@@ -40,7 +40,7 @@ jobs:
             a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5 uv-0.13.9.tar.gz
           tar -xzf "$CI_TOOL_CACHE/uv-0.13.9.tar.gz" -C "$tools"
           cp "$tools/uv-x86_64-unknown-linux-gnu/uv" "$tools/uv-x86_64-unknown-linux-gnu/uvx" "$tools/bin/"
-          UV_PYTHON_INSTALL_DIR=$RUNNER_TEMP/uv-python "$tools/bin/uv" python install 3.14
+          UV_PYTHON_INSTALL_DIR=$RUNNER_TEMP/uv-python "$tools/bin/uv" python install --no-bin 3.14
           echo "UV_PYTHON_INSTALL_DIR=$RUNNER_TEMP/uv-python" >> "$GITHUB_ENV"
           ci_fetch https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
             8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 shellcheck-v0.11.0.tar.xz
@@ -53,7 +53,7 @@ jobs:
             44efaef3ed14c6ab52eb87481d78e5e5c204796dccf26e2f4598a61ba17f8003 editorconfig-checker-v4.0.2.tar.gz
           mkdir -p "$tools/ec"
           tar -xzf "$CI_TOOL_CACHE/editorconfig-checker-v4.0.2.tar.gz" -C "$tools/ec"
-          install -m 0755 "$tools/ec/bin/ec-linux-amd64" "$tools/bin/editorconfig-checker"
+          install -m 0755 "$tools/ec/editorconfig-checker" "$tools/bin/editorconfig-checker"
           echo "$tools/bin" >> "$GITHUB_PATH"
 
       - name: Sync the locked environment
