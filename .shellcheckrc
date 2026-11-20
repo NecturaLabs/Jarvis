@@ -1,0 +1,23 @@
+# Managed by agentic-setup lint/common. Do not edit; a project's exception is a
+# `# shellcheck disable=SCxxxx` directive with its reason, at the line. Update with: lint.py sync.
+# ShellCheck 0.11.0 reads this file as .shellcheckrc from the script's directory upward.
+
+# Source files named in a `source` directive are read too, and looked up next to the script.
+external-sources=true
+source-path=SCRIPTDIR
+
+# Every optional check (shellcheck --list-optional), except the two below.
+enable=all
+
+# check-extra-masked-returns: reports a command whose exit status is lost in a command substitution used
+# as an argument, in a process substitution, or on the left of a pipe. Most of what it finds in
+# bundle-style scripts is `mapfile -d '' -t files < <(cmd)` and `cmd | while read`: bash gives no
+# status for those without `wait $!` and temporary files, and ShellCheck's own fix (invoke separately)
+# does not apply to them. Measured on the shipped scripts: 24 findings, 19 of them of that kind.
+disable=SC2312
+
+# check-set-e-suppressed: reports every function called in an `if`, `&&` or `||` because `set -e` is
+# ignored inside it. Branching on a function's status is the only way to use it as a test (the lint_*
+# helpers are used this way), and the fix ShellCheck suggests, calling it on its own line, makes the
+# script exit instead of branch.
+disable=SC2310,SC2311

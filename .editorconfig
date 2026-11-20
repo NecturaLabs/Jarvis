@@ -1,0 +1,57 @@
+# Managed by agentic-setup lint/common (composed with the installed bundles' fragments). Do not edit;
+# project changes go in a nested .editorconfig without `root = true`. Update with: lint.py sync.
+# Spec: https://spec.editorconfig.org/ (keys outside it are shfmt's, see lint/common/README.md).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# Rust (rustfmt), Python (ruff format, PEP 8), C#, C and C++ outside Unreal, SQL, Kotlin and
+# PowerShell use the default above: 4 spaces.
+
+# Web and data files: 2 spaces (Biome and Prettier are set to match; Biome's own default is tabs).
+[*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,css,scss,html,svelte,astro,json,jsonc,json5,yml,yaml,toml,xml,svg,csproj,props,targets}]
+indent_size = 2
+
+# Markdown: two trailing spaces are a hard line break, so trailing whitespace is not trimmed.
+[*.{md,markdown}]
+indent_size = 2
+trim_trailing_whitespace = false
+
+# Shell. The keys after indent_size are shfmt's (shfmt reads them when it is given no formatting flags):
+# binary operators and pipes may start a line, `case` arms are indented. switch_case_indent is the
+# spelling every shfmt release reads (newer ones also accept case_indent).
+[*.{sh,bash}]
+indent_size = 2
+simplify = true
+binary_next_line = true
+switch_case_indent = true
+space_redirects = false
+function_next_line = false
+
+# Scripts that must keep their line endings: Windows batch files need CRLF.
+[*.{cmd,bat}]
+end_of_line = crlf
+
+# Makefiles need tabs.
+[{Makefile,makefile,GNUmakefile,*.mk,*.make}]
+indent_style = tab
+
+# Dockerfile continuation lines.
+[{Dockerfile,Dockerfile.*,*.Dockerfile,*.dockerfile}]
+indent_size = 4
+
+# Lua: StyLua's defaults (tabs, 4 columns wide).
+[*.lua]
+indent_style = tab
+tab_width = 4
+
+# Diffs and patches carry the whitespace of the code they patch.
+[*.{diff,patch}]
+trim_trailing_whitespace = false
+insert_final_newline = unset

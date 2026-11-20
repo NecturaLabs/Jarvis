@@ -1,0 +1,22 @@
+# Python (from github/gitignore Python.gitignore, trimmed to what uv projects produce)
+__pycache__/
+*.py[cod]
+*.so
+build/
+dist/
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Agent worktrees and scratch
+.claude/worktrees/
+.claude/settings.local.json
+.lint-backup/
+/tmp/
+
+# Local environment
+.env
+.env.*
