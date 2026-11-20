@@ -1,0 +1,21 @@
+// Managed by agentic-setup lint/python. Do not edit; project changes go in the project's pyrightconfig.json (which extends this file). Update with: lint.py sync.
+// The keys follow https://microsoft.github.io/pyright/#/configuration and were run with pyright 1.1.412.
+{
+  "typeCheckingMode": "strict",
+  "pythonVersion": "3.11",
+  // `# type: ignore` silences everything on its line; `# pyright: ignore[rule]` names the rule.
+  "enableTypeIgnoreComments": false,
+  "reportUnnecessaryTypeIgnoreComment": "error",
+  "reportImplicitOverride": "error",
+  // Off in strict, on here (https://microsoft.github.io/pyright/#/configuration): PEP 585 aliases
+  // such as typing.List are deprecated; import cycles slow analysis and hide layering mistakes; a
+  // setter whose value does not fit its getter breaks what a property promises; unreachable code is
+  // dead; a subclass that skips its base's __init__ or __enter__ leaves the base half set up; an
+  // instance variable outside __init__ and the class body is invisible to a reader of the class.
+  "deprecateTypingAliases": true,
+  "reportImportCycles": "error",
+  "reportPropertyTypeMismatch": "error",
+  "reportUnreachable": "error",
+  "reportMissingSuperCall": "error",
+  "reportUninitializedInstanceVariable": "error"
+}

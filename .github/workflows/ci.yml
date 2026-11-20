@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev, "feature/**", "bugfix/**", "hotfix/**", "refactor/**", "docs/**", "test/**", "chore/**"]
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Lint, types and tests
+    runs-on: ${{ vars.USE_SELF_HOSTED == '0' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "x64"]') }}
+    timeout-minutes: 15
+    env:
+      # pyproject.toml prefers the system Python on the owner's PC; CI runners get a uv-managed 3.14.
+      UV_PYTHON_PREFERENCE: managed
+
+    steps:
+      # Actions are pinned to commits, not mutable tags. Bump the SHA and its comment together.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.9"
+          python-version: "3.14"
+
+      # One pin per tool: bump the version and its sha256 together.
+      - name: Install the shell and editorconfig checkers
+        run: |
+          set -euo pipefail
+          . tools/ci-tool-install.sh
+          tools=$RUNNER_TEMP/ci-tools
+          mkdir -p "$tools/bin"
+          ci_fetch https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
+            8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 shellcheck-v0.11.0.tar.xz
+          tar -xJf "$CI_TOOL_CACHE/shellcheck-v0.11.0.tar.xz" -C "$tools"
+          cp "$tools/shellcheck-v0.11.0/shellcheck" "$tools/bin/"
+          ci_fetch https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64 \
+            76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf shfmt_v3.14.1
+          install -m 0755 "$CI_TOOL_CACHE/shfmt_v3.14.1" "$tools/bin/shfmt"
+          ci_fetch https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v4.0.2/editorconfig-checker-linux-amd64.tar.gz \
+            44efaef3ed14c6ab52eb87481d78e5e5c204796dccf26e2f4598a61ba17f8003 editorconfig-checker-v4.0.2.tar.gz
+          mkdir -p "$tools/ec"
+          tar -xzf "$CI_TOOL_CACHE/editorconfig-checker-v4.0.2.tar.gz" -C "$tools/ec"
+          install -m 0755 "$tools/ec/bin/ec-linux-amd64" "$tools/bin/editorconfig-checker"
+          echo "$tools/bin" >> "$GITHUB_PATH"
+
+      - name: Sync the locked environment
+        run: uv sync --frozen
+
+      - name: Lint and type check
+        run: uv run .lint/check.sh
+
+      - name: Unit tests
+        run: uv run pytest -q -m "not local"

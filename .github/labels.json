@@ -1,0 +1,172 @@
+[
+  {
+    "name": "bug",
+    "color": "d73a4a",
+    "description": "Existing behaviour is incorrect or fails."
+  },
+  {
+    "name": "enhancement",
+    "color": "a2eeef",
+    "description": "New or expanded user-facing capability."
+  },
+  {
+    "name": "maintenance",
+    "color": "fef2c0",
+    "description": "Internal upkeep, refactoring, tooling or process work."
+  },
+  {
+    "name": "documentation",
+    "color": "0075ca",
+    "description": "Documentation changes with no product behaviour change."
+  },
+  {
+    "name": "verification",
+    "color": "d4c5f9",
+    "description": "Checks of implemented behaviour, with recorded evidence."
+  },
+  {
+    "name": "owner-action",
+    "color": "e99695",
+    "description": "Owner decision, legal information or external-account action."
+  },
+  {
+    "name": "needs-triage",
+    "color": "e4e669",
+    "description": "Awaiting maintainer classification, priority or actionable scope."
+  },
+  {
+    "name": "needs-verification",
+    "color": "5319e7",
+    "description": "Acceptance still needs live, platform or owner verification."
+  },
+  {
+    "name": "security",
+    "color": "b60205",
+    "description": "Credential, trust, privacy or command-execution risk."
+  },
+  {
+    "name": "dependencies",
+    "color": "0366d6",
+    "description": "Dependency update pull requests, including Dependabot."
+  },
+  {
+    "name": "github_actions",
+    "color": "2088ff",
+    "description": "GitHub Actions dependency update pull requests."
+  },
+  {
+    "name": "priority:p0-critical",
+    "color": "b60205",
+    "description": "Confirmed critical incident or release blocker; address immediately."
+  },
+  {
+    "name": "priority:p1-high",
+    "color": "d93f0b",
+    "description": "High-priority work; address before normal backlog."
+  },
+  {
+    "name": "priority:p2-normal",
+    "color": "fbca04",
+    "description": "Normal planned work and default priority pending triage."
+  },
+  {
+    "name": "priority:p3-low",
+    "color": "c5def5",
+    "description": "Deferred or low-impact work after higher priorities."
+  },
+  {
+    "name": "size:small",
+    "color": "c2e0c6",
+    "description": "One bounded correction or focused verification; little coordination."
+  },
+  {
+    "name": "size:medium",
+    "color": "fef2c0",
+    "description": "Several related changes or checks within one workflow."
+  },
+  {
+    "name": "size:large",
+    "color": "f9d0c4",
+    "description": "Cross-module/platform work, a broad audit or a compound feature."
+  },
+  {
+    "name": "size:needs-estimate",
+    "color": "e4e669",
+    "description": "Scope or external dependencies are too unclear to estimate remaining work."
+  },
+  {
+    "name": "duplicate",
+    "color": "cfd3d7",
+    "description": "Same deliverable as a linked canonical issue; close and track work there."
+  },
+  {
+    "name": "archived",
+    "color": "ededed",
+    "description": "Placeholder for an issue or pull request from before the source was published."
+  },
+  {
+    "name": "python",
+    "color": "3572A5",
+    "description": "Pull requests that update Python dependencies"
+  },
+  {
+    "name": "area:audio",
+    "color": "c5def5",
+    "description": "Capture, wake word, VAD, transcription"
+  },
+  {
+    "name": "area:voice",
+    "color": "c5def5",
+    "description": "Speech output and confirmation"
+  },
+  {
+    "name": "area:agent",
+    "color": "c5def5",
+    "description": "Agent loop, prompts, tool calling"
+  },
+  {
+    "name": "area:policy",
+    "color": "c5def5",
+    "description": "Boundaries, provenance, confirmation, audit log"
+  },
+  {
+    "name": "area:model",
+    "color": "c5def5",
+    "description": "Strata serving, profile, evaluation"
+  },
+  {
+    "name": "area:spotify",
+    "color": "c5def5",
+    "description": "Spotify Web API and MPRIS"
+  },
+  {
+    "name": "area:pc-ops",
+    "color": "c5def5",
+    "description": "Typed PC operations and Omarchy skills"
+  },
+  {
+    "name": "area:research",
+    "color": "c5def5",
+    "description": "Web search and fetch"
+  },
+  {
+    "name": "area:setup",
+    "color": "c5def5",
+    "description": "Install, update, doctor, first-run wizard, config"
+  },
+  {
+    "name": "area:tests",
+    "color": "c5def5",
+    "description": "Test suite and fixtures"
+  },
+  {
+    "name": "area:docs",
+    "color": "c5def5",
+    "description": "Documentation"
+  },
+  {
+    "name": "area:ci",
+    "color": "c5def5",
+    "description": "CI, lint and supply chain"
+  }
+]

@@ -1,0 +1,8 @@
+{
+  "extends": ".lint/pyrightconfig.json",
+  "pythonVersion": "3.14",
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": ["src", "tests"],
+  "exclude": ["**/node_modules", "**/.*", "**/target", "**/vendor"]
+}

@@ -1,0 +1,80 @@
+# Managed by agentic-setup lint/python. Do not edit; project changes go in the project's ruff.toml (which extends this file). Update with: lint.py sync.
+#
+# Every ruff rule is selected, the preview rules included; each ignore below says why. Tested with ruff
+# 0.17.3. Sources:
+# rule list https://docs.astral.sh/ruff/rules/, settings https://docs.astral.sh/ruff/settings/,
+# formatter conflicts https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules.
+
+# Rules and options this file uses exist from this release; an older ruff stops with a message instead
+# of silently running fewer rules (https://docs.astral.sh/ruff/settings/#required-version).
+required-version = ">=0.17"
+line-length = 100
+# The floor for every script we write (tomllib, PEP 604 unions and `except*` all exist at 3.11); a
+# project that needs newer syntax raises it in its own ruff.toml.
+target-version = "py311"
+unsafe-fixes = false
+
+[format]
+# Preview formatting changes the layout between releases, so a ruff upgrade would fail the format check
+# on every file; lint preview below is a separate switch (https://docs.astral.sh/ruff/preview/).
+preview = false
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+
+[lint]
+# Preview rules are on: they catch real defects the stable set does not yet (PLW1514 unspecified
+# encoding, PLR6201 list literal in a membership test, the DOC rules). Ruff is pinned per project, so
+# the set only changes when the pin does. `explicit-preview-rules` stays off, so a new preview rule
+# under ALL runs at once.
+preview = true
+select = ["ALL"]
+ignore = [
+  # The formatter owns these; ruff warns they conflict with `ruff format` and its docs say to
+  # leave them off (trailing commas, implicit string concatenation on one line).
+  "COM812",
+  "ISC001",
+  # No copyright header on private tools.
+  "CPY001",
+  # Rule codes are what a finding prints and what `# noqa` takes, so an ignore stays greppable from
+  # the finding; RUF201 asks for the names instead.
+  "RUF201",
+  # These tools talk to the terminal: print is their output, not a stray debug call.
+  "T201",
+  # Scripts run git, cargo and the like by name with a fixed argument list and no shell (shell=True
+  # stays flagged by S602); S404, S603 and S607 fire on every import of subprocess and every such call.
+  "S404",
+  "S603",
+  "S607",
+  # Google's guide, which `convention` below follows, lets "Returns" and "Yields" be left out when
+  # the docstring starts with "Return" or "Yield" and the first sentence says enough (section 3.8.3,
+  # https://google.github.io/styleguide/pyguide.html); DOC201 and DOC402 ask for the section anyway.
+  # DOC501 (a "Raises:" section) stays on.
+  "DOC201",
+  "DOC402",
+  # A short message written at the raise site reads better in a script than a variable and a
+  # second line; the traceback duplication these rules avoid does not matter here.
+  "EM101",
+  "EM102",
+  "TRY003",
+  # The scripts are stdlib-only, so their tests are unittest, not pytest: its assertion methods are
+  # the idiom there. A project on pytest drops these two ignores in its own ruff.toml.
+  "PT009",
+  "PT027",
+]
+
+[lint.pydocstyle]
+# One convention: Google's. It also switches off the rules that contradict it (D203, D213, ...),
+# so ruff has nothing to warn about.
+convention = "google"
+
+[lint.per-file-ignores]
+# A test asserts, compares to literals, builds fixtures with positional arguments, reads private
+# members, is not a package module, and needs no docstring to be understood. It does need its
+# annotations: pyright strict has no per-file relaxation, so an unannotated test fails there.
+"**/tests/**" = ["S101", "PLR2004", "PLR0913", "D", "SLF001", "S105", "S106", "FBT", "INP001", "N999"]
+"**/test_*.py" = ["S101", "PLR2004", "PLR0913", "D", "SLF001", "S105", "S106", "FBT", "INP001"]
+"**/*_test.py" = ["S101", "PLR2004", "PLR0913", "D", "SLF001", "S105", "S106", "FBT", "INP001"]
+"**/conftest.py" = ["S101", "D", "INP001"]

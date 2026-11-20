@@ -1,0 +1,20 @@
+# This project's ruff settings. The strict base is .lint/ruff.toml (managed; never edit it, run
+# lint.py sync); this file holds only what is this project's. ruff docs: https://docs.astral.sh/ruff/
+extend = ".lint/ruff.toml"
+target-version = "py314"
+
+# Paths ruff leaves alone (generated or vendored code):
+# extend-exclude = ["vendor"]
+
+[lint]
+# The base ignores PT009 and PT027 for stdlib unittest scripts; this project tests with pytest.
+extend-select = ["PT009", "PT027"]
+
+[lint.isort]
+known-first-party = ["jarvis"]
+
+# `extend-per-file-ignores` adds to the base's entries (the test relaxations); a plain
+# `per-file-ignores` here would replace them all.
+[lint.extend-per-file-ignores]
+# One entry per deliberate exception, with the reason on the line above:
+# "tools/legacy.py" = ["C901"]

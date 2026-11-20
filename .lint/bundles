@@ -1,0 +1,5 @@
+# agentic-setup lint record: written by lint.py, read by .lint/check.sh. Do not edit by hand.
+version	5.53.4
+name	Jarvis
+bundle	common
+bundle	python
