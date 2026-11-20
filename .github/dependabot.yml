@@ -2,6 +2,7 @@ version: 2
 updates:
   - package-ecosystem: uv
     directory: /
+    labels: [dependencies, python]
     schedule:
       interval: weekly
     groups:
@@ -9,6 +10,7 @@ updates:
         update-types: [minor, patch]
   - package-ecosystem: github-actions
     directory: /
+    labels: [dependencies, github_actions]
     schedule:
       interval: weekly
     groups:
