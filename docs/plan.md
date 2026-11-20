@@ -19,6 +19,8 @@ Piper answers by voice. First core feature: Spotify.
 - Replies by voice (Piper); no desktop notifications.
 - Model idle by default (including after reboot), loaded on demand, unloaded when idle.
 - Very easy to set up and maintain. Private repo `necturalabs/jarvis`.
+- Goes open source once stable and confirmed working to our standards, so everything committed stays
+  publishable from day one.
 - Agents working on it open nothing on the owner's screen (hidden; else workspace 1) and never stop processes they
   did not start.
 
@@ -174,6 +176,18 @@ enforced in code before any tool runs.
   suspend/resume (re-open mic, re-check Strata), mic unplug/replug (wait and re-open), missing `/data/gaming` mount
   (Strata unit fails cleanly, Jarvis says the model is unavailable).
 - Repo `necturalabs/jarvis` (private); CI: ruff, pyright, pytest (unit only, no audio/GPU).
+
+## Open-source readiness (from day one)
+
+- Nothing machine- or owner-specific in code: paths (`/data/gaming/ai/strata`), devices, voices and accounts come
+  from config with documented defaults; tests use fixtures, never the owner's data.
+- History stays publishable: no personal data, tokens, recordings or internal hostnames in any commit; owner
+  voice fixtures stay out of the repository unless the owner approves them for publication.
+- Licences checked on every dependency and model added (code, weights, voices). Piper (`piper-tts`) is
+  GPL-3.0, so the release licence must be GPL-3.0-compatible or Piper must be swappable behind the speech
+  interface; decided before going public (ADR then).
+- Each user brings their own Spotify developer app (client ID in setup), which fits Spotify's dev-mode limit.
+- At release: `necturalabs:open-source-repo` audit (history and secret scan, community files, licence, Scorecard).
 
 ## Phases (each ends with measured evidence)
 

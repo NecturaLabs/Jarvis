@@ -45,6 +45,12 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
   release branch: merge and push to it only when the owner asks. A pull request only when the owner asks for one.
 - Conventional Commits; push every commit on a non-release branch at once.
 
+## Open source later
+
+Jarvis will be published once it is stable, so every commit must be publishable: no personal data, tokens,
+recordings or internal hostnames; owner- and machine-specific values live in config, not code; check the licence
+of every dependency, model and voice before adding it (Piper is GPL-3.0; see `docs/plan.md`).
+
 ## Boundaries
 
 - **Never** commit secrets, tokens or the Spotify refresh token; tokens live in `~/.local/state/jarvis/`

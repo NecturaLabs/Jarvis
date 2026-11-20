@@ -28,18 +28,20 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: "0.13.9"
-          python-version: "3.14"
-
-      # One pin per tool: bump the version and its sha256 together.
-      - name: Install the shell and editorconfig checkers
+      # One pin per tool: bump the version and its sha256 together. The org allows only listed actions, so
+      # uv comes from its release tarball rather than astral-sh/setup-uv.
+      - name: Install uv, Python and the checkers
         run: |
           set -euo pipefail
           . tools/ci-tool-install.sh
           tools=$RUNNER_TEMP/ci-tools
           mkdir -p "$tools/bin"
+          ci_fetch https://github.com/astral-sh/uv/releases/download/0.13.9/uv-x86_64-unknown-linux-gnu.tar.gz \
+            a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5 uv-0.13.9.tar.gz
+          tar -xzf "$CI_TOOL_CACHE/uv-0.13.9.tar.gz" -C "$tools"
+          cp "$tools/uv-x86_64-unknown-linux-gnu/uv" "$tools/uv-x86_64-unknown-linux-gnu/uvx" "$tools/bin/"
+          UV_PYTHON_INSTALL_DIR=$RUNNER_TEMP/uv-python "$tools/bin/uv" python install 3.14
+          echo "UV_PYTHON_INSTALL_DIR=$RUNNER_TEMP/uv-python" >> "$GITHUB_ENV"
           ci_fetch https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
             8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 shellcheck-v0.11.0.tar.xz
           tar -xJf "$CI_TOOL_CACHE/shellcheck-v0.11.0.tar.xz" -C "$tools"
