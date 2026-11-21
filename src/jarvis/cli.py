@@ -7,8 +7,10 @@ import signal
 import subprocess
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from jarvis import __version__, config, models, paths
 from jarvis.agent import Hooks
@@ -404,10 +406,33 @@ def _whisper_model(cfg: config.Config) -> list[tuple[bool, str, str]]:
     Other engines keep their models in their own forms, so Voxtype itself reports on those.
     """
     audio = cfg.audio
-    if audio.transcribe_engine not in {"", "whisper"} or not audio.transcribe_model:
+    name = audio.transcribe_model
+    if audio.transcribe_engine not in {"", "whisper"} or not name:
         return []
-    model = paths.xdg_data_home() / "voxtype" / "models" / f"ggml-{audio.transcribe_model}.bin"
+    model = (
+        Path(name)
+        if name.startswith("/")
+        else paths.xdg_data_home() / "voxtype" / "models" / f"ggml-{name}.bin"
+    )
     return [(model.is_file(), f"speech model {model}", "download it with `voxtype setup model`")]
+
+
+def _model_url(cfg: config.Config) -> list[tuple[bool, str, str]]:
+    """Return the check that a saved model URL still points at Strata's port.
+
+    A URL saved by an older version keeps the port it was saved with; after `strata.port` is
+    changed by hand, Jarvis would talk to the old port.
+    """
+    url = cfg.model.base_url
+    if not url or urlsplit(url).port == cfg.strata.port:
+        return []
+    return [
+        (
+            False,
+            f"model.base_url {url} is not on Strata's port {cfg.strata.port}",
+            "remove model.base_url from the config, or set it to Strata's port",
+        )
+    ]
 
 
 RENEW_WARNING_DAYS = 14
@@ -456,6 +481,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         *((f.exists(), f"file {f}", "see docs/models.md") for f in files),
         *unreadable,
         *_whisper_model(cfg),
+        *_model_url(cfg),
         (cfg.strata.model_file.is_file(), f"model {cfg.strata.model_file}", "set --model-file"),
         *(
             (shutil.which(t) is not None, f"tool {t}", f"install {t}")
@@ -522,19 +548,36 @@ def cmd_stop(_args: argparse.Namespace) -> int:
     return code
 
 
+def parse_systemd_time(text: str) -> float | None:
+    """Return a `systemctl show --timestamp=us+utc` time as Unix time, or None when unset."""
+    stamp = text.strip()
+    if not stamp.endswith(" UTC"):
+        return None
+    try:
+        when = datetime.strptime(
+            stamp.removesuffix(" UTC") + " +0000", "%a %Y-%m-%d %H:%M:%S.%f %z"
+        )
+    except ValueError:
+        return None
+    return when.timestamp()
+
+
 def _started_at(unit: str) -> float | None:
-    """Return when `unit` last became active (Unix time), or None when it is not running."""
-    show = ["show", unit, "-p", "ActiveEnterTimestamp", "--timestamp=unix", "--value"]
+    """Return when `unit` last became active (Unix time, to the microsecond), or None if stopped.
+
+    Whole seconds are not enough: `jarvis setup` writes Strata's files and starts it within the
+    same second, and those files must not count as newer than the server.
+    """
+    show = ["show", unit, "-p", "ActiveEnterTimestamp", "--timestamp=us+utc", "--value"]
     done = subprocess.run(
         ["systemctl", "--user", *show],
         capture_output=True,
         text=True,
         check=False,
     )
-    stamp = done.stdout.strip().removeprefix("@")
-    if _unit_state(unit) != "active" or not stamp.isdigit():
+    if _unit_state(unit) != "active":
         return None
-    return float(stamp)
+    return parse_systemd_time(done.stdout)
 
 
 def _strata_changed_since(started: float) -> bool:
