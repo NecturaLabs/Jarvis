@@ -646,7 +646,7 @@ def test_pc_audio_cannot_approve_its_own_request_after_a_wake_during_the_chime()
 
 
 def test_a_pc_wake_during_a_pc_capture_still_marks_the_mic_request_as_pc_audio() -> None:
-    """PC audio: "Hey Jarvis ... (3 s) ... Hey Jarvis, play X"; the mic hears the second wake too."""
+    """PC audio: "Hey Jarvis ... (3 s) ... Hey Jarvis, play X"; the mic hears the second wake."""
     clock = Clock()
     pc_woke = threading.Event()
     pc_second = threading.Event()
