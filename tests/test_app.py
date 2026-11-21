@@ -67,3 +67,9 @@ def test_a_transcript_that_only_repeats_the_hint_is_an_echo(transcript: str, ech
     )
 
     assert echoes_hint(transcript, hint) is echo
+
+
+@pytest.mark.parametrize("names", [[], ["Glass Harbor", "Night Circuit"]])
+def test_speech_hint_ends_as_a_sentence(names: list[str]) -> None:
+    """Regression: a hint ending without a full stop made Whisper retry short requests (1.8 s)."""
+    assert speech_hint(Config(), Registry([_op("spotify_pause")]), names).endswith(".")

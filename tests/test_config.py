@@ -218,3 +218,9 @@ def test_save_does_not_write_through_a_link_left_at_a_temp_name(tmp_path: Path) 
 
     assert victim.read_text(encoding="utf-8") == "untouched"
     assert config.load(target) == config.Config()
+
+
+def test_transcription_runs_fast_by_default() -> None:
+    audio = config.AudioConfig()
+    assert audio.transcribe_threads == 8
+    assert audio.transcribe_short_window is True
