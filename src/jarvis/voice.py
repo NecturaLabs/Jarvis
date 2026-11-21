@@ -239,9 +239,19 @@ class VoiceLoop:
         self._pc_done_at: float | None = None  # when the last PC-audio request ended
         self._pc_speech = 0  # PC speech frames heard while waiting for an answer
         self._requests = 0  # requests the loop has taken
+        self._chiming: threading.Thread | None = None
         self.state = State.IDLE
 
+    def _chime(self) -> None:
+        try:
+            self._speaker.chime()
+        except Exception:
+            log.exception("could not play the chime")
+
     def _speak(self, words: str) -> None:
+        chiming, self._chiming = self._chiming, None
+        if chiming is not None:
+            chiming.join()
         self.state = State.SPEAK
         self._speaker.say(words)
         self._mic.drain()
@@ -310,8 +320,11 @@ class VoiceLoop:
         wake_at = self._clock() if wake_at is None else wake_at
         self._requests += 1
         threading.Thread(target=self._prewarm, daemon=True).start()
-        self._speaker.chime()
-        self._mic.drain()
+        # The chime plays while the request is already being heard: words said right after the
+        # wake word are kept. Measured: Silero rates the chime far below speech, and it does not
+        # change what Whisper hears even at full level over the first words.
+        self._chiming = threading.Thread(target=self._chime, name="jarvis-chime", daemon=True)
+        self._chiming.start()
         self.state = State.CAPTURE
         started = time.perf_counter()
         heard = capture_utterance(self._mic.frames(), self._vad, self._cfg)
