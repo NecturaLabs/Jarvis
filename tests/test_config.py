@@ -232,3 +232,15 @@ def test_a_non_default_config_round_trips_with_the_new_keys(tmp_path: Path) -> N
 
     assert config.load(path) == original
     assert "confirm_blocks_on_pc_speech = false" in path.read_text(encoding="utf-8")
+
+
+def test_save_does_not_write_through_a_link_left_at_a_temp_name(tmp_path: Path) -> None:
+    victim = tmp_path / "victim.txt"
+    victim.write_text("untouched", encoding="utf-8")
+    target = tmp_path / "config.toml"
+    target.with_suffix(".toml.tmp").symlink_to(victim)
+
+    config.save(config.Config(), target)
+
+    assert victim.read_text(encoding="utf-8") == "untouched"
+    assert config.load(target) == config.Config()
