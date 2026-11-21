@@ -90,6 +90,18 @@ def test_exec_words_are_escaped_per_systemd_rules(raw: str, written: str) -> Non
     assert services.exec_word(raw) == written
 
 
+@pytest.mark.parametrize(
+    "program", ["-/bin/x", "@/bin/x", "+/bin/x", "!/bin/x", ":/bin/x", "bin/x", ""]
+)
+def test_a_program_that_is_not_an_absolute_path_never_starts_a_unit_line(program: str) -> None:
+    with pytest.raises(ConfigError, match="absolute path"):
+        services.exec_program(program, "program")
+
+
+def test_an_absolute_program_is_written_as_an_exec_word() -> None:
+    assert services.exec_program("/my apps/jarvis", "program") == '"/my apps/jarvis"'
+
+
 @pytest.mark.parametrize("bad", ["/a\nExecStartPre=/bin/evil", "/a\rb", "/a\x00b", "/a\x7fb"])
 def test_a_control_character_never_reaches_a_unit(tmp_path: Path, bad: str) -> None:
     cfg = _config(tmp_path)

@@ -108,26 +108,30 @@ def test_the_model_url_is_derived_from_the_strata_port_unless_set() -> None:
     assert config.Config().model_base_url() == "http://127.0.0.1:8080/v1"
     derived = config.Config(strata=config.StrataConfig(port=9100))
     assert derived.model_base_url() == "http://127.0.0.1:9100/v1"
-    explicit = config.Config(model=config.ModelConfig(base_url="https://llm.example.org/v1"))
-    assert explicit.model_base_url() == "https://llm.example.org/v1"
+    explicit = config.Config(model=config.ModelConfig(base_url="http://127.0.0.1:9000/v1"))
+    assert explicit.model_base_url() == "http://127.0.0.1:9000/v1"
 
 
 @pytest.mark.parametrize(
     "url",
     [
-        "https://llm.example.org/v1",
         "http://127.0.0.1:9000/v1",
         "http://localhost:9000/v1",
         "http://[::1]:9000/v1",
+        "https://127.0.0.1:9443/v1",
+        "https://localhost/v1",
     ],
 )
-def test_https_or_loopback_http_urls_are_accepted(url: str) -> None:
+def test_only_urls_on_this_machine_are_accepted(url: str) -> None:
     assert config.ModelConfig(base_url=url).base_url == url
 
 
 @pytest.mark.parametrize(
     "url",
     [
+        "https://llm.example.org/v1",
+        "https://192.168.1.5:8443/v1",
+        "https://127.0.0.1.example.org/v1",
         "http://llm.example.org/v1",
         "http://192.168.1.5:8080/v1",
         "ftp://127.0.0.1/v1",

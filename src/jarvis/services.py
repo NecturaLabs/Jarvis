@@ -56,6 +56,21 @@ def exec_word(value: str, what: str = "value") -> str:
     return _quoted(word) if _NEEDS_QUOTES.search(word) or not word else word
 
 
+def exec_program(value: str, what: str = "program") -> str:
+    """Return `value` as the program word that starts an `ExecStart=` line.
+
+    systemd reads a leading `-`, `@`, `+`, `!` or `:` there as a prefix that changes how the
+    command runs, so only an absolute path is accepted.
+
+    Raises:
+        ConfigError: `value` is not an absolute path, or cannot be written into a unit.
+    """
+    if not value.startswith("/"):
+        msg = f"{what} must be an absolute path, not {value!r}"
+        raise ConfigError(msg)
+    return exec_word(value, what)
+
+
 def _environment(name: str, value: str) -> str:
     """Return an `Environment=` line (specifiers doubled; `$` is literal there)."""
     assignment = f"{name}={_checked(value, name).replace('%', '%%')}"
@@ -135,7 +150,7 @@ def strata_unit(config: Config, key_file: Path) -> str:
     )
     start = " ".join(
         [
-            exec_word(_strata_bin(config), "strata executable"),
+            exec_program(_strata_bin(config), "strata executable"),
             "serve --profile",
             exec_word(str(strata_profile_file()), "profile file"),
             "\\\n  --ready-file",
@@ -172,7 +187,7 @@ WantedBy=graphical-session.target
 
 def jarvis_unit() -> str:
     """Return the `jarvis.service` unit text (the voice loop)."""
-    exe = exec_word(str(Path(sys.executable).parent / "jarvis"), "jarvis executable")
+    exe = exec_program(str(Path(sys.executable).parent / "jarvis"), "jarvis executable")
     return f"""[Unit]
 Description=Jarvis voice agent
 PartOf=graphical-session.target
