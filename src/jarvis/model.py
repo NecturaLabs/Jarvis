@@ -1,7 +1,7 @@
 """OpenAI-compatible chat client for the Strata server, with non-generating health checks."""
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import httpx
@@ -9,6 +9,8 @@ import httpx
 from jarvis.jsonutil import obj, objs
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from jarvis.config import ModelConfig
 
 
@@ -60,8 +62,9 @@ class StrataModel:
     """Talks to `strata serve` over its OpenAI API."""
 
     config: ModelConfig
-    api_key: str
+    api_key: str = field(repr=False)
     transport: httpx.BaseTransport | None = None  # tests answer in place of the server
+    sleep: Callable[[float], None] = time.sleep  # tests wait without waiting
 
     def _client(self, timeout: float) -> httpx.Client:
         return httpx.Client(
@@ -149,4 +152,4 @@ class StrataModel:
         while time.monotonic() < deadline:
             if self.status() is not None:
                 return
-            time.sleep(1.0)
+            self.sleep(1.0)

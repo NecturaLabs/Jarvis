@@ -9,10 +9,11 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from jarvis import __version__, config, paths
+from jarvis import __version__, config, models, paths
 from jarvis.agent import Hooks
-from jarvis.app import SetupError, build, spotify_token_file, strata_key_file
+from jarvis.app import SetupError, build
 from jarvis.model import StrataModel
+from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
 
 if TYPE_CHECKING:
@@ -20,6 +21,19 @@ if TYPE_CHECKING:
 
 WAKE_MODEL = "wake/hey_jarvis.onnx"
 VAD_MODEL = "vad/silero_vad.onnx"
+
+
+def _app_names(value: str) -> list[str]:
+    """Return the app names of a comma-separated `--apps` value.
+
+    Raises:
+        argparse.ArgumentTypeError: a name is empty.
+    """
+    names = [name.strip() for name in value.split(",")]
+    if not all(names):
+        msg = "name at least one app and no empty names (to hear all PC audio use --all-output)"
+        raise argparse.ArgumentTypeError(msg)
+    return names
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,11 +81,17 @@ def build_parser() -> argparse.ArgumentParser:
         "pc-audio", help="let Jarvis take requests from PC audio (Discord by default)"
     )
     pc.add_argument("state", nargs="?", choices=["on", "off"], help="omit to show the setting")
-    pc.add_argument(
+    which = pc.add_mutually_exclusive_group()
+    which.add_argument(
         "--apps",
-        nargs="*",
-        metavar="APP",
-        help="which apps to listen to, by process or app name; none listed means all PC audio",
+        type=_app_names,
+        metavar="A,B",
+        help="apps to listen to, comma-separated, by process or app name (--apps discord,firefox)",
+    )
+    which.add_argument(
+        "--all-output",
+        action="store_true",
+        help="listen to all PC audio, not only named apps (anything playing can speak to Jarvis)",
     )
     return parser
 
@@ -111,11 +131,19 @@ def cmd_setup(args: argparse.Namespace) -> int:
             **({"data_dir": args.data_dir} if args.data_dir is not None else {}),
         }
     )
-    updated = config.Config.model_validate(updated.model_dump())
+    try:
+        updated = config.Config.model_validate(updated.model_dump())
+    except ValueError as exc:
+        print(f"jarvis: setup value refused: {exc}", file=sys.stderr)
+        return 2
     config.save(updated)
     ensure_api_key(strata_key_file())
-    profile = services.write_strata_profile(updated)
-    units = services.write_units(updated, strata_key_file())
+    try:
+        profile = services.write_strata_profile(updated)
+        units = services.write_units(updated, strata_key_file())
+    except config.ConfigError as exc:
+        print(f"jarvis: {exc}", file=sys.stderr)
+        return 2
     print(f"config: {paths.config_file()}\nstrata profile: {profile}")
     print("units: " + ", ".join(str(u) for u in units))
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
@@ -258,8 +286,46 @@ def cmd_run(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _model_files(cfg: config.Config) -> list[tuple[str, Path]]:
+    """Return the (role, file) pairs the doctor can check against a known release."""
+    from jarvis.audio import KOKORO_PREFIX, voice_files  # ruff: ignore[import-outside-top-level]
+
+    found = [("wake", cfg.data_dir / WAKE_MODEL), ("vad", cfg.data_dir / VAD_MODEL)]
+    if cfg.audio.voice.startswith(KOKORO_PREFIX):
+        model, voices = voice_files(cfg.data_dir, cfg.audio.voice)
+        found += [("kokoro-model", model), ("kokoro-voices", voices)]
+    return found
+
+
+def _release_lines(cfg: config.Config) -> tuple[list[str], list[tuple[bool, str, str]]]:
+    """Hash the model files that exist; return the report lines and any unreadable-file failures."""
+    lines: list[str] = []
+    failures: list[tuple[bool, str, str]] = []
+    for role, path in _model_files(cfg):
+        if not path.is_file():
+            continue
+        try:
+            verdict = models.verify(role, path)
+        except OSError as exc:
+            failures.append(
+                (False, f"read {path} ({exc.strerror or exc})", "check its permissions")
+            )
+            continue
+        known = verdict.known
+        if known is None:
+            lines.append(f"note {path.name}: not a known release (sha256 {verdict.digest})")
+        else:
+            release = f"{known.project} {known.version} ({known.licence})"
+            lines.append(f"ok  {path.name}: {release}, sha256 verified")
+    return lines, failures
+
+
 def cmd_doctor(_args: argparse.Namespace) -> int:
-    """Print one line per check with its fix; never loads the model."""
+    """Print one line per check with its fix; never loads the model.
+
+    Model files found on disk are also hashed and named by the release they match; a file that
+    matches no known release is only a note.
+    """
     cfg = _load()
     from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level]
 
@@ -269,11 +335,13 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         *voice_files(cfg.data_dir, cfg.audio.voice),
     ]
     state = _strata(cfg).status() if read_api_key(strata_key_file()) else None
+    release_lines, unreadable = _release_lines(cfg)
     checks: list[tuple[bool, str, str]] = [
         (paths.config_file().exists(), f"config {paths.config_file()}", "run jarvis setup"),
         (bool(cfg.spotify.client_id), "Spotify client ID", "jarvis setup --spotify-client-id <id>"),
         (read_private(spotify_token_file()) is not None, "Spotify login", "jarvis spotify-login"),
-        *((f.exists(), f"file {f}", "see docs/playbook") for f in files),
+        *((f.exists(), f"file {f}", "see docs/models.md") for f in files),
+        *unreadable,
         (cfg.strata.model_file.is_file(), f"model {cfg.strata.model_file}", "set --model-file"),
         *(
             (shutil.which(t) is not None, f"tool {t}", f"install {t}")
@@ -287,11 +355,14 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     ]
     for ok, what, fix in checks:
         print(f"{'ok ' if ok else 'FAIL'} {what}" + ("" if ok else f"  -> {fix}"))
+    for line in release_lines:
+        print(line)
     return 0 if all(ok for ok, _, _ in checks) else 1
 
 
 def _strata(cfg: config.Config) -> StrataModel:
-    return StrataModel(cfg.model, read_api_key(strata_key_file()) or "")
+    local = cfg.model.model_copy(update={"base_url": cfg.model_base_url()})
+    return StrataModel(local, read_api_key(strata_key_file()) or "")
 
 
 def cmd_status(_args: argparse.Namespace) -> int:
@@ -387,14 +458,16 @@ def _restart_if_running() -> None:
 def cmd_pc_audio(args: argparse.Namespace) -> int:
     """Show or set whether Jarvis takes requests heard in PC audio, and from which apps."""
     cfg = _load()
-    if args.state is None and args.apps is None:
+    if args.state is None and args.apps is None and not args.all_output:
         print(f"pc audio: {_pc_audio_summary(cfg.audio)}")
         return 0
     update: dict[str, object] = {}
     if args.state is not None:
         update["listen_to_pc"] = args.state == "on"
     if args.apps is not None:
-        update["pc_audio_apps"] = list(args.apps)
+        update["pc_audio_apps"] = args.apps
+    elif args.all_output:
+        update["pc_audio_apps"] = []
     new = cfg.model_copy(update={"audio": cfg.audio.model_copy(update=update)})
     config.save(config.Config.model_validate(new.model_dump()))
     print(f"pc audio: {_pc_audio_summary(new.audio)}")
