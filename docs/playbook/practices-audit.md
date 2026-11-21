@@ -15,7 +15,7 @@ gaps or files them as issues, and only then sets the area's date (UTC, `YYYY-MM-
 | Agent loop and tool calling | OpenAI Chat Completions function-calling guide, Strata API notes, OWASP Top 10 for LLM Applications | never |
 | Policy, confirmation and prompt-injection defence | OWASP Top 10 for LLM Applications, OWASP ASVS 5.0, `docs/adr/0002-typed-operation-policy.md` | never |
 | Spotify integration | Spotify Web API reference, Authorization Code with PKCE tutorial, redirect URI rules, Feb 2026 and Jul 2026 changes | never |
-| Speech output | Piper (OHF-Voice/piper1-gpl) docs for the pinned release | never |
+| Speech output | Kokoro (hexgrad/Kokoro-82M) and Piper (OHF-Voice/piper1-gpl) docs for the pinned releases | never |
 | Web research | SearXNG admin and search API docs, trafilatura docs | never |
 | systemd user services | systemd.service, systemd.exec and systemd.resource-control man pages (systemd in Arch), Arch Wiki systemd/User | never |
 | CI and supply chain | GitHub Actions security hardening guide, Dependabot docs, OpenSSF Scorecard checks | never |

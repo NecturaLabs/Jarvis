@@ -10,6 +10,9 @@ no global agent instructions, skills or plugins except the Omarchy OS skills, an
 local quantized model (Qwen3.8-Flash-Next IQ2_XS on Strata), and a voice assistant has to answer within a
 few seconds.
 
+*Update 2026-11-21: the model Jarvis runs is now Qwen3.6-35B-A3B UD-Q4_K_XL (see `docs/models.md`); the
+decision below does not depend on which model it is.*
+
 ## Considered options
 
 1. Point an existing agent harness (Claude Code, OpenCode, Hermes, Codex CLI) at Strata's

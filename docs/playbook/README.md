@@ -11,9 +11,10 @@ traps found along the way. Add a trap the moment it costs time.
 
 ## Launch and capture
 
-- Nothing runs yet beyond `uv run jarvis --version`. When the daemon exists, agents start it silent
-  (`PIPEWIRE_REMOTE=/nonexistent PULSE_SERVER=unix:/nonexistent`) and hidden; only the owner runs it with real
-  audio.
+- `uv run jarvis doctor` and `--help` are safe to run anywhere. `jarvis run`, `ask`, `start`, `stop`, `restart`
+  and `spotify-login` touch the owner's services, network or Spotify account: agents start the voice loop silent
+  (`PIPEWIRE_REMOTE=/nonexistent PULSE_SERVER=unix:/nonexistent`) and hidden, and only the owner runs it with
+  real audio.
 
 ## Review and hand-off
 
