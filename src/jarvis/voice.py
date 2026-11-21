@@ -478,7 +478,10 @@ class VoiceLoop:
         requests = self._requests
         threading.Thread(target=self._prewarm, daemon=True).start()
         heard = capture_utterance(self._pc_tap(pc, frames, requests), pc.vad, self._cfg)
-        pc.wake.reset()
+        if self._requests == requests and self.state is not State.CONFIRM:
+            # Ended by itself. A capture the tap cut short keeps the wake model as it is, so a
+            # wake word still being heard on the PC is not lost (it marks the mic's request).
+            pc.wake.reset()
         if heard.samples is None:
             return
         if self._requests != requests:
