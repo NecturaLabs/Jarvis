@@ -1,0 +1,20 @@
+# Review requests go to the maintainers. The security-sensitive areas (AGENTS.md, "Boundaries") are listed so a
+# change to them always asks for a review. The PC-operation and web tools get their paths here when they exist.
+*                                @Nectura
+/.github/                        @Nectura
+/.lint/                          @Nectura
+/pyproject.toml                  @Nectura
+/uv.lock                         @Nectura
+/docs/adr/                       @Nectura
+/SECURITY.md                     @Nectura
+/LICENSE                         @Nectura
+/src/jarvis/policy.py            @Nectura
+/src/jarvis/operations.py        @Nectura
+/src/jarvis/agent.py             @Nectura
+/src/jarvis/shortcuts.py         @Nectura
+/src/jarvis/audit.py             @Nectura
+/src/jarvis/secretfile.py        @Nectura
+/src/jarvis/services.py          @Nectura
+/src/jarvis/config.py            @Nectura
+/src/jarvis/prompts/             @Nectura
+/src/jarvis/spotify/             @Nectura
