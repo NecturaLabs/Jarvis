@@ -137,6 +137,8 @@ class Counter:
         shortcuts: tuple[Shortcut, ...] = (),
         summary: Callable[[dict[str, Any]], str] = lambda _args: "do that",
         then: Callable[[], None] = lambda: None,
+        side_effect: bool = True,
+        outbound: bool = False,
     ) -> Operation:
         def run(args: dict[str, Any]) -> Result:
             self.runs.append({"op": name, **args})
@@ -151,6 +153,8 @@ class Counter:
             {"type": "object", "properties": {"q": {"type": "string"}}},
             run,
             default_class=cls,
+            side_effect=side_effect,
+            outbound=outbound,
             spoken_summary=summary,
             prepare=prepare,
             shortcuts=shortcuts,
@@ -441,6 +445,70 @@ def test_untrusted_result_requires_confirmation_for_next_side_effect() -> None:
     assert [r["op"] for r in counter.runs] == ["search"]
     assert len(confirmations) == 1
     assert model.seen[1][-1]["content"].startswith('<data origin="spotify">')
+
+
+def _file_and_search(counter: Counter) -> list[Operation]:
+    return [
+        counter.op("read", origin=Origin.FILE, side_effect=False),
+        counter.op("page", origin=Origin.WEB, side_effect=False),
+        counter.op("search", side_effect=False, outbound=True),
+    ]
+
+
+def test_after_a_file_is_read_a_search_needs_a_yes() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_call("read"), _call("search", call_id="c2"), _say("Done.")])
+    agent, _ = _agent(model, _file_and_search(counter))
+
+    agent.handle("read my notes", Hooks(confirm=lambda q: asked.append(q) or False))
+
+    assert [r["op"] for r in counter.runs] == ["read"]
+    assert len(asked) == 1
+
+
+def test_a_search_after_only_web_text_runs_without_a_yes() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_call("page"), _call("search", call_id="c2"), _say("Done.")])
+    agent, _ = _agent(model, _file_and_search(counter))
+
+    agent.handle("research it", Hooks(confirm=lambda q: asked.append(q) or False))
+
+    assert [r["op"] for r in counter.runs] == ["page", "search"]
+    assert asked == []
+
+
+def test_a_search_written_with_the_file_read_cannot_carry_its_text() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_both(_call("read"), _call("search", call_id="c2")), _say("Done.")])
+    agent, _ = _agent(model, _file_and_search(counter))
+
+    agent.handle("read and search", Hooks(confirm=lambda q: asked.append(q) or False))
+
+    assert [r["op"] for r in counter.runs] == ["read", "search"]
+    assert asked == []
+
+
+def test_remembered_file_text_puts_the_next_search_behind_a_yes(tmp_path: Path) -> None:
+    counter = Counter()
+    asked: list[str] = []
+    replies = [_call("read"), _say("It says hi."), _call("search"), _say("Found.")]
+    model = ScriptedModel(replies)
+    saved = tmp_path / "conversation.json"
+    agent, _ = _agent(
+        model, _file_and_search(counter), limits=Limits(remember_outside=True), memory_file=saved
+    )
+    agent.handle("read my notes", NO_CONFIRM)
+
+    again, _ = _agent(
+        model, _file_and_search(counter), limits=Limits(remember_outside=True), memory_file=saved
+    )
+    again.handle("search for it", Hooks(confirm=lambda q: asked.append(q) or False))
+
+    assert [r["op"] for r in counter.runs] == ["read"]
+    assert len(asked) == 1
 
 
 def test_uncertain_outcome_is_reported_not_retried() -> None:
@@ -1106,6 +1174,24 @@ def test_a_request_stops_after_the_step_limit() -> None:
 
     assert agent.handle("queue forever", NO_CONFIRM) == TOO_MANY_STEPS
     assert len(model.seen) == MAX_STEPS
+
+
+def test_the_last_step_answers_from_what_was_found_instead_of_giving_up() -> None:
+    counter = Counter()
+    replies = [
+        _call("search", {"q": "a"}, "c1"),
+        _call("search", {"q": "b"}, "c2"),
+        _say("The Fairy Wand is the usual pick at level 40."),
+    ]
+    model = ScriptedModel(replies)
+    agent, _ = _agent(model, [counter.op("search")], limits=Limits(max_steps=3))
+
+    reply = agent.handle("which wand", NO_CONFIRM)
+
+    assert reply == "The Fairy Wand is the usual pick at level 40."
+    assert model.tools_offered[-1] == 0  # the last call may only answer
+    assert "answer" in model.seen[-1][-1]["content"].lower()
+    assert len(counter.runs) == 2
 
 
 def test_a_strong_operation_is_refused_even_when_the_owner_would_say_yes() -> None:

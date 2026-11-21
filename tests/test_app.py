@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from jarvis import paths
 from jarvis.agent import Agent, Hooks
 from jarvis.app import (
     MAX_HINT_CHARS,
@@ -12,12 +13,13 @@ from jarvis.app import (
     channel_registry,
     echoes_hint,
     no_action_operation,
+    pc_operations,
     speech_hint,
     system_prompt,
 )
 from jarvis.audit import AuditLog
-from jarvis.config import AudioConfig, Config, PersonaConfig
-from jarvis.operations import Operation, Registry, Result
+from jarvis.config import AudioConfig, Config, FilesConfig, PersonaConfig
+from jarvis.operations import Operation, OperationError, Registry, Result
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
@@ -186,3 +188,26 @@ def _tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
 def _reply(text: str) -> dict[str, Any]:
     return {"role": "assistant", "content": text}
+
+
+@pytest.mark.parametrize("channel", ["voice", "chat"])
+def test_both_channels_offer_the_pc_and_file_operations(tmp_path: Path, channel: Channel) -> None:
+    config = Config()
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+    limits = channel_limits(config, channel)
+
+    registry = channel_registry(config, spotify.operations(), limits, channel)
+
+    for name in ("pc_stats", "list_dir", "read_file", "write_file"):
+        assert registry.get(name) is not None
+
+
+def test_jarvis_own_state_is_never_readable_through_the_file_operations(tmp_path: Path) -> None:
+    state = paths.state_dir()
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "spotify-token.json").write_text("{}", encoding="utf-8")
+    config = Config(files=FilesConfig(read_roots=[str(state.parent)]))
+    ops = {op.name: op for op in pc_operations(config, channel_limits(config, "chat"), tmp_path)}
+
+    with pytest.raises(OperationError, match="private"):
+        ops["read_file"].run({"path": str(state / "spotify-token.json")})

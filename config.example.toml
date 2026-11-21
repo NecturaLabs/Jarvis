@@ -121,6 +121,14 @@ results = 5
 page_chars = 2800
 reddit_comments = 6
 
+# The folders Jarvis may read and write; ~ is your home. Keys, tokens, browser profiles and
+# Jarvis's own state are never read or written; deny adds more (patterns such as "diary*").
+# Writing a file always asks you first and never touches a hidden file or folder.
+[files]
+read_roots = ["~"]
+write_roots = ["~/Documents"]
+deny = []
+
 [boundaries]
 
 # Per-operation classes: "safe", "confirm", "strong" or "deny". For example:

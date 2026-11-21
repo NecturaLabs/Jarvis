@@ -2,7 +2,10 @@
 
 The decision table is plain data (`decide`), so tests cover it row by row. Text that did not come
 from the owner's own speech never raises an operation's class, and while such text is in the
-conversation every side-effecting operation needs at least spoken confirmation.
+conversation every side-effecting operation needs at least spoken confirmation. While text read
+from one of the owner's files is in the conversation, an operation that sends words the model
+wrote to a service off this PC (a web search, a place name) needs that confirmation too, so the
+file's contents cannot be carried out of the PC without the owner seeing it.
 """
 
 import hashlib
@@ -61,6 +64,11 @@ class Classified(Protocol):
         """Whether it changes anything."""
         ...
 
+    @property
+    def outbound(self) -> bool:
+        """Whether it sends words the model wrote to a service off this PC."""
+        ...
+
 
 class Verdict(StrEnum):
     """The outcome of a policy decision."""
@@ -98,14 +106,22 @@ def decide(
     overrides: Mapping[str, str],
     *,
     untrusted_in_context: bool,
+    private_in_context: bool = False,
 ) -> Decision:
-    """Decide whether a validated tool call may run, needs confirmation or is refused."""
+    """Decide whether a validated tool call may run, needs confirmation or is refused.
+
+    `private_in_context` says text read from the owner's files is in the conversation.
+    """
     if op is None:
         return Decision(Verdict.DENY, f"unknown operation {name!r}", None)
     cls = effective_class(op, overrides)
-    if untrusted_in_context and op.side_effect and _RANK[cls] < _RANK[OpClass.CONFIRM]:
+    below_confirm = _RANK[cls] < _RANK[OpClass.CONFIRM]
+    if untrusted_in_context and op.side_effect and below_confirm:
         cls = OpClass.CONFIRM
         reason = "side effect while untrusted text is in the conversation"
+    elif private_in_context and op.outbound and below_confirm:
+        cls = OpClass.CONFIRM
+        reason = "sends text off the PC while file text is in the conversation"
     else:
         reason = f"class {cls.value}"
     verdict = {

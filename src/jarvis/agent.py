@@ -59,6 +59,10 @@ _OMITTED = "(That reply quoted outside data, so it is left out here.)"
 MODEL_DOWN = "My model isn't answering right now."
 TOO_LONG = "That took too long, so I stopped."
 TOO_MANY_STEPS = "That needed too many steps, so I stopped."
+LAST_STEP_REMINDER = (
+    "That was the last step this request may take, so no more tools. Answer the owner now from "
+    "what you found, and say plainly what you could not find."
+)
 CUT_SHORT = "(That is as far as one reply goes; ask me to go on.)"
 UNDONE = "Sorry, I didn't manage to do that."
 NO_ACTION_REMINDER = (
@@ -487,8 +491,10 @@ class _Turn:
     foreign: bool = False
     untrusted: bool = False
     outside: str = ""  # where the first outside text this request read came from
+    private: bool = False  # text from the owner's files is in the conversation
     nudged: bool = False
     stuck: bool = False
+    last: bool = False  # the request's last step: the model may only answer
     declined: bool = False
     succeeded: bool = False
     calls: int = 0
@@ -677,7 +683,10 @@ class Agent:
         if outside and not self._limits.remember_outside:
             reply = _OMITTED
             outside = ""
-        self._memory.add(Turn(text, reply, "; ".join(turn.actions), outside, self._clock()))
+        private = turn.private and bool(outside)
+        self._memory.add(
+            Turn(text, reply, "; ".join(turn.actions), outside, self._clock(), private=private)
+        )
         self._save_memory()
 
     def handle(self, text: str, hooks: Hooks, origin: Origin = Origin.OWNER_SPEECH) -> str:
@@ -721,6 +730,7 @@ class Agent:
             turn.untrusted = turn.untrusted or (
                 bool(remembered) and self._memory.holds_outside_text
             )
+            turn.private = turn.private or (bool(remembered) and self._memory.holds_private_text)
             reply = self._converse(hooks, turn)
         self._deliver(reply, hooks, turn)
         if reply and not foreign:
@@ -783,6 +793,10 @@ class Agent:
                     return ""
                 if self._clock() - turn.started > turn.limit_s:
                     return TOO_LONG
+                if step == self._limits.max_steps - 1 and step > 0 and turn.actions:
+                    # Rather than stop with nothing, the last call answers from what was found.
+                    turn.last = True
+                    turn.messages.append({"role": "user", "content": LAST_STEP_REMINDER})
                 done = self._step(turn, hooks, step)
                 if done is not None:
                     return done
@@ -795,7 +809,7 @@ class Agent:
 
         After a repeated call the model is offered no tools, so it must answer from what was done.
         """
-        tools = [] if turn.stuck else self._registry.tool_schemas()
+        tools = [] if turn.stuck or turn.last else self._registry.tool_schemas()
         self._make_room(turn)
         stream = turn.stream = self._stream(turn, hooks)
         began = self._clock()
@@ -818,7 +832,7 @@ class Agent:
             turn.cues.settle()
         self._note_usage(message)
         self._audit.record("model_call", step=step, seconds=round(self._clock() - began, 2))
-        calls = [] if turn.stuck else self._unique(objs(message.get("tool_calls")))
+        calls = [] if turn.stuck or turn.last else self._unique(objs(message.get("tool_calls")))
         cut = message.get("finish_reason") == "length"
         if cut:
             self._audit.record("reply_limit", tokens=self._limits.reply_tokens)
@@ -830,7 +844,7 @@ class Agent:
             text = _ACTIONS_NOTE.sub("", _text(message).strip())
             if cut and text:
                 text = f"{text} {CUT_SHORT}"
-            return self._final(turn, text or "Done.")
+            return self._final(turn, text or (TOO_MANY_STEPS if turn.last else "Done."))
         lone_reply = len(calls) == 1 and str(obj(calls[0].get("function")).get("name")) == NO_ACTION
         if not lone_reply or (stream is not None and stream.cut):
             self._cut(stream)  # text before even a lone reply call was not the reply
@@ -936,15 +950,16 @@ class Agent:
         """Run the calls of one assistant message and add their results to the conversation.
 
         The calls were all written before any of their results existed, so whether outside text
-        can have steered them is settled once, before the first one runs.
+        can have steered them is settled once, before the first one runs (and so is whether file
+        text can be in what they send).
         """
-        untrusted = turn.untrusted
+        untrusted, private = turn.untrusted, turn.private
         results: list[Result] = []
         repeated_any = False
         for call in calls:
             name = str(obj(call.get("function")).get("name", ""))
             known = self._registry.get(name) is not None
-            result = self._guarded(call, hooks, turn, untrusted=untrusted)
+            result = self._guarded(call, hooks, turn, taint=(untrusted, private))
             turn.actions.append(
                 f"{name if known else _UNKNOWN} -> {'ok' if result.ok else 'not done'}"
             )
@@ -953,6 +968,7 @@ class Agent:
             if result.origin not in TRUSTED_ORIGINS:
                 turn.untrusted = True
                 turn.outside = turn.outside or result.origin.value
+                turn.private = turn.private or result.origin is Origin.FILE
                 body = f'<data origin="{result.origin.value}">{_inert(body)}</data>'
             turn.messages.append(
                 {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": body}
@@ -963,7 +979,7 @@ class Agent:
         return results
 
     def _guarded(
-        self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, untrusted: bool
+        self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, taint: tuple[bool, bool]
     ) -> Result:
         """Run one call unless the request is over its limits or Jarvis is stopping."""
         turn.calls += 1
@@ -974,7 +990,7 @@ class Agent:
             return Result("Error: too many actions in one request, so this was not run.", ok=False)
         if self._clock() - turn.started > turn.limit_s:
             return Result("Error: the request ran out of time, so this was not run.", ok=False)
-        return self._run_call(call, hooks, turn, untrusted=untrusted)
+        return self._run_call(call, hooks, turn, taint=taint)
 
     @staticmethod
     def _arguments(function: Mapping[str, Any]) -> object:
@@ -1026,8 +1042,10 @@ class Agent:
         return op, args
 
     def _run_call(
-        self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, untrusted: bool
+        self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, taint: tuple[bool, bool]
     ) -> Result:
+        """Run one call as the policy decides; `taint` is (outside text, file text) in context."""
+        untrusted, private = taint
         parsed = self._parse_call(call)
         if isinstance(parsed, Result):
             return parsed
@@ -1038,7 +1056,13 @@ class Agent:
             return _REPEATED
         turn.seen.add(asked_for)
         tainted = untrusted or (turn.foreign and self._clock() >= self._grant_until)
-        decision = decide(op, op.name, self._overrides, untrusted_in_context=tainted)
+        decision = decide(
+            op,
+            op.name,
+            self._overrides,
+            untrusted_in_context=tainted,
+            private_in_context=private,
+        )
         stopped = _REFUSALS.get(decision.verdict)
         if stopped is None and op.prepare is not None:
             bound = self._attempt(op.prepare, op, args, asked_for)

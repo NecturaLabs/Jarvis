@@ -1,10 +1,12 @@
 """Answers from outside this PC: the time, the weather, web search, web pages and Reddit.
 
-None of these changes anything, so none needs confirmation; every one sends only what it is asked
-about (a place, a search) to the service named in docs/adr/0007. Text written by someone else
-(search results, pages, Reddit) keeps the `web` origin, so it stays data and never raises a class.
-Weather and time answers carry none: they are built here from numbers, codes, checked
-identifiers and the place the model asked about, so they do not make the next action need a yes.
+None of these changes anything, so none needs confirmation on its own; every one sends only what
+it is asked about (a place, a search) to the service named in docs/adr/0007. Text written by
+someone else (search results, pages, Reddit) keeps the `web` origin, so it stays data and never
+raises a class. Weather and time answers carry no `web` origin: they are built here from numbers,
+codes, checked identifiers and the place the model asked about, so they do not make the next
+action need a yes. Every operation that sends words the model wrote (a place, a query) is
+`outbound`: while text from the owner's files is in the conversation it needs a yes.
 
 A page or a Reddit thread can be opened only when a search in this session returned it: the model
 cannot be talked into sending conversation text to an address a page made up.
@@ -417,6 +419,7 @@ class WebOps:
                 },
                 self.time,
                 side_effect=False,
+                outbound=True,
                 spoken_summary=lambda _a: "tell you the time",
                 shortcuts=(_TIME, _DATE),
             ),
@@ -437,6 +440,7 @@ class WebOps:
                 },
                 self.weather,
                 side_effect=False,
+                outbound=True,
                 spoken_summary=lambda _a: "check the weather",
                 shortcuts=(_WEATHER_NOW, _WEATHER_TODAY, _WEATHER_TOMORROW),
             ),
@@ -456,6 +460,7 @@ class WebOps:
                 },
                 self.web_search,
                 side_effect=False,
+                outbound=True,
                 spoken_summary=lambda a: f"search the web for {str(a.get('query', ''))[:60]}",
             ),
             Operation(
@@ -491,6 +496,7 @@ class WebOps:
                 },
                 self.reddit_search,
                 side_effect=False,
+                outbound=True,
                 spoken_summary=lambda a: f"search Reddit for {str(a.get('query', ''))[:60]}",
             ),
             Operation(

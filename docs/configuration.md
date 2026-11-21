@@ -25,8 +25,8 @@ Paths and names may not contain control characters, because they are written int
 Jarvis reads the file when a command starts, so `jarvis ask`, `status`, `unload` and `doctor` always see the
 current file. The running voice service reads it once, when it starts.
 
-- `audio`, `persona`, `boundaries`, `spotify`, `model`, `clock`, `weather` and `research` keys: run
-  `jarvis restart`.
+- `audio`, `persona`, `boundaries`, `spotify`, `model`, `clock`, `weather`, `research` and `files` keys:
+  run `jarvis restart`.
 - `strata` keys: run `jarvis setup` to rewrite the profile and unit (it keeps every other value), then
   `jarvis restart`. It restarts Strata too when its profile or unit was rewritten after Strata started, and
   otherwise leaves a running Strata, and its loaded model, alone. An empty `model.base_url` follows
@@ -284,13 +284,34 @@ with it) and restarts with Docker unless you stop it (`docker compose -f deploy/
 down`). The `.env` file is git-ignored. Reddit threads are found through SearXNG and read from the
 Arctic Shift archive, a free copy of public Reddit that can lag behind it by a little.
 
+## `[files]`: the folders Jarvis may read and write
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `read_roots` | `["~"]` | `~`, paths under `~/`, absolute paths | Folders whose files Jarvis may list and read (`list_dir`, `read_file`). |
+| `write_roots` | `["~/Documents"]` | the same | Folders Jarvis may create files in, or replace or add to them (`write_file`, always asked first). |
+| `deny` | `[]` | shell-style patterns | More names (`diary*`) or paths under home (`.config/app`) never read or written. |
+
+Whatever the roots say, Jarvis never reads or writes keys, tokens, password stores, browser profiles
+and its own state: `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.netrc`, `.env` files, `*.pem`,
+`*.key`, `id_rsa*` and the like, any name with `secret`, `password` or `credential` in it,
+`~/.config/gh`, keyrings and browser profiles (the full lists are `SECRET_NAMES` and `SECRET_PATHS`
+in `src/jarvis/pc/files.py`). Paths are resolved through links first, so a link cannot lead out of a
+root or to a secret. Writing never touches a hidden file or folder (no `~/.bashrc`, no `~/.config`),
+never overwrites unless asked to replace, and never makes a file executable.
+
+A file's text is data, like a web page: while it is in the conversation, side effects need your yes,
+and so do the operations that send words off the PC (`web_search`, `reddit_search`, and `weather` or
+`time_now` for a named place), so a file's contents cannot leave in a search without you seeing it.
+
 ## `[boundaries.classes]`
 
 A table from operation name to a class: `safe` (runs), `confirm` (needs your spoken yes), `strong`
 (keybinding confirmation, not built yet, so such a call is refused) or `deny`. An operation not listed keeps
-its shipped class, which is `safe` for every operation Jarvis has today (`spotify_*`, `time_now`, `weather`,
-`web_search`, `web_read`, `reddit_search`, `reddit_read`); set one to `deny` to switch it off. Whatever the class, side effects are raised to
-`confirm` while text from outside your own speech is in the request. Example:
+its shipped class, which is `safe` for every operation but `write_file` (`confirm`): `spotify_*`, `time_now`,
+`weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`, `pc_stats`, `list_dir`, `read_file`; set
+one to `deny` to switch it off. Whatever the class, side effects are raised to `confirm` while text from outside
+your own speech is in the request, and so are the operations that send words off the PC while a file's text is. Example:
 
 ```toml
 [boundaries.classes]

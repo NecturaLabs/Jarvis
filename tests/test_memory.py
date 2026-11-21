@@ -105,3 +105,32 @@ def test_a_broken_or_foreign_file_leaves_the_conversation_empty(tmp_path: Path) 
         assert conversation.turns == []
 
     assert not Conversation(budget=1000).load(tmp_path / "missing.json")
+
+
+def test_file_text_stays_marked_private_through_a_fold_and_a_save(tmp_path: Path) -> None:
+    path = tmp_path / "conversation.json"
+    conversation = Conversation(budget=1000)
+    conversation.add(Turn("read my notes", "They say hi.", "read -> ok", "file", 1.0, private=True))
+    conversation.add(_turn(1))
+    conversation.add(_turn(2))
+    assert conversation.holds_private_text
+
+    conversation.fold(conversation.turns[:1], "They read their notes.")
+    assert conversation.summary_private
+    assert conversation.holds_private_text
+    conversation.save(path)
+
+    loaded = Conversation(budget=1000)
+    assert loaded.load(path)
+    assert loaded.summary_private
+    assert loaded.holds_private_text
+
+
+def test_forgetting_drops_the_private_mark() -> None:
+    conversation = Conversation(budget=1000)
+    conversation.add(Turn("read", "hi", "", "file", 1.0, private=True))
+    conversation.fold(conversation.turns[:1], "Read notes.")
+
+    conversation.clear()
+
+    assert not conversation.holds_private_text
