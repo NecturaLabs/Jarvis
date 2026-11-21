@@ -11,8 +11,9 @@ from typing import TYPE_CHECKING
 
 from jarvis import __version__, config, paths
 from jarvis.agent import Hooks
-from jarvis.app import SetupError, build, spotify_token_file, strata_key_file
+from jarvis.app import SetupError, build
 from jarvis.model import StrataModel
+from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
 
 if TYPE_CHECKING:
