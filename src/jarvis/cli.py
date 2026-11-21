@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from jarvis import __version__, config, paths
+from jarvis import __version__, config, models, paths
 from jarvis.agent import Hooks
 from jarvis.app import SetupError, build
 from jarvis.model import StrataModel
@@ -278,8 +278,46 @@ def cmd_run(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _model_files(cfg: config.Config) -> list[tuple[str, Path]]:
+    """Return the (role, file) pairs the doctor can check against a known release."""
+    from jarvis.audio import KOKORO_PREFIX, voice_files  # ruff: ignore[import-outside-top-level]
+
+    found = [("wake", cfg.data_dir / WAKE_MODEL), ("vad", cfg.data_dir / VAD_MODEL)]
+    if cfg.audio.voice.startswith(KOKORO_PREFIX):
+        model, voices = voice_files(cfg.data_dir, cfg.audio.voice)
+        found += [("kokoro-model", model), ("kokoro-voices", voices)]
+    return found
+
+
+def _release_lines(cfg: config.Config) -> tuple[list[str], list[tuple[bool, str, str]]]:
+    """Hash the model files that exist; return the report lines and any unreadable-file failures."""
+    lines: list[str] = []
+    failures: list[tuple[bool, str, str]] = []
+    for role, path in _model_files(cfg):
+        if not path.is_file():
+            continue
+        try:
+            verdict = models.verify(role, path)
+        except OSError as exc:
+            failures.append(
+                (False, f"read {path} ({exc.strerror or exc})", "check its permissions")
+            )
+            continue
+        known = verdict.known
+        if known is None:
+            lines.append(f"note {path.name}: not a known release (sha256 {verdict.digest})")
+        else:
+            release = f"{known.project} {known.version} ({known.licence})"
+            lines.append(f"ok  {path.name}: {release}, sha256 verified")
+    return lines, failures
+
+
 def cmd_doctor(_args: argparse.Namespace) -> int:
-    """Print one line per check with its fix; never loads the model."""
+    """Print one line per check with its fix; never loads the model.
+
+    Model files found on disk are also hashed and named by the release they match; a file that
+    matches no known release is only a note.
+    """
     cfg = _load()
     from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level]
 
@@ -289,11 +327,13 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         *voice_files(cfg.data_dir, cfg.audio.voice),
     ]
     state = _strata(cfg).status() if read_api_key(strata_key_file()) else None
+    release_lines, unreadable = _release_lines(cfg)
     checks: list[tuple[bool, str, str]] = [
         (paths.config_file().exists(), f"config {paths.config_file()}", "run jarvis setup"),
         (bool(cfg.spotify.client_id), "Spotify client ID", "jarvis setup --spotify-client-id <id>"),
         (read_private(spotify_token_file()) is not None, "Spotify login", "jarvis spotify-login"),
-        *((f.exists(), f"file {f}", "see docs/playbook") for f in files),
+        *((f.exists(), f"file {f}", "see docs/models.md") for f in files),
+        *unreadable,
         (cfg.strata.model_file.is_file(), f"model {cfg.strata.model_file}", "set --model-file"),
         *(
             (shutil.which(t) is not None, f"tool {t}", f"install {t}")
@@ -307,6 +347,8 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     ]
     for ok, what, fix in checks:
         print(f"{'ok ' if ok else 'FAIL'} {what}" + ("" if ok else f"  -> {fix}"))
+    for line in release_lines:
+        print(line)
     return 0 if all(ok for ok, _, _ in checks) else 1
 
 
