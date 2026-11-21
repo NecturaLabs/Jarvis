@@ -6,18 +6,24 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jarvis import __version__, config, models, paths
 from jarvis.agent import Hooks
-from jarvis.app import SetupError, build
+from jarvis.app import SetupError, build, echoes_hint
 from jarvis.model import StrataModel
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+
+    import numpy as np
+    from numpy.typing import NDArray
+
+log = logging.getLogger(__name__)
 
 WAKE_MODEL = "wake/hey_jarvis.onnx"
 VAD_MODEL = "vad/silero_vad.onnx"
@@ -248,18 +254,34 @@ def cmd_run(_args: argparse.Namespace) -> int:
             WakeWord(data / WAKE_MODEL, cfg.audio.wake_threshold),
             Vad(data / VAD_MODEL),
         )
-    stopping = False
+    stop_requested = threading.Event()
 
     def stop(_signum: int, _frame: object) -> None:
-        nonlocal stopping
-        stopping = True
+        # A signal handler interrupts whatever the main thread holds (the speaker's lock, say),
+        # so it only raises the flag; the stopper thread does the stopping.
+        stop_requested.set()
+
+    def stopper() -> None:
+        stop_requested.wait()
         speaker.stop()
         mic.stop()
         if pc_audio is not None:
             pc_audio.stop()
 
+    threading.Thread(target=stopper, name="jarvis-stopper", daemon=True).start()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    hint: Callable[[], str] = jarvis.hint if cfg.audio.vocabulary_hint else (lambda: "")
+    engine, model = cfg.audio.transcribe_engine, cfg.audio.transcribe_model
+
+    def heard(samples: NDArray[np.int16]) -> str:
+        primed = hint()
+        text = transcribe(samples, engine, model, primed)
+        if primed and echoes_hint(text, primed):
+            log.info("ignored a transcript that only repeats the vocabulary hint: %r", text)
+            return ""
+        return text
+
     mic.start()
     loop = VoiceLoop(
         jarvis.agent,
@@ -268,19 +290,16 @@ def cmd_run(_args: argparse.Namespace) -> int:
         vad,
         speaker,
         cfg.audio,
-        lambda s: transcribe(
-            s,
-            cfg.audio.transcribe_engine,
-            cfg.audio.transcribe_model,
-            jarvis.hint() if cfg.audio.vocabulary_hint else "",
-        ),
+        heard,
         prewarm=lambda: None if jarvis.model.is_loaded() else jarvis.model.load(),
         pc=pc,
+        transcribe_answer=lambda samples: transcribe(samples, engine, model, ""),
+        names=(cfg.persona.name,),
     )
     try:
-        loop.run(lambda: stopping)
+        loop.run(stop_requested.is_set)
     except Exception:
-        if stopping:
+        if stop_requested.is_set():
             return 0
         raise
     return 0
