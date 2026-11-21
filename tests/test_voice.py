@@ -161,6 +161,7 @@ class Speaker:
     said: list[str] = field(default_factory=list[str])
     chimes: int = 0
     broken: bool = False
+    during_chime: Callable[[], object] = lambda: None
 
     def say(self, text: str) -> None:
         if self.broken:
@@ -170,6 +171,7 @@ class Speaker:
 
     def chime(self) -> None:
         self.chimes += 1
+        self.during_chime()
 
 
 type Reply = Callable[[str, Hooks, Origin], str]
@@ -552,3 +554,22 @@ def test_pc_audio_is_never_kept_when_debugging(
 
     assert agent.calls == [("pause the music", Origin.PC_AUDIO)]
     assert not folder.exists() or not list(folder.iterdir())
+
+
+def test_the_wake_chime_plays_while_the_request_is_already_being_heard() -> None:
+    """Words said right after the wake word were lost while the chime played and was drained."""
+    capturing = threading.Event()
+    speaker = Speaker(during_chime=until(capturing.is_set))
+    drains_before_capture: list[int] = []
+
+    def first_capture_frame() -> None:
+        drains_before_capture.append(mic.drained)
+        capturing.set()
+
+    agent = Agent()
+    mic = Mic(WAKE, first_capture_frame, *REQUEST[1:])
+
+    _run(_loop(agent, mic, speaker))
+
+    assert drains_before_capture == [0]
+    assert agent.calls == [("pause the music", Origin.OWNER_SPEECH)]
