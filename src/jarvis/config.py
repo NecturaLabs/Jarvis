@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from jarvis import paths
+from jarvis.files import write_atomic
 
 SCHEMA_VERSION = 1
 
@@ -262,9 +263,5 @@ def dumps(config: Config) -> str:
 
 
 def save(config: Config, path: Path | None = None) -> None:
-    """Write the config file (not secret; mode follows the umask)."""
-    path = path or paths.config_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".toml.tmp")
-    tmp.write_text(dumps(config), encoding="utf-8")
-    tmp.replace(path)
+    """Write the config file (not secret) in one step, so a reader never sees half of it."""
+    write_atomic(path or paths.config_file(), dumps(config))

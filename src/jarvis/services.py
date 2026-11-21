@@ -5,16 +5,15 @@ unloaded after boot until the first real request. `jarvis.service` runs the voic
 """
 
 import json
-import os
 import re
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jarvis import paths
 from jarvis.config import ConfigError
+from jarvis.files import write_atomic
 
 if TYPE_CHECKING:
     from jarvis.config import Config
@@ -66,26 +65,6 @@ def _environment(name: str, value: str) -> str:
 def _path(value: object, what: str) -> str:
     """Return a path-valued setting: the rest of the line, so spaces need no quotes."""
     return _checked(str(value), what).replace("%", "%%")
-
-
-def _fill(fd: int, text: str) -> None:
-    os.fchmod(fd, 0o644)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-
-
-def write_atomic(path: Path, text: str) -> None:
-    """Write `text` to `path` through an exclusive temp file in the same folder and a rename."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        _fill(fd, text)
-        Path(tmp).replace(path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
 
 
 def strata_profile_file() -> Path:
