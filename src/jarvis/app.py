@@ -132,7 +132,9 @@ def build(config: Config) -> Jarvis:
         raise SetupError(msg)
     model = StrataModel(config.model.model_copy(update={"base_url": config.model_base_url()}), key)
     tokens = TokenStore(config.spotify.client_id, spotify_token_file())
-    ops = SpotifyOps(SpotifyApi(tokens), config.spotify)
+    ops = SpotifyOps(
+        SpotifyApi(tokens, library_ttl_s=config.spotify.library_refresh_s), config.spotify
+    )
     audit = AuditLog(audit_file())
     registry = Registry([*ops.operations(), no_action_operation()])
     agent = Agent(

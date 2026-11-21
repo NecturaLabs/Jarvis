@@ -221,6 +221,40 @@ def cmd_ask(args: argparse.Namespace) -> int:
     return 0
 
 
+type _Transcriber = Callable[[NDArray[np.int16]], str]
+
+
+def _transcribers(cfg: config.Config, hint: Callable[[], str]) -> tuple[_Transcriber, _Transcriber]:
+    """Return the request transcriber (with the vocabulary hint) and the yes/no one (without).
+
+    Both run Voxtype with Jarvis's own speed settings, written here; the owner's Voxtype config
+    is never touched.
+    """
+    from jarvis.audio import transcribe, voxtype_settings  # ruff: ignore[import-outside-top-level]
+    from jarvis.files import write_atomic  # ruff: ignore[import-outside-top-level]
+
+    audio = cfg.audio
+    engine, model = audio.transcribe_engine, audio.transcribe_model
+    settings = paths.config_dir() / "voxtype.toml"
+    write_atomic(
+        settings,
+        voxtype_settings(audio.transcribe_threads, short_window=audio.transcribe_short_window),
+    )
+
+    def request(samples: NDArray[np.int16]) -> str:
+        primed = hint() if audio.vocabulary_hint else ""
+        text = transcribe(samples, engine, model, primed, settings=settings)
+        if primed and echoes_hint(text, primed):
+            log.info("ignored a transcript that only repeats the vocabulary hint: %r", text)
+            return ""
+        return text
+
+    def answer(samples: NDArray[np.int16]) -> str:
+        return transcribe(samples, engine, model, "", settings=settings)
+
+    return request, answer
+
+
 def cmd_run(_args: argparse.Namespace) -> int:
     """Run the voice loop until stopped."""
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
@@ -230,10 +264,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         Vad,
         WakeWord,
         make_synthesizer,
-        transcribe,
-        voxtype_settings,
     )
-    from jarvis.files import write_atomic  # ruff: ignore[import-outside-top-level]
     from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level]
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -245,18 +276,10 @@ def cmd_run(_args: argparse.Namespace) -> int:
         return 2
     data = cfg.data_dir
     mic = Microphone(cfg.audio.source)
-    wake = WakeWord(data / WAKE_MODEL, cfg.audio.wake_threshold)
-    vad = Vad(data / VAD_MODEL)
     speaker = Speaker(make_synthesizer(data, cfg.audio.voice, cfg.audio.speech_speed))
     pc_audio = AppAudio(cfg.audio.pc_audio_apps) if cfg.audio.listen_to_pc else None
-    pc = None
-    if pc_audio is not None:
-        pc = PcListener(
-            pc_audio,
-            WakeWord(data / WAKE_MODEL, cfg.audio.wake_threshold),
-            Vad(data / VAD_MODEL),
-        )
     stop_requested = threading.Event()
+    refresh_stop = threading.Event()
 
     def stop(_signum: int, _frame: object) -> None:
         # A signal handler interrupts whatever the main thread holds (the speaker's lock, say),
@@ -265,6 +288,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
 
     def stopper() -> None:
         stop_requested.wait()
+        refresh_stop.set()
         speaker.stop()
         mic.stop()
         if pc_audio is not None:
@@ -273,36 +297,29 @@ def cmd_run(_args: argparse.Namespace) -> int:
     threading.Thread(target=stopper, name="jarvis-stopper", daemon=True).start()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    hint: Callable[[], str] = jarvis.hint if cfg.audio.vocabulary_hint else (lambda: "")
-    engine, model = cfg.audio.transcribe_engine, cfg.audio.transcribe_model
-    settings = paths.config_dir() / "voxtype.toml"
-    write_atomic(
-        settings,
-        voxtype_settings(
-            cfg.audio.transcribe_threads, short_window=cfg.audio.transcribe_short_window
-        ),
-    )
-
-    def heard(samples: NDArray[np.int16]) -> str:
-        primed = hint()
-        text = transcribe(samples, engine, model, primed, settings=settings)
-        if primed and echoes_hint(text, primed):
-            log.info("ignored a transcript that only repeats the vocabulary hint: %r", text)
-            return ""
-        return text
-
+    # Off the request path: the Spotify login and library (for the hint and matching) are kept
+    # warm, and the model is loaded now, so the first request waits for neither.
+    jarvis.ops.start_refresh(refresh_stop)
+    threading.Thread(target=jarvis.model.load, name="jarvis-model-load", daemon=True).start()
+    request, answer = _transcribers(cfg, jarvis.hint)
     mic.start()
     loop = VoiceLoop(
         jarvis.agent,
         mic,
-        wake,
-        vad,
+        WakeWord(data / WAKE_MODEL, cfg.audio.wake_threshold),
+        Vad(data / VAD_MODEL),
         speaker,
         cfg.audio,
-        heard,
+        request,
         prewarm=lambda: None if jarvis.model.is_loaded() else jarvis.model.load(),
-        pc=pc,
-        transcribe_answer=lambda samples: transcribe(samples, engine, model, "", settings=settings),
+        pc=None
+        if pc_audio is None
+        else PcListener(
+            pc_audio,
+            WakeWord(data / WAKE_MODEL, cfg.audio.wake_threshold),
+            Vad(data / VAD_MODEL),
+        ),
+        transcribe_answer=answer,
         names=(cfg.persona.name,),
     )
     try:
@@ -348,6 +365,29 @@ def _release_lines(cfg: config.Config) -> tuple[list[str], list[tuple[bool, str,
     return lines, failures
 
 
+RENEW_WARNING_DAYS = 14
+
+
+def _spotify_login(cfg: config.Config) -> tuple[bool, str, str]:
+    """Return the doctor check for the Spotify login, saying how long Spotify still honours it.
+
+    Spotify ends a login six months after it was granted; refreshing does not extend it.
+    """
+    from jarvis.spotify.auth import TokenStore  # ruff: ignore[import-outside-top-level]
+
+    fix = "jarvis spotify-login"
+    tokens = TokenStore(cfg.spotify.client_id, spotify_token_file())
+    if not tokens.has_login():
+        return False, "Spotify login", fix
+    days = tokens.days_left()
+    if days is None:
+        return True, "Spotify login (expiry unknown: logged in before Jarvis kept the date)", fix
+    if days <= 0:
+        return False, "Spotify login expired", fix
+    soon = f"; renew soon with `{fix}`" if days <= RENEW_WARNING_DAYS else ""
+    return True, f"Spotify login ({days} days left{soon})", fix
+
+
 def cmd_doctor(_args: argparse.Namespace) -> int:
     """Print one line per check with its fix; never loads the model.
 
@@ -367,7 +407,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     checks: list[tuple[bool, str, str]] = [
         (paths.config_file().exists(), f"config {paths.config_file()}", "run jarvis setup"),
         (bool(cfg.spotify.client_id), "Spotify client ID", "jarvis setup --spotify-client-id <id>"),
-        (read_private(spotify_token_file()) is not None, "Spotify login", "jarvis spotify-login"),
+        _spotify_login(cfg),
         *((f.exists(), f"file {f}", "see docs/models.md") for f in files),
         *unreadable,
         (cfg.strata.model_file.is_file(), f"model {cfg.strata.model_file}", "set --model-file"),
@@ -510,7 +550,10 @@ def cmd_overview(args: argparse.Namespace) -> int:
     state = _strata(_load()).status() if _unit_state(STRATA_UNIT) == "active" else None
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}   model server: {_unit_state(STRATA_UNIT)}", end="")
     print(f"   model: {state}" if state else "")
-    print(f"pc audio: {_pc_audio_summary(_load().audio)}")
+    cfg = _load()
+    print(f"pc audio: {_pc_audio_summary(cfg.audio)}")
+    ok, login, fix = _spotify_login(cfg)
+    print(login if ok else f"{login}: run {fix}")
     print(
         "commands: jarvis start | stop | restart | status | unload | doctor | logs | ask <text>"
         " | pc-audio [on|off]"

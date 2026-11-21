@@ -1,13 +1,15 @@
 """The `jarvis` command, run against a throw-away home: never the owner's config or services."""
 
 import hashlib
+import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
-from jarvis import __version__, cli, config, models
+from jarvis import __version__, cli, config, models, paths
 from jarvis.cli import main
+from jarvis.secretfile import write_private_json
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -294,3 +296,55 @@ def test_setup_refuses_a_value_that_cannot_go_into_a_unit(
     assert "model_file" in capsys.readouterr().err
     assert calls == []
     assert not (home / "config").exists()
+
+
+def _login(authorized_days_ago: float | None) -> None:
+    record: dict[str, object] = {
+        "access_token": "example-access",
+        "refresh_token": "example-refresh",
+        "expires_at": time.time() + 3600,
+        "scope": "",
+    }
+    if authorized_days_ago is not None:
+        record["authorized_at"] = time.time() - authorized_days_ago * 86400
+    write_private_json(paths.spotify_token_file(), record)
+
+
+def _login_line(capsys: pytest.CaptureFixture[str]) -> str:
+    cli.main(["doctor"])
+    (line,) = [line for line in _doctor_lines(capsys) if "Spotify login" in line]
+    return line
+
+
+@pytest.mark.parametrize(
+    ("days_ago", "ok", "shown"),
+    [
+        (9.5, True, "173 days"),
+        (174.5, True, "8 days"),
+        (200, False, "expired"),
+        (None, True, "unknown"),
+    ],
+)
+def test_doctor_says_how_long_the_spotify_login_lasts(
+    home: Path,
+    capsys: pytest.CaptureFixture[str],
+    days_ago: float | None,
+    *,
+    ok: bool,
+    shown: str,
+) -> None:
+    _doctor_config(home / "models")
+    _login(days_ago)
+
+    line = _login_line(capsys)
+
+    assert line.startswith("ok ") is ok
+    assert shown in line
+
+
+def test_doctor_without_a_spotify_login_fails_that_line(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _doctor_config(home / "models")
+
+    assert _login_line(capsys).startswith("FAIL")
