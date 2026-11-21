@@ -77,11 +77,7 @@ def test_shipped_defaults_are_the_safe_ones() -> None:
     assert cfg.audio.pc_audio_grant_s == 600
     assert cfg.audio.confirm_blocks_on_pc_speech is True
     assert cfg.audio.pc_audio_cooldown_s == pytest.approx(5.0)
-    assert cfg.model.provider == "strata"
-    assert cfg.model.fallback is True
     assert not cfg.model.base_url
-    assert not cfg.model.remote_base_url
-    assert not cfg.model.remote_model
     assert cfg.model.max_tokens == 200
 
 
@@ -125,9 +121,8 @@ def test_the_model_url_is_derived_from_the_strata_port_unless_set() -> None:
         "http://[::1]:9000/v1",
     ],
 )
-@pytest.mark.parametrize("key", ["base_url", "remote_base_url"])
-def test_https_or_loopback_http_urls_are_accepted(key: str, url: str) -> None:
-    assert getattr(config.ModelConfig.model_validate({key: url}), key) == url
+def test_https_or_loopback_http_urls_are_accepted(url: str) -> None:
+    assert config.ModelConfig(base_url=url).base_url == url
 
 
 @pytest.mark.parametrize(
@@ -143,26 +138,9 @@ def test_https_or_loopback_http_urls_are_accepted(key: str, url: str) -> None:
         "https://llm.example.org/v1\nHost: other",
     ],
 )
-@pytest.mark.parametrize("key", ["base_url", "remote_base_url"])
-def test_other_urls_are_refused_naming_the_key(key: str, url: str) -> None:
-    with pytest.raises(ValueError, match=key):
-        config.ModelConfig.model_validate({key: url})
-
-
-def test_the_openai_provider_needs_a_remote_url_and_model() -> None:
-    with pytest.raises(ValueError, match="remote_base_url"):
-        config.ModelConfig(provider="openai", remote_model="gpt")
-    with pytest.raises(ValueError, match="remote_model"):
-        config.ModelConfig(provider="openai", remote_base_url="https://llm.example.org/v1")
-    ok = config.ModelConfig(
-        provider="openai", remote_base_url="https://llm.example.org/v1", remote_model="gpt"
-    )
-    assert ok.provider == "openai"
-
-
-def test_an_unknown_provider_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(config.ConfigError):
-        _load_text(tmp_path, '[model]\nprovider = "carrier-pigeon"\n')
+def test_other_urls_are_refused_naming_the_key(url: str) -> None:
+    with pytest.raises(ValueError, match="base_url"):
+        config.ModelConfig(base_url=url)
 
 
 @pytest.mark.parametrize("value", ["40G", "512M", "8", "2T", "100K"])
@@ -217,10 +195,6 @@ def test_a_non_default_config_round_trips_with_the_new_keys(tmp_path: Path) -> N
         data_dir=Path("/data/with space/jarvis"),
         model=config.ModelConfig(
             base_url="http://localhost:9000/v1",
-            provider="openai",
-            fallback=False,
-            remote_base_url="https://llm.example.org/v1",
-            remote_model="gpt",
             max_tokens=123,
         ),
         strata=config.StrataConfig(memory_max="12G", port=9000),
