@@ -8,17 +8,14 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
 from jarvis.jsonutil import obj, objs
-from jarvis.operations import Operation, Result, UncertainOutcomeError
+from jarvis.operations import Operation, OperationError, Result, UncertainOutcomeError
 from jarvis.policy import Origin
-from jarvis.spotify.api import (
-    NoDeviceError,
-    SpotifyApi,
-    SpotifyError,
-    pick_device,
-)
+from jarvis.spotify.api import SpotifyApi, pick_device
+from jarvis.spotify.errors import NoDeviceError, SpotifyError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -28,6 +25,9 @@ if TYPE_CHECKING:
 
 DEVICE_WAIT_S = 15.0
 PLAYLIST_TTL_S = 300.0
+NOTHING_PLAYING = "Nothing is playing."
+NO_VOLUME_CONTROL = "This device doesn't allow volume control from here."
+_VOLUME_DISALLOWED = "VOLUME_CONTROL_DISALLOW"
 _NAMED_IN_REPLY = 5
 _NO_ARGS: dict[str, Any] = {"type": "object", "properties": {}, "additionalProperties": False}
 _QUERY = {
@@ -89,6 +89,29 @@ def _song_key(item: dict[str, Any]) -> str:
 def _unquoted(text: str) -> str:
     """Return `text` fit for a search filter value: double quotes removed."""
     return " ".join(text.replace('"', " ").split())
+
+
+@dataclass(frozen=True, slots=True)
+class _Current:
+    """What the player is on: nothing, an ad, a song, an episode, or something it did not say."""
+
+    kind: str
+    item: dict[str, Any]
+    playing: bool
+
+
+def _current(state: dict[str, Any] | None) -> _Current:
+    """Read what is playing from a player state; `item` is null for ads and some content."""
+    if not state:
+        return _Current("nothing", {}, playing=False)
+    item = obj(state.get("item"))
+    playing = bool(state.get("is_playing"))
+    if state.get("currently_playing_type") == "ad":
+        return _Current("ad", {}, playing)
+    if not item:
+        return _Current("unknown", {}, playing)
+    kind = "episode" if item.get("type") == "episode" else "track"
+    return _Current(kind, item, playing)
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,24 +183,88 @@ class SpotifyOps:
             self._names_at = now
         return self._names
 
-    def _device(self) -> Device:
-        found = pick_device(self._api.devices(), self._preferred)
-        if found is None:
-            self._launch()
-            found = self._api.wait_for_device(self._preferred, DEVICE_WAIT_S)
+    def _listed_device(self) -> Device | None:
+        """Return the player to use from what Spotify lists now, or None when none will do.
+
+        A configured device that is not listed is not silently replaced by another one, unless
+        that other one is the only player there is.
+        """
+        devices = self._api.devices()
+        found = pick_device(devices, self._preferred)
+        if (
+            found is not None
+            and self._preferred
+            and len(devices) > 1
+            and not self._is_preferred(found)
+        ):
+            return None
+        return found
+
+    def _is_preferred(self, device: Device) -> bool:
+        return device.name.casefold() == self._preferred.casefold()
+
+    def _launched_device(self) -> Device:
+        """Start Spotify and wait for its player to be listed.
+
+        Raises:
+            NoDeviceError: no player came up, or not the one the owner configured.
+        """
+        self._launch()
+        found = self._api.wait_for_device(self._preferred, DEVICE_WAIT_S)
         if found is None:
             msg = "no Spotify player came up; open Spotify and try again"
             raise NoDeviceError(msg)
+        if self._preferred and not self._is_preferred(found) and len(self._api.devices()) > 1:
+            msg = f"Spotify has no player called {self._preferred!r} right now"
+            raise NoDeviceError(msg)
         return found
 
-    def _player_call(self, method: str, path: str, **kwargs: Any) -> None:  # ruff: ignore[any-type]
+    def _bring_up(self, *, launch: bool, play: bool) -> tuple[Device, bool]:
+        """Return a player that accepts commands, and whether playback was started on it.
+
+        A listed player that is not active gets playback transferred to it (started when `play`).
+        With no player at all, Spotify is launched when `launch` allows it.
+
+        Raises:
+            NoDeviceError: no player is available.
+        """
+        device = self._listed_device()
+        if device is None:
+            if not launch:
+                msg = "Spotify is not open on any device"
+                raise NoDeviceError(msg)
+            device = self._launched_device()
+        if device.is_active:
+            return device, False
+        self._api.transfer(device.id, play=play)
+        return device, play
+
+    def _player_call(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+        launch: bool = False,
+    ) -> None:
+        """Send a player command; with no active player, bring one up and send it again."""
         try:
-            self._api.request(method, path, **kwargs)
+            self._api.request(method, path, params=params, json=json)
         except NoDeviceError:
-            device = self._device()
-            params = dict(kwargs.pop("params", None) or {})
-            params["device_id"] = device.id
-            self._api.request(method, path, params=params, **kwargs)
+            device, _started = self._bring_up(launch=launch, play=False)
+            self._api.request(
+                method, path, params={**(params or {}), "device_id": device.id}, json=json
+            )
+
+    def _start(self, body: dict[str, Any]) -> None:
+        """Start playback of `body`: at once, or on the configured player when there is one."""
+        if self._preferred:
+            device, _started = self._bring_up(launch=True, play=False)
+            params = {"device_id": device.id}
+            self._api.request("PUT", "/me/player/play", params=params, json=body)
+        else:
+            self._player_call("PUT", "/me/player/play", json=body, launch=True)
 
     def _library_match(self, query: str) -> _Hit | None:
         """Return the owner's own item most like `query`, and its kind.
@@ -279,11 +366,8 @@ class SpotifyOps:
         if not uris:
             return Result("You have no saved songs to play.", Origin.TOOL_STATUS, ok=False)
         self._rng.shuffle(uris)
-        device = self._device()
-        self._api.request(
-            "PUT", "/me/player/play", params={"device_id": device.id}, json={"uris": uris}
-        )
-        return Result(f"Now playing your liked songs, shuffled, on {device.name}.", Origin.SPOTIFY)
+        self._start({"uris": uris})
+        return Result("Now playing your liked songs, shuffled.", Origin.SPOTIFY)
 
     def play(self, args: dict[str, Any]) -> Result:
         """Find what was asked for and play it; misheard names fall back to the owner's music."""
@@ -306,10 +390,9 @@ class SpotifyOps:
         kind, item = found.kind, found.item
         uri = str(item["uri"])
         body: dict[str, Any] = {"uris": [uri]} if kind == "track" else {"context_uri": uri}
-        device = self._device()
-        self._api.request("PUT", "/me/player/play", params={"device_id": device.id}, json=body)
+        self._start(body)
         label = _names(item) if kind in {"track", "album"} else str(item.get("name", query))
-        return Result(f"Now playing the {kind} {label} on {device.name}.", Origin.SPOTIFY)
+        return Result(f"Now playing the {kind} {label}.", Origin.SPOTIFY)
 
     def _track_search_query(self, query: str) -> str:
         """Search only an artist's own songs when the query names an artist."""
@@ -383,50 +466,157 @@ class SpotifyOps:
     def now_playing(self, _args: dict[str, Any]) -> Result:
         """Describe what is playing."""
         state = self._api.player()
-        item = obj((state or {}).get("item"))
-        if not state or not item:
-            return Result("Nothing is playing.")
-        status = "playing" if state.get("is_playing") else "paused"
-        device = obj(state.get("device")).get("name", "")
-        volume = obj(state.get("device")).get("volume_percent")
+        current = _current(state)
+        if state is None or current.kind == "nothing":
+            return Result(NOTHING_PLAYING)
+        if current.kind == "ad":
+            return Result("An ad is playing.")
+        status = "playing" if current.playing else "paused"
+        if current.kind == "unknown":
+            return Result(f"Spotify says it is {status} but not what.")
+        device = obj(state.get("device"))
         shuffle = "on" if state.get("shuffle_state") else "off"
+        if current.kind == "episode":
+            show = obj(current.item.get("show")).get("name", "")
+            what = f"podcast episode {current.item.get('name', '')}, from {show}"
+        else:
+            what = f"{_names(current.item)}, from {obj(current.item.get('album')).get('name', '')}"
         return Result(
-            f"{status}: {_names(item)}, from {obj(item.get('album')).get('name', '')}; "
-            f"device {device}, volume {volume}%, shuffle {shuffle}.",
+            f"{status}: {what}; device {device.get('name', '')}, "
+            f"volume {device.get('volume_percent')}%, shuffle {shuffle}.",
             Origin.SPOTIFY,
         )
 
-    def like(self, _args: dict[str, Any]) -> Result:
-        """Save the current track to the owner's library."""
-        item = obj((self._api.player() or {}).get("item"))
-        if not item.get("uri"):
-            return Result("Nothing is playing to like.", ok=False)
-        self._api.request("PUT", "/me/library", params={"uris": item["uri"]})
-        return Result(f"Saved {_names(item)} to your library.", Origin.SPOTIFY)
+    def _playing_song(self) -> dict[str, Any]:
+        """Return the song that is playing now as {"uri", "name"}.
 
-    def _simple(
-        self, method: str, path: str, done: str, **params: object
-    ) -> Callable[[dict[str, Any]], Result]:
-        def run(_args: dict[str, Any]) -> Result:
-            self._player_call(method, path, params=dict(params) or None)
-            return Result(done)
+        Raises:
+            OperationError: nothing, an ad, an episode or something unreadable is playing.
+        """
+        current = _current(self._api.player())
+        refusals = {
+            "nothing": NOTHING_PLAYING,
+            "ad": "An ad is playing.",
+            "episode": "That's a podcast episode, and I can only save songs.",
+        }
+        if current.kind in refusals:
+            raise OperationError(refusals[current.kind])
+        if not current.item.get("uri"):
+            msg = "I can't tell what is playing, so I can't save it."
+            raise OperationError(msg)
+        return {"uri": str(current.item["uri"]), "name": _names(current.item)}
 
-        return run
+    def like(self, args: dict[str, Any]) -> Result:
+        """Save a track to the owner's library: the one `prepare` bound, else the one playing."""
+        song = args if args.get("uri") else self._playing_song()
+        self._api.request("PUT", "/me/library", params={"uris": song["uri"]})
+        return Result(f"Saved {song['name']} to your library.", Origin.SPOTIFY)
+
+    def _command(
+        self, method: str, path: str, done: str, *, refusal_check: str = "", **params: object
+    ) -> Result:
+        """Send a command to the active player; with none, nothing is playing and nothing to do.
+
+        Raises:
+            SpotifyError: Spotify refused, and `refusal_check` (pause) did not explain it.
+        """
+        try:
+            self._api.request(method, path, params=dict(params) or None)
+        except NoDeviceError:
+            return Result(NOTHING_PLAYING)
+        except SpotifyError as exc:
+            if exc.status != HTTPStatus.FORBIDDEN or not refusal_check:
+                raise
+            return self._already(refusal_check, exc)
+        return Result(done)
+
+    def _already(self, command: str, refusal: SpotifyError) -> Result:
+        """Explain a 403 on pause or resume from the player's state, or pass the refusal on.
+
+        Spotify refuses a pause while paused and a play while playing with a bare 403.
+        """
+        state = self._api.player()
+        playing = bool(state and state.get("is_playing"))
+        if command == "pause" and not playing:
+            return Result("It's already paused." if state else NOTHING_PLAYING)
+        if command == "resume" and playing:
+            return Result("It's already playing.")
+        raise refusal
+
+    def pause(self, _args: dict[str, Any]) -> Result:
+        """Pause playback; it never starts Spotify."""
+        return self._command("PUT", "/me/player/pause", "Paused.", refusal_check="pause")
+
+    def resume(self, _args: dict[str, Any]) -> Result:
+        """Resume playback, bringing a player up (even starting Spotify) when none is active.
+
+        Raises:
+            SpotifyError: Spotify refused for a reason other than "already playing".
+        """
+        try:
+            self._api.request("PUT", "/me/player/play")
+        except NoDeviceError:
+            device, started = self._bring_up(launch=True, play=True)
+            if not started:
+                self._api.request("PUT", "/me/player/play", params={"device_id": device.id})
+        except SpotifyError as exc:
+            if exc.status != HTTPStatus.FORBIDDEN:
+                raise
+            return self._already("resume", exc)
+        return Result("Resumed.")
+
+    def next_track(self, _args: dict[str, Any]) -> Result:
+        """Skip to the next track; it never starts Spotify."""
+        return self._command("POST", "/me/player/next", "Skipped to the next track.")
+
+    def previous_track(self, _args: dict[str, Any]) -> Result:
+        """Go back a track; it never starts Spotify."""
+        return self._command("POST", "/me/player/previous", "Went back a track.")
+
+    def _set_volume(self, percent: int) -> Result:
+        try:
+            self._player_call("PUT", "/me/player/volume", params={"volume_percent": percent})
+        except SpotifyError as exc:
+            refused = exc.reason == _VOLUME_DISALLOWED or "control device volume" in str(exc)
+            if exc.status == HTTPStatus.FORBIDDEN and refused:
+                return Result(NO_VOLUME_CONTROL, ok=False)
+            raise
+        return Result(f"Volume set to {percent} percent.")
 
     def set_volume(self, args: dict[str, Any]) -> Result:
         """Set the player's volume."""
-        self._player_call("PUT", "/me/player/volume", params={"volume_percent": args["percent"]})
-        return Result(f"Volume set to {args['percent']} percent.")
+        return self._set_volume(int(args["percent"]))
+
+    def _volume_plan(self, delta: int) -> dict[str, Any]:
+        """Read the volume now and return the one it would change to, as {"current", "target"}.
+
+        Raises:
+            OperationError: nothing is playing, the device cannot be turned up from here, or it
+                does not say what its volume is.
+        """
+        state = self._api.player()
+        if not state:
+            raise OperationError(NOTHING_PLAYING)
+        device = obj(state.get("device"))
+        if device.get("supports_volume") is False:
+            raise OperationError(NO_VOLUME_CONTROL)
+        current = device.get("volume_percent")
+        if not isinstance(current, int):
+            msg = "I can't read the current volume."
+            raise OperationError(msg)
+        return {"current": current, "target": max(0, min(100, current + delta))}
+
+    def prepare_volume(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Bind a volume change to the exact level it will set."""
+        return {**args, **self._volume_plan(int(args["delta"]))}
 
     def change_volume(self, args: dict[str, Any]) -> Result:
-        """Raise or lower the volume by a step."""
-        state = self._api.player() or {}
-        current = obj(state.get("device")).get("volume_percent")
-        if not isinstance(current, int):
-            return Result("I can't read the current volume.", ok=False)
-        target = max(0, min(100, current + int(args["delta"])))
-        self._player_call("PUT", "/me/player/volume", params={"volume_percent": target})
-        return Result(f"Volume changed from {current} to {target} percent.")
+        """Raise or lower the volume by a step: to the level `prepare` bound, else from now."""
+        plan = args if "target" in args else self._volume_plan(int(args["delta"]))
+        result = self._set_volume(plan["target"])
+        if not result.ok:
+            return result
+        return Result(f"Volume changed from {plan['current']} to {plan['target']} percent.")
 
     def shuffle(self, args: dict[str, Any]) -> Result:
         """Turn shuffle on or off."""
@@ -472,28 +662,28 @@ class SpotifyOps:
                 "spotify_pause",
                 "Pause playback.",
                 _NO_ARGS,
-                self._simple("PUT", "/me/player/pause", "Paused."),
+                self.pause,
                 spoken_summary=lambda _a: "pause the music",
             ),
             Operation(
                 "spotify_resume",
                 "Resume playback.",
                 _NO_ARGS,
-                self._simple("PUT", "/me/player/play", "Resumed."),
+                self.resume,
                 spoken_summary=lambda _a: "resume the music",
             ),
             Operation(
                 "spotify_next",
                 "Skip to the next track.",
                 _NO_ARGS,
-                self._simple("POST", "/me/player/next", "Skipped to the next track."),
+                self.next_track,
                 spoken_summary=lambda _a: "skip this track",
             ),
             Operation(
                 "spotify_previous",
                 "Go back to the previous track.",
                 _NO_ARGS,
-                self._simple("POST", "/me/player/previous", "Went back a track."),
+                self.previous_track,
                 spoken_summary=lambda _a: "go back a track",
             ),
             Operation(
@@ -519,7 +709,12 @@ class SpotifyOps:
                     "additionalProperties": False,
                 },
                 self.change_volume,
-                spoken_summary=lambda a: f"change the volume by {a['delta']}",
+                spoken_summary=lambda a: (
+                    f"change the volume from {a['current']} to {a['target']} percent"
+                    if "target" in a
+                    else f"change the volume by {a['delta']}"
+                ),
+                prepare=self.prepare_volume,
             ),
             Operation(
                 "spotify_shuffle",
@@ -576,7 +771,8 @@ class SpotifyOps:
                 "Save the track that is playing now to the owner's library.",
                 _NO_ARGS,
                 self.like,
-                spoken_summary=lambda _a: "save this track to your library",
+                spoken_summary=lambda a: f"save {a.get('name', 'this track')} to your library",
+                prepare=lambda _a: self._playing_song(),
             ),
             Operation(
                 "spotify_now_playing",
