@@ -103,9 +103,9 @@ def _line(entry: dict[str, object]) -> str:
         ({"event": "request", "text": "pause", "via": "chat"}, "you", "typed"),
         ({"event": "reply", "text": "Paused it.", "seconds": 0.3}, "jarvis", "Paused it."),
         ({"event": "tool_call", "op": "spotify_pause", "verdict": "allow"}, "step", "pause"),
-        ({"event": "tool_call", "op": "spotify_queue", "verdict": "confirm"}, "step", "yes"),
+        ({"event": "tool_call", "op": "spotify_queue", "verdict": "confirm"}, "ask", "yes"),
         ({"event": "tool_call", "op": "x", "verdict": "deny", "reason": "off"}, "warn", "off"),
-        ({"event": "confirmation", "approved": True}, "step", "yes"),
+        ({"event": "confirmation", "approved": True}, "result", "yes"),
         ({"event": "confirmation", "approved": False}, "warn", "no"),
         ({"event": "tool_failed", "op": "spotify_play", "error": "no device"}, "warn", "device"),
         ({"event": "tool_uncertain", "op": "spotify_queue"}, "warn", "not sure"),
@@ -114,12 +114,46 @@ def _line(entry: dict[str, object]) -> str:
         ({"event": "shortcut", "op": "spotify_pause"}, "step", "without the model"),
     ],
 )
-def test_each_event_reads_as_one_line(entry: dict[str, object], kind: str, words: str) -> None:
+def test_each_event_reads_as_one_entry(entry: dict[str, object], kind: str, words: str) -> None:
     shown = describe({"ts": "2026-11-21T10:00:00+00:00", **entry})
 
     assert shown is not None
     assert shown.kind == kind
-    assert words in shown.text
+    assert words in f"{shown.text} {shown.note}"
+
+
+@pytest.mark.parametrize(
+    ("event", "nested"),
+    [
+        ("request", False),
+        ("tool_call", False),
+        ("reply", False),
+        ("shortcut", False),
+        ("model_error", False),
+        ("tool_result", True),
+        ("confirmation", True),
+        ("tool_failed", True),
+        ("model_call", True),
+    ],
+)
+def test_results_belong_to_the_step_above(event: str, nested: bool) -> None:
+    shown = describe({"ts": "2026-11-21T10:00:00+00:00", "event": event, "op": "spotify_pause"})
+
+    assert shown is not None
+    assert shown.nested is nested
+
+
+def test_only_a_request_opens_a_turn_and_only_details_hide() -> None:
+    entries: dict[str, dict[str, object]] = {
+        "request": {"event": "request", "text": "pause"},
+        "pc": {"event": "request", "text": "pause", "origin": "pc_audio"},
+        "reply": {"event": "reply", "text": "ok"},
+        "model_call": {"event": "model_call", "seconds": 1},
+    }
+    shown = {name: describe(entry) for name, entry in entries.items()}
+
+    assert {name for name, s in shown.items() if s and s.starts_turn} == {"request", "pc"}
+    assert {name for name, s in shown.items() if s and s.detail} == {"model_call"}
 
 
 def test_an_unknown_event_still_shows_its_name() -> None:
