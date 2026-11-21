@@ -25,6 +25,7 @@ from jarvis.agent import (
 )
 from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
+from jarvis.model import Delta
 from jarvis.operations import (
     Operation,
     OperationError,
@@ -57,6 +58,21 @@ def _say(text: str) -> dict[str, Any]:
     return {"role": "assistant", "content": text}
 
 
+def stream_pieces(message: dict[str, Any], size: int) -> list[Delta]:
+    """Return a scripted answer as the pieces a streaming server sends, `size` characters each."""
+    text = str(message.get("content") or "")
+    pieces = [Delta(text=text[i : i + size]) for i in range(0, len(text), size)]
+    for index, call in enumerate(message.get("tool_calls") or []):
+        function = call["function"]
+        arguments = str(function["arguments"])
+        pieces.append(Delta(call=index, name=function["name"]))
+        pieces += [
+            Delta(call=index, arguments=arguments[i : i + size])
+            for i in range(0, len(arguments), size)
+        ]
+    return pieces
+
+
 @dataclass
 class ScriptedModel:
     replies: list[dict[str, Any]]
@@ -67,6 +83,9 @@ class ScriptedModel:
     error: Exception | None = None
     during: Callable[[], object] = lambda: None
     timeouts: list[float | None] = field(default_factory=list[float | None])
+    streamed: list[bool] = field(default_factory=list[bool])
+    piece: int = 3  # characters per streamed piece
+    after_piece: Callable[[int], object] = lambda _number: None
 
     def chat(
         self,
@@ -75,15 +94,22 @@ class ScriptedModel:
         *,
         require_tool: bool = False,
         timeout_s: float | None = None,
+        on_delta: Callable[[Delta], None] | None = None,
     ) -> dict[str, Any]:
         self.timeouts.append(timeout_s)
         self.tools_offered.append(len(tools))
         self.seen.append([dict(m) for m in messages])
         self.required.append(require_tool)
+        self.streamed.append(on_delta is not None)
         self.during()
         if self.error is not None:
             raise self.error
-        return self.replies.pop(0)
+        reply = self.replies.pop(0)
+        if on_delta is not None:
+            for number, delta in enumerate(stream_pieces(reply, self.piece)):
+                on_delta(delta)
+                self.after_piece(number)
+        return reply
 
     def is_loaded(self) -> bool | None:
         return self.loaded

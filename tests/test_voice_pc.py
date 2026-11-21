@@ -75,9 +75,20 @@ class NeverWake:
 @dataclass
 class Speaker:
     said: list[str] = field(default_factory=list[str])
+    busy: bool = False
+    interruptible: bool = True
 
     def say(self, text: str) -> None:
         self.said.append(text)
+
+    def queue(self, text: str) -> None:
+        self.said.append(text)
+
+    def wait(self) -> None:
+        pass
+
+    def hush(self) -> None:
+        pass
 
     def chime(self) -> None:
         pass
@@ -89,9 +100,10 @@ class Agent:
     done: threading.Event = field(default_factory=threading.Event)
 
     def handle(self, text: str, hooks: Hooks, origin: Origin = Origin.OWNER_SPEECH) -> str:
-        del hooks
         self.calls.append((text, origin))
         self.done.set()
+        if hooks.speak is not None:
+            hooks.speak("Skipped it.")
         return "Skipped it."
 
 

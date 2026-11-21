@@ -22,12 +22,13 @@ from jarvis.operations import (
     validate_args,
 )
 from jarvis.policy import TRUSTED_ORIGINS, Origin, Verdict, action_hash, decide
+from jarvis.sentences import sentence_end
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from jarvis.audit import AuditLog
-    from jarvis.model import ChatModel
+    from jarvis.model import ChatModel, Delta
     from jarvis.operations import Operation, Registry
 
 log = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ MAX_AUDIT_TEXT = 300
 HISTORY_TURNS = 4
 HISTORY_IDLE_S = 300.0
 STILL_WAITING_S = 15.0
+MAX_STREAMED_CHARS = 1000  # no more is spoken before an answer is whole (no_action's reply cap)
 NO_ACTION = "no_action"
 _UNKNOWN = "unknown operation"
 _OMITTED = "(That reply quoted outside data, so it is left out here.)"
@@ -94,6 +96,9 @@ _DESCRIPTION = re.compile(
 _COURTESY = re.compile(r"^no (?:problem|worries)\b[,.!]?\s*", re.IGNORECASE)  # not a denial
 _SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+|\n+")
 _ACTIONS_NOTE = re.compile(r"^\[actions taken:[^\]]*\]\s*", re.IGNORECASE)
+_REPLY_KEY = '{"reply":"'
+_REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
+_HIGH_SURROGATE = re.compile(r"\\u[dD][89abAB][0-9a-fA-F]{2}")
 
 
 def claims_action(reply: str) -> bool:
@@ -110,6 +115,148 @@ def claims_action(reply: str) -> bool:
         if any(_CLAIM.match(clause.strip()) for clause in text.split(",")):
             return True
     return False
+
+
+def _complete_prefix(body: str) -> str:
+    """Return the start of a JSON string's inside up to its closing quote or last whole character.
+
+    An escape is whole once all of it has arrived; a UTF-16 surrogate pair once both halves have.
+    """
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char == '"':
+            break
+        if char != "\\":
+            index += 1
+            continue
+        if body[index + 1 : index + 2] != "u":
+            if index + 2 > len(body):
+                break
+            index += 2
+            continue
+        width = 12 if _HIGH_SURROGATE.match(body, index) else 6
+        if index + width > len(body):
+            break
+        index += width
+    return body[:index]
+
+
+def partial_reply(arguments: str) -> str | None:
+    """Return the `reply` of a `no_action` call's arguments as far as they have been written.
+
+    "" while the arguments may still turn into `{"reply": "...`; None once they cannot, so the
+    words are only known when the call is whole.
+    """
+    found = _REPLY_START.match(arguments)
+    if found is None:
+        squeezed = "".join(arguments.split())
+        return "" if _REPLY_KEY.startswith(squeezed) else None
+    try:
+        return str(json.loads(f'"{_complete_prefix(arguments[found.end() :])}"'))
+    except ValueError:
+        return None
+
+
+class _Stopped(Exception):  # ruff: ignore[error-suffix-on-exception-name] - control flow, not an error
+    """Jarvis is stopping or the owner spoke over it: the answer being written is not wanted."""
+
+
+class _ReplyStream:
+    """Speaks the finished sentences of an answer while the model is still writing it.
+
+    Only words that will be the reply are spoken: the message's text, or the `reply` of a
+    `no_action` call that comes first. A sentence that says something was done waits for the
+    whole answer unless an action already succeeded in this request (the claim check then
+    decides on the whole reply). Once a tool call follows, nothing more of the message is
+    spoken and what was not yet heard is dropped.
+    """
+
+    def __init__(
+        self,
+        speak: Callable[[str], None],
+        hooks: Hooks,
+        *,
+        may_claim: bool,
+        reply_allowed: bool,
+        before_first: Callable[[], None],
+    ) -> None:
+        super().__init__()
+        self._speak = speak
+        self._hooks = hooks
+        self._may_claim = may_claim
+        self._reply_allowed = reply_allowed
+        self._before_first = before_first
+        self._source = ""  # "text" or "reply", once known
+        self._text = ""
+        self._arguments = ""
+        self._held = False
+        self.spoken = ""  # the start of the answer already passed on to be spoken
+        self.cut = False  # a tool call came after spoken words
+        self.audited = False
+
+    def feed(self, delta: Delta) -> None:
+        """Take one streamed piece of the answer.
+
+        Raises:
+            _Stopped: the request was cancelled while the answer was being written.
+        """
+        if self._hooks.cancelled():
+            raise _Stopped
+        if delta.call is None:
+            if self._source in {"", "text"}:
+                self._source = "text"
+                self._text += delta.text
+        elif delta.call == 0 and (
+            self._source == "reply" or (not self._source and delta.name == NO_ACTION)
+        ):
+            self._source = "reply"
+            self._arguments += delta.arguments
+        elif self._source == "reply":
+            # A second call after the reply: speak no more, but it may be an exact copy the
+            # agent drops, so whether what was said stands is settled once the message is whole.
+            self._held = True
+            return
+        else:
+            self.stop()  # a tool call: no later word of this message is the reply
+            return
+        self._speak_ready()
+
+    def stop(self) -> None:
+        """Speak no more of this message; drop what was passed on and not yet heard."""
+        self._held = True
+        if self.spoken and not self.cut:
+            self.cut = True
+            self._hooks.hush()
+
+    def rest(self, reply: str) -> str:
+        """Return the part of the final `reply` not spoken yet (all of it if it changed)."""
+        return reply.removeprefix(self.spoken)
+
+    def _words(self) -> str | None:
+        if self._source == "text":
+            return self._text.lstrip()
+        if self._source == "reply" and self._reply_allowed:
+            words = partial_reply(self._arguments)
+            return None if words is None else words.lstrip()
+        return None
+
+    def _speak_ready(self) -> None:
+        if self._held:
+            return
+        words = self._words()
+        if words is None or words.startswith("["):  # not a reply, or an actions note
+            self._held = words is not None or self._source == "reply"
+            return
+        while (end := sentence_end(words, len(self.spoken))) is not None:
+            piece = words[len(self.spoken) : end]
+            if end > MAX_STREAMED_CHARS or (not self._may_claim and claims_action(piece)):
+                self._held = True
+                return
+            if not self.spoken:
+                self._before_first()
+            self.spoken = words[:end]
+            self._speak(piece.strip())
 
 
 def _inert(text: str) -> str:
@@ -160,13 +307,17 @@ class Hooks:
 
     `waking` is called when the model has to load first and `still_waiting` once more if that
     takes long; both run beside the model call and have finished before anything else is said.
-    `cancelled` turning true (Jarvis is stopping) ends the request without a reply.
+    `cancelled` turning true (Jarvis is stopping, or the owner spoke over it) ends the request.
+    With `speak`, the reply is spoken through it, sentence by sentence and while the model is
+    still writing; `hush` drops what was passed to `speak` and not yet heard.
     """
 
     confirm: Callable[[str], bool]
     waking: Callable[[], None] = lambda: None
     still_waiting: Callable[[], None] = lambda: None
     cancelled: Callable[[], bool] = lambda: False
+    speak: Callable[[str], None] | None = None
+    hush: Callable[[], None] = lambda: None
 
 
 class _Cues:
@@ -223,6 +374,7 @@ class _Turn:
     calls: int = 0
     seen: set[str] = field(default_factory=set[str])
     actions: list[str] = field(default_factory=list[str])
+    stream: _ReplyStream | None = None  # the last model call's, when the reply is spoken
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,7 +439,11 @@ class Agent:
         self._still_waiting_s = still_waiting_s
 
     def handle(self, text: str, hooks: Hooks, origin: Origin = Origin.OWNER_SPEECH) -> str:
-        """Answer one spoken request and return the reply to speak ("" when cut short by a stop).
+        """Answer one spoken request and return the reply.
+
+        With `hooks.speak` the reply is also spoken through it, the first sentences while the
+        model still writes the rest. A request cut short (`hooks.cancelled`) returns only what
+        was already spoken, often "".
 
         A request whose `origin` is not the owner (speech heard from PC audio) is marked as
         someone else's: its side effects need the owner's spoken yes (remembered for `grant_s`)
@@ -315,6 +471,7 @@ class Agent:
         reply = self._shortcut(text, hooks, turn)
         if reply is None:
             reply = self._converse(hooks, turn)
+        self._deliver(reply, hooks, turn)
         if reply and not foreign:
             reply_origin = Origin.SPOTIFY if turn.untrusted else Origin.MODEL
             self._history.add(
@@ -324,6 +481,31 @@ class Agent:
             )
         self._audit.record("reply", text=reply, seconds=round(self._clock() - started, 2))
         return reply
+
+    @staticmethod
+    def _deliver(reply: str, hooks: Hooks, turn: _Turn) -> None:
+        """Speak what the owner has not heard yet of the final reply."""
+        if hooks.speak is None or hooks.cancelled():
+            return
+        rest = turn.stream.rest(reply) if turn.stream is not None else reply
+        if rest.strip():
+            hooks.speak(rest.strip())
+
+    def _stream(self, turn: _Turn, hooks: Hooks) -> _ReplyStream | None:
+        """Return the stream that speaks the next answer as it is written, when it is spoken."""
+        if hooks.speak is None:
+            return None
+        op = self._registry.get(NO_ACTION)
+        allowed = op is not None and (
+            decide(op, NO_ACTION, self._overrides, untrusted_in_context=True).verdict is Verdict.RUN
+        )
+        return _ReplyStream(
+            hooks.speak,
+            hooks,
+            may_claim=turn.succeeded,
+            reply_allowed=allowed,
+            before_first=turn.cues.settle,
+        )
 
     def _shortcut(self, text: str, hooks: Hooks, turn: _Turn) -> str | None:
         """Run a plain command without the model; return its spoken result, or None to go on.
@@ -368,6 +550,7 @@ class Agent:
         After a repeated call the model is offered no tools, so it must answer from what was done.
         """
         tools = [] if turn.stuck else self._registry.tool_schemas()
+        stream = turn.stream = self._stream(turn, hooks)
         began = self._clock()
         try:
             message = self._model.chat(
@@ -375,7 +558,10 @@ class Agent:
                 tools,
                 require_tool=not turn.actions,
                 timeout_s=max(MIN_CALL_S, turn.limit_s - (began - turn.started)),
+                on_delta=None if stream is None else stream.feed,
             )
+        except _Stopped:
+            return stream.spoken if stream is not None else ""
         except Exception as exc:  # ruff: ignore[blind-except] - any model failure becomes a spoken apology
             self._audit.record("model_error", error=str(exc)[:MAX_AUDIT_TEXT])
             log.warning("the model did not answer: %s", exc)
@@ -386,10 +572,25 @@ class Agent:
         calls = [] if turn.stuck else self._unique(objs(message.get("tool_calls")))
         if not calls:
             return self._final(turn, _ACTIONS_NOTE.sub("", _text(message).strip()) or "Done.")
+        lone_reply = len(calls) == 1 and str(obj(calls[0].get("function")).get("name")) == NO_ACTION
+        if not lone_reply:
+            self._cut(stream)
         turn.messages.append({"role": "assistant", "content": _text(message), "tool_calls": calls})
         results = self._run_calls(calls, hooks, turn)
         answer = self._no_action_reply(calls, results)
-        return None if answer is None else self._final(turn, answer)
+        if answer is None:
+            self._cut(stream)  # the model answers again; what it said here was not its reply
+            return None
+        return self._final(turn, answer)
+
+    def _cut(self, stream: _ReplyStream | None) -> None:
+        """Stop a stream whose words turned out not to be the reply, and audit what was heard."""
+        if stream is None:
+            return
+        stream.stop()
+        if stream.cut and not stream.audited:
+            stream.audited = True
+            self._audit.record("spoken_before_tool_call", text=stream.spoken[:MAX_AUDIT_TEXT])
 
     @staticmethod
     def _no_action_reply(calls: list[dict[str, Any]], results: list[Result]) -> str | None:

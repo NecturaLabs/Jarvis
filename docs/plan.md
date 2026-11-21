@@ -22,7 +22,7 @@ which parts exist. Details of what is built are in [configuration.md](configurat
 | 4. Spotify | Built | PKCE login, Web API client, and the operations play (track, album, artist, playlist, liked songs), pause, resume, next, previous, set and change volume, shuffle, repeat, queue, like, now playing. Players are found and Spotify is launched through the Web API; MPRIS is not used. No seek, no separate transfer-to-device or my-playlists operation (playing "my playlist" is `play` with `mine`). |
 | 5. PC operations | Planned | |
 | 6. Research | Mostly built | `deploy/searxng/` (pinned image, JSON on, limiter off, `127.0.0.1:8888`), `web_search`, `web_read` (trafilatura, size caps, public-address checks at every connection and redirect, only pages a search returned), plus `reddit_search` and `reddit_read` (SearXNG and the Arctic Shift archive), `time_now` and `weather` (Open-Meteo), [ADR 0007](adr/0007-outside-services-for-answers.md). Not built: SearXNG in an installer, a spoken check with the owner. |
-| 7. Polish | Planned | No follow-up listening, sentence streaming, barge-in or bar indicator. |
+| 7. Polish | Partly built | Built: sentence streaming and voice barge-in ([ADR 0008](adr/0008-speak-while-writing-and-barge-in.md), proposed). Not built: follow-up listening, echo cancellation, the bar indicator. |
 | 8. Hardening | Planned | No `install.sh`, `jarvis update`, rollback or uninstall. `jarvis doctor`, `status`, `logs`, `unload`, `start`, `stop` and `restart` exist. |
 
 Built beyond the plan, each with an ADR: speech heard in PC audio is treated as someone else's
@@ -130,12 +130,15 @@ enforced in code before any tool runs.
   setting; path A inherits it, path B does not touch it.
 
 ### Speaking, barge-in, confirmation
-- v1: no voice barge-in while speaking; a keybinding (`jarvis stop`) interrupts. Wake detection is suspended during
-  TTS, so Jarvis cannot trigger itself.
+- Built: the reply is spoken sentence by sentence while the model writes it, one player for the whole reply, and
+  the wake word stays on while Jarvis speaks: saying it stops the speech and the request and starts a new one
+  (`audio.barge_in`). A sentence that would trigger the wake word by itself is checked before it plays and
+  cannot be spoken over. See [ADR 0008](adr/0008-speak-while-writing-and-barge-in.md) (proposed).
 - Confirmation starts only after TTS playback has drained, accepts yes/no for 8 s, and is bound to one immutable
-  action (hash of operation + arguments). Anything else, or silence, is no. The highest-risk class is confirmed by
-  keybinding (`jarvis confirm`), never by voice.
-- Voice barge-in and echo cancellation (PipeWire echo-cancel module) come in the polish phase.
+  action (hash of operation + arguments). Anything else, silence, or the wake word over the question, is no. The
+  highest-risk class is confirmed by keybinding (`jarvis confirm`), never by voice.
+- Echo cancellation (PipeWire echo-cancel module) is not built; it is the owner's system setting if Jarvis's own
+  voice ever reaches the wake word through the room.
 
 ### Model (Strata)
 - Profile `jarvis`: Qwen3.6-35B-A3B UD-Q4_K_XL (files in the model folder, `strata.model_file`) in hybrid mode with a fixed
@@ -155,8 +158,9 @@ enforced in code before any tool runs.
 - Caps per request: 6 tool steps, 60 s (built as 90 s, plus 180 s more when the model must load first), output size per tool. Repeated identical calls are stopped.
 - Uncertain outcomes (timeout after sending) are never retried blindly for non-idempotent actions (queue, skip,
   like); Jarvis says "I'm not sure that went through" instead.
-- Replies are short and report what happened (tool results, not intentions). v1 speaks complete replies; sentence
-  streaming later.
+- Replies are short and report what happened (tool results, not intentions). The reply is streamed: a finished
+  sentence is spoken while the rest is written, except a sentence claiming an action before any succeeded, and
+  nothing more of a message once a tool call follows it ([ADR 0008](adr/0008-speak-while-writing-and-barge-in.md)).
 - Session memory: last ~10 turns (built as 4), expires after 5 min idle. No follow-up listening in v1 (say "Hey Jarvis" again).
 - System prompt: `core.md` (shipped: identity, tools, limits) + persona/tone + owner addendum from setup + a
   rendering of the boundaries + the Omarchy skill index (names and descriptions; full text through `os_skill`).
@@ -252,7 +256,7 @@ enforced in code before any tool runs.
    / playlist, skip, volume, now playing, queue, like, all by voice, with recorded-fixture tests.
 5. **PC operations** (planned) — typed operation set, os_skill, optional strong-class shell.
 6. **Research** (planned) — SearXNG, search/fetch, URL policy, sourced answers.
-7. **Polish** (planned) — follow-up listening, sentence streaming, voice barge-in with echo cancellation, bar indicator,
+7. **Polish** (partly built) — sentence streaming and voice barge-in built; follow-up listening, echo cancellation, bar indicator,
    optional bare-"Jarvis" wake word.
 8. **Hardening** (planned) — install/update/rollback/uninstall tested on a clean user, lifecycle cases, docs and playbook.
 

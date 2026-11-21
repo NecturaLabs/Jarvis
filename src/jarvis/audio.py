@@ -8,15 +8,17 @@ Jarvis never touches Voxtype's daemon, config or the owner's recordings.
 import contextlib
 import json
 import logging
+import os
 import queue
 import re
+import select
 import subprocess
 import tempfile
 import threading
 import time
 import wave
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 import onnxruntime as ort
@@ -585,10 +587,75 @@ def pw_play_command(rate: int) -> list[str]:
 
 
 PLAY_GRACE_S = 10.0  # how long playback may run past the sound's own length before it is ended
+LINGER_S = 0.3  # how long an open player waits for the next sentence before it is closed
+WRITE_STEP = 4096  # bytes handed to the player at a time (one pipe page; about 0.085 s at 24 kHz)
+QUIET = 300  # samples at or below this level count as silence at the ends of a sentence
+LEAD_KEEP_S = 0.03  # silence kept before the first word Jarvis says
+TAIL_KEEP_S = 0.2  # silence kept after each sentence (the voice pads about 0.35 s)
+
+
+def trim_silence(pcm: bytes, rate: int, *, lead_s: float | None, tail_s: float) -> bytes:
+    """Return int16 `pcm` with its leading and trailing silence cut to `lead_s` and `tail_s`.
+
+    `lead_s` None keeps the leading silence (the pause between two sentences). A clip with no
+    sound at all comes back empty.
+    """
+    samples = np.frombuffer(pcm, dtype=np.int16)
+    loud = np.flatnonzero(np.abs(samples.astype(np.int32)) > QUIET)
+    if loud.size == 0:
+        return b""
+    start = 0 if lead_s is None else max(0, int(loud[0]) - int(lead_s * rate))
+    end = min(samples.size, int(loud[-1]) + 1 + int(tail_s * rate))
+    return samples[start:end].tobytes()
+
+
+def to_16k(pcm: bytes, rate: int) -> NDArray[np.int16]:
+    """Return int16 `pcm` at `rate` resampled to 16 kHz (linear; enough for the wake model)."""
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+    if rate == RATE or samples.size == 0:
+        return samples.astype(np.int16)
+    count = int(samples.size * RATE / rate)
+    points = np.linspace(0, samples.size - 1, count)
+    return np.interp(points, np.arange(samples.size), samples).astype(np.int16)
+
+
+class _WakeModel(Protocol):
+    def heard(self, frame: NDArray[np.int16]) -> bool: ...
+    def reset(self) -> None: ...
+
+
+class OwnVoiceCheck:
+    """Tells whether a sentence Jarvis is about to say would itself trigger the wake word.
+
+    While such a sentence plays, the owner cannot speak over Jarvis (it would hear itself).
+    It uses its own copy of the wake model, so the listening one keeps its state.
+    """
+
+    def __init__(self, wake: _WakeModel) -> None:
+        """Check with `wake`, a wake model used for nothing else."""
+        super().__init__()
+        self._wake = wake
+
+    def __call__(self, pcm: bytes, rate: int) -> bool:
+        """Return True when the wake model hears its phrase in `pcm` (int16 at `rate`)."""
+        samples = np.concatenate([to_16k(pcm, rate), np.zeros(RATE // 2, dtype=np.int16)])
+        self._wake.reset()
+        try:
+            return any(
+                self._wake.heard(samples[i : i + FRAME])
+                for i in range(0, samples.size - FRAME + 1, FRAME)
+            )
+        finally:
+            self._wake.reset()
 
 
 class Speaker:
-    """Speaks through `pw-play` with a synthesizer from `make_synthesizer`."""
+    """Speaks through `pw-play` with a synthesizer from `make_synthesizer`.
+
+    Sentences are queued and spoken in order by one worker thread, each synthesized while the
+    one before it plays, through one player for as long as sentences keep coming. `hush` drops
+    what has not been heard yet, so the owner can speak over Jarvis.
+    """
 
     def __init__(
         self,
@@ -596,23 +663,255 @@ class Speaker:
         *,
         player: Callable[[int], list[str]] = pw_play_command,
         grace_s: float = PLAY_GRACE_S,
+        own_wake: Callable[[bytes, int], bool] | None = None,
+        linger_s: float = LINGER_S,
     ) -> None:
-        """Use `synthesize` for text to speech; `player` builds the playback command for a rate."""
+        """Use `synthesize` for text to speech; `player` builds the playback command for a rate.
+
+        `own_wake` tells whether a synthesized sentence would trigger the wake word itself.
+        """
         super().__init__()
         self._synthesize = synthesize
         self._player = player
         self._grace_s = grace_s
-        self._proc: subprocess.Popen[bytes] | None = None
+        self._own_wake = own_wake
+        self._linger_s = linger_s
+        self._lock = threading.Condition()
+        self._items: queue.Queue[tuple[int, str]] = queue.Queue()
+        self._pending = 0  # sentences queued, being synthesized or being handed to the player
+        self._run = 0  # raised by `hush`: sentences queued before it are dropped
+        self._error: AudioError | None = None
+        self._guarded = False  # the speech playing now holds the wake phrase
+        self._worker: threading.Thread | None = None
+        self._proc: subprocess.Popen[bytes] | None = None  # the open player
+        self._rate = 0
+        self._player_run = 0  # the run the open player was started for
+        self._opened = 0.0
+        self._written_s = 0.0
+        self._chime: subprocess.Popen[bytes] | None = None
         self._stopped = threading.Event()
 
+    @property
+    def busy(self) -> bool:
+        """True while sentences are waiting, being synthesized or playing (a hushed one is not)."""
+        with self._lock:
+            return self._busy()
+
+    def _busy(self) -> bool:
+        playing = self._proc is not None and self._player_run == self._run
+        return self._pending > 0 or playing
+
+    @property
+    def interruptible(self) -> bool:
+        """False while the speech playing would trigger the wake word by itself."""
+        with self._lock:
+            return not self._guarded
+
     def say(self, text: str) -> None:
-        """Speak `text` and return once playback has drained (or was stopped).
+        """Speak `text` after anything already queued; return once it has all played.
 
         A player that cannot be started or does not finish is an `AudioError`.
         """
+        self.queue(text)
+        self.wait()
+
+    def queue(self, text: str) -> None:
+        """Have `text` spoken after what is already queued, and return at once."""
+        if self._stopped.is_set() or not text.strip():
+            return
+        with self._lock:
+            self._pending += 1
+            if self._worker is None:
+                self._worker = threading.Thread(
+                    target=self._work, name="jarvis-speech", daemon=True
+                )
+                self._worker.start()
+            self._items.put((self._run, text))
+
+    def wait(self) -> None:
+        """Return once everything queued has played or was hushed.
+
+        A failure of synthesis or of the player since the last wait is raised here, as the
+        `AudioError` the worker kept.
+        """
+        with self._lock:
+            while self._busy():
+                self._lock.wait()
+            error, self._error = self._error, None
+        if error is not None:
+            raise error
+
+    def hush(self) -> None:
+        """Drop every sentence not yet heard and end the one playing, at once."""
+        with self._lock:
+            self._run += 1
+            self._guarded = False  # what held the wake phrase is no longer playing
+            while True:
+                try:
+                    self._items.get_nowait()
+                except queue.Empty:
+                    break
+                self._pending -= 1
+            proc = self._proc
+            self._lock.notify_all()
+        if proc is not None:
+            with contextlib.suppress(OSError):
+                proc.terminate()
+
+    def _work(self) -> None:
+        while True:
+            try:
+                run, text = self._items.get(timeout=self._linger_s if self._proc else None)
+            except queue.Empty:
+                self._close()
+                continue
+            try:
+                self._speak(run, text)
+            except AudioError as exc:
+                self._failed(exc)
+            except Exception as exc:
+                log.exception("speech synthesis failed")
+                self._failed(AudioError(f"speech synthesis failed: {exc}"))
+            finally:
+                with self._lock:  # taken off the queue, so a hush did not count it
+                    self._pending -= 1
+                    self._lock.notify_all()
+
+    def _failed(self, error: AudioError) -> None:
+        self._end_player()
+        with self._lock:
+            self._error = self._error or error
+
+    def _current(self, run: int) -> bool:
+        return run == self._run and not self._stopped.is_set()
+
+    def _speak(self, run: int, text: str) -> None:
+        if not self._current(run):
+            return
         pcm, rate = self._synthesize(text)
-        if pcm:
-            self._play(pcm, rate)
+        if not self._current(run):
+            return
+        if self._proc is not None and (rate != self._rate or self._player_run != run):
+            self._close()  # another rate, or a player a hush has ended
+        first = self._proc is None
+        pcm = trim_silence(pcm, rate, lead_s=LEAD_KEEP_S if first else None, tail_s=TAIL_KEEP_S)
+        if not pcm:
+            return
+        if self._sounds_like_wake(pcm, rate):
+            with self._lock:
+                if run != self._run:  # hushed during the check: it will not be played
+                    return
+                self._guarded = True
+            log.info("a sentence sounds like the wake word; it cannot be spoken over")
+        proc = self._proc or self._open(rate, run)
+        if proc is not None:
+            self._write(proc, pcm, run)
+
+    def _sounds_like_wake(self, pcm: bytes, rate: int) -> bool:
+        """Return whether `pcm` would trigger the wake word; a check that fails counts as yes."""
+        if self._own_wake is None:
+            return False
+        try:
+            return self._own_wake(pcm, rate)
+        except Exception:
+            log.exception("the own-voice wake check failed")
+            return True  # the safe answer: this sentence cannot be spoken over
+
+    def _open(self, rate: int, run: int) -> subprocess.Popen[bytes] | None:
+        cmd = self._player(rate)
+        if not self._current(run):
+            return None
+        try:
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except OSError as exc:
+            msg = f"could not start {cmd[0]}: {exc}"
+            raise AudioError(msg) from exc
+        if proc.stdin is not None:
+            os.set_blocking(proc.stdin.fileno(), False)  # a stuck player cannot block a write
+        with self._lock:
+            self._proc = proc
+            self._rate = rate
+            self._player_run = run
+            self._opened = time.monotonic()
+            self._written_s = 0.0
+        if not self._current(run):  # a hush or stop that came while the player was starting
+            with contextlib.suppress(OSError):
+                proc.terminate()
+        return proc
+
+    def _write(self, proc: subprocess.Popen[bytes], pcm: bytes, run: int) -> None:
+        """Hand `pcm` to the player as fast as it takes it.
+
+        Raises:
+            AudioError: the player stopped taking sound without a hush or stop.
+        """
+        stdin = proc.stdin
+        assert stdin is not None  # ruff: ignore[assert] - started with a pipe
+        fd = stdin.fileno()
+        view = memoryview(pcm)
+        progress = time.monotonic()
+        while view:
+            if not self._current(run):
+                return
+            if time.monotonic() - progress > self._grace_s:
+                msg = "the player stopped taking sound"
+                raise AudioError(msg)
+            _, ready, _ = select.select([], [fd], [], self._grace_s)
+            try:
+                if not ready:
+                    msg = "the player stopped taking sound"
+                    raise AudioError(msg)
+                view = view[os.write(fd, view[:WRITE_STEP]) :]
+                progress = time.monotonic()
+            except BlockingIOError:
+                continue  # the pipe filled between select and write
+            except OSError as exc:
+                if not self._current(run):
+                    return
+                msg = f"the player stopped: {exc}"
+                raise AudioError(msg) from exc
+        with self._lock:
+            self._written_s += len(pcm) / (2 * self._rate)
+
+    def _close(self) -> None:
+        """Let the open player finish what it was given, then end it.
+
+        A player that does not finish in time is killed and reported at the next `wait`.
+        """
+        proc = self._proc
+        if proc is None:
+            return
+        with contextlib.suppress(OSError):
+            if proc.stdin is not None:
+                proc.stdin.close()
+        left_s = max(0.0, self._written_s - (time.monotonic() - self._opened))
+        try:
+            proc.wait(timeout=left_s + self._grace_s)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            with self._lock:
+                self._error = self._error or AudioError(
+                    f"{self._player(self._rate)[0]} did not finish playing"
+                )
+        self._release()
+
+    def _end_player(self) -> None:
+        proc = self._proc
+        if proc is not None:
+            with contextlib.suppress(OSError):
+                proc.kill()
+            with contextlib.suppress(OSError):
+                if proc.stdin is not None:
+                    proc.stdin.close()
+            proc.wait()
+            self._release()
+
+    def _release(self) -> None:
+        with self._lock:
+            self._proc = None
+            self._guarded = False
+            self._lock.notify_all()
 
     def _play(self, pcm: bytes, rate: int) -> None:
         cmd = self._player(rate)
@@ -623,7 +922,7 @@ class Speaker:
         except OSError as exc:
             msg = f"could not start {cmd[0]}: {exc}"
             raise AudioError(msg) from exc
-        self._proc = proc
+        self._chime = proc
         if self._stopped.is_set():  # a stop that came while the player was starting
             with contextlib.suppress(OSError):
                 proc.terminate()
@@ -635,7 +934,7 @@ class Speaker:
             msg = f"{cmd[0]} did not finish playing"
             raise AudioError(msg) from exc
         finally:
-            self._proc = None
+            self._chime = None
 
     def chime(self) -> None:
         """Play a short two-note chime (about 0.15 s) that says "I'm listening"."""
@@ -649,13 +948,13 @@ class Speaker:
         self._play(pcm, rate)
 
     def stop(self) -> None:
-        """Stop speaking now and for good (Jarvis is shutting down).
+        """Stop speaking now and for good (Jarvis is shutting down); safe from any thread.
 
-        Takes no lock, so it is safe from any thread, a signal handler included: it signals the
-        player that is running at this moment, if there is one, and no player starts after it.
+        Nothing is spoken after it, and the player running now is ended.
         """
         self._stopped.set()
-        proc = self._proc
-        if proc is not None:
+        self.hush()
+        chime = self._chime
+        if chime is not None:
             with contextlib.suppress(OSError):
-                proc.terminate()
+                chime.terminate()

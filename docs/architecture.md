@@ -41,6 +41,7 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 | `voice.py` | `VoiceLoop` and its `State`: wake, capture, transcribe, think, confirm, speak; the PC-audio listener; `speakable` and `spoken_question`. | Decide what an operation may do (that is `policy.py`). Touch a device directly; it uses `audio.py` objects. |
 | `audio.py` | The `pw-record` microphone and per-app capture (`Microphone`, `AppAudio`), the wake word, Silero VAD, `voxtype transcribe`, the `pw-play` speaker, voice selection. | Edit Voxtype's config or use its daemon. It runs only `voxtype transcribe`, with Jarvis's own settings file. |
 | `kokoro.py` | Kokoro text to speech on ONNX Runtime, phonemized by espeak-ng. | Play audio. It returns samples. |
+| `sentences.py` | Where a sentence of a reply ends (`sentence_end`, `split_sentences`), so speech starts before the reply is whole; every end is also one for `agent.claims_action`. | Decide what may be spoken; the agent's reply stream does. |
 | `models.py` | The pinned sha256 of each model file Jarvis loads, for `jarvis doctor`. | Download anything or fail a request over a digest. |
 
 ### Agent and policy
@@ -114,11 +115,14 @@ changes as one request moves through.
 | `CONFIRM` | `THINK` or `SPEAK` | The answer is in; the call runs or is dropped, and the reply is spoken. |
 | `SPEAK` | `IDLE` | The reply was spoken, or the request failed after an apology (`_serve`). |
 
-Notes. There is no separate wake state: wake detection runs on the mic frames in `IDLE`. Wake
-detection is paused while Jarvis speaks, and `_speak` drains the capture afterwards so it cannot
-hear itself. A line spoken while the agent works (`_cue`: a waiting line, a confirmation question)
-moves the loop to `SPEAK` and back to `THINK`. Every capture has a timeout, and a failed request
-ends in `IDLE`.
+Notes. There is no separate wake state: wake detection runs on the mic frames in `IDLE`. While
+Jarvis speaks, the `jarvis-barge-in` thread reads the mic and listens for the wake word
+(`audio.barge_in`); hearing it hushes the speaker, cancels the request and makes `_serve` take a new
+one (`SPEAK` to `CAPTURE`). It reads frames only while speech plays, so it never takes one the loop
+needs, and a sentence the speaker found wake-like (`Speaker.interruptible`) is not spoken over. After
+speech that was not interrupted, `_end_speaking` drains the capture so Jarvis cannot hear itself. A
+line spoken while the agent works (`_cue`: a waiting line, a confirmation question) moves the loop to
+`SPEAK` and back to `THINK`. Every capture has a timeout, and a failed request ends in `IDLE`.
 
 ## One request, from wake word to spoken reply
 
@@ -149,9 +153,14 @@ ends in `IDLE`.
 6. A tool result keeps its origin. Text from outside (Spotify names) is wrapped as
    `<data origin="...">` for the model and marks the rest of the request as untrusted. Jarvis's own
    status text stays trusted.
-7. `Agent._final` checks a reply that claims an action when no tool succeeded; it challenges the
-   model once, then speaks a plain "I didn't manage that". `voice.speakable` turns the reply into
-   plain words and `audio.Speaker` plays it through `pw-play`.
+7. The reply is streamed (`StrataModel.chat` with `on_delta`): `agent._ReplyStream` passes each
+   finished sentence (`sentences.sentence_end`) of the message's text, or of a first `no_action`
+   call's `reply`, to `Hooks.speak` while the model writes on. It holds a sentence claiming an
+   action before any succeeded, and stops (and hushes) once a tool call follows.
+   `Agent._final` checks the whole reply that claims an action when no tool succeeded; it
+   challenges the model once, then speaks a plain "I didn't manage that". `Agent._deliver` speaks
+   what was not streamed yet. `voice.speakable` turns each part into plain words and
+   `audio.Speaker` synthesizes each sentence while the one before plays, through one `pw-play`.
 
 ## Threads and processes
 
@@ -162,6 +171,8 @@ Threads in the `jarvis run` process:
 | Main | `VoiceLoop.run`: mic frames, wake, capture, transcribe, agent, speech, confirmation. One request at a time. |
 | Microphone reader | `Microphone._read`: moves `pw-record` output into a bounded queue. Each PC-audio capture has its own. |
 | PC watcher | `VoiceLoop._watch_pc`: scans PC audio for the wake word and hands one request at a time to the main thread. Only with `audio.listen_to_pc`. |
+| `jarvis-speech` | `Speaker._work`: synthesizes queued sentences in order and hands them to one `pw-play` while they keep coming. |
+| `jarvis-barge-in` | `VoiceLoop._watch_speech`: while Jarvis speaks, reads the mic for the wake word. Only with `audio.barge_in`. |
 | `jarvis-stopper` | Waits for SIGTERM or SIGINT, then stops the speaker, mic and PC capture. |
 | `jarvis-model-warm` | Loads the model at start, off the request path. |
 | `jarvis-spotify-refresh` | Keeps the Spotify login and library fresh. |
