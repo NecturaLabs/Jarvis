@@ -191,6 +191,19 @@ def test_rewriting_a_unit_replaces_it_whole(tmp_path: Path) -> None:
     assert "stale" not in first.read_text(encoding="utf-8")
 
 
+def test_unchanged_strata_files_are_not_rewritten(tmp_path: Path) -> None:
+    """jarvis restart restarts Strata when these files are newer than it; same text is no change."""
+    cfg = _config(tmp_path)
+    unit = services.write_units(cfg, tmp_path / "strata.env")[0]
+    profile = services.write_strata_profile(cfg)
+    before = (unit.stat().st_ino, profile.stat().st_ino)
+
+    services.write_units(cfg, tmp_path / "strata.env")
+    services.write_strata_profile(cfg)
+
+    assert (unit.stat().st_ino, profile.stat().st_ino) == before
+
+
 def test_a_failed_write_leaves_the_old_file_and_no_temp_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -5,6 +5,7 @@ the model, and `jarvis.service`, the voice loop, loads it when it starts. Strata
 per-request timings (no request text) go to the journal.
 """
 
+import contextlib
 import json
 import re
 import shutil
@@ -126,10 +127,22 @@ def strata_profile(config: Config) -> dict[str, object]:
     }
 
 
+def _write_if_changed(path: Path, text: str) -> None:
+    """Write `text` atomically unless the file already holds it.
+
+    `jarvis restart` restarts Strata when its profile or unit is newer than the running server,
+    so a file rewritten with the same text must keep its old time.
+    """
+    with contextlib.suppress(OSError, ValueError):  # missing or unreadable: write it
+        if path.read_text(encoding="utf-8") == text:
+            return
+    write_atomic(path, text)
+
+
 def write_strata_profile(config: Config) -> Path:
     """Write the Strata run config (no secrets: the key comes from the unit's environment)."""
     path = strata_profile_file()
-    write_atomic(path, json.dumps(strata_profile(config), indent=1) + "\n")
+    _write_if_changed(path, json.dumps(strata_profile(config), indent=1) + "\n")
     return path
 
 
@@ -226,6 +239,6 @@ def write_units(config: Config, key_file: Path) -> list[Path]:
     written: list[Path] = []
     for name, text in texts:
         path = directory / name
-        write_atomic(path, text)
+        _write_if_changed(path, text)
         written.append(path)
     return written
