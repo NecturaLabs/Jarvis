@@ -570,3 +570,39 @@ def test_install_rejects_an_unknown_argument(installable: Sandbox) -> None:
     assert done.returncode == 2
     assert "usage:" in done.stderr
     assert not _installed(installable, "pre-commit").exists()
+
+
+def test_uninstall_undoes_the_old_hooks_path_setting_and_keeps_the_tracked_hooks(
+    installable: Sandbox,
+) -> None:
+    """An earlier version pointed core.hooksPath at tools/hooks; uninstall undoes only that."""
+    installable.git("config", "--local", "core.hooksPath", "tools/hooks")
+
+    done = _install(installable, "--uninstall")
+
+    assert done.returncode == 0, done.stderr
+    assert not _hooks_path_setting(installable)
+    for hook in HOOK_NAMES:
+        assert (installable.repo / "tools" / "hooks" / hook).is_file()
+
+
+@pytest.mark.parametrize("scope", ["local", "global"])
+def test_uninstall_refuses_and_deletes_nothing_under_another_hooks_path(
+    installable: Sandbox, scope: str
+) -> None:
+    elsewhere = installable.root / "elsewhere"
+    elsewhere.mkdir()
+    marked = elsewhere / "pre-commit"
+    marked.write_bytes((installable.repo / "tools" / "hooks" / "pre-commit").read_bytes())
+    if scope == "local":
+        installable.git("config", "--local", "core.hooksPath", str(elsewhere))
+    else:
+        (installable.root / "gitconfig").write_text(
+            f"[core]\n\thooksPath = {elsewhere}\n", encoding="utf-8"
+        )
+
+    done = _install(installable, "--uninstall")
+
+    assert done.returncode == 1
+    assert str(elsewhere) in done.stderr
+    assert marked.is_file()
