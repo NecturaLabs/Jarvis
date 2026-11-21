@@ -334,7 +334,7 @@ def test_a_wake_like_sentence_after_a_hush_is_still_guarded(tmp_path: Path) -> N
         return _stuck(first_pid if len(starts) == 1 else pid_file)(rate)
 
     speaker = Speaker(
-        lambda t: (_sound(1000, seconds=2.0), RATE),
+        lambda _t: (_sound(1000, seconds=2.0), RATE),
         player=player,
         own_wake=lambda _pcm, _rate: bool(starts),  # wake-like from the second sentence on
     )
