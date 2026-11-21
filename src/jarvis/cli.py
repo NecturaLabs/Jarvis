@@ -300,7 +300,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
     # Off the request path: the Spotify login and library (for the hint and matching) are kept
     # warm, and the model is loaded now, so the first request waits for neither.
     jarvis.ops.start_refresh(refresh_stop)
-    threading.Thread(target=jarvis.model.load, name="jarvis-model-load", daemon=True).start()
+    threading.Thread(target=jarvis.model.warm, name="jarvis-model-warm", daemon=True).start()
     request, answer = _transcribers(cfg, jarvis.hint)
     mic.start()
     loop = VoiceLoop(

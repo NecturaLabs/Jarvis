@@ -14,6 +14,11 @@ if TYPE_CHECKING:
     from jarvis.config import ModelConfig
 
 
+LOAD_TIMEOUT_S = 300.0  # a cold load from disk took about 110 s while a game ran
+WARM_ATTEMPTS = 60
+WARM_RETRY_S = 2.0
+
+
 class ModelError(Exception):
     """The model server could not answer."""
 
@@ -104,6 +109,28 @@ class StrataModel:
         except httpx.HTTPError:
             return False
         return response.status_code < 300  # ruff: ignore[magic-value-comparison]
+
+    def warm(self, attempts: int = WARM_ATTEMPTS) -> bool:
+        """Load the model once the server is up (at service start); return whether it loaded.
+
+        The server may still be starting (unreachable, or answering 409 while busy), so this
+        waits and tries again, up to `attempts` times. A load reads the whole model and can take
+        minutes when it is not in the page cache, so the request waits for it.
+        """
+        for _ in range(attempts):
+            if self.status() is not None:
+                try:
+                    with self._client(LOAD_TIMEOUT_S) as client:
+                        response = client.post("/load", json={})
+                except httpx.ReadTimeout:
+                    return True  # still loading on the server's side
+                except httpx.HTTPError:
+                    pass
+                else:
+                    if response.status_code < 300:  # ruff: ignore[magic-value-comparison]
+                        return True
+            self.sleep(WARM_RETRY_S)
+        return False
 
     def unload(self) -> bool:
         """Ask the server to free the model now; return whether it did."""
