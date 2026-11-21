@@ -23,6 +23,15 @@ WAKE_MODEL = "wake/hey_jarvis.onnx"
 VAD_MODEL = "vad/silero_vad.onnx"
 
 
+def _app_names(value: str) -> list[str]:
+    """Return the app names of a comma-separated `--apps` value; an empty name is an error."""
+    names = [name.strip() for name in value.split(",")]
+    if not all(names):
+        msg = "name at least one app and no empty names (to hear all PC audio use --all-output)"
+        raise argparse.ArgumentTypeError(msg)
+    return names
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Return the argument parser for the `jarvis` command."""
     parser = argparse.ArgumentParser(prog="jarvis", description="Local voice agent for Omarchy.")
@@ -68,11 +77,17 @@ def build_parser() -> argparse.ArgumentParser:
         "pc-audio", help="let Jarvis take requests from PC audio (Discord by default)"
     )
     pc.add_argument("state", nargs="?", choices=["on", "off"], help="omit to show the setting")
-    pc.add_argument(
+    which = pc.add_mutually_exclusive_group()
+    which.add_argument(
         "--apps",
-        nargs="*",
-        metavar="APP",
-        help="which apps to listen to, by process or app name; none listed means all PC audio",
+        type=_app_names,
+        metavar="A,B",
+        help="the apps to listen to, comma-separated, by process or app name (--apps discord,firefox)",
+    )
+    which.add_argument(
+        "--all-output",
+        action="store_true",
+        help="listen to all PC audio, not only named apps (anything playing can then speak to Jarvis)",
     )
     return parser
 
@@ -389,14 +404,16 @@ def _restart_if_running() -> None:
 def cmd_pc_audio(args: argparse.Namespace) -> int:
     """Show or set whether Jarvis takes requests heard in PC audio, and from which apps."""
     cfg = _load()
-    if args.state is None and args.apps is None:
+    if args.state is None and args.apps is None and not args.all_output:
         print(f"pc audio: {_pc_audio_summary(cfg.audio)}")
         return 0
     update: dict[str, object] = {}
     if args.state is not None:
         update["listen_to_pc"] = args.state == "on"
     if args.apps is not None:
-        update["pc_audio_apps"] = list(args.apps)
+        update["pc_audio_apps"] = args.apps
+    elif args.all_output:
+        update["pc_audio_apps"] = []
     new = cfg.model_copy(update={"audio": cfg.audio.model_copy(update=update)})
     config.save(config.Config.model_validate(new.model_dump()))
     print(f"pc audio: {_pc_audio_summary(new.audio)}")
