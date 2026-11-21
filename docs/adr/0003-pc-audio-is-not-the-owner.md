@@ -41,6 +41,13 @@ default (`audio.listen_to_pc`). When it is on:
   within `audio.pc_audio_cooldown_s` (5 s) of the last one is ignored. A PC request starts only while the loop
   is idle.
 
+- **Capture while the loop moves on.** A PC request is captured through a tap (`VoiceLoop._pc_tap`) that
+  passes the frames on but still notes wake words in them. The capture ends as soon as the loop takes another
+  request or starts waiting for a yes, so PC speech in the answer window is still counted for the block above,
+  and a wake word said meanwhile still marks a microphone request that echoes it as PC audio.
+- **No second capture.** A PC request moves the loop out of IDLE before its chime plays
+  (`VoiceLoop._answer_pc`), so no further PC request is captured while it is handled.
+
 ### Consequences
 
 - **Good:** a stranger on a call cannot change playback without the owner's yes, cannot speak the yes
