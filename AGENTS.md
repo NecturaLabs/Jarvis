@@ -26,14 +26,16 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
 - Voxtype is driven only through its integration contract (`voxtype record start --file …`,
   `voxtype record stop --wait --json`, `voxtype transcribe`). Never edit `~/.config/voxtype/` and never
   stop a recording Jarvis did not start.
-- Strata serves only Jarvis. Its model lives at `/mnt/models/ai/strata`, outside the repository. Health
+- Strata serves only Jarvis. Its model lives outside the repository (`strata.model_file`). Health
   checks never generate tokens. The model is loaded when `jarvis run` starts and stays loaded (the owner's
   choice): it may hold RAM and VRAM, but must use no GPU or CPU while idle, and Jarvis runs beside games.
 - Jarvis runs locally and is free to use and maintain: no hosted model backend, no paid API. Voice activation
   and speech-to-text stay local too.
 - Jarvis replies by voice only; no desktop notifications.
 
-## Working on this PC
+## Working on the maintainer's PC
+
+These hold on the maintainer's machine; elsewhere, use your own folders and keep audio silent the same way.
 
 - Everything an agent runs is silent: start Jarvis, a voice or any audio test with
   `PIPEWIRE_REMOTE=/nonexistent PULSE_SERVER=unix:/nonexistent` (or the process's own mute). Tests that
@@ -49,11 +51,13 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
   release branch: merge and push to it only when the owner asks. A pull request only when the owner asks for one.
 - Conventional Commits; push every commit on a non-release branch at once.
 
-## Open source later
+## Open source
 
-Jarvis will be published once it is stable, so every commit must be publishable: no personal data, tokens,
-recordings or internal hostnames; owner- and machine-specific values live in config, not code; check the licence
-of every dependency, model and voice before adding it (Piper is GPL-3.0; see `docs/plan.md`).
+Jarvis is public under GPL-3.0-or-later (it imports `piper-tts`, GPL-3.0-or-later). Every commit is published:
+no personal data, tokens, recordings or internal hostnames; owner- and machine-specific values live in config, not
+code; commit under the public identity the repository is configured with. Check the licence of every new
+dependency, model and voice against GPL-3.0-or-later before adding it, and keep `uv run reuse lint` clean. Outside
+contributions follow `CONTRIBUTING.md` (DCO sign-off).
 
 ## Boundaries
 
