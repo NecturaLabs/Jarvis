@@ -1,7 +1,8 @@
 # Security policy
 
 Jarvis acts on your PC and accounts by voice, so security issues matter. The voice runs locally; nothing is
-sent to a hosted model.
+sent to a hosted model. What Jarvis stores and the one outside service it talks to are in
+[docs/privacy.md](docs/privacy.md).
 
 ## Reporting a vulnerability
 

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Git commit-msg hook: refuses a subject that is not a Conventional Commit (`type(scope)?!?: summary`,
+# the types in CONTRIBUTING.md) and warns when there is no Signed-off-by line. It never changes the
+# message. Merge, Revert, fixup! and squash! subjects pass.
+# Opt in with tools/install-hooks.sh, which copies this file into the repository's own hooks folder.
+# jarvis-hook: installed by tools/install-hooks.sh
+set -euo pipefail
+
+message_file=${1:?usage: commit-msg <message file>}
+
+# The subject is the first line that is not blank and not a comment (git strips comments later).
+subject=
+signed_off=false
+while IFS= read -r line || [[ -n ${line} ]]; do
+  [[ ${line} == "#"* ]] && continue
+  if [[ -z ${subject} && -n ${line//[[:space:]]/} ]]; then
+    subject=${line}
+  fi
+  [[ ${line} =~ ^Signed-off-by:\ .+ ]] && signed_off=true
+done <"${message_file}"
+
+types='feat|fix|perf|refactor|docs|test|build|ci|chore|style|revert'
+conventional="^(${types})(\\([^()[:space:]]+\\))?!?: [^[:space:]].*\$"
+
+case "${subject}" in
+  "Merge "* | "Revert "* | "fixup! "* | "squash! "*) ;;
+  *)
+    if ! [[ ${subject} =~ ${conventional} ]]; then
+      {
+        echo "commit-msg: the subject is not a Conventional Commit:"
+        echo "  ${subject}"
+        echo "Use: <type>(<scope>)<!>: <summary>, with type one of:"
+        echo "  ${types//|/, }"
+        echo "Example: feat(spotify): queue several songs in one request"
+      } >&2
+      exit 1
+    fi
+    ;;
+esac
+
+if ! "${signed_off}"; then
+  echo "commit-msg: warning, no Signed-off-by line (CONTRIBUTING.md asks for one: git commit -s)." >&2
+fi

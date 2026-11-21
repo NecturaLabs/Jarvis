@@ -9,10 +9,13 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
 ## Commands
 
 - Install the environment: `uv sync`
-- All checks (Ruff with every rule, `ruff format --check`, pyright strict, shell and editorconfig checks):
-  `uv run .lint/check.sh`. It lints **tracked** files only, so `git add` new files first.
-- Tests: `uv run pytest -q`
+- Everything CI runs, in one command, before calling work done: `tools/check.sh` (lint, tests without `local`,
+  `reuse lint`, the licence, docs and advisories checks). It lints **tracked** files only, so `git add` new files first.
+- Lint only (Ruff with every rule, `ruff format --check`, pyright strict, shell and editorconfig):
+  `uv run .lint/check.sh`
+- Tests: `uv run pytest -q -m "not local"`; `tests/conftest.py` cuts audio, network and your home folder for each test.
 - Single test: `uv run pytest tests/test_cli.py::test_version_prints_package_version -q`
+- Opt-in git hooks (lint and tests before a commit, the subject format): `tools/install-hooks.sh`
 - CLI: `uv run jarvis --version`
 - Tests marked `local` need this PC's hardware or services and never run in CI: `uv run pytest -m local`.
 
@@ -45,6 +48,16 @@ These hold on the maintainer's machine; elsewhere, use your own folders and keep
 - Downloaded tools, voices and model files go on the DEV SSD (`/data/dev`), never under `~/.local/share`;
   Strata's model is the owner's exception on `/data/gaming`.
 
+## Workflow
+
+- GitHub Issues is the only backlog; labels and issue rules are in `CONTRIBUTING.md`. Link the issue (`Closes #N`).
+- A behavioural change gets the `jarvis-reviewer` agent before it merges, and every blocking finding is answered;
+  pull request text and changed docs get `jarvis-slop-check`.
+- Docs and `CHANGELOG.md` change in the same commit as the behaviour; `docs/README.md` says which docs are kept true.
+- Recipes: the `add-operation` skill for anything Jarvis can do, `add-dependency-or-voice` before adding a package,
+  model or voice, `run-silent` before starting Jarvis. Skills live in `.claude/skills/` with a byte-identical copy in
+  `.agents/skills/`, and agents in `.claude/agents/` with a Codex copy in `.codex/agents/`; change both together.
+
 ## Git
 
 - `feature/`, `bugfix/`, `docs/`, `chore/` … branches merge into `dev` (the working branch). `main` is the
@@ -66,4 +79,7 @@ contributions follow `CONTRIBUTING.md` (DCO sign-off).
 - **Never** edit `.lint/` (managed by agentic-setup; update with `lint.py sync`); project lint changes go in
   `ruff.toml` and `pyrightconfig.json`.
 - **Security-sensitive**: the policy engine, confirmation flow, the Spotify OAuth flow, the PC-operation
-  tools and the web tools. Changes there get a security pass and a review before merging into `dev`.
+  tools and the web tools; `.github/CODEOWNERS` lists their files. Changes there get a security pass and a review
+  before merging into `dev`.
+- **Never** weaken `tests/test_product_rules.py`, `tests/conftest.py` or the `banned-api` table in `ruff.toml`
+  to get green: they enforce the product rules above.

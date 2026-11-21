@@ -54,10 +54,10 @@ class Result:
 class Operation:
     """One thing Jarvis can do. `parameters` is a JSON schema object with only flat properties.
 
-    `prepare` runs on the validated arguments before the policy decision and any confirmation
-    question. It returns the arguments the call will run with, so an operation that acts on
-    "whatever is current" can bind the exact target the owner is asked about. `shortcuts` are the
-    phrasings that mean this operation without the model's help.
+    `prepare` runs on the validated arguments once the policy has not refused the call, before
+    any confirmation question. It returns the arguments the call will run with, so an operation
+    that acts on "whatever is current" can bind the exact target the owner is asked about.
+    `shortcuts` are the phrasings that mean this operation without the model's help.
     """
 
     name: str

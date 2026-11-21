@@ -1,5 +1,9 @@
 # Jarvis
 
+[![CI](https://github.com/NecturaLabs/Jarvis/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/NecturaLabs/Jarvis/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/NecturaLabs/Jarvis/badge)](https://scorecard.dev/viewer/?uri=github.com/NecturaLabs/Jarvis)
+[![Licence: GPL-3.0-or-later](https://img.shields.io/badge/licence-GPL--3.0--or--later-blue)](#licence)
+
 A local, always-on voice agent for Omarchy. Say "Hey Jarvis" and it transcribes you with Omarchy's local
 dictation (Voxtype), reasons with a local model served by [Strata](https://github.com/niko1221/strata), acts within the boundaries
 you set and answers by voice. It runs on your PC and is free to use: no hosted model, no paid API.
@@ -76,11 +80,14 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 
 ## Docs
 
+- [docs/README.md](docs/README.md): the map of every document, and how far to trust each kind
 - [docs/configuration.md](docs/configuration.md): every config key, its range and what needs a restart
 - [docs/models.md](docs/models.md): the model, speech to text, voices, the wake word, latency and licences
+- [docs/architecture.md](docs/architecture.md): the modules, the voice loop and one request end to end
 - [docs/plan.md](docs/plan.md): architecture, design and phases, with what is built
 - [docs/roadmap.md](docs/roadmap.md): what is planned, and what Jarvis will not do
-- [docs/adr/](docs/adr/): decisions
+- [docs/privacy.md](docs/privacy.md): what Jarvis keeps on disk and what leaves the PC
+- [docs/adr/](docs/adr/README.md): decisions
 - [docs/playbook/](docs/playbook/): how to work on the project, and its traps
 - [SECURITY.md](SECURITY.md): scope and how to report a vulnerability
 - [ACCESSIBILITY.md](ACCESSIBILITY.md): voice, the chat window and keyboard-only use
@@ -110,10 +117,36 @@ Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md) for what fits,
 ```sh
 uv sync                      # install the locked environment
 uv run .lint/check.sh        # lint, format and type checks (tracked files only)
-uv run pytest -q             # unit tests
+uv run pytest -q -m "not local"   # unit tests
 ```
 
 Tests marked `local` need real hardware and services and never run in CI (`uv run pytest -m local`).
+`tools/check.sh` runs everything CI runs, in one command; `tools/install-hooks.sh` adds an opt-in pre-commit check.
+
+## Project layout
+
+```text
+src/jarvis/          the package: voice loop, agent, policy, operations, CLI (map: docs/architecture.md)
+  spotify/           the Spotify login, Web API client and operations
+  prompts/           the system prompt
+tests/               pytest; tests/conftest.py keeps every test off the network, audio and your home folder
+tools/               the checks CI runs (tools/README.md lists them)
+docs/                configuration, models, architecture, plan, decisions (map: docs/README.md)
+.github/             CI, issue forms, the pull request template, labels
+.claude/ .codex/    agents and recipes for coding agents (see below);
+.agents/            the recipes again, for Codex and other harnesses
+```
+
+## Working with AI agents
+
+The repository is set up for coding agents. [AGENTS.md](AGENTS.md) (loaded by Claude Code through `CLAUDE.md`)
+holds the product rules, commands, workflow and boundaries.
+
+- **Agents** (`.claude/agents/`, mirrored for Codex in `.codex/agents/`): `jarvis-reviewer` (read-only review of a
+  finished change) and `jarvis-slop-check` (the words of a pull request, docs and spoken replies).
+- **Skills** (`.claude/skills/`, mirrored in `.agents/skills/`): `add-operation` (a new thing Jarvis can do),
+  `add-dependency-or-voice` (licence and pin checks) and `run-silent` (running Jarvis without sound or windows).
+- **Tools** (`tools/`): `tools/check.sh` is the one command an agent runs before calling work done.
 
 ## Community
 
