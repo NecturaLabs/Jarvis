@@ -98,7 +98,7 @@ def test_parse_transcript_keeps_only_the_text(stdout: str, expected: str) -> Non
     [
         ("Thank you for watching!", True),
         ("you", True),
-        ("Thank you, play Bad Omens", False),
+        ("Thank you, play Glass Harbor", False),
         ("Skip this", False),
     ],
 )
@@ -107,13 +107,15 @@ def test_whisper_phantoms_are_recognised(text: str, phantom: bool) -> None:
 
 
 def test_voxtype_command_passes_overrides_before_the_subcommand() -> None:
-    cmd = voxtype_command(Path("/x.wav"), model="large-v3-turbo", prompt="Bad Omens, Linkin Park")
+    cmd = voxtype_command(
+        Path("/x.wav"), model="large-v3-turbo", prompt="Glass Harbor, Night Circuit"
+    )
     assert cmd == [
         "voxtype",
         "--model",
         "large-v3-turbo",
         "--initial-prompt",
-        "Bad Omens, Linkin Park",
+        "Glass Harbor, Night Circuit",
         "transcribe",
         "/x.wav",
     ]

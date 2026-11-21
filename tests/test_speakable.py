@@ -6,12 +6,12 @@ from jarvis.voice import MAX_SPOKEN_CHARS, speakable, spoken_question
 @pytest.mark.parametrize(
     ("reply", "spoken"),
     [
-        ("from the album *Bad Omens*.", "from the album Bad Omens."),
+        ("from the album *Glass Harbor*.", "from the album Glass Harbor."),
         ("**Paused.**", "Paused."),
-        ("Playing `Just Pretend` now.", "Playing Just Pretend now."),
-        ("# Now playing\n- Like A Villain", "Now playing. Like A Villain"),
+        ("Playing `Low Tide` now.", "Playing Low Tide now."),
+        ("# Now playing\n- Second Sun", "Now playing. Second Sun"),
         ("See [the album](https://example.com).", "See the album."),
-        ("Playing _The Death of Peace of Mind_.", "Playing The Death of Peace of Mind."),
+        ("Playing _The Quiet Hours_.", "Playing The Quiet Hours."),
         ("Volume at 47% 🎵", "Volume at 47%"),
         ("Track snake_case_name stays.", "Track snake_case_name stays."),
     ],
