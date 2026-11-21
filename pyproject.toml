@@ -29,11 +29,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/NecturaLabs/jarvis"
-Documentation = "https://github.com/NecturaLabs/jarvis/tree/dev/docs"
-Issues = "https://github.com/NecturaLabs/jarvis/issues"
-Changelog = "https://github.com/NecturaLabs/jarvis/blob/dev/CHANGELOG.md"
-Security = "https://github.com/NecturaLabs/jarvis/security/policy"
+Homepage = "https://github.com/NecturaLabs/Jarvis"
+Documentation = "https://github.com/NecturaLabs/Jarvis/tree/dev/docs"
+Issues = "https://github.com/NecturaLabs/Jarvis/issues"
+Changelog = "https://github.com/NecturaLabs/Jarvis/blob/dev/CHANGELOG.md"
+Security = "https://github.com/NecturaLabs/Jarvis/security/policy"
 
 [project.scripts]
 jarvis = "jarvis.cli:main"

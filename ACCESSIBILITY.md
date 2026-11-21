@@ -43,10 +43,10 @@ Jarvis has no pointer-only controls. Setup and every command run from the termin
 
 ## Known gaps
 
-Tracked in [issues](https://github.com/NecturaLabs/jarvis/issues): interrupting Jarvis by voice (#13),
+Tracked in [issues](https://github.com/NecturaLabs/Jarvis/issues): interrupting Jarvis by voice (#13),
 following up without repeating the wake word (#11), and a state indicator in the Omarchy bar (#14). Not
 tracked yet: a text-only mode that skips speech, and a screen-reader test of the chat window.
 
-To report a barrier, file a [bug](https://github.com/NecturaLabs/jarvis/issues/new/choose) naming the
+To report a barrier, file a [bug](https://github.com/NecturaLabs/Jarvis/issues/new/choose) naming the
 assistive technology, terminal, operating system and the step that fails, or start a
-[discussion](https://github.com/NecturaLabs/jarvis/discussions) if you are not sure it is a bug.
+[discussion](https://github.com/NecturaLabs/Jarvis/discussions) if you are not sure it is a bug.

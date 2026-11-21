@@ -8,7 +8,7 @@ sent to a hosted model.
 Report security problems privately, never in a public issue or pull request:
 
 - on GitHub, through private vulnerability reporting:
-  <https://github.com/NecturaLabs/jarvis/security/advisories/new> (**Security → Report a
+  <https://github.com/NecturaLabs/Jarvis/security/advisories/new> (**Security → Report a
   vulnerability**), or
 - by e-mail to support@necturalabs.com, with "Security" in the subject.
 
@@ -24,7 +24,7 @@ runs without its spoken yes, a confirmation bound to a different action than the
 Strata credential readable by another user or sent off the machine, or a request that leaves this PC for a
 host that is not a local one. Code that could be more robust without crossing a boundary is a normal bug, for
 example a misheard command that the owner can see in the audit log, or a crash: report it in the
-[bug form](https://github.com/NecturaLabs/jarvis/issues/new/choose).
+[bug form](https://github.com/NecturaLabs/Jarvis/issues/new/choose).
 
 ## Research in good faith
 
