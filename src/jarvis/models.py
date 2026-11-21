@@ -53,14 +53,14 @@ KNOWN_MODELS: tuple[KnownModel, ...] = (
     KnownModel(
         role="kokoro-model",
         project="Kokoro ONNX (kokoro-onnx release kokoro-v1.0.onnx)",
-        version="model-files-v1.0",
-        sha256="7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5",
+        version="model-files-v1.1",
+        sha256="beb0d1848dee9a49da392cc3df26958d46cfa35d321edf434f52949153f0df3a",
         licence="Apache-2.0",
     ),
     KnownModel(
         role="kokoro-voices",
         project="Kokoro ONNX (kokoro-onnx release voices-v1.0.bin)",
-        version="model-files-v1.0",
+        version="model-files-v1.1",
         sha256="bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
         licence="Apache-2.0",
     ),
