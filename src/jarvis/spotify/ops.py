@@ -3,14 +3,16 @@
 import difflib
 import operator
 import random
+import re
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from jarvis.jsonutil import obj, objs
 from jarvis.operations import Operation, Result, UncertainOutcomeError
-from jarvis.policy import OpClass, Origin
+from jarvis.policy import Origin
 from jarvis.spotify.api import (
     NoDeviceError,
     SpotifyApi,
@@ -25,15 +27,25 @@ if TYPE_CHECKING:
     from jarvis.spotify.api import Device
 
 DEVICE_WAIT_S = 15.0
-LOOSE_MATCH = 0.6
+PLAYLIST_TTL_S = 300.0
 _NAMED_IN_REPLY = 5
 _NO_ARGS: dict[str, Any] = {"type": "object", "properties": {}, "additionalProperties": False}
 _QUERY = {
     "type": "string",
     "minLength": 1,
     "maxLength": 120,
-    "description": "What to search for, as said",
+    "description": "What to search for, as said: only the title when an artist is named",
 }
+_ARTIST = {
+    "type": "string",
+    "maxLength": 120,
+    "description": 'The artist, when the request names one ("the song X by Y": query X, artist Y)',
+}
+# A bracketed or trailing part that only says which version of a song this is.
+_VERSION_PAREN = re.compile(
+    r"\s*[(\[]\s*(?:live|remaster|\d{4}\b|feat\b|ft\b|featuring)[^)\]]*[)\]]", re.IGNORECASE
+)
+_FEATURING = re.compile(r"\s+(?:feat|ft|featuring)\b.*$", re.IGNORECASE)
 
 
 def _names(item: dict[str, Any]) -> str:
@@ -53,7 +65,7 @@ def similarity(heard: str, name: str) -> float:
 
 
 def best_match(
-    heard: str, candidates: list[dict[str, Any]], threshold: float = LOOSE_MATCH
+    heard: str, candidates: list[dict[str, Any]], threshold: float
 ) -> dict[str, Any] | None:
     """Return the candidate whose name is most like what was heard, if it is alike enough."""
     scored = [(similarity(heard, str(c.get("name", ""))), c) for c in candidates if c.get("uri")]
@@ -63,9 +75,29 @@ def best_match(
     return item if score >= threshold else None
 
 
+def _base_title(name: str) -> str:
+    """Return a song's title without its version: no "(Live ...)", "- Remastered", "feat. ..."."""
+    bare = _FEATURING.sub("", _VERSION_PAREN.sub("", name))
+    return bare.split(" - ", 1)[0].strip()
+
+
 def _song_key(item: dict[str, Any]) -> str:
     """Return a song's identity ignoring versions: "Breath - Remix" is the same song as "Breath"."""
-    return _letters(str(item.get("name", "")).split(" - ", 1)[0])
+    return _letters(_base_title(str(item.get("name", ""))))
+
+
+def _unquoted(text: str) -> str:
+    """Return `text` fit for a search filter value: double quotes removed."""
+    return " ".join(text.replace('"', " ").split())
+
+
+@dataclass(frozen=True, slots=True)
+class _Hit:
+    """The best candidate for a request, with how well it matched."""
+
+    kind: str
+    item: dict[str, Any]
+    score: float
 
 
 def launch_spotify() -> None:
@@ -108,6 +140,8 @@ class SpotifyOps:
         self._clock = clock
         self._names: list[str] = []
         self._names_at: float | None = None
+        self._playlist_cache: list[dict[str, Any]] | None = None
+        self._playlist_at = 0.0
 
     def artist_names(self) -> list[str]:
         """Return the owner's artist names (top, followed, recently played), most played first.
@@ -145,51 +179,131 @@ class SpotifyOps:
             params["device_id"] = device.id
             self._api.request(method, path, params=params, **kwargs)
 
-    def _library_match(self, query: str, kind: str) -> tuple[str, dict[str, Any]] | None:
+    def _library_match(self, query: str) -> _Hit | None:
         """Return the owner's own item most like `query`, and its kind.
 
-        Speech-to-text often mishears names and the model may guess the wrong kind ("a Bad Omens
-        song" heard as "bad moments", asked as a track), so every kind in the owner's library is
-        compared, not only the one asked for. Playlists are matched only when asked for.
+        Speech-to-text often mishears names and the model may guess the wrong kind ("a Glass
+        Harbor song" heard as "grass harbor", asked as a track), so every kind in the owner's
+        library is compared, not only the one asked for.
         """
-        if kind == "playlist":
-            found = best_match(query, self._api.my_playlists(), self._settings.loose_match)
-            return (kind, found) if found else None
         scored = [
-            (similarity(query, str(item.get("name", ""))), k, item)
+            _Hit(k, item, similarity(query, str(item.get("name", ""))))
             for k, items in self._api.library().items()
             for item in items
             if item.get("uri")
         ]
-        if not scored:
+        best = max(scored, key=operator.attrgetter("score"), default=None)
+        return best if best and best.score >= self._settings.loose_match else None
+
+    def _playlists(self, *, fresh: bool = False) -> list[dict[str, Any]]:
+        """Return the owner's playlists, kept for a few minutes."""
+        now = self._clock()
+        if fresh or self._playlist_cache is None or now - self._playlist_at >= PLAYLIST_TTL_S:
+            self._playlist_cache = self._api.my_playlists()
+            self._playlist_at = now
+        return self._playlist_cache
+
+    def _score(
+        self, item: dict[str, Any], query: str, kind: str, artist: str
+    ) -> tuple[bool, bool, float]:
+        """Rank one hit: right artist, exact title, then title similarity (API order breaks ties).
+
+        The title is compared with the item's own name only, ignoring its version suffix; the
+        artist is checked separately.
+        """
+        name = str(item.get("name", ""))
+        if kind in {"track", "album"}:
+            score = max(similarity(query, name), similarity(query, _base_title(name)))
+            exact = _letters(query) in {_letters(name), _letters(_base_title(name))}
+        else:
+            score = similarity(query, name)
+            exact = _letters(query) == _letters(name)
+        by_artist = not artist or any(
+            similarity(artist, str(a.get("name", ""))) >= self._settings.loose_match
+            for a in objs(item.get("artists"))
+        )
+        return by_artist, exact, score
+
+    def _best_hit(
+        self, hits: list[dict[str, Any]], query: str, kind: str, artist: str
+    ) -> _Hit | None:
+        """Examine every hit and return the best one (an exact title first, then similarity)."""
+        ranked = [
+            (self._score(item, query, kind, artist), item) for item in hits if item.get("uri")
+        ]
+        if not ranked:
             return None
-        score, best_kind, item = max(scored, key=operator.itemgetter(0))
-        return (best_kind, item) if score >= self._settings.loose_match else None
+        key, item = max(ranked, key=operator.itemgetter(0))
+        return _Hit(kind, item, key[2])
+
+    def _search_hits(self, query: str, kind: str, artist: str) -> list[dict[str, Any]]:
+        """Search one page; with an artist, filter by title and artist first, then plain text."""
+        if artist and kind in {"track", "album"}:
+            filtered = f'{kind}:"{_unquoted(query)}" artist:"{_unquoted(artist)}"'
+            return self._api.search(filtered, kind) or self._api.search(f"{query} {artist}", kind)
+        return self._api.search(query, kind)
+
+    def _find(self, query: str, kind: str, artist: str) -> _Hit | None:
+        """Return what to play: the best hit, or the owner's own music for a misheard name."""
+        best = self._best_hit(self._search_hits(query, kind, artist), query, kind, artist)
+        if best is not None and best.score >= self._settings.close_match:
+            return best
+        mine = self._library_match(query)
+        if mine is not None and (best is None or mine.score > best.score):
+            return mine
+        if best is not None and artist and not self._score(best.item, query, kind, artist)[0]:
+            return None
+        return best
+
+    def _find_playlist(self, query: str, *, mine: bool) -> _Hit | None:
+        """Return a playlist to play: the owner's own first; a public one only if not `mine`."""
+        close, loose = self._settings.close_match, self._settings.loose_match
+        own = self._best_hit(self._playlists(), query, "playlist", "")
+        if own is None or own.score < close:
+            fresh = self._best_hit(self._playlists(fresh=True), query, "playlist", "")
+            own = fresh if fresh and (own is None or fresh.score > own.score) else own
+        if own is not None and own.score >= close:
+            return own
+        if mine:
+            return own if own is not None and own.score >= loose else None
+        public = self._best_hit(self._api.search(query, "playlist"), query, "playlist", "")
+        if public is not None and public.score >= close:
+            return public
+        if own is not None and own.score >= loose and (public is None or own.score > public.score):
+            return own
+        return public
+
+    def _play_liked(self) -> Result:
+        """Play the owner's saved tracks in random order."""
+        uris = [str(t["uri"]) for t in self._api.saved_tracks()]
+        if not uris:
+            return Result("You have no saved songs to play.", Origin.TOOL_STATUS, ok=False)
+        self._rng.shuffle(uris)
+        device = self._device()
+        self._api.request(
+            "PUT", "/me/player/play", params={"device_id": device.id}, json={"uris": uris}
+        )
+        return Result(f"Now playing your liked songs, shuffled, on {device.name}.", Origin.SPOTIFY)
 
     def play(self, args: dict[str, Any]) -> Result:
         """Find what was asked for and play it; misheard names fall back to the owner's music."""
         query, kind = args["query"], args["kind"]
-        item: dict[str, Any] | None = None
+        if kind == "liked":
+            return self._play_liked()
+        artist = str(args.get("artist") or "").strip()
         if kind == "playlist":
-            item = best_match(query, self._api.my_playlists(), threshold=self._settings.close_match)
-        if item is None:
-            found = self._api.search(query, kind)
-            item = found[0] if found else None
-        if (
-            item is None
-            or similarity(query, str(item.get("name", ""))) < self._settings.close_match
-        ):
-            mine = self._library_match(query, kind)
-            if mine is not None and (
-                item is None
-                or similarity(query, str(mine[1].get("name", "")))
-                > similarity(query, str(item.get("name", "")))
-            ):
-                kind, item = mine
-        if item is None:
+            found = self._find_playlist(query, mine=bool(args.get("mine")))
+        else:
+            found = self._find(query, kind, artist)
+        if found is None:
+            if kind == "playlist" and args.get("mine"):
+                return Result(
+                    f"You don't have a playlist called {query!r}.", Origin.TOOL_STATUS, ok=False
+                )
             return Result(
                 f"Nothing on Spotify matched {query!r} as a {kind}.", Origin.TOOL_STATUS, ok=False
             )
+        kind, item = found.kind, found.item
         uri = str(item["uri"])
         body: dict[str, Any] = {"uris": [uri]} if kind == "track" else {"context_uri": uri}
         device = self._device()
@@ -202,8 +316,8 @@ class SpotifyOps:
         artists = self._api.search(query, "artist")
         named = best_match(query, artists[:1], threshold=self._settings.close_match)
         if named is None:
-            mine = self._library_match(query, "artist")
-            named = mine[1] if mine is not None and mine[0] == "artist" else None
+            mine = self._library_match(query)
+            named = mine.item if mine is not None and mine.kind == "artist" else None
         return f'artist:"{named["name"]}"' if named else query
 
     def _distinct_tracks(self, query: str, wanted: int) -> list[dict[str, Any]]:
@@ -213,11 +327,11 @@ class SpotifyOps:
         keys: set[str] = set()
         offset = 0
         for _page in range(self._settings.search_pages):
-            found = self._api.search(search, "track", offset=offset)
-            offset += len(found)
-            if not found:
+            page = self._api.search_page(search, "track", offset=offset)
+            offset += page.returned
+            if not page.returned:
                 break
-            for item in found:
+            for item in page.items:
                 key = _song_key(item)
                 if item.get("uri") and key not in keys:
                     keys.add(key)
@@ -330,15 +444,22 @@ class SpotifyOps:
         return [
             Operation(
                 "spotify_play",
-                "Play a track, album, artist or playlist on Spotify. "
-                "Use kind=playlist for the owner's playlists.",
+                "Play a track, album, artist or playlist on Spotify, or kind=liked for the "
+                "owner's saved songs (shuffled). Use kind=playlist for the owner's playlists, "
+                'with mine=true when they said "my" playlist. For "the song X by Y" set '
+                "query=X and artist=Y.",
                 {
                     "type": "object",
                     "properties": {
                         "query": _QUERY,
                         "kind": {
                             "type": "string",
-                            "enum": ["track", "album", "artist", "playlist"],
+                            "enum": ["track", "album", "artist", "playlist", "liked"],
+                        },
+                        "artist": _ARTIST,
+                        "mine": {
+                            "type": "boolean",
+                            "description": "The owner said it is their own playlist",
                         },
                     },
                     "required": ["query", "kind"],
@@ -466,6 +587,3 @@ class SpotifyOps:
                 spoken_summary=lambda _a: "check what's playing",
             ),
         ]
-
-
-__all__ = ["OpClass", "SpotifyOps"]
