@@ -72,7 +72,20 @@ jobs:
           mkdir -p "$tools/ec"
           tar -xzf "$CI_TOOL_CACHE/editorconfig-checker-v4.0.2.tar.gz" -C "$tools/ec"
           install -m 0755 "$tools/ec/editorconfig-checker" "$tools/bin/editorconfig-checker"
+          ci_fetch https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 actionlint-v1.7.12.tar.gz
+          mkdir -p "$tools/actionlint"
+          tar -xzf "$CI_TOOL_CACHE/actionlint-v1.7.12.tar.gz" -C "$tools/actionlint" actionlint
+          install -m 0755 "$tools/actionlint/actionlint" "$tools/bin/actionlint"
           echo "$tools/bin" >> "$GITHUB_PATH"
+
+      # actionlint runs shellcheck over every run: step, but skips that rule without a word when shellcheck
+      # is missing, so its path is looked up first and a missing one fails the step.
+      - name: Lint the workflows
+        run: |
+          set -euo pipefail
+          shellcheck=$(command -v shellcheck)
+          actionlint -shellcheck="$shellcheck"
 
       - name: Sync the locked environment
         run: uv sync --locked

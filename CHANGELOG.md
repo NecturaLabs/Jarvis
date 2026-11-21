@@ -21,6 +21,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- CI lints the workflow files with actionlint (and shellcheck over their `run:` steps); `tools/check.sh` runs
+  it too when `actionlint` is installed.
 - An Azure custom keyword model can be the wake word instead of LiveKit's: `audio.wake_engine = "azure"`
   or `jarvis wake azure --model FILE`, and `jarvis wake livekit` to switch back. Microsoft's Speech SDK runs
   only in a separate MIT-licensed helper with no network; an Azure model that cannot start falls back to
