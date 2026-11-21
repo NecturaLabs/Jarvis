@@ -170,8 +170,8 @@ def _request(entry: dict[str, object]) -> _Line:
     if entry.get("origin") == "pc_audio":
         return "pc", words, False, "PC audio"
     if entry.get("via") in {"chat", "ask"}:
-        return "you", words, False, "you, typed"
-    return "you", words, False, "you, by voice"
+        return "you", words, False, "typed"
+    return "you", words, False, "by voice"
 
 
 MAX_ARGUMENT_CHARS = 60

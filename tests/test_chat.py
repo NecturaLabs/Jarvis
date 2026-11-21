@@ -273,6 +273,30 @@ def test_pc_audio_says_who_spoke() -> None:
     _run(test, app)
 
 
+def test_a_request_without_a_time_says_only_how_it_came() -> None:
+    tail = FakeTail([{"event": "request", "text": "pause", "via": "chat", "session": "other"}])
+    app = _app(tail)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _until(pilot, lambda: _has(app, "typed"))
+        line = next(_words(w) for w in _transcript(app) if isinstance(w, Request)).strip()
+        assert line.endswith("typed")
+
+    _run(test, app)
+
+
+def test_a_request_from_pc_audio_names_it_once() -> None:
+    tail = FakeTail([{"event": "request", "text": "skip", "origin": "pc_audio"}])
+    app = _app(tail)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _until(pilot, lambda: _has(app, "PC audio: skip"))
+        line = next(_words(w) for w in _transcript(app) if isinstance(w, Request))
+        assert line.count("PC audio") == 1
+
+    _run(test, app)
+
+
 def test_outside_text_is_shown_as_it_is() -> None:
     tail = FakeTail([{"event": "request", "text": "Night [b]Circuit[/b]", "origin": "x"}])
     app = _app(tail)
@@ -304,6 +328,16 @@ def test_without_an_agent_the_window_and_typing_say_why() -> None:
         before = sum("no Spotify client ID" in line for line in _shown(app))
         await _type(pilot, "pause")
         await _until(pilot, lambda: sum("no Spotify" in s for s in _shown(app)) > before)
+
+    _run(test, app)
+
+
+def test_without_an_agent_the_input_says_typing_is_off() -> None:
+    app = _app(unavailable="no model")
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.pause(0.05)
+        assert "off" in str(_input(app).placeholder)
 
     _run(test, app)
 
@@ -474,6 +508,38 @@ def _asking(keys: tuple[str, ...], *, wait: bool = True) -> list[bool]:
     return answers
 
 
+def test_the_working_line_waits_for_the_answer_while_a_question_is_open() -> None:
+    answers: list[bool] = []
+    done = threading.Event()
+    app = _app(session=_confirming(answers, done))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "queue low tide")
+        await _until(pilot, lambda: _question_open(app))
+        await pilot.pause(0.2)
+        line = _plain(app.query_one("#working", Static).content)
+        assert "Waiting for your answer" in line
+        assert "esc to interrupt" not in line
+
+    _run(test, app)
+
+
+def test_the_highlighted_choice_is_pointed_at() -> None:
+    answers: list[bool] = []
+    done = threading.Event()
+    clock = Clock()
+    app = _app(session=_confirming(answers, done), clock=clock)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "queue low tide")
+        await _until(pilot, lambda: _question_open(app))
+        assert _pointed(app, "#choices") == "1. Yes"
+        await pilot.press("down")
+        assert _pointed(app, "#choices") == "2. No"
+
+    _run(test, app)
+
+
 def test_enter_1_or_y_answers_yes() -> None:
     for key in ("enter", "1", "y"):
         assert _asking((key,)) == [True]
@@ -560,6 +626,37 @@ def test_a_slash_lists_matching_commands_and_tab_completes() -> None:
         await pilot.press("tab")
         await _until(pilot, lambda: menu.option_count == 3)
         assert _input(app).text == "/verbosity "
+
+    _run(test, app)
+
+
+def _pointed(app: ChatApp, selector: str) -> str:
+    """Return the option the list points at with the chevron, and check it is the only one."""
+    listing = app.query_one(selector, OptionList)
+    prompts = [_plain(listing.get_option_at_index(i).prompt) for i in range(listing.option_count)]
+    pointed = [
+        prompt
+        for prompt in prompts
+        if prompt.lstrip().startswith("\N{HEAVY RIGHT-POINTING ANGLE QUOTATION MARK ORNAMENT}")
+    ]
+    assert len(pointed) == 1
+    return (
+        pointed[0].strip().lstrip("\N{HEAVY RIGHT-POINTING ANGLE QUOTATION MARK ORNAMENT}").strip()
+    )
+
+
+def test_the_menu_points_at_the_highlighted_command_and_says_how_to_use_it() -> None:
+    app = _app(session=FakeSession())
+
+    async def test(pilot: Pilot[None]) -> None:
+        _input(app).set_text("/c")
+        await _until(pilot, lambda: app.query_one("#menu").display)
+        assert _pointed(app, "#menu").startswith("/clear")
+        await pilot.press("down")
+        assert _pointed(app, "#menu").startswith("/compact")
+        assert "tab" in _plain(app.query_one("#hints", Static).content)
+        await pilot.press("escape")
+        assert "? for shortcuts" in _plain(app.query_one("#hints", Static).content)
 
     _run(test, app)
 
@@ -765,6 +862,40 @@ def test_the_toolbar_shows_the_pcs_load_and_the_context() -> None:
         assert "9.1k/24.6k" in line
 
     _run(test, app)
+
+
+def test_the_transcript_and_the_input_share_the_window_width() -> None:
+    app = _app(session=FakeSession())
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.pause(0.05)
+        transcript = app.query_one("#transcript")
+        prompt = app.query_one("#prompt")
+        assert transcript.region.width == app.size.width
+        assert transcript.scrollable_content_region.right == prompt.region.right
+
+    _run(test, app)
+
+
+def test_the_footer_hint_fits_a_narrow_window_whole() -> None:
+    services = Services(status=lambda: "voice on · model loaded")
+    app = _app(session=FakeSession(), services=services)
+
+    async def body() -> None:
+        async with app.run_test(size=(80, 30)) as pilot:
+            hints = app.query_one("#hints", Static)
+            status = app.query_one("#status", Static)
+            await _until(pilot, lambda: "voice on" in _plain(status.content))
+            await pilot.pause(0.05)
+            assert len(_plain(hints.content).strip()) <= hints.size.width
+            assert "ctrl+o" in _plain(hints.content)
+
+    asyncio.run(body())
+
+
+def test_the_window_draws_nothing_on_the_terminals_black() -> None:
+    """Omarchy's terminals set colour 0 (black) to the background, so a band on it never shows."""
+    assert "ansi_black" not in ChatApp.CSS
 
 
 def test_the_toolbar_can_be_turned_off() -> None:

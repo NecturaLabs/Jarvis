@@ -2,7 +2,9 @@
 
 Every colour is a terminal colour name (`ansi_*` in CSS, plain names in Rich styles), so the window
 takes the terminal's palette and with it the Omarchy theme. Colour only repeats what words and
-marks say.
+marks say, and nothing is drawn on black: Omarchy's terminals make colour 0 the background, so
+structure comes from marks, rules and spacing instead of shaded bands. Cyan is the one accent: the
+caret, the owner's requests, and the option the keyboard is on.
 """
 
 from dataclasses import dataclass
@@ -10,6 +12,7 @@ from typing import TYPE_CHECKING, ClassVar, override
 
 from PIL import Image as PillowImage
 from rich import box
+from rich.cells import cell_len
 from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
@@ -19,9 +22,11 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Markdown, OptionList, Static, TextArea
+from textual.widgets.option_list import Option
 from textual_image.widget import Image
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
     from rich.console import RenderableType
@@ -32,8 +37,8 @@ if TYPE_CHECKING:
     from jarvis.sysinfo import Stats
 
 DOT = "\N{BLACK CIRCLE}"  # a step or a reply
-CHEVRON = "\N{HEAVY RIGHT-POINTING ANGLE QUOTATION MARK ORNAMENT}"  # the input
-PROMPT = ">"  # what was asked, as Claude Code marks it
+CHEVRON = "\N{HEAVY RIGHT-POINTING ANGLE QUOTATION MARK ORNAMENT}"  # the input, a request, a choice
+ACCENT = "cyan"
 ELBOW = "\N{DENTISTRY SYMBOL LIGHT VERTICAL AND BOTTOM RIGHT}"  # a result under its step
 STAR = "\N{TEARDROP-SPOKED ASTERISK}"
 BAR_FULL = "\N{BOX DRAWINGS HEAVY HORIZONTAL}"
@@ -73,7 +78,7 @@ def entry_renderable(shown: Shown) -> RenderableType:
     """Return a step, result, warning or note as one marked line."""
     mark, mark_style, style = MARKS.get(shown.kind, MARKS["detail"])
     nested = shown.nested or shown.kind in {"result", "detail"}
-    words = Text(shown.text, style=f"{style} bold".strip() if shown.kind == "step" else style)
+    words = Text.assemble((shown.text, f"{style} bold".strip() if shown.kind == "step" else style))
     if shown.note:
         words.append(f"  {shown.note}", style="bright_black")
     return gutter_line(mark, mark_style, words, nested=nested)
@@ -98,7 +103,7 @@ class Note(Static):
 
 
 class Request(Static):
-    """What was asked: the owner's words on a shaded band, with how and when they came in."""
+    """What was asked: the owner's words after the accent's chevron, how and when at the right."""
 
     def __init__(self, text: str, note: str, *, pc: bool = False) -> None:
         """Show `text` with `note` after it; `pc` marks speech heard from the PC's audio."""
@@ -106,12 +111,16 @@ class Request(Static):
         if pc:
             words.append("PC audio: ", style="bold magenta")
         words.append(text, style="magenta" if pc else "")
-        if note:
-            words.append(f"  {note}", style="bright_black")
-        super().__init__(
-            gutter_line(PROMPT, "bold magenta" if pc else "bright_black", words),
-            classes="request",
+        grid = Table.grid(padding=0, expand=True)
+        grid.add_column(width=2, no_wrap=True)
+        grid.add_column(ratio=1)
+        grid.add_column(no_wrap=True, justify="right")
+        grid.add_row(
+            Text(f"{CHEVRON} ", style=f"bold {'magenta' if pc else ACCENT}"),
+            words,
+            Text(f"  {note}", style="bright_black") if note else Text(""),
         )
+        super().__init__(grid, classes="request")
         self.text = text
 
 
@@ -264,8 +273,8 @@ class PromptArea(TextArea):
         self.move_cursor(self.document.end)
 
 
-def _gib(value: int) -> str:
-    return f"{value / GIB:.1f}"
+def _gib(value: int, *, tenths: bool = True) -> str:
+    return f"{value / GIB:.1f}" if tenths else f"{value / GIB:.0f}"
 
 
 def _level(fraction: float) -> str:
@@ -291,49 +300,145 @@ def tokens_short(count: int) -> str:
     return f"{count}" if count < thousand else f"{count / thousand:.1f}k"
 
 
-def _figure(text: Text, label: str, value: str, style: str = "") -> None:
+def _figure(text: Text, label: str, value: str, style: str = "", *, gap: str = "  ·  ") -> None:
     if text:
-        text.append("  ·  ", style="bright_black")
+        text.append(gap, style="bright_black")
     text.append(f"{label} ", style="bright_black")
     text.append(value, style=style)
 
 
-def toolbar(status: str, stats: Stats | None, use: ContextUse | None) -> Text:
-    """Return the toolbar: services, then the PC's load, then how full the context is."""
+@dataclass(frozen=True, slots=True)
+class _Fit:
+    """How much the toolbar says; it says less in a narrower window."""
+
+    temperatures: bool = True
+    gap: str = "  ·  "
+    meter: int = BAR_CELLS
+    tenths: bool = True  # memory in tenths of a gigabyte
+
+
+# From the widest window down: the temperatures go first, then the dots between figures and half
+# the context meter, then the tenths of a gigabyte.
+FITS = (
+    _Fit(),
+    _Fit(temperatures=False),
+    _Fit(temperatures=False, gap="  ", meter=BAR_CELLS // 2),
+    _Fit(temperatures=False, gap="  ", meter=BAR_CELLS // 2, tenths=False),
+)
+
+
+def toolbar(
+    status: str, stats: Stats | None, use: ContextUse | None, width: int | None = None
+) -> Text:
+    """Return the toolbar: services, then the PC's load, then how full the context is.
+
+    Given a `width`, it says as much as fits on one line (`FITS`).
+    """
+    line = Text()
+    for fit in FITS:
+        line = _toolbar(status, stats, use, fit)
+        if width is None or line.cell_len <= width:
+            break
+    return line
+
+
+def _toolbar(status: str, stats: Stats | None, use: ContextUse | None, fit: _Fit) -> Text:
     text = Text()
     if status:
         text.append(status, style="bright_black")
     if stats is not None:
-        _load(text, stats)
+        _load(text, stats, fit)
     if use is not None and use.window:
-        _figure(text, "context", "")
-        text.append_text(meter(use.used / use.window))
+        _figure(text, "context", "", gap=fit.gap)
+        text.append_text(meter(use.used / use.window, fit.meter))
         text.append(f" {tokens_short(use.used)}/{tokens_short(use.window)}", style="bright_black")
         if use.memory_budget and use.memory >= WARN_AT * use.memory_budget:
             text.append("  compacts soon", style="yellow")
     return text
 
 
-def _load(text: Text, stats: Stats) -> None:
+def _load(text: Text, stats: Stats, fit: _Fit) -> None:
     """Add the processor, graphics card and memory figures that are known."""
+    gap, temperatures, tenths = fit.gap, fit.temperatures, fit.tenths
     if stats.cpu_percent is not None:
-        _figure(text, "CPU", f"{stats.cpu_percent:.0f}%", _level(stats.cpu_percent / 100))
-    if stats.cpu_temperature_c is not None:
-        text.append(f" {stats.cpu_temperature_c:.0f}°", style="bright_black")
+        _figure(text, "CPU", f"{stats.cpu_percent:.0f}%", _level(stats.cpu_percent / 100), gap=gap)
+        if temperatures and stats.cpu_temperature_c is not None:
+            text.append(f" {stats.cpu_temperature_c:.0f}°", style="bright_black")
     gpu = stats.gpu
     if gpu is not None and gpu.busy_percent is not None:
-        _figure(text, "GPU", f"{gpu.busy_percent}%", _level(gpu.busy_percent / 100))
-        if gpu.temperature_c is not None:
+        _figure(text, "GPU", f"{gpu.busy_percent}%", _level(gpu.busy_percent / 100), gap=gap)
+        if temperatures and gpu.temperature_c is not None:
             text.append(f" {gpu.temperature_c:.0f}°", style="bright_black")
     if gpu is not None and gpu.vram_used is not None and gpu.vram_total:
         share = gpu.vram_used / gpu.vram_total
-        _figure(text, "VRAM", f"{_gib(gpu.vram_used)}/{_gib(gpu.vram_total)}G", _level(share))
+        vram = f"{_gib(gpu.vram_used, tenths=tenths)}/{_gib(gpu.vram_total, tenths=tenths)}G"
+        _figure(text, "VRAM", vram, _level(share), gap=gap)
     if stats.ram_used is not None and stats.ram_total:
         share = stats.ram_used / stats.ram_total
-        _figure(text, "RAM", f"{_gib(stats.ram_used)}/{_gib(stats.ram_total)}G", _level(share))
+        ram = f"{_gib(stats.ram_used, tenths=tenths)}/{_gib(stats.ram_total, tenths=tenths)}G"
+        _figure(text, "RAM", ram, _level(share), gap=gap)
 
 
-class ChoiceList(OptionList):
+class PointerList(OptionList):
+    """Options in aligned columns, the highlighted one pointed at, as in Claude Code's menus.
+
+    The highlighted row gets the chevron and the accent; the others keep each column's own style.
+    """
+
+    _rows: tuple[tuple[str, ...], ...] = ()
+    _styles: tuple[str, ...] = ()
+    _widths: tuple[int, ...] = ()
+    _pointed: int | None = None
+
+    def show(
+        self,
+        rows: Sequence[tuple[str, ...]],
+        styles: tuple[str, ...],
+        ids: Sequence[str | None] = (),
+        highlighted: int = 0,
+    ) -> None:
+        """List `rows` (their cells styled by `styles`, column by column) and point at one."""
+        self._rows = tuple(rows)
+        self._styles = styles
+        columns = max((len(row) for row in rows), default=0)
+        self._widths = tuple(
+            max((cell_len(row[column]) for row in rows if column < len(row)), default=0)
+            for column in range(columns)
+        )
+        self.clear_options()
+        self._pointed = highlighted
+        self.add_options(
+            Option(self._prompt(index, chosen=index == highlighted), id=ids[index] if ids else None)
+            for index in range(len(self._rows))
+        )
+        self.highlighted = highlighted if self._rows else None
+
+    def _prompt(self, index: int, *, chosen: bool) -> Text:
+        row = self._rows[index]
+        text = Text.assemble((f"{CHEVRON} " if chosen else "  ", f"bold {ACCENT}"))
+        for column, cell in enumerate(row):
+            last = column == len(row) - 1
+            padded = cell if last else cell + " " * (self._widths[column] - cell_len(cell) + 3)
+            if chosen:
+                style = f"bold {ACCENT}" if column == 0 else ACCENT
+            else:
+                style = self._styles[column] if column < len(self._styles) else ""
+            text.append(padded, style=style)
+        return text
+
+    @override
+    def watch_highlighted(self, highlighted: int | None) -> None:
+        """Move the pointer to the highlighted row."""
+        super().watch_highlighted(highlighted)
+        for index in {self._pointed, highlighted} - {None}:
+            if index is not None and index < self.option_count:
+                self.replace_option_prompt_at_index(
+                    index, self._prompt(index, chosen=index == highlighted)
+                )
+        self._pointed = highlighted
+
+
+class ChoiceList(PointerList):
     """The yes-or-no choice; 1 or y chooses yes, 2 or n no."""
 
     BINDINGS: ClassVar = [

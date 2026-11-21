@@ -33,6 +33,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   choice for questions (1 or y, 2, n or Esc), a `/` command menu, ↑ and ↓ for earlier requests, `?` for the
   shortcuts, Ctrl+O for every step, and the terminal's own colours, so it follows the Omarchy theme. A typed
   request shows at once.
+- `jarvis chat` reads well on every terminal theme. Omarchy sets the terminal's black to its background, so
+  the shaded bands behind requests and code were invisible; requests now start with a cyan `❯` and say how
+  and when they came in at the right, code blocks and quotes have a quiet rule at their left, and tables,
+  headings, bullets and numbers use the theme's text and grey instead of four different colours. The
+  command menu, `/config` and the yes-or-no choice point at the highlighted row with `❯`, the working line
+  says "Waiting for your answer" while a question is open, the footer and toolbar shorten themselves to
+  stay on one line in a narrow window, and the input says when typed requests are off.
 - Jarvis says the time on a 12-hour clock ("3:42 PM") by default; `clock.twelve_hour = false` keeps "15:42".
 - Jarvis starts speaking sooner. Each sentence of a reply is spoken as soon as the model has written it and
   synthesized while the one before plays. The silence before the first word is cut from 0.23 s to 0.03 s. A
@@ -124,6 +131,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- In `jarvis chat`, a request from the log without a time no longer ends in a lone "·", a reply that
+  starts with a heading no longer leaves its `●` on a line of its own, the details after a step's name are
+  no longer bold, and the transcript fills the window's width instead of stopping six columns short.
 - A web page read a second time in a session (or one much like a page read before) came back as "no
   readable text": trafilatura's duplicate check remembers text across calls. It is off now.
 - A request that reaches its step limit no longer ends with "That needed too many steps, so I stopped.":
