@@ -86,7 +86,7 @@ class StrataConfig(_Section):
     tokenizer_dir: SafePath = Path()
     model_id: SafeText = "qwen3.6-35b-a3b-ud-q4_k_xl"
     port: int = Field(default=8080, ge=1024, le=65535)
-    context: int = Field(default=8192, ge=2048, le=262144)
+    context: int = Field(default=16384, ge=2048, le=262144)
     expert_vram_gib: float = Field(default=1.0, ge=0, le=64)
     prefill: int = Field(default=512, ge=128, le=8192)
     idle_unload_s: int = Field(default=300, ge=30, le=86400)
@@ -185,7 +185,7 @@ class ResearchConfig(_Section):
 
     searxng_url: Endpoint = "http://127.0.0.1:8888"
     results: int = Field(default=5, ge=1, le=8)
-    page_chars: int = Field(default=2800, ge=500, le=6000)
+    page_chars: int = Field(default=2800, ge=500, le=2800)  # within the agent's MAX_TOOL_TEXT
     reddit_comments: int = Field(default=6, ge=1, le=10)
 
 

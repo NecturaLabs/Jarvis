@@ -6,6 +6,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ## [Unreleased]
 
+### Changed
+
+- The default Strata context window is 16,384 tokens (was 8,192), and the model sees up to 3,000 characters
+  of each tool result (was 1,500), so a search and two page reads fit in one request. A saved
+  `strata.context` keeps its value; to change it, edit it and run `jarvis setup`.
+
 ### Added
 
 - The time and date, here or in a named place, and the weather now, today, tomorrow or for the week, at home

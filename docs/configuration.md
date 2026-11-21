@@ -64,7 +64,7 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `tokenizer_dir` | unset | path | The model's tokenizer folder. `--tokenizer-dir`. |
 | `model_id` | `qwen3.6-35b-a3b-ud-q4_k_xl` | text | The model's name inside Strata's profile. |
 | `port` | `8080` | 1024 to 65535 | Strata's port on `127.0.0.1`. |
-| `context` | `8192` | 2048 to 262144 | Context window in tokens (`--max-context`). |
+| `context` | `16384` | 2048 to 262144 | Context window in tokens (`--max-context`). It holds the prompt and the tool schemas (about 2,800 tokens together), the last 4 turns and up to 8 tool results of up to 3,000 characters each, enough for a search and two page reads. |
 | `expert_vram_gib` | `1.0` | 0 to 64 | VRAM budget for expert weights kept on the GPU, passed as `--expert-vram`; the rest of the experts stay in host memory. |
 | `prefill` | `512` | 128 to 8192 | Prompt-reading chunk size (`--prefill`). |
 | `idle_unload_s` | `300` | 30 to 86400 | Seconds without a request before Strata frees the model. |
@@ -185,7 +185,7 @@ With neither set, Jarvis asks you to name a place.
 |---|---|---|---|
 | `searxng_url` | `http://127.0.0.1:8888` | an `http://` or `https://` URL on `127.0.0.1`, `localhost` or `::1` | The local SearXNG Jarvis searches through. |
 | `results` | `5` | 1 to 8 | Results per search when the model does not ask for a number. |
-| `page_chars` | `2800` | 500 to 6000 | Most characters of a page or Reddit thread passed to the model. |
+| `page_chars` | `2800` | 500 to 2800 | Most characters of a page or Reddit thread passed to the model. |
 | `reddit_comments` | `6` | 1 to 10 | Top comments read from a Reddit thread. |
 
 Search needs the SearXNG container running; without it Jarvis says search isn't running, and everything
