@@ -107,3 +107,14 @@ def test_without_a_path_events_stay_in_memory() -> None:
     log.record("request", text="pause")
 
     assert [e["event"] for e in log.events] == ["request"]
+
+
+def test_tags_go_on_every_event_and_cannot_be_overwritten(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, tags={"via": "chat"})
+
+    log.record("request", text="pause")
+    log.record("reply", text="Paused.", via="voice")
+
+    entries = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [entry["via"] for entry in entries] == ["chat", "chat"]

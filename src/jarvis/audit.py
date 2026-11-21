@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -35,17 +36,32 @@ def _line(entry: dict[str, object]) -> str:
 class AuditLog:
     """One JSON object per line; each line has a UTC timestamp and an event name."""
 
-    def __init__(self, path: Path | None, max_bytes: int = MAX_BYTES) -> None:
-        """Log to `path`; with None, keep the events in `events` instead (tests)."""
+    def __init__(
+        self,
+        path: Path | None,
+        max_bytes: int = MAX_BYTES,
+        *,
+        tags: Mapping[str, str] | None = None,
+    ) -> None:
+        """Log to `path`; with None, keep the events in `events` instead (tests).
+
+        `tags` go on every event (`{"via": "chat"}`), over any field of the same name.
+        """
         super().__init__()
         self._path = path
         self._max_bytes = max_bytes
+        self._tags = dict(tags or {})
         self._lock = threading.Lock()
         self.events: list[dict[str, object]] = []
 
     def record(self, event: str, **fields: object) -> None:
         """Append one event; a write failure is logged, never raised."""
-        entry: dict[str, object] = {"ts": datetime.now(UTC).isoformat(), "event": event, **fields}
+        entry: dict[str, object] = {
+            "ts": datetime.now(UTC).isoformat(),
+            "event": event,
+            **fields,
+            **self._tags,
+        }
         with self._lock:
             if self._path is None:
                 self.events.append(entry)

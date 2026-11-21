@@ -75,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes", action="store_true", help="answer yes to confirmations (default: ask here)"
     )
 
+    sub.add_parser("chat", help="type requests and watch what Jarvis does, live")
     sub.add_parser("run", help="run the voice loop (what jarvis.service runs)")
     sub.add_parser("start", help="start Jarvis (the voice service and its model server)")
     sub.add_parser("stop", help="stop Jarvis and free the model")
@@ -207,7 +208,7 @@ def _terminal_confirm(question: str) -> bool:
 def cmd_ask(args: argparse.Namespace) -> int:
     """Answer one typed request and print the reply."""
     try:
-        jarvis = build(_load())
+        jarvis = build(_load(), via="ask")
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
@@ -218,6 +219,38 @@ def cmd_ask(args: argparse.Namespace) -> int:
         " ".join(args.text), Hooks(confirm=confirm, waking=lambda: print("(waking up)"))
     )
     print(reply)
+    return 0
+
+
+def _chat_status(cfg: config.Config) -> str:
+    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
+
+    voice = _unit_state(JARVIS_UNIT)
+    model = _strata(cfg).status() if _unit_state(STRATA_UNIT) == "active" else None
+    return f"voice service: {voice}   model: {model or 'server not running'}"
+
+
+def cmd_chat(_args: argparse.Namespace) -> int:
+    """Open the chat window: typed requests, and everything Jarvis does, live."""
+    from jarvis.activity import AuditTail  # ruff: ignore[import-outside-top-level]
+    from jarvis.chat import Ask, ChatApp  # ruff: ignore[import-outside-top-level]
+
+    cfg = _load()
+    ask: Ask | None = None
+    unavailable = ""
+    try:
+        agent = build(cfg, via="chat").agent
+    except SetupError as exc:
+        unavailable = str(exc)
+    else:
+        ask = agent.handle
+    ChatApp(
+        AuditTail(paths.audit_file()),
+        ask,
+        unavailable=unavailable,
+        status=lambda: _chat_status(cfg),
+        names=(cfg.persona.name,),
+    ).run()
     return 0
 
 
@@ -555,8 +588,8 @@ def cmd_overview(args: argparse.Namespace) -> int:
     ok, login, fix = _spotify_login(cfg)
     print(login if ok else f"{login}: run {fix}")
     print(
-        "commands: jarvis start | stop | restart | status | unload | doctor | logs | ask <text>"
-        " | pc-audio [on|off]"
+        "commands: jarvis start | stop | restart | status | unload | doctor | logs | chat"
+        " | ask <text> | pc-audio [on|off]"
     )
     if _unit_state(JARVIS_UNIT) != "active":
         print("Jarvis is not running; start it with: jarvis start")
@@ -575,6 +608,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "setup": cmd_setup,
     "spotify-login": cmd_spotify_login,
     "ask": cmd_ask,
+    "chat": cmd_chat,
     "run": cmd_run,
     "doctor": cmd_doctor,
     "status": cmd_status,

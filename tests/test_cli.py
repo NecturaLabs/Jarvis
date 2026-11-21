@@ -1,13 +1,22 @@
 """The `jarvis` command, run against a throw-away home: never the owner's config or services."""
 
 import hashlib
+import signal
+import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pytest
 
 from jarvis import __version__, cli, config, models, paths
+from jarvis import audio as audio_module
+from jarvis import voice as voice_module
+from jarvis.agent import Hooks
+from jarvis.chat import ChatApp
 from jarvis.cli import main
 from jarvis.secretfile import write_private_json
 
@@ -348,3 +357,228 @@ def test_doctor_without_a_spotify_login_fails_that_line(
     _doctor_config(home / "models")
 
     assert _login_line(capsys).startswith("FAIL")
+
+
+def _opened_chat(monkeypatch: pytest.MonkeyPatch) -> list[ChatApp]:
+    opened: list[ChatApp] = []
+
+    def run(self: ChatApp, *_args: object, **_kwargs: object) -> None:
+        opened.append(self)
+
+    monkeypatch.setattr(ChatApp, "run", run)
+    return opened
+
+
+def test_chat_opens_the_window_with_typing_off_until_setup_is_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = _opened_chat(monkeypatch)
+
+    assert main(["chat"]) == 0
+
+    (app,) = opened
+    assert app._ask is None  # pyright: ignore[reportPrivateUsage]
+    assert "jarvis setup" in app._unavailable  # pyright: ignore[reportPrivateUsage]
+
+
+def test_chat_sends_typed_requests_to_an_agent_that_marks_its_audit_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = _opened_chat(monkeypatch)
+    vias: list[str | None] = []
+
+    def build(_config: object, *, via: str | None = None) -> object:
+        vias.append(via)
+
+        def handle(text: str, _hooks: Hooks) -> str:
+            return f"heard {text}"
+
+        return SimpleNamespace(agent=SimpleNamespace(handle=handle))
+
+    monkeypatch.setattr(cli, "build", build)
+
+    assert main(["chat"]) == 0
+
+    (app,) = opened
+    assert vias == ["chat"]
+    assert app._ask is not None  # pyright: ignore[reportPrivateUsage]
+    assert app._ask("pause", Hooks(confirm=lambda _q: False)) == "heard pause"  # pyright: ignore[reportPrivateUsage]
+
+
+def _transcribed(monkeypatch: pytest.MonkeyPatch, text: str) -> list[tuple[str, Path | None]]:
+    heard: list[tuple[str, Path | None]] = []
+
+    def transcribe(
+        _samples: object, _engine: str, _model: str, hint: str, *, settings: Path | None = None
+    ) -> str:
+        heard.append((hint, settings))
+        return text
+
+    monkeypatch.setattr(audio_module, "transcribe", transcribe)
+    return heard
+
+
+SAMPLES = np.zeros(1600, dtype=np.int16)
+
+
+def test_requests_are_transcribed_with_the_hint_and_answers_without(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    heard = _transcribed(monkeypatch, "pause")
+    request, answer = cli._transcribers(config.Config(), lambda: "Jarvis. play, pause.")  # pyright: ignore[reportPrivateUsage]
+
+    assert request(SAMPLES) == "pause"
+    assert answer(SAMPLES) == "pause"
+
+    settings = paths.config_dir() / "voxtype.toml"
+    assert [hint for hint, _ in heard] == ["Jarvis. play, pause.", ""]
+    assert {used for _, used in heard} == {settings}
+    assert settings.read_text() == audio_module.voxtype_settings(8, short_window=True)
+
+
+def test_a_transcript_that_only_repeats_the_hint_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hint = "Jarvis. play, pause, skip, queue songs."
+    _transcribed(monkeypatch, "play, pause, skip, queue songs.")
+    request, _ = cli._transcribers(config.Config(), lambda: hint)  # pyright: ignore[reportPrivateUsage]
+
+    assert not request(SAMPLES)
+
+
+def test_without_the_vocabulary_hint_requests_get_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    heard = _transcribed(monkeypatch, "pause")
+    cfg = config.Config(audio=config.AudioConfig(vocabulary_hint=False))
+    request, _ = cli._transcribers(cfg, lambda: "Jarvis.")  # pyright: ignore[reportPrivateUsage]
+
+    request(SAMPLES)
+
+    assert not heard[0][0]
+
+
+class _Part:
+    """A stand-in for a device or listener: records that it was started and stopped."""
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        super().__init__()
+        self.started = False
+        self.stopped = threading.Event()
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped.set()
+
+
+@dataclass
+class _Run:
+    """What `cmd_run` built and did, with a voice loop scripted by the test."""
+
+    handlers: dict[int, Callable[[int, object], None]] = field(
+        default_factory=dict[int, Callable[[int, object], None]]
+    )
+    parts: list[_Part] = field(default_factory=list[_Part])
+    refresh: list[threading.Event] = field(default_factory=list[threading.Event])
+    warmed: threading.Event = field(default_factory=threading.Event)
+    loops: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
+
+    def part(self, *args: object, **kwargs: object) -> _Part:
+        made = _Part(*args, **kwargs)
+        self.parts.append(made)
+        return made
+
+
+def _cmd_run(
+    monkeypatch: pytest.MonkeyPatch,
+    body: Callable[[_Run, Callable[[], bool]], None],
+    cfg: config.Config | None = None,
+) -> tuple[_Run, int]:
+    run = _Run()
+    for name in ("Microphone", "Speaker", "Vad", "WakeWord", "AppAudio"):
+        monkeypatch.setattr(audio_module, name, run.part)
+
+    def no_voice(*_args: object) -> None:
+        return None
+
+    monkeypatch.setattr(audio_module, "make_synthesizer", no_voice)
+    _transcribed(monkeypatch, "")
+
+    def signal_handler(signum: int, handler: Callable[[int, object], None]) -> None:
+        run.handlers[signum] = handler
+
+    monkeypatch.setattr(cli.signal, "signal", signal_handler)
+    monkeypatch.setattr(cli, "_load", lambda: cfg or config.Config())
+    model = SimpleNamespace(warm=run.warmed.set, is_loaded=lambda: True, load=lambda: True)
+    ops = SimpleNamespace(start_refresh=run.refresh.append)
+    jarvis = SimpleNamespace(agent=object(), model=model, ops=ops, hint=lambda: "")
+
+    def build(_cfg: config.Config) -> SimpleNamespace:
+        return jarvis
+
+    monkeypatch.setattr(cli, "build", build)
+
+    class Loop:
+        def __init__(self, *_args: object, **kwargs: object) -> None:
+            super().__init__()
+            run.loops.append(kwargs)
+
+        @staticmethod
+        def run(should_stop: Callable[[], bool]) -> None:
+            body(run, should_stop)
+
+    monkeypatch.setattr(voice_module, "VoiceLoop", Loop)
+    return run, main(["run"])
+
+
+def test_a_stop_signal_only_raises_the_flag_and_the_stopper_ends_everything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def body(run: _Run, should_stop: Callable[[], bool]) -> None:
+        assert not should_stop()
+        run.handlers[signal.SIGTERM](signal.SIGTERM, None)
+        assert should_stop()
+        assert all(part.stopped.wait(5) for part in run.parts if part.started)
+
+    cfg = config.Config(audio=config.AudioConfig(listen_to_pc=True))
+    run, code = _cmd_run(monkeypatch, body, cfg)
+
+    assert code == 0
+    assert set(run.handlers) == {signal.SIGTERM, signal.SIGINT}
+    (refresh,) = run.refresh
+    assert refresh.wait(5)
+    assert run.warmed.wait(5)
+    mic, speaker, pc_audio = run.parts[:3]
+    assert mic.started
+    assert all(part.stopped.is_set() for part in (mic, speaker, pc_audio))
+    assert run.loops[0]["pc"] is not None
+
+
+def test_a_loop_failure_after_a_stop_ends_the_run_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def body(run: _Run, _should_stop: Callable[[], bool]) -> None:
+        run.handlers[signal.SIGINT](signal.SIGINT, None)
+        msg = "the microphone stream ended"
+        raise audio_module.AudioError(msg)
+
+    _, code = _cmd_run(monkeypatch, body)
+
+    assert code == 0
+
+
+def test_a_loop_failure_without_a_stop_is_raised(monkeypatch: pytest.MonkeyPatch) -> None:
+    def body(_run: _Run, _should_stop: Callable[[], bool]) -> None:
+        msg = "the microphone stream ended"
+        raise audio_module.AudioError(msg)
+
+    with pytest.raises(audio_module.AudioError):
+        _cmd_run(monkeypatch, body)
+
+
+def test_pc_audio_is_not_followed_unless_it_is_switched_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run, _ = _cmd_run(monkeypatch, lambda _run, _should_stop: None)
+
+    assert run.loops[0]["pc"] is None

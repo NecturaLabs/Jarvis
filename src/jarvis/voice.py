@@ -477,7 +477,7 @@ class VoiceLoop:
     ) -> None:
         requests = self._requests
         threading.Thread(target=self._prewarm, daemon=True).start()
-        heard = capture_utterance(frames, pc.vad, self._cfg)
+        heard = capture_utterance(self._pc_tap(pc, frames, requests), pc.vad, self._cfg)
         pc.wake.reset()
         if heard.samples is None:
             return
@@ -487,7 +487,24 @@ class VoiceLoop:
         with contextlib.suppress(queue.Full):
             self._pc_heard.put_nowait(_PcRequest(heard.samples, wake_at))
 
+    def _pc_tap(
+        self, pc: PcListener, frames: Iterator[NDArray[np.int16]], requests: int
+    ) -> Iterator[NDArray[np.int16]]:
+        """Pass on a PC capture's frames while still noting wake words in them.
+
+        The capture ends once the loop takes another request or waits for a yes, so the watcher
+        counts PC speech in the answer window again, and a wake word said meanwhile still marks a
+        mic request that echoes it as PC audio. A plain loop, so closing this leaves `frames` open.
+        """
+        for frame in frames:
+            if pc.wake.heard(frame):
+                self._pc_wake_at = self._clock()
+            if self._requests != requests or self.state is State.CONFIRM:
+                return
+            yield frame
+
     def _answer_pc(self, request: _PcRequest) -> None:
+        self.state = State.TRANSCRIBE  # out of IDLE before the chime: no PC capture starts now
         self._speaker.chime()
         self._answer(request.samples, Origin.PC_AUDIO, wake_at=request.wake_at)
 
