@@ -18,3 +18,5 @@ known-first-party = ["jarvis"]
 [lint.extend-per-file-ignores]
 # One entry per deliberate exception, with the reason on the line above:
 # "tools/legacy.py" = ["C901"]
+# The checks in tools/ are command-line scripts run by path, not a package, and they report on stdout.
+"tools/*.py" = ["INP001", "T201"]
