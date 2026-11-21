@@ -422,15 +422,29 @@ def _hooks_path_setting(box: Sandbox) -> str:
     return box.git("config", "--local", "--get", "core.hooksPath", check=False).stdout.strip()
 
 
-def test_install_sets_the_hooks_path_for_this_repository(installable: Sandbox) -> None:
+def _installed(box: Sandbox, hook: str) -> Path:
+    """Where git looks for `hook` in this repository when core.hooksPath is unset."""
+    path = Path(box.git("rev-parse", "--git-path", f"hooks/{hook}").stdout.strip())
+    return path if path.is_absolute() else box.repo / path
+
+
+HOOK_NAMES = ("pre-commit", "commit-msg")
+
+
+def test_install_copies_the_hooks_into_the_repositorys_own_hooks_folder(
+    installable: Sandbox,
+) -> None:
     done = _install(installable)
 
     assert done.returncode == 0, done.stderr
-    assert "hooks installed: core.hooksPath = tools/hooks" in done.stdout
-    assert _hooks_path_setting(installable) == "tools/hooks"
+    assert "hooks installed" in done.stdout
+    assert not _hooks_path_setting(installable)
     assert not (installable.root / "gitconfig").read_text(encoding="utf-8")
-    for hook in ("pre-commit", "commit-msg"):
-        assert os.access(installable.repo / "tools" / "hooks" / hook, os.X_OK)
+    for hook in HOOK_NAMES:
+        copy = _installed(installable, hook)
+        assert copy.read_bytes() == (installable.repo / "tools" / "hooks" / hook).read_bytes()
+        assert os.access(copy, os.X_OK)
+        assert not copy.is_symlink()
 
 
 def test_installed_hooks_run_on_a_commit(installable: Sandbox) -> None:
@@ -443,6 +457,37 @@ def test_installed_hooks_run_on_a_commit(installable: Sandbox) -> None:
     assert "not a Conventional Commit" in done.stderr
 
 
+def test_a_hook_a_branch_adds_never_runs_on_checkout(installable: Sandbox) -> None:
+    """A pull request branch can add tools/hooks/post-checkout; checking it out must not run it."""
+    _install(installable)
+    installable.git("commit", "-q", "--no-verify", "--allow-empty", "-m", "chore: start")
+    installable.git("switch", "-q", "-c", "pull-request")
+    planted = installable.repo / "tools" / "hooks" / "post-checkout"
+    marker = installable.root / "planted-hook-ran"
+    planted.write_text(f"#!/bin/sh\ntouch '{marker}'\n", encoding="utf-8")
+    planted.chmod(0o755)
+    installable.git("add", "--", "tools")
+    installable.git("commit", "-q", "--no-verify", "-m", "chore: plant a hook")
+
+    installable.git("switch", "-q", "-")
+    installable.git("switch", "-q", "pull-request")
+
+    assert not marker.exists()
+
+
+def test_a_branch_that_changes_a_hook_does_not_change_the_installed_copy(
+    installable: Sandbox,
+) -> None:
+    _install(installable)
+    before = _installed(installable, "pre-commit").read_bytes()
+
+    (installable.repo / "tools" / "hooks" / "pre-commit").write_text(
+        "#!/bin/sh\nexit 0\n", encoding="utf-8"
+    )
+
+    assert _installed(installable, "pre-commit").read_bytes() == before
+
+
 def test_install_twice_changes_nothing(installable: Sandbox) -> None:
     _install(installable)
 
@@ -450,17 +495,44 @@ def test_install_twice_changes_nothing(installable: Sandbox) -> None:
 
     assert done.returncode == 0
     assert "already installed" in done.stdout
-    assert _hooks_path_setting(installable) == "tools/hooks"
 
 
-def test_uninstall_unsets_the_hooks_path(installable: Sandbox) -> None:
+def test_install_updates_an_older_copy_of_its_own_hook(installable: Sandbox) -> None:
     _install(installable)
+    copy = _installed(installable, "pre-commit")
+    copy.write_text(copy.read_text(encoding="utf-8") + "# older\n", encoding="utf-8")
+
+    done = _install(installable)
+
+    assert done.returncode == 0, done.stderr
+    assert copy.read_bytes() == (installable.repo / "tools" / "hooks" / "pre-commit").read_bytes()
+
+
+def test_install_refuses_to_replace_a_hook_it_did_not_install(installable: Sandbox) -> None:
+    hooks = _installed(installable, "pre-commit").parent
+    hooks.mkdir(parents=True, exist_ok=True)
+    own = hooks / "pre-commit"
+    own.write_text("#!/bin/sh\necho mine\n", encoding="utf-8")
+
+    done = _install(installable)
+
+    assert done.returncode == 1
+    assert "pre-commit" in done.stderr
+    assert own.read_text(encoding="utf-8") == "#!/bin/sh\necho mine\n"
+    assert not _installed(installable, "commit-msg").exists()
+
+
+def test_uninstall_removes_only_its_own_hooks(installable: Sandbox) -> None:
+    _install(installable)
+    foreign = _installed(installable, "commit-msg")
+    foreign.write_text("#!/bin/sh\necho mine\n", encoding="utf-8")
 
     done = _install(installable, "--uninstall")
 
     assert done.returncode == 0, done.stderr
     assert "hooks uninstalled" in done.stdout
-    assert not _hooks_path_setting(installable)
+    assert not _installed(installable, "pre-commit").exists()
+    assert foreign.read_text(encoding="utf-8") == "#!/bin/sh\necho mine\n"
 
 
 def test_uninstall_without_hooks_says_so(installable: Sandbox) -> None:
@@ -470,15 +542,15 @@ def test_uninstall_without_hooks_says_so(installable: Sandbox) -> None:
     assert "not installed" in done.stdout
 
 
-def test_install_refuses_another_hooks_path(installable: Sandbox) -> None:
+def test_install_refuses_a_local_hooks_path(installable: Sandbox) -> None:
     installable.git("config", "--local", "core.hooksPath", ".githooks")
 
     done = _install(installable)
 
     assert done.returncode == 1
     assert ".githooks" in done.stderr
-    assert "already set" in done.stderr
     assert _hooks_path_setting(installable) == ".githooks"
+    assert not _installed(installable, "pre-commit").exists()
 
 
 def test_install_refuses_a_global_hooks_path(installable: Sandbox) -> None:
@@ -492,19 +564,9 @@ def test_install_refuses_a_global_hooks_path(installable: Sandbox) -> None:
     assert not _hooks_path_setting(installable)
 
 
-def test_uninstall_leaves_another_hooks_path_alone(installable: Sandbox) -> None:
-    installable.git("config", "--local", "core.hooksPath", ".githooks")
-
-    done = _install(installable, "--uninstall")
-
-    assert done.returncode == 1
-    assert ".githooks" in done.stderr
-    assert _hooks_path_setting(installable) == ".githooks"
-
-
 def test_install_rejects_an_unknown_argument(installable: Sandbox) -> None:
     done = _install(installable, "--frobnicate")
 
     assert done.returncode == 2
     assert "usage:" in done.stderr
-    assert not _hooks_path_setting(installable)
+    assert not _installed(installable, "pre-commit").exists()

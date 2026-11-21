@@ -3,7 +3,8 @@
 # tests that need no hardware (`pytest -m "not local"`) fail, before CI runs the same. Skipped when the
 # commit stages no Python, stub, shell, TOML, Markdown or YAML file, no uv.lock and nothing in
 # tools/hooks/.
-# Opt in with tools/install-hooks.sh.
+# Opt in with tools/install-hooks.sh, which copies this file into the repository's own hooks folder.
+# jarvis-hook: installed by tools/install-hooks.sh
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
