@@ -579,3 +579,9 @@ def test_weather_does_not_make_the_next_action_need_a_yes() -> None:
     agent.handle("weather and skip", Hooks(confirm=lambda _q: False))
 
     assert runs == ["skipped"]
+
+
+def test_the_operations_that_send_the_models_words_off_the_pc_are_marked_outbound() -> None:
+    # A search query or a place name can carry anything the model has read, file text included.
+    outbound = {op.name for op in _ops(Net()).operations() if op.outbound}
+    assert outbound == {"time_now", "weather", "web_search", "reddit_search"}

@@ -58,6 +58,8 @@ class Operation:
     any confirmation question. It returns the arguments the call will run with, so an operation
     that acts on "whatever is current" can bind the exact target the owner is asked about.
     `shortcuts` are the phrasings that mean this operation without the model's help.
+    `outbound` marks an operation that sends words the model wrote (a search, a place) to a
+    service off this PC; while file text is in the conversation it needs a yes.
     """
 
     name: str
@@ -66,6 +68,7 @@ class Operation:
     run: Callable[[dict[str, Any]], Result]
     default_class: OpClass = OpClass.SAFE
     side_effect: bool = True
+    outbound: bool = False
     spoken_summary: Callable[[dict[str, Any]], str] = field(default=lambda _args: "do that")
     prepare: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     shortcuts: tuple[Shortcut, ...] = ()

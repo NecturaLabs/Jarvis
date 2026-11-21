@@ -64,8 +64,14 @@ did not confirm. What exists today and what is in scope:
   known as PC audio. On speakers, speech from another app that reaches the microphone is heard as the owner's;
   headphones or PipeWire echo cancellation ([docs/configuration.md](docs/configuration.md), "Speakers and
   other apps' speech") close that gap.
-- **Outside text is data.** Song, artist and playlist names from Spotify are wrapped as data and marked with
-  their origin; while such text is in a request, every side-effecting operation needs a spoken yes.
+- **Outside text is data.** Song, artist and playlist names from Spotify, web pages and files are wrapped as
+  data and marked with their origin; while such text is in a request, every side-effecting operation needs a
+  spoken yes. While text from a file is in the conversation, so does every operation that sends words off the
+  PC (a web or Reddit search, a place for the weather or the time), so a file cannot be carried out in a search.
+- **Files.** Jarvis reads only inside `files.read_roots` and writes only inside `files.write_roots`, each
+  path resolved through its links before the check. Keys, tokens, password stores, browser profiles and
+  Jarvis's own state are never read or written. Every write asks first, names the resolved path, and is
+  refused if that path changed before the yes; it never writes a hidden file or makes one executable.
 - **The chat window** (`jarvis chat`) shows outside text, such as Spotify names and PC speech, as plain
   characters only: control characters are removed and long text is cut (`activity.py`).
 - **Policy and confirmation.** Operations are typed with validated arguments and default deny; unknown

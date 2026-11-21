@@ -20,6 +20,7 @@ class _Op:
     name: str
     default_class: OpClass
     side_effect: bool = True
+    outbound: bool = False
 
 
 @pytest.mark.parametrize(
@@ -67,6 +68,32 @@ def test_untrusted_text_never_lowers_a_class() -> None:
     op = _Op("x", OpClass.SAFE)
     decision = decide(op, "x", {"x": "strong"}, untrusted_in_context=True)
     assert decision.verdict is Verdict.STRONG
+
+
+@pytest.mark.parametrize(
+    ("default", "outbound", "private", "expected"),
+    [
+        (OpClass.SAFE, True, True, Verdict.CONFIRM),
+        (OpClass.SAFE, True, False, Verdict.RUN),
+        (OpClass.SAFE, False, True, Verdict.RUN),
+        (OpClass.CONFIRM, True, True, Verdict.CONFIRM),
+        (OpClass.STRONG, True, True, Verdict.STRONG),
+        (OpClass.DENY, True, True, Verdict.DENY),
+    ],
+)
+def test_sending_text_off_the_pc_while_file_text_is_in_context_needs_a_yes(
+    default: OpClass, outbound: bool, private: bool, expected: Verdict
+) -> None:
+    # A read-only search still carries words the model wrote to a service outside this PC.
+    op = _Op("x", default, side_effect=False, outbound=outbound)
+    decision = decide(op, "x", {}, untrusted_in_context=private, private_in_context=private)
+    assert decision.verdict is expected
+
+
+def test_an_owner_class_still_wins_over_the_private_text_rule() -> None:
+    op = _Op("x", OpClass.SAFE, side_effect=False, outbound=True)
+    decision = decide(op, "x", {"x": "deny"}, untrusted_in_context=True, private_in_context=True)
+    assert decision.verdict is Verdict.DENY
 
 
 def test_action_hash_binds_operation_and_exact_arguments() -> None:

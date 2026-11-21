@@ -227,6 +227,35 @@ class ResearchConfig(_Section):
     reddit_comments: int = Field(default=6, ge=1, le=10)
 
 
+def _check_root(root: str) -> str:
+    """Return `root` when it is `~`, a path under `~/` or an absolute path.
+
+    Raises:
+        ValueError: anything else, or a root with a control character.
+    """
+    if not root or _CONTROL.search(root) or not (root == "~" or root.startswith(("~/", "/"))):
+        msg = "a root must be ~, a path under ~/ or an absolute path, on one line"
+        raise ValueError(msg)
+    return root
+
+
+RootPath = Annotated[str, AfterValidator(_check_root)]
+
+
+class FilesConfig(_Section):
+    """The folders Jarvis may read and write (`~` is the owner's home).
+
+    Secrets (keys, tokens, browser profiles, Jarvis's own state) are never read or written,
+    whatever the roots; `deny` adds names or paths under home to that list (shell-style
+    patterns such as `diary*` or `.config/app`). Writing always asks first and never touches a
+    hidden file or folder.
+    """
+
+    read_roots: list[RootPath] = Field(default_factory=lambda: ["~"])
+    write_roots: list[RootPath] = Field(default_factory=lambda: ["~/Documents"])
+    deny: list[SafeText] = Field(default_factory=list[str])
+
+
 class BoundariesConfig(_Section):
     """Per-operation class overrides set by the owner (default profile: ask for risky)."""
 
@@ -248,6 +277,7 @@ class Config(_Section):
     clock: ClockConfig = Field(default_factory=ClockConfig)
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
     research: ResearchConfig = Field(default_factory=ResearchConfig)
+    files: FilesConfig = Field(default_factory=FilesConfig)
     boundaries: BoundariesConfig = Field(default_factory=BoundariesConfig)
 
     def strata_url(self) -> str:

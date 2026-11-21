@@ -491,6 +491,7 @@ class _Turn:
     foreign: bool = False
     untrusted: bool = False
     outside: str = ""  # where the first outside text this request read came from
+    private: bool = False  # text from the owner's files is in the conversation
     nudged: bool = False
     stuck: bool = False
     last: bool = False  # the request's last step: the model may only answer
@@ -682,7 +683,10 @@ class Agent:
         if outside and not self._limits.remember_outside:
             reply = _OMITTED
             outside = ""
-        self._memory.add(Turn(text, reply, "; ".join(turn.actions), outside, self._clock()))
+        private = turn.private and bool(outside)
+        self._memory.add(
+            Turn(text, reply, "; ".join(turn.actions), outside, self._clock(), private=private)
+        )
         self._save_memory()
 
     def handle(self, text: str, hooks: Hooks, origin: Origin = Origin.OWNER_SPEECH) -> str:
@@ -726,6 +730,7 @@ class Agent:
             turn.untrusted = turn.untrusted or (
                 bool(remembered) and self._memory.holds_outside_text
             )
+            turn.private = turn.private or (bool(remembered) and self._memory.holds_private_text)
             reply = self._converse(hooks, turn)
         self._deliver(reply, hooks, turn)
         if reply and not foreign:
@@ -945,15 +950,16 @@ class Agent:
         """Run the calls of one assistant message and add their results to the conversation.
 
         The calls were all written before any of their results existed, so whether outside text
-        can have steered them is settled once, before the first one runs.
+        can have steered them is settled once, before the first one runs (and so is whether file
+        text can be in what they send).
         """
-        untrusted = turn.untrusted
+        untrusted, private = turn.untrusted, turn.private
         results: list[Result] = []
         repeated_any = False
         for call in calls:
             name = str(obj(call.get("function")).get("name", ""))
             known = self._registry.get(name) is not None
-            result = self._guarded(call, hooks, turn, untrusted=untrusted)
+            result = self._guarded(call, hooks, turn, taint=(untrusted, private))
             turn.actions.append(
                 f"{name if known else _UNKNOWN} -> {'ok' if result.ok else 'not done'}"
             )
@@ -962,6 +968,7 @@ class Agent:
             if result.origin not in TRUSTED_ORIGINS:
                 turn.untrusted = True
                 turn.outside = turn.outside or result.origin.value
+                turn.private = turn.private or result.origin is Origin.FILE
                 body = f'<data origin="{result.origin.value}">{_inert(body)}</data>'
             turn.messages.append(
                 {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": body}
@@ -972,7 +979,7 @@ class Agent:
         return results
 
     def _guarded(
-        self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, untrusted: bool
+        self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, taint: tuple[bool, bool]
     ) -> Result:
         """Run one call unless the request is over its limits or Jarvis is stopping."""
         turn.calls += 1
@@ -983,7 +990,7 @@ class Agent:
             return Result("Error: too many actions in one request, so this was not run.", ok=False)
         if self._clock() - turn.started > turn.limit_s:
             return Result("Error: the request ran out of time, so this was not run.", ok=False)
-        return self._run_call(call, hooks, turn, untrusted=untrusted)
+        return self._run_call(call, hooks, turn, taint=taint)
 
     @staticmethod
     def _arguments(function: Mapping[str, Any]) -> object:
@@ -1035,8 +1042,10 @@ class Agent:
         return op, args
 
     def _run_call(
-        self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, untrusted: bool
+        self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, taint: tuple[bool, bool]
     ) -> Result:
+        """Run one call as the policy decides; `taint` is (outside text, file text) in context."""
+        untrusted, private = taint
         parsed = self._parse_call(call)
         if isinstance(parsed, Result):
             return parsed
@@ -1047,7 +1056,13 @@ class Agent:
             return _REPEATED
         turn.seen.add(asked_for)
         tainted = untrusted or (turn.foreign and self._clock() >= self._grant_until)
-        decision = decide(op, op.name, self._overrides, untrusted_in_context=tainted)
+        decision = decide(
+            op,
+            op.name,
+            self._overrides,
+            untrusted_in_context=tainted,
+            private_in_context=private,
+        )
         stopped = _REFUSALS.get(decision.verdict)
         if stopped is None and op.prepare is not None:
             bound = self._attempt(op.prepare, op, args, asked_for)

@@ -46,6 +46,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- PC operations: `pc_stats` ("how's my PC doing": CPU, graphics card, VRAM, memory, temperatures, disks,
+  uptime), `list_dir` and `read_file` within `files.read_roots` (home by default), and `write_file` within
+  `files.write_roots` (`~/Documents` by default), which always asks first. Keys, tokens, password stores,
+  browser profiles and Jarvis's own state are never read or written; writes never touch hidden files.
+  Jarvis's own `files` and `pc` skills say how to use them.
+- While text read from a file is in the conversation, operations that send words off the PC (web and Reddit
+  searches, a named place for the weather or time) need a yes, so a file's contents cannot leave in a search
+  unseen.
 - Skills: Jarvis's own instructions for web research and game look-ups, listed in its prompt and read
   through the safe `read_skill` operation before such a task.
 

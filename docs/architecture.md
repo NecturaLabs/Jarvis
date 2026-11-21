@@ -50,7 +50,7 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 | Module | Owns | Must not |
 |---|---|---|
 | `agent.py` | `Agent`: one request into at most `max_steps` model calls and `max_tool_calls` tool calls within `max_seconds` (`[agent]` for speech, `[chat]` for the chat window); each answer capped at `reply_tokens` (a reply the cap ends is kept and says so); the oldest tool results of a long request cleared to fit the context window; the remembered conversation (`memory.py`), summarized by the model when it outgrows its room; provenance on message parts; running each call through validation, policy, confirmation and audit; the check that a reply does not claim an action no tool did. | Run an operation that policy refused. Talk to the owner except through `Hooks`. |
-| `policy.py` | `Origin` (provenance), `OpClass`, `decide` (the decision table), `action_hash`, `is_yes`. Plain data and pure functions. | Do I/O, or let text from outside the owner's speech raise an operation's class. |
+| `policy.py` | `Origin` (provenance), `OpClass`, `decide` (the decision table: outside text raises side effects to `confirm`, and file text raises `outbound` operations to it), `action_hash`, `is_yes`. Plain data and pure functions. | Do I/O, or let text from outside the owner's speech raise an operation's class. |
 | `operations.py` | `Operation`, `Registry`, `Result`, argument validation against a flat JSON schema, the error types. | Accept an unknown argument or an unknown operation. |
 | `shortcuts.py` | Plain commands ("pause", "volume 40") that skip the model: normalising and matching a request to one call. | Guess. A request that fits two calls, or none exactly, matches nothing. |
 | `audit.py` | `AuditLog`: append-only JSONL, mode 0600, rotated once at 5 MiB. | Fail the caller; a write error goes to the service log. |
@@ -90,6 +90,8 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 | `chat/commands.py` | The slash commands and what the menu suggests while one is typed: prefix first, then letters in order, then a command's arguments. | Run anything; the window does. |
 | `chat/history.py` | `InputHistory`: the typed lines ↑ brings back, kept 0600 in `chat-history` under the state folder. | Keep more than `chat.history_size` lines. |
 | `chat/widgets.py` | The window's pieces: requests, replies (Textual's Markdown), steps, the multi-line input and the toolbar line with its meters. | Choose colours other than the terminal's own. |
+| `pc/files.py` | `Boundary` (the read and write roots, resolved through links, and the secrets never touched: `SECRET_NAMES`, `SECRET_PATHS`, `files.deny`, Jarvis's state) and `FileOps`: `list_dir`, `read_file` (text only, in parts by line) and `write_file` (`confirm`; the path bound before the question and checked again before the write, through the folder's descriptor with no link followed at the last name). | Read or write outside the roots, follow a link out of them, open a pipe or device, write a hidden file, make a file executable, or pass file text on as trusted. |
+| `pc/stats.py` | `StatsOps`: `pc_stats` (specs, CPU, memory, graphics card, VRAM, temperatures, disks, uptime) with its shortcuts and spoken sentence. | Start a program. |
 | `sysinfo.py` | `Sampler`: the CPU's busy share and temperature, memory, and the biggest graphics card's load, VRAM and temperature, read from `/proc` and `/sys`. | Start a program or fail on a missing file; a figure it cannot read is left out. |
 | `activity.py` | `AuditTail` (follows the audit log) and how the chat window shows each event: its kind, words (a request and a reply whole, a step on one line), a quiet note, whether it belongs to the step above, the verbosity that shows it, and what the working line says. | Write the log. |
 | `config.py` | `config.toml`: a validated, versioned pydantic schema. | Accept an unknown key or a value with a control character. |
@@ -232,5 +234,6 @@ falls under its catch-all entry, so a change anywhere still asks for review). Th
 - the system prompt: `prompts/core.md`;
 - the web tools: `web/`, above all `web/guard.py` and `web/page.py`.
 
-The PC-operation tools are not built yet (see [plan.md](plan.md)); when they exist they join this
-list. Report a vulnerability as [SECURITY.md](../SECURITY.md) says.
+- the PC-operation tools: `pc/`, above all `pc/files.py`.
+
+Report a vulnerability as [SECURITY.md](../SECURITY.md) says.

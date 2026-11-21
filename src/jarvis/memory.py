@@ -6,7 +6,8 @@ folded into a summary (the agent asks the model to write it); when that fails, t
 
 A turn whose reply drew on outside text (a web page, a song name, a file) is kept as data, never
 as the model's own words, and the conversation counts as holding outside text until that turn is
-summarized away or forgotten.
+summarized away or forgotten. A turn that read one of the owner's files is also marked private, so
+what Jarvis sends off the PC needs a yes while it is remembered.
 """
 
 import json
@@ -46,6 +47,7 @@ class Turn:
 
     `outside` names where outside text in the reply came from ("web", "spotify"...), empty when the
     reply is the model's own words over trusted results only. `actions` lists what was done.
+    `private` marks a turn that read text from the owner's files.
     """
 
     request: str
@@ -53,6 +55,7 @@ class Turn:
     actions: str = ""
     outside: str = ""
     at: float = 0.0
+    private: bool = False
 
     def messages(self) -> list[dict[str, Any]]:
         """Return the turn as the user and assistant messages the model reads."""
@@ -85,6 +88,7 @@ class Conversation:
     turns: list[Turn] = field(default_factory=list[Turn])
     summary: str = ""
     summary_outside: bool = False  # the summary was written from turns that held outside text
+    summary_private: bool = False  # ... and from turns that read the owner's files
     last: float = 0.0  # on the agent's clock; not kept across sessions
     saved_at: float = 0.0  # wall-clock time of the save a loaded conversation came from
 
@@ -101,6 +105,7 @@ class Conversation:
         self.turns.clear()
         self.summary = ""
         self.summary_outside = False
+        self.summary_private = False
 
     def add(self, turn: Turn) -> None:
         """Remember one finished turn."""
@@ -111,6 +116,11 @@ class Conversation:
     def holds_outside_text(self) -> bool:
         """Whether anything remembered came from outside text."""
         return self.summary_outside or any(turn.outside for turn in self.turns)
+
+    @property
+    def holds_private_text(self) -> bool:
+        """Whether anything remembered came from the owner's files."""
+        return self.summary_private or any(turn.private for turn in self.turns)
 
     def summary_messages(self) -> list[dict[str, Any]]:
         """Return the summary as messages, or none when there is no summary."""
@@ -158,6 +168,7 @@ class Conversation:
     def fold(self, folded: list[Turn], summary: str) -> None:
         """Replace `folded` (the oldest turns) with a new summary that covers them."""
         self.summary_outside = self.summary_outside or any(turn.outside for turn in folded)
+        self.summary_private = self.summary_private or any(turn.private for turn in folded)
         self.summary = summary.strip()
         del self.turns[: len(folded)]
 
@@ -170,6 +181,7 @@ class Conversation:
         if self.over_budget():
             self.summary = ""
             self.summary_outside = False
+            self.summary_private = False
         return dropped
 
     # --- keeping it across sessions -----------------------------------------------------------
@@ -180,6 +192,7 @@ class Conversation:
             "version": FILE_VERSION,
             "summary": self.summary,
             "summary_outside": self.summary_outside,
+            "summary_private": self.summary_private,
             "saved_at": time.time(),
             "turns": [asdict(turn) for turn in self.turns],
         }
@@ -198,14 +211,15 @@ class Conversation:
             return False
         if saved is None:
             return False
-        turns, summary, summary_outside, saved_at = saved
-        self.turns, self.summary, self.summary_outside = turns, summary, summary_outside
+        turns, summary, (summary_outside, summary_private), saved_at = saved
+        self.turns, self.summary = turns, summary
+        self.summary_outside, self.summary_private = summary_outside, summary_private
         self.saved_at, self.last = saved_at, 0.0
         return bool(turns or summary)
 
 
-def _read(path: Path) -> tuple[list[Turn], str, bool, float] | None:
-    """Return the turns, summary, its outside mark and save time of a file, or None if foreign.
+def _read(path: Path) -> tuple[list[Turn], str, tuple[bool, bool], float] | None:
+    """Return the turns, summary, its outside and private marks and save time, or None if foreign.
 
     What `Path.read_text`, `json.loads`, `obj` and `float` raise for an unreadable, non-JSON or
     malformed file passes through.
@@ -220,8 +234,9 @@ def _read(path: Path) -> tuple[list[Turn], str, bool, float] | None:
             str(t.get("actions", "")),
             str(t.get("outside", "")),
             float(t.get("at", 0.0)),
+            private=t.get("private") is True,
         )
         for t in objs(data.get("turns"))
     ]
-    summary_outside = data.get("summary_outside") is True
-    return turns, str(data.get("summary", "")), summary_outside, float(data.get("saved_at", 0.0))
+    marks = (data.get("summary_outside") is True, data.get("summary_private") is True)
+    return turns, str(data.get("summary", "")), marks, float(data.get("saved_at", 0.0))

@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from importlib.resources import files
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from jarvis import paths, skills
@@ -10,10 +11,13 @@ from jarvis.audit import AuditLog
 from jarvis.model import StrataModel
 from jarvis.operations import Operation, Registry, Result
 from jarvis.paths import audit_file, spotify_token_file, strata_key_file  # re-exported for callers
+from jarvis.pc.files import Boundary, FileOps
+from jarvis.pc.stats import StatsOps
 from jarvis.secretfile import read_api_key
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
+from jarvis.sysinfo import Sampler
 from jarvis.web.arctic import ArcticShift
 from jarvis.web.guard import public_client
 from jarvis.web.openmeteo import OpenMeteo
@@ -23,7 +27,6 @@ from jarvis.web.searxng import Searxng
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from jarvis.config import Config
 
@@ -174,6 +177,18 @@ def web_operations(config: Config) -> list[Operation]:
     ).operations()
 
 
+def pc_operations(config: Config, limits: Limits, home: Path | None = None) -> list[Operation]:
+    """Return `pc_stats` and the file operations, within the owner's `[files]` folders.
+
+    Jarvis's own state (its tokens and keys) is never read or written, whatever the roots say.
+    """
+    boundary = Boundary.of(config.files, home or Path.home(), protected=(paths.state_dir(),))
+    return [
+        *StatsOps(Sampler()).operations(),
+        *FileOps(boundary, max_chars=limits.tool_text_chars).operations(),
+    ]
+
+
 class SetupError(Exception):
     """Something setup provides is missing."""
 
@@ -201,6 +216,7 @@ def channel_registry(
         [
             *spotify,
             *web_operations(web),
+            *pc_operations(config, limits),
             *([skills.skill_operation(shipped)] if shipped else []),
             no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
         ]

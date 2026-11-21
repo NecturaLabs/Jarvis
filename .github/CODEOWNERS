@@ -19,4 +19,5 @@
 /src/jarvis/prompts/             @Nectura
 /src/jarvis/spotify/             @Nectura
 /src/jarvis/web/                 @Nectura
+/src/jarvis/pc/                  @Nectura
 /deploy/                         @Nectura
