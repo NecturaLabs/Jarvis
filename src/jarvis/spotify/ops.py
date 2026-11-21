@@ -109,6 +109,28 @@ def _names(item: dict[str, Any]) -> str:
     return f"{name} by {artists}" if artists else name
 
 
+MAX_SPOKEN_NAME = 100
+
+
+def _spoken(name: object) -> str:
+    """Return a name from Spotify or the model as one short line for a spoken question.
+
+    Names are other people's text: a long or multi-line title must not turn the question into
+    something else.
+    """
+    text = " ".join("".join(c if c.isprintable() else " " for c in str(name)).split())
+    return text if len(text) <= MAX_SPOKEN_NAME else text[: MAX_SPOKEN_NAME - 1].rstrip() + "…"
+
+
+def _play_question(args: dict[str, Any]) -> str:
+    """Return what a play request is about, naming the item `prepare_play` found."""
+    if args["kind"] == "liked":
+        return "play your liked songs"
+    if args.get("found"):
+        return f"play the {args['found']} {_spoken(args['name'])}"
+    return f"play the {args['kind']} {_spoken(args['query'])}"
+
+
 def _letters(text: str) -> str:
     return "".join(ch for ch in text.casefold() if ch.isalnum())
 
@@ -513,39 +535,49 @@ class SpotifyOps:
             raise OperationError(SAY_WHAT_TO_PLAY)
         return query
 
-    def check_play(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Refuse a play request that names nothing before it is decided on or confirmed."""
-        self._play_query(args)
-        return args
+    def prepare_play(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Find what a play request names, before it is decided on or confirmed.
 
-    def play(self, args: dict[str, Any]) -> Result:
-        """Find what was asked for and play it; misheard names fall back to the owner's music.
-
-        A request that names nothing to play (every kind but liked needs a query) fails with an
-        `OperationError` that says so.
+        The item is bound into the arguments (`found` is its kind, or "" for nothing found, with
+        its `uri` and `name`), so a yes plays exactly what the owner was asked about. Liked songs
+        need no search. A request that names nothing fails with an `OperationError`.
         """
         query, kind = self._play_query(args), args["kind"]
         if kind == "liked":
-            return self._play_liked()
+            return args
         artist = str(args.get("artist") or "").strip()
         if kind == "playlist":
             found = self._find_playlist(query, mine=bool(args.get("mine")))
         else:
             found = self._find(query, kind, artist)
         if found is None:
-            if kind == "playlist" and args.get("mine"):
+            return {**args, "found": "", "uri": "", "name": ""}
+        item = found.item
+        label = _names(item) if found.kind in {"track", "album"} else str(item.get("name", query))
+        return {**args, "found": found.kind, "uri": str(item["uri"]), "name": label}
+
+    def play(self, args: dict[str, Any]) -> Result:
+        """Play what `prepare_play` found, finding it now when it was not prepared.
+
+        Misheard names fall back to the owner's music. A request that names nothing to play
+        (every kind but liked needs a query) fails with an `OperationError` that says so.
+        """
+        bound = args if "found" in args else self.prepare_play(args)
+        query, kind = self._play_query(bound), bound["kind"]
+        if kind == "liked":
+            return self._play_liked()
+        if not bound["found"]:
+            if kind == "playlist" and bound.get("mine"):
                 return Result(
                     f"You don't have a playlist called {query!r}.", Origin.TOOL_STATUS, ok=False
                 )
             return Result(
                 f"Nothing on Spotify matched {query!r} as a {kind}.", Origin.TOOL_STATUS, ok=False
             )
-        kind, item = found.kind, found.item
-        uri = str(item["uri"])
+        kind, uri = bound["found"], bound["uri"]
         body: dict[str, Any] = {"uris": [uri]} if kind == "track" else {"context_uri": uri}
         self._start(body)
-        label = _names(item) if kind in {"track", "album"} else str(item.get("name", query))
-        return Result(f"Now playing the {kind} {label}.", Origin.SPOTIFY)
+        return Result(f"Now playing the {kind} {bound['name']}.", Origin.SPOTIFY)
 
     def _artist_search(self, name: str) -> tuple[str, str]:
         """Return the track search for an artist's own songs, and the artist's URI.
@@ -925,12 +957,8 @@ class SpotifyOps:
                     "additionalProperties": False,
                 },
                 self.play,
-                spoken_summary=lambda a: (
-                    "play your liked songs"
-                    if a["kind"] == "liked"
-                    else f"play the {a['kind']} {a['query']}"
-                ),
-                prepare=self.check_play,
+                spoken_summary=_play_question,
+                prepare=self.prepare_play,
             ),
             Operation(
                 "spotify_pause",
@@ -1046,14 +1074,16 @@ class SpotifyOps:
                     "additionalProperties": False,
                 },
                 self.queue,
-                spoken_summary=lambda a: f"queue {a.get('count', 1)} of {a['query']}",
+                spoken_summary=lambda a: f"queue {a.get('count', 1)} of {_spoken(a['query'])}",
             ),
             Operation(
                 "spotify_like",
                 "Save the track that is playing now to the owner's library.",
                 _NO_ARGS,
                 self.like,
-                spoken_summary=lambda a: f"save {a.get('name', 'this track')} to your library",
+                spoken_summary=lambda a: (
+                    f"save {_spoken(a.get('name', 'this track'))} to your library"
+                ),
                 prepare=lambda _a: self._playing_song(),
                 shortcuts=(_LIKE,),
             ),
