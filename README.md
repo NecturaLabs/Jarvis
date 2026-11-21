@@ -1,15 +1,75 @@
 # Jarvis
 
-A local, always-on voice agent for Omarchy: say "Hey Jarvis", and it transcribes you with Omarchy's local
-dictation (Voxtype), reasons with a local model served by Strata, acts within the boundaries you set, and
-answers by voice. Its first core feature is Spotify control.
+A local, always-on voice agent for Omarchy. Say "Hey Jarvis" and it transcribes you with Omarchy's local
+dictation (Voxtype), reasons with a local model served by Strata, acts within the boundaries you set and
+answers by voice. It runs on your PC and is free to use: no hosted model, no paid API.
 
-Status: phase 0 (project setup). The build plan is in [docs/plan.md](docs/plan.md).
+## What it does today
+
+- **Wake word:** a local "Hey Jarvis" model (LiveKit wake word) listens on your microphone. Silero VAD finds
+  the end of your request.
+- **Speech to text:** Voxtype, run with Jarvis's own settings file. Your own Voxtype configuration is never
+  edited.
+- **Reasoning:** one agent on a local Qwen3.6-35B-A3B model served by Strata. Plain commands such as "pause",
+  "next song" or "volume 40" skip the model and answer in about 0.3 s.
+- **Voice:** Kokoro by default (`kokoro:bm_george`); a Piper voice can be set instead. Jarvis replies by voice
+  only, with no desktop notifications.
+- **Spotify:** play a track, album, artist, playlist or your liked songs; pause, resume, next, previous; set or
+  change the volume; shuffle; repeat; queue songs; like the current song; say what is playing. It can start the
+  Spotify desktop app when you ask it to play or resume and no player is open.
+- **Boundaries:** every action is a typed operation checked by a policy engine in code before it runs, and
+  every request, decision and result goes to an audit log. See [SECURITY.md](SECURITY.md).
+- **Listening to PC audio (off by default):** Jarvis can also take requests heard in what the PC plays, such as
+  a Discord call. That speech is treated as someone else's, so you are asked to confirm before it changes
+  anything. See [the ADR](docs/adr/0003-pc-audio-is-not-the-owner.md).
+
+Not built yet: web research, PC operations other than Spotify, keybinding confirmation, voice barge-in. The
+plan marks each as planned.
 
 ## Requirements
 
-Omarchy 4.5 on Arch Linux with PipeWire, Voxtype as the default dictation backend, Python 3.14, uv, and a
-Strata-supported GPU (built on an RX 7900 XT).
+- Omarchy on Arch Linux with PipeWire (`pw-record` and `pw-play`; `pw-dump` too for PC audio) and systemd user services.
+- Voxtype as the dictation backend, with the Whisper model you set in `audio.transcribe_model` downloaded.
+- Python 3.14 and uv.
+- Strata and a Qwen3.6-35B-A3B UD-Q4_K_XL model file with its tokenizer folder. Built and measured on an RX
+  7900 XT with 64 GB of RAM; the loaded model holds about 38 GB of RAM and 7.3 GiB of VRAM there (see
+  [docs/configuration.md](docs/configuration.md)).
+- Spotify Premium and your own Spotify developer app (a client ID; there is no client secret).
+- The wake word, VAD and voice model files, placed under the data folder ([docs/models.md](docs/models.md)).
+
+## Set up
+
+```sh
+uv sync
+uv run jarvis setup --model-file <model file> --tokenizer-dir <tokenizer folder> \
+    --spotify-client-id <your app's client ID>
+uv run jarvis spotify-login     # prints the redirect URI your Spotify app must list, then opens the login
+uv run jarvis setup --enable    # writes and starts the user units
+uv run jarvis doctor            # one line per check, with its fix; never loads the model
+```
+
+`jarvis setup` writes the config, the Strata profile, the Strata API key and two systemd user units
+(`jarvis.service` and `jarvis-strata.service`), and keeps every value already set unless you pass it again.
+Use `--data-dir`, `--strata-home`, `--strata-components-parent` and `--mic` for the other locations and the
+microphone. The config file and every key are in [docs/configuration.md](docs/configuration.md).
+
+## Everyday commands
+
+These are the subcommands `jarvis --help` lists.
+
+| Command | What it does |
+|---|---|
+| `jarvis setup` | Write the config, the Strata profile and the user units (`--enable` also starts them). |
+| `jarvis spotify-login` | Connect Jarvis to your Spotify account with PKCE (`--no-browser` only prints the link). |
+| `jarvis start` / `stop` / `restart` | Start Jarvis and its model server, stop both (which frees the model), or restart the voice service after a config change. |
+| `jarvis status` | Show whether the model is loaded. |
+| `jarvis unload` | Free the model's memory now, for example before a game. |
+| `jarvis doctor` | Check every part without loading the model. |
+| `jarvis logs` | Follow the live log (Ctrl+C to leave). |
+| `jarvis ask <text>` | Send one typed request as if spoken; `--yes` answers yes to confirmations. |
+| `jarvis pc-audio [on\|off]` | Show or set listening to PC audio; `--apps discord,firefox` names the apps, `--all-output` listens to everything the PC plays. |
+| `jarvis run` | Run the voice loop in the foreground. This is what `jarvis.service` runs. |
+| `jarvis --version` | Print the version. |
 
 ## Develop
 
@@ -17,18 +77,18 @@ Strata-supported GPU (built on an RX 7900 XT).
 uv sync                      # install the locked environment
 uv run .lint/check.sh        # lint, format and type checks (tracked files only)
 uv run pytest -q             # unit tests
-uv run jarvis --version
 ```
-
-Install, setup and update commands (`./install.sh`, `jarvis setup`, `jarvis doctor`, `jarvis update`) arrive
-with the phases that build them; see the plan.
 
 ## Docs
 
-- [docs/plan.md](docs/plan.md) — architecture, design and phases
-- [docs/adr/](docs/adr/) — decisions
-- [docs/playbook/](docs/playbook/) — how to work on the project, and its traps
+- [docs/configuration.md](docs/configuration.md): every config key, its range and what needs a restart
+- [docs/models.md](docs/models.md): the model, speech to text, voices, the wake word, latency and licences
+- [docs/plan.md](docs/plan.md): architecture, design and phases, with what is built
+- [docs/adr/](docs/adr/): decisions
+- [docs/playbook/](docs/playbook/): how to work on the project, and its traps
+- [SECURITY.md](SECURITY.md): scope and how to report a vulnerability
 
 ## Licence
 
-Copyright NecturaLabs. All rights reserved.
+Copyright NecturaLabs. All rights reserved. Jarvis depends on Piper (GPL-3.0-or-later), so the licence has to
+be settled before release; see [docs/models.md](docs/models.md).
