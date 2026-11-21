@@ -18,7 +18,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 MAX_REDIRECTS = 5
-READ_LIMIT_S = 15.0  # a whole read, every redirect and chunk; one read may wait 10 s more
+# A whole read, every redirect and chunk. A hop begun just before it may still spend its own DNS,
+# connect and read timeouts, so the worst case is about 45 s, inside the agent's 90 s.
+READ_LIMIT_S = 15.0
+MAX_TITLE = 160
 MAX_BYTES = 2_000_000
 _TEXT_TYPES = frozenset({"text/html", "application/xhtml+xml", "text/plain"})
 _REDIRECTS = frozenset({301, 302, 303, 307, 308})
@@ -100,7 +103,7 @@ def _extract(html: str, url: str) -> tuple[str, str]:
     )
     meta = trafilatura.extract_metadata(html, default_url=url)
     title = meta.title or ""
-    return " ".join(title.split()), text or ""
+    return " ".join(title.split())[:MAX_TITLE], text or ""
 
 
 class PageReader:
@@ -192,7 +195,7 @@ class PageReader:
         """Read at most `max_bytes` of an answer that is a page, or note where it redirects.
 
         Raises:
-            PageError: the answer is not text, or arrives too slowly.
+            PageError: the answer is not text, arrives too slowly or is badly compressed.
         """
         if resp.status_code in _REDIRECTS:
             return "", "", resp.headers.get("location", ""), resp.status_code
@@ -206,7 +209,11 @@ class PageReader:
         for raw_chunk in resp.iter_raw():
             # Inflated here, never more than the cap allows: a small compressed body can hold
             # gigabytes of text.
-            chunk = inflate(raw_chunk, self._max_bytes - size + 1) if inflate else raw_chunk
+            try:
+                chunk = inflate(raw_chunk, self._max_bytes - size + 1) if inflate else raw_chunk
+            except zlib.error as exc:
+                msg = "the page's compressed text is broken"
+                raise PageError(msg) from exc
             chunks.append(chunk)
             size += len(chunk)
             if size >= self._max_bytes:

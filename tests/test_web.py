@@ -340,6 +340,27 @@ def test_a_gzipped_page_is_read() -> None:
     assert "white vinegar" in PageReader(client).read("http://public.example/kettle").text
 
 
+def test_a_broken_compressed_page_is_a_page_error() -> None:
+    client, _ = _guarded(
+        _http("200 OK", b"not gzip at all", Content_Type="text/html", Content_Encoding="gzip")
+    )
+
+    with pytest.raises(PageError, match="broken"):
+        PageReader(client).read("http://public.example/")
+
+
+def test_a_long_title_is_cut() -> None:
+    html = b"<html><head><title>t</title></head><body><article><h1>" + b"T" * 500 + b"</h1>"
+    html += (
+        b"<p>"
+        + b"Plenty of readable words in a paragraph here. " * 20
+        + b"</p></article></body></html>"
+    )
+    client, _ = _guarded(_http("200 OK", html, Content_Type="text/html"))
+
+    assert len(PageReader(client).read("http://public.example/").title) <= 160
+
+
 def test_an_unknown_compression_is_refused() -> None:
     client, _ = _guarded(_http("200 OK", b"??", Content_Type="text/html", Content_Encoding="br"))
 

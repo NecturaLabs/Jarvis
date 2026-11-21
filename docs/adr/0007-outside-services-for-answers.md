@@ -58,7 +58,7 @@ No request carries anything that names the owner, the PC or the project: the use
   is in the conversation. A page can open no address of its own choosing: only an address or thread a
   search in the session returned can be read, and only on a public address. What remains open is
   low-bandwidth: a page could steer the model into putting up to 200 characters of the conversation in
-  a search or a place name, which goes to the search engines or Open-Meteo, not to whoever wrote the page.
+  a search (80 in a place name), which goes to the search engines or Open-Meteo, not to whoever wrote the page.
   This is accepted for now so research does not ask for a yes at every step; the stricter choice, a yes
   for any search or lookup while outside text is in the conversation, is open to the owner.
 
