@@ -7,6 +7,7 @@ import random
 import re
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -17,7 +18,7 @@ from jarvis.operations import Operation, OperationError, Result, UncertainOutcom
 from jarvis.policy import Origin
 from jarvis.shortcuts import Shortcut
 from jarvis.spotify.api import SpotifyApi, pick_device
-from jarvis.spotify.errors import NoDeviceError, SpotifyAuthError, SpotifyError
+from jarvis.spotify.errors import NoDeviceError, SpotifyAuthError, SpotifyError, SpotifyLoginExpired
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -29,6 +30,7 @@ log = logging.getLogger(__name__)
 
 DEVICE_WAIT_S = 15.0
 PLAYLIST_TTL_S = 300.0
+REFRESH_RETRY_S = 60.0
 QUEUE_BUDGET_S = 30.0
 RECENT_QUEUE_S = 30 * 60.0
 ALREADY_QUEUED = "That's already in the queue."
@@ -223,7 +225,7 @@ class SpotifyOps:
         self._rng = rng or random.SystemRandom()
         self._clock = clock
         self._names: list[str] = []
-        self._names_at: float | None = None
+        self._warm = False
         self._playlist_cache: list[dict[str, Any]] | None = None
         self._playlist_at = 0.0
         self._recent: dict[str, float] = {}
@@ -231,19 +233,48 @@ class SpotifyOps:
     def artist_names(self) -> list[str]:
         """Return the owner's artist names (top, followed, recently played), most played first.
 
-        Cached and refreshed every `library_refresh_s`; when Spotify cannot be reached, the last
-        list (or none) is used.
+        Only what `refresh` last loaded: it never touches the network, so a speech hint built from
+        it costs the request no time. Empty until the first refresh has finished.
         """
-        now = self._clock()
-        due = self._names_at is None or now - self._names_at >= self._settings.library_refresh_s
-        if due:
-            try:
-                artists = self._api.library(max_age_s=0).get("artist", [])
-            except SpotifyError:
-                return self._names
-            self._names = list(dict.fromkeys(str(a["name"]) for a in artists if a.get("name")))
-            self._names_at = now
         return self._names
+
+    def refresh(self) -> None:
+        """Load the owner's library and artist names once, ahead of any request that needs them.
+
+        A failure is logged and swallowed, and the previous names are kept.
+        """
+        self._warm = False
+        try:
+            self._api.ensure_login()
+            artists = self._api.library(max_age_s=0).get("artist", [])
+        except SpotifyLoginExpired:
+            log.warning("Spotify login has expired; run `jarvis spotify-login`")
+            return
+        except SpotifyError as exc:
+            log.warning("Spotify library refresh failed: %s", exc)
+            return
+        except Exception:  # a warm-up must never take Jarvis down
+            log.exception("Spotify library refresh failed unexpectedly")
+            return
+        self._names = list(dict.fromkeys(str(a["name"]) for a in artists if a.get("name")))
+        self._warm = True
+
+    def start_refresh(self, stop: threading.Event) -> threading.Thread:
+        """Refresh now and then every `library_refresh_s` on a daemon thread, until `stop` is set.
+
+        A refresh that failed (offline at start-up, say) is tried again after a minute.
+        """
+
+        def loop() -> None:
+            while not stop.is_set():
+                self.refresh()
+                period = self._settings.library_refresh_s
+                if stop.wait(period if self._warm else min(period, REFRESH_RETRY_S)):
+                    return
+
+        thread = threading.Thread(target=loop, name="jarvis-spotify-refresh", daemon=True)
+        thread.start()
+        return thread
 
     def _listed_device(self) -> Device | None:
         """Return the player to use from what Spotify lists now, or None when none will do.
@@ -337,7 +368,9 @@ class SpotifyOps:
         """
         scored = [
             _Hit(k, item, similarity(query, str(item.get("name", ""))))
-            for k, items in self._api.library().items()
+            for k, items in self._api.library(
+                max_age_s=2 * self._settings.library_refresh_s
+            ).items()
             for item in items
             if item.get("uri")
         ]
