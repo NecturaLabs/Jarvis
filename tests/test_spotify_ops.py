@@ -3,10 +3,13 @@
 import json
 import logging
 import random
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, override
+from itertools import starmap
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast, override
 
 import httpx
 import pytest
@@ -15,6 +18,7 @@ from jarvis.config import SpotifyConfig
 from jarvis.operations import Operation, OperationError, UncertainOutcomeError
 from jarvis.policy import Origin
 from jarvis.secretfile import write_private_json
+from jarvis.spotify import ops as ops_module
 from jarvis.spotify.api import API, SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.errors import NoDeviceError, SpotifyAuthError, SpotifyError, SpotifyLoginExpired
@@ -1605,3 +1609,331 @@ def test_a_failed_refresh_is_tried_again_after_a_minute_not_a_period(tmp_path: P
     thread.join(timeout=5)
 
     assert stop.waited == [REFRESH_RETRY_S, REFRESH_RETRY_S]
+
+
+# --- What goes over the wire, and what ships (9) ---
+
+
+def test_the_default_launcher_says_when_spotify_is_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def nothing_installed(_name: str) -> None:
+        return None
+
+    monkeypatch.setattr(ops_module, "shutil", SimpleNamespace(which=nothing_installed))
+
+    with pytest.raises(SpotifyError, match="not installed"):
+        ops_module.launch_spotify()
+
+
+def test_the_default_launcher_starts_the_omarchy_launcher_detached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started: list[tuple[list[str], dict[str, Any]]] = []
+
+    def which(name: str) -> str | None:
+        return f"/bin/{name}" if name == "omarchy-launch-spotify" else None
+
+    def popen(command: list[str], **options: Any) -> None:  # ruff: ignore[any-type]
+        started.append((command, options))
+
+    monkeypatch.setattr(ops_module, "shutil", SimpleNamespace(which=which))
+    monkeypatch.setattr(
+        ops_module, "subprocess", SimpleNamespace(Popen=popen, DEVNULL=subprocess.DEVNULL)
+    )
+
+    ops_module.launch_spotify()
+
+    ((command, options),) = started
+    assert command == ["/bin/omarchy-launch-spotify"]
+    assert options["start_new_session"] is True
+    assert options["stdout"] is subprocess.DEVNULL
+
+
+ALBUM = {"name": "Tide Pools", "uri": "spotify:album:pools", "artists": [GLASS_HARBOR]}
+WIRE_SEARCH = {
+    "track": [LOW_TIDE],
+    "album": [ALBUM],
+    "artist": [GLASS_HARBOR],
+    "playlist": [{"name": "Gym", "uri": "spotify:playlist:gym"}],
+}
+
+
+@dataclass(frozen=True, slots=True)
+class WireCase:
+    """One operation and the request it must send."""
+
+    name: str
+    args: dict[str, Any]
+    method: str
+    path: str
+    params: dict[str, str]
+    body: Any
+
+
+_WIRE_ROWS: list[tuple[str, dict[str, Any], str, str, dict[str, str], Any]] = [
+    (
+        "spotify_play",
+        {"query": "Low Tide", "kind": "track"},
+        "PUT",
+        "/me/player/play",
+        {},
+        {"uris": ["spotify:track:lowtide"]},
+    ),
+    (
+        "spotify_play",
+        {"query": "Tide Pools", "kind": "album"},
+        "PUT",
+        "/me/player/play",
+        {},
+        {"context_uri": "spotify:album:pools"},
+    ),
+    (
+        "spotify_play",
+        {"query": "Glass Harbor", "kind": "artist"},
+        "PUT",
+        "/me/player/play",
+        {},
+        {"context_uri": "spotify:artist:glassharbor"},
+    ),
+    (
+        "spotify_play",
+        {"query": "Gym", "kind": "playlist"},
+        "PUT",
+        "/me/player/play",
+        {},
+        {"context_uri": "spotify:playlist:gym"},
+    ),
+    (
+        "spotify_play",
+        {"query": "liked songs", "kind": "liked"},
+        "PUT",
+        "/me/player/play",
+        {},
+        {"uris": ["spotify:track:lowtide"]},
+    ),
+    ("spotify_pause", {}, "PUT", "/me/player/pause", {}, None),
+    ("spotify_resume", {}, "PUT", "/me/player/play", {}, None),
+    ("spotify_next", {}, "POST", "/me/player/next", {}, None),
+    ("spotify_previous", {}, "POST", "/me/player/previous", {}, None),
+    (
+        "spotify_set_volume",
+        {"percent": 35},
+        "PUT",
+        "/me/player/volume",
+        {"volume_percent": "35"},
+        None,
+    ),
+    (
+        "spotify_change_volume",
+        {"delta": -15},
+        "PUT",
+        "/me/player/volume",
+        {"volume_percent": "25"},
+        None,
+    ),
+    ("spotify_shuffle", {"on": True}, "PUT", "/me/player/shuffle", {"state": "true"}, None),
+    ("spotify_shuffle", {"on": False}, "PUT", "/me/player/shuffle", {"state": "false"}, None),
+    ("spotify_repeat", {"mode": "track"}, "PUT", "/me/player/repeat", {"state": "track"}, None),
+    (
+        "spotify_queue",
+        {"query": "Low Tide"},
+        "POST",
+        "/me/player/queue",
+        {"uri": "spotify:track:lowtide"},
+        None,
+    ),
+    ("spotify_like", {}, "PUT", "/me/library", {"uris": "spotify:track:lowtide"}, None),
+    ("spotify_now_playing", {}, "GET", "/me/player", {"additional_types": "episode"}, None),
+]
+
+
+WIRE = list(starmap(WireCase, _WIRE_ROWS))
+
+
+@pytest.mark.parametrize("case", WIRE, ids=lambda c: f"{c.name}-{c.args}")
+def test_every_operation_sends_the_documented_request(tmp_path: Path, case: WireCase) -> None:
+    fake = FakeSpotify(search=WIRE_SEARCH, saved=[LOW_TIDE], state=playing_state(volume=40))
+    operation = find_op(build_ops(fake, tmp_path, SpotifyConfig()), case.name)
+
+    result = operation.run(operation.prepare(case.args) if operation.prepare else case.args)
+
+    assert result.ok
+    sent = fake.calls(case.method, case.path)[-1]
+    assert dict(sent.url.params) == case.params
+    assert (json.loads(sent.content) if sent.content else None) == case.body
+
+
+def test_searches_ask_for_ten_at_a_time_from_the_start(tmp_path: Path) -> None:
+    fake = FakeSpotify(search=WIRE_SEARCH)
+
+    build_ops(fake, tmp_path, SpotifyConfig()).play({"query": "Low Tide", "kind": "track"})
+
+    (search,) = fake.calls("GET", "/search")
+    assert dict(search.url.params) == {
+        "q": "Low Tide",
+        "type": "track",
+        "limit": "10",
+        "offset": "0",
+    }
+
+
+@pytest.mark.parametrize("case", WIRE, ids=lambda c: f"{c.name}-{c.args}")
+def test_a_configured_player_is_targeted_by_play_only(tmp_path: Path, case: WireCase) -> None:
+    fake = FakeSpotify(search=WIRE_SEARCH, saved=[LOW_TIDE], state=playing_state())
+    operation = find_op(build_ops(fake, tmp_path), case.name)
+
+    operation.run(operation.prepare(case.args) if operation.prepare else case.args)
+
+    targeted = [r for r in fake.requests if "device_id" in r.url.params]
+    assert bool(targeted) is (case.name == "spotify_play")
+
+
+NO_ARGUMENTS: dict[str, Any] = {"additionalProperties": False, "properties": {}, "type": "object"}
+SHIPPED: list[tuple[str, str, bool, dict[str, Any]]] = [
+    (
+        "spotify_play",
+        "safe",
+        True,
+        {
+            "additionalProperties": False,
+            "properties": {
+                "artist": {"maxLength": 120, "type": "string"},
+                "kind": {
+                    "enum": ["track", "album", "artist", "playlist", "liked"],
+                    "type": "string",
+                },
+                "mine": {"type": "boolean"},
+                "query": {"maxLength": 120, "minLength": 1, "type": "string"},
+            },
+            "required": ["query", "kind"],
+            "type": "object",
+        },
+    ),
+    ("spotify_pause", "safe", True, NO_ARGUMENTS),
+    ("spotify_resume", "safe", True, NO_ARGUMENTS),
+    ("spotify_next", "safe", True, NO_ARGUMENTS),
+    ("spotify_previous", "safe", True, NO_ARGUMENTS),
+    (
+        "spotify_set_volume",
+        "safe",
+        True,
+        {
+            "additionalProperties": False,
+            "properties": {"percent": {"maximum": 100, "minimum": 0, "type": "integer"}},
+            "required": ["percent"],
+            "type": "object",
+        },
+    ),
+    (
+        "spotify_change_volume",
+        "safe",
+        True,
+        {
+            "additionalProperties": False,
+            "properties": {"delta": {"maximum": 50, "minimum": -50, "type": "integer"}},
+            "required": ["delta"],
+            "type": "object",
+        },
+    ),
+    (
+        "spotify_shuffle",
+        "safe",
+        True,
+        {
+            "additionalProperties": False,
+            "properties": {"on": {"type": "boolean"}},
+            "required": ["on"],
+            "type": "object",
+        },
+    ),
+    (
+        "spotify_repeat",
+        "safe",
+        True,
+        {
+            "additionalProperties": False,
+            "properties": {"mode": {"enum": ["off", "track", "context"], "type": "string"}},
+            "required": ["mode"],
+            "type": "object",
+        },
+    ),
+    (
+        "spotify_queue",
+        "safe",
+        True,
+        {
+            "additionalProperties": False,
+            "properties": {
+                "artist": {"maxLength": 120, "type": "string"},
+                "count": {"maximum": 20, "minimum": 1, "type": "integer"},
+                "query": {"maxLength": 120, "minLength": 1, "type": "string"},
+                "random_order": {"type": "boolean"},
+            },
+            "required": ["query"],
+            "type": "object",
+        },
+    ),
+    ("spotify_like", "safe", True, NO_ARGUMENTS),
+    ("spotify_now_playing", "safe", False, NO_ARGUMENTS),
+]
+SUMMARIES: list[tuple[str, dict[str, Any], str]] = [
+    ("spotify_play", {"kind": "track", "query": "Low Tide"}, "play the track Low Tide"),
+    ("spotify_pause", {}, "pause the music"),
+    ("spotify_resume", {}, "resume the music"),
+    ("spotify_next", {}, "skip this track"),
+    ("spotify_previous", {}, "go back a track"),
+    ("spotify_set_volume", {"percent": 40}, "set the volume to 40 percent"),
+    ("spotify_change_volume", {"delta": 10}, "change the volume by 10"),
+    (
+        "spotify_change_volume",
+        {"delta": 10, "current": 40, "target": 50},
+        "change the volume from 40 to 50 percent",
+    ),
+    ("spotify_shuffle", {"on": True}, "turn shuffle on"),
+    ("spotify_shuffle", {"on": False}, "turn shuffle off"),
+    ("spotify_repeat", {"mode": "track"}, "set repeat to track"),
+    ("spotify_queue", {"query": "Night Circuit", "count": 3}, "queue 3 of Night Circuit"),
+    ("spotify_queue", {"query": "Low Tide"}, "queue 1 of Low Tide"),
+    ("spotify_like", {}, "save this track to your library"),
+    (
+        "spotify_like",
+        {"uri": "u", "name": "Low Tide by Glass Harbor"},
+        "save Low Tide by Glass Harbor to your library",
+    ),
+    ("spotify_now_playing", {}, "check what's playing"),
+]
+
+
+def _shape(schema: object) -> object:
+    """Return a schema without its prose, which is the model's to read and not a contract."""
+    if isinstance(schema, dict):
+        found = cast("dict[str, object]", schema)
+        return {k: _shape(v) for k, v in found.items() if k != "description"}
+    return schema
+
+
+def test_every_shipped_operation_is_pinned(tmp_path: Path) -> None:
+    ops = build_ops(FakeSpotify(), tmp_path).operations()
+
+    assert [
+        (op.name, op.default_class.value, op.side_effect, _shape(op.parameters)) for op in ops
+    ] == SHIPPED
+    assert all(op.description for op in ops)
+
+
+@pytest.mark.parametrize(("name", "args", "summary"), SUMMARIES)
+def test_every_confirmation_summary_is_pinned(
+    tmp_path: Path, name: str, args: dict[str, Any], summary: str
+) -> None:
+    operation = find_op(build_ops(FakeSpotify(), tmp_path), name)
+
+    assert operation.spoken_summary(args) == summary
+
+
+def test_the_queue_size_limit_follows_the_owners_setting(tmp_path: Path) -> None:
+    ops = build_ops(FakeSpotify(), tmp_path, SpotifyConfig(queue_max=7))
+
+    queue = find_op(ops, "spotify_queue")
+
+    assert queue.parameters["properties"]["count"]["maximum"] == 7
