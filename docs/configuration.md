@@ -200,7 +200,7 @@ be spoken over.
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
-| `twelve_hour` | `false` | `true`, `false` | Say the time as "3:42 PM" instead of "15:42". |
+| `twelve_hour` | `true` | `true`, `false` | Say the time as "3:42 PM"; `false` says "15:42". |
 
 The time is this PC's own clock and time zone; only the time in a named place asks Open-Meteo for that
 place's time zone.

@@ -11,7 +11,7 @@ import pytest
 from jarvis.agent import Agent, Hooks
 from jarvis.app import no_action_operation, web_operations
 from jarvis.audit import AuditLog
-from jarvis.config import Config, ResearchConfig, WeatherConfig
+from jarvis.config import ClockConfig, Config, ResearchConfig, WeatherConfig
 from jarvis.operations import (
     ArgumentError,
     Operation,
@@ -210,10 +210,15 @@ def test_the_local_time_needs_no_network() -> None:
 
     result = _run(_ops(net), "time_now")
 
-    assert result.spoken == "It's 15:05."
-    assert result.text == "Time: 15:05."  # the owner asked for the time, not the date
+    assert result.spoken == "It's 3:05 PM."
+    assert result.text == "Time: 3:05 PM."  # the owner asked for the time, not the date
     assert result.origin is Origin.TOOL_STATUS
     assert net.seen == []
+
+
+def test_the_clock_is_twelve_hour_unless_set_otherwise() -> None:
+    assert ClockConfig().twelve_hour  # the owner's default: "3:42 PM"
+    assert spoken_time(datetime(2026, 1, 1, 15, 42, tzinfo=UTC), twelve_hour=False) == "15:42"
 
 
 def test_the_date_and_a_twelve_hour_clock() -> None:
@@ -230,8 +235,8 @@ def test_the_time_in_a_named_place_uses_its_zone() -> None:
 
     result = _run(_ops(net), "time_now", place="Tokyo")
 
-    assert result.spoken == "It's 23:05 in Tokyo."
-    assert result.text == "Time in Tokyo (JP): 23:05."
+    assert result.spoken == "It's 11:05 PM in Tokyo."
+    assert result.text == "Time in Tokyo (JP): 11:05 PM."
     assert result.origin is Origin.TOOL_STATUS
     assert net.hosts() == ["geocoding-api.open-meteo.com"]
 
