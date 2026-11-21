@@ -86,8 +86,12 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 | `cli.py` | The `jarvis` command: setup, run, ask, chat, doctor, status, start, stop, restart, logs, unload, pc-audio, spotify-login. `cmd_run` wires the threads and the signal handlers. | Hold logic that tests need elsewhere; it only wires parts together. |
 | `services.py` | The Strata profile and the two systemd user units, rendered and written. | Write a value with a control character into a unit, or a relative program path. |
 | `model.py` | `StrataModel`: the OpenAI-style chat client, plus status, load, warm and unload. | Generate tokens to check health. Use the network beyond Strata's URL. |
-| `chat.py` | The Textual window for `jarvis chat`, laid out like Claude Code's: typed requests, a live view of the audit log grouped by request, a yes-or-no choice for questions, Esc to stop a request. | Trust log text; it shows it as plain characters. |
-| `activity.py` | `AuditTail` (follows the audit log) and how the chat window shows each event: its kind, words, a quiet note, and whether it belongs to the step above. | Write the log. |
+| `chat/app.py` | The Textual window for `jarvis chat`, laid out like Claude Code's: typed requests to the window's own agent, its replies rendered as Markdown while they are written (`Hooks.draft`), the voice service's requests and replies from the audit log, steps shown by verbosity, a yes-or-no choice for questions, Esc to stop a request, slash commands, the `/config` panel and the toolbar. | Trust log text; it shows it as plain characters (a reply's Markdown draws nothing on the terminal). |
+| `chat/commands.py` | The slash commands and what the menu suggests while one is typed: prefix first, then letters in order, then a command's arguments. | Run anything; the window does. |
+| `chat/history.py` | `InputHistory`: the typed lines ↑ brings back, kept 0600 in `chat-history` under the state folder. | Keep more than `chat.history_size` lines. |
+| `chat/widgets.py` | The window's pieces: requests, replies (Textual's Markdown), steps, the multi-line input and the toolbar line with its meters. | Choose colours other than the terminal's own. |
+| `sysinfo.py` | `Sampler`: the CPU's busy share and temperature, memory, and the biggest graphics card's load, VRAM and temperature, read from `/proc` and `/sys`. | Start a program or fail on a missing file; a figure it cannot read is left out. |
+| `activity.py` | `AuditTail` (follows the audit log) and how the chat window shows each event: its kind, words (a request and a reply whole, a step on one line), a quiet note, whether it belongs to the step above, the verbosity that shows it, and what the working line says. | Write the log. |
 | `config.py` | `config.toml`: a validated, versioned pydantic schema. | Accept an unknown key or a value with a control character. |
 
 ### Support

@@ -19,9 +19,11 @@ page says what it offers today, what it does not, and where the gaps are tracked
 
 ## Without speaking or hearing
 
-- `jarvis chat` opens a terminal window where you type requests and read everything Jarvis does, live:
-  what you said, what it did, what it refused and what it replied, as text, whether the request was typed or
-  spoken. A question that needs a yes opens a choice: 1 or y for yes, 2, n or Esc for no.
+- `jarvis chat` opens a terminal window where you type requests and read Jarvis's replies, live, whether the
+  request was typed or spoken. Replies are formatted (headings, lists, tables, code) and shown as they are
+  written. By default only requests, replies, refusals and errors show; Ctrl+O or `/verbosity` adds every
+  step and its result, then every detail. A question that needs a yes opens a choice: 1 or y for yes, 2, n or
+  Esc for no.
 - `jarvis ask <text>` sends one typed request and prints the reply, with no audio device needed.
 - Jarvis still speaks its replies aloud in both cases; there is no setting to turn speech off yet.
 
@@ -29,9 +31,11 @@ page says what it offers today, what it does not, and where the gaps are tracked
 
 Jarvis has no pointer-only controls. Setup and every command run from the terminal
 ([README](README.md#everyday-commands)). In the chat window the cursor starts in the input line; Enter sends,
-Esc stops a request, ↑ and ↓ bring back earlier requests, `/` lists the commands (Tab completes one), `?` on an
-empty line shows the shortcuts, Ctrl+O shows every step, Ctrl+L empties the window, and `/quit` or Ctrl+Q
-leaves.
+Shift+Enter (or a backslash then Enter, or Ctrl+J) starts a new line, Esc stops a request, ↑ and ↓ bring back
+earlier requests (kept between sessions), `/` lists the commands as you type (Tab completes one), `?` on an
+empty line shows the shortcuts, Ctrl+O shows more or less of the work, Ctrl+L redraws, Ctrl+C clears the input
+(twice on an empty one leaves), and `/quit` or Ctrl+Q leaves. `/config` changes the chat's settings with the
+arrow keys and Enter.
 
 ## The chat window
 
@@ -39,9 +43,10 @@ leaves.
   zoom, and works with a terminal screen reader. Whether a given reader announces new lines as they arrive
   has not been tested.
 - The window uses the terminal's own colours (an ANSI theme), so it follows the Omarchy theme.
-- Colour only reinforces meaning. A request starts with `❯` and says who asked ("you, typed", "you, by
-  voice", "PC audio:"); each step and the reply start with `●`, and a step's result sits under it after `⎿`.
-  Words, not colour, say when something was refused, not done or failed, and the status line is text.
+- Colour only reinforces meaning. A request starts with `>` on a shaded band and says who asked ("typed",
+  "you, by voice", "PC audio:"); each step and the reply start with `●`, and a step's result sits under it
+  after `⎿`. Words, not colour, say when something was refused, not done or failed. The toolbar under the
+  input gives the PC's load and how full the model's context is as numbers; the coloured bars repeat them.
 - Text from outside, such as song names and PC speech, is shown as plain characters, with control
   characters removed.
 

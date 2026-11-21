@@ -104,6 +104,9 @@ class ChatConfig(AgentConfig):
     memory_tokens: int = Field(default=12000, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
     resume: bool = True  # open the chat on the conversation it had last time
+    verbosity: Literal["replies", "steps", "everything"] = "replies"
+    toolbar: bool = True  # the line of PC load, model and context under the input
+    history_size: int = Field(default=1000, ge=0, le=100000)  # typed lines ↑ brings back
 
 
 class StrataConfig(_Section):
