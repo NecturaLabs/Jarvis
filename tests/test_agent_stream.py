@@ -378,3 +378,52 @@ def test_nothing_is_delivered_after_the_request_was_cancelled() -> None:
     agent.handle("talk", ear.hooks())
 
     assert ear.heard == []
+
+
+def test_a_claim_said_before_its_own_call_is_dropped_where_not_heard() -> None:
+    # An earlier action succeeded, so the claim was not held; its own call then fails, so the
+    # claim was not true: it is hushed at the call like a reply that turned out not to be one.
+    counter = Counter()
+    second = _call("volume")
+    second["content"] = "Volume is set to thirty. One moment."
+    model = ScriptedModel([_call("pause"), second, _say("I could not change the volume.")])
+    ear = Ear(model)
+    agent, audit = _agent(
+        model, [counter.op("pause"), counter.op("volume", error=RuntimeError("down"))]
+    )
+
+    agent.handle("pause and set the volume to thirty", ear.hooks())
+
+    assert claims_action("Volume is set to thirty.")
+    assert ear.heard[0] == "Volume is set to thirty."
+    assert ear.hushes == 1
+    assert _events(audit).count("spoken_before_tool_call") == 1
+
+
+def test_words_before_a_lone_reply_call_are_heard_and_audited() -> None:
+    first = _call("no_action", {"reply": "Hello there."})
+    first["content"] = "Let me look. One moment."
+    model = ScriptedModel([first])
+    ear = Ear(model)
+    agent, audit = _agent(model, [])
+
+    assert agent.handle("hello", ear.hooks()) == "Hello there."
+
+    assert ear.heard == ["Let me look.", "Hello there."]
+    assert ear.hushes == 0
+    assert _events(audit).count("spoken_before_tool_call") == 1
+
+
+def test_words_before_a_refused_reply_call_stay_heard_and_are_audited_once() -> None:
+    bad = _call("no_action")
+    bad["content"] = "Let me look. One moment."
+    bad["tool_calls"][0]["function"]["arguments"] = '{"reply": "Hello there.", "x": 1}'
+    model = ScriptedModel([bad, _call("no_action", {"reply": "Hi."})])
+    ear = Ear(model)
+    agent, audit = _agent(model, [])
+
+    assert agent.handle("hello", ear.hooks()) == "Hi."
+
+    assert ear.heard == ["Let me look.", "Hi."]
+    assert ear.hushes == 0
+    assert _events(audit).count("spoken_before_tool_call") == 1

@@ -49,11 +49,8 @@ No request carries anything that names the owner, the PC or the project: the use
   no longer holds. Search results depend on outside engines that rate-limit or block (DuckDuckGo answers
   with a CAPTCHA at times). Arctic Shift is a third-party copy of Reddit and can lag behind it. SearXNG is
   one more container to run: idle, it measured 0.10 % CPU and 134 MiB (`docker stats`, 2026-11-21, on
-  the reference PC), less than the wake word's own listening. Jarvis's own rule is no CPU while idle, and
-  this container breaks it slightly. Accepted on 2026-11-21: starting it on demand (systemd socket
-  activation) would save 134 MiB beside a model that keeps about 38 GB loaded, and add about 1.4 s to the
-  first search after it stopped (a fresh container answered `/healthz` after 1.36 s). No SearXNG guide
-  found recommends starting it on demand.
+  the reference PC). Jarvis's own rule is no CPU while idle, and this container breaks it slightly; the owner
+  has not yet accepted or rejected that.
 - Text from all of these is marked as web data: it never raises an operation's class, and while it is in
   the conversation any action needs a spoken yes. Weather and time answers are built from numbers, codes,
   checked identifiers and the place the model asked about, so they do not count as outside text.
@@ -62,14 +59,8 @@ No request carries anything that names the owner, the PC or the project: the use
   search in the session returned can be read, and only on a public address. What remains open is
   low-bandwidth: a page could steer the model into putting up to 200 characters of the conversation in
   a search (80 in a place name), which goes to the search engines or Open-Meteo, not to whoever wrote the page.
-  Accepted on 2026-11-21 so research does not ask for a yes at every step. The guidance read that day
-  puts the risk in an agent that has private data, reads untrusted text and can send data out at once
-  ([the lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/),
-  [Meta's Rule of Two](https://ai.meta.com/blog/practical-ai-agent-security/)); here the channel out reaches
-  search engines and Open-Meteo, not the page's author, and a yes for each lookup would show the owner a
-  query they cannot judge by ear. Revisit it, with a spoken yes for lookups while outside text is in the
-  conversation, if Jarvis gains a fetch of an address of its own choosing, a lookup whose logs the page's
-  author can read, or private data such as mail or a calendar in the conversation.
+  This is accepted for now so research does not ask for a yes at every step; the stricter choice, a yes
+  for any search or lookup while outside text is in the conversation, is open to the owner.
 
 ## Related
 

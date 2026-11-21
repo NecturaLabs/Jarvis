@@ -55,7 +55,7 @@ and ignores `continue_final_message` and `parallel_tool_calls`, so Jarvis cannot
 A second request that repeats the first one and its reply exactly and adds a new question also reused 0,
 with the reply as written, with the empty think block written back into it, and with Qwen's
 `preserve_thinking` and an empty `reasoning_content` (probed 2026-11-21). Keeping more history would not
-help: only the calls within one request reuse the cache. llama.cpp gets reuse on such hybrid models from
+help: the cache is reused only between calls within one request. llama.cpp gets reuse on such hybrid models from
 saved checkpoints of the recurrent state (`--ctx-checkpoints`), so the fix belongs in the engine.
 
 ## Speech to text: Voxtype

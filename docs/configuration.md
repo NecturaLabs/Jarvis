@@ -150,10 +150,10 @@ context.modules = [
 
 Then run `systemctl --user restart pipewire`, set `audio.source = "jarvis-aec-source"` and run
 `jarvis restart`. `monitor.mode` takes what the default output plays as the sound to remove, so no new output device
-appears and every app keeps playing where it did. It removes Jarvis's own voice too, so the wake word heard
-while Jarvis speaks (`barge_in`) is more likely yours. `aec.args` turns off WebRTC's noise suppression and
-gain control: noise suppression is on by default, and one practitioner found it, with gain control, stopped
-the wake word being heard at all
+appears and every app keeps playing where it did. It removes Jarvis's own voice from the microphone too, so a
+wake word heard while Jarvis speaks (`barge_in`) is more likely to be yours. `aec.args` turns off WebRTC's noise suppression and
+gain control: noise suppression is on by default, and one practitioner found that noise suppression and gain
+control together stopped the wake word from being heard at all
 ([FINDINGS.md](https://github.com/bluetooth47/agent-voice/blob/main/bench/FINDINGS.md)). Use a wired or
 built-in microphone: after a WirePlumber restart the module can fall back to a Bluetooth headset's
 microphone, which drops the headset to its low-quality call profile. Check the wake word, idle and while

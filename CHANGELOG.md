@@ -10,9 +10,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 - Jarvis starts speaking sooner. Each sentence of a reply is spoken as soon as the model has written it and
   synthesized while the one before plays. The silence before the first word is cut from 0.23 s to 0.03 s. A
-  sentence claiming an action is not spoken before an action succeeded
-  ([ADR 0008](docs/adr/0008-speak-while-writing-and-barge-in.md)). A sentence said before a tool call
-  plays to its end instead of being cut off mid-word.
+  sentence claiming an action is not spoken before an action succeeded, and a sentence said before a tool
+  call plays to its end instead of being cut off mid-word
+  ([ADR 0008](docs/adr/0008-speak-while-writing-and-barge-in.md)).
 - The service log's timing line now shows when the first words were ready.
 - The default Strata context window is 24,576 tokens (was 8,192), about 8.1 GiB of VRAM with the default model, and the model sees up to 3,000 characters
   of each tool result (was 1,500), so a search and two page reads fit in one request. A saved

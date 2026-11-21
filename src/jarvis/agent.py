@@ -169,9 +169,9 @@ class _ReplyStream:
     `no_action` call that comes first. A sentence that says something was done waits for the
     whole answer unless an action already succeeded in this request (the claim check then
     decides on the whole reply). Once a tool call follows, nothing more of the message is
-    spoken; sentences of its text already passed on still play to their end, as they passed the
-    claim check, but words of a `no_action` reply that turns out not to be the answer are
-    dropped where they were not yet heard.
+    spoken. Sentences of its text already passed on play to their end, since they passed the
+    claim check, unless one says something was done. Unheard words of such a claim, or of a
+    `no_action` reply that turns out not to be the answer, are dropped.
     """
 
     def __init__(
@@ -196,6 +196,7 @@ class _ReplyStream:
         self.spoken = ""  # the start of the answer already passed on to be spoken
         self.cut = False  # a tool call came after spoken words
         self.audited = False
+        self._claimed = False  # a spoken sentence says something was done
 
     def feed(self, delta: Delta) -> None:
         """Take one streamed piece of the answer.
@@ -225,14 +226,15 @@ class _ReplyStream:
         self._speak_ready()
 
     def stop(self) -> None:
-        """Speak no more of this message; drop the unheard words of a reply that is not one.
+        """Speak no more of this message; hush unheard words of a reply call or of a claim.
 
-        The message's own text plays to its end: cutting it at the call left half a word.
+        The message's own text plays to its end, because cutting it at the call left half a word,
+        unless it says something was done: that may be the call now starting, which can fail.
         """
         self._held = True
         if self.spoken and not self.cut:
             self.cut = True
-            if self._source == "reply":
+            if self._source == "reply" or self._claimed:
                 self._hooks.hush()
 
     def rest(self, reply: str) -> str:
@@ -261,6 +263,7 @@ class _ReplyStream:
                 return
             if not self.spoken:
                 self._before_first()
+            self._claimed = self._claimed or claims_action(piece)
             self.spoken = words[:end]
             self._speak(piece.strip())
 
@@ -579,8 +582,8 @@ class Agent:
         if not calls:
             return self._final(turn, _ACTIONS_NOTE.sub("", _text(message).strip()) or "Done.")
         lone_reply = len(calls) == 1 and str(obj(calls[0].get("function")).get("name")) == NO_ACTION
-        if not lone_reply:
-            self._cut(stream)
+        if not lone_reply or (stream is not None and stream.cut):
+            self._cut(stream)  # text before even a lone reply call was not the reply
         turn.messages.append({"role": "assistant", "content": _text(message), "tool_calls": calls})
         results = self._run_calls(calls, hooks, turn)
         answer = self._no_action_reply(calls, results)
