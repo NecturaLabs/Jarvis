@@ -30,9 +30,14 @@ was checked it says so.
 | Model not loaded | Cold load | about 107 s with a game running; Jarvis says "One moment, waking up". The request gets 180 s more (270 s in all instead of 90 s); each model call is still capped by `model.request_timeout_s` |
 
 Memory while loaded, idle: about 38 GB of RAM and 7.3 GiB of VRAM at an 8,192-token context, no GPU or CPU
-use. At the 16,384-token default, measured on 2026-11-21 after `jarvis restart`: 37.0 GB of RAM
-(`MemoryCurrent` of `jarvis-strata.service`) and 7.71 GiB of VRAM (the engine's `drm-memory-vram` in
-`/proc/<pid>/fdinfo`), so the larger context costs about 0.4 GiB of VRAM. On 2026-11-21
+use. VRAM grows by about 0.05 GiB per 1,000 tokens of context (the engine's `drm-memory-vram` in
+`/proc/<pid>/fdinfo`, measured on 2026-11-21 after each `jarvis restart`): 7.71 GiB at 16,384, 8.00 GiB at
+22,528 and 8.10 GiB at 24,576. The default, 24,576 (the owner's choice, slightly over 8 GiB), holds a full research request
+(`tests/test_app.py`) with room for Jarvis's limits to grow; 16,384 is the smallest that still holds
+one, if VRAM is tight. Speed at 16,384 to 22,528 tokens
+(2026-11-21): about 50 tokens/s writing a reply; about 700 tokens/s reading a long prompt, so a request
+carrying 10,800 tokens of results waits about 15 s before the first word. RAM stayed between 21 and 37 GB
+(`MemoryCurrent` of `jarvis-strata.service`; it varies with how much of the mapped model is paged in). On 2026-11-21
 `tools/idle_check.py` measured 30 s of the running services while idle: `jarvis.service` used 1.4 % of one core
 (the wake word and end-of-speech models score every 80 ms frame), `jarvis-strata.service` 0.1 %, and neither
 grew in memory. The GPU could not be measured that way: Strata's engine holds `/dev/kfd` (ROCm compute) and an

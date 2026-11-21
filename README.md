@@ -65,7 +65,9 @@ uv run jarvis doctor            # one line per check, with its fix; never loads 
 `jarvis setup` writes the config, the Strata profile, the Strata API key and two systemd user units
 (`jarvis.service` and `jarvis-strata.service`), and keeps every value already set unless you pass it again.
 Use `--data-dir`, `--strata-home`, `--strata-components-parent` and `--mic` for the other locations and the
-microphone. The config file and every key are in [docs/configuration.md](docs/configuration.md).
+microphone. The config file and every key are in [docs/configuration.md](docs/configuration.md);
+[`config.example.toml`](config.example.toml) shows them all at their defaults. Your own config stays in
+`~/.config/jarvis/`, outside the repository.
 
 ## Everyday commands
 

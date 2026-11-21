@@ -36,3 +36,5 @@ audit.jsonl*
 # The owner's private files: kept locally, never published
 docs/directives.md
 .claude/settings.json
+# Your own Jarvis config lives in ~/.config/jarvis/; a copy here is never committed.
+/config.toml

@@ -14,7 +14,9 @@ Every setting lives in one TOML file, validated when Jarvis reads it. This page 
 | Strata API key, Spotify tokens, audit log, Strata log | `~/.local/state/jarvis/` (`$XDG_STATE_HOME/jarvis/`): `strata.env`, `spotify-token.json`, `audit.jsonl`, `strata.log` | Jarvis; the key and token files are mode 0600 |
 | Wake, VAD and voice model files | `data_dir`, default `~/.local/share/jarvis/` | you; see [models.md](models.md) |
 
-A missing config file means all defaults. An unknown key, an out-of-range value, a malformed file or a
+[`config.example.toml`](../config.example.toml) in the repository lists every key at its default, with no
+personal values: copy it to `~/.config/jarvis/config.toml` and change what you need. A missing config file
+means all defaults. An unknown key, an out-of-range value, a malformed file or a
 `schema_version` other than `1` is an error that names the file and key; `jarvis` exits with status 2.
 Paths and names may not contain control characters, because they are written into systemd units.
 
@@ -64,7 +66,7 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `tokenizer_dir` | unset | path | The model's tokenizer folder. `--tokenizer-dir`. |
 | `model_id` | `qwen3.6-35b-a3b-ud-q4_k_xl` | text | The model's name inside Strata's profile. |
 | `port` | `8080` | 1024 to 65535 | Strata's port on `127.0.0.1`. |
-| `context` | `16384` | 2048 to 262144 | Context window in tokens (`--max-context`). It holds the prompt and the tool schemas (about 2,800 tokens together), the last 4 turns and up to 8 tool results of up to 3,000 characters each, enough for a search and two page reads. |
+| `context` | `24576` | 2048 to 262144 | Context window in tokens (`--max-context`). Each 1,000 tokens more costs about 0.05 GiB of VRAM ([models.md](models.md)). It holds the prompt and the tool schemas (about 2,800 tokens together), the last 4 turns and up to 8 tool results of up to 3,000 characters each, enough for a search and two page reads. |
 | `expert_vram_gib` | `1.0` | 0 to 64 | VRAM budget for expert weights kept on the GPU, passed as `--expert-vram`; the rest of the experts stay in host memory. |
 | `prefill` | `512` | 128 to 8192 | Prompt-reading chunk size (`--prefill`). |
 | `idle_unload_s` | `300` | 30 to 86400 | Seconds without a request before Strata frees the model. |
