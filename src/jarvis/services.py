@@ -1,7 +1,8 @@
 """The Strata profile and the systemd user units Jarvis runs under.
 
-`jarvis-strata.service` runs `strata serve` in the foreground with lazy loading, so the model stays
-unloaded after boot until the first real request. `jarvis.service` runs the voice loop.
+`jarvis-strata.service` runs `strata serve` in the foreground with lazy loading: it starts without
+the model, and `jarvis.service`, the voice loop, loads it when it starts. Strata's own notes and
+per-request timings (no request text) go to the journal.
 """
 
 import json
@@ -155,12 +156,11 @@ def strata_unit(config: Config, key_file: Path) -> str:
             exec_word(str(strata_profile_file()), "profile file"),
             "\\\n  --ready-file",
             exec_word(str(strata_ready_file()), "ready file"),
-            "--quiet",
         ]
     )
     memory = _path(s.memory_max, "memory_max")
     return f"""[Unit]
-Description=Strata model server for Jarvis (lazy load, idle unload)
+Description=Strata model server for Jarvis
 PartOf=graphical-session.target
 After=graphical-session.target
 {condition}

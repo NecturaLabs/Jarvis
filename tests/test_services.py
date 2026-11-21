@@ -53,6 +53,13 @@ def test_the_strata_unit_for_a_normal_config(tmp_path: Path) -> None:
     assert text.endswith("WantedBy=graphical-session.target\n")
 
 
+def test_the_strata_unit_keeps_the_servers_own_notes_in_the_journal(tmp_path: Path) -> None:
+    """Strata's per-request timings and its notes (an ignored prefix pin) are on its stdout."""
+    text = services.strata_unit(_config(tmp_path), tmp_path / "strata.env")
+
+    assert "--quiet" not in text
+
+
 def test_paths_with_spaces_are_quoted_for_systemd(tmp_path: Path) -> None:
     spaced = tmp_path / "my models"
     cfg = _config(tmp_path, home=spaced / "strata home", model_file=spaced / "q4 k.gguf")
