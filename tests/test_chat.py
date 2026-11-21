@@ -1179,6 +1179,7 @@ def test_under_a_reply_it_says_how_long_it_worked_when_it_was_done_and_how_fast(
         await _type(pilot, "pause")
         await _until(pilot, lambda: any(isinstance(w, Reply) for w in _transcript(app)))
         reply = next(w for w in _transcript(app) if isinstance(w, Reply))
+        await _until(pilot, lambda: bool(reply.query(".reply-note")))
         note = _plain(reply.query_one(".reply-note", Static).content)
         assert "Worked for 1s · done " in note
         assert note.rstrip().endswith("· 50 TPS")
@@ -1201,6 +1202,7 @@ def test_a_spoken_reply_from_the_log_gets_the_same_line() -> None:
         )
         await _until(pilot, lambda: any(isinstance(w, Reply) for w in _transcript(app)))
         reply = next(w for w in _transcript(app) if isinstance(w, Reply))
+        await _until(pilot, lambda: bool(reply.query(".reply-note")))
         note = _plain(reply.query_one(".reply-note", Static).content)
         assert "Worked for 4m 41s · done " in note
 
