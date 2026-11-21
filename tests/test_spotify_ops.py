@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from jarvis.config import SpotifyConfig
-from jarvis.operations import Operation, OperationError
+from jarvis.operations import Operation, OperationError, UncertainOutcomeError
 from jarvis.policy import Origin
 from jarvis.secretfile import write_private_json
 from jarvis.spotify.api import API, SpotifyApi
@@ -67,6 +67,7 @@ class FakeSpotify:
     playlists: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     saved: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     queue_items: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    playing_item: dict[str, Any] | None = None
     devices: list[dict[str, Any]] = field(default_factory=lambda: [dict(PC)])
     state: dict[str, Any] | None = None
     page_size: int = 10
@@ -147,7 +148,7 @@ class FakeSpotify:
             "/me/player/recently-played": {"items": []},
             "/me/playlists": {"items": self.playlists},
             "/me/tracks": {"items": [{"track": t} for t in self.saved]},
-            "/me/player/queue": {"currently_playing": None, "queue": self.queue_items},
+            "/me/player/queue": {"currently_playing": self.playing_item, "queue": self.queue_items},
         }
         if path == "/me/player":
             if self.state is None:
@@ -1009,3 +1010,335 @@ def test_another_volume_refusal_keeps_its_error(tmp_path: Path) -> None:
 
     with pytest.raises(SpotifyError, match="Premium required"):
         _op(_ops(fake, tmp_path), "spotify_set_volume").run({"percent": 30})
+
+
+# --- The queue: no song twice (5) ---
+
+ALREADY_QUEUED = "That's already in the queue."
+
+
+def test_asking_for_the_same_song_twice_in_a_row_queues_it_once(tmp_path: Path) -> None:
+    # Spotify's queue read can lag or be cut short; Jarvis remembers what it queued itself.
+    fake = FakeSpotify(search={"track": [LOW_TIDE]})
+    ops = _ops(fake, tmp_path)
+
+    first = ops.queue({"query": "low tide"})
+    second = ops.queue({"query": "low tide"})
+
+    assert first.ok
+    assert "Low Tide" in first.text
+    assert second.ok
+    assert second.text == ALREADY_QUEUED
+    assert second.origin is Origin.TOOL_STATUS
+    assert fake.queued == ["spotify:track:lowtide"]
+
+
+def test_a_later_request_inside_half_an_hour_is_still_a_repeat(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": [LOW_TIDE]})
+    ops = _ops(fake, tmp_path)
+    ops.queue({"query": "low tide"})
+
+    fake.clock.now += 29 * 60
+    again = ops.queue({"query": "low tide"})
+
+    assert again.text == ALREADY_QUEUED
+    assert fake.queued == ["spotify:track:lowtide"]
+
+
+def test_after_half_an_hour_the_song_may_be_queued_again(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": [LOW_TIDE]})
+    ops = _ops(fake, tmp_path)
+    ops.queue({"query": "low tide"})
+
+    fake.clock.now += 31 * 60
+    again = ops.queue({"query": "low tide"})
+
+    assert again.ok
+    assert fake.queued == ["spotify:track:lowtide"] * 2
+
+
+def test_a_song_already_in_spotifys_queue_is_not_added_again(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": [LOW_TIDE]}, queue_items=[LOW_TIDE])
+
+    result = _ops(fake, tmp_path).queue({"query": "low tide"})
+
+    assert result.ok
+    assert result.text == ALREADY_QUEUED
+    assert fake.queued == []
+    assert len(fake.calls("GET", "/me/player/queue")) == 1
+
+
+def test_the_song_playing_now_is_not_queued_again(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": [LOW_TIDE]}, playing_item=LOW_TIDE)
+
+    result = _ops(fake, tmp_path).queue({"query": "low tide"})
+
+    assert result.text == ALREADY_QUEUED
+    assert fake.queued == []
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "Low Tide (Live at Harbor Hall)",
+        "Low Tide - Live at Harbor Hall",
+        "Low Tide (Remastered 2011)",
+        "Low Tide - Remastered 2011",
+        "Low Tide (2011 Remaster)",
+        "Low Tide (feat. Paper Moons)",
+        "Low Tide feat. Paper Moons",
+        "Low Tide [Live]",
+    ],
+)
+def test_another_version_of_a_queued_song_counts_as_the_same_song(
+    tmp_path: Path, version: str
+) -> None:
+    other = _track(version, "Glass Harbor", "spotify:track:other")
+    fake = FakeSpotify(search={"track": [other]}, queue_items=[LOW_TIDE])
+
+    result = _ops(fake, tmp_path).queue({"query": "low tide"})
+
+    assert result.text == ALREADY_QUEUED
+    assert fake.queued == []
+
+
+def test_versions_of_one_song_in_one_request_count_once(tmp_path: Path) -> None:
+    tracks = [
+        _track("Low Tide (Live at Harbor Hall)", "Glass Harbor", "spotify:track:live"),
+        _track("Low Tide - Remastered 2011", "Glass Harbor", "spotify:track:remaster"),
+        _track("Second Sun (feat. Paper Moons)", "Glass Harbor", "spotify:track:sun"),
+        _track("Second Sun", "Glass Harbor", "spotify:track:sun2"),
+        _track("Paper Boats", "Glass Harbor", "spotify:track:boats"),
+    ]
+    fake = FakeSpotify(search={"track": tracks})
+
+    _ops(fake, tmp_path).queue({"query": "Glass Harbor", "count": 3})
+
+    assert fake.queued == ["spotify:track:live", "spotify:track:sun", "spotify:track:boats"]
+
+
+def test_replacements_come_from_the_pool_so_the_count_is_still_met(tmp_path: Path) -> None:
+    catalogue = _catalogue(8)
+    fake = FakeSpotify(search={"track": catalogue}, queue_items=[catalogue[1], catalogue[2]])
+
+    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 4})
+
+    assert result.ok
+    assert fake.queued == [
+        "spotify:track:0",
+        "spotify:track:3",
+        "spotify:track:4",
+        "spotify:track:5",
+    ]
+
+
+def test_a_second_request_for_more_songs_by_the_artist_adds_different_ones(
+    tmp_path: Path,
+) -> None:
+    fake = FakeSpotify(search={"track": _catalogue(12)})
+    ops = _ops(fake, tmp_path)
+
+    ops.queue({"query": "Night Circuit", "count": 4})
+    ops.queue({"query": "Night Circuit", "count": 4})
+
+    assert len(fake.queued) == 8
+    assert len(set(fake.queued)) == 8
+
+
+def test_when_every_candidate_is_queued_nothing_is_sent(tmp_path: Path) -> None:
+    catalogue = _catalogue(3)
+    fake = FakeSpotify(search={"track": catalogue}, queue_items=catalogue)
+
+    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 3})
+
+    assert result.ok
+    assert result.text == ALREADY_QUEUED
+    assert fake.queued == []
+
+
+def test_fewer_new_songs_than_asked_says_so(tmp_path: Path) -> None:
+    catalogue = _catalogue(4)
+    fake = FakeSpotify(search={"track": catalogue}, queue_items=[catalogue[0]])
+
+    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 6})
+
+    assert result.ok
+    assert len(fake.queued) == 3
+    assert "only 3 new" in result.text
+    assert "6 asked" in result.text
+
+
+def test_an_unreadable_queue_still_leaves_the_memory_of_what_was_added(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": [LOW_TIDE]})
+    ops = _ops(fake, tmp_path)
+    fake.script("GET", "/me/player/queue", _spotify_error(500, "", "boom"))
+
+    first = ops.queue({"query": "low tide"})
+    fake.script("GET", "/me/player/queue", _spotify_error(500, "", "boom"))
+    second = ops.queue({"query": "low tide"})
+
+    assert first.ok
+    assert second.text == ALREADY_QUEUED
+    assert fake.queued == ["spotify:track:lowtide"]
+
+
+def test_a_song_whose_queueing_failed_may_be_asked_for_again(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": [LOW_TIDE]})
+    ops = _ops(fake, tmp_path)
+    fake.script("POST", "/me/player/queue", _spotify_error(500, "", "boom"))
+
+    with pytest.raises(SpotifyError):
+        ops.queue({"query": "low tide"})
+    result = ops.queue({"query": "low tide"})
+
+    assert result.ok
+    assert fake.queued == ["spotify:track:lowtide"] * 2
+
+
+def test_a_single_title_queues_the_best_matching_hit_not_the_first(tmp_path: Path) -> None:
+    hits = [
+        _track("Low Tide Remixed Megamix", "DJ Nobody", "spotify:track:mix"),
+        _track("Slow Tide", "Other", "spotify:track:slow"),
+        LOW_TIDE,
+    ]
+    fake = FakeSpotify(search={"track": hits})
+
+    _ops(fake, tmp_path).queue({"query": "low tide"})
+
+    assert fake.queued == ["spotify:track:lowtide"]
+
+
+def test_a_single_song_by_an_artist_uses_the_filtered_search(tmp_path: Path) -> None:
+    cover = _track("Low Tide", "Cover Band", "spotify:track:cover")
+    fake = FakeSpotify(
+        by_query={('track:"Low Tide" artist:"Glass Harbor"', "track"): [cover, LOW_TIDE]}
+    )
+
+    _ops(fake, tmp_path).queue({"query": "Low Tide", "artist": "Glass Harbor"})
+
+    assert fake.searches == [('track:"Low Tide" artist:"Glass Harbor"', "track")]
+    assert fake.queued == ["spotify:track:lowtide"]
+
+
+def test_a_repeat_of_a_single_title_does_not_queue_the_next_best_song(tmp_path: Path) -> None:
+    hits = [LOW_TIDE, _track("Low Tides", "Other", "spotify:track:near")]
+    fake = FakeSpotify(search={"track": hits}, queue_items=[LOW_TIDE])
+
+    result = _ops(fake, tmp_path).queue({"query": "low tide"})
+
+    assert result.text == ALREADY_QUEUED
+    assert fake.queued == []
+
+
+def test_queueing_by_artist_keeps_only_that_artists_tracks(tmp_path: Path) -> None:
+    own = [_track(f"Song {i}", "Glass Harbor", f"spotify:track:own{i}") for i in range(2)]
+    featuring = _track("Duet", "Paper Moons", "spotify:track:duet")
+    featuring["artists"].append({"name": "Glass Harbor", "uri": _artist_uri("Glass Harbor")})
+    stranger = _track("Glass Harbor Blues", "Harbor Glass Tribute", "spotify:track:tribute")
+    fake = FakeSpotify(
+        search={"artist": [GLASS_HARBOR]},
+        by_query={('artist:"Glass Harbor"', "track"): [stranger, own[0], featuring, own[1]]},
+    )
+
+    _ops(fake, tmp_path).queue({"query": "Glass Harbor", "count": 3})
+
+    assert fake.queued == ["spotify:track:own0", "spotify:track:duet", "spotify:track:own1"]
+
+
+def test_the_whole_queue_operation_stops_after_thirty_seconds(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": _catalogue(10)})
+    fake.clock.per_request = 4.0
+
+    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 10})
+
+    assert 0 < len(fake.queued) < 10
+    assert result.ok
+    assert f"Queued {len(fake.queued)} of 10" in result.text
+    assert "ran out of time" in result.text
+    assert result.origin is Origin.SPOTIFY
+
+
+def test_running_out_of_time_before_anything_is_queued_says_so(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": _catalogue(10)})
+    fake.clock.per_request = 40.0
+
+    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 5})
+
+    assert not result.ok
+    assert "ran out of time" in result.text
+    assert fake.queued == []
+
+
+def test_a_failure_part_way_reports_what_was_queued(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": _catalogue(6)})
+    fake.script(
+        "POST",
+        "/me/player/queue",
+        httpx.Response(204),
+        httpx.Response(204),
+        _spotify_error(500, "", "boom"),
+    )
+
+    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 5})
+
+    assert result.ok
+    assert result.text.startswith(
+        "Queued 2 of 5 (Song 0 by Night Circuit, Song 1 by Night Circuit)"
+    )
+    assert "Spotify failed" in result.text
+    assert result.origin is Origin.SPOTIFY
+    assert fake.queued == ["spotify:track:0", "spotify:track:1", "spotify:track:2"]
+
+
+def test_a_timeout_part_way_says_not_to_retry(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": _catalogue(6)})
+    fake.script(
+        "POST",
+        "/me/player/queue",
+        httpx.Response(204),
+        httpx.ReadTimeout("slow"),
+    )
+
+    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 3})
+
+    assert result.text.startswith("Queued 1 of 3")
+    assert "may not have gone through" in result.text
+    assert "do not retry" in result.text
+
+
+def test_a_failure_before_anything_is_queued_is_raised(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": _catalogue(3)})
+    fake.script("POST", "/me/player/queue", _spotify_error(500, "", "boom"))
+
+    with pytest.raises(SpotifyError):
+        _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 2})
+
+
+def test_a_timeout_on_the_first_song_is_uncertain(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": _catalogue(3)})
+    fake.script("POST", "/me/player/queue", httpx.ReadTimeout("slow"))
+
+    with pytest.raises(UncertainOutcomeError):
+        _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 2})
+
+
+def test_queueing_on_an_inactive_player_transfers_then_retries(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": [LOW_TIDE]}, devices=[_inactive()])
+    fake.script("POST", "/me/player/queue", _no_device())
+
+    result = _ops(fake, tmp_path, SpotifyConfig()).queue({"query": "low tide"})
+
+    assert result.ok
+    assert fake.transfers == [{"device_ids": ["d1"], "play": False}]
+    assert fake.calls("POST", "/me/player/queue")[-1].url.params["device_id"] == "d1"
+    assert fake.launches == []
+
+
+def test_queueing_with_no_player_does_not_launch_spotify(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": [LOW_TIDE]}, devices=[])
+    fake.script("POST", "/me/player/queue", _no_device())
+
+    with pytest.raises(NoDeviceError):
+        _ops(fake, tmp_path, SpotifyConfig()).queue({"query": "low tide"})
+
+    assert fake.launches == []
