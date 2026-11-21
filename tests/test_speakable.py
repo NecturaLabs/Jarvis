@@ -1,6 +1,6 @@
 import pytest
 
-from jarvis.voice import speakable
+from jarvis.voice import MAX_SPOKEN_CHARS, speakable, spoken_question
 
 
 @pytest.mark.parametrize(
@@ -18,3 +18,8 @@ from jarvis.voice import speakable
 )
 def test_markdown_is_not_read_aloud(reply: str, spoken: str) -> None:
     assert speakable(reply) == spoken
+
+
+def test_a_runaway_reply_is_cut_before_it_is_cleaned() -> None:
+    assert len(speakable("word " * 5000)) <= MAX_SPOKEN_CHARS
+    assert len(spoken_question("word " * 5000)) <= MAX_SPOKEN_CHARS

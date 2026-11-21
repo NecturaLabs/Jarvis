@@ -12,7 +12,7 @@ from jarvis.policy import Origin
 from jarvis.voice import PcListener, VoiceLoop
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
     from numpy.typing import NDArray
 
@@ -28,11 +28,14 @@ class Frames:
     forever: bool = False
     drained: int = 0
 
-    def frames(self) -> Iterator[NDArray[np.int16]]:
+    def frames(self) -> Generator[NDArray[np.int16]]:
         yield from self.script
         while self.forever:
             threading.Event().wait(0.005)
             yield SILENCE
+
+    def sessions(self) -> Generator[Generator[NDArray[np.int16]]]:
+        yield self.frames()
 
     def drain(self) -> None:
         self.drained += 1
