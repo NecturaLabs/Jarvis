@@ -260,6 +260,17 @@ def test_a_claim_after_only_failed_tools_is_challenged_with_the_failure() -> Non
         "The volume is now at 20.",
         "I've put it on shuffle.",
         "Set it to thirty.",
+        "Done, anything else?",
+        "Paused, anything else?",
+        "Playing it now, want more?",
+        "I've set it to 30, is that okay?",
+        "Muted.",
+        "It's muted now.",
+        "I turned shuffle on.",
+        "I've turned on shuffle.",
+        "I upped the volume.",
+        "Sure \u2014 I muted it.",
+        '"I muted it."',
     ],
 )
 def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
@@ -288,6 +299,11 @@ def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
         "I set out to find it, but nothing came up.",
         "I'd set it lower at night.",
         "Shall I put it on shuffle?",
+        "Sure, set it to what?",
+        "Set the volume to what\uff1f",
+        "The volume is set by the system.",
+        "The volume's up to you.",
+        "Set it to what?)",
     ],
 )
 def test_an_honest_answer_is_not_a_claim(reply: str) -> None:

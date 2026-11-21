@@ -72,14 +72,21 @@ _SUBJECT = (
 )
 _DEED = (
     r"(?:paused|resumed|resuming|playing|skipped|skipping|queued|added|saved|liked|started|"
-    r"stopped|switched|done|turned (?:it |the volume )?(?:up|down)|"
-    r"(?:set|changed|lowered|raised|increased|decreased|muted|unmuted|put) (?:it|that|this|"
+    r"stopped|switched|done|muted|unmuted|"
+    r"turned (?:it |the volume |shuffle |repeat )?(?:up|down|on|off)|"
+    r"turned (?:on|off) (?:shuffle|repeat)|"
+    r"(?:set|changed|lowered|raised|increased|decreased|upped|muted|unmuted|put) (?:it|that|this|"
     r"(?:the|your) (?:volume|music|song|track|playlist|queue))|"
-    r"(?:the )?volume(?:'s| is| has been)? (?:now )?(?:set|changed|increased|decreased|raised|"
-    r"lowered|up|down|at)|"
+    r"volume(?:'s| is| has been)? (?:now )?(?:set|changed|increased|decreased|raised|lowered|"
+    r"up|down|at)|"
+    r"the volume(?:'s| is| has been)? (?:now )?(?:at (?:\d+|(?:ten|eleven|twelve|\w+teen|\w+ty)\b)|"
+    r"(?:set|changed|raised|lowered|turned (?:up|down)) to\b)|"
     r"(?:shuffle|repeat)(?:'s| is)? (?:now )?(?:on|off|set))\b"
 )
 _CLAIM = re.compile(_LEAD + _SUBJECT + _DEED, re.IGNORECASE)
+# After a dash only a clause with its own subject counts ("Sure - I muted it"), not a list of
+# what Jarvis can do ("Spotify - playing music, managing queues").
+_CLAIM_AFTER_DASH = re.compile(_LEAD + _SUBJECT.removesuffix("?") + _DEED, re.IGNORECASE)
 _DENIAL = re.compile(
     r"\b(?:not|no|nothing|never|cannot|unable|failed)\b|n't\b|\bcant\b|\bcouldnt\b",
     re.IGNORECASE,
@@ -97,6 +104,8 @@ _DESCRIPTION = re.compile(
 )
 _COURTESY = re.compile(r"^no (?:problem|worries)\b[,.!]?\s*", re.IGNORECASE)  # not a denial
 _SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+|\n+")
+_DASH = re.compile(r"\s*[\u2014\u2013]\s*|\s-\s")
+_QUOTES = "\"'\u201c\u201d\u2018()[]"
 _ACTIONS_NOTE = re.compile(r"^\[actions taken:[^\]]*\]\s*", re.IGNORECASE)
 _REPLY_KEY = '{"reply":"'
 _REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
@@ -107,20 +116,23 @@ def claims_action(reply: str) -> bool:
     """Return True when a reply says that something was done.
 
     Only a sentence or clause that opens with the deed counts ("Paused.", "Sure thing, playing
-    it now.", "I set the volume to thirty."), and never a question, a sentence that denies anything
-    or one that names a deed as a thing, so an honest "Shall I put it on shuffle?", "I couldn't
-    find that, so nothing was saved" or "Playing music is my specialty" is left alone.
+    it now.", "I set the volume to thirty.", "Sure - I muted it."), and never the question that
+    ends a sentence, a sentence that denies anything or one that names a deed as a thing, so an
+    honest "Shall I put it on shuffle?", "I couldn't find that, so nothing was saved" or "Playing
+    music is my specialty" is left alone, while "Done, anything else?" is still a claim.
     """
-    for sentence in _SENTENCE_END.split(reply.replace("\u2019", "'")):
-        text = sentence.strip()
-        if (
-            not text
-            or text.endswith("?")  # a question offers to act; it does not say it acted
-            or _DENIAL.search(_COURTESY.sub("", text))
-            or _DESCRIPTION.match(text)
-        ):
+    for sentence in _SENTENCE_END.split(reply.replace("\u2019", "'").replace("\uff1f", "?")):
+        text = sentence.strip().strip(_QUOTES)
+        if not text or _DENIAL.search(_COURTESY.sub("", text)) or _DESCRIPTION.match(text):
             continue
-        if any(_CLAIM.match(clause.strip()) for clause in text.split(",")):
+        clauses: list[tuple[str, re.Pattern[str]]] = []
+        for index, part in enumerate(_DASH.split(text)):
+            for number, clause in enumerate(part.split(",")):
+                pattern = _CLAIM_AFTER_DASH if index > 0 and number == 0 else _CLAIM
+                clauses.append((clause.strip().strip(_QUOTES), pattern))
+        if sentence.strip().rstrip(_QUOTES).endswith("?"):
+            clauses = clauses[:-1]  # the question offers to act; a clause before it may still claim
+        if any(pattern.match(clause) for clause, pattern in clauses):
             return True
     return False
 

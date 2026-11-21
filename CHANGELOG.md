@@ -57,10 +57,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - A docs map, an architecture overview, a statement of what Jarvis keeps and sends (`docs/privacy.md`), and
   recipes and agents for coding agents (`.claude/`, `.codex/`, `.agents/`).
 
-[Unreleased]: https://github.com/NecturaLabs/Jarvis/commits/dev
-
 ### Fixed
 
 - The check that Jarvis does not claim an action no tool did now also catches "I set the volume to
-  thirty", "I've lowered the volume", "I muted it" and "The volume is now at 20"; a question such as
-  "Shall I put it on shuffle?" is never taken for a claim.
+  thirty", "I've lowered the volume", "I muted it", "The volume is now at 20" and "Sure — I muted it".
+  A question such as "Shall I put it on shuffle?" is not a claim, but "Done, anything else?" still is.
+
+[Unreleased]: https://github.com/NecturaLabs/Jarvis/commits/dev
