@@ -418,7 +418,7 @@ def test_main_reports_an_idle_pid_and_exits_zero(
     assert clock.slept == [30.0]
     assert "pid 100 (pid 100)" in out
     assert "cpu: 0.0 % of one core (limit 5 %)" in out
-    assert "gpu: no DRM client" in out
+    assert "gpu: no GPU engine time published" in out
     assert "rss: 512.0 MiB -> 512.0 MiB" in out
     assert "ok: idle" in out
 
@@ -547,3 +547,19 @@ def test_main_pid_reads_the_pid() -> None:
         return subprocess.CompletedProcess(command, 0, stdout="4242\n", stderr="")
 
     assert idle_check.main_pid("jarvis.service", run) == 4242
+
+
+def test_a_drm_client_without_engine_counters_is_not_reported_as_no_client(
+    proc: FakeProc, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ROCm compute goes through /dev/kfd; amdgpu then lists the client with no drm-engine lines."""
+    proc.process(100)
+    proc.drm_fd(100, 8, client=13783, engines={})
+
+    _main(proc, "--pid", "100", "--seconds", "30")
+
+    out = capsys.readouterr().out
+    assert (
+        "gpu: no GPU engine time published (no DRM client, or one without drm-engine counters)"
+        in out
+    )
