@@ -35,7 +35,8 @@ did not confirm. What exists today and what is in scope:
   `127.0.0.1`. There is no client secret. Tokens are kept in a mode 0600 file under `~/.local/state/jarvis/`
   and a token file that is a symbolic link, belongs to another user or is readable by others is refused.
 - **Local services.** Strata listens on `127.0.0.1` and requires an API key held in a mode 0600 file. A custom
-  `model.base_url` must be `https`, or `http` to this machine, and may not carry credentials. Nothing is
+  `model.base_url` must be an `http` or `https` URL on this machine (`127.0.0.1`, `localhost` or `::1`), so a
+  request and its key never leave it, and may not carry credentials. Nothing is
   sent to a hosted model; see `docs/adr/0005-local-only.md`.
 - **Recordings.** Jarvis keeps no audio. Setting `JARVIS_DEBUG_AUDIO_DIR` saves the owner's requests (never PC
   audio) to that folder, mode 0600, for debugging; leave it unset otherwise.

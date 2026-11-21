@@ -39,10 +39,13 @@ SafeText = Annotated[str, AfterValidator(_no_control)]
 
 
 def _check_endpoint(url: str) -> str:
-    """Return `url` when it is `https`, or `http` to this machine; empty means unset.
+    """Return `url` when it is an `http` or `https` URL on this machine; empty means unset.
+
+    Jarvis runs locally (docs/plan.md): the model server is on this machine, so a request and the
+    key it carries never leave it.
 
     Raises:
-        ValueError: the URL has control characters, a password or an insecure scheme or host.
+        ValueError: the URL has control characters, a password, another scheme or another host.
     """
     if not url:
         return url
@@ -51,11 +54,8 @@ def _check_endpoint(url: str) -> str:
     if parts.username is not None or parts.password is not None:
         msg = "must not hold a user name or password (keys never live in the config)"
         raise ValueError(msg)
-    secure = parts.scheme == "https" or (
-        parts.scheme == "http" and parts.hostname in _LOOPBACK_HOSTS
-    )
-    if not secure or not parts.hostname:
-        msg = "must be an https URL (http only for 127.0.0.1, localhost or ::1)"
+    if parts.scheme not in {"http", "https"} or parts.hostname not in _LOOPBACK_HOSTS:
+        msg = "must be an http or https URL on this machine (127.0.0.1, localhost or ::1)"
         raise ValueError(msg)
     return url
 
@@ -127,7 +127,7 @@ class AudioConfig(_Section):
     voice: str = "kokoro:bm_george"
     speech_speed: float = Field(default=1.0, ge=0.5, le=2.0)
     transcribe_engine: str = ""
-    transcribe_model: str = "base.en"
+    transcribe_model: str = "small.en"  # measured faster and more accurate than base.en here
     transcribe_threads: int = Field(default=8, ge=1, le=256)
     transcribe_short_window: bool = True  # size Whisper's window to the clip: ~5x faster
     vocabulary_hint: bool = True
