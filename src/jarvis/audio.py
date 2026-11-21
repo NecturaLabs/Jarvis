@@ -588,7 +588,7 @@ def pw_play_command(rate: int) -> list[str]:
 
 PLAY_GRACE_S = 10.0  # how long playback may run past the sound's own length before it is ended
 LINGER_S = 0.3  # how long an open player waits for the next sentence before it is closed
-WRITE_STEP = 4800  # bytes handed to the player at a time (0.1 s at 24 kHz)
+WRITE_STEP = 4096  # bytes handed to the player at a time (one pipe page; about 0.085 s at 24 kHz)
 QUIET = 300  # samples at or below this level count as silence at the ends of a sentence
 LEAD_KEEP_S = 0.03  # silence kept before the first word Jarvis says
 TAIL_KEEP_S = 0.2  # silence kept after each sentence (the voice pads about 0.35 s)
@@ -693,9 +693,13 @@ class Speaker:
 
     @property
     def busy(self) -> bool:
-        """True while sentences are waiting, being synthesized or playing."""
+        """True while sentences are waiting, being synthesized or playing (a hushed one is not)."""
         with self._lock:
-            return self._pending > 0 or self._proc is not None
+            return self._busy()
+
+    def _busy(self) -> bool:
+        playing = self._proc is not None and self._player_run == self._run
+        return self._pending > 0 or playing
 
     @property
     def interruptible(self) -> bool:
@@ -731,7 +735,7 @@ class Speaker:
         `AudioError` the worker kept.
         """
         with self._lock:
-            while self._pending > 0 or self._proc is not None:
+            while self._busy():
                 self._lock.wait()
             error, self._error = self._error, None
         if error is not None:
@@ -741,6 +745,7 @@ class Speaker:
         """Drop every sentence not yet heard and end the one playing, at once."""
         with self._lock:
             self._run += 1
+            self._guarded = False  # what held the wake phrase is no longer playing
             while True:
                 try:
                     self._items.get_nowait()
@@ -786,19 +791,29 @@ class Speaker:
         pcm, rate = self._synthesize(text)
         if not self._current(run):
             return
+        if self._proc is not None and (rate != self._rate or self._player_run != run):
+            self._close()  # another rate, or a player a hush has ended
         first = self._proc is None
         pcm = trim_silence(pcm, rate, lead_s=LEAD_KEEP_S if first else None, tail_s=TAIL_KEEP_S)
         if not pcm:
             return
-        if self._own_wake is not None and self._own_wake(pcm, rate):
+        if self._sounds_like_wake(pcm, rate):
             log.info("a sentence sounds like the wake word; it cannot be spoken over")
             with self._lock:
                 self._guarded = True
-        if self._proc is not None and (rate != self._rate or self._player_run != run):
-            self._close()  # another rate, or a player a hush has ended
         proc = self._proc or self._open(rate, run)
         if proc is not None:
             self._write(proc, pcm, run)
+
+    def _sounds_like_wake(self, pcm: bytes, rate: int) -> bool:
+        """Return whether `pcm` would trigger the wake word; a check that fails counts as yes."""
+        if self._own_wake is None:
+            return False
+        try:
+            return self._own_wake(pcm, rate)
+        except Exception:
+            log.exception("the own-voice wake check failed")
+            return True  # the safe answer: this sentence cannot be spoken over
 
     def _open(self, rate: int, run: int) -> subprocess.Popen[bytes] | None:
         cmd = self._player(rate)
@@ -809,6 +824,8 @@ class Speaker:
         except OSError as exc:
             msg = f"could not start {cmd[0]}: {exc}"
             raise AudioError(msg) from exc
+        if proc.stdin is not None:
+            os.set_blocking(proc.stdin.fileno(), False)  # a stuck player cannot block a write
         with self._lock:
             self._proc = proc
             self._rate = rate
@@ -839,6 +856,8 @@ class Speaker:
                     msg = "the player stopped taking sound"
                     raise AudioError(msg)
                 view = view[os.write(fd, view[:WRITE_STEP]) :]
+            except BlockingIOError:
+                continue  # the pipe filled between select and write
             except OSError as exc:
                 if not self._current(run):
                     return

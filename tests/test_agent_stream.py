@@ -299,3 +299,83 @@ def test_split_sentences_keeps_the_unfinished_tail() -> None:
 def test_the_claim_check_gives_the_same_answer_in_pieces_as_whole(reply: str) -> None:
     pieces = split_sentences(reply)
     assert claims_action(reply) == any(claims_action(piece) for piece in pieces)
+
+
+def _two_calls(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    message = dict(first)
+    other = dict(second["tool_calls"][0], id="c2")
+    message["tool_calls"] = [*first["tool_calls"], other]
+    return message
+
+
+def test_an_exact_copy_of_the_reply_call_does_not_cut_the_reply() -> None:
+    reply = _call("no_action", {"reply": "Alpha one. Beta two. Gamma three."})
+    model = ScriptedModel([_two_calls(reply, reply)])
+    ear = Ear(model)
+    agent, _ = _agent(model, [])
+
+    agent.handle("talk", ear.hooks())
+
+    assert ear.hushes == 0
+    assert ear.heard == ["Alpha one.", "Beta two.", "Gamma three."]
+
+
+def test_a_call_after_a_held_claim_still_drops_and_audits_what_was_said() -> None:
+    counter = Counter()
+    first = _call("pause")
+    first["content"] = "Let me look. Paused it. One moment."
+    model = ScriptedModel([first, _say("Paused.")])
+    ear = Ear(model)
+    agent, audit = _agent(model, [counter.op("pause")])
+
+    agent.handle("pause", ear.hooks())
+
+    assert ear.heard[0] == "Let me look."
+    assert "Paused it." not in ear.heard
+    assert ear.hushes == 1
+    assert _events(audit).count("spoken_before_tool_call") == 1
+
+
+def test_words_of_a_reply_call_that_is_refused_are_dropped_and_audited() -> None:
+    bad = _call("no_action")
+    bad["tool_calls"][0]["function"]["arguments"] = '{"reply": "Hello there. Nice day.", "x": 1}'
+    model = ScriptedModel([bad, _call("no_action", {"reply": "Hi."})])
+    ear = Ear(model)
+    agent, audit = _agent(model, [])
+
+    assert agent.handle("hello", ear.hooks()) == "Hi."
+
+    assert ear.hushes == 1
+    assert "spoken_before_tool_call" in _events(audit)
+    assert ear.heard[-1] == "Hi."
+
+
+def test_another_tools_arguments_are_never_spoken() -> None:
+    counter = Counter()
+    # Shaped like a reply, and refused later by the operation's schema: never heard either way.
+    model = ScriptedModel(
+        [_call("pause", {"reply": "Secret words. More."}), _say("I could not pause it.")]
+    )
+    ear = Ear(model)
+    agent, _ = _agent(model, [counter.op("pause")])
+
+    agent.handle("pause", ear.hooks())
+
+    assert ear.heard == ["I could not pause it."]
+
+
+def test_nothing_is_delivered_after_the_request_was_cancelled() -> None:
+    answer = _say("Unfinished")  # text, so the reply is final without running a call
+    model = ScriptedModel([answer])
+    ear = Ear(model)
+    agent, _ = _agent(model, [])
+    last = len(stream_pieces(answer, model.piece)) - 1
+
+    def cancel_at_the_end(number: int) -> None:
+        if number == last:  # after the last piece: only the final delivery can see it
+            ear.cancelled = True
+
+    model.after_piece = cancel_at_the_end
+    agent.handle("talk", ear.hooks())
+
+    assert ear.heard == []

@@ -291,6 +291,7 @@ class StrataModel:
             response.read()
             return _message(response)
         answer = _Assembly()
+        finished = False
         for event in _events(response.iter_lines()):
             if self.clock() > deadline:
                 msg = "model server took too long to answer"
@@ -301,6 +302,10 @@ class StrataModel:
             for piece in answer.add(obj(choices[0].get("delta"))):
                 passed_on.append(piece)
                 on_delta(piece)
+            finished = finished or choices[0].get("finish_reason") is not None
+        if not finished:  # cut off: what arrived is not the whole answer
+            msg = "model server's answer ended before it was finished"
+            raise ModelError(msg)
         return answer.message()
 
     def _wait_ready(self, seconds: float) -> None:

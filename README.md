@@ -36,9 +36,12 @@ Jarvis is pre-1.0 software; see [Status](#status).
 - **Listening to PC audio (off by default):** Jarvis can also take requests heard in what the PC plays, such as
   a Discord call. That speech is treated as someone else's, so you are asked to confirm before it changes
   anything. See [the ADR](docs/adr/0003-pc-audio-is-not-the-owner.md).
+- **Talking:** Jarvis starts speaking as soon as the first sentence of its reply is written. Say "Hey Jarvis"
+  while it talks and it stops and listens to your new request. See
+  [the ADR](docs/adr/0008-speak-while-writing-and-barge-in.md).
 
-Not built yet: PC operations other than Spotify, keybinding confirmation, voice barge-in. The
-plan marks each as planned.
+Not built yet: PC operations other than Spotify and keybinding confirmation. The plan marks each as
+planned.
 
 ## Requirements
 

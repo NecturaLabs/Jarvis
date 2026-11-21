@@ -193,6 +193,7 @@ class _ReplyStream:
         self._held = False
         self.spoken = ""  # the start of the answer already passed on to be spoken
         self.cut = False  # a tool call came after spoken words
+        self.audited = False
 
     def feed(self, delta: Delta) -> None:
         """Take one streamed piece of the answer.
@@ -211,17 +212,20 @@ class _ReplyStream:
         ):
             self._source = "reply"
             self._arguments += delta.arguments
+        elif self._source == "reply":
+            # A second call after the reply: speak no more, but it may be an exact copy the
+            # agent drops, so whether what was said stands is settled once the message is whole.
+            self._held = True
+            return
         else:
-            self.stop()
+            self.stop()  # a tool call: no later word of this message is the reply
             return
         self._speak_ready()
 
     def stop(self) -> None:
         """Speak no more of this message; drop what was passed on and not yet heard."""
-        if self._held:
-            return
         self._held = True
-        if self.spoken:
+        if self.spoken and not self.cut:
             self.cut = True
             self._hooks.hush()
 
@@ -569,18 +573,24 @@ class Agent:
         if not calls:
             return self._final(turn, _ACTIONS_NOTE.sub("", _text(message).strip()) or "Done.")
         lone_reply = len(calls) == 1 and str(obj(calls[0].get("function")).get("name")) == NO_ACTION
-        if stream is not None and not lone_reply:
-            stream.stop()
-            if stream.cut:
-                self._audit.record("spoken_before_tool_call", text=stream.spoken[:MAX_AUDIT_TEXT])
+        if not lone_reply:
+            self._cut(stream)
         turn.messages.append({"role": "assistant", "content": _text(message), "tool_calls": calls})
         results = self._run_calls(calls, hooks, turn)
         answer = self._no_action_reply(calls, results)
         if answer is None:
-            if stream is not None:
-                stream.stop()  # the model answers again; what it said here was not its reply
+            self._cut(stream)  # the model answers again; what it said here was not its reply
             return None
         return self._final(turn, answer)
+
+    def _cut(self, stream: _ReplyStream | None) -> None:
+        """Stop a stream whose words turned out not to be the reply, and audit what was heard."""
+        if stream is None:
+            return
+        stream.stop()
+        if stream.cut and not stream.audited:
+            stream.audited = True
+            self._audit.record("spoken_before_tool_call", text=stream.spoken[:MAX_AUDIT_TEXT])
 
     @staticmethod
     def _no_action_reply(calls: list[dict[str, Any]], results: list[Result]) -> str | None:

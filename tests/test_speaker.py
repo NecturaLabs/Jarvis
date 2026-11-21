@@ -268,3 +268,58 @@ def test_a_sentence_right_after_a_hush_gets_a_fresh_player(tmp_path: Path) -> No
         assert files[-1].read_bytes() == _sound(1000, seconds=2.0)
     finally:
         _end(pid_file)
+
+
+def test_a_player_that_stops_taking_sound_is_ended_and_reported(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pid"
+    speaker = Speaker(
+        lambda _t: (_sound(1000, seconds=5.0), RATE), player=_stuck(pid_file), grace_s=0.3
+    )
+    failures: list[BaseException] = []
+
+    def say() -> None:
+        try:
+            speaker.say("x")
+        except AudioError as exc:
+            failures.append(exc)
+
+    talking = threading.Thread(target=say, daemon=True)
+    try:
+        talking.start()
+        talking.join(WAIT_S)
+        assert not talking.is_alive()
+        assert len(failures) == 1
+    finally:
+        _end(pid_file)
+
+
+def test_a_failing_own_voice_check_counts_as_wake_like_and_the_sentence_still_plays(
+    tmp_path: Path,
+) -> None:
+    pid_file = tmp_path / "pid"
+
+    def broken(_pcm: bytes, _rate: int) -> bool:
+        msg = "wake model broke"
+        raise RuntimeError(msg)
+
+    speaker = Speaker(_voice, player=_endless(pid_file), own_wake=broken)
+    try:
+        speaker.queue("hello")
+        _until(pid_file.exists)
+        assert not speaker.interruptible
+    finally:
+        speaker.hush()
+        _end(pid_file)
+
+
+def test_a_hushed_speaker_is_not_busy_at_once(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pid"
+    speaker = Speaker(_voice, player=_endless(pid_file), linger_s=5.0)
+    try:
+        speaker.queue("hello")
+        _until(pid_file.exists)
+        _until(lambda: speaker.busy)
+        speaker.hush()
+        assert not speaker.busy  # the next request need not wait for the old player to close
+    finally:
+        _end(pid_file)

@@ -334,6 +334,8 @@ class VoiceLoop:
                     self._pc.audio.drain()
 
     def _speak(self, words: str) -> None:
+        if self._barged_at is not None:  # the owner spoke over Jarvis: say nothing more
+            return
         self._begin_speaking()
         self._speaker.queue(words)
         self._end_speaking()
@@ -348,6 +350,8 @@ class VoiceLoop:
         self._begin_speaking()
         for sentence in split_sentences(words):
             self._speaker.queue(sentence)
+        if self._barged_at is not None:  # spoken over while these were being queued
+            self._speaker.hush()
 
     def _hush(self) -> None:
         """Drop the reply's words not heard yet (the agent's `hush` hook)."""
@@ -556,18 +560,16 @@ class VoiceLoop:
     ) -> bool:
         """Hand each request heard in one PC audio stream to the loop; True once stopping.
 
-        Jarvis's own voice also plays through the PC, so frames are skipped while it is busy. While
-        it waits for a yes or no, speech in PC audio is counted, so a voice there cannot answer.
+        Jarvis's own voice also plays through the PC, so no request is captured while it is busy;
+        while it speaks or waits for a yes, `_pc_busy` notes what the frames mean.
         """
         busy = False
         for frame in frames:
             if should_stop():
                 return True
             state = self.state
-            if state is State.CONFIRM:
+            if self._pc_busy(pc, frame, state):
                 busy = True
-                if pc.vad.speech_probability(frame) >= self._cfg.vad_threshold:
-                    self._pc_speech += 1
                 continue
             if state not in _NOTING_WAKES or not self._pc_heard.empty():
                 busy = True
@@ -584,6 +586,24 @@ class VoiceLoop:
                 pc.wake.reset()
                 continue
             self._capture_pc(pc, frames, wake_at)
+        return False
+
+    def _pc_busy(self, pc: PcListener, frame: NDArray[np.int16], state: State) -> bool:
+        """Note what a PC frame means while Jarvis speaks or waits for a yes; True if it did.
+
+        A wake word said over Jarvis may come from the call: it is noted, so a barge-in that
+        echoes it is the call's request, not the owner's (see `_reply`). While Jarvis waits for
+        a yes, speech in PC audio is counted, so a voice there cannot answer.
+        """
+        if state is State.SPEAK:
+            if pc.wake.heard(frame):
+                self._pc_wake_at = self._clock()
+                log.info("wake word in PC audio while Jarvis speaks")
+            return True
+        if state is State.CONFIRM:
+            if pc.vad.speech_probability(frame) >= self._cfg.vad_threshold:
+                self._pc_speech += 1
+            return True
         return False
 
     def _too_soon(self, wake_at: float) -> bool:

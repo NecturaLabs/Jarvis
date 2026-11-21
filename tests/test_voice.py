@@ -933,3 +933,84 @@ def test_streamed_parts_of_a_reply_are_queued_sentence_by_sentence() -> None:
     _run(_loop(Agent(reply), Mic(*REQUEST), speaker))
 
     assert speaker.said == ["First part.", "Second part!"]
+
+
+@dataclass
+class NotingWake(Wake):
+    fired: threading.Event = field(default_factory=threading.Event)
+
+    @override
+    def heard(self, frame: NDArray[np.int16]) -> bool:
+        found = super().heard(frame)
+        if found:
+            self.fired.set()
+        return found
+
+
+def test_a_wake_said_over_jarvis_that_pc_audio_also_held_is_pc_audio() -> None:
+    reply, _ = _replies("Here is a long answer.", "Skipped.")
+    agent = Agent(reply)
+    speaker = Playing()
+    pc_wake = NotingWake()
+    pc = PcAudio(Idle(lambda: speaker.busy), WAKE)
+    mic = Mic(*REQUEST, until(pc_wake.fired.is_set), WAKE, *REQUEST[1:])
+    cfg = CFG.model_copy(update={"listen_to_pc": True})
+
+    _run(_loop(agent, mic, speaker, pc=pc, cfg=cfg, pc_wake=pc_wake))
+
+    assert [origin for _text, origin in agent.calls] == [Origin.OWNER_SPEECH, Origin.PC_AUDIO]
+
+
+def test_jarvis_own_voice_is_drained_after_speech_but_not_after_a_barge_in() -> None:
+    plain = Mic(*REQUEST)
+    _run(_loop(Agent(lambda _t, _h, _o: "Paused."), plain, Speaker()))
+    reply, _ = _replies("Here is a long answer.", "Skipped.")
+    speaker = Playing()
+    barged = Mic(*REQUEST, until(lambda: speaker.busy), WAKE, *REQUEST[1:])
+    _run(_loop(Agent(reply), barged, speaker))
+
+    # Once after the speech and once as the loop goes back to waiting. With a barge-in there are
+    # two speeches but the first is not drained, so the owner's words after the wake are kept.
+    assert plain.drained == 2
+    assert barged.drained == 2
+
+
+def test_nothing_more_is_said_once_the_owner_spoke_over_jarvis() -> None:
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        if hooks.speak is None:
+            return ""
+        hooks.speak("Here is a long answer.")
+        until(hooks.cancelled)()
+        hooks.waking()  # a line that comes after the barge-in must not be spoken
+        hooks.speak("And more.")
+        return ""
+
+    calls: list[int] = []
+
+    def counted(text: str, hooks: Hooks, origin: Origin) -> str:
+        calls.append(1)
+        return reply(text, hooks, origin) if len(calls) == 1 else ""
+
+    speaker = Playing()
+    mic = Mic(*REQUEST, until(lambda: speaker.busy), WAKE, *REQUEST[1:])
+    _run(_loop(Agent(counted), mic, speaker))
+
+    assert speaker.said == ["Here is a long answer."]
+
+
+def test_dropping_unheard_words_puts_the_loop_back_to_thinking() -> None:
+    states: list[State] = []
+    loops: list[VoiceLoop] = []
+
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        assert hooks.speak is not None
+        hooks.speak("Let me look.")
+        hooks.hush()
+        states.append(loops[0].state)
+        return ""
+
+    loop = _loop(Agent(reply), Mic(*REQUEST), Speaker())
+    loops.append(loop)
+    _run(loop)
+
+    assert states == [State.THINK]

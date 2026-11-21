@@ -291,6 +291,7 @@ class _Breaking(httpx.SyncByteStream):
         raise httpx.ReadError(msg)
 
 
+FINISH: dict[str, Any] = {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
 CALL_EVENTS: tuple[dict[str, Any], ...] = (
     _chunk({"role": "assistant", "content": ""}),
     _chunk(
@@ -341,7 +342,7 @@ def test_a_streamed_answer_is_passed_on_piece_by_piece_and_returned_whole() -> N
 
 
 def test_streamed_text_arrives_as_text_pieces() -> None:
-    events = (_chunk({"content": "Paused "}), _chunk({"content": "it."}))
+    events = (_chunk({"content": "Paused "}), _chunk({"content": "it."}), FINISH)
     transport = httpx.MockTransport(lambda _r: httpx.Response(200, content=_sse(*events)))
     pieces: list[Delta] = []
 
@@ -377,7 +378,7 @@ def test_a_stream_that_fails_before_any_piece_is_retried_once() -> None:
         posts.append(1)
         if len(posts) == 1:
             raise httpx.ConnectError("refused", request=request)
-        return httpx.Response(200, content=_sse(_chunk({"content": "back"})))
+        return httpx.Response(200, content=_sse(_chunk({"content": "back"}), FINISH))
 
     pieces: list[Delta] = []
     reply = _model(httpx.MockTransport(handle)).chat(MESSAGES, TOOLS, on_delta=pieces.append)
@@ -392,6 +393,7 @@ def test_a_stream_that_fails_before_any_piece_is_retried_once() -> None:
         httpx.Response(500, text="boom"),
         httpx.Response(200, content=b"data: not json\n\n"),
         httpx.Response(200, content=_sse(_chunk({"tool_calls": [{"function": {"name": "x"}}]}))),
+        httpx.Response(200, content=_sse(_chunk({"content": "cut off"}))),  # no finish_reason
     ],
 )
 def test_a_refused_or_unreadable_stream_is_a_model_error(response: httpx.Response) -> None:
@@ -403,7 +405,12 @@ def test_a_refused_or_unreadable_stream_is_a_model_error(response: httpx.Respons
 
 def test_a_stream_that_runs_past_its_time_is_a_model_error() -> None:
     now = [0.0]
-    events = (_chunk({"content": "one "}), _chunk({"content": "two "}), _chunk({"content": "x"}))
+    events = (
+        _chunk({"content": "one "}),
+        _chunk({"content": "two "}),
+        _chunk({"content": "x"}),
+        FINISH,
+    )
     local = ModelConfig(base_url=Config().model_base_url())
     model = StrataModel(
         local,

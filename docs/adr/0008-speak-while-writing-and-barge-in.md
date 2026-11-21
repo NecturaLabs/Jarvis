@@ -10,7 +10,8 @@ the wake word to stop Jarvis mid-sentence so the request can be steered. Until n
 reply, synthesized all of it, then played it, with the wake word off while it spoke
 ([plan](../plan.md#speaking-barge-in-confirmation), issue #12).
 
-Measured on 2026-11-21 (Strata 0.1.62, Qwen3.6-35B-A3B, Kokoro `bm_fable`), for a typical command:
+Measured on 2026-11-21 (Strata 0.1.62, Qwen3.6-35B-A3B, Kokoro `bm_fable`, not the default `bm_george`), for a
+typical command:
 
 | Stage | Time |
 |---|---|
@@ -52,8 +53,8 @@ For speaking over Jarvis:
 
 ## Decision outcome
 
-Proposed: speak finished sentences as they are written, and listen for the wake word while speaking, with the
-own-voice check. The rules, all in code:
+Speak finished sentences as they are written, and listen for the wake word while speaking, after checking
+that each of Jarvis's own sentences does not trigger it. The rules, all in code:
 
 - Only the message's text, or the `reply` of a `no_action` call that comes first, is spoken; never a tool's
   arguments or reasoning. `no_action` is only streamed while the owner's settings let it run.
@@ -62,11 +63,22 @@ own-voice check. The rules, all in code:
   Sentence ends are a subset of the claim check's, so checking the pieces gives the same answer as checking
   the whole.
 - Once a tool call follows spoken words, nothing more of that message is spoken, the audio not yet heard is
-  dropped, and the audit log records `spoken_before_tool_call`. This relaxes #12's constraint: words that
-  passed the claim check may be heard before a call in the same message.
+  dropped, and the audit log records `spoken_before_tool_call`. The same happens when the `no_action` call
+  turns out to be refused (its arguments are checked only once whole) or not alone; an exact copy of it,
+  which the agent drops, changes nothing. This relaxes #12's constraint: words that passed the claim check
+  may be heard before a call in the same message, or from a reply call that is then refused.
+- When the claim check challenges the whole reply, the sentences already heard stay heard and the corrected
+  answer follows them.
+- A stream that ends without the server saying it is finished is a model failure, not a reply.
 - At most 1,000 characters are spoken before the answer is whole.
 - While Jarvis speaks, the wake word stops the speech and the request and starts a new one; a question
-  spoken over counts as no. `audio.barge_in = false` turns this off.
+  spoken over counts as no, and no further line of that request is spoken. `audio.barge_in = false` turns
+  this off.
+- With PC audio on, a wake word heard there while Jarvis speaks is noted, so a barge-in that echoes it is
+  treated as PC audio, as an idle wake heard on both already was ([ADR 0003](0003-pc-audio-is-not-the-owner.md)).
+- Once a sentence about to play sounds like the wake word, the rest of that stretch of speech cannot be
+  spoken over (sentences are checked as they are synthesized, ahead of playback). A check that fails counts
+  as wake-like.
 
 Measured: the check costs 6 to 33 ms per sentence. In direct playback, Jarvis's ordinary replies scored 0.001
 to 0.035 on the wake model (the threshold is 0.5), and only lines like "Hey, Jarvis here" scored above 0.9.
@@ -82,4 +94,4 @@ to 0.035 on the wake model (the threshold is 0.5), and only lines like "Hey, Jar
 - Bad: without echo cancellation, loud speakers next to the microphone may still let Jarvis's own voice reach
   the wake model at a level the direct check did not see; the owner's room check (a `local` test) decides.
 - The first model call still reads the whole prompt; a Strata engine that honours `strata_prefix` removes
-  about 4 s from every request.
+  about 4.5 s from every request.
