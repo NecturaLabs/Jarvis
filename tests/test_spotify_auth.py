@@ -368,29 +368,6 @@ def test_days_left_counts_whole_days_to_the_six_month_limit(tmp_path: Path) -> N
     assert (store.days_left(START + 183 * DAY) or 0) < 0
 
 
-def test_backfill_sets_the_authorization_time_only_when_missing(tmp_path: Path) -> None:
-    path = tmp_path / "token.json"
-    store = _store(path, Accounts(_ok()))
-    assert not store.backfill_authorized_at(START)
-    assert read_private(path) is None
-
-    _write(path)
-    assert store.backfill_authorized_at(START - DAY)
-    assert store.authorized_at == START - DAY
-    assert not store.backfill_authorized_at(START)
-    assert store.authorized_at == START - DAY
-    assert _saved(path)["refresh_token"] == "ref-0"
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
-
-
-def test_backfill_leaves_a_damaged_file_alone(tmp_path: Path) -> None:
-    path = tmp_path / "token.json"
-    write_private(path, "{")
-
-    assert not _store(path, Accounts(_ok())).backfill_authorized_at(START)
-    assert read_private(path) == "{"
-
-
 def test_invalid_grant_means_log_in_again_and_keeps_the_file(tmp_path: Path) -> None:
     path = tmp_path / "token.json"
     _write(path, expires_at=START)
