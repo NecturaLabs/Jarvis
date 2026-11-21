@@ -28,5 +28,7 @@ Check, with file:line evidence for every finding:
    without the fix; no weakened assertions, skips or retries; audio tests run silent.
 7. **Checks** — run `tools/check.sh` (it cuts audio and skips `local` tests) and quote its summary.
 
-Do not edit files. Report blocking findings first (file:line, why it is wrong, how to show it fails), then
+Do not edit files, and never change the shared checkout's state (no `git checkout`, `switch`, `stash`,
+`reset` or `restore`): another session may be working in it. To build or test an exact commit, export it
+(`git archive <sha> | tar -x -C <scratch dir>`) and run there. Report blocking findings first (file:line, why it is wrong, how to show it fails), then
 non-blocking ones, then what you could not verify.
