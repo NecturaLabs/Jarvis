@@ -514,6 +514,11 @@ class ChatApp(App[None]):
             self._mount(Note(body))
 
     def _poll(self) -> None:
+        """Show what the log gained; it runs from a timer, so not once the window is going."""
+        with contextlib.suppress(NoMatches):
+            self._show_log()
+
+    def _show_log(self) -> None:
         self._follow_down()  # a reply's Markdown grows after it is mounted
         for entry in self._tail.read():
             own = bool(self._session_id) and entry.get("session") == self._session_id
@@ -590,7 +595,8 @@ class ChatApp(App[None]):
         if self._services.stats is not None and self._settings.toolbar:
             self.run_worker(self._read_stats, thread=True, group="stats", exclusive=True)
         else:
-            self._draw_toolbar()
+            with contextlib.suppress(NoMatches):  # a timer's call, as the window closes
+                self._draw_toolbar()
 
     def _read_stats(self) -> None:
         sample = self._services.stats
@@ -643,6 +649,14 @@ class ChatApp(App[None]):
             self.call_after_refresh(self._follow_down)
 
     def _tick(self) -> None:
+        """Redraw the working line, the hints and the footer.
+
+        It also runs from a timer, so it does nothing once the window is being taken down.
+        """
+        with contextlib.suppress(NoMatches):
+            self._draw_tick()
+
+    def _draw_tick(self) -> None:
         self._bottom()
         work = self._work
         working = self.query_one("#working", Static)

@@ -1,6 +1,7 @@
 """The Azure keyword wake word: a helper process with no network, switchable with LiveKit's."""
 
 import io
+import os
 import sys
 import threading
 import time
@@ -77,8 +78,11 @@ def test_a_wake_line_from_the_helper_is_heard_once() -> None:
 def test_reset_forgets_a_wake_not_yet_reported() -> None:
     wake = AzureWake(_fake(FAKE_HELPER))
     try:
-        for _ in range(4):
-            wake.heard(QUIET)
+        for _ in range(3):
+            assert not wake.heard(QUIET)
+        # The fourth frame goes straight to the helper: through heard() its report could be
+        # taken by that same call, and then there would be nothing left to forget.
+        os.write(wake._stdin, QUIET.tobytes())  # pyright: ignore[reportPrivateUsage]
         assert _until(lambda: bool(wake._wakes))  # pyright: ignore[reportPrivateUsage]
         wake.reset()
         assert not wake.heard(QUIET)
@@ -92,13 +96,17 @@ def test_the_words_right_after_the_keyword_are_handed_to_the_request() -> None:
     numbered = np.arange(20 * FRAME, dtype=np.int16)
     try:
         sent = 0
-        for _ in range(4):  # the fake helper reports the keyword after its fourth frame
+        for _ in range(3):  # the fake helper reports the keyword after its fourth frame
             assert not wake.heard(numbered[sent * FRAME : (sent + 1) * FRAME])
             sent += 1
-        # Wait for the helper's report, never on how fast it answers: a slow runner lagged it.
-        assert _until(lambda: bool(wake._wakes))  # pyright: ignore[reportPrivateUsage]
-        assert wake.heard(numbered[sent * FRAME : (sent + 1) * FRAME])
+        # The report may come back within the fourth call or after it; wait for it, never on
+        # how fast the helper answers (a slow runner lagged it, a fast one beat the call).
+        heard = wake.heard(numbered[sent * FRAME : (sent + 1) * FRAME])
         sent += 1
+        if not heard:
+            assert _until(lambda: bool(wake._wakes))  # pyright: ignore[reportPrivateUsage]
+            assert wake.heard(numbered[sent * FRAME : (sent + 1) * FRAME])
+            sent += 1
         lead = np.concatenate(wake.after_wake())
         # From a quarter second before the keyword's end (sample 5120) to the last frame sent.
         assert lead[0] == 5120 - RATE // 4

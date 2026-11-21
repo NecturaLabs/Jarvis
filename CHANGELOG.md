@@ -143,6 +143,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `jarvis chat` could end with a `NoMatches` traceback when it was closed: a timer that redraws the
+  window, reads the log or draws the toolbar could fire after the window's parts were taken down.
 - In `jarvis chat`, a request from the log without a time no longer ends in a lone "·", a reply that
   starts with a heading no longer leaves its `●` on a line of its own, the details after a step's name are
   no longer bold, and the transcript fills the window's width instead of stopping six columns short.
