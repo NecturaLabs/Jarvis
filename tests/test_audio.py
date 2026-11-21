@@ -182,6 +182,28 @@ def test_app_audio_waits_for_the_app_then_records_it() -> None:
     assert len(finds) >= 2
 
 
+def test_each_app_audio_session_ends_with_its_stream() -> None:
+    """A capture over PC audio must end with the stream, not run on into the next one."""
+    audio = AppAudio(
+        ["discord"],
+        find=lambda _apps: ["42"],
+        poll_s=0.01,
+        command_for=lambda _target: ["head", "-c", str(FRAME * 2 * 3), "/dev/zero"],
+        feeds=lambda _pid: ["42"],
+    )
+    sessions = audio.sessions()
+    try:
+        first = next(sessions)
+        frames = [next(first, None) for _ in range(4)]
+        second = next(sessions)
+        assert next(second, None) is not None
+    finally:
+        sessions.close()
+        audio.stop()
+
+    assert [frame is not None for frame in frames] == [True, True, True, False]
+
+
 def test_app_audio_with_no_apps_records_all_pc_output() -> None:
     targets: list[str] = []
 

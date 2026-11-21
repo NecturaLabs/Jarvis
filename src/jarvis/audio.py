@@ -26,7 +26,7 @@ from jarvis.jsonutil import obj, objs
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator, Iterator
     from typing import IO
 
     from numpy.typing import NDArray
@@ -242,16 +242,28 @@ class AppAudio:
             self._mic = None
             mic.stop()
 
-    def frames(self) -> Iterator[NDArray[np.int16]]:
-        """Yield frames from whichever matching stream is playing, until stopped."""
+    def _session(self, target: str) -> Generator[NDArray[np.int16]]:
+        try:
+            yield from self._record(target)
+        except AudioError as exc:
+            log.info("PC audio stream ended (%s); waiting for it to come back", exc)
+
+    def sessions(self) -> Generator[Generator[NDArray[np.int16]]]:
+        """Yield one frame stream per matching stream that plays, each ending with it.
+
+        A consumer that reads speech from one session cannot run on into the next stream. Runs
+        until stopped.
+        """
         while not self._stopping.is_set():
             target = self._target()
             if target is not None:
-                try:
-                    yield from self._record(target)
-                except AudioError as exc:
-                    log.info("PC audio stream ended (%s); waiting for it to come back", exc)
+                yield self._session(target)
             self._stopping.wait(self._poll_s)
+
+    def frames(self) -> Iterator[NDArray[np.int16]]:
+        """Yield frames from whichever matching stream is playing, until stopped."""
+        for session in self.sessions():
+            yield from session
 
     def drain(self) -> None:
         """Drop frames captured so far."""
@@ -419,9 +431,9 @@ class Vad:
         return best
 
 
-def write_wav(path: Path, samples: NDArray[np.int16]) -> None:
-    """Write 16 kHz mono 16-bit PCM."""
-    with wave.open(str(path), "wb") as handle:
+def write_wav(target: Path | IO[bytes], samples: NDArray[np.int16]) -> None:
+    """Write 16 kHz mono 16-bit PCM to a file path or an open binary file."""
+    with wave.open(str(target) if isinstance(target, Path) else target, "wb") as handle:
         handle.setnchannels(1)
         handle.setsampwidth(2)
         handle.setframerate(RATE)
