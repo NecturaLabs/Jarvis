@@ -13,6 +13,12 @@ from jarvis.secretfile import read_api_key
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
+from jarvis.web.arctic import ArcticShift
+from jarvis.web.guard import public_client
+from jarvis.web.openmeteo import OpenMeteo
+from jarvis.web.ops import Clients, WebOps
+from jarvis.web.page import PageReader
+from jarvis.web.searxng import Searxng
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -30,10 +36,11 @@ def no_action_operation() -> Operation:
     """
     return Operation(
         "no_action",
-        "Call this when the request needs no Spotify action (a greeting, a general question or a "
-        "request you can't do), with your spoken answer in `reply`. Never use it when the owner "
-        "asks you to play, pause, resume, skip, change volume, shuffle, repeat, queue or like "
-        "something.",
+        "Call this when the request needs no tool (a greeting, chat, or a request you can't do), "
+        "with your spoken answer in `reply`, or to answer from what earlier tools returned. Never "
+        "use it when the owner asks you to play, pause, resume, skip, change volume, shuffle, "
+        "repeat, queue or like something, or for the time, the weather or facts you would have "
+        "to look up.",
         {
             "type": "object",
             "properties": {
@@ -132,6 +139,19 @@ class Jarvis:
     hint: Callable[[], str]
 
 
+def web_operations(config: Config) -> list[Operation]:
+    """Return the time, weather, web and Reddit operations, with clients made on first use."""
+    return WebOps(
+        config,
+        Clients(
+            search=Searxng(config.research.searxng_url),
+            weather=OpenMeteo(factory=public_client),
+            reddit=ArcticShift(factory=public_client),
+            pages=PageReader(factory=public_client),
+        ),
+    ).operations()
+
+
 class SetupError(Exception):
     """Something setup provides is missing."""
 
@@ -158,7 +178,7 @@ def build(config: Config, *, via: str | None = None) -> Jarvis:
         SpotifyApi(tokens, library_ttl_s=config.spotify.library_refresh_s), config.spotify
     )
     audit = AuditLog(audit_file(), tags={"via": via} if via else None)
-    registry = Registry([*ops.operations(), no_action_operation()])
+    registry = Registry([*ops.operations(), *web_operations(config), no_action_operation()])
     agent = Agent(
         model,
         registry,

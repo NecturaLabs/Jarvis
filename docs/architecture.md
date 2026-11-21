@@ -8,7 +8,8 @@ Jarvis is one Python process, `jarvis run`, started as a systemd user unit. One 
 microphone and runs the whole request path: wake word, speech capture, transcription, the agent, the
 spoken reply. There is one agent and no subagents. The model is a separate service, Strata, on
 loopback. Every tool call goes through a typed operation and a policy decision before it runs, and
-every step is written to an audit log. Today the only tools are Spotify's.
+every step is written to an audit log. The tools are Spotify's, and the time, the weather, web search and
+Reddit (`web/`).
 
 ```text
  jarvis.service (jarvis run)                          jarvis-strata.service
@@ -21,6 +22,9 @@ every step is written to an audit log. Today the only tools are Spotify's.
  │    │          shortcuts.py (no model)    │
  │    ▼                                     │        Spotify Web API (HTTPS)
  │ spotify/ops.py ─▶ spotify/api.py ────────┼──────▶ and the Spotify app
+ │ web/ops.py ─▶ web/searxng.py ────────────┼──────▶ SearXNG container, 127.0.0.1:8888
+ │    ├─▶ web/openmeteo.py, web/arctic.py ──┼──────▶ Open-Meteo, Arctic Shift (HTTPS)
+ │    └─▶ web/page.py ─▶ web/guard.py ──────┼──────▶ public web pages only
  │    audit.py ─▶ audit.jsonl               │
  │ audio.py  Speaker ─▶ pw-play             │
  └──────────────────────────────────────────┘
@@ -59,6 +63,17 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 | `spotify/api.py` | The Web API client: playback, search, library, devices; retries, rate limits. | Replay a request whose outcome is unknown (`UncertainOutcomeError`). |
 | `spotify/auth.py` | The PKCE login, the loopback-only callback, and `TokenStore` (file-locked refresh). | Use a client secret, or listen on anything but `127.0.0.1`. |
 | `spotify/errors.py` | `SpotifyError` and friends, with the origin of their words. | Mark Spotify's own text as trusted. |
+
+### The time, weather, web and Reddit
+
+| Module | Owns | Must not |
+|---|---|---|
+| `web/ops.py` | `WebOps`: `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`, their shortcuts and spoken sentences, and the addresses and thread ids recent searches returned. | Open a page or thread no search returned. Pass search, page or Reddit text on as trusted, or put outside text into a weather or time answer. |
+| `web/guard.py` | `public_client`: an httpx client over an httpcore pool whose every connection is resolved (within 5 s), checked to be a public address on port 80 or 443, and pinned to that address; `read_capped` for the 1 MB cap on service answers. | Follow a redirect itself, use a proxy from the environment, or send anything that names the owner. |
+| `web/page.py` | `PageReader`: one redirect hop at a time with each address checked, 15 s for the whole read, a 2 MB cap counted after inflating gzip or deflate itself, text types only, trafilatura's main-text extraction. | Read past the cap or the deadline, or open another scheme, port or a URL with a password. |
+| `web/searxng.py` | The client of the local SearXNG (`deploy/searxng/`): JSON results, broken and repeated links dropped. | Reach anything but the loopback URL in `research.searxng_url`. |
+| `web/openmeteo.py` | Open-Meteo's place lookup and forecast, taking only numbers, WMO codes, a checked time zone and a two-letter country code. | Return a place name or any other free text from the answer. |
+| `web/arctic.py` | The Arctic Shift archive: posts by id, top-level comments by score. | Ask for an id or subreddit that is not plain letters and digits. |
 
 ### Services and CLI
 
@@ -186,7 +201,8 @@ falls under its catch-all entry, so a change anywhere still asks for review). Th
 - the audit log: `audit.py`;
 - the Spotify OAuth flow and token files: `spotify/`, `secretfile.py`;
 - the units and the config that become systemd lines: `services.py`, `config.py`;
-- the system prompt: `prompts/core.md`.
+- the system prompt: `prompts/core.md`;
+- the web tools: `web/`, above all `web/guard.py` and `web/page.py`.
 
-The PC-operation tools and the web tools are not built yet (see [plan.md](plan.md)); when they
-exist they join this list. Report a vulnerability as [SECURITY.md](../SECURITY.md) says.
+The PC-operation tools are not built yet (see [plan.md](plan.md)); when they exist they join this
+list. Report a vulnerability as [SECURITY.md](../SECURITY.md) says.

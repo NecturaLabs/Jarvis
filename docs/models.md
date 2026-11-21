@@ -102,6 +102,7 @@ daemon and never your Voxtype config or recordings. Each run is
 
 | Package | Version | Licence (package metadata) |
 |---|---|---|
+| httpcore (used directly by the web guard) | 1.0.9 | BSD-3-Clause |
 | httpx | 0.28.1 | BSD-3-Clause |
 | livekit-wakeword | 2.1.3 | Apache-2.0 |
 | numpy | 2.5.5 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 |
@@ -109,8 +110,21 @@ daemon and never your Voxtype config or recordings. Each run is
 | piper-tts | 1.8.0 | GPL-3.0-or-later |
 | pydantic | 2.14.3 | MIT |
 | textual (the `jarvis chat` window) | 8.2.8 | MIT |
+| trafilatura (the main text of a web page) | 2.3.1 | Apache-2.0 |
 
 What textual pulls in: rich 15.0.0, markdown-it-py 4.3.0, mdit-py-plugins 0.7.0, mdurl 0.1.2 and platformdirs
-4.14.8, all MIT (package metadata; the three markdown packages give it as a licence classifier). Every other
+4.14.8, all MIT (package metadata; the three markdown packages give it as a licence classifier).
+
+What trafilatura pulls in: lxml 6.1.3 and lxml-html-clean 0.4.6 (BSD-3-Clause), jusText 3.0.2 (BSD-2-Clause,
+read from its LICENSE), courlan 1.5.0, htmldate 1.11.0 and tzlocal 5.4.5, dateparser 1.5.1, python-dateutil
+4.0.0, pytz and tzdata, and `regex` 2026.11.19 (Apache-2.0 AND CNRI-Python). CNRI-Python is the one licence
+outside the GPL-compatible list: the owner accepted it as a named exception in `tools/check_licences.py`
+([ADR 0007](adr/0007-outside-services-for-answers.md)). Trafilatura is imported only when a page is first
+read.
+
+The SearXNG container (`deploy/searxng/`, AGPL-3.0-or-later) is a separate program Jarvis talks to over HTTP;
+its image is pinned by digest.
+
+Every other
 installed package, development tools included, is checked by `tools/check_licences.py` in CI: its licence must be
 compatible with GPL-3.0-or-later, and `uv.lock` must resolve and download only from PyPI.
