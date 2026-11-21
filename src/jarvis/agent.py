@@ -1150,12 +1150,14 @@ class Agent:
         result = self._attempt(op.run, op, args, digest)
         if isinstance(result, _Failed):
             return result.result
+        shown = {"picture": result.picture, "caption": result.caption} if result.picture else {}
         self._audit.record(
             "tool_result",
             op=op.name,
             action=digest,
             ok=result.ok,
             text=result.text[:MAX_AUDIT_TEXT],
+            **shown,
         )
         return result
 

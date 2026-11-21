@@ -8,6 +8,7 @@ marks say.
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, override
 
+from PIL import Image as PillowImage
 from rich import box
 from rich.console import Group
 from rich.panel import Panel
@@ -18,8 +19,11 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Markdown, OptionList, Static, TextArea
+from textual_image.widget import Image
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from rich.console import RenderableType
     from textual.app import ComposeResult
 
@@ -35,6 +39,9 @@ STAR = "\N{TEARDROP-SPOKED ASTERISK}"
 BAR_FULL = "\N{BOX DRAWINGS HEAVY HORIZONTAL}"
 BAR_EMPTY = "\N{BOX DRAWINGS HEAVY HORIZONTAL}"
 BAR_CELLS = 10
+PICTURE_CELLS = 64  # the widest a shown picture is drawn, in terminal cells
+PICTURE_ROWS = 24  # and the tallest
+CELL_SHAPE = 2  # a terminal cell is about twice as tall as it is wide
 GIB = 1024**3
 WARN_AT = 0.7
 ALARM_AT = 0.9
@@ -130,6 +137,40 @@ class Reply(Horizontal):
         """Show `text` in place of what the draft held."""
         self.text = text
         self.query_one(Markdown).update(text)
+
+
+class PictureView(Vertical):
+    """A picture Jarvis shows, drawn with the terminal's own graphics, with its caption.
+
+    In kitty it is drawn with the terminal graphics protocol, in a Sixel terminal with Sixel, and
+    elsewhere in coloured half cells (textual-image picks when the window starts).
+    """
+
+    def __init__(self, path: Path, caption: str) -> None:
+        """Show the picture file at `path`, which the chat's own picture folder holds.
+
+        A file that cannot be read as a picture raises `OSError` here, not while it is drawn.
+        """
+        super().__init__(classes="picture")
+        self.path = path
+        self._caption = caption
+        self._cells = self.cells(path)
+
+    @staticmethod
+    def cells(path: Path) -> int:
+        """Return how many cells wide to draw the picture so it is at most `PICTURE_ROWS` tall."""
+        with PillowImage.open(path) as picture:
+            width, height = picture.size
+        fitting = (PICTURE_ROWS * CELL_SHAPE * width) // max(1, height)
+        return max(1, min(PICTURE_CELLS, fitting))
+
+    @override
+    def compose(self) -> ComposeResult:
+        """The picture, then its caption."""
+        picture = Image(self.path, classes="picture-image")
+        picture.styles.width = self._cells
+        yield picture
+        yield Static(f"{STAR} {self._caption}", classes="picture-caption", markup=False)
 
 
 def welcome(name: str, lines: list[Text]) -> Panel:

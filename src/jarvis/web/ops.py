@@ -9,7 +9,8 @@ action need a yes. Every operation that sends words the model wrote (a place, a 
 `outbound`: while text from the owner's files is in the conversation it needs a yes.
 
 A page or a Reddit thread can be opened only when a search in this session returned it: the model
-cannot be talked into sending conversation text to an address a page made up.
+cannot be talked into sending conversation text to an address a page made up. The same holds for a
+picture the chat shows (`show_image`): it must come from an image search or a read page.
 """
 
 import re
@@ -21,17 +22,19 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from jarvis.operations import Operation, OperationError, Result
+from jarvis.pictures import SHOWN_SIDE, PictureError, prepare
 from jarvis.policy import Origin
 from jarvis.shortcuts import Shortcut
 from jarvis.web.arctic import SUBREDDIT, ArcticShift, Post, RedditUnavailableError
 from jarvis.web.openmeteo import Day, Forecast, OpenMeteo, Place, WeatherUnavailableError
 from jarvis.web.page import PageError, PageReader
-from jarvis.web.searxng import Hit, SearchUnavailableError, Searxng
+from jarvis.web.searxng import Hit, ImageHit, SearchUnavailableError, Searxng
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from jarvis.config import Config
+    from jarvis.pictures import PictureCache
 
 REMEMBERED = 60
 NOON = 12
@@ -173,8 +176,12 @@ class WebOps:
         clients: Clients,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         local_zone: tzinfo | None = None,
+        shown: PictureCache | None = None,
     ) -> None:
-        """Use the clients given; `clock` and `local_zone` are for tests (default: this PC's)."""
+        """Use the clients given; `clock` and `local_zone` are for tests (default: this PC's).
+
+        With `shown`, where the chat's pictures are kept, the pictures operations are offered too.
+        """
         super().__init__()
         self._clock_config = config.clock
         self._weather_config = config.weather
@@ -188,6 +195,9 @@ class WebOps:
         self._home: Place | None = None
         self._urls: deque[str] = deque(maxlen=REMEMBERED)
         self._posts: deque[str] = deque(maxlen=REMEMBERED)
+        self._shown = shown
+        self._images: dict[str, ImageHit] = {}
+        self._image_number = 0
 
     # --- time -------------------------------------------------------------------------------
 
@@ -317,7 +327,82 @@ class WebOps:
         host = urlsplit(page.url).hostname or ""
         title = f"{page.title} " if page.title else ""
         body = page.text[: self._research.page_chars]
+        if page.image and self._shown is not None:
+            found = ImageHit(page.title or host, page.image, page.url, 0, 0)
+            body += f"\nPicture: [image_id {self._remember_image(found)}]"
         return Result(f"Page {title}({host}):\n{body}", Origin.WEB)
+
+    # --- pictures ---------------------------------------------------------------------------
+
+    def _remember_image(self, found: ImageHit) -> str:
+        """Return the id a picture is shown by; the oldest are forgotten past `REMEMBERED`."""
+        self._image_number += 1
+        image_id = f"i{self._image_number}"
+        self._images[image_id] = found
+        while len(self._images) > REMEMBERED:
+            del self._images[next(iter(self._images))]
+        return image_id
+
+    def image_search(self, args: dict[str, Any]) -> Result:
+        """Search for pictures and list them by id, for `show_image`.
+
+        Raises:
+            OperationError: the local search service failed.
+        """
+        query = str(args["query"])
+        try:
+            found = self._search.images(query, limit=int(args.get("count", self._research.results)))
+        except SearchUnavailableError as exc:
+            raise OperationError(str(exc)) from exc
+        if not found:
+            return Result("The search found no pictures.")
+        lines: list[str] = []
+        for number, hit in enumerate(found, 1):
+            host = urlsplit(hit.page_url or hit.image_url).hostname
+            size = f", {hit.width}x{hit.height}" if hit.width and hit.height else ""
+            lines.append(
+                f"{number}. {hit.title} ({host}){size} [image_id {self._remember_image(hit)}]"
+            )
+        return Result(f"Pictures for {query!r}:\n" + "\n".join(lines), Origin.WEB)
+
+    def show_image(self, args: dict[str, Any]) -> Result:
+        """Fetch a picture a recent image search or read page returned and show it in the chat.
+
+        Raises:
+            OperationError: the id came from no search, or the picture could not be fetched,
+                read or kept.
+        """
+        image_id = str(args["image_id"]).strip().lower()
+        found = self._images.get(image_id)
+        if found is None or self._shown is None:
+            msg = (
+                "Only a picture a recent image_search or web_read returned can be shown; "
+                "search first."
+            )
+            raise OperationError(msg)
+        try:
+            data = self._pages.picture(found.image_url)
+        except PageError as exc:
+            msg = f"Couldn't get that picture: {exc}."
+            raise OperationError(msg) from exc
+        try:
+            picture = prepare(data, found.title, max_side=SHOWN_SIDE)
+        except PictureError as exc:
+            msg = f"That picture couldn't be shown: {exc}."
+            raise OperationError(msg) from exc
+        try:
+            path = self._shown.keep(picture)
+        except OSError as exc:
+            msg = f"That picture couldn't be kept to show: {exc.strerror or type(exc).__name__}."
+            raise OperationError(msg) from exc
+        host = urlsplit(found.page_url or found.image_url).hostname or ""
+        return Result(
+            f"Shown to the owner in the chat: {found.title} ({host}), {picture.width}x"
+            f"{picture.height}. You can't see it, so say no more about it than its title does.",
+            Origin.WEB,
+            picture=str(path),
+            caption=f"{found.title} · {host}",
+        )
 
     # --- reddit -----------------------------------------------------------------------------
 
@@ -511,5 +596,43 @@ class WebOps:
                 self.reddit_read,
                 side_effect=False,
                 spoken_summary=lambda _a: "read that Reddit thread",
+            ),
+            *(self._picture_operations() if self._shown is not None else []),
+        ]
+
+    def _picture_operations(self) -> list[Operation]:
+        """Return `image_search` and `show_image`, for a channel that can show pictures."""
+        return [
+            Operation(
+                "image_search",
+                "Search for pictures of something to show the owner. Returns titles and an "
+                "image_id for each; show one with show_image.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1, "maxLength": MAX_QUERY},
+                        "count": _COUNT,
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+                self.image_search,
+                side_effect=False,
+                outbound=True,
+                spoken_summary=lambda a: f"search for pictures of {str(a.get('query', ''))[:60]}",
+            ),
+            Operation(
+                "show_image",
+                "Show the owner a picture that image_search or web_read returned, by its image_id. "
+                "You can't see it yourself.",
+                {
+                    "type": "object",
+                    "properties": {"image_id": {"type": "string", "minLength": 1, "maxLength": 12}},
+                    "required": ["image_id"],
+                    "additionalProperties": False,
+                },
+                self.show_image,
+                side_effect=False,
+                spoken_summary=lambda _a: "show you a picture",
             ),
         ]

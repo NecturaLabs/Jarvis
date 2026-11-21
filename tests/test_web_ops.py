@@ -1,12 +1,15 @@
 """The time, weather, web and Reddit operations, and how the agent treats what they return."""
 
+import io
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
+from PIL import Image
 
 from jarvis.agent import Agent, Hooks
 from jarvis.app import no_action_operation, web_operations
@@ -20,6 +23,7 @@ from jarvis.operations import (
     Result,
     validate_args,
 )
+from jarvis.pictures import PictureCache
 from jarvis.policy import Origin
 from jarvis.shortcuts import match
 from jarvis.web.arctic import ArcticShift
@@ -109,6 +113,28 @@ PAGE = (
 )
 
 
+IMAGES = {
+    "results": [
+        {
+            "title": "Red panda",
+            "url": "https://zoo.example/panda",
+            "img_src": "https://img.example/panda.png",
+            "resolution": "1920x1080",
+        },
+        {"title": "Snow leopard", "img_src": "https://img.example/leopard.png"},
+    ]
+}
+PAGE_WITH_PICTURE = PAGE.replace(
+    b"<html>", b'<html><head><meta property="og:image" content="https://img.example/k.png"></head>'
+)
+
+
+def _png(width: int = 2000, height: int = 1000) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), "orange").save(buffer, "PNG")
+    return buffer.getvalue()
+
+
 class Net:
     """Every outside service at once, answering from the dictionaries above; records requests."""
 
@@ -117,14 +143,21 @@ class Net:
         self.seen: list[httpx.Request] = []
         self.geo: object = GEO
         self.down: set[str] = set()
+        self.picture: bytes = _png()
+        self.page: bytes = PAGE
 
-    def handle(self, request: httpx.Request) -> httpx.Response:
+    def handle(self, request: httpx.Request) -> httpx.Response:  # ruff: ignore[too-many-return-statements] - one service per host
         self.seen.append(request)
         host = request.url.host
         if host in self.down:
             raise httpx.ConnectError("down", request=request)
         if host == "127.0.0.1":
-            return httpx.Response(200, json=SEARCH)
+            images = request.url.params.get("categories") == "images"
+            return httpx.Response(200, json=IMAGES if images else SEARCH)
+        if host == "img.example":
+            return httpx.Response(
+                200, stream=httpx.ByteStream(self.picture), headers={"content-type": "image/png"}
+            )
         if str(request.url.copy_with(query=None)) == GEOCODE:
             return httpx.Response(200, json=self.geo)
         if host == "api.open-meteo.com":
@@ -134,14 +167,14 @@ class Net:
         if request.url.path.endswith("/posts/ids"):
             return httpx.Response(200, json=POSTS)
         return httpx.Response(
-            200, stream=httpx.ByteStream(PAGE), headers={"content-type": "text/html"}
+            200, stream=httpx.ByteStream(self.page), headers={"content-type": "text/html"}
         )
 
     def hosts(self) -> list[str]:
         return [r.url.host for r in self.seen]
 
 
-def _ops(net: Net, config: Config | None = None) -> WebOps:
+def _ops(net: Net, config: Config | None = None, shown: PictureCache | None = None) -> WebOps:
     client = httpx.Client(transport=httpx.MockTransport(net.handle))
     return WebOps(
         config or Config(weather=WeatherConfig(coordinates=[52.52, 13.41], place="Berlin")),
@@ -153,6 +186,7 @@ def _ops(net: Net, config: Config | None = None) -> WebOps:
         ),
         clock=lambda: NOW,
         local_zone=BERLIN,
+        shown=shown,
     )
 
 
@@ -585,3 +619,99 @@ def test_the_operations_that_send_the_models_words_off_the_pc_are_marked_outboun
     # A search query or a place name can carry anything the model has read, file text included.
     outbound = {op.name for op in _ops(Net()).operations() if op.outbound}
     assert outbound == {"time_now", "weather", "web_search", "reddit_search"}
+
+
+# --- pictures -------------------------------------------------------------------------------------
+
+
+def _shown(tmp_path: Path) -> PictureCache:
+    return PictureCache(tmp_path / "pictures")
+
+
+def test_pictures_are_offered_only_where_they_can_be_shown(tmp_path: Path) -> None:
+    plain = [op.name for op in _ops(Net()).operations()]
+    shown = _ops(Net(), shown=_shown(tmp_path)).operations()
+
+    assert "image_search" not in plain
+    assert "show_image" not in plain
+    assert [op.name for op in shown][-2:] == ["image_search", "show_image"]
+    assert not any(op.side_effect for op in shown)
+    assert next(op for op in shown if op.name == "image_search").outbound
+
+
+def test_an_image_search_lists_pictures_by_id_as_outside_text(tmp_path: Path) -> None:
+    result = _run(_ops(Net(), shown=_shown(tmp_path)), "image_search", query="red panda")
+
+    assert result.origin is Origin.WEB
+    assert "1. Red panda (zoo.example), 1920x1080 [image_id i1]" in result.text
+    assert "2. Snow leopard (img.example) [image_id i2]" in result.text
+
+
+def test_a_found_picture_is_fetched_shrunk_kept_and_shown(tmp_path: Path) -> None:
+    net = Net()
+    ops = _ops(net, shown=_shown(tmp_path))
+    _run(ops, "image_search", query="red panda")
+
+    result = _run(ops, "show_image", image_id="i1")
+
+    path = Path(result.picture)
+    assert path.parent == tmp_path / "pictures"
+    assert path.stat().st_mode & 0o777 == 0o600
+    with Image.open(path) as shown:
+        assert shown.size == (1024, 512)
+    assert result.caption == "Red panda · zoo.example"
+    assert result.origin is Origin.WEB
+    assert "can't see it" in result.text
+    assert net.hosts()[-1] == "img.example"
+
+
+def test_only_a_picture_a_search_returned_is_fetched(tmp_path: Path) -> None:
+    net = Net()
+
+    with pytest.raises(OperationError, match="search first"):
+        _run(_ops(net, shown=_shown(tmp_path)), "show_image", image_id="i1")
+    assert net.seen == []
+
+
+def test_a_picture_that_is_not_one_is_not_shown(tmp_path: Path) -> None:
+    net = Net()
+    net.picture = b"<html>not a picture</html>"
+    ops = _ops(net, shown=_shown(tmp_path))
+    _run(ops, "image_search", query="red panda")
+
+    with pytest.raises(OperationError, match="isn't a picture"):
+        _run(ops, "show_image", image_id="i1")
+    assert not (tmp_path / "pictures").exists() or not any((tmp_path / "pictures").iterdir())
+
+
+def test_a_read_page_offers_its_own_picture(tmp_path: Path) -> None:
+    net = Net()
+    ops = _ops(net, shown=_shown(tmp_path))
+    _run(ops, "web_search", query="kettle")
+    net.page = PAGE_WITH_PICTURE
+
+    page = _run(ops, "web_read", url="https://kettles.example/descale")
+
+    assert "Picture: [image_id i1]" in page.text
+    assert Path(_run(ops, "show_image", image_id="i1").picture).is_file()
+
+
+def test_without_a_place_to_show_pictures_a_page_offers_none() -> None:
+    ops = _ops(Net())
+    _run(ops, "web_search", query="kettle")
+
+    assert "image_id" not in _run(ops, "web_read", url="https://kettles.example/descale").text
+
+
+def test_a_made_up_picture_id_or_an_address_fetches_nothing(tmp_path: Path) -> None:
+    net = Net()
+    ops = _ops(net, shown=_shown(tmp_path))
+    _run(ops, "image_search", query="red panda")
+    searched = len(net.seen)
+
+    for made_up in ("i99", "i0", "panda"):
+        with pytest.raises(OperationError, match="search first"):
+            _run(ops, "show_image", image_id=made_up)
+    with pytest.raises(ArgumentError):
+        _run(ops, "show_image", image_id="https://img.example/panda.png")
+    assert len(net.seen) == searched

@@ -73,7 +73,7 @@ the chat keeps it (see below).
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `12000` and `memory_idle_s` `0.0` (never forget), plus:
+`memory_tokens` `11500` and `memory_idle_s` `0.0` (never forget), plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -97,6 +97,10 @@ attaches that file, and `/image` alone attaches the newest screenshot in `OMASNA
 and shrunk to 1,568 pixels on its longest side before it goes to the model. What a picture shows counts as
 outside text: in that request, an action the model chooses needs your yes. The conversation keeps the
 picture's name, not the picture.
+
+Ask the chat to show you something ("show me a red panda") and it searches for pictures and draws the best
+one in the window, through kitty's graphics protocol (Sixel in a Sixel terminal, coloured half cells
+elsewhere). It fetches only a picture that search offered, from a public address, and does not see it itself.
 
 ## `[strata]`: how the `jarvis-strata` service runs the model
 

@@ -1,4 +1,4 @@
-"""Reads one web page: checked destinations, a size cap, and the main text pulled out of the HTML.
+"""Reads one web page or picture: checked destinations, a size cap, and a page's main text.
 
 Redirects are followed here, one hop at a time, so each new address is checked before it is
 reached (the connection itself is checked again in `jarvis.web.guard`).
@@ -23,7 +23,11 @@ MAX_REDIRECTS = 5
 READ_LIMIT_S = 15.0
 MAX_TITLE = 160
 MAX_BYTES = 2_000_000
+MAX_PICTURE_BYTES = 8_000_000
 _TEXT_TYPES = frozenset({"text/html", "application/xhtml+xml", "text/plain"})
+_PICTURE_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"})
+_ACCEPT_PAGE = "text/html,text/plain"
+_ACCEPT_PICTURE = "image/png,image/jpeg,image/webp,image/gif,image/bmp"
 _REDIRECTS = frozenset({301, 302, 303, 307, 308})
 
 
@@ -33,11 +37,35 @@ class PageError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class Page:
-    """A page's final address, its title and its main text (all someone else's words)."""
+    """A page's final address, its title and its main text (all someone else's words).
+
+    `image` is the page's own picture (`og:image`) at a full address Jarvis may open, or "".
+    """
 
     url: str
     title: str
     text: str
+    image: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _Body:
+    """What one address answered in the end: the bytes (capped), their type and text encoding."""
+
+    url: str
+    data: bytes
+    kind: str
+    encoding: str
+
+
+def _picture_address(image: str, page: str) -> str:
+    """Return a page's picture at its full address, or "" when Jarvis may not open it."""
+    if not image.strip():
+        return ""
+    try:
+        return check_url(urljoin(page, image.strip()))
+    except PageError:
+        return ""
 
 
 def _inflater(encoding: str) -> Callable[[bytes, int], bytes] | None:
@@ -83,8 +111,8 @@ def check_url(url: str) -> str:
     return url
 
 
-def _extract(html: str, url: str) -> tuple[str, str]:
-    """Return the page's title and main text (trafilatura; imported on first use, it is large)."""
+def _extract(html: str, url: str) -> tuple[str, str, str]:
+    """Return the page's title, main text and picture (trafilatura, imported on first use)."""
     with warnings.catch_warnings():
         # urllib3, which trafilatura imports for its own downloads (unused here), warns that
         # optional SOCKS proxy support is not installed.
@@ -99,11 +127,14 @@ def _extract(html: str, url: str) -> tuple[str, str]:
         include_links=False,
         include_images=False,
         favor_precision=True,
-        deduplicate=True,
+        # Its duplicate check remembers text across calls, so a page read again (or one much
+        # like an earlier one) would come back empty.
+        deduplicate=False,
     )
     meta = trafilatura.extract_metadata(html, default_url=url)
     title = meta.title or ""
-    return " ".join(title.split())[:MAX_TITLE], text or ""
+    image = _picture_address(str(meta.image or ""), url)
+    return " ".join(title.split())[:MAX_TITLE], text or "", image
 
 
 class PageReader:
@@ -115,6 +146,7 @@ class PageReader:
         *,
         factory: Callable[[], httpx.Client] | None = None,
         max_bytes: int = MAX_BYTES,
+        max_picture_bytes: int = MAX_PICTURE_BYTES,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """Use `http` (tests) or a client `factory` makes on first use (no socket while idle)."""
@@ -122,6 +154,7 @@ class PageReader:
         self._http = http
         self._factory = factory
         self._max_bytes = max_bytes
+        self._max_picture_bytes = max_picture_bytes
         self._clock = clock
         self._deadline = 0.0
 
@@ -132,6 +165,38 @@ class PageReader:
             PageError: the address or a redirect is refused, the page failed, is not text, or
                 has no readable text.
         """
+        body = self._follow(url, _TEXT_TYPES, self._max_bytes, picture=False)
+        text = body.data.decode(body.encoding or "utf-8", errors="replace")
+        if body.kind == "text/plain":
+            return Page(body.url, "", " ".join(text.split()))
+        title, main, image = _extract(text, body.url)
+        if not main.strip():
+            msg = "the page has no readable text"
+            raise PageError(msg)
+        return Page(body.url, title, main, image)
+
+    def picture(self, url: str) -> bytes:
+        """Return the bytes of the picture at `url`, following redirects as `read` does.
+
+        Raises:
+            PageError: the address or a redirect is refused, the answer failed, is not a
+                picture, or is larger than `max_picture_bytes`.
+        """
+        body = self._follow(url, _PICTURE_TYPES, self._max_picture_bytes, picture=True)
+        if len(body.data) > self._max_picture_bytes:
+            msg = "that picture is too big to show"
+            raise PageError(msg)
+        return body.data
+
+    def _follow(self, url: str, kinds: frozenset[str], limit: int, *, picture: bool) -> _Body:
+        """Return what `url` answers in the end, one checked redirect hop at a time.
+
+        A picture's body is read to one byte past `limit`, so one over it can be told apart.
+
+        Raises:
+            PageError: a refused address, a failed or slow answer, a type outside `kinds`, or
+                too many redirects.
+        """
         if self._http is None:
             if self._factory is None:
                 msg = "no web client is set up"
@@ -139,9 +204,12 @@ class PageReader:
             self._http = self._factory()
         current = check_url(url)
         self._deadline = self._clock() + READ_LIMIT_S
+        accept = _ACCEPT_PICTURE if picture else _ACCEPT_PAGE
         for _ in range(MAX_REDIRECTS + 1):
             self._in_time()
-            body, kind, location, status = self._fetch(self._http, current)
+            body, location, status = self._fetch(
+                self._http, current, accept, kinds, limit + 1 if picture else limit
+            )
             if status in _REDIRECTS:
                 if not location:
                     msg = "the page redirected nowhere"
@@ -151,26 +219,23 @@ class PageReader:
             if status != HTTPStatus.OK:
                 msg = f"the page answered {status}"
                 raise PageError(msg)
-            if kind == "text/plain":
-                return Page(current, "", " ".join(body.split()))
-            title, text = _extract(body, current)
-            if not text.strip():
-                msg = "the page has no readable text"
-                raise PageError(msg)
-            return Page(current, title, text)
+            return _Body(current, body.data, body.kind, body.encoding)
         msg = "the page redirected too many times"
         raise PageError(msg)
 
-    def _fetch(self, http: httpx.Client, url: str) -> tuple[str, str, str, int]:
-        """Return the body (capped), its media type, any redirect target and the status.
+    def _fetch(
+        self, http: httpx.Client, url: str, accept: str, kinds: frozenset[str], limit: int
+    ) -> tuple[_Body, str, int]:
+        """Return the body (capped at `limit`), any redirect target and the status.
 
         Raises:
-            PageError: the site is unreachable, too slow, not a page, or the read failed.
+            PageError: the site is unreachable, too slow, of a type outside `kinds`, or the read
+                failed.
         """
         try:
-            headers = {"Accept": "text/html,text/plain", "Accept-Encoding": "gzip, deflate"}
+            headers = {"Accept": accept, "Accept-Encoding": "gzip, deflate"}
             with http.stream("GET", url, headers=headers) as resp:
-                return self._body(resp)
+                return self._body(resp, kinds, limit)
         except httpx.ConnectError as exc:
             msg = "that site can't be reached from here"
             raise PageError(msg) from exc
@@ -191,17 +256,24 @@ class PageReader:
             msg = "the page took too long to answer"
             raise PageError(msg)
 
-    def _body(self, resp: httpx.Response) -> tuple[str, str, str, int]:
-        """Read at most `max_bytes` of an answer that is a page, or note where it redirects.
+    def _body(
+        self, resp: httpx.Response, kinds: frozenset[str], limit: int
+    ) -> tuple[_Body, str, int]:
+        """Read at most `limit` bytes of an answer of a type in `kinds`, or note its redirect.
 
         Raises:
-            PageError: the answer is not text, arrives too slowly or is badly compressed.
+            PageError: the answer is of another type, arrives too slowly or is badly compressed.
         """
         if resp.status_code in _REDIRECTS:
-            return "", "", resp.headers.get("location", ""), resp.status_code
+            empty = _Body("", b"", "", "")
+            return empty, resp.headers.get("location", ""), resp.status_code
         kind = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        if resp.status_code == HTTPStatus.OK and kind not in _TEXT_TYPES:
-            msg = "that address is not a web page"
+        if resp.status_code == HTTPStatus.OK and kind not in kinds:
+            msg = (
+                "that address is not a picture"
+                if kinds is _PICTURE_TYPES
+                else ("that address is not a web page")
+            )
             raise PageError(msg)
         inflate = _inflater(resp.headers.get("content-encoding", ""))
         chunks: list[bytes] = []
@@ -210,15 +282,14 @@ class PageReader:
             # Inflated here, never more than the cap allows: a small compressed body can hold
             # gigabytes of text.
             try:
-                chunk = inflate(raw_chunk, self._max_bytes - size + 1) if inflate else raw_chunk
+                chunk = inflate(raw_chunk, limit - size + 1) if inflate else raw_chunk
             except zlib.error as exc:
                 msg = "the page's compressed text is broken"
                 raise PageError(msg) from exc
             chunks.append(chunk)
             size += len(chunk)
-            if size >= self._max_bytes:
+            if size >= limit:
                 break
             self._in_time()
-        raw = b"".join(chunks)[: self._max_bytes]
-        text = raw.decode(resp.encoding or "utf-8", errors="replace")
-        return text, kind, "", resp.status_code
+        raw = b"".join(chunks)[:limit]
+        return _Body(str(resp.url), raw, kind, resp.encoding or ""), "", resp.status_code

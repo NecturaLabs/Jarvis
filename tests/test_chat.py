@@ -16,9 +16,10 @@ from jarvis.agent import ContextUse, Hooks
 from jarvis.chat.app import ChatApp, Services
 from jarvis.chat.clipboard import Clip, ClipboardError
 from jarvis.chat.history import InputHistory
-from jarvis.chat.widgets import Entry, PromptArea, Reply, Request
+from jarvis.chat.widgets import Entry, PictureView, PromptArea, Reply, Request
 from jarvis.config import ChatConfig
 from jarvis.memory import Conversation, Turn
+from jarvis.pictures import Picture, PictureCache
 from jarvis.sysinfo import Gpu, Stats
 
 if TYPE_CHECKING:
@@ -27,8 +28,6 @@ if TYPE_CHECKING:
 
     from textual.pilot import Pilot
     from textual.widget import Widget
-
-    from jarvis.pictures import Picture
 
 SESSION = "s1"
 
@@ -970,5 +969,67 @@ def test_slash_image_without_a_screenshot_says_where_it_looked(tmp_path: Path) -
         await _type(pilot, "/image")
         await _until(pilot, lambda: _has(app, "No screenshot"))
         assert _has(app, str(tmp_path))
+
+    _run(test, app)
+
+
+def _cached(tmp_path: Path, width: int = 400, height: int = 200) -> tuple[PictureCache, Path]:
+    cache = PictureCache(tmp_path / "chat-pictures")
+    picture = Picture("panda", "image/png", _png(width, height), width, height)
+    return cache, cache.keep(picture)
+
+
+def test_a_picture_jarvis_shows_appears_with_its_caption(tmp_path: Path) -> None:
+    cache, path = _cached(tmp_path)
+    tail = FakeTail()
+    app = _app(tail, FakeSession(), services=Services(shown=cache))
+    own = {"session": SESSION, "via": "chat"}
+
+    async def test(pilot: Pilot[None]) -> None:
+        tail.entries.append(
+            {
+                "event": "tool_result",
+                "op": "show_image",
+                "ok": True,
+                "text": "Shown",
+                "picture": str(path),
+                "caption": "Red panda · zoo.example",
+                **own,
+            }
+        )
+        await _until(pilot, lambda: bool(app.query(PictureView)))
+        view = app.query_one(PictureView)
+        assert view.path == path
+        assert "Red panda · zoo.example" in _plain(
+            view.query_one(".picture-caption", Static).content
+        )
+
+    _run(test, app)
+
+
+def test_a_tall_picture_is_kept_to_a_few_rows(tmp_path: Path) -> None:
+    _, path = _cached(tmp_path, 200, 2000)
+
+    assert PictureView.cells(path) <= 6
+    assert PictureView.cells(_cached(tmp_path, 2000, 200)[1]) == 64
+
+
+def test_a_picture_from_outside_the_chat_folder_or_another_session_is_not_shown(
+    tmp_path: Path,
+) -> None:
+    cache, path = _cached(tmp_path)
+    stray = tmp_path / "elsewhere.png"
+    stray.write_bytes(_png())
+    tail = FakeTail()
+    app = _app(tail, FakeSession(), services=Services(shown=cache))
+
+    async def test(pilot: Pilot[None]) -> None:
+        base = {"event": "tool_result", "op": "show_image", "ok": True, "text": "Shown"}
+        tail.entries.append({**base, "picture": str(stray), "session": SESSION})
+        tail.entries.append({**base, "picture": str(path), "session": "someone-else"})
+        tail.entries.append({**base, "picture": str(path), "session": SESSION, "via": "chat"})
+        await _until(pilot, lambda: bool(app.query(PictureView)))
+        await pilot.pause(0.05)
+        assert [view.path for view in app.query(PictureView)] == [path]
 
     _run(test, app)

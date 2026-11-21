@@ -222,6 +222,21 @@ def test_a_page_is_read_and_its_main_text_extracted() -> None:
     assert "Cookie settings" not in page.text
 
 
+def test_the_same_page_reads_the_same_every_time() -> None:
+    # trafilatura's own duplicate check remembers text across calls and drops a page it has seen.
+    unique = ARTICLE.replace(b"white vinegar", b"white vinegar (read again)")
+    answers = [
+        _http("200 OK", unique, Content_Type="text/html", Connection="close") for _ in range(5)
+    ]
+    client, _ = _guarded(*answers)
+    reader = PageReader(client)
+
+    texts = [reader.read("http://public.example/kettle").text for _ in range(5)]
+
+    assert all("read again" in text for text in texts)
+    assert len(set(texts)) == 1
+
+
 def test_a_redirect_to_a_private_address_is_refused() -> None:
     client, wire = _guarded(_http("302 Found", Location="http://internal.example/admin"))
 
@@ -380,6 +395,59 @@ def test_an_error_status_is_reported() -> None:
 
     with pytest.raises(PageError, match="404"):
         PageReader(client).read("http://public.example/gone")
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"pixels" * 20
+
+
+def test_a_picture_is_fetched_as_its_bytes() -> None:
+    client, _ = _guarded(_http("200 OK", PNG, Content_Type="image/png"))
+
+    assert PageReader(client).picture("http://public.example/cat.png") == PNG
+
+
+def test_an_address_that_is_not_a_picture_is_refused_as_one() -> None:
+    client, _ = _guarded(_http("200 OK", ARTICLE, Content_Type="text/html"))
+
+    with pytest.raises(PageError, match="not a picture"):
+        PageReader(client).picture("http://public.example/kettle")
+
+
+def test_a_picture_over_its_cap_is_refused() -> None:
+    client, _ = _guarded(_http("200 OK", PNG, Content_Type="image/jpeg"))
+
+    with pytest.raises(PageError, match="too big"):
+        PageReader(client, max_picture_bytes=50).picture("http://public.example/big.jpg")
+
+
+def test_a_picture_redirected_to_a_private_address_is_refused() -> None:
+    client, wire = _guarded(_http("302 Found", Location="http://internal.example/cat.png"))
+
+    with pytest.raises(PageError, match="can't be reached"):
+        PageReader(client).picture("http://public.example/cat.png")
+    assert wire.connected == [(PUBLIC, 80)]
+
+
+def _with_picture(content: str) -> bytes:
+    meta = f'<head><meta property="og:image" content="{content}">'.encode()
+    return ARTICLE.replace(b"<head>", meta, 1)
+
+
+def test_a_page_names_its_picture_at_its_full_address() -> None:
+    client, _ = _guarded(
+        _http("200 OK", _with_picture("/img/kettle.jpg"), Content_Type="text/html")
+    )
+
+    page = PageReader(client).read("http://public.example/kettle")
+
+    assert page.image == "http://public.example/img/kettle.jpg"
+
+
+@pytest.mark.parametrize("content", ["http://public.example:8080/x.jpg", "file:///etc/x.png", ""])
+def test_a_page_picture_jarvis_may_not_open_is_left_out(content: str) -> None:
+    client, _ = _guarded(_http("200 OK", _with_picture(content), Content_Type="text/html"))
+
+    assert not PageReader(client).read("http://public.example/kettle").image
 
 
 @pytest.mark.parametrize(
@@ -654,3 +722,68 @@ def test_archive_failure_is_reported() -> None:
 
     with pytest.raises(RedditUnavailableError):
         ArcticShift(_mock(handler)).posts(["abc"])
+
+
+IMAGES_ANSWER = {
+    "results": [
+        {
+            "title": " Red  panda ",
+            "url": "https://zoo.example/panda",
+            "img_src": "https://img.example/panda.jpg",
+            "thumbnail_src": "https://thumbs.example/t.jpg",
+            "resolution": "1920\u00d71080",
+        },
+        {
+            "title": "dup",
+            "url": "https://zoo.example/2",
+            "img_src": "https://img.example/panda.jpg",
+        },
+        {
+            "title": "Protocol-relative",
+            "url": "https://x.example/",
+            "img_src": "//cdn.example/a.jpg",
+        },
+        {
+            "title": "Odd port",
+            "url": "https://x.example/",
+            "img_src": "https://img.example:8443/a.jpg",
+        },
+        {
+            "title": "",
+            "url": "https://commons.example/f",
+            "img_src": "https://up.example/f.png",
+            "resolution": "2464 x 1643",
+        },
+        {"title": "No size", "img_src": "http://img.example/n.webp", "resolution": "big"},
+    ]
+}
+
+
+def test_image_search_returns_openable_unique_pictures_with_their_size() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=IMAGES_ANSWER)
+
+    images = Searxng("http://127.0.0.1:8888", _mock(handler)).images("red panda", limit=5)
+
+    assert [i.image_url for i in images] == [
+        "https://img.example/panda.jpg",
+        "https://up.example/f.png",
+        "http://img.example/n.webp",
+    ]
+    assert (images[0].title, images[0].page_url) == ("Red panda", "https://zoo.example/panda")
+    assert (images[0].width, images[0].height) == (1920, 1080)
+    assert images[1].title == "commons.example"
+    assert (images[1].width, images[1].height) == (2464, 1643)
+    assert (images[2].title, images[2].page_url, images[2].width) == ("No size", "", 0)
+    assert seen[0].url.params["categories"] == "images"
+    assert seen[0].url.params["safesearch"] == "1"
+
+
+def test_image_search_stops_at_the_limit() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=IMAGES_ANSWER)
+
+    assert len(Searxng("http://127.0.0.1:8888", _mock(handler)).images("p", limit=1)) == 1

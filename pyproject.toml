@@ -28,6 +28,7 @@ dependencies = [
     "piper-tts==1.8.0",
     "pydantic==2.14.3",
     "textual==8.2.8",
+    "textual-image==0.14.2",
     "trafilatura==2.3.1",
 ]
 

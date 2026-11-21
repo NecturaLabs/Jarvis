@@ -9,7 +9,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 ### Changed
 
 - Jarvis remembers the conversation. Instead of the last 4 turns, forgotten after 5 minutes, it keeps as
-  much as fits a token budget (`agent.memory_tokens` 6,000 for speech, `chat.memory_tokens` 12,000 for the
+  much as fits a token budget (`agent.memory_tokens` 6,000 for speech, `chat.memory_tokens` 11,500 for the
   chat) and has the model summarize the oldest turns when it outgrows it. Speech forgets after 30 idle
   minutes; the chat never does and resumes its conversation when it opens again (`chat.resume`).
 - Replies are no longer cut. The model is told its length and capped in tokens (`agent.reply_tokens` 400,
@@ -46,6 +46,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `jarvis chat` shows pictures: ask to see something and Jarvis searches SearXNG's image category
+  (`image_search`) and draws the best result in the window (`show_image`), with kitty's graphics protocol
+  through textual-image 0.14.2 (new dependency, LGPL-3.0-or-later). A read page offers its own picture too.
+  Only a picture a search or page in the same conversation offered is fetched, through the same address
+  checks as pages, then checked and shrunk; the newest 50 are kept 0600 in `chat-pictures`.
 - Pictures in `jarvis chat`, as in Claude Code: Ctrl+V pastes a copied picture as an `[Image #1]` tag (or
   copied text where the cursor is), a picture file dropped on the terminal or `/image <path>` attaches that
   file, and `/image` alone the newest screenshot. Pictures are checked and shrunk with Pillow 13.0.0 (new
@@ -119,6 +124,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A web page read a second time in a session (or one much like a page read before) came back as "no
+  readable text": trafilatura's duplicate check remembers text across calls. It is off now.
 - A request that reaches its step limit no longer ends with "That needed too many steps, so I stopped.":
   its last model call gets no tools and answers from what the earlier steps found. Research questions
   asked by voice that kept searching and re-reading pages now get an answer.
