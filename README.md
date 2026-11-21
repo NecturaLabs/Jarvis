@@ -76,11 +76,13 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 
 ## Docs
 
+- [docs/README.md](docs/README.md): the map of every document, and how far to trust each kind
 - [docs/configuration.md](docs/configuration.md): every config key, its range and what needs a restart
 - [docs/models.md](docs/models.md): the model, speech to text, voices, the wake word, latency and licences
 - [docs/plan.md](docs/plan.md): architecture, design and phases, with what is built
 - [docs/roadmap.md](docs/roadmap.md): what is planned, and what Jarvis will not do
-- [docs/adr/](docs/adr/): decisions
+- [docs/privacy.md](docs/privacy.md): what Jarvis keeps on disk and what leaves the PC
+- [docs/adr/](docs/adr/README.md): decisions
 - [docs/playbook/](docs/playbook/): how to work on the project, and its traps
 - [SECURITY.md](SECURITY.md): scope and how to report a vulnerability
 - [ACCESSIBILITY.md](ACCESSIBILITY.md): voice, the chat window and keyboard-only use
