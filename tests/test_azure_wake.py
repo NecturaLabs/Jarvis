@@ -92,11 +92,13 @@ def test_the_words_right_after_the_keyword_are_handed_to_the_request() -> None:
     numbered = np.arange(20 * FRAME, dtype=np.int16)
     try:
         sent = 0
-        found = False
-        while not found and sent < 20:
-            found = wake.heard(numbered[sent * FRAME : (sent + 1) * FRAME])
+        for _ in range(4):  # the fake helper reports the keyword after its fourth frame
+            assert not wake.heard(numbered[sent * FRAME : (sent + 1) * FRAME])
             sent += 1
-        assert found
+        # Wait for the helper's report, never on how fast it answers: a slow runner lagged it.
+        assert _until(lambda: bool(wake._wakes))  # pyright: ignore[reportPrivateUsage]
+        assert wake.heard(numbered[sent * FRAME : (sent + 1) * FRAME])
+        sent += 1
         lead = np.concatenate(wake.after_wake())
         # From a quarter second before the keyword's end (sample 5120) to the last frame sent.
         assert lead[0] == 5120 - RATE // 4
