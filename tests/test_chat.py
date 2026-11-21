@@ -61,17 +61,16 @@ def test_a_typed_request_runs_and_what_happens_is_shown() -> None:
 
     def ask(text: str, _hooks: Hooks) -> str:
         asked.append(text)
-        tail.entries += [
-            {"event": "request", "text": text, "via": "chat"},
-            {"event": "reply", "text": "Paused it for you.", "seconds": 0.2},
-        ]
-        return "Paused it for you."
+        heard: dict[str, object] = {"event": "request", "text": text, "via": "chat"}
+        answered: dict[str, object] = {"event": "reply", "text": "Paused it.", "seconds": 0.2}
+        tail.entries += [heard, answered]
+        return "Paused it."
 
     app = ChatApp(tail, ask, poll_s=0.01)
 
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "pause")
-        await _until(pilot, lambda: any("Paused it" in line for line in _shown(app)))
+        await _until(pilot, lambda: any("Paused it." in line for line in _shown(app)))
         assert asked == ["pause"]
         assert any("You (typed): pause" in line for line in _shown(app))
 

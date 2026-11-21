@@ -354,7 +354,11 @@ def test_doctor_without_a_spotify_login_fails_that_line(
 
 def _opened_chat(monkeypatch: pytest.MonkeyPatch) -> list[ChatApp]:
     opened: list[ChatApp] = []
-    monkeypatch.setattr(ChatApp, "run", lambda self, *_a, **_k: opened.append(self))
+
+    def run(self: ChatApp, *_args: object, **_kwargs: object) -> None:
+        opened.append(self)
+
+    monkeypatch.setattr(ChatApp, "run", run)
     return opened
 
 
@@ -378,7 +382,11 @@ def test_chat_sends_typed_requests_to_an_agent_that_marks_its_audit_events(
 
     def build(_config: object, *, via: str | None = None) -> object:
         vias.append(via)
-        return SimpleNamespace(agent=SimpleNamespace(handle=lambda text, _hooks: f"heard {text}"))
+
+        def handle(text: str, _hooks: Hooks) -> str:
+            return f"heard {text}"
+
+        return SimpleNamespace(agent=SimpleNamespace(handle=handle))
 
     monkeypatch.setattr(cli, "build", build)
 
