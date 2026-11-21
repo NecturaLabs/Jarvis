@@ -93,6 +93,9 @@ def _message(response: httpx.Response) -> dict[str, Any]:
     usage = data.get("usage")
     if isinstance(usage, dict):
         answer["usage"] = usage
+    timings = data.get("timings")
+    if isinstance(timings, dict):
+        answer["timings"] = timings
     return answer
 
 
@@ -123,6 +126,7 @@ class _Assembly:
     calls: dict[int, dict[str, Any]] = field(default_factory=dict[int, dict[str, Any]])
     finish_reason: str = ""
     usage: dict[str, Any] = field(default_factory=dict[str, Any])
+    timings: dict[str, Any] = field(default_factory=dict[str, Any])
 
     def add(self, delta: dict[str, Any]) -> list[Delta]:
         pieces: list[Delta] = []
@@ -158,6 +162,8 @@ class _Assembly:
             message["finish_reason"] = self.finish_reason
         if self.usage:
             message["usage"] = self.usage
+        if self.timings:
+            message["timings"] = self.timings
         return message
 
 
@@ -319,6 +325,9 @@ class StrataModel:
             usage = event.get("usage")
             if isinstance(usage, dict):
                 answer.usage = cast("dict[str, Any]", usage)
+            timings = event.get("timings")
+            if isinstance(timings, dict):
+                answer.timings = cast("dict[str, Any]", timings)
             choices = objs(event.get("choices"))
             if not choices:
                 continue

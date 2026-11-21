@@ -52,6 +52,7 @@ from jarvis.chat.widgets import (
     tokens_short,
     toolbar,
     welcome,
+    worked_line,
 )
 from jarvis.config import ChatConfig
 from jarvis.pictures import PictureError, newest, pasted_path, prepare, read_file
@@ -128,6 +129,10 @@ class Session(Protocol):
         """Start a new conversation."""
         ...
 
+    def last_rate(self) -> float | None:
+        """Return how fast the model wrote in the last request, in tokens per second."""
+        ...
+
     def compact(self, *, everything: bool = False) -> bool:
         """Summarize the older turns now; return whether anything was folded."""
         ...
@@ -157,6 +162,7 @@ class Services:
     screenshots: tuple[Path, ...] = ()  # where `/image` looks for the newest screenshot
     home: Path = field(default_factory=Path.home)  # what `~/` means in a pasted path
     shown: PictureCache | None = None  # where the pictures Jarvis shows are kept
+    twelve_hour: bool = True  # "done 7:37 PM" under a reply, or "done 19:37"
 
 
 @dataclass(slots=True)
@@ -227,14 +233,14 @@ class ChatApp(App[None]):
     .reply-mark { width: 2; color: ansi_default; text-style: bold; }
     .reply.draft .reply-mark { color: ansi_bright_black; }
     .reply-body { height: auto; width: 1fr; }
-    .reply-note { height: auto; color: ansi_bright_black; }
+    .reply-note { height: auto; margin: 1 0 0 0; color: ansi_bright_black; }
     .reply Markdown { margin: 0; padding: 0; background: ansi_default; }
     .reply Markdown > *:first-child { margin-top: 0; }
     .reply Markdown > *:last-child { margin-bottom: 0; }
-    .reply Markdown > MarkdownHeader:first-child { margin: 0 0 1 0; }
+    .reply Markdown > MarkdownHeader:first-child { margin: 0; }
     .reply MarkdownH1, .reply MarkdownH2, .reply MarkdownH3,
     .reply MarkdownH4, .reply MarkdownH5, .reply MarkdownH6 {
-        width: 1fr; margin: 1 0; content-align: left top;
+        width: 1fr; margin: 1 0 0 0; content-align: left top;
         color: ansi_default; background: ansi_default; text-style: bold;
     }
     .reply MarkdownH1 { text-style: bold underline; }
@@ -522,7 +528,7 @@ class ChatApp(App[None]):
                 )
                 self._exchanges.append(("you", shown.text))
             elif shown.kind == "jarvis":
-                self._mount(Reply(shown.text, shown.note))
+                self._mount(Reply(shown.text, self._worked_note(entry)))
                 self._exchanges.append(("jarvis", shown.text))
             else:
                 self._mount(Entry(shown))
@@ -538,6 +544,18 @@ class ChatApp(App[None]):
             self._mount(PictureView(path, caption))
         except OSError:
             self._note("The picture couldn't be drawn.", "warn")
+
+    def _worked_note(self, entry: dict[str, object]) -> str:
+        """Return the line under a reply read from the log, as under one typed here."""
+        seconds = entry.get("seconds")
+        try:
+            done = datetime.fromisoformat(str(entry.get("ts"))).astimezone()
+        except ValueError:
+            done = datetime.now().astimezone()
+        if not isinstance(seconds, int | float):
+            return ""
+        line = worked_line(float(seconds), done, None, twelve_hour=self._services.twelve_hour)
+        return f"{STAR} {line}"
 
     def _follow(self, entry: dict[str, object]) -> None:
         """Keep the working line on what this window's request is doing."""
@@ -606,7 +624,21 @@ class ChatApp(App[None]):
         with contextlib.suppress(RuntimeError):  # the window has closed
             self.call_from_thread(run)
 
+    def _bottom(self) -> None:
+        """While the command menu or the shortcuts are open they take the footer's place.
+
+        As in Claude Code, the menu replaces the hints and the toolbar instead of squeezing the
+        transcript, and the newest entry stays in view.
+        """
+        menu = self.query_one("#menu").display or self.query_one("#shortcuts").display
+        footer, toolbar = self.query_one("#footer"), self.query_one("#toolbar")
+        wanted = (not menu, self._settings.toolbar and not menu)
+        if (footer.display, toolbar.display) != wanted:
+            footer.display, toolbar.display = wanted
+            self.call_after_refresh(self._follow_down)
+
     def _tick(self) -> None:
+        self._bottom()
         work = self._work
         working = self.query_one("#working", Static)
         hints = self.query_one("#hints", Static)
@@ -648,6 +680,7 @@ class ChatApp(App[None]):
             shortcuts = self.query_one("#shortcuts", Static)
             shortcuts.update(self._shortcuts())
             shortcuts.display = not shortcuts.display
+            self._tick()
             return
         self._menu(value)
 
@@ -927,7 +960,7 @@ class ChatApp(App[None]):
             "/copy": lambda _a: self._copy(),
             "/export": lambda _a: self._export(),
             "/image": self._image_command,
-            "/quit": lambda _a: self.exit(),
+            "/exit": lambda _a: self.exit(),
         }
         handlers[command.name](argument.strip())
 
@@ -1184,16 +1217,18 @@ class ChatApp(App[None]):
             hush=lambda: self._from_worker(self._drop_draft, work),
         )
         reply = ""
+        rate: float | None = None
         try:
             if session is not None:
                 reply = session.handle(text, hooks, pictures=pictures)
+                rate = session.last_rate()
         except Exception as exc:  # ruff: ignore[blind-except] - shown in the window, never raised
             self._from_worker(self._note, f"Something went wrong: {type(exc).__name__}", "error")
         finally:
             seconds = self._clock() - work.started
             stopped = work.stop.is_set() and not self._closing
             self._from_worker(
-                partial(self._settle, stopped=stopped), work, full_text(reply), seconds
+                partial(self._settle, stopped=stopped, rate=rate), work, full_text(reply), seconds
             )
             self._finish(work)
 
@@ -1211,9 +1246,15 @@ class ChatApp(App[None]):
         for draft in self.query(".reply.draft"):
             draft.remove()
 
-    def _settle(self, work: _Work, reply: str, seconds: float, *, stopped: bool) -> None:
+    def _settle(
+        self, work: _Work, reply: str, seconds: float, *, stopped: bool, rate: float | None = None
+    ) -> None:
         self._drop_draft(work)
-        note = f"{seconds:.1f} s" + (" · stopped" if stopped else "")
+        done = datetime.now().astimezone()
+        line = worked_line(
+            seconds, done, rate, twelve_hour=self._services.twelve_hour, stopped=stopped
+        )
+        note = f"{STAR} {line}"
         if reply:
             self._mount(Reply(reply, note))
             self._exchanges.append(("jarvis", reply))

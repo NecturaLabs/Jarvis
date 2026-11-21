@@ -614,6 +614,7 @@ class Agent:
         self._names = tuple(names)
         self._still_waiting_s = still_waiting_s
         self._pictures = pictures
+        self._written = [0, 0.0]  # tokens the model wrote this request, and the milliseconds
         self._bypass_consent = bypass_consent
 
     def _memory_budget(self) -> int:
@@ -756,6 +757,7 @@ class Agent:
         """
         started = self._clock()
         foreign = origin not in TRUSTED_ORIGINS
+        self._written = [0, 0.0]
         shown = {"pictures": [p.name for p in pictures]} if pictures else {}
         self._audit.record("request", text=text, origin=origin.value, **shown)
         if pictures and not self._pictures:
@@ -921,11 +923,21 @@ class Agent:
         return self._final(turn, answer)
 
     def _note_usage(self, message: Mapping[str, Any]) -> None:
-        """Keep the server's count of what the last call read and wrote, when it sent one."""
+        """Keep the server's count of what the last call read and wrote, and how fast it wrote."""
         usage = obj(message.get("usage"))
         read, wrote = usage.get("prompt_tokens"), usage.get("completion_tokens")
         if isinstance(read, int) and isinstance(wrote, int):
             self._last_used = read + wrote
+        timings = obj(message.get("timings"))
+        made, spent = timings.get("predicted_n"), timings.get("predicted_ms")
+        if isinstance(made, int) and isinstance(spent, int | float) and spent > 0:
+            self._written[0] += made
+            self._written[1] += float(spent)
+
+    def last_rate(self) -> float | None:
+        """Return how fast the model wrote in the last request, in tokens per second."""
+        made, spent = self._written
+        return made / (spent / 1000) if made and spent else None
 
     @staticmethod
     def _salvage(calls: list[dict[str, Any]]) -> str | None:

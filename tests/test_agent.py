@@ -1734,3 +1734,15 @@ def test_with_consent_bypassed_a_denied_action_is_still_refused() -> None:
     agent.handle("pause", Hooks(confirm=_never_asked))
 
     assert counter.runs == []
+
+
+def test_the_generation_speed_of_a_request_is_kept() -> None:
+    first = {**_say("A."), "timings": {"predicted_n": 40, "predicted_ms": 1000.0}}
+    model = ScriptedModel([_call("pause"), first])
+    model.replies[0]["timings"] = {"predicted_n": 10, "predicted_ms": 250.0}
+    agent, _ = _agent(model, [Counter().op("pause")])
+
+    assert agent.last_rate() is None
+    agent.handle("pause it", NO_CONFIRM)
+
+    assert agent.last_rate() == pytest.approx(40.0)

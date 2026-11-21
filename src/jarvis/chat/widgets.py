@@ -27,6 +27,7 @@ from textual_image.widget import Image
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from datetime import datetime
     from pathlib import Path
 
     from rich.console import RenderableType
@@ -180,6 +181,46 @@ class PictureView(Vertical):
         picture.styles.width = self._cells
         yield picture
         yield Static(f"{STAR} {self._caption}", classes="picture-caption", markup=False)
+
+
+MINUTE = 60
+HOUR = 3600
+NOON = 12
+
+
+def duration(seconds: float) -> str:
+    """Return how long something took the way Claude Code says it: 34s, 4m 41s, 1h 2m."""
+    whole = max(1, round(seconds))
+    if whole < MINUTE:
+        return f"{whole}s"
+    if whole < HOUR:
+        return f"{whole // MINUTE}m {whole % MINUTE}s"
+    return f"{whole // HOUR}h {whole % HOUR // MINUTE}m"
+
+
+def _clock_time(moment: datetime, *, twelve_hour: bool) -> str:
+    if not twelve_hour:
+        return f"{moment.hour}:{moment.minute:02d}"
+    return f"{moment.hour % 12 or 12}:{moment.minute:02d} {'AM' if moment.hour < NOON else 'PM'}"
+
+
+def worked_line(
+    seconds: float,
+    done: datetime,
+    rate: float | None,
+    *,
+    twelve_hour: bool,
+    stopped: bool = False,
+) -> str:
+    """Return the line under a reply: "Worked for 4m 41s · done 7:37 PM · 50 TPS".
+
+    `rate` is the model's own writing speed in tokens per second, left out when unknown.
+    """
+    took = f"{'Stopped after' if stopped else 'Worked for'} {duration(seconds)}"
+    parts = [took, f"done {_clock_time(done, twelve_hour=twelve_hour)}"]
+    if rate:
+        parts.append(f"{round(rate)} TPS")
+    return " · ".join(parts)
 
 
 def welcome(name: str, lines: list[Text]) -> Panel:
