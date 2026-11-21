@@ -1127,3 +1127,20 @@ def test_a_capability_answer_is_spoken_as_it_is() -> None:
 
     assert agent.handle("what can you do", NO_CONFIRM) == answer
     assert len(model.seen) == 1
+
+
+def test_a_request_that_waits_for_a_cold_model_gets_the_load_time_too() -> None:
+    clock = Clock()
+    counter = Counter()
+
+    def load() -> None:
+        clock.now += 110  # a cold load while a game runs (measured ~107 s)
+
+    model = ScriptedModel([_call("next"), _say("Skipped.")], loaded=False, during=load)
+    agent, _ = _agent(model, [counter.op("next")], clock=clock)
+
+    assert agent.handle("skip", NO_CONFIRM) == "Skipped."
+    assert counter.runs == [{"op": "next"}]
+    assert model.timeouts[0] == pytest.approx(
+        agent_module.MAX_SECONDS + agent_module.COLD_LOAD_S
+    )
