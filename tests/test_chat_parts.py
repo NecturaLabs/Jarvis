@@ -1,6 +1,7 @@
 """The chat window's parts alone: command suggestions, kept input, PC load and the toolbar."""
 
 import io
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,7 +11,14 @@ from jarvis.activity import Shown
 from jarvis.agent import ContextUse
 from jarvis.chat import commands
 from jarvis.chat.history import InputHistory
-from jarvis.chat.widgets import entry_renderable, meter, tokens_short, toolbar
+from jarvis.chat.widgets import (
+    duration,
+    entry_renderable,
+    meter,
+    tokens_short,
+    toolbar,
+    worked_line,
+)
 from jarvis.sysinfo import Gpu, Sampler, Stats
 
 if TYPE_CHECKING:
@@ -54,11 +62,11 @@ def test_nothing_is_suggested_outside_a_command(value: str) -> None:
 
 
 def test_aliases_find_their_command() -> None:
-    quit_command = commands.find("/exit")
+    quit_command = commands.find("/quit")  # the owner asked for /exit; /quit still works
     clear_command = commands.find("/new")
 
     assert quit_command is not None
-    assert quit_command.name == "/quit"
+    assert quit_command.name == "/exit"
     assert clear_command is not None
     assert clear_command.name == "/clear"
     assert commands.find("/nonsense") is None
@@ -212,3 +220,22 @@ def test_a_steps_details_are_quiet_beside_its_bold_name() -> None:
     assert name.style is not None
     assert name.style.bold
     assert detail.style is None or not detail.style.bold
+
+
+@pytest.mark.parametrize(
+    ("seconds", "said"),
+    [(0.4, "1s"), (33.6, "34s"), (60, "1m 0s"), (281.2, "4m 41s"), (3725, "1h 2m")],
+)
+def test_how_long_a_reply_took_is_said_as_claude_code_says_it(seconds: float, said: str) -> None:
+    assert duration(seconds) == said
+
+
+def test_the_line_under_a_reply_says_how_long_when_and_how_fast() -> None:
+    done = datetime(2026, 11, 21, 19, 37, tzinfo=UTC)
+
+    assert (
+        worked_line(281.2, done, 50.4, twelve_hour=True)
+        == "Worked for 4m 41s · done 7:37 PM · 50 TPS"
+    )
+    assert worked_line(33.6, done, None, twelve_hour=False) == "Worked for 34s · done 19:37"
+    assert worked_line(5, done, 41.0, twelve_hour=True, stopped=True).startswith("Stopped after 5s")

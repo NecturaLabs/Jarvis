@@ -74,6 +74,11 @@ class FakeSession:
         self.pictures.append([p.name for p in pictures])
         return self.answer(text, hooks)
 
+    rate: float | None = 50.4
+
+    def last_rate(self) -> float | None:
+        return self.rate
+
     def forget(self) -> None:
         self.forgotten += 1
         self.memory.clear()
@@ -1162,5 +1167,72 @@ def test_a_picture_from_outside_the_chat_folder_or_another_session_is_not_shown(
         await _until(pilot, lambda: bool(app.query(PictureView)))
         await pilot.pause(0.05)
         assert [view.path for view in app.query(PictureView)] == [path]
+
+    _run(test, app)
+
+
+def test_under_a_reply_it_says_how_long_it_worked_when_it_was_done_and_how_fast() -> None:
+    session = FakeSession(lambda _t, _h: "Paused.")
+    app = _app(session=session, clock=Clock())
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "pause")
+        await _until(pilot, lambda: any(isinstance(w, Reply) for w in _transcript(app)))
+        reply = next(w for w in _transcript(app) if isinstance(w, Reply))
+        note = _plain(reply.query_one(".reply-note", Static).content)
+        assert "Worked for 1s · done " in note
+        assert note.rstrip().endswith("· 50 TPS")
+
+    _run(test, app)
+
+
+def test_a_spoken_reply_from_the_log_gets_the_same_line() -> None:
+    tail = FakeTail()
+    app = _app(tail, FakeSession(), services=Services(twelve_hour=False))
+
+    async def test(pilot: Pilot[None]) -> None:
+        tail.entries.append(
+            {
+                "event": "reply",
+                "text": "Paused.",
+                "seconds": 281.2,
+                "ts": "2026-11-21T17:37:00+00:00",
+            }
+        )
+        await _until(pilot, lambda: any(isinstance(w, Reply) for w in _transcript(app)))
+        reply = next(w for w in _transcript(app) if isinstance(w, Reply))
+        note = _plain(reply.query_one(".reply-note", Static).content)
+        assert "Worked for 4m 41s · done " in note
+
+    _run(test, app)
+
+
+def test_the_command_menu_takes_the_footers_place_instead_of_squeezing_the_transcript() -> None:
+    app = _app(session=FakeSession())
+
+    async def test(pilot: Pilot[None]) -> None:
+        height = app.query_one("#transcript").size.height
+        _input(app).set_text("/")
+        await _until(pilot, lambda: app.query_one("#menu").display)
+        await pilot.pause(0.05)
+        assert not app.query_one("#footer").display
+        assert not app.query_one("#toolbar").display
+        menu_rows = app.query_one("#menu").size.height
+        assert app.query_one("#transcript").size.height >= height - menu_rows + 2
+        await pilot.press("escape")
+        await pilot.pause(0.05)
+        assert app.query_one("#footer").display
+        assert app.query_one("#toolbar").display
+
+    _run(test, app)
+
+
+def test_slash_exit_leaves() -> None:
+    app = _app(session=FakeSession())
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/exit")
+        await pilot.pause(0.1)
+        assert not app.is_running
 
     _run(test, app)

@@ -351,6 +351,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         pictures=cfg.strata.pictures,
         screenshots=_screenshot_folders(Path.home(), os.environ),
         shown=chat_pictures(),
+        twelve_hour=cfg.clock.twelve_hour,
     )
     ChatApp(
         AuditTail(paths.audit_file()),
