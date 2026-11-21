@@ -1083,6 +1083,7 @@ def test_another_volume_refusal_keeps_its_error(tmp_path: Path) -> None:
 # --- The queue: no song twice (5) ---
 
 ALREADY_QUEUED = "That's already in the queue."
+QUEUED_LATELY = "I queued that a few minutes ago."
 
 
 def test_asking_for_the_same_song_twice_in_a_row_queues_it_once(tmp_path: Path) -> None:
@@ -1096,7 +1097,7 @@ def test_asking_for_the_same_song_twice_in_a_row_queues_it_once(tmp_path: Path) 
     assert first.ok
     assert "Low Tide" in first.text
     assert second.ok
-    assert second.text == ALREADY_QUEUED
+    assert second.text == QUEUED_LATELY
     assert second.origin is Origin.TOOL_STATUS
     assert fake.queued == ["spotify:track:lowtide"]
 
@@ -1109,7 +1110,8 @@ def test_a_later_request_inside_half_an_hour_is_still_a_repeat(tmp_path: Path) -
     fake.clock.now += 29 * 60
     again = ops.queue({"query": "low tide"})
 
-    assert again.text == ALREADY_QUEUED
+    assert again.ok
+    assert again.text == QUEUED_LATELY
     assert fake.queued == ["spotify:track:lowtide"]
 
 
@@ -1246,8 +1248,112 @@ def test_an_unreadable_queue_still_leaves_the_memory_of_what_was_added(tmp_path:
     second = ops.queue({"query": "low tide"})
 
     assert first.ok
-    assert second.text == ALREADY_QUEUED
+    assert second.text == QUEUED_LATELY
     assert fake.queued == ["spotify:track:lowtide"]
+
+
+def test_a_song_in_the_live_queue_and_one_queued_lately_are_told_apart(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": [LOW_TIDE]})
+    ops = build_ops(fake, tmp_path)
+    ops.queue({"query": "low tide"})
+
+    lately = ops.queue({"query": "low tide"})
+    fake.queue_items.append(LOW_TIDE)
+    live = ops.queue({"query": "low tide"})
+
+    assert fake.queued == ["spotify:track:lowtide"]
+    assert (lately.ok, lately.text, lately.origin) == (True, QUEUED_LATELY, Origin.TOOL_STATUS)
+    assert (live.ok, live.text, live.origin) == (True, ALREADY_QUEUED, Origin.TOOL_STATUS)
+
+
+def test_the_same_title_by_another_artist_is_a_different_song(tmp_path: Path) -> None:
+    stay_a = _track("Stay", "Glass Harbor", "spotify:track:a")
+    stay_b = _track("Stay", "Night Circuit", "spotify:track:b")
+    fake = FakeSpotify(search={"track": [stay_b]}, queue_items=[stay_a])
+
+    result = build_ops(fake, tmp_path).queue({"query": "Stay", "artist": "Night Circuit"})
+
+    assert result.text.startswith("Queued 1 song(s)")
+    assert fake.queued == ["spotify:track:b"]
+
+
+def test_the_same_title_by_another_artist_is_not_held_back_by_the_memory(tmp_path: Path) -> None:
+    stay_a = _track("Stay", "Glass Harbor", "spotify:track:a")
+    stay_b = _track("Stay", "Night Circuit", "spotify:track:b")
+    fake = FakeSpotify(
+        by_query={
+            ('track:"Stay" artist:"Glass Harbor"', "track"): [stay_a],
+            ('track:"Stay" artist:"Night Circuit"', "track"): [stay_b],
+        }
+    )
+    ops = build_ops(fake, tmp_path)
+
+    ops.queue({"query": "Stay", "artist": "Glass Harbor"})
+    again = ops.queue({"query": "Stay", "artist": "Night Circuit"})
+    repeat = ops.queue({"query": "Stay", "artist": "Glass Harbor"})
+
+    assert again.text.startswith("Queued 1 song(s)")
+    assert repeat.text == QUEUED_LATELY
+    assert fake.queued == ["spotify:track:a", "spotify:track:b"]
+
+
+def test_two_artists_songs_with_one_title_are_both_collected(tmp_path: Path) -> None:
+    tracks = [
+        _track("Stay", "Glass Harbor", "spotify:track:a"),
+        _track("Stay", "Night Circuit", "spotify:track:b"),
+        _track("Stay (Live)", "Night Circuit", "spotify:track:b-live"),
+    ]
+    fake = FakeSpotify(search={"track": tracks})
+
+    build_ops(fake, tmp_path).queue({"query": "Stay", "count": 3})
+
+    assert fake.queued == ["spotify:track:a", "spotify:track:b"]
+
+
+def test_a_version_by_the_same_artist_without_a_uri_is_the_same_song(tmp_path: Path) -> None:
+    def unlinked(name: str, artist: str, uri: str) -> dict[str, Any]:
+        return {**_track(name, artist, uri), "artists": [{"name": artist}]}
+
+    queued = unlinked("Low Tide", "Glass Harbor", "spotify:track:queued")
+    fake = FakeSpotify(
+        search={"track": [unlinked("Low Tide (Live)", "glass harbor", "spotify:track:live")]},
+        queue_items=[queued],
+    )
+    other = FakeSpotify(
+        search={"track": [unlinked("Low Tide", "Night Circuit", "spotify:track:cover")]},
+        queue_items=[queued],
+    )
+
+    same = build_ops(fake, tmp_path).queue({"query": "low tide"})
+    different = build_ops(other, tmp_path).queue({"query": "low tide"})
+
+    assert same.text == ALREADY_QUEUED
+    assert different.text.startswith("Queued 1 song(s)")
+
+
+def test_a_song_whose_outcome_is_unknown_is_remembered_as_queued(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": [LOW_TIDE]})
+    ops = build_ops(fake, tmp_path)
+    fake.script("POST", "/me/player/queue", httpx.ReadTimeout("slow"))
+
+    with pytest.raises(UncertainOutcomeError):
+        ops.queue({"query": "low tide"})
+    again = ops.queue({"query": "low tide"})
+
+    assert again.text == QUEUED_LATELY
+    assert len(fake.calls("POST", "/me/player/queue")) == 1
+
+
+def test_a_song_whose_outcome_is_unknown_part_way_is_remembered_too(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": _catalogue(6)})
+    ops = build_ops(fake, tmp_path)
+    fake.script("POST", "/me/player/queue", httpx.Response(204), httpx.ReadTimeout("slow"))
+
+    ops.queue({"query": "Night Circuit", "count": 3})
+    again = ops.queue({"query": "Night Circuit", "count": 2})
+
+    assert fake.queued == [f"spotify:track:{i}" for i in range(4)]
+    assert again.text.startswith("Queued 2 song(s)")
 
 
 def test_a_song_whose_queueing_failed_may_be_asked_for_again(tmp_path: Path) -> None:
