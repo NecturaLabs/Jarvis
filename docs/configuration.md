@@ -58,7 +58,7 @@ that still holds it loads, and the key is ignored: the reply cap is now `reply_t
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
-| `max_steps` | `8` | 1 to 100 | Most model calls in one request. |
+| `max_steps` | `8` | 1 to 100 | Most model calls in one request; the last one may only answer, from what the others found. |
 | `max_tool_calls` | `12` | 1 to 200 | Most tool calls in one request. |
 | `max_seconds` | `90.0` | 10 to 3600 | Longest one request may take (180 s more when the model must load first). |
 | `reply_tokens` | `400` | 64 to 8192 | Most tokens the model writes in one answer. The prompt asks for replies that fit; a reply the cap ends anyway is kept and says it was cut short. |
