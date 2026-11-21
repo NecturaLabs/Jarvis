@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 
 MAX_STEPS = 6
 MAX_SECONDS = 90.0
+MIN_CALL_S = 1.0  # a model call always gets at least this long
 MAX_CALLS_PER_TURN = 8
 MAX_TOOL_TEXT = 1500
 MAX_AUDIT_TEXT = 300
@@ -349,7 +350,12 @@ class Agent:
         tools = [] if turn.stuck else self._registry.tool_schemas()
         began = self._clock()
         try:
-            message = self._model.chat(turn.messages, tools, require_tool=not turn.actions)
+            message = self._model.chat(
+                turn.messages,
+                tools,
+                require_tool=not turn.actions,
+                timeout_s=max(MIN_CALL_S, MAX_SECONDS - (began - turn.started)),
+            )
         except Exception as exc:  # ruff: ignore[blind-except] - any model failure becomes a spoken apology
             self._audit.record("model_error", error=str(exc)[:MAX_AUDIT_TEXT])
             log.warning("the model did not answer: %s", exc)
