@@ -46,7 +46,6 @@ def no_action_operation() -> Operation:
         {"type": "object", "properties": {}, "additionalProperties": False},
         lambda _args: Result("No action taken. Answer the owner briefly."),
         side_effect=False,
-        idempotent=True,
         spoken_summary=lambda _args: "do nothing",
     )
 

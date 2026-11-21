@@ -1,5 +1,6 @@
 """Typed operations: a name, a JSON schema for its arguments, a class and an executor."""
 
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
@@ -7,6 +8,11 @@ from jarvis.policy import OpClass, Origin
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
+
+    from jarvis.shortcuts import Shortcut
+
+MAX_STRING = 200
+MAX_INTEGER = 2**31 - 1
 
 
 class UncertainOutcomeError(Exception):
@@ -17,18 +23,42 @@ class ArgumentError(ValueError):
     """A tool call's arguments do not match the operation's schema."""
 
 
+class OperationError(Exception):
+    """An operation could not do what was asked; the message is what the model is told.
+
+    `origin` says where the message's words come from: Jarvis's own status text unless the
+    operation passes on text an outside service wrote.
+    """
+
+    def __init__(self, message: str, *, origin: Origin = Origin.TOOL_STATUS) -> None:
+        """Keep the message and the origin of its words."""
+        super().__init__(message)
+        self.origin = origin
+
+
 @dataclass(frozen=True, slots=True)
 class Result:
-    """What an operation returns to the model, with the origin of its text."""
+    """What an operation returns to the model, with the origin of its text.
+
+    `spoken` is a finished sentence for the owner. An operation sets it when its result needs no
+    wording by the model, which lets a shortcut request be answered without the model.
+    """
 
     text: str
     origin: Origin = Origin.TOOL_STATUS
     ok: bool = True
+    spoken: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class Operation:
-    """One thing Jarvis can do. `parameters` is a JSON schema object with only flat properties."""
+    """One thing Jarvis can do. `parameters` is a JSON schema object with only flat properties.
+
+    `prepare` runs on the validated arguments before the policy decision and any confirmation
+    question. It returns the arguments the call will run with, so an operation that acts on
+    "whatever is current" can bind the exact target the owner is asked about. `shortcuts` are the
+    phrasings that mean this operation without the model's help.
+    """
 
     name: str
     description: str
@@ -36,8 +66,9 @@ class Operation:
     run: Callable[[dict[str, Any]], Result]
     default_class: OpClass = OpClass.SAFE
     side_effect: bool = True
-    idempotent: bool = False
     spoken_summary: Callable[[dict[str, Any]], str] = field(default=lambda _args: "do that")
+    prepare: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    shortcuts: tuple[Shortcut, ...] = ()
 
     def tool_schema(self) -> dict[str, Any]:
         """Return the OpenAI tool definition."""
@@ -57,7 +88,7 @@ def _check_string(name: str, spec: dict[str, Any], value: object) -> str:
     text = value.strip()
     if not text and spec.get("minLength", 0) > 0:
         raise ArgumentError(f"{name} must not be empty")
-    if len(text) > spec.get("maxLength", 200):
+    if len(text) > spec.get("maxLength", MAX_STRING):
         raise ArgumentError(f"{name} is too long")
     if "enum" in spec and text not in spec["enum"]:
         raise ArgumentError(f"{name} must be one of {spec['enum']}")
@@ -65,10 +96,12 @@ def _check_string(name: str, spec: dict[str, Any], value: object) -> str:
 
 
 def _check_integer(name: str, spec: dict[str, Any], value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ArgumentError(f"{name} must be an integer")
+    if isinstance(value, float) and not (math.isfinite(value) and value.is_integer()):
         raise ArgumentError(f"{name} must be an integer")
     number = int(value)
-    low, high = spec.get("minimum", number), spec.get("maximum", number)
+    low, high = spec.get("minimum", -MAX_INTEGER), spec.get("maximum", MAX_INTEGER)
     if not low <= number <= high:
         raise ArgumentError(f"{name} must be between {low} and {high}")
     return number
@@ -88,7 +121,7 @@ def _check_value(name: str, spec: dict[str, Any], value: object) -> object:
 
 
 def validate_args(op: Operation, args: object) -> dict[str, Any]:
-    """Return the arguments cleaned against the operation's schema.
+    """Return the arguments cleaned against the operation's schema, with its defaults filled in.
 
     Raises:
         ArgumentError: the arguments are not an object, miss a required key, have an unknown key or
@@ -106,6 +139,9 @@ def validate_args(op: Operation, args: object) -> dict[str, Any]:
     missing = [key for key in required if key not in cleaned]
     if missing:
         raise ArgumentError(f"missing argument(s): {', '.join(missing)}")
+    for key, spec in props.items():
+        if key not in cleaned and "default" in spec:
+            cleaned[key] = spec["default"]
     return cleaned
 
 
@@ -128,3 +164,7 @@ class Registry:
     def names(self) -> list[str]:
         """Return the operation names."""
         return list(self._ops)
+
+    def shortcuts(self) -> list[tuple[str, Shortcut]]:
+        """Return every shortcut phrasing with the name of the operation it means."""
+        return [(op.name, shortcut) for op in self._ops.values() for shortcut in op.shortcuts]

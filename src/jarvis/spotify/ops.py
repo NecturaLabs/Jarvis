@@ -352,7 +352,6 @@ class SpotifyOps:
                 "Pause playback.",
                 _NO_ARGS,
                 self._simple("PUT", "/me/player/pause", "Paused."),
-                idempotent=True,
                 spoken_summary=lambda _a: "pause the music",
             ),
             Operation(
@@ -360,7 +359,6 @@ class SpotifyOps:
                 "Resume playback.",
                 _NO_ARGS,
                 self._simple("PUT", "/me/player/play", "Resumed."),
-                idempotent=True,
                 spoken_summary=lambda _a: "resume the music",
             ),
             Operation(
@@ -387,7 +385,6 @@ class SpotifyOps:
                     "additionalProperties": False,
                 },
                 self.set_volume,
-                idempotent=True,
                 spoken_summary=lambda a: f"set the volume to {a['percent']} percent",
             ),
             Operation(
@@ -413,7 +410,6 @@ class SpotifyOps:
                     "additionalProperties": False,
                 },
                 self.shuffle,
-                idempotent=True,
                 spoken_summary=lambda a: f"turn shuffle {'on' if a['on'] else 'off'}",
             ),
             Operation(
@@ -426,7 +422,6 @@ class SpotifyOps:
                     "additionalProperties": False,
                 },
                 self.repeat,
-                idempotent=True,
                 spoken_summary=lambda a: f"set repeat to {a['mode']}",
             ),
             Operation(
@@ -460,7 +455,6 @@ class SpotifyOps:
                 "Save the track that is playing now to the owner's library.",
                 _NO_ARGS,
                 self.like,
-                idempotent=True,
                 spoken_summary=lambda _a: "save this track to your library",
             ),
             Operation(
@@ -469,7 +463,6 @@ class SpotifyOps:
                 _NO_ARGS,
                 self.now_playing,
                 side_effect=False,
-                idempotent=True,
                 spoken_summary=lambda _a: "check what's playing",
             ),
         ]
