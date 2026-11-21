@@ -1,13 +1,10 @@
-"""tools/check_docs.py: the documentation still matches the repository, on synthetic trees."""
+"""tools/check_docs.py: the docs still match the repository, on synthetic trees and the real one."""
 
 import subprocess
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import check_docs as cd
 import pytest
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 GOOD: dict[str, str] = {
     "AGENTS.md": "# Agents\n",
@@ -376,3 +373,9 @@ def test_main_prints_findings_and_exits_one(
 def test_main_rejects_arguments(capsys: pytest.CaptureFixture[str]) -> None:
     assert cd.main(["--bogus"]) == 2
     assert "usage" in capsys.readouterr().err
+
+
+def test_the_real_tree_has_no_findings() -> None:
+    root = Path(__file__).resolve().parent.parent
+
+    assert cd.check(root, cd.tracked_files(root)) == []

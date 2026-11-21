@@ -86,6 +86,12 @@ jobs:
       - name: Licence information (REUSE)
         run: uv run reuse lint
 
+      - name: Dependency licences and lock sources
+        run: uv run python tools/check_licences.py
+
+      - name: Docs match the tracked files
+        run: uv run python tools/check_docs.py
+
       - name: Known vulnerabilities in the locked dependencies
         run: |
           set -euo pipefail
