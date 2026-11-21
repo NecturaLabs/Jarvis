@@ -10,20 +10,21 @@ says which parts are built.
 - **Verification on real hardware**: most of what is built is still open for checks against a real machine:
   the model service (#2), the wake word and transcription (#3), the policy engine (#4), configuration and
   setup (#5), the agent loop (#6) and Spotify control (#7). Whether the local model can drive Jarvis's tools
-  is measured in #17, and spoken replies through Piper in #18.
+  is measured in #17, and which speech-to-text model serves Jarvis best in #28.
 - **Install and maintenance**: one install command and a doctor that names the fix for each problem (#16);
   update, rollback and uninstall (#21); commands for desktop session changes such as lock and suspend (#22).
 - **Operating the PC**: typed PC operations (#9), and an off-by-default shell operation behind strong
   confirmation (#19).
 - **Research**: built (web search, page reading and Reddit through a local SearXNG); the owner's spoken check
   of a sourced answer and SearXNG in the installer remain (#10, #20).
-- **Voice polish**: speaking the first sentence while the rest is generated (#12), interrupting Jarvis by
-  voice with echo cancellation (#13), follow-up requests without the wake word (#11), the bare word "Jarvis"
-  (#15) and a state indicator in the Omarchy bar (#14).
+- **Voice polish**: speaking the first sentence while the rest is generated (#12) and follow-up requests
+  without the wake word (#11) are built and wait for live measurements; the bare word "Jarvis" (#15) is built
+  as the Azure keyword model and waits for the owner's trained model. Still to build: interrupting Jarvis by
+  voice without its own voice waking it (#13) and a state indicator in the Omarchy bar (#14).
 - **Accessibility** (not filed as issues yet): a text-only way to use Jarvis and a screen-reader check of
   the chat window; see [ACCESSIBILITY.md](../ACCESSIBILITY.md).
 
-Issue #8 is the maintainer's own Spotify developer app setup; everyone who runs Jarvis creates their own.
+Everyone who runs Jarvis creates their own Spotify developer app (the maintainer's was #8, now done).
 
 ## Not planned
 
