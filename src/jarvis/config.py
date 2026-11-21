@@ -134,6 +134,26 @@ def load(path: Path | None = None) -> Config:
         raise ConfigError(msg) from exc
 
 
+_TOML_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+}
+_DEL = 0x7F
+
+
+def _toml_char(char: str) -> str:
+    if char in _TOML_ESCAPES:
+        return _TOML_ESCAPES[char]
+    if ord(char) < ord(" ") or ord(char) == _DEL:
+        return f"\\u{ord(char):04X}"
+    return char
+
+
 def _toml_value(value: object) -> str:
     if isinstance(value, list):
         return "[" + ", ".join(_toml_value(v) for v in cast("list[object]", value)) + "]"
@@ -141,9 +161,7 @@ def _toml_value(value: object) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return repr(value)
-    text = str(value)
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-    return f'"{escaped}"'
+    return '"' + "".join(_toml_char(c) for c in str(value)) + '"'
 
 
 def dumps(config: Config) -> str:
