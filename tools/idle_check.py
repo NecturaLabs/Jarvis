@@ -349,7 +349,7 @@ def format_result(result: Result, limits: Limits) -> str:
     if result.seconds > 0:
         gpu = (
             ", ".join(f"{engine} {percent:.1f} %" for engine, percent in result.gpu_percent.items())
-            or "no DRM client"
+            or "no GPU engine time published (no DRM client, or one without drm-engine counters)"
         )
         growth = result.rss_end_mib - result.rss_start_mib
         lines += [
