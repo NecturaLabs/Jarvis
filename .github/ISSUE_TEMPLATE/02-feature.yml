@@ -1,0 +1,78 @@
+name: Feature request
+description: Propose a new capability or expand an existing one.
+labels:
+- enhancement
+- needs-triage
+- priority:p2-normal
+- size:needs-estimate
+body:
+- type: markdown
+  attributes:
+    value: Keep the title specific. Search for duplicates and link related issues. Redact tokens,
+      recordings and personal data.
+- type: checkboxes
+  id: search
+  attributes:
+    label: Existing issues
+    options:
+    - label: I searched existing issues.
+      required: true
+- type: dropdown
+  id: area
+  attributes:
+    label: Area
+    description: A maintainer applies the matching label during triage.
+    options:
+    - Wake word, microphone and transcription
+    - Speech output and confirmation
+    - Agent loop and prompts
+    - Boundaries, provenance and audit log
+    - Model and Strata
+    - Spotify
+    - PC operations
+    - Web research
+    - Install, setup and configuration
+    - Tests
+    - Documentation
+    - CI, lint and supply chain
+    - Not sure
+  validations:
+    required: true
+- type: textarea
+  id: problem
+  attributes:
+    label: Problem or use case
+    description: What are you trying to do, and what is difficult today?
+  validations:
+    required: true
+- type: textarea
+  id: proposal
+  attributes:
+    label: Proposed behaviour
+    description: Describe the requested behaviour and where it belongs in Jarvis. A proposal is not an approved design. Check [the roadmap](https://github.com/NecturaLabs/jarvis/blob/dev/docs/roadmap.md) for what is not planned.
+  validations:
+    required: true
+- type: textarea
+  id: constraints
+  attributes:
+    label: Constraints and alternatives
+    description: Relevant safety, privacy, boundary or hardware concerns, and alternatives. Link related work or prior art.
+  validations:
+    required: false
+- type: textarea
+  id: acceptance
+  attributes:
+    label: Acceptance criteria
+    description: List observable outcomes that make this issue complete.
+    placeholder: '- [ ] First checkable outcome
+
+      - [ ] Second checkable outcome'
+  validations:
+    required: true
+- type: textarea
+  id: where_to_see
+  attributes:
+    label: Where to see it (optional)
+    description: Name the current command, request or workflow and how a reviewer can verify the proposal, with exact commands when useful.
+  validations:
+    required: false
