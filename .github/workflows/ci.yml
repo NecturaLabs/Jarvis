@@ -16,7 +16,13 @@ concurrency:
 jobs:
   check:
     name: Lint, types and tests
-    runs-on: ${{ vars.USE_SELF_HOSTED == '0' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "x64"]') }}
+    # Runner: GitHub-hosted for pull requests from forks (never run untrusted code on the self-hosted machine)
+    # and when the repository variable USE_SELF_HOSTED is '0'; the self-hosted runner otherwise.
+    # `github.event.pull_request` is empty on pushes, hence the event_name test first.
+    runs-on: >-
+      ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)
+      && 'ubuntu-latest'
+      || (vars.USE_SELF_HOSTED == '0' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "x64"]')) }}
     timeout-minutes: 15
     env:
       # pyproject.toml prefers the system Python on the owner's PC; CI runners get a uv-managed 3.14.
@@ -57,7 +63,7 @@ jobs:
           echo "$tools/bin" >> "$GITHUB_PATH"
 
       - name: Sync the locked environment
-        run: uv sync --frozen
+        run: uv sync --locked
 
       - name: Lint and type check
         run: uv run .lint/check.sh
