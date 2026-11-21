@@ -208,9 +208,10 @@ class WebOps:
             where = said = ""
         clock = spoken_time(moment, twelve_hour=self._clock_config.twelve_hour)
         day = spoken_date(moment.date())
-        text = f"Time{where}: {clock}, {day} {moment.year} ({moment.tzname()})."
-        spoken = f"It's {day}{said}." if what == "date" else f"It's {clock}{said}."
-        return Result(text, spoken=spoken)
+        # Only what was asked: the model reads every word it is given aloud.
+        if what == "date":
+            return Result(f"Date{where}: {day} {moment.year}.", spoken=f"It's {day}{said}.")
+        return Result(f"Time{where}: {clock}.", spoken=f"It's {clock}{said}.")
 
     # --- weather ----------------------------------------------------------------------------
 
@@ -401,7 +402,8 @@ class WebOps:
         return [
             Operation(
                 "time_now",
-                "The current time or date, here or in a named place.",
+                "The current time or date, here or in a named place; one per call, so both only"
+                " when asked for both.",
                 {
                     "type": "object",
                     "properties": {
