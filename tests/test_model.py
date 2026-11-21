@@ -122,3 +122,34 @@ def test_an_unreadable_status_is_unknown(response: httpx.Response) -> None:
 
     assert model.status() is None
     assert model.is_loaded() is None
+
+
+def test_the_api_key_never_appears_in_the_repr() -> None:
+    model = StrataModel(ModelConfig(), "sk-very-secret")
+
+    assert "sk-very-secret" not in repr(model)
+    assert "sk-very-secret" not in str(model)
+
+
+def test_a_retry_waits_for_the_server_with_the_injected_sleep() -> None:
+    gets: list[int] = []
+    posts: list[int] = []
+    naps: list[float] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            gets.append(1)
+            if len(gets) < 3:
+                return httpx.Response(503, text="starting")
+            return httpx.Response(200, json={"data": [{"status": {"value": "loaded"}}]})
+        posts.append(1)
+        if len(posts) == 1:
+            raise httpx.ConnectError("refused", request=request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "back"}}]})
+
+    local = ModelConfig(base_url=Config().model_base_url())
+    model = StrataModel(local, "key", transport=httpx.MockTransport(handle), sleep=naps.append)
+
+    assert model.chat(MESSAGES, TOOLS) == {"content": "back"}
+    assert naps == [1.0, 1.0]
+    assert len(gets) == 3
