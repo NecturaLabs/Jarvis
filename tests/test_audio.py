@@ -1,7 +1,10 @@
 """Microphone stream handling and transcript parsing, without real audio devices."""
 
+import contextlib
 import os
 import queue
+import signal
+import subprocess
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, override
@@ -15,6 +18,7 @@ from jarvis.audio import (
     AppAudio,
     AudioError,
     Microphone,
+    Speaker,
     app_record_command,
     app_stream_serials,
     capture_sources,
@@ -22,11 +26,12 @@ from jarvis.audio import (
     match_app_streams,
     parse_transcript,
     pw_record_command,
+    transcribe,
     voxtype_command,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from numpy.typing import NDArray
 
@@ -166,11 +171,13 @@ def test_app_audio_waits_for_the_app_then_records_it() -> None:
         return ["head", "-c", str(FRAME * 2 * 3), "/dev/zero"]
 
     audio = AppAudio(["discord"], find=find, poll_s=0.01, command_for=command_for)
-    frames = audio.frames()
-    got = [next(frames) for _ in range(3)]
-    audio.stop()
+    try:
+        frames = audio.frames()
+        for _ in range(3):
+            next(frames)
+    finally:
+        audio.stop()
 
-    assert len(got) == 3
     assert targets[0] == "42"
     assert len(finds) >= 2
 
@@ -183,8 +190,10 @@ def test_app_audio_with_no_apps_records_all_pc_output() -> None:
         return ["head", "-c", str(FRAME * 2), "/dev/zero"]
 
     audio = AppAudio([], find=lambda _a: pytest.fail("no lookup needed"), command_for=command_for)
-    next(audio.frames())
-    audio.stop()
+    try:
+        next(audio.frames())
+    finally:
+        audio.stop()
 
     assert targets == [""]
 
@@ -389,9 +398,138 @@ def test_stop_ends_a_capture_tool_that_ignores_the_polite_signal(
     mic.start()
     pid = mic.pid
     assert pid is not None
-    next(mic.frames())  # the frame is written after the trap is set
+    try:
+        next(mic.frames())  # the frame is written after the trap is set
 
-    mic.stop()
+        mic.stop()
 
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        # A stop() that fails must not leave the looping child behind.
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+
+
+SILENCE = np.zeros(FRAME, dtype=np.int16)
+
+
+def _voxtype(
+    stdout: bytes = b"", returncode: int = 0, error: Exception | None = None
+) -> Callable[..., subprocess.CompletedProcess[bytes]]:
+    def run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if error is not None:
+            raise error
+        return subprocess.CompletedProcess(cmd, returncode, stdout, b"model missing")
+
+    return run
+
+
+def test_transcribe_returns_the_text_voxtype_printed() -> None:
+    assert transcribe(SILENCE, run=_voxtype(b"Loading audio file: x\nPause the music.\n")) == (
+        "Pause the music."
+    )
+
+
+def test_text_that_is_not_valid_utf8_is_kept_readable() -> None:
+    assert "play" in transcribe(SILENCE, run=_voxtype(b"\xff\xfe play\n"))
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        FileNotFoundError("voxtype"),
+        PermissionError("voxtype"),
+        ValueError("embedded null byte"),
+        subprocess.TimeoutExpired("voxtype", 60),
+    ],
+    ids=["missing", "not allowed", "bad argument", "timed out"],
+)
+def test_a_transcription_that_cannot_run_is_an_audio_error(failure: Exception) -> None:
+    with pytest.raises(AudioError):
+        transcribe(SILENCE, run=_voxtype(error=failure))
+
+
+def test_a_failed_transcription_is_an_audio_error() -> None:
+    with pytest.raises(AudioError):
+        transcribe(SILENCE, run=_voxtype(returncode=1))
+
+
+def test_a_hint_no_command_line_can_carry_is_an_audio_error() -> None:
+    # A NUL in an argument is refused by the operating system before Voxtype ever starts.
+    with pytest.raises(AudioError):
+        transcribe(SILENCE, prompt="Glass\x00Harbor")
+
+
+def _speaker(player: list[str], grace_s: float = 10.0) -> Speaker:
+    return Speaker(
+        lambda _text: (b"\x00\x00" * 2400, 24000), player=lambda _rate: player, grace_s=grace_s
+    )
+
+
+def _finishes(action: threading.Thread, seconds: float) -> bool:
+    action.join(seconds)
+    return not action.is_alive()
+
+
+def _endless_player(pid_file: Path) -> list[str]:
+    """A player that takes the sound and then never exits; its process ID is left in `pid_file`."""
+    return ["sh", "-c", f"echo $$ > {pid_file}; cat > /dev/null; exec sleep 600"]
+
+
+def _end(pid_file: Path) -> None:
+    """Kill the endless player whatever the speaker did, so a failing test leaves nothing behind."""
+    with contextlib.suppress(OSError, ValueError):
+        os.kill(int(pid_file.read_text(encoding="ascii")), signal.SIGKILL)
+
+
+def test_speech_goes_to_the_player_and_returns_when_it_is_done(tmp_path: Path) -> None:
+    heard = tmp_path / "heard.raw"
+
+    _speaker(["sh", "-c", f"cat > {heard}"]).say("hello")
+
+    assert heard.stat().st_size == 4800
+
+
+def test_a_missing_player_is_an_audio_error() -> None:
+    with pytest.raises(AudioError):
+        _speaker(["/nonexistent/pw-play"]).say("hello")
+
+
+def test_a_player_that_never_finishes_is_ended_and_reported(tmp_path: Path) -> None:
+    failures: list[BaseException] = []
+    speaker = _speaker(_endless_player(tmp_path / "pid"), grace_s=0.2)
+
+    def say() -> None:
+        try:
+            speaker.say("hello")
+        except AudioError as exc:
+            failures.append(exc)
+
+    talking = threading.Thread(target=say, daemon=True)
+    talking.start()
+    try:
+        assert _finishes(talking, 5)
+        assert len(failures) == 1
+    finally:
+        _end(tmp_path / "pid")
+
+
+def test_stop_cuts_speech_short(tmp_path: Path) -> None:
+    speaker = _speaker(_endless_player(tmp_path / "pid"))
+    talking = threading.Thread(target=speaker.say, args=("hello",), daemon=True)
+    talking.start()
+    try:
+        stopped = False
+        for _ in range(100):
+            speaker.stop()
+            if _finishes(talking, 0.05):
+                stopped = True
+                break
+        assert stopped
+    finally:
+        _end(tmp_path / "pid")
+
+
+def test_stop_with_nothing_playing_is_harmless() -> None:
+    _speaker(["true"]).stop()
