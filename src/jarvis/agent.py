@@ -93,8 +93,10 @@ _BARE_DEED = re.compile(_LEAD + _DEED + r"(?: (?:it|that|this|now|for you))*[.!]
 # A question that asks rather than reports: it opens with a question word or an auxiliary, or a
 # clause before its end holds a question word ("Set it to what, exactly?").
 _ASKS = re.compile(
-    r"^(?:do|does|did|shall|should|would|could|can|will|is|are|was|were|want|may)\b|"
-    r"\b(?:what|which|who|whom|where|when|why|how)\b",
+    r"^(?:do|does|did|shall|should|would|could|can|will|is|are|was|were|want|may)\b(?! do\b)|"
+    # a question word, unless a subject or a verb follows it: "what you asked", "which is by"
+    r"\b(?:what|which|who|whom|where|when|why|how)\b"
+    r"(?! (?:you|i|he|she|they|we|it|is|was|are|were)\b)",
     re.IGNORECASE,
 )
 _DENIAL = re.compile(
@@ -112,6 +114,7 @@ _DESCRIPTION = re.compile(
     rf"^{_LEAD}{_GERUND}\b(?:[^,.;:!?]{{0,40}}?\b(?:is|are|was|were|works|work|can|will|"
     rf"means|lets|makes|takes)\b|\s*,\s*{_GERUND}\b)|^(?i:added to (?:that|this))\b"
 )
+_LISTED = re.compile(rf"^{_GERUND}\b")  # "playing music, pausing, skipping": what Jarvis can do
 _COURTESY = re.compile(r"^no (?:problem|worries)\b[,.!]?\s*", re.IGNORECASE)  # not a denial
 _SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+|\n+")
 _DASH = re.compile(r"\s*(?:[\u2012\u2013\u2014\u2015\u2212]|--)\s*|\s-\s")
@@ -134,11 +137,11 @@ def claims_action(reply: str) -> bool:
     nothing was saved" or "Playing music is my specialty" is left alone.
     """
     for sentence in _SENTENCE_END.split(reply.replace("\u2019", "'").replace("\uff1f", "?")):
-        text = sentence.strip().strip(_EDGES + "([")
+        text = " ".join(sentence.split()).strip(_EDGES + "([")
         if not text or _DENIAL.search(_COURTESY.sub("", text)) or _DESCRIPTION.match(text):
             continue
         clauses = _clauses(text)
-        if text.rstrip(_EDGES).endswith("?"):
+        if text.rstrip(_EDGES + "!").endswith("?"):
             before = [words for words, _ in clauses[:-1]]
             if (
                 _ASKS.match(clauses[0][0])
@@ -155,18 +158,20 @@ def claims_action(reply: str) -> bool:
 def _clauses(text: str) -> list[tuple[str, bool]]:
     """Split a sentence at commas, asides and dashes; return each clause and whether it claims.
 
-    After a dash only a clause with its own subject counts, or a deed that is its part's only
-    clause, so "Spotify - playing music, managing queues" lists rather than reports.
+    After a dash a clause counts with its own subject or as a deed standing alone ("Sure - muted,
+    anything else?"), unless the part lists what Jarvis can do ("Spotify - playing music, pausing,
+    skipping").
     """
     out: list[tuple[str, bool]] = []
     for index, part in enumerate(_DASH.split(text)):
         pieces = [w for c in _CLAUSE_BREAK.split(part) if (w := c.strip().strip(_EDGES))]
+        listed = sum(1 for words in pieces if _LISTED.match(words)) > 1
         for words in pieces:
             if index == 0:
                 claim = bool(_CLAIM.match(words))
             else:
-                claim = bool(_CLAIM_AFTER_DASH.match(words)) or (
-                    len(pieces) == 1 and bool(_BARE_DEED.match(words))
+                claim = not listed and bool(
+                    _CLAIM_AFTER_DASH.match(words) or _BARE_DEED.match(words)
                 )
             out.append((words, claim))
     return out or [(text, False)]

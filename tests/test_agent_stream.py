@@ -299,6 +299,7 @@ def test_split_sentences_keeps_the_unfinished_tail() -> None:
         "Set it to what? The volume's up to you.",
         "Muted, or just quieter? Done (anything else?)",
         "Playing which song, the first one? Okay - paused it.",
+        "Sure - muted, anything else? Playing what you asked for, okay?",
     ],
 )
 def test_the_claim_check_gives_the_same_answer_in_pieces_as_whole(reply: str) -> None:

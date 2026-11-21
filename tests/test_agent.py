@@ -2,6 +2,7 @@
 
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -281,6 +282,13 @@ def test_a_claim_after_only_failed_tools_is_challenged_with_the_failure() -> Non
         "Done \u2015 anything else?",
         "Set to 30.",
         "It's set to 30.",
+        "Sure \u2014 I found it, playing it now.",
+        "Okay - found it, paused.",
+        "Sure - muted, anything else?",
+        "I've set it to what you asked, anything else?",
+        "Playing Bohemian Rhapsody, which is by Queen, okay?",
+        "Muted, until when you're back, okay?",
+        "Will do, muted, anything else?",
     ],
 )
 def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
@@ -328,6 +336,7 @@ def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
         "Playing music, or pausing it?",
         "I can help with that - playing music, pausing, skipping.",
         "It's set to repeat already.",
+        "Muted, or just quieter?!",
     ],
 )
 def test_an_honest_answer_is_not_a_claim(reply: str) -> None:
@@ -1223,3 +1232,10 @@ def test_a_request_that_waits_for_a_cold_model_gets_the_load_time_too() -> None:
     assert agent.handle("skip", NO_CONFIRM) == "Skipped."
     assert counter.runs == [{"op": "next"}]
     assert model.timeouts[0] == pytest.approx(agent_module.MAX_SECONDS + agent_module.COLD_LOAD_S)
+
+
+def test_a_long_run_of_spaces_is_checked_quickly() -> None:
+    started = time.perf_counter()
+
+    assert not claims_action("Muted" + " " * 50_000 + "?")
+    assert time.perf_counter() - started < 1.0
