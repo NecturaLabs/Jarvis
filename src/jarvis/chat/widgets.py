@@ -125,6 +125,12 @@ class Request(Static):
         self.text = text
 
 
+class ReplyMarkdown(Markdown):
+    """A reply's Markdown, lists marked with a dash at every depth, as Claude Code marks them."""
+
+    BULLETS: ClassVar[list[str]] = ["- "]
+
+
 class Reply(Horizontal):
     """A reply: the dot, then the words rendered as Markdown, then how long it took."""
 
@@ -139,7 +145,7 @@ class Reply(Horizontal):
         """The mark and the body."""
         yield Static(DOT, classes="reply-mark")
         with Vertical(classes="reply-body"):
-            yield Markdown(self.text)
+            yield ReplyMarkdown(self.text)
             if self._note:
                 yield Static(self._note, classes="reply-note", markup=False)
 
@@ -437,13 +443,20 @@ class PointerList(OptionList):
         styles: tuple[str, ...],
         ids: Sequence[str | None] = (),
         highlighted: int = 0,
+        *,
+        widths: Sequence[int] = (),
     ) -> None:
-        """List `rows` (their cells styled by `styles`, column by column) and point at one."""
+        """List `rows` (their cells styled by `styles`, column by column) and point at one.
+
+        `widths` are the columns' least widths, so a list that is filtered keeps its columns
+        where they were.
+        """
         self._rows = tuple(rows)
         self._styles = styles
         columns = max((len(row) for row in rows), default=0)
+        least = tuple(widths) + (0,) * columns
         self._widths = tuple(
-            max((cell_len(row[column]) for row in rows if column < len(row)), default=0)
+            max([least[column], *(cell_len(row[column]) for row in rows if column < len(row))])
             for column in range(columns)
         )
         self.clear_options()

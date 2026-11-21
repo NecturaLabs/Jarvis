@@ -10,13 +10,15 @@ from typing import TYPE_CHECKING
 from PIL import Image
 from rich.console import Console
 from textual import events
+from textual.containers import VerticalScroll
 from textual.widgets import Markdown, OptionList, Static
 
 from jarvis.agent import ContextUse, Hooks
+from jarvis.chat import commands
 from jarvis.chat.app import ChatApp, Services
 from jarvis.chat.clipboard import Clip, ClipboardError
 from jarvis.chat.history import InputHistory
-from jarvis.chat.widgets import Entry, PictureView, PromptArea, Reply, Request
+from jarvis.chat.widgets import Entry, PictureView, PointerList, PromptArea, Reply, Request
 from jarvis.config import ChatConfig
 from jarvis.memory import Conversation, Turn
 from jarvis.pictures import Picture, PictureCache
@@ -204,6 +206,28 @@ def test_a_long_reply_is_shown_whole_as_markdown() -> None:
         shown = next(w for w in _transcript(app) if isinstance(w, Reply))
         assert shown.text == reply
         assert shown.query_one(Markdown).source == reply
+
+    _run(test, app)
+
+
+def test_a_reply_is_set_as_claude_code_sets_it() -> None:
+    reply = "# Katanas\n\nSome text.\n\n## Where\n\n- one\n- two\n\n### Summary\n\nDone."
+    app = _app(session=FakeSession(lambda _t, _h: reply))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "compare them")
+        await _until(pilot, lambda: bool(app.query("MarkdownH3")))
+        await pilot.pause(0.05)
+        title, part, small = (
+            app.query_one(kind) for kind in ("MarkdownH1", "MarkdownH2", "MarkdownH3")
+        )
+        assert {"bold", "italic", "underline"} <= set(str(title.styles.text_style).split())
+        for heading in (part, small):
+            assert set(str(heading.styles.text_style).split()) == {"bold"}
+        assert heading.styles.margin.bottom == 0  # the owner: no gap under a heading
+        bullets = list(app.query("MarkdownBullet"))
+        assert [_plain(bullet.render()).strip() for bullet in bullets] == ["-", "-"]
+        assert bullets[0].styles.color.ansi == -1  # the terminal's own text colour, not dimmed
 
     _run(test, app)
 
@@ -1225,6 +1249,70 @@ def test_the_command_menu_takes_the_footers_place_instead_of_squeezing_the_trans
         await pilot.pause(0.05)
         assert app.query_one("#footer").display
         assert app.query_one("#toolbar").display
+
+    _run(test, app)
+
+
+def test_the_menu_keeps_one_height_while_the_owner_types_so_nothing_jumps() -> None:
+    app = _app(session=FakeSession())
+
+    async def test(pilot: Pilot[None]) -> None:
+        _input(app).set_text("/")
+        await _until(pilot, lambda: app.query_one("#menu").display)
+        await pilot.pause(0.05)
+        menu, transcript = app.query_one("#menu"), app.query_one("#transcript")
+        heights = (menu.outer_size.height, transcript.size.height)
+        for typed in ("/c", "/co", "/con", "/conf", "/e"):
+            _input(app).set_text(typed)
+            await pilot.pause(0.05)
+            assert menu.display
+            assert (menu.outer_size.height, transcript.size.height) == heights, typed
+
+    _run(test, app)
+
+
+def test_the_menu_keeps_its_columns_and_one_line_a_command_on_a_narrow_window() -> None:
+    app = _app(session=FakeSession())
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.resize_terminal(60, 30)
+        _input(app).set_text("/")
+        await _until(pilot, lambda: app.query_one("#menu").display)
+        await pilot.pause(0.05)
+        menu = app.query_one("#menu", PointerList)
+
+        def about_column(name: str) -> int:
+            line = next(
+                _plain(menu.get_option_at_index(index).prompt)
+                for index in range(menu.option_count)
+                if name in _plain(menu.get_option_at_index(index).prompt)
+            )
+            after = line.index(name) + len(name)
+            return after + len(line[after:]) - len(line[after:].lstrip())
+
+        everything = about_column("/exit")
+        assert menu.option_count == len(commands.COMMANDS)
+        assert menu.virtual_size.height == menu.option_count  # no command wraps
+        _input(app).set_text("/ex")
+        await pilot.pause(0.05)
+        assert about_column("/exit") == everything
+
+    _run(test, app)
+
+
+def test_the_transcript_stays_at_its_newest_line_when_the_menu_opens() -> None:
+    app = _app(session=FakeSession())
+
+    async def test(pilot: Pilot[None]) -> None:
+        transcript = app.query_one("#transcript", VerticalScroll)
+        for number in range(60):
+            transcript.mount(Static(f"line {number}"))
+        await pilot.pause(0.05)
+        assert transcript.is_vertical_scroll_end
+        _input(app).set_text("/")
+        await pilot.pause()
+        assert app.query_one("#menu").display
+        assert transcript.is_vertical_scroll_end
 
     _run(test, app)
 

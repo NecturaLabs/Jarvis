@@ -24,6 +24,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Protocol, override
 
+from rich.cells import cell_len
 from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -86,6 +87,7 @@ SPINNER = "·✢✳✶✻✽✻✶✳✢"
 PLACEHOLDER = 'Ask anything, or try "what\'s playing?"  (/ for commands)'
 PLACEHOLDER_OFF = "Typed requests are off (see above); / for commands"
 MENU_HINT = "tab completes · enter runs · esc closes"
+MENU_ROWS = 12  # the command menu's most rows; it keeps one height while it is open
 FOOTER_MARGIN = 6  # the footer's margins, left and right
 STATUS_GAP = 2  # between the footer's hint and the services' status
 SHORTCUTS = (
@@ -243,12 +245,9 @@ class ChatApp(App[None]):
         width: 1fr; margin: 1 0 0 0; content-align: left top;
         color: ansi_default; background: ansi_default; text-style: bold;
     }
-    .reply MarkdownH1 { text-style: bold underline; }
-    .reply MarkdownH3, .reply MarkdownH4, .reply MarkdownH5, .reply MarkdownH6 {
-        text-style: bold italic;
-    }
+    .reply MarkdownH1 { text-style: bold italic underline; }
     .reply MarkdownBlock > .code_inline { color: ansi_blue; }
-    .reply MarkdownBullet { color: ansi_bright_black; }
+    .reply MarkdownBullet { color: ansi_default; }
     .reply MarkdownFence {
         margin: 1 0; padding: 0 0 0 1; background: ansi_default;
         border-left: outer ansi_bright_black;
@@ -287,7 +286,10 @@ class ChatApp(App[None]):
     }
     #prompt PromptArea:focus { border: none; }
     #pictures { height: auto; margin: 0 3 0 5; color: ansi_bright_black; }
-    #menu { height: auto; max-height: 12; margin: 0 3; border: none; background: ansi_default; }
+    #menu {
+        margin: 0 3; border: none; background: ansi_default;
+        text-wrap: nowrap; text-overflow: ellipsis;
+    }
     OptionList > .option-list--option-highlighted,
     OptionList:focus > .option-list--option-highlighted {
         background: ansi_default; color: ansi_default; text-style: none;
@@ -397,6 +399,7 @@ class ChatApp(App[None]):
             self.query_one(widget).display = False
         self.query_one("#question").border_title = f"{self._name} asks"
         self.query_one("#settings").border_title = "Settings"
+        self.query_one("#menu").styles.height = min(len(commands.COMMANDS), MENU_ROWS)
         self._apply_verbosity()
         self.query_one("#toolbar").display = self._settings.toolbar
         transcript = self.query_one("#transcript", VerticalScroll)
@@ -705,7 +708,11 @@ class ChatApp(App[None]):
         found = commands.suggest(value)
         shown = bool(found) and [s.value.strip() for s in found] != [value.strip().lower()]
         if shown:
-            menu.show([(s.label, s.about) for s in found], ("bold", "bright_black"))
+            menu.show(
+                [(s.label, s.about) for s in found],
+                ("bold", "bright_black"),
+                widths=(max(cell_len(every.label) for every in commands.suggest("/")),),
+            )
         if menu.display != shown:
             menu.display = shown
             self._tick()
