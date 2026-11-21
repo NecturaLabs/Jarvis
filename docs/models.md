@@ -46,7 +46,7 @@ daemon and never your Voxtype config or recordings. Each run is
   (`audio.transcribe_threads`, default 8) and `context_window_optimization` (`audio.transcribe_short_window`,
   default on) under `[whisper]`. Whisper pads every clip to a 30 s window, so without the short window a
   two-second request costs as much as a long one; with it a short command took 0.29 s instead of 1.66 s
-  (commit `141c2bf`, measured with `small.en`). Whisper.cpp also uses only 4 threads unless told otherwise.
+  (commit `d29d73e`, measured with `small.en`). Whisper.cpp also uses only 4 threads unless told otherwise.
 - **Model:** `audio.transcribe_model`, default `small.en`; it must already be downloaded through Voxtype
   (`voxtype setup model`), and `jarvis doctor` checks that it is. In that same measurement `small.en` took
   0.29 s on a short command against 0.49 s for `base.en`, and was more accurate.
