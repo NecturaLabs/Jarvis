@@ -27,7 +27,8 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
   `voxtype record stop --wait --json`, `voxtype transcribe`). Never edit `~/.config/voxtype/` and never
   stop a recording Jarvis did not start.
 - Strata serves only Jarvis. Its model lives at `/mnt/models/ai/strata`, outside the repository. Health
-  checks never generate tokens, so the model stays unloaded until a real request.
+  checks never generate tokens. The model is loaded when `jarvis run` starts and stays loaded (the owner's
+  choice): it may hold RAM and VRAM, but must use no GPU or CPU while idle, and Jarvis runs beside games.
 - Jarvis runs locally and is free to use and maintain: no hosted model backend, no paid API. Voice activation
   and speech-to-text stay local too.
 - Jarvis replies by voice only; no desktop notifications.
