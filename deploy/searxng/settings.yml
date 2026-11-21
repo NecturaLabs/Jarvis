@@ -1,0 +1,27 @@
+# Jarvis's SearXNG: SearXNG's defaults, JSON answers for Jarvis, no limiter (only this PC reaches
+# it), no image proxy. The secret comes from SEARXNG_SECRET (compose.yaml).
+use_default_settings:
+  engines:
+    remove:
+      - ahmia
+      - torch
+general:
+  instance_name: Jarvis search
+  enable_metrics: false
+server:
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: GET
+search:
+  safe_search: 1
+  # Jarvis listens and speaks in English; without this, engines answer in the public IP's language.
+  default_lang: en
+  autocomplete: ""
+  formats:
+    - html
+    - json
+engines:
+  # Its result links come back wrapped ("http:///go/v1/…") and cannot be opened.
+  - name: brave
+    disabled: true

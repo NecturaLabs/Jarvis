@@ -22,8 +22,8 @@ Jarvis sends no telemetry and checks for no updates.
 
 ## What leaves your PC
 
-Only Spotify, and only once you have run `jarvis spotify-login` with your own Spotify developer app
-([ADR 0005](adr/0005-local-only.md)):
+Nothing is sent until you ask for something that needs it. Spotify, once you have run
+`jarvis spotify-login` with your own Spotify developer app ([ADR 0005](adr/0005-local-only.md)):
 
 - `accounts.spotify.com`: the login (PKCE) and the token refresh.
 - `api.spotify.com`: playback commands, the volume, the device list, searches built from your words ("play
@@ -33,6 +33,22 @@ Only Spotify, and only once you have run `jarvis spotify-login` with your own Sp
 
 What Spotify does with that is set by Spotify's own privacy policy.
 
+Questions that need the outside world ([ADR 0007](adr/0007-outside-services-for-answers.md)):
+
+- **Weather and the time abroad**: `api.open-meteo.com` gets your home's coordinates (`[weather]`) or the
+  place you name; `geocoding-api.open-meteo.com` gets a place name to look up (your home's name once per
+  run when no coordinates are set). The time here is read from this PC's clock and sends nothing.
+- **Web search**: your search goes to the SearXNG container on this PC, which passes it on, with no cookies
+  or account, to the public search engines in SearXNG's default set (in a test on 2026-11-21 only Google's
+  answered; others were rate-limited). They see the search and your public IP address.
+- **Web pages**: Jarvis opens only a page a search in the same conversation returned, and only on a public
+  address. The site sees your IP address and a generic user agent.
+- **Reddit**: thread searches go through SearXNG the same way, with `site:reddit.com` added; the
+  `arctic-shift.photon-reddit.com` archive gets the ids of the threads Jarvis reads.
+
+No request names you, the PC or Jarvis. Set an operation to `deny` in `[boundaries.classes]` to keep it
+from ever running.
+
 ## Removing it
 
 - Delete `~/.local/state/jarvis/` to remove the audit log, the Strata log, the tokens and the key.
@@ -40,3 +56,5 @@ What Spotify does with that is set by Spotify's own privacy policy.
   `man journald.conf`). There is no way to remove only Jarvis's lines from it.
 - Remove Jarvis's access to your Spotify account on Spotify's account page, under apps.
 - `jarvis stop` stops both services; the units are in `~/.config/systemd/user/`.
+- `docker compose -f deploy/searxng/compose.yaml down` stops and removes the search container. While it runs
+  it keeps engine caches in memory (`/tmp` in the container); they go with it.

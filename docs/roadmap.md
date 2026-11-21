@@ -15,7 +15,8 @@ says which parts are built.
   update, rollback and uninstall (#21); commands for desktop session changes such as lock and suspend (#22).
 - **Operating the PC**: typed PC operations (#9), and an off-by-default shell operation behind strong
   confirmation (#19).
-- **Research**: sourced spoken answers through a local SearXNG (#10, #20).
+- **Research**: built (web search, page reading and Reddit through a local SearXNG); the owner's spoken check
+  of a sourced answer and SearXNG in the installer remain (#10, #20).
 - **Voice polish**: speaking the first sentence while the rest is generated (#12), interrupting Jarvis by
   voice with echo cancellation (#13), follow-up requests without the wake word (#11), the bare word "Jarvis"
   (#15) and a state indicator in the Omarchy bar (#14).

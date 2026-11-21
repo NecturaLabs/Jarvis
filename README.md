@@ -25,11 +25,19 @@ Jarvis is pre-1.0 software; see [Status](#status).
   Spotify desktop app when you ask it to play or resume and no player is open.
 - **Boundaries:** every action is a typed operation checked by a policy engine in code before it runs, and
   every request, decision and result goes to an audit log. See [SECURITY.md](SECURITY.md).
+- **Time and weather:** "what time is it", "what's the weather tomorrow" or "what's the weather in Lisbon".
+  The time comes from this PC; the weather from Open-Meteo, free and without an account. Set your home in
+  [`[weather]`](docs/configuration.md).
+- **Research:** questions it can't answer on its own go to a web search through a local SearXNG; it reads
+  the best pages and says where the answer came from. "What does Reddit think of …" finds Reddit threads and
+  reads their top comments from the Arctic Shift archive. Start the search container once as
+  [`[research]`](docs/configuration.md) says. What these send, and to whom, is in
+  [docs/privacy.md](docs/privacy.md).
 - **Listening to PC audio (off by default):** Jarvis can also take requests heard in what the PC plays, such as
   a Discord call. That speech is treated as someone else's, so you are asked to confirm before it changes
   anything. See [the ADR](docs/adr/0003-pc-audio-is-not-the-owner.md).
 
-Not built yet: web research, PC operations other than Spotify, keybinding confirmation, voice barge-in. The
+Not built yet: PC operations other than Spotify, keybinding confirmation, voice barge-in. The
 plan marks each as planned.
 
 ## Requirements
@@ -96,8 +104,8 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 
 Jarvis is pre-1.0 and has no tagged releases yet. It was built and measured on one machine (Omarchy, an RX
 7900 XT and 64 GB of RAM); other hardware is untested. The configuration file has one schema version and no
-migrations, so a later version may ask you to edit it. Web research, PC operations other than Spotify and
-keybinding confirmation are not built; [docs/roadmap.md](docs/roadmap.md) lists what is planned and
+migrations, so a later version may ask you to edit it. PC operations other than Spotify and keybinding
+confirmation are not built; [docs/roadmap.md](docs/roadmap.md) lists what is planned and
 [docs/plan.md](docs/plan.md) says what is built. Changes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Licence

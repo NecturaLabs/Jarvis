@@ -74,6 +74,16 @@ EXCEPTIONS: Final[dict[str, tuple[frozenset[str], str]]] = {
             "License field, unexplained. It is a development tool, never distributed with Jarvis"
         ),
     ),
+    "regex": (
+        frozenset({"CNRI-Python"}),
+        (
+            "the owner accepted it on 2026-11-21 so Jarvis can read web pages with trafilatura "
+            "(trafilatura -> htmldate -> dateparser -> regex). LICENSE.txt in its dist-info says "
+            "the code derives from CPython 2.6/3.1's `re`, under CNRI's Python 1.6 licence; SPDX "
+            "lists a separate CNRI-Python-GPL-Compatible id, so this one is treated as "
+            "GPL-incompatible. Users install it from PyPI; Jarvis ships no copy"
+        ),
+    ),
 }
 
 
@@ -88,6 +98,14 @@ class Override:
 # Keyed by the normalised distribution name (lower case, runs of - _ . as one -). Used only when
 # the metadata gives no usable licence; one the metadata has outgrown is reported for removal.
 OVERRIDES: Final[dict[str, Override]] = {
+    "justext": Override(
+        "BSD-2-Clause",
+        (
+            "only the `BSD License` classifier and `License: The BSD 2-Clause License`; "
+            "LICENSE.rst in justext-3.0.2.dist-info is the two-clause BSD text (source and binary "
+            "clauses, no endorsement or advertising clause)"
+        ),
+    ),
     "jinja2": Override(
         "BSD-3-Clause",
         (

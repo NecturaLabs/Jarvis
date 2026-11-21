@@ -245,3 +245,30 @@ def test_transcription_runs_fast_by_default() -> None:
     audio = config.AudioConfig()
     assert audio.transcribe_threads == 8
     assert audio.transcribe_short_window is True
+
+
+def test_weather_and_research_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    original = config.Config(
+        clock=config.ClockConfig(twelve_hour=True),
+        weather=config.WeatherConfig(
+            place="Lisbon", coordinates=[38.72, -9.14], temperature_unit="fahrenheit"
+        ),
+        research=config.ResearchConfig(searxng_url="http://127.0.0.1:9999", results=3),
+    )
+
+    config.save(original, path)
+
+    assert config.load(path) == original
+
+
+@pytest.mark.parametrize("point", [[1.0], [1.0, 2.0, 3.0], [91.0, 0.0], [0.0, -181.0]])
+def test_coordinates_are_a_real_point_or_nothing(point: list[float]) -> None:
+    with pytest.raises(ValueError, match="coordinates"):
+        config.WeatherConfig(coordinates=point)
+
+
+def test_search_runs_only_on_this_machine() -> None:
+    with pytest.raises(ValueError, match="on this machine"):
+        config.ResearchConfig(searxng_url="https://searx.example.org")
+    assert config.ResearchConfig().searxng_url == "http://127.0.0.1:8888"

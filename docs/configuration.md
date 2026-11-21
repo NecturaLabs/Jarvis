@@ -23,7 +23,8 @@ Paths and names may not contain control characters, because they are written int
 Jarvis reads the file when a command starts, so `jarvis ask`, `status`, `unload` and `doctor` always see the
 current file. The running voice service reads it once, when it starts.
 
-- `audio`, `persona`, `boundaries`, `spotify` and `model` keys: run `jarvis restart`.
+- `audio`, `persona`, `boundaries`, `spotify`, `model`, `clock`, `weather` and `research` keys: run
+  `jarvis restart`.
 - `strata` keys: run `jarvis setup` to rewrite the profile and unit (it keeps every other value), then
   `jarvis restart`. It restarts Strata too when its profile or unit was rewritten after Strata started, and
   otherwise leaves a running Strata, and its loaded model, alone. An empty `model.base_url` follows
@@ -155,15 +156,62 @@ appears and every app keeps playing where it did.
 | `tone` | calm, warm, to the point, with a light touch of dry wit | How it speaks. |
 | `addendum` | empty | Your own extra instructions, added to the system prompt. |
 
+## `[clock]`
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `twelve_hour` | `false` | `true`, `false` | Say the time as "3:42 PM" instead of "15:42". |
+
+The time is this PC's own clock and time zone; only the time in a named place asks Open-Meteo for that
+place's time zone.
+
+## `[weather]`: your home, for weather that names no place
+
+Weather comes from Open-Meteo, which needs no account or key ([ADR 0007](adr/0007-outside-services-for-answers.md)).
+"What's the weather" uses your home; "what's the weather in Lisbon tomorrow" looks Lisbon up.
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `place` | empty | text | Your home's name, said back to you and looked up once per run when `coordinates` is empty. |
+| `coordinates` | empty | empty, or `[latitude, longitude]` within 90 and 180 degrees | Your home's exact point; no place lookup is sent when it is set. |
+| `temperature_unit` | `celsius` | `celsius`, `fahrenheit` | Units of every temperature. |
+| `wind_unit` | `kmh` | `kmh`, `mph`, `ms`, `kn` | Units of the wind speed. |
+
+With neither set, Jarvis asks you to name a place.
+
+## `[research]`: web search, pages and Reddit
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `searxng_url` | `http://127.0.0.1:8888` | an `http://` or `https://` URL on `127.0.0.1`, `localhost` or `::1` | The local SearXNG Jarvis searches through. |
+| `results` | `5` | 1 to 8 | Results per search when the model does not ask for a number. |
+| `page_chars` | `2800` | 500 to 6000 | Most characters of a page or Reddit thread passed to the model. |
+| `reddit_comments` | `6` | 1 to 10 | Top comments read from a Reddit thread. |
+
+Search needs the SearXNG container running; without it Jarvis says search isn't running, and everything
+else keeps working. To start it:
+
+```sh
+printf 'SEARXNG_SECRET=%s\n' "$(openssl rand -hex 32)" > deploy/searxng/.env
+docker compose -f deploy/searxng/compose.yaml up -d
+```
+
+It listens on `127.0.0.1:8888` only (`SEARXNG_PORT` in `.env` changes the port; change `searxng_url`
+with it) and restarts with Docker unless you stop it (`docker compose -f deploy/searxng/compose.yaml
+down`). The `.env` file is git-ignored. Reddit threads are found through SearXNG and read from the
+Arctic Shift archive, a free copy of public Reddit that can lag behind it by a little.
+
 ## `[boundaries.classes]`
 
 A table from operation name to a class: `safe` (runs), `confirm` (needs your spoken yes), `strong`
 (keybinding confirmation, not built yet, so such a call is refused) or `deny`. An operation not listed keeps
-its shipped class, which is `safe` for every Spotify operation. Whatever the class, side effects are raised to
+its shipped class, which is `safe` for every operation Jarvis has today (`spotify_*`, `time_now`, `weather`,
+`web_search`, `web_read`, `reddit_search`, `reddit_read`); set one to `deny` to switch it off. Whatever the class, side effects are raised to
 `confirm` while text from outside your own speech is in the request. Example:
 
 ```toml
 [boundaries.classes]
 spotify_like = "confirm"
 spotify_queue = "deny"
+reddit_search = "deny"
 ```

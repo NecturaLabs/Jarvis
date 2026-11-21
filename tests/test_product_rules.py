@@ -26,6 +26,17 @@ HTTPX_FILES = {
     "model.py": "the client of the local Strata server",
     "spotify/api.py": "the Spotify Web API client",
     "spotify/auth.py": "the Spotify OAuth token exchange",
+    "web/guard.py": "the client that reaches only public addresses, for every outside web service",
+    "web/searxng.py": "the client of the local SearXNG search service (loopback only)",
+    "web/openmeteo.py": "the Open-Meteo weather and geocoding client (docs/adr/0007)",
+    "web/arctic.py": "the Arctic Shift Reddit archive client (docs/adr/0007)",
+    "web/page.py": "reads a web page a search returned, through web/guard.py's client",
+}
+
+# Files that may import httpcore, httpx's connection layer: only the guard that checks every
+# connection's destination builds on it directly.
+HTTPCORE_FILES = {
+    "web/guard.py": "pins each connection to an address it checked is public",
 }
 
 # Files that may import subprocess: the only places that start another program.
@@ -47,6 +58,9 @@ ALLOWED_HOSTS = {
     "::1": "loopback",
     "accounts.spotify.com": "Spotify's OAuth endpoints, the one outside service a feature needs",
     "api.spotify.com": "Spotify's Web API, the one outside service a feature needs",
+    "api.open-meteo.com": "Open-Meteo's free forecast API, for weather (docs/adr/0007)",
+    "geocoding-api.open-meteo.com": "Open-Meteo's place lookup, for weather and time abroad",
+    "arctic-shift.photon-reddit.com": "the Reddit archive, since Reddit refuses automated clients",
 }
 
 # Words an operation or tool name may not contain: one agent does all the work.
@@ -117,7 +131,12 @@ def _import_scanner(module: str, allowed: dict[str, str], hint: str) -> Scanner:
 scan_httpx = _import_scanner(
     "httpx",
     HTTPX_FILES,
-    "Jarvis talks to a server only through its model client and the Spotify client.",
+    "Jarvis talks to a server only through its named clients (model, Spotify, web).",
+)
+scan_httpcore = _import_scanner(
+    "httpcore",
+    HTTPCORE_FILES,
+    "Below httpx, only the guard that checks every connection may open one.",
 )
 scan_subprocess = _import_scanner(
     "subprocess",
@@ -274,6 +293,13 @@ def test_httpx_in_a_client_or_not_at_all_passes() -> None:
     assert scan_httpx("voice.py", "import httpxy\nx = 'httpx'") == []
 
 
+def test_httpcore_outside_the_guard_is_flagged() -> None:
+    findings = scan_httpcore("web/page.py", "import httpcore")
+    assert [f.line for f in findings] == [1]
+    assert "imports httpcore" in str(findings[0])
+    assert scan_httpcore("web/guard.py", "import httpcore") == []
+
+
 def test_subprocess_outside_the_launchers_is_flagged() -> None:
     findings = scan_subprocess("agent.py", "import subprocess")
     assert [f.line for f in findings] == [1]
@@ -427,10 +453,11 @@ def test_ordinary_operation_names_pass() -> None:
 
 
 def test_the_allow_lists_name_real_files() -> None:
-    for path in (*HTTPX_FILES, *SUBPROCESS_FILES, *VOXTYPE_PATH_FILES):
+    for path in (*HTTPX_FILES, *HTTPCORE_FILES, *SUBPROCESS_FILES, *VOXTYPE_PATH_FILES):
         assert (SOURCE / path).is_file(), f"allow-list entry src/jarvis/{path} no longer exists"
     reasons = [
         *HTTPX_FILES.values(),
+        *HTTPCORE_FILES.values(),
         *SUBPROCESS_FILES.values(),
         *VOXTYPE_PATH_FILES.values(),
         *ALLOWED_HOSTS.values(),
@@ -440,6 +467,11 @@ def test_the_allow_lists_name_real_files() -> None:
 
 def test_the_tree_imports_httpx_only_in_the_clients() -> None:
     findings = _scan_tree(scan_httpx)
+    assert not findings, _report(findings)
+
+
+def test_the_tree_imports_httpcore_only_in_the_guard() -> None:
+    findings = _scan_tree(scan_httpcore)
     assert not findings, _report(findings)
 
 

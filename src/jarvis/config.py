@@ -147,6 +147,48 @@ class PersonaConfig(_Section):
     addendum: str = ""
 
 
+class ClockConfig(_Section):
+    """How Jarvis says the time."""
+
+    twelve_hour: bool = False
+
+
+POINT = 2  # a latitude and a longitude
+MAX_LATITUDE = 90.0
+MAX_LONGITUDE = 180.0
+
+
+class WeatherConfig(_Section):
+    """The owner's home for weather and time questions that name no place (Open-Meteo)."""
+
+    place: SafeText = ""
+    coordinates: list[float] = Field(default_factory=list[float])
+    temperature_unit: Literal["celsius", "fahrenheit"] = "celsius"
+    wind_unit: Literal["kmh", "mph", "ms", "kn"] = "kmh"
+
+    @model_validator(mode="after")
+    def _point(self) -> Self:
+        if not self.coordinates:
+            return self
+        if len(self.coordinates) != POINT:
+            msg = "coordinates must be [latitude, longitude] or empty"
+            raise ValueError(msg)
+        latitude, longitude = self.coordinates
+        if abs(latitude) > MAX_LATITUDE or abs(longitude) > MAX_LONGITUDE:
+            msg = "coordinates must be a latitude within 90 and a longitude within 180 degrees"
+            raise ValueError(msg)
+        return self
+
+
+class ResearchConfig(_Section):
+    """Web search through the local SearXNG, page reading and Reddit."""
+
+    searxng_url: Endpoint = "http://127.0.0.1:8888"
+    results: int = Field(default=5, ge=1, le=8)
+    page_chars: int = Field(default=2800, ge=500, le=6000)
+    reddit_comments: int = Field(default=6, ge=1, le=10)
+
+
 class BoundariesConfig(_Section):
     """Per-operation class overrides set by the owner (default profile: ask for risky)."""
 
@@ -163,6 +205,9 @@ class Config(_Section):
     spotify: SpotifyConfig = Field(default_factory=SpotifyConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
+    clock: ClockConfig = Field(default_factory=ClockConfig)
+    weather: WeatherConfig = Field(default_factory=WeatherConfig)
+    research: ResearchConfig = Field(default_factory=ResearchConfig)
     boundaries: BoundariesConfig = Field(default_factory=BoundariesConfig)
 
     def strata_url(self) -> str:

@@ -8,6 +8,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- The time and date, here or in a named place, and the weather now, today, tomorrow or for the week, at home
+  (`[weather]`) or wherever you name, from Open-Meteo. "What time is it" and "what's the weather" skip the
+  model.
+- Research: web search through a local SearXNG (`deploy/searxng/`), reading the pages a search returned, and
+  Reddit threads found through SearXNG and read from the Arctic Shift archive. Pages are opened only on public
+  addresses, checked at every connection and redirect, and everything they say is kept as outside data
+  ([ADR 0007](docs/adr/0007-outside-services-for-answers.md)).
 - The first public version of Jarvis, a local, always-on voice agent for Omarchy, open source under
   GPL-3.0-or-later.
 - A "Hey Jarvis" wake word and end-of-speech detection, with speech to text through Voxtype and Jarvis's own
