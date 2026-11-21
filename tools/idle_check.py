@@ -40,6 +40,7 @@ DEFAULT_MAX_CPU_PERCENT = 5.0
 DEFAULT_MAX_RSS_GROWTH_MIB = 50.0
 DEFAULT_MAX_GPU_PERCENT = 1.0
 # utime, stime, cutime and cstime are fields 14 to 17 of stat; the text after ")" starts at field 3.
+_PPID = 1
 _UTIME = 11
 _STIME = 12
 _CUTIME = 13
@@ -71,6 +72,7 @@ class Ticks:
 
     own: int
     reaped: int
+    ppid: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +161,7 @@ def cpu_ticks(proc: Path, pid: int) -> Ticks | None:
         return Ticks(
             own=int(fields[_UTIME]) + int(fields[_STIME]),
             reaped=int(fields[_CUTIME]) + int(fields[_CSTIME]),
+            ppid=int(fields[_PPID]),
         )
     except ValueError:
         return None
@@ -235,14 +238,21 @@ def _cpu_delta(start: Snapshot, end: Snapshot) -> int:
 
     A process that appeared in between counts in full. A child that exited shows up in its
     parent's reaped time with its whole life, so what it had used before the window is taken off
-    that again; the result never goes below the processes' own time.
+    that again, but only when that parent is still in the tree to have reaped it: a process that
+    left the tree (re-parented to systemd) took its time elsewhere. The result never goes below the
+    processes' own time. A grandchild reaped by a child that has exited too is counted with its
+    earlier time, an over-count that only errs towards reporting load.
     """
     none = Ticks(0, 0)
     own = sum(max(0, t.own - start.ticks.get(pid, none).own) for pid, t in end.ticks.items())
     reaped = sum(
         max(0, t.reaped - start.ticks.get(pid, none).reaped) for pid, t in end.ticks.items()
     )
-    before = sum(t.own + t.reaped for pid, t in start.ticks.items() if pid not in end.ticks)
+    before = sum(
+        t.own + t.reaped
+        for pid, t in start.ticks.items()
+        if pid not in end.ticks and t.ppid in end.ticks
+    )
     return own + max(0, reaped - before)
 
 
