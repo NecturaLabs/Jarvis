@@ -114,7 +114,7 @@ _DESCRIPTION = re.compile(
     rf"^{_LEAD}{_GERUND}\b(?:[^,.;:!?]{{0,40}}?\b(?:is|are|was|were|works|work|can|will|"
     rf"means|lets|makes|takes)\b|\s*,\s*{_GERUND}\b)|^(?i:added to (?:that|this))\b"
 )
-_LISTED = re.compile(rf"^{_GERUND}\b")  # "playing music, pausing, skipping": what Jarvis can do
+_LONE_GERUND = re.compile(rf"^{_GERUND}[.!]?$")  # "pausing" in "playing music, pausing, skipping"
 _COURTESY = re.compile(r"^no (?:problem|worries)\b[,.!]?\s*", re.IGNORECASE)  # not a denial
 _SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+|\n+")
 _DASH = re.compile(r"\s*(?:[\u2012\u2013\u2014\u2015\u2212]|--)\s*|\s-\s")
@@ -158,20 +158,22 @@ def claims_action(reply: str) -> bool:
 def _clauses(text: str) -> list[tuple[str, bool]]:
     """Split a sentence at commas, asides and dashes; return each clause and whether it claims.
 
-    After a dash a clause counts with its own subject or as a deed standing alone ("Sure - muted,
-    anything else?"), unless the part lists what Jarvis can do ("Spotify - playing music, pausing,
-    skipping").
+    After a dash a clause counts with its own subject, or as a deed standing alone ("Sure - muted,
+    anything else?") unless the part lists what Jarvis can do ("Spotify - playing music, pausing,
+    skipping", "Spotify - playing, managing queues").
     """
     out: list[tuple[str, bool]] = []
     for index, part in enumerate(_DASH.split(text)):
         pieces = [w for c in _CLAUSE_BREAK.split(part) if (w := c.strip().strip(_EDGES))]
-        listed = sum(1 for words in pieces if _LISTED.match(words)) > 1
-        for words in pieces:
+        lone = [bool(_LONE_GERUND.match(words)) for words in pieces]
+        listed = sum(lone) > 1  # what Jarvis can do, not what it did
+        for words, gerund in zip(pieces, lone, strict=True):
             if index == 0:
                 claim = bool(_CLAIM.match(words))
             else:
-                claim = not listed and bool(
-                    _CLAIM_AFTER_DASH.match(words) or _BARE_DEED.match(words)
+                bare = not listed and not (gerund and len(pieces) > 1)
+                claim = bool(_CLAIM_AFTER_DASH.match(words)) or (
+                    bare and bool(_BARE_DEED.match(words))
                 )
             out.append((words, claim))
     return out or [(text, False)]

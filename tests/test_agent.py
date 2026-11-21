@@ -289,6 +289,9 @@ def test_a_claim_after_only_failed_tools_is_challenged_with_the_failure() -> Non
         "Playing Bohemian Rhapsody, which is by Queen, okay?",
         "Muted, until when you're back, okay?",
         "Will do, muted, anything else?",
+        "Can do, muted, anything else?",
+        "Sure - I paused it, playing next, skipping ahead.",
+        "Okay - found it, playing it now, resuming from the start.",
     ],
 )
 def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
@@ -337,6 +340,12 @@ def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
         "I can help with that - playing music, pausing, skipping.",
         "It's set to repeat already.",
         "Muted, or just quieter?!",
+        "Here's what I can do - playing, managing queues.",
+        "Spotify - playing, managing queues.",
+        "I can help - playing, or pausing.",
+        "I can do that - playing, and pausing.",
+        "I can control it - playing, volume and mute.",
+        "Here's what I can do - playing, pausing.",
     ],
 )
 def test_an_honest_answer_is_not_a_claim(reply: str) -> None:
