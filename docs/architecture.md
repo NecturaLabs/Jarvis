@@ -157,8 +157,8 @@ line spoken while the agent works (`_cue`: a waiting line, a confirmation questi
    finished sentence (`sentences.sentence_end`) of the message's text, or of a first `no_action`
    call's `reply`, to `Hooks.speak` while the model writes on. It holds a sentence claiming an
    action before any succeeded, and stops once a tool call follows: sentences of the text already
-   passed on play out, unless one claims an action; the unheard words of such a claim, or of a
-   `no_action` reply that is not the answer, are hushed.
+   passed on play out, unless one claims an action; then, as for a `no_action` reply that is not the
+   answer, the speaker is hushed (what is playing ends, the rest is dropped).
    `Agent._final` checks the whole reply that claims an action when no tool succeeded; it
    challenges the model once, then speaks a plain "I didn't manage that". `Agent._deliver` speaks
    what was not streamed yet. `voice.speakable` turns each part into plain words and

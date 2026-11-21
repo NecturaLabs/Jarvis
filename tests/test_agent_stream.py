@@ -382,7 +382,7 @@ def test_nothing_is_delivered_after_the_request_was_cancelled() -> None:
 
 def test_a_claim_said_before_its_own_call_is_dropped_where_not_heard() -> None:
     # An earlier action succeeded, so the claim was not held; its own call then fails, so the
-    # claim was not true: it is hushed at the call like a reply that turned out not to be one.
+    # claim was not true: the speaker is hushed at the call, as for a reply that is not one.
     counter = Counter()
     second = _call("volume")
     second["content"] = "Volume is set to thirty. One moment."
@@ -426,4 +426,19 @@ def test_words_before_a_refused_reply_call_stay_heard_and_are_audited_once() -> 
 
     assert ear.heard == ["Let me look.", "Hi."]
     assert ear.hushes == 0
+    assert _events(audit).count("spoken_before_tool_call") == 1
+
+
+def test_a_claim_before_a_lone_reply_call_is_hushed_and_the_reply_still_heard() -> None:
+    counter = Counter()
+    second = _call("no_action", {"reply": "All set."})
+    second["content"] = "Volume is set to thirty. One moment."
+    model = ScriptedModel([_call("pause"), second])
+    ear = Ear(model)
+    agent, audit = _agent(model, [counter.op("pause")])
+
+    assert agent.handle("pause", ear.hooks()) == "All set."
+
+    assert ear.heard == ["Volume is set to thirty.", "All set."]
+    assert ear.hushes == 1
     assert _events(audit).count("spoken_before_tool_call") == 1

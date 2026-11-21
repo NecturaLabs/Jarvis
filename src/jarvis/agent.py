@@ -170,8 +170,8 @@ class _ReplyStream:
     whole answer unless an action already succeeded in this request (the claim check then
     decides on the whole reply). Once a tool call follows, nothing more of the message is
     spoken. Sentences of its text already passed on play to their end, since they passed the
-    claim check, unless one says something was done. Unheard words of such a claim, or of a
-    `no_action` reply that turns out not to be the answer, are dropped.
+    claim check, unless one says something was done. For such a claim, or a `no_action` reply
+    that turns out not to be the answer, the speaker is hushed: what plays ends, the rest drops.
     """
 
     def __init__(
@@ -226,7 +226,7 @@ class _ReplyStream:
         self._speak_ready()
 
     def stop(self) -> None:
-        """Speak no more of this message; hush unheard words of a reply call or of a claim.
+        """Speak no more of this message; hush the speaker after a reply call's words or a claim.
 
         The message's own text plays to its end, because cutting it at the call left half a word,
         unless it says something was done: that may be the call now starting, which can fail.

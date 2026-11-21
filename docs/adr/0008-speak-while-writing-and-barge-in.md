@@ -68,7 +68,9 @@ that each of Jarvis's own sentences does not trigger it. The rules, all in code:
 - Once a tool call follows spoken words, nothing more of that message is spoken and the audit log records
   `spoken_before_tool_call`. Sentences of the message's text already passed on play to their end, because
   they passed the claim check and hushing them cut a word in half; a sentence that says something was done
-  (let through because an earlier action succeeded) is dropped where not heard, as its own call may fail. Words of a `no_action` reply that turns
+  (let through because an earlier action succeeded) is hushed at the call, as its own call may fail. A hush
+  also ends the sentence playing then, so a preamble in the same message can still be cut, and a short claim
+  that finished playing before the call began has been heard. Words of a `no_action` reply that turns
   out to be refused (its arguments are checked only once whole) or is not the only call are dropped unless
   already heard; an exact copy of the call, which the agent drops, changes nothing. This relaxes
   #12's constraint: words that passed the claim check may be heard before a call in the same message, or
