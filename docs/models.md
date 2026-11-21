@@ -29,7 +29,12 @@ was checked it says so.
 | Anything else the model answers (a chat reply is one model call: `no_action` carries the reply) | One prompt read of about 2,100 tokens, then generation | about 3.3 s of prompt reading at about 640 tokens/s, plus generation |
 | Model not loaded | Cold load | about 107 s with a game running; Jarvis says "One moment, waking up". The request gets 180 s more (270 s in all instead of 90 s); each model call is still capped by `model.request_timeout_s` |
 
-Memory while loaded, idle: about 38 GB of RAM and 7.3 GiB of VRAM, no GPU or CPU use. See
+Memory while loaded, idle: about 38 GB of RAM and 7.3 GiB of VRAM, no GPU or CPU use. On 2026-11-21
+`tools/idle_check.py` measured 30 s of the running services while idle: `jarvis.service` used 1.4 % of one core
+(the wake word and end-of-speech models score every 80 ms frame), `jarvis-strata.service` 0.1 %, and neither
+grew in memory. The GPU could not be measured that way: Strata's engine holds `/dev/kfd` (ROCm compute) and an
+amdgpu DRM client, and amdgpu published no `drm-engine` busy counters for that client in `/proc/<pid>/fdinfo`. The check's default limit of 5 % of one core leaves room for the wake word,
+which has to listen. See
 [configuration.md](configuration.md#keeping-the-model-loaded).
 
 Jarvis marks the system prompt and the tools as Strata's shared prefix (`strata_prefix`, one message) on every
@@ -106,5 +111,6 @@ daemon and never your Voxtype config or recordings. Each run is
 | textual (the `jarvis chat` window) | 8.2.8 | MIT |
 
 What textual pulls in: rich 15.0.0, markdown-it-py 4.3.0, mdit-py-plugins 0.7.0, mdurl 0.1.2 and platformdirs
-4.14.8, all MIT (package metadata; the three markdown packages give it as a licence classifier). The other
-packages' own dependencies and the development tools were not checked.
+4.14.8, all MIT (package metadata; the three markdown packages give it as a licence classifier). Every other
+installed package, development tools included, is checked by `tools/check_licences.py` in CI: its licence must be
+compatible with GPL-3.0-or-later, and `uv.lock` must resolve and download only from PyPI.

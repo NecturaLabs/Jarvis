@@ -83,6 +83,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 - [docs/README.md](docs/README.md): the map of every document, and how far to trust each kind
 - [docs/configuration.md](docs/configuration.md): every config key, its range and what needs a restart
 - [docs/models.md](docs/models.md): the model, speech to text, voices, the wake word, latency and licences
+- [docs/architecture.md](docs/architecture.md): the modules, the voice loop and one request end to end
 - [docs/plan.md](docs/plan.md): architecture, design and phases, with what is built
 - [docs/roadmap.md](docs/roadmap.md): what is planned, and what Jarvis will not do
 - [docs/privacy.md](docs/privacy.md): what Jarvis keeps on disk and what leaves the PC
@@ -116,7 +117,7 @@ Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md) for what fits,
 ```sh
 uv sync                      # install the locked environment
 uv run .lint/check.sh        # lint, format and type checks (tracked files only)
-uv run pytest -q             # unit tests
+uv run pytest -q -m "not local"   # unit tests
 ```
 
 Tests marked `local` need real hardware and services and never run in CI (`uv run pytest -m local`).
@@ -132,7 +133,8 @@ tests/               pytest; tests/conftest.py keeps every test off the network,
 tools/               the checks CI runs (tools/README.md lists them)
 docs/                configuration, models, architecture, plan, decisions (map: docs/README.md)
 .github/             CI, issue forms, the pull request template, labels
-.claude/, .codex/    agents and recipes for coding agents (see below)
+.claude/ .codex/    agents and recipes for coding agents (see below);
+.agents/            the recipes again, for Codex and other harnesses
 ```
 
 ## Working with AI agents
