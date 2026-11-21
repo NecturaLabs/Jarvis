@@ -1,12 +1,13 @@
 import tomllib
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from jarvis import config
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Callable
 
 
 def test_missing_file_gives_defaults(tmp_path: Path) -> None:
@@ -60,3 +61,174 @@ def test_dumped_text_holds_no_raw_control_character() -> None:
     text = config.dumps(config.Config(persona=config.PersonaConfig(addendum="a\r\x07\x7fb")))
 
     assert not {"\r", "\x07", "\x7f"} & set(text)
+
+
+def _load_text(tmp_path: Path, text: str) -> config.Config:
+    path = tmp_path / "config.toml"
+    path.write_text(text, encoding="utf-8")
+    return config.load(path)
+
+
+def test_shipped_defaults_are_the_safe_ones() -> None:
+    cfg = config.Config()
+
+    assert cfg.audio.listen_to_pc is False
+    assert cfg.audio.vocabulary_hint is True
+    assert cfg.audio.pc_audio_grant_s == 600
+    assert cfg.audio.confirm_blocks_on_pc_speech is True
+    assert cfg.audio.pc_audio_cooldown_s == pytest.approx(5.0)
+    assert cfg.model.provider == "strata"
+    assert cfg.model.fallback is True
+    assert not cfg.model.base_url
+    assert not cfg.model.remote_base_url
+    assert not cfg.model.remote_model
+    assert cfg.model.max_tokens == 200
+
+
+def test_an_unknown_key_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(config.ConfigError, match="surprise"):
+        _load_text(tmp_path, "[audio]\nsurprise = 1\n")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[model]\nmax_tokens = 0\n",
+        "[model]\nmax_tokens = 5000\n",
+        "[model]\ntemperature = 3.0\n",
+        "[strata]\nport = 80\n",
+        "[audio]\nwake_threshold = 1.0\n",
+        "[audio]\npc_audio_cooldown_s = -1\n",
+        "[audio]\npc_audio_cooldown_s = 601\n",
+        "[spotify]\nclose_match = 1.5\n",
+    ],
+)
+def test_out_of_range_values_are_refused(tmp_path: Path, text: str) -> None:
+    with pytest.raises(config.ConfigError):
+        _load_text(tmp_path, text)
+
+
+def test_the_model_url_is_derived_from_the_strata_port_unless_set() -> None:
+    assert config.Config().model_base_url() == "http://127.0.0.1:8080/v1"
+    derived = config.Config(strata=config.StrataConfig(port=9100))
+    assert derived.model_base_url() == "http://127.0.0.1:9100/v1"
+    explicit = config.Config(model=config.ModelConfig(base_url="https://llm.example.org/v1"))
+    assert explicit.model_base_url() == "https://llm.example.org/v1"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://llm.example.org/v1",
+        "http://127.0.0.1:9000/v1",
+        "http://localhost:9000/v1",
+        "http://[::1]:9000/v1",
+    ],
+)
+@pytest.mark.parametrize("key", ["base_url", "remote_base_url"])
+def test_https_or_loopback_http_urls_are_accepted(key: str, url: str) -> None:
+    assert getattr(config.ModelConfig.model_validate({key: url}), key) == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://llm.example.org/v1",
+        "http://192.168.1.5:8080/v1",
+        "ftp://127.0.0.1/v1",
+        "file:///etc/passwd",
+        "llm.example.org/v1",
+        "https:///v1",
+        "https://user:pass@llm.example.org/v1",
+        "https://llm.example.org/v1\nHost: other",
+    ],
+)
+@pytest.mark.parametrize("key", ["base_url", "remote_base_url"])
+def test_other_urls_are_refused_naming_the_key(key: str, url: str) -> None:
+    with pytest.raises(ValueError, match=key):
+        config.ModelConfig.model_validate({key: url})
+
+
+def test_the_openai_provider_needs_a_remote_url_and_model() -> None:
+    with pytest.raises(ValueError, match="remote_base_url"):
+        config.ModelConfig(provider="openai", remote_model="gpt")
+    with pytest.raises(ValueError, match="remote_model"):
+        config.ModelConfig(provider="openai", remote_base_url="https://llm.example.org/v1")
+    ok = config.ModelConfig(
+        provider="openai", remote_base_url="https://llm.example.org/v1", remote_model="gpt"
+    )
+    assert ok.provider == "openai"
+
+
+def test_an_unknown_provider_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(config.ConfigError):
+        _load_text(tmp_path, '[model]\nprovider = "carrier-pigeon"\n')
+
+
+@pytest.mark.parametrize("value", ["40G", "512M", "8", "2T", "100K"])
+def test_memory_max_accepts_sizes(value: str) -> None:
+    assert config.StrataConfig(memory_max=value).memory_max == value
+
+
+@pytest.mark.parametrize("value", ["", "40GB", "G", "4 0G", "40G\n", "-1G", "40g", "infinity"])
+def test_memory_max_refuses_everything_else(value: str) -> None:
+    with pytest.raises(ValueError, match="memory_max"):
+        config.StrataConfig(memory_max=value)
+
+
+_PATH_FIELDS: list[tuple[str, Callable[[str], Any]]] = [
+    ("data_dir", lambda v: config.Config(data_dir=Path(v))),
+    ("home", lambda v: config.StrataConfig(home=Path(v))),
+    ("components_parent", lambda v: config.StrataConfig(components_parent=Path(v))),
+    ("model_file", lambda v: config.StrataConfig(model_file=Path(v))),
+    ("tokenizer_dir", lambda v: config.StrataConfig(tokenizer_dir=Path(v))),
+    ("model_id", lambda v: config.StrataConfig(model_id=v)),
+]
+
+
+@pytest.mark.parametrize("bad", ["/a\nb", "/a\rb", "/a\x00b", "/a\x07b", "/a\x7fb", "/a\tb"])
+@pytest.mark.parametrize(("name", "make"), _PATH_FIELDS)
+def test_paths_and_unit_strings_refuse_control_characters(
+    name: str, make: Callable[[str], Any], bad: str
+) -> None:
+    with pytest.raises(ValueError, match=name):
+        make(bad)
+
+
+def test_a_path_with_a_space_is_fine() -> None:
+    cfg = config.StrataConfig(model_file=Path("/data/my models/q4.gguf"))
+
+    assert cfg.model_file.name == "q4.gguf"
+
+
+def test_control_characters_in_a_loaded_path_are_a_config_error(tmp_path: Path) -> None:
+    with pytest.raises(config.ConfigError, match="model_file"):
+        _load_text(tmp_path, '[strata]\nmodel_file = "/a\\nb"\n')
+
+
+def test_loose_match_may_not_exceed_close_match() -> None:
+    with pytest.raises(ValueError, match="loose_match"):
+        config.SpotifyConfig(close_match=0.5, loose_match=0.7)
+    assert config.SpotifyConfig(close_match=0.6, loose_match=0.6).loose_match == pytest.approx(0.6)
+
+
+def test_a_non_default_config_round_trips_with_the_new_keys(tmp_path: Path) -> None:
+    original = config.Config(
+        data_dir=Path("/data/with space/jarvis"),
+        model=config.ModelConfig(
+            base_url="http://localhost:9000/v1",
+            provider="openai",
+            fallback=False,
+            remote_base_url="https://llm.example.org/v1",
+            remote_model="gpt",
+            max_tokens=123,
+        ),
+        strata=config.StrataConfig(memory_max="12G", port=9000),
+        audio=config.AudioConfig(confirm_blocks_on_pc_speech=False, pc_audio_cooldown_s=12.5),
+    )
+    path = tmp_path / "config.toml"
+
+    config.save(original, path)
+
+    assert config.load(path) == original
+    assert "confirm_blocks_on_pc_speech = false" in path.read_text(encoding="utf-8")

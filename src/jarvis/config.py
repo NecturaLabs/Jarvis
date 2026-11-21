@@ -1,10 +1,12 @@
 """`config.toml`: versioned, validated settings with documented defaults."""
 
+import re
 import tomllib
 from pathlib import Path
-from typing import Literal, cast
+from typing import Annotated, Literal, Self, cast
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from jarvis import paths
 
@@ -13,35 +15,96 @@ SCHEMA_VERSION = 1
 OpClassName = Literal["safe", "confirm", "strong", "deny"]
 
 
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _no_control(text: str) -> str:
+    if _CONTROL.search(text):
+        msg = "must not contain control characters (newlines included)"
+        raise ValueError(msg)
+    return text
+
+
+def _no_control_path(path: Path) -> Path:
+    _no_control(str(path))
+    return path
+
+
+# Paths and names end up in systemd unit files, so a newline or other control character in one could
+# add a directive; refuse them at the config, where the error can name the key.
+SafePath = Annotated[Path, AfterValidator(_no_control_path)]
+SafeText = Annotated[str, AfterValidator(_no_control)]
+
+
+def _check_endpoint(url: str) -> str:
+    """Return `url` when it is `https`, or `http` to this machine; empty means unset.
+
+    Raises:
+        ValueError: the URL has control characters, a password or an insecure scheme or host.
+    """
+    if not url:
+        return url
+    _no_control(url)
+    parts = urlsplit(url)
+    if parts.username is not None or parts.password is not None:
+        msg = "must not hold a user name or password (keys never live in the config)"
+        raise ValueError(msg)
+    secure = parts.scheme == "https" or (
+        parts.scheme == "http" and parts.hostname in _LOOPBACK_HOSTS
+    )
+    if not secure or not parts.hostname:
+        msg = "must be an https URL (http only for 127.0.0.1, localhost or ::1)"
+        raise ValueError(msg)
+    return url
+
+
+Endpoint = Annotated[str, AfterValidator(_check_endpoint)]
+
+
 class _Section(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class ModelConfig(_Section):
-    """The Strata server Jarvis talks to."""
+    """Which model answers: the local Strata server, or a hosted OpenAI-compatible endpoint."""
 
-    base_url: str = "http://127.0.0.1:8080/v1"
+    base_url: Endpoint = ""  # empty: the local Strata server (see `Config.model_base_url`)
     model: str = "jarvis"
     request_timeout_s: float = Field(default=120.0, gt=0, le=600)
-    max_tokens: int = Field(default=300, gt=0, le=4096)
+    max_tokens: int = Field(default=200, gt=0, le=4096)
     temperature: float = Field(default=0.2, ge=0, le=2)
+    provider: Literal["strata", "openai"] = "strata"
+    fallback: bool = True  # use the other backend when the chosen one fails
+    # The hosted endpoint, e.g. Azure AI Foundry. Its API key never lives in the config.
+    remote_base_url: Endpoint = ""
+    remote_model: str = ""
+
+    @model_validator(mode="after")
+    def _remote_is_complete(self) -> Self:
+        if self.provider == "openai":
+            for key in ("remote_base_url", "remote_model"):
+                if not getattr(self, key):
+                    msg = f'provider "openai" needs {key}'
+                    raise ValueError(msg)
+        return self
 
 
 class StrataConfig(_Section):
     """How the `jarvis-strata` user service runs Strata (written into its profile by setup)."""
 
-    home: Path = Field(default_factory=lambda: paths.xdg_data_home() / "strata")
-    components_parent: Path = Field(default_factory=paths.xdg_data_home)
-    model_file: Path = Path()
-    tokenizer_dir: Path = Path()
-    model_id: str = "qwen3.6-35b-a3b-ud-q4_k_xl"
+    home: SafePath = Field(default_factory=lambda: paths.xdg_data_home() / "strata")
+    components_parent: SafePath = Field(default_factory=paths.xdg_data_home)
+    model_file: SafePath = Path()
+    tokenizer_dir: SafePath = Path()
+    model_id: SafeText = "qwen3.6-35b-a3b-ud-q4_k_xl"
     port: int = Field(default=8080, ge=1024, le=65535)
     context: int = Field(default=8192, ge=2048, le=262144)
     expert_vram_gib: float = Field(default=1.0, ge=0, le=64)
     prefill: int = Field(default=512, ge=128, le=8192)
     idle_unload_s: int = Field(default=300, ge=30, le=86400)
     reasoning_budget_tokens: int = Field(default=512, gt=0, le=8192)
-    memory_max: str = "40G"
+    memory_max: str = Field(default="40G", pattern=r"^\d+[KMGT]?$")
 
 
 class SpotifyConfig(_Section):
@@ -55,6 +118,13 @@ class SpotifyConfig(_Section):
     queue_max: int = Field(default=20, ge=1, le=100)
     search_pages: int = Field(default=8, ge=1, le=20)
     library_refresh_s: float = Field(default=6 * 3600.0, ge=60)
+
+    @model_validator(mode="after")
+    def _loose_is_looser(self) -> Self:
+        if self.loose_match > self.close_match:
+            msg = "loose_match must not exceed close_match"
+            raise ValueError(msg)
+        return self
 
 
 class AudioConfig(_Section):
@@ -76,6 +146,8 @@ class AudioConfig(_Section):
     listen_to_pc: bool = False
     pc_audio_apps: list[str] = Field(default_factory=lambda: ["discord"])
     pc_audio_grant_s: float = Field(default=600.0, ge=0, le=86400)
+    confirm_blocks_on_pc_speech: bool = True
+    pc_audio_cooldown_s: float = Field(default=5.0, ge=0, le=600)
 
 
 class PersonaConfig(_Section):
@@ -96,13 +168,17 @@ class Config(_Section):
     """The whole file."""
 
     schema_version: int = SCHEMA_VERSION
-    data_dir: Path = Field(default_factory=paths.default_data_dir)
+    data_dir: SafePath = Field(default_factory=paths.default_data_dir)
     model: ModelConfig = Field(default_factory=ModelConfig)
     strata: StrataConfig = Field(default_factory=StrataConfig)
     spotify: SpotifyConfig = Field(default_factory=SpotifyConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
     boundaries: BoundariesConfig = Field(default_factory=BoundariesConfig)
+
+    def model_base_url(self) -> str:
+        """Return the local model server's URL: the explicit setting, else Strata's own port."""
+        return self.model.base_url or f"http://127.0.0.1:{self.strata.port}/v1"
 
 
 class ConfigError(Exception):

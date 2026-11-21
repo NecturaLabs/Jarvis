@@ -104,7 +104,7 @@ def build(config: Config) -> Jarvis:
     if not key:
         msg = f"no Strata API key at {strata_key_file()}; run `jarvis setup`"
         raise SetupError(msg)
-    model = StrataModel(config.model, key)
+    model = StrataModel(config.model.model_copy(update={"base_url": config.model_base_url()}), key)
     tokens = TokenStore(config.spotify.client_id, spotify_token_file())
     ops = SpotifyOps(SpotifyApi(tokens), config.spotify)
     audit = AuditLog(audit_file())

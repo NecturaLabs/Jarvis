@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 import pytest
 
-from jarvis.config import ModelConfig
+from jarvis.config import Config, ModelConfig
 from jarvis.model import ModelError, StrataModel
 
 TOOLS: list[dict[str, Any]] = [{"type": "function", "function": {"name": "x"}}]
@@ -14,7 +14,8 @@ MESSAGES: list[dict[str, Any]] = [{"role": "user", "content": "hi"}]
 
 
 def _model(handler: httpx.MockTransport) -> StrataModel:
-    return StrataModel(ModelConfig(), "key", transport=handler)
+    local = ModelConfig(base_url=Config().model_base_url())
+    return StrataModel(local, "key", transport=handler)
 
 
 def _answering(message: object, seen: list[httpx.Request] | None = None) -> httpx.MockTransport:
