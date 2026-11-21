@@ -1,8 +1,10 @@
 # Jarvis
 
 A local, always-on voice agent for Omarchy. Say "Hey Jarvis" and it transcribes you with Omarchy's local
-dictation (Voxtype), reasons with a local model served by Strata, acts within the boundaries you set and
-answers by voice. It runs on your PC and is free to use: no hosted model, no paid API.
+dictation (Voxtype), reasons with a local model served by [Strata](https://github.com/niko1221/strata), acts within the boundaries
+you set and answers by voice. It runs on your PC and is free to use: no hosted model, no paid API.
+
+Jarvis is pre-1.0 software; see [Status](#status).
 
 ## What it does today
 
@@ -55,7 +57,7 @@ microphone. The config file and every key are in [docs/configuration.md](docs/co
 
 ## Everyday commands
 
-These are the subcommands `jarvis --help` lists.
+These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what is running and follows the log.
 
 | Command | What it does |
 |---|---|
@@ -72,7 +74,38 @@ These are the subcommands `jarvis --help` lists.
 | `jarvis run` | Run the voice loop in the foreground. This is what `jarvis.service` runs. |
 | `jarvis --version` | Print the version. |
 
-## Develop
+## Docs
+
+- [docs/configuration.md](docs/configuration.md): every config key, its range and what needs a restart
+- [docs/models.md](docs/models.md): the model, speech to text, voices, the wake word, latency and licences
+- [docs/plan.md](docs/plan.md): architecture, design and phases, with what is built
+- [docs/roadmap.md](docs/roadmap.md): what is planned, and what Jarvis will not do
+- [docs/adr/](docs/adr/): decisions
+- [docs/playbook/](docs/playbook/): how to work on the project, and its traps
+- [SECURITY.md](SECURITY.md): scope and how to report a vulnerability
+- [ACCESSIBILITY.md](ACCESSIBILITY.md): voice, the chat window and keyboard-only use
+
+## Status
+
+Jarvis is pre-1.0 and has no tagged releases yet. It was built and measured on one machine (Omarchy, an RX
+7900 XT and 64 GB of RAM); other hardware is untested. The configuration file has one schema version and no
+migrations, so a later version may ask you to edit it. Web research, PC operations other than Spotify and
+keybinding confirmation are not built; [docs/roadmap.md](docs/roadmap.md) lists what is planned and
+[docs/plan.md](docs/plan.md) says what is built. Changes are in [CHANGELOG.md](CHANGELOG.md).
+
+## Licence
+
+Jarvis is licensed under the GNU General Public License, version 3 or (at your option) any later version
+(GPL-3.0-or-later); see [LICENSE](LICENSE). It imports `piper-tts`, which is GPL-3.0-or-later, in the same
+process for both of its voices, so Jarvis as a whole has to be GPL-compatible, and GPL-3.0-or-later is the
+licence the project uses for its own code too. Contributions are accepted under the same licence (inbound =
+outbound). Every dependency, model and voice, with its licence, is listed in [docs/models.md](docs/models.md)
+and [docs/configuration.md](docs/configuration.md).
+
+## Contributing
+
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md) for what fits, the checks and the sign-off
+(`git commit -s`). To work on the code:
 
 ```sh
 uv sync                      # install the locked environment
@@ -80,17 +113,16 @@ uv run .lint/check.sh        # lint, format and type checks (tracked files only)
 uv run pytest -q             # unit tests
 ```
 
-## Docs
+Tests marked `local` need real hardware and services and never run in CI (`uv run pytest -m local`).
 
-- [docs/configuration.md](docs/configuration.md): every config key, its range and what needs a restart
-- [docs/models.md](docs/models.md): the model, speech to text, voices, the wake word, latency and licences
-- [docs/plan.md](docs/plan.md): architecture, design and phases, with what is built
-- [docs/adr/](docs/adr/): decisions
-- [docs/playbook/](docs/playbook/): how to work on the project, and its traps
-- [SECURITY.md](SECURITY.md): scope and how to report a vulnerability
+## Community
 
-## Licence
-
-Copyright NecturaLabs. All rights reserved. Jarvis depends on Piper (GPL-3.0-or-later; see
-[docs/models.md](docs/models.md) for every dependency), so the licence has to
-be settled before release; see [docs/models.md](docs/models.md).
+- [CONTRIBUTING.md](CONTRIBUTING.md): how to contribute
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): how we treat each other (Contributor Covenant 3.0)
+- [SUPPORT.md](SUPPORT.md): where to get help; questions go to
+  [Discussions](https://github.com/NecturaLabs/jarvis/discussions)
+- [SECURITY.md](SECURITY.md): report a vulnerability privately
+- [GOVERNANCE.md](GOVERNANCE.md): who decides what
+- [ACCESSIBILITY.md](ACCESSIBILITY.md): what Jarvis offers today, and its gaps
+- [CHANGELOG.md](CHANGELOG.md) and [docs/roadmap.md](docs/roadmap.md): what changed and what is planned
+- [Issues](https://github.com/NecturaLabs/jarvis/issues): the backlog
