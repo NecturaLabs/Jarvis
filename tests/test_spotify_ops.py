@@ -159,7 +159,7 @@ class FakeSpotify:
         return httpx.Response(404, json={"error": {"message": f"no route {path}"}})
 
 
-def _ops(
+def build_ops(
     fake: FakeSpotify,
     tmp_path: Path,
     config: SpotifyConfig | None = None,
@@ -208,7 +208,7 @@ def test_similarity_ignores_case_and_punctuation() -> None:
 def test_exact_search_hit_is_played_with_one_search(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": [LOW_TIDE]})
 
-    result = _ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
+    result = build_ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
 
     assert result.ok
     assert fake.played == [{"uris": ["spotify:track:lowtide"]}]
@@ -219,7 +219,7 @@ def test_exact_search_hit_is_played_with_one_search(tmp_path: Path) -> None:
 def test_a_song_by_an_artist_searches_with_both_filters(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": [LOW_TIDE]})
 
-    _ops(fake, tmp_path).play({"query": "Low Tide", "kind": "track", "artist": "Glass Harbor"})
+    build_ops(fake, tmp_path).play({"query": "Low Tide", "kind": "track", "artist": "Glass Harbor"})
 
     assert fake.searches == [('track:"Low Tide" artist:"Glass Harbor"', "track")]
     assert fake.played == [{"uris": ["spotify:track:lowtide"]}]
@@ -228,7 +228,9 @@ def test_a_song_by_an_artist_searches_with_both_filters(tmp_path: Path) -> None:
 def test_double_quotes_are_removed_from_the_filter_values(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": [LOW_TIDE]})
 
-    _ops(fake, tmp_path).play({"query": 'Low "Tide"', "kind": "track", "artist": 'Glass "Harbor'})
+    build_ops(fake, tmp_path).play(
+        {"query": 'Low "Tide"', "kind": "track", "artist": 'Glass "Harbor'}
+    )
 
     assert fake.searches == [('track:"Low Tide" artist:"Glass Harbor"', "track")]
 
@@ -241,7 +243,7 @@ def test_an_empty_filtered_search_falls_back_to_plain_text(tmp_path: Path) -> No
         }
     )
 
-    result = _ops(fake, tmp_path).play(
+    result = build_ops(fake, tmp_path).play(
         {"query": "Low Tide", "kind": "track", "artist": "Glass Harbor"}
     )
 
@@ -258,7 +260,7 @@ def test_the_title_is_scored_against_the_name_only(tmp_path: Path) -> None:
     # library fallback; now the title alone decides, so no library call is made.
     fake = FakeSpotify(search={"track": [LOW_TIDE]})
 
-    _ops(fake, tmp_path).play({"query": "Low Tide", "kind": "track", "artist": "Glass Harbor"})
+    build_ops(fake, tmp_path).play({"query": "Low Tide", "kind": "track", "artist": "Glass Harbor"})
 
     assert not fake.calls("GET", "/me/top/artists")
     assert not fake.calls("GET", "/me/top/tracks")
@@ -272,7 +274,7 @@ def test_every_hit_is_examined_not_only_the_first(tmp_path: Path) -> None:
     ]
     fake = FakeSpotify(search={"track": hits})
 
-    _ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
+    build_ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
 
     assert fake.played == [{"uris": ["spotify:track:lowtide"]}]
 
@@ -284,7 +286,7 @@ def test_an_exact_title_beats_a_closer_spelling_and_ties_keep_api_order(tmp_path
         search={"track": [_track("Low Tides", "C", "spotify:track:near"), first, second]}
     )
 
-    _ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
+    build_ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
 
     assert fake.played == [{"uris": ["spotify:track:first"]}]
 
@@ -293,7 +295,9 @@ def test_the_requested_artist_decides_between_equal_titles(tmp_path: Path) -> No
     cover = _track("Low Tide", "Cover Band", "spotify:track:cover")
     fake = FakeSpotify(search={"track": [cover, LOW_TIDE]})
 
-    _ops(fake, tmp_path).play({"query": "Low Tide", "kind": "track", "artist": "glass harbour"})
+    build_ops(fake, tmp_path).play(
+        {"query": "Low Tide", "kind": "track", "artist": "glass harbour"}
+    )
 
     assert fake.played == [{"uris": ["spotify:track:lowtide"]}]
 
@@ -302,7 +306,7 @@ def test_a_well_matched_title_by_another_artist_is_still_played(tmp_path: Path) 
     # The artist may be misheard beyond recognition; the title matched, so play it.
     fake = FakeSpotify(search={"track": [_track("Low Tide", "Cover Band", "spotify:track:cover")]})
 
-    result = _ops(fake, tmp_path).play(
+    result = build_ops(fake, tmp_path).play(
         {"query": "Low Tide", "kind": "track", "artist": "Night Circuit"}
     )
 
@@ -316,7 +320,7 @@ def test_a_remastered_version_still_counts_as_the_title(tmp_path: Path) -> None:
         search={"track": [remaster]}, top_tracks=[_track("Low Tides", "X", "spotify:track:x")]
     )
 
-    _ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
+    build_ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
 
     assert fake.played == [{"uris": ["spotify:track:remaster"]}]
     assert not fake.calls("GET", "/me/top/tracks")
@@ -330,7 +334,7 @@ def test_misheard_artist_asked_as_track_plays_the_owners_artist(tmp_path: Path) 
         top_artists=[GLASS_HARBOR],
     )
 
-    _ops(fake, tmp_path).play({"query": "grass harbor", "kind": "track"})
+    build_ops(fake, tmp_path).play({"query": "grass harbor", "kind": "track"})
 
     assert fake.played == [{"context_uri": "spotify:artist:glassharbor"}]
 
@@ -341,7 +345,7 @@ def test_misheard_track_falls_back_to_owners_track(tmp_path: Path) -> None:
         top_tracks=[_track("Second Sun", "Night Circuit", "spotify:track:sun")],
     )
 
-    _ops(fake, tmp_path).play({"query": "secund sun", "kind": "track"})
+    build_ops(fake, tmp_path).play({"query": "secund sun", "kind": "track"})
 
     assert fake.played == [{"uris": ["spotify:track:sun"]}]
 
@@ -352,7 +356,7 @@ def test_owners_playlist_is_preferred(tmp_path: Path) -> None:
         search={"playlist": [{"name": "Neon Classics", "uri": "spotify:playlist:public"}]},
     )
 
-    _ops(fake, tmp_path).play({"query": "2031 neon taste", "kind": "playlist"})
+    build_ops(fake, tmp_path).play({"query": "2031 neon taste", "kind": "playlist"})
 
     assert fake.played == [{"context_uri": "spotify:playlist:mine"}]
     assert not fake.calls("GET", "/search")
@@ -364,7 +368,7 @@ def test_a_public_playlist_is_played_when_the_owner_has_none_like_it(tmp_path: P
         search={"playlist": [{"name": "Rainy Day Jazz", "uri": "spotify:playlist:public"}]},
     )
 
-    _ops(fake, tmp_path).play({"query": "rainy day jazz", "kind": "playlist"})
+    build_ops(fake, tmp_path).play({"query": "rainy day jazz", "kind": "playlist"})
 
     assert fake.played == [{"context_uri": "spotify:playlist:public"}]
 
@@ -375,7 +379,7 @@ def test_my_playlist_never_falls_back_to_a_public_one(tmp_path: Path) -> None:
         search={"playlist": [{"name": "Rainy Day Jazz", "uri": "spotify:playlist:public"}]},
     )
 
-    result = _ops(fake, tmp_path).play(
+    result = build_ops(fake, tmp_path).play(
         {"query": "rainy day jazz", "kind": "playlist", "mine": True}
     )
 
@@ -389,7 +393,7 @@ def test_my_playlist_never_falls_back_to_a_public_one(tmp_path: Path) -> None:
 def test_my_playlist_accepts_a_loose_spelling_of_the_owners_own(tmp_path: Path) -> None:
     fake = FakeSpotify(playlists=[{"name": "Morning Run Mix", "uri": "spotify:playlist:mine"}])
 
-    _ops(fake, tmp_path).play({"query": "morning ron", "kind": "playlist", "mine": True})
+    build_ops(fake, tmp_path).play({"query": "morning ron", "kind": "playlist", "mine": True})
 
     assert fake.played == [{"context_uri": "spotify:playlist:mine"}]
 
@@ -398,7 +402,7 @@ def test_liked_songs_play_the_owners_saved_tracks_shuffled(tmp_path: Path) -> No
     saved = [_track(f"Song {i}", "Night Circuit", f"spotify:track:{i}") for i in range(30)]
     fake = FakeSpotify(saved=saved)
 
-    result = _ops(fake, tmp_path).play({"query": "my liked songs", "kind": "liked"})
+    result = build_ops(fake, tmp_path).play({"query": "my liked songs", "kind": "liked"})
 
     assert result.ok
     (body,) = fake.played
@@ -411,7 +415,7 @@ def test_liked_songs_play_the_owners_saved_tracks_shuffled(tmp_path: Path) -> No
 def test_liked_songs_with_nothing_saved_say_so(tmp_path: Path) -> None:
     fake = FakeSpotify()
 
-    result = _ops(fake, tmp_path).play({"query": "liked songs", "kind": "liked"})
+    result = build_ops(fake, tmp_path).play({"query": "liked songs", "kind": "liked"})
 
     assert not result.ok
     assert "saved" in result.text
@@ -421,7 +425,7 @@ def test_liked_songs_with_nothing_saved_say_so(tmp_path: Path) -> None:
 def test_nothing_found_reports_failure(tmp_path: Path) -> None:
     fake = FakeSpotify()
 
-    result = _ops(fake, tmp_path).play({"query": "zzzz", "kind": "track"})
+    result = build_ops(fake, tmp_path).play({"query": "zzzz", "kind": "track"})
 
     assert not result.ok
     assert fake.played == []
@@ -430,7 +434,7 @@ def test_nothing_found_reports_failure(tmp_path: Path) -> None:
 def test_a_found_item_reports_with_spotifys_origin(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": [LOW_TIDE]})
 
-    result = _ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
+    result = build_ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
 
     assert result.origin is Origin.SPOTIFY
     assert "Low Tide" in result.text
@@ -443,7 +447,7 @@ def _catalogue(n: int, artist: str = "Night Circuit") -> list[dict[str, Any]]:
 def test_queue_one_track_by_default(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": _catalogue(3)})
 
-    _ops(fake, tmp_path).queue({"query": "song 0"})
+    build_ops(fake, tmp_path).queue({"query": "song 0"})
 
     assert fake.queued == ["spotify:track:0"]
 
@@ -452,7 +456,7 @@ def test_queue_several_distinct_tracks_across_search_pages(tmp_path: Path) -> No
     # "queue up 14 Night Circuit songs": Spotify returns at most 10 results per page.
     fake = FakeSpotify(search={"track": _catalogue(24)})
 
-    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 14})
+    result = build_ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 14})
 
     assert result.ok
     assert fake.queued == [f"spotify:track:{i}" for i in range(14)]
@@ -468,7 +472,7 @@ def test_queue_skips_versions_of_the_same_song(tmp_path: Path) -> None:
     ]
     fake = FakeSpotify(search={"track": tracks})
 
-    _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 3})
+    build_ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 3})
 
     assert fake.queued == ["spotify:track:a", "spotify:track:c", "spotify:track:e"]
 
@@ -476,7 +480,7 @@ def test_queue_skips_versions_of_the_same_song(tmp_path: Path) -> None:
 def test_queue_in_random_order_is_a_shuffled_pick(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": _catalogue(30)})
 
-    _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 10, "random_order": True})
+    build_ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 10, "random_order": True})
 
     assert len(set(fake.queued)) == 10
     assert fake.queued != [f"spotify:track:{i}" for i in range(10)]
@@ -489,7 +493,7 @@ def test_random_order_is_not_fixed_by_default(tmp_path: Path) -> None:
     orders: list[list[str]] = []
     for _run in range(2):
         fake = FakeSpotify(search={"track": _catalogue(40)})
-        ops = _ops(fake, tmp_path, seeded=False)
+        ops = build_ops(fake, tmp_path, seeded=False)
         ops.queue({"query": "Night Circuit", "count": 10, "random_order": True})
         orders.append(fake.queued)
     assert orders[0] != orders[1]
@@ -498,7 +502,7 @@ def test_random_order_is_not_fixed_by_default(tmp_path: Path) -> None:
 def test_queue_reports_fewer_when_spotify_has_fewer(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": _catalogue(4)})
 
-    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 10})
+    result = build_ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 10})
 
     assert result.ok
     assert len(fake.queued) == 4
@@ -508,7 +512,7 @@ def test_artist_names_are_distinct_and_cached(tmp_path: Path) -> None:
     fake = FakeSpotify(
         top_artists=[GLASS_HARBOR, GLASS_HARBOR, {"name": "Night Circuit", "uri": "u"}]
     )
-    ops = _ops(fake, tmp_path)
+    ops = build_ops(fake, tmp_path)
 
     names = ops.artist_names()
     fetched = len(fake.requests)
@@ -525,14 +529,14 @@ def test_artist_names_are_distinct_and_cached(tmp_path: Path) -> None:
 def test_queue_pages_by_what_spotify_actually_returned(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": _catalogue(12)}, page_size=3)
 
-    _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 7})
+    build_ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 7})
 
     assert fake.queued == [f"spotify:track:{i}" for i in range(7)]
 
 
 def test_a_playlist_made_after_the_cache_is_found_without_waiting(tmp_path: Path) -> None:
     fake = FakeSpotify(playlists=[{"name": "Gym", "uri": "spotify:playlist:gym"}])
-    ops = _ops(fake, tmp_path)
+    ops = build_ops(fake, tmp_path)
     ops.play({"query": "gym", "kind": "playlist", "mine": True})
 
     fake.playlists.append({"name": "Sunday Chores", "uri": "spotify:playlist:chores"})
@@ -544,7 +548,7 @@ def test_a_playlist_made_after_the_cache_is_found_without_waiting(tmp_path: Path
 
 def test_playlists_are_not_fetched_again_for_every_request(tmp_path: Path) -> None:
     fake = FakeSpotify(playlists=[{"name": "Gym", "uri": "spotify:playlist:gym"}])
-    ops = _ops(fake, tmp_path)
+    ops = build_ops(fake, tmp_path)
 
     ops.play({"query": "gym", "kind": "playlist", "mine": True})
     ops.play({"query": "gym", "kind": "playlist", "mine": True})
@@ -568,7 +572,7 @@ def _inactive(name: str = "pc", device_id: str = "d1") -> dict[str, Any]:
     return {"id": device_id, "name": name, "type": "Computer", "is_active": False}
 
 
-def _playing_state(
+def playing_state(
     *, playing: bool = True, volume: int | None = 40, supports_volume: bool = True
 ) -> dict[str, Any]:
     return {
@@ -586,7 +590,7 @@ def _playing_state(
 def test_play_without_a_configured_device_sends_the_command_at_once(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": [LOW_TIDE]})
 
-    result = _ops(fake, tmp_path, SpotifyConfig()).play({"query": "low tide", "kind": "track"})
+    result = build_ops(fake, tmp_path, SpotifyConfig()).play({"query": "low tide", "kind": "track"})
 
     assert result.ok
     assert fake.played == [{"uris": ["spotify:track:lowtide"]}]
@@ -604,7 +608,7 @@ def test_a_listed_but_inactive_device_gets_playback_transferred_then_the_command
     fake = FakeSpotify(search={"track": [LOW_TIDE]}, devices=[_inactive()])
     fake.script("PUT", "/me/player/play", _no_device())
 
-    result = _ops(fake, tmp_path, SpotifyConfig()).play({"query": "low tide", "kind": "track"})
+    result = build_ops(fake, tmp_path, SpotifyConfig()).play({"query": "low tide", "kind": "track"})
 
     assert result.ok
     assert fake.transfers == [{"device_ids": ["d1"], "play": False}]
@@ -619,7 +623,7 @@ def test_play_launches_spotify_when_no_device_is_listed_then_transfers(tmp_path:
     fake = FakeSpotify(search={"track": [LOW_TIDE]}, devices=[], appears_on_launch=[_inactive()])
     fake.script("PUT", "/me/player/play", _no_device())
 
-    result = _ops(fake, tmp_path, SpotifyConfig()).play({"query": "low tide", "kind": "track"})
+    result = build_ops(fake, tmp_path, SpotifyConfig()).play({"query": "low tide", "kind": "track"})
 
     assert result.ok
     assert fake.launches == [1]
@@ -632,7 +636,7 @@ def test_play_says_so_when_no_player_ever_comes_up(tmp_path: Path) -> None:
     fake.script("PUT", "/me/player/play", _no_device())
 
     with pytest.raises(NoDeviceError, match="no Spotify player came up"):
-        _ops(fake, tmp_path, SpotifyConfig()).play({"query": "low tide", "kind": "track"})
+        build_ops(fake, tmp_path, SpotifyConfig()).play({"query": "low tide", "kind": "track"})
 
     assert fake.launches == [1]
     assert fake.clock.now >= 1000.0 + DEVICE_WAIT_S
@@ -642,7 +646,7 @@ def test_a_configured_device_is_looked_up_first_and_targeted(tmp_path: Path) -> 
     phone = {"id": "p1", "name": "phone", "type": "Smartphone", "is_active": False}
     fake = FakeSpotify(search={"track": [LOW_TIDE]}, devices=[phone, dict(PC)])
 
-    _ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
+    build_ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
 
     (request,) = fake.calls("PUT", "/me/player/play")
     assert request.url.params["device_id"] == "d1"
@@ -652,7 +656,7 @@ def test_a_configured_device_is_looked_up_first_and_targeted(tmp_path: Path) -> 
 def test_a_configured_device_that_is_inactive_gets_a_transfer_first(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": [LOW_TIDE]}, devices=[_inactive()])
 
-    _ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
+    build_ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
 
     assert fake.transfers == [{"device_ids": ["d1"], "play": False}]
     assert fake.calls("PUT", "/me/player/play")[0].url.params["device_id"] == "d1"
@@ -668,7 +672,7 @@ def test_a_configured_device_that_is_missing_is_launched_for_and_waited_for(
         search={"track": [LOW_TIDE]}, devices=[phone, tablet], appears_on_launch=[_inactive()]
     )
 
-    _ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
+    build_ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
 
     assert fake.launches == [1]
     assert fake.transfers == [{"device_ids": ["d1"], "play": False}]
@@ -681,7 +685,7 @@ def test_a_configured_device_that_never_appears_is_reported_not_replaced(tmp_pat
     fake = FakeSpotify(search={"track": [LOW_TIDE]}, devices=[phone, tablet])
 
     with pytest.raises(NoDeviceError, match="no player called 'pc'") as caught:
-        _ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
+        build_ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
 
     assert caught.value.origin is Origin.TOOL_STATUS
     assert fake.played == []
@@ -693,7 +697,7 @@ def test_a_configured_device_that_is_missing_is_replaced_only_by_the_only_device
     phone = {"id": "p1", "name": "phone", "type": "Smartphone", "is_active": True}
     fake = FakeSpotify(search={"track": [LOW_TIDE]}, devices=[phone])
 
-    result = _ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
+    result = build_ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
 
     assert result.ok
     assert fake.launches == []
@@ -704,7 +708,7 @@ def test_liked_songs_start_the_same_way(tmp_path: Path) -> None:
     fake = FakeSpotify(saved=[LOW_TIDE], devices=[_inactive()])
     fake.script("PUT", "/me/player/play", _no_device())
 
-    result = _ops(fake, tmp_path, SpotifyConfig()).play({"query": "liked", "kind": "liked"})
+    result = build_ops(fake, tmp_path, SpotifyConfig()).play({"query": "liked", "kind": "liked"})
 
     assert result.ok
     assert fake.transfers == [{"device_ids": ["d1"], "play": False}]
@@ -724,7 +728,7 @@ def test_pause_next_and_previous_never_launch_or_look_up_devices(
 ) -> None:
     fake = FakeSpotify(devices=[])
     fake.script(method, path, _no_device())
-    ops = {op.name: op for op in _ops(fake, tmp_path, SpotifyConfig()).operations()}
+    ops = {op.name: op for op in build_ops(fake, tmp_path, SpotifyConfig()).operations()}
 
     result = ops[f"spotify_{run}"].run({})
 
@@ -738,7 +742,7 @@ def test_pause_next_and_previous_never_launch_or_look_up_devices(
 def test_resume_transfers_to_an_inactive_device_and_starts_it(tmp_path: Path) -> None:
     fake = FakeSpotify(devices=[_inactive()])
     fake.script("PUT", "/me/player/play", _no_device())
-    ops = {op.name: op for op in _ops(fake, tmp_path, SpotifyConfig()).operations()}
+    ops = {op.name: op for op in build_ops(fake, tmp_path, SpotifyConfig()).operations()}
 
     result = ops["spotify_resume"].run({})
 
@@ -751,7 +755,7 @@ def test_resume_transfers_to_an_inactive_device_and_starts_it(tmp_path: Path) ->
 def test_resume_may_launch_spotify(tmp_path: Path) -> None:
     fake = FakeSpotify(devices=[], appears_on_launch=[_inactive()])
     fake.script("PUT", "/me/player/play", _no_device())
-    ops = {op.name: op for op in _ops(fake, tmp_path, SpotifyConfig()).operations()}
+    ops = {op.name: op for op in build_ops(fake, tmp_path, SpotifyConfig()).operations()}
 
     result = ops["spotify_resume"].run({})
 
@@ -769,7 +773,7 @@ def test_settings_commands_do_not_launch_spotify(tmp_path: Path, name: str) -> N
         ("PUT", "/me/player/volume"),
     ]:
         fake.script(method, path, _no_device())
-    ops = {op.name: op for op in _ops(fake, tmp_path, SpotifyConfig()).operations()}
+    ops = {op.name: op for op in build_ops(fake, tmp_path, SpotifyConfig()).operations()}
     args = {"spotify_shuffle": {"on": True}, "spotify_repeat": {"mode": "off"}}.get(
         name, {"percent": 30}
     )
@@ -783,7 +787,7 @@ def test_settings_commands_do_not_launch_spotify(tmp_path: Path, name: str) -> N
 def test_a_setting_on_an_inactive_device_transfers_then_retries(tmp_path: Path) -> None:
     fake = FakeSpotify(devices=[_inactive()])
     fake.script("PUT", "/me/player/shuffle", _no_device())
-    ops = {op.name: op for op in _ops(fake, tmp_path, SpotifyConfig()).operations()}
+    ops = {op.name: op for op in build_ops(fake, tmp_path, SpotifyConfig()).operations()}
 
     result = ops["spotify_shuffle"].run({"on": True})
 
@@ -801,10 +805,10 @@ def _op(ops: SpotifyOps, name: str) -> Operation:
 
 
 def test_pausing_what_is_already_paused_is_a_success(tmp_path: Path) -> None:
-    fake = FakeSpotify(state=_playing_state(playing=False))
+    fake = FakeSpotify(state=playing_state(playing=False))
     fake.script("PUT", "/me/player/pause", _spotify_error(403, "UNKNOWN", "Restriction violated"))
 
-    result = _op(_ops(fake, tmp_path), "spotify_pause").run({})
+    result = _op(build_ops(fake, tmp_path), "spotify_pause").run({})
 
     assert result.ok
     assert result.text == "It's already paused."
@@ -813,23 +817,23 @@ def test_pausing_what_is_already_paused_is_a_success(tmp_path: Path) -> None:
 
 
 def test_resuming_what_is_already_playing_is_a_success(tmp_path: Path) -> None:
-    fake = FakeSpotify(state=_playing_state(playing=True))
+    fake = FakeSpotify(state=playing_state(playing=True))
     fake.script("PUT", "/me/player/play", _spotify_error(403, "UNKNOWN", "Restriction violated"))
 
-    result = _op(_ops(fake, tmp_path), "spotify_resume").run({})
+    result = _op(build_ops(fake, tmp_path), "spotify_resume").run({})
 
     assert result.ok
     assert result.text == "It's already playing."
 
 
 def test_a_refusal_that_the_state_does_not_explain_keeps_its_error(tmp_path: Path) -> None:
-    fake = FakeSpotify(state=_playing_state(playing=True))
+    fake = FakeSpotify(state=playing_state(playing=True))
     fake.script(
         "PUT", "/me/player/pause", _spotify_error(403, "PREMIUM_REQUIRED", "Premium required")
     )
 
     with pytest.raises(SpotifyError, match="Premium required"):
-        _op(_ops(fake, tmp_path), "spotify_pause").run({})
+        _op(build_ops(fake, tmp_path), "spotify_pause").run({})
 
 
 def test_pausing_with_no_player_state_after_a_refusal_says_nothing_is_playing(
@@ -838,18 +842,18 @@ def test_pausing_with_no_player_state_after_a_refusal_says_nothing_is_playing(
     fake = FakeSpotify(state=None)
     fake.script("PUT", "/me/player/pause", _spotify_error(403, "UNKNOWN", "Restriction violated"))
 
-    result = _op(_ops(fake, tmp_path), "spotify_pause").run({})
+    result = _op(build_ops(fake, tmp_path), "spotify_pause").run({})
 
     assert result.ok
     assert result.text == "Nothing is playing."
 
 
 def test_resuming_while_paused_with_a_refusal_keeps_the_error(tmp_path: Path) -> None:
-    fake = FakeSpotify(state=_playing_state(playing=False))
+    fake = FakeSpotify(state=playing_state(playing=False))
     fake.script("PUT", "/me/player/play", _spotify_error(403, "UNKNOWN", "Restriction violated"))
 
     with pytest.raises(SpotifyError, match="Restriction violated"):
-        _op(_ops(fake, tmp_path), "spotify_resume").run({})
+        _op(build_ops(fake, tmp_path), "spotify_resume").run({})
 
 
 # --- What is playing: ads, podcasts, a missing item (4h) ---
@@ -863,9 +867,9 @@ EPISODE = {
 
 
 def test_an_ad_is_named_as_an_ad(tmp_path: Path) -> None:
-    fake = FakeSpotify(state={**_playing_state(), "item": None, "currently_playing_type": "ad"})
+    fake = FakeSpotify(state={**playing_state(), "item": None, "currently_playing_type": "ad"})
 
-    result = _op(_ops(fake, tmp_path), "spotify_now_playing").run({})
+    result = _op(build_ops(fake, tmp_path), "spotify_now_playing").run({})
 
     assert result.ok
     assert result.text == "An ad is playing."
@@ -873,10 +877,10 @@ def test_an_ad_is_named_as_an_ad(tmp_path: Path) -> None:
 
 def test_a_podcast_episode_is_named(tmp_path: Path) -> None:
     fake = FakeSpotify(
-        state={**_playing_state(), "item": EPISODE, "currently_playing_type": "episode"}
+        state={**playing_state(), "item": EPISODE, "currently_playing_type": "episode"}
     )
 
-    result = _op(_ops(fake, tmp_path), "spotify_now_playing").run({})
+    result = _op(build_ops(fake, tmp_path), "spotify_now_playing").run({})
 
     assert result.ok
     assert "Quiet Hours" in result.text
@@ -885,11 +889,9 @@ def test_a_podcast_episode_is_named(tmp_path: Path) -> None:
 
 
 def test_a_state_without_an_item_says_what_is_known(tmp_path: Path) -> None:
-    fake = FakeSpotify(
-        state={**_playing_state(), "item": None, "currently_playing_type": "unknown"}
-    )
+    fake = FakeSpotify(state={**playing_state(), "item": None, "currently_playing_type": "unknown"})
 
-    result = _op(_ops(fake, tmp_path), "spotify_now_playing").run({})
+    result = _op(build_ops(fake, tmp_path), "spotify_now_playing").run({})
 
     assert result.ok
     assert "playing" in result.text
@@ -897,16 +899,16 @@ def test_a_state_without_an_item_says_what_is_known(tmp_path: Path) -> None:
 
 
 def test_with_no_player_state_nothing_is_playing(tmp_path: Path) -> None:
-    result = _op(_ops(FakeSpotify(), tmp_path), "spotify_now_playing").run({})
+    result = _op(build_ops(FakeSpotify(), tmp_path), "spotify_now_playing").run({})
 
     assert result.ok
     assert result.text == "Nothing is playing."
 
 
 def test_now_playing_describes_a_track(tmp_path: Path) -> None:
-    fake = FakeSpotify(state=_playing_state())
+    fake = FakeSpotify(state=playing_state())
 
-    result = _op(_ops(fake, tmp_path), "spotify_now_playing").run({})
+    result = _op(build_ops(fake, tmp_path), "spotify_now_playing").run({})
 
     assert result.origin is Origin.SPOTIFY
     assert "Low Tide by Glass Harbor" in result.text
@@ -915,9 +917,9 @@ def test_now_playing_describes_a_track(tmp_path: Path) -> None:
 
 
 def test_like_saves_the_playing_track(tmp_path: Path) -> None:
-    fake = FakeSpotify(state=_playing_state())
+    fake = FakeSpotify(state=playing_state())
 
-    result = _op(_ops(fake, tmp_path), "spotify_like").run({})
+    result = _op(build_ops(fake, tmp_path), "spotify_like").run({})
 
     assert result.ok
     (request,) = fake.calls("PUT", "/me/library")
@@ -940,7 +942,7 @@ def test_like_declines_what_is_not_a_song(
     fake = FakeSpotify(state=state)
 
     with pytest.raises(OperationError, match=said) as caught:
-        _op(_ops(fake, tmp_path), "spotify_like").run({})
+        _op(build_ops(fake, tmp_path), "spotify_like").run({})
 
     assert caught.value.origin is Origin.TOOL_STATUS
     assert not fake.calls("PUT", "/me/library")
@@ -950,9 +952,9 @@ def test_like_declines_what_is_not_a_song(
 
 
 def test_change_volume_clamps_to_the_range(tmp_path: Path) -> None:
-    fake = FakeSpotify(state=_playing_state(volume=95))
+    fake = FakeSpotify(state=playing_state(volume=95))
 
-    result = _op(_ops(fake, tmp_path), "spotify_change_volume").run({"delta": 10})
+    result = _op(build_ops(fake, tmp_path), "spotify_change_volume").run({"delta": 10})
 
     assert result.ok
     (request,) = fake.calls("PUT", "/me/player/volume")
@@ -960,27 +962,27 @@ def test_change_volume_clamps_to_the_range(tmp_path: Path) -> None:
 
 
 def test_change_volume_cannot_go_below_zero(tmp_path: Path) -> None:
-    fake = FakeSpotify(state=_playing_state(volume=5))
+    fake = FakeSpotify(state=playing_state(volume=5))
 
-    _op(_ops(fake, tmp_path), "spotify_change_volume").run({"delta": -50})
+    _op(build_ops(fake, tmp_path), "spotify_change_volume").run({"delta": -50})
 
     assert fake.calls("PUT", "/me/player/volume")[0].url.params["volume_percent"] == "0"
 
 
 def test_change_volume_says_so_when_the_volume_is_unknown(tmp_path: Path) -> None:
-    fake = FakeSpotify(state=_playing_state(volume=None))
+    fake = FakeSpotify(state=playing_state(volume=None))
 
     with pytest.raises(OperationError, match="can't read the current volume"):
-        _op(_ops(fake, tmp_path), "spotify_change_volume").run({"delta": 10})
+        _op(build_ops(fake, tmp_path), "spotify_change_volume").run({"delta": 10})
 
     assert not fake.calls("PUT", "/me/player/volume")
 
 
 def test_a_device_without_volume_control_is_refused_without_sending(tmp_path: Path) -> None:
-    fake = FakeSpotify(state=_playing_state(supports_volume=False))
+    fake = FakeSpotify(state=playing_state(supports_volume=False))
 
     with pytest.raises(OperationError, match="doesn't allow volume control"):
-        _op(_ops(fake, tmp_path), "spotify_change_volume").run({"delta": 10})
+        _op(build_ops(fake, tmp_path), "spotify_change_volume").run({"delta": 10})
 
     assert not fake.calls("PUT", "/me/player/volume")
 
@@ -995,7 +997,7 @@ def test_a_volume_refusal_from_spotify_gets_the_same_answer(tmp_path: Path) -> N
         ),
     )
 
-    result = _op(_ops(fake, tmp_path), "spotify_set_volume").run({"percent": 30})
+    result = _op(build_ops(fake, tmp_path), "spotify_set_volume").run({"percent": 30})
 
     assert not result.ok
     assert result.text == "This device doesn't allow volume control from here."
@@ -1009,7 +1011,7 @@ def test_another_volume_refusal_keeps_its_error(tmp_path: Path) -> None:
     )
 
     with pytest.raises(SpotifyError, match="Premium required"):
-        _op(_ops(fake, tmp_path), "spotify_set_volume").run({"percent": 30})
+        _op(build_ops(fake, tmp_path), "spotify_set_volume").run({"percent": 30})
 
 
 # --- The queue: no song twice (5) ---
@@ -1020,7 +1022,7 @@ ALREADY_QUEUED = "That's already in the queue."
 def test_asking_for_the_same_song_twice_in_a_row_queues_it_once(tmp_path: Path) -> None:
     # Spotify's queue read can lag or be cut short; Jarvis remembers what it queued itself.
     fake = FakeSpotify(search={"track": [LOW_TIDE]})
-    ops = _ops(fake, tmp_path)
+    ops = build_ops(fake, tmp_path)
 
     first = ops.queue({"query": "low tide"})
     second = ops.queue({"query": "low tide"})
@@ -1035,7 +1037,7 @@ def test_asking_for_the_same_song_twice_in_a_row_queues_it_once(tmp_path: Path) 
 
 def test_a_later_request_inside_half_an_hour_is_still_a_repeat(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": [LOW_TIDE]})
-    ops = _ops(fake, tmp_path)
+    ops = build_ops(fake, tmp_path)
     ops.queue({"query": "low tide"})
 
     fake.clock.now += 29 * 60
@@ -1047,7 +1049,7 @@ def test_a_later_request_inside_half_an_hour_is_still_a_repeat(tmp_path: Path) -
 
 def test_after_half_an_hour_the_song_may_be_queued_again(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": [LOW_TIDE]})
-    ops = _ops(fake, tmp_path)
+    ops = build_ops(fake, tmp_path)
     ops.queue({"query": "low tide"})
 
     fake.clock.now += 31 * 60
@@ -1060,7 +1062,7 @@ def test_after_half_an_hour_the_song_may_be_queued_again(tmp_path: Path) -> None
 def test_a_song_already_in_spotifys_queue_is_not_added_again(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": [LOW_TIDE]}, queue_items=[LOW_TIDE])
 
-    result = _ops(fake, tmp_path).queue({"query": "low tide"})
+    result = build_ops(fake, tmp_path).queue({"query": "low tide"})
 
     assert result.ok
     assert result.text == ALREADY_QUEUED
@@ -1071,7 +1073,7 @@ def test_a_song_already_in_spotifys_queue_is_not_added_again(tmp_path: Path) -> 
 def test_the_song_playing_now_is_not_queued_again(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": [LOW_TIDE]}, playing_item=LOW_TIDE)
 
-    result = _ops(fake, tmp_path).queue({"query": "low tide"})
+    result = build_ops(fake, tmp_path).queue({"query": "low tide"})
 
     assert result.text == ALREADY_QUEUED
     assert fake.queued == []
@@ -1096,7 +1098,7 @@ def test_another_version_of_a_queued_song_counts_as_the_same_song(
     other = _track(version, "Glass Harbor", "spotify:track:other")
     fake = FakeSpotify(search={"track": [other]}, queue_items=[LOW_TIDE])
 
-    result = _ops(fake, tmp_path).queue({"query": "low tide"})
+    result = build_ops(fake, tmp_path).queue({"query": "low tide"})
 
     assert result.text == ALREADY_QUEUED
     assert fake.queued == []
@@ -1112,7 +1114,7 @@ def test_versions_of_one_song_in_one_request_count_once(tmp_path: Path) -> None:
     ]
     fake = FakeSpotify(search={"track": tracks})
 
-    _ops(fake, tmp_path).queue({"query": "Glass Harbor", "count": 3})
+    build_ops(fake, tmp_path).queue({"query": "Glass Harbor", "count": 3})
 
     assert fake.queued == ["spotify:track:live", "spotify:track:sun", "spotify:track:boats"]
 
@@ -1121,7 +1123,7 @@ def test_replacements_come_from_the_pool_so_the_count_is_still_met(tmp_path: Pat
     catalogue = _catalogue(8)
     fake = FakeSpotify(search={"track": catalogue}, queue_items=[catalogue[1], catalogue[2]])
 
-    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 4})
+    result = build_ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 4})
 
     assert result.ok
     assert fake.queued == [
@@ -1136,7 +1138,7 @@ def test_a_second_request_for_more_songs_by_the_artist_adds_different_ones(
     tmp_path: Path,
 ) -> None:
     fake = FakeSpotify(search={"track": _catalogue(12)})
-    ops = _ops(fake, tmp_path)
+    ops = build_ops(fake, tmp_path)
 
     ops.queue({"query": "Night Circuit", "count": 4})
     ops.queue({"query": "Night Circuit", "count": 4})
@@ -1149,7 +1151,7 @@ def test_when_every_candidate_is_queued_nothing_is_sent(tmp_path: Path) -> None:
     catalogue = _catalogue(3)
     fake = FakeSpotify(search={"track": catalogue}, queue_items=catalogue)
 
-    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 3})
+    result = build_ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 3})
 
     assert result.ok
     assert result.text == ALREADY_QUEUED
@@ -1160,7 +1162,7 @@ def test_fewer_new_songs_than_asked_says_so(tmp_path: Path) -> None:
     catalogue = _catalogue(4)
     fake = FakeSpotify(search={"track": catalogue}, queue_items=[catalogue[0]])
 
-    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 6})
+    result = build_ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 6})
 
     assert result.ok
     assert len(fake.queued) == 3
@@ -1170,7 +1172,7 @@ def test_fewer_new_songs_than_asked_says_so(tmp_path: Path) -> None:
 
 def test_an_unreadable_queue_still_leaves_the_memory_of_what_was_added(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": [LOW_TIDE]})
-    ops = _ops(fake, tmp_path)
+    ops = build_ops(fake, tmp_path)
     fake.script("GET", "/me/player/queue", _spotify_error(500, "", "boom"))
 
     first = ops.queue({"query": "low tide"})
@@ -1184,7 +1186,7 @@ def test_an_unreadable_queue_still_leaves_the_memory_of_what_was_added(tmp_path:
 
 def test_a_song_whose_queueing_failed_may_be_asked_for_again(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": [LOW_TIDE]})
-    ops = _ops(fake, tmp_path)
+    ops = build_ops(fake, tmp_path)
     fake.script("POST", "/me/player/queue", _spotify_error(500, "", "boom"))
 
     with pytest.raises(SpotifyError):
@@ -1203,7 +1205,7 @@ def test_a_single_title_queues_the_best_matching_hit_not_the_first(tmp_path: Pat
     ]
     fake = FakeSpotify(search={"track": hits})
 
-    _ops(fake, tmp_path).queue({"query": "low tide"})
+    build_ops(fake, tmp_path).queue({"query": "low tide"})
 
     assert fake.queued == ["spotify:track:lowtide"]
 
@@ -1214,7 +1216,7 @@ def test_a_single_song_by_an_artist_uses_the_filtered_search(tmp_path: Path) -> 
         by_query={('track:"Low Tide" artist:"Glass Harbor"', "track"): [cover, LOW_TIDE]}
     )
 
-    _ops(fake, tmp_path).queue({"query": "Low Tide", "artist": "Glass Harbor"})
+    build_ops(fake, tmp_path).queue({"query": "Low Tide", "artist": "Glass Harbor"})
 
     assert fake.searches == [('track:"Low Tide" artist:"Glass Harbor"', "track")]
     assert fake.queued == ["spotify:track:lowtide"]
@@ -1224,7 +1226,7 @@ def test_a_repeat_of_a_single_title_does_not_queue_the_next_best_song(tmp_path: 
     hits = [LOW_TIDE, _track("Low Tides", "Other", "spotify:track:near")]
     fake = FakeSpotify(search={"track": hits}, queue_items=[LOW_TIDE])
 
-    result = _ops(fake, tmp_path).queue({"query": "low tide"})
+    result = build_ops(fake, tmp_path).queue({"query": "low tide"})
 
     assert result.text == ALREADY_QUEUED
     assert fake.queued == []
@@ -1240,7 +1242,7 @@ def test_queueing_by_artist_keeps_only_that_artists_tracks(tmp_path: Path) -> No
         by_query={('artist:"Glass Harbor"', "track"): [stranger, own[0], featuring, own[1]]},
     )
 
-    _ops(fake, tmp_path).queue({"query": "Glass Harbor", "count": 3})
+    build_ops(fake, tmp_path).queue({"query": "Glass Harbor", "count": 3})
 
     assert fake.queued == ["spotify:track:own0", "spotify:track:duet", "spotify:track:own1"]
 
@@ -1249,7 +1251,7 @@ def test_the_whole_queue_operation_stops_after_thirty_seconds(tmp_path: Path) ->
     fake = FakeSpotify(search={"track": _catalogue(10)})
     fake.clock.per_request = 4.0
 
-    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 10})
+    result = build_ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 10})
 
     assert 0 < len(fake.queued) < 10
     assert result.ok
@@ -1262,7 +1264,7 @@ def test_running_out_of_time_before_anything_is_queued_says_so(tmp_path: Path) -
     fake = FakeSpotify(search={"track": _catalogue(10)})
     fake.clock.per_request = 40.0
 
-    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 5})
+    result = build_ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 5})
 
     assert not result.ok
     assert "ran out of time" in result.text
@@ -1279,7 +1281,7 @@ def test_a_failure_part_way_reports_what_was_queued(tmp_path: Path) -> None:
         _spotify_error(500, "", "boom"),
     )
 
-    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 5})
+    result = build_ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 5})
 
     assert result.ok
     assert result.text.startswith(
@@ -1299,7 +1301,7 @@ def test_a_timeout_part_way_says_not_to_retry(tmp_path: Path) -> None:
         httpx.ReadTimeout("slow"),
     )
 
-    result = _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 3})
+    result = build_ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 3})
 
     assert result.text.startswith("Queued 1 of 3")
     assert "may not have gone through" in result.text
@@ -1311,7 +1313,7 @@ def test_a_failure_before_anything_is_queued_is_raised(tmp_path: Path) -> None:
     fake.script("POST", "/me/player/queue", _spotify_error(500, "", "boom"))
 
     with pytest.raises(SpotifyError):
-        _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 2})
+        build_ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 2})
 
 
 def test_a_timeout_on_the_first_song_is_uncertain(tmp_path: Path) -> None:
@@ -1319,14 +1321,14 @@ def test_a_timeout_on_the_first_song_is_uncertain(tmp_path: Path) -> None:
     fake.script("POST", "/me/player/queue", httpx.ReadTimeout("slow"))
 
     with pytest.raises(UncertainOutcomeError):
-        _ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 2})
+        build_ops(fake, tmp_path).queue({"query": "Night Circuit", "count": 2})
 
 
 def test_queueing_on_an_inactive_player_transfers_then_retries(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": [LOW_TIDE]}, devices=[_inactive()])
     fake.script("POST", "/me/player/queue", _no_device())
 
-    result = _ops(fake, tmp_path, SpotifyConfig()).queue({"query": "low tide"})
+    result = build_ops(fake, tmp_path, SpotifyConfig()).queue({"query": "low tide"})
 
     assert result.ok
     assert fake.transfers == [{"device_ids": ["d1"], "play": False}]
@@ -1339,6 +1341,94 @@ def test_queueing_with_no_player_does_not_launch_spotify(tmp_path: Path) -> None
     fake.script("POST", "/me/player/queue", _no_device())
 
     with pytest.raises(NoDeviceError):
-        _ops(fake, tmp_path, SpotifyConfig()).queue({"query": "low tide"})
+        build_ops(fake, tmp_path, SpotifyConfig()).queue({"query": "low tide"})
 
     assert fake.launches == []
+
+
+# --- Binding what a confirmation is about (6) ---
+
+
+def test_like_binds_the_track_that_is_playing_when_it_is_asked_about(tmp_path: Path) -> None:
+    fake = FakeSpotify(state=playing_state())
+    like = _op(build_ops(fake, tmp_path), "spotify_like")
+    assert like.prepare is not None
+
+    bound = like.prepare({})
+
+    assert bound == {"uri": "spotify:track:lowtide", "name": "Low Tide by Glass Harbor"}
+    assert like.spoken_summary(bound) == "save Low Tide by Glass Harbor to your library"
+
+
+def test_like_saves_exactly_the_track_it_asked_about(tmp_path: Path) -> None:
+    fake = FakeSpotify(state=playing_state())
+    like = _op(build_ops(fake, tmp_path), "spotify_like")
+    assert like.prepare is not None
+    bound = like.prepare({})
+    fake.state = {
+        **playing_state(),
+        "item": _track("Second Sun", "Night Circuit", "spotify:track:sun"),
+    }
+
+    result = like.run(bound)
+
+    assert result.ok
+    (request,) = fake.calls("PUT", "/me/library")
+    assert request.url.params["uris"] == "spotify:track:lowtide"
+    assert "Low Tide" in result.text
+
+
+def test_like_prepare_refuses_when_nothing_is_playing(tmp_path: Path) -> None:
+    like = _op(build_ops(FakeSpotify(), tmp_path), "spotify_like")
+    assert like.prepare is not None
+
+    with pytest.raises(OperationError, match=r"^Nothing is playing\.$"):
+        like.prepare({})
+
+
+def test_change_volume_binds_the_level_it_will_set(tmp_path: Path) -> None:
+    fake = FakeSpotify(state=playing_state(volume=40))
+    volume = _op(build_ops(fake, tmp_path), "spotify_change_volume")
+    assert volume.prepare is not None
+
+    bound = volume.prepare({"delta": 10})
+
+    assert bound == {"delta": 10, "current": 40, "target": 50}
+    assert volume.spoken_summary(bound) == "change the volume from 40 to 50 percent"
+
+
+def test_change_volume_sets_the_bound_level_even_if_the_volume_moved(tmp_path: Path) -> None:
+    fake = FakeSpotify(state=playing_state(volume=40))
+    volume = _op(build_ops(fake, tmp_path), "spotify_change_volume")
+    assert volume.prepare is not None
+    bound = volume.prepare({"delta": 10})
+    fake.state = playing_state(volume=80)
+
+    result = volume.run(bound)
+
+    assert result.ok
+    assert fake.calls("PUT", "/me/player/volume")[0].url.params["volume_percent"] == "50"
+    assert "from 40 to 50" in result.text
+
+
+def test_change_volume_binds_a_clamped_level(tmp_path: Path) -> None:
+    fake = FakeSpotify(state=playing_state(volume=95))
+    volume = _op(build_ops(fake, tmp_path), "spotify_change_volume")
+    assert volume.prepare is not None
+
+    assert volume.prepare({"delta": 50})["target"] == 100
+    fake.state = playing_state(volume=10)
+    assert volume.prepare({"delta": -50})["target"] == 0
+
+
+def test_change_volume_prepare_refuses_without_a_player_or_a_level(tmp_path: Path) -> None:
+    volume = _op(build_ops(FakeSpotify(), tmp_path), "spotify_change_volume")
+    assert volume.prepare is not None
+    with pytest.raises(OperationError, match=r"^Nothing is playing\.$"):
+        volume.prepare({"delta": 10})
+
+    fake = FakeSpotify(state=playing_state(volume=None))
+    volume = _op(build_ops(fake, tmp_path), "spotify_change_volume")
+    assert volume.prepare is not None
+    with pytest.raises(OperationError, match="can't read the current volume"):
+        volume.prepare({"delta": 10})
