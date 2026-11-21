@@ -74,6 +74,7 @@ class StrataModel:
     api_key: str = field(repr=False)
     transport: httpx.BaseTransport | None = None  # tests answer in place of the server
     sleep: Callable[[float], None] = time.sleep  # tests wait without waiting
+    clock: Callable[[], float] = time.monotonic  # tests move time with their sleep
 
     def _client(self, timeout: float) -> httpx.Client:
         return httpx.Client(
@@ -175,23 +176,24 @@ class StrataModel:
         limit = self.config.request_timeout_s
         if timeout_s is not None:
             limit = min(limit, timeout_s)
+        deadline = self.clock() + limit
         for attempt in (1, 2):
             try:
-                with self._client(limit) as client:
+                with self._client(max(1.0, deadline - self.clock())) as client:
                     response = client.post("/chat/completions", json=body)
             except httpx.TransportError as exc:
                 if attempt == 2 or isinstance(exc, httpx.ReadTimeout):  # ruff: ignore[magic-value-comparison]
                     msg = f"model server unreachable: {exc}"
                     raise ModelError(msg) from exc
-                self._wait_ready(30.0)
+                self._wait_ready(min(30.0, max(0.0, deadline - self.clock())))
                 continue
             return _message(response)
         msg = "unreachable"
         raise ModelError(msg)
 
     def _wait_ready(self, seconds: float) -> None:
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
+        deadline = self.clock() + seconds
+        while self.clock() < deadline:
             if self.status() is not None:
                 return
             self.sleep(1.0)

@@ -234,3 +234,32 @@ def test_no_shared_prefix_is_marked_when_it_is_not_the_usual_one(
     messages: list[dict[str, Any]], tools: list[dict[str, Any]]
 ) -> None:
     assert "strata_prefix" not in _sent(messages, tools)
+
+
+def test_a_retry_after_waiting_for_the_server_gets_only_the_time_left() -> None:
+    now = [0.0]
+    posts: list[httpx.Request] = []
+    gets: list[int] = []
+
+    def nap(seconds: float) -> None:
+        now[0] += seconds
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            gets.append(1)
+            if len(gets) < 3:
+                return httpx.Response(503, text="starting")
+            return httpx.Response(200, json={"data": [{"status": {"value": "loaded"}}]})
+        posts.append(request)
+        if len(posts) == 1:
+            raise httpx.ConnectError("refused", request=request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "back"}}]})
+
+    local = ModelConfig(base_url=Config().model_base_url())
+    model = StrataModel(
+        local, "key", transport=httpx.MockTransport(handle), sleep=nap, clock=lambda: now[0]
+    )
+
+    assert model.chat(MESSAGES, TOOLS, timeout_s=10.0) == {"content": "back"}
+    assert _read_timeout(posts[0]) == pytest.approx(10.0)
+    assert _read_timeout(posts[1]) == pytest.approx(8.0)
