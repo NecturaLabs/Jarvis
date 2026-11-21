@@ -217,6 +217,46 @@ def test_doctor_still_fails_a_missing_file_and_points_at_the_models_doc(
     assert not any("not a known release" in line for line in out)
 
 
+def test_the_default_speech_model_is_small_en() -> None:
+    assert config.AudioConfig().transcribe_model == "small.en"
+
+
+def test_doctor_checks_the_whisper_model_is_downloaded(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _doctor_config(home / "models")
+
+    cli.main(["doctor"])
+
+    out = _doctor_lines(capsys)
+    assert any(
+        line.startswith("FAIL") and "ggml-small.en.bin" in line and "voxtype setup model" in line
+        for line in out
+    )
+    models_dir = home / "data" / "voxtype" / "models"
+    models_dir.mkdir(parents=True)
+    (models_dir / "ggml-small.en.bin").write_bytes(b"model")
+
+    cli.main(["doctor"])
+
+    assert any(
+        line.startswith("ok ") and "ggml-small.en.bin" in line for line in _doctor_lines(capsys)
+    )
+
+
+def test_doctor_leaves_other_speech_engines_to_voxtype(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    audio = config.AudioConfig(
+        transcribe_engine="parakeet", transcribe_model="parakeet-tdt-0.6b-v3"
+    )
+    config.save(config.Config(data_dir=home / "models", audio=audio))
+
+    cli.main(["doctor"])
+
+    assert not any("ggml-" in line for line in _doctor_lines(capsys))
+
+
 def test_doctor_checks_the_kokoro_files_only_for_a_kokoro_voice(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

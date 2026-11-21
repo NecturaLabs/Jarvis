@@ -398,6 +398,18 @@ def _release_lines(cfg: config.Config) -> tuple[list[str], list[tuple[bool, str,
     return lines, failures
 
 
+def _whisper_model(cfg: config.Config) -> list[tuple[bool, str, str]]:
+    """Return the check that Voxtype has downloaded the Whisper model Jarvis asks it for.
+
+    Other engines keep their models in their own forms, so Voxtype itself reports on those.
+    """
+    audio = cfg.audio
+    if audio.transcribe_engine not in {"", "whisper"} or not audio.transcribe_model:
+        return []
+    model = paths.xdg_data_home() / "voxtype" / "models" / f"ggml-{audio.transcribe_model}.bin"
+    return [(model.is_file(), f"speech model {model}", "download it with `voxtype setup model`")]
+
+
 RENEW_WARNING_DAYS = 14
 
 
@@ -443,6 +455,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         _spotify_login(cfg),
         *((f.exists(), f"file {f}", "see docs/models.md") for f in files),
         *unreadable,
+        *_whisper_model(cfg),
         (cfg.strata.model_file.is_file(), f"model {cfg.strata.model_file}", "set --model-file"),
         *(
             (shutil.which(t) is not None, f"tool {t}", f"install {t}")
