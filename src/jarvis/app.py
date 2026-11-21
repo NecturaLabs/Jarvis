@@ -20,15 +20,34 @@ if TYPE_CHECKING:
     from jarvis.config import Config
 
 
+MAX_REPLY_CHARS = 1000
+
+
 def no_action_operation() -> Operation:
-    """Return the explicit "nothing to do" choice the model makes for questions and chat."""
+    """Return the explicit "nothing to do" choice the model makes for questions and chat.
+
+    Its `reply` is the model's own answer, so a greeting or a question takes one model call.
+    """
     return Operation(
         "no_action",
         "Call this when the request needs no Spotify action (a greeting, a general question or a "
-        "request you can't do). Then answer in words. Never use it when the owner asks you to "
-        "play, pause, resume, skip, change volume, shuffle, repeat, queue or like something.",
-        {"type": "object", "properties": {}, "additionalProperties": False},
-        lambda _args: Result("No action taken. Answer the owner briefly."),
+        "request you can't do), with your spoken answer in `reply`. Never use it when the owner "
+        "asks you to play, pause, resume, skip, change volume, shuffle, repeat, queue or like "
+        "something.",
+        {
+            "type": "object",
+            "properties": {
+                "reply": {
+                    "type": "string",
+                    "maxLength": MAX_REPLY_CHARS,
+                    "description": "What to say to the owner, as you would say it aloud.",
+                }
+            },
+            "additionalProperties": False,
+        },
+        lambda args: Result(
+            "No action taken. Answer the owner briefly.", spoken=str(args.get("reply", ""))
+        ),
         side_effect=False,
         spoken_summary=lambda _args: "do nothing",
     )
