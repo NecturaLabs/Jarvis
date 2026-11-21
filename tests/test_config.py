@@ -308,3 +308,13 @@ def test_the_example_config_names_no_machine_or_person() -> None:
     assert not raw["spotify"]["client_id"]
     assert not raw["weather"]["place"]
     assert raw["weather"]["coordinates"] == []
+
+
+def test_consent_is_bypassed_unless_the_owner_turns_asking_on() -> None:
+    assert config.Config().boundaries.bypass_consent is True
+    assert (
+        config.Config.model_validate(
+            {"boundaries": {"bypass_consent": False}}
+        ).boundaries.bypass_consent
+        is False
+    )

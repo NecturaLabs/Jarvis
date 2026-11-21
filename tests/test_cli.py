@@ -780,3 +780,19 @@ def test_screenshots_are_looked_for_where_omarchy_saves_them_then_in_pictures(
         home / "Pictures" / "Screenshots",
         home / "Pictures",
     )
+
+
+def test_consent_toggle_saves_the_setting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    restarts: list[bool] = []
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: restarts.append(True))
+
+    assert main(["consent"]) == 0
+    assert "bypassed" in capsys.readouterr().out
+    assert main(["consent", "ask"]) == 0
+    assert config.load().boundaries.bypass_consent is False
+    assert "asks" in capsys.readouterr().out
+    assert main(["consent", "bypass"]) == 0
+    assert config.load().boundaries.bypass_consent is True
+    assert len(restarts) == 2

@@ -265,9 +265,15 @@ class FilesConfig(_Section):
 
 
 class BoundariesConfig(_Section):
-    """Per-operation class overrides set by the owner (default profile: ask for risky)."""
+    """Per-operation class overrides set by the owner, and whether Jarvis asks before acting.
+
+    `bypass_consent` (the owner's choice, on by default) runs every action that would need a yes
+    without asking: `confirm` and `strong` actions, actions after outside or file text, and
+    requests heard in PC audio. An operation set to `deny` stays refused.
+    """
 
     classes: dict[str, OpClassName] = Field(default_factory=dict[str, OpClassName])
+    bypass_consent: bool = True
 
 
 class Config(_Section):

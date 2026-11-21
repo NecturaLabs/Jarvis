@@ -141,6 +141,12 @@ def build_parser() -> argparse.ArgumentParser:
         "engine", nargs="?", choices=["livekit", "azure"], help="omit to show the setting"
     )
     wake.add_argument("--model", metavar="FILE", help="the Azure custom keyword .table file")
+    consent = sub.add_parser(
+        "consent", help="whether Jarvis asks before acting (bypass: never asks; ask: asks first)"
+    )
+    consent.add_argument(
+        "mode", nargs="?", choices=["bypass", "ask"], help="omit to show the setting"
+    )
     pc = sub.add_parser(
         "pc-audio", help="let Jarvis take requests from PC audio (Discord by default)"
     )
@@ -814,6 +820,26 @@ def _restart_if_running() -> None:
         _systemctl("restart", JARVIS_UNIT)
 
 
+CONSENT_SAID = {
+    True: "consent: bypassed (Jarvis acts without asking; `deny` still refuses)",
+    False: "consent: asks (a risky action, or one after outside text, needs your yes)",
+}
+
+
+def cmd_consent(args: argparse.Namespace) -> int:
+    """Show or set whether Jarvis asks for a yes before acting."""
+    cfg = _load()
+    if args.mode is not None:
+        bypass = args.mode == "bypass"
+        cfg = cfg.model_copy(
+            update={"boundaries": cfg.boundaries.model_copy(update={"bypass_consent": bypass})}
+        )
+        config.save(cfg)
+        _restart_if_running()
+    print(CONSENT_SAID[cfg.boundaries.bypass_consent])
+    return 0
+
+
 def cmd_pc_audio(args: argparse.Namespace) -> int:
     """Show or set whether Jarvis takes requests heard in PC audio, and from which apps."""
     cfg = _load()
@@ -901,6 +927,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "status": cmd_status,
     "unload": cmd_unload,
     "pc-audio": cmd_pc_audio,
+    "consent": cmd_consent,
     "wake": cmd_wake,
 }
 

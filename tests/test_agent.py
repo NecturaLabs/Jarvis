@@ -1667,3 +1667,70 @@ def test_a_picture_is_remembered_by_its_name_and_its_bytes_are_not_kept() -> Non
     assert turn.outside == "picture"
     assert all(isinstance(m["content"], str) for m in model.seen[1])
     assert "base64" not in json.dumps(model.seen[1])
+
+
+# Bypassing consent (the owner's toggle)
+
+
+def _bypassing(
+    model: ScriptedModel, ops: list[Operation], overrides: dict[str, str] | None = None
+) -> tuple[Agent, AuditLog]:
+    audit = AuditLog(None)
+    agent = Agent(
+        model,
+        Registry([*ops, no_action_operation()]),
+        "system",
+        audit,
+        overrides or {},
+        clock=Clock(),
+        bypass_consent=True,
+    )
+    return agent, audit
+
+
+def _never_asked(question: str) -> bool:
+    raise AssertionError(f"asked: {question}")
+
+
+def test_with_consent_bypassed_a_confirm_action_runs_unasked() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("delete_all"), _say("Done.")])
+    agent, audit = _bypassing(model, [counter.op("delete_all", cls=OpClass.CONFIRM)])
+
+    assert agent.handle("delete it all", Hooks(confirm=_never_asked)) == "Done."
+    assert counter.runs == [{"op": "delete_all"}]
+    call = next(e for e in audit.events if e["event"] == "tool_call")
+    assert call["verdict"] == "run"
+    assert call["consent"] == "bypassed"
+    assert "confirmation" not in _events(audit)
+
+
+def test_with_consent_bypassed_outside_text_does_not_stop_a_side_effect() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("search"), _call("pause", call_id="c2"), _say("Paused.")])
+    ops = [counter.op("search", origin=Origin.WEB, side_effect=False), counter.op("pause")]
+    agent, _ = _bypassing(model, ops)
+
+    agent.handle("look it up then pause", Hooks(confirm=_never_asked))
+
+    assert [run["op"] for run in counter.runs] == ["search", "pause"]
+
+
+def test_with_consent_bypassed_pc_audio_runs_unasked() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("pause"), _say("Paused.")])
+    agent, _ = _bypassing(model, [counter.op("pause")])
+
+    agent.handle("pause", Hooks(confirm=_never_asked), Origin.PC_AUDIO)
+
+    assert counter.runs == [{"op": "pause"}]
+
+
+def test_with_consent_bypassed_a_denied_action_is_still_refused() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("pause"), _say("I can't.")])
+    agent, _ = _bypassing(model, [counter.op("pause")], overrides={"pause": "deny"})
+
+    agent.handle("pause", Hooks(confirm=_never_asked))
+
+    assert counter.runs == []
