@@ -35,6 +35,7 @@ COMMANDS = (
     Command("/status", "the voice service, the model and where things are kept"),
     Command("/copy", "copy the last reply"),
     Command("/export", "save the conversation as a Markdown file"),
+    Command("/image", "attach a picture: a file, or the newest screenshot (also ctrl+v)", "[path]"),
     Command("/quit", "leave (also ctrl+q, or ctrl+c twice)"),
 )
 ALIASES = {"/exit": "/quit", "/new": "/clear", "/reset": "/clear", "/?": "/help"}

@@ -46,6 +46,8 @@ SUBPROCESS_FILES = {
     "contract) and the "
     "Azure keyword helper, only inside `unshare --net` (ADR 0010)",
     "spotify/ops.py": "launches the Spotify client when no device is active",
+    "chat/clipboard.py": "`wl-paste` with a fixed argument list, for Ctrl+V in the chat (the "
+    "owner's request, 2026-11-21)",
 }
 
 # Files that may build a path with a `voxtype` component other than the config directory.

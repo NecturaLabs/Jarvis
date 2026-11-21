@@ -7,8 +7,11 @@ only requests and replies, with a working line that says what Jarvis is doing; `
 tool call and its result, `everything` the model calls and other details.
 
 A question the agent asks opens a yes-or-no choice above the input; anything but a chosen yes is a
-no, as by voice. The layout follows Claude Code's terminal interface, and the colours are the
-terminal's own, so the window takes the Omarchy theme.
+no, as by voice. A picture is attached as Claude Code does it: Ctrl+V pastes a copied picture (or
+text), a file dropped on the terminal or `/image` attaches that file, and each shows as an
+`[Image #N]` tag in the input; deleting the tag leaves the picture out. The layout follows Claude
+Code's terminal interface, and the colours are the terminal's own, so the window takes the Omarchy
+theme.
 """
 
 import contextlib
@@ -30,8 +33,9 @@ from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
 from jarvis.activity import Shown, describe, full_text, working_label
-from jarvis.agent import Hooks
+from jarvis.agent import PICTURES_OFF, Hooks
 from jarvis.chat import commands
+from jarvis.chat.clipboard import ClipboardError
 from jarvis.chat.commands import VERBOSITY
 from jarvis.chat.widgets import (
     CHEVRON,
@@ -48,17 +52,20 @@ from jarvis.chat.widgets import (
     welcome,
 )
 from jarvis.config import ChatConfig
+from jarvis.pictures import PictureError, newest, pasted_path, prepare, read_file
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from rich.console import RenderableType
     from textual.timer import Timer
     from textual.widget import Widget
 
     from jarvis.agent import ContextUse
+    from jarvis.chat.clipboard import Clip
     from jarvis.chat.history import InputHistory
     from jarvis.memory import Conversation
+    from jarvis.pictures import Picture
     from jarvis.sysinfo import Stats
 
 
@@ -70,6 +77,7 @@ ARM_S = 0.4  # a choice made sooner than this after a question appears was meant
 QUIT_WINDOW_S = 2.0  # a second Ctrl+C this soon after the first leaves
 MAX_ENTRIES = 600  # transcript widgets kept; older ones are removed
 RESUMED_TURNS = 12  # remembered turns shown when the window opens on an earlier conversation
+PASTED_NAME = "pasted picture"  # what a picture from the clipboard is called
 SPINNER = "·✢✳✶✻✽✻✶✳✢"
 SHORTCUTS = (
     ("enter", "send"),
@@ -77,6 +85,7 @@ SHORTCUTS = (
     ("esc", "stop the request, or close a menu"),
     ("↑ ↓", "earlier requests"),
     ("/", "commands, tab completes"),
+    ("ctrl+v", "paste text or a picture"),
     ("ctrl+o", "show more or less of the work"),
     ("ctrl+l", "redraw"),
     ("ctrl+c", "clear the input; twice to leave"),
@@ -103,8 +112,8 @@ class Tail(Protocol):
 class Session(Protocol):
     """What the window needs of its agent."""
 
-    def handle(self, text: str, hooks: Hooks) -> str:
-        """Answer one request and return the reply."""
+    def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
+        """Answer one request, with any pictures the owner attached, and return the reply."""
         ...
 
     def forget(self) -> None:
@@ -135,6 +144,10 @@ class Services:
     save_settings: Callable[[ChatConfig], None] | None = None
     history: InputHistory | None = None
     export_dir: Path = field(default_factory=Path.home)
+    paste: Callable[[], Clip] | None = None  # reads the clipboard, for Ctrl+V
+    pictures: bool = False  # the model can see pictures
+    screenshots: tuple[Path, ...] = ()  # where `/image` looks for the newest screenshot
+    home: Path = field(default_factory=Path.home)  # what `~/` means in a pasted path
 
 
 @dataclass(slots=True)
@@ -226,6 +239,7 @@ class ChatApp(App[None]):
         height: auto; max-height: 12; border: none; padding: 0; background: ansi_default;
     }
     #prompt PromptArea:focus { border: none; }
+    #pictures { height: auto; margin: 0 3; color: ansi_bright_black; }
     #menu { height: auto; max-height: 10; margin: 0 3; border: none; background: ansi_default; }
     OptionList > .option-list--option-highlighted {
         background: ansi_default; color: ansi_cyan; text-style: bold;
@@ -292,6 +306,8 @@ class ChatApp(App[None]):
         self._exchanges: list[tuple[str, str]] = []  # ("you" or "jarvis", words), for /export
         self._history = self._services.history
         self._stick = True  # follow new entries down until the owner scrolls up
+        self._attached: dict[int, Picture] = {}  # by the number in their `[Image #N]` tag
+        self._picture_number = 0
 
     @override
     def compose(self) -> ComposeResult:
@@ -316,6 +332,7 @@ class ChatApp(App[None]):
                 highlight_cursor_line=False,
                 id="input",
             )
+        yield Static("", id="pictures", markup=False)
         yield OptionList(id="menu")
         yield Static("", id="shortcuts", markup=False)
         with Horizontal(id="footer"):
@@ -325,7 +342,7 @@ class ChatApp(App[None]):
 
     def on_mount(self) -> None:
         """Open with the welcome card and the remembered conversation, then follow the log."""
-        for widget in ("#working", "#question", "#settings", "#menu", "#shortcuts"):
+        for widget in ("#working", "#question", "#settings", "#menu", "#shortcuts", "#pictures"):
             self.query_one(widget).display = False
         self.query_one("#question").border_title = f"{self._name} asks"
         self.query_one("#settings").border_title = "Settings"
@@ -551,6 +568,8 @@ class ChatApp(App[None]):
         if event.text_area.id != "input":
             return
         value = event.text_area.text
+        if self._attached:
+            self._show_pictures()
         if value == "?":
             self._input().set_text("")
             shortcuts = self.query_one("#shortcuts", Static)
@@ -699,6 +718,7 @@ class ChatApp(App[None]):
         """Run a command or send a request."""
         choice = self._menu_choice()
         text = event.text.strip()
+        pictures = self._sent_pictures(text)
         if choice is not None and choice.strip() != text:
             self.action_complete()
             if not choice.endswith(" "):
@@ -716,7 +736,111 @@ class ChatApp(App[None]):
         if text.startswith("/"):
             self._command(text)
             return
-        self._request(text)
+        self._request(text, pictures)
+
+    # Pictures
+
+    @staticmethod
+    def _tag(number: int) -> str:
+        return f"[Image #{number}]"
+
+    def _sent_pictures(self, text: str) -> list[Picture]:
+        """Return the attached pictures whose tag is still in `text`, and let go of them all."""
+        pictures = [p for n, p in sorted(self._attached.items()) if self._tag(n) in text]
+        self._attached = {}
+        self._show_pictures()
+        return pictures
+
+    def _show_pictures(self) -> None:
+        """List the attached pictures under the input; one whose tag was deleted is dropped."""
+        text = self._input().text
+        self._attached = {n: p for n, p in self._attached.items() if self._tag(n) in text}
+        shown = self.query_one("#pictures", Static)
+        lines = Text()
+        for number, picture in sorted(self._attached.items()):
+            if lines:
+                lines.append("\n")
+            lines.append(f"{self._tag(number)} ", style="cyan")
+            lines.append(f"{picture.name} · {picture.width}x{picture.height}")
+        if lines:
+            lines.append("\ndelete a tag to leave its picture out", style="dim")
+        shown.update(lines)
+        shown.display = bool(self._attached)
+
+    def _attach_picture(self, picture: Picture) -> None:
+        self._picture_number += 1
+        self._attached[self._picture_number] = picture
+        self._input().insert_text(f"{self._tag(self._picture_number)} ")
+        self._show_pictures()
+
+    def _load_picture(self, load: Callable[[], Picture]) -> None:
+        """Read and check a picture off the window's thread, then attach it."""
+        if not self._services.pictures:
+            self._note(PICTURES_OFF, "warn")
+            return
+
+        def run() -> None:
+            try:
+                picture = load()
+            except PictureError as exc:
+                self._from_worker(self._note, str(exc), "warn")
+            else:
+                self._from_worker(self._attach_picture, picture)
+
+        self.run_worker(run, thread=True, group="picture")
+
+    def action_paste(self) -> None:
+        """Ctrl+V: attach a copied picture, or put copied text in, as Claude Code does."""
+        paste = self._services.paste
+        if paste is None:
+            self._note("Pasting from the clipboard isn't set up here.", "warn")
+            return
+
+        def run() -> None:
+            try:
+                clip = paste()
+            except ClipboardError as exc:
+                self._from_worker(self._note, str(exc), "warn")
+            else:
+                self._from_worker(self._pasted_clip, clip)
+
+        self.run_worker(run, thread=True, group="paste", exclusive=True)
+
+    def _pasted_clip(self, clip: Clip) -> None:
+        if not clip:
+            self._note("Nothing is copied.", "warn")
+        elif clip.image:
+            data = clip.image
+            self._load_picture(lambda: prepare(data, PASTED_NAME))
+        else:
+            self._pasted_text(clip.text)
+
+    def on_prompt_area_pasted(self, event: PromptArea.Pasted) -> None:
+        """The terminal's paste: a dropped picture file is attached, anything else typed in."""
+        self._pasted_text(event.text)
+
+    def _pasted_text(self, text: str) -> None:
+        path = pasted_path(text, self._services.home) if self._services.pictures else None
+        if path is None:
+            self._input().insert_text(text)
+            return
+        self._load_picture(lambda: read_file(path))
+
+    def _image_command(self, argument: str) -> None:
+        """`/image [path]`: attach that picture file, or the newest screenshot."""
+        if argument:
+            value = argument.strip("'\"")
+            home = self._services.home
+            path = home / value[2:] if value.startswith("~/") else Path(value)
+            self._load_picture(lambda: read_file(path))
+            return
+        folders = self._services.screenshots
+        shot = newest(folders)
+        if shot is None:
+            where = ", ".join(str(folder) for folder in folders) or "no screenshot folder"
+            self._note(f"No screenshot in {where}; name a file: /image ~/Pictures/shot.png", "warn")
+            return
+        self._load_picture(lambda: read_file(shot))
 
     # Commands
 
@@ -736,9 +860,10 @@ class ChatApp(App[None]):
             "/status": lambda _a: self._status_note(),
             "/copy": lambda _a: self._copy(),
             "/export": lambda _a: self._export(),
+            "/image": self._image_command,
             "/quit": lambda _a: self.exit(),
         }
-        handlers[command.name](argument.strip().lower())
+        handlers[command.name](argument.strip())
 
     def _help(self) -> None:
         grid = Table.grid(padding=(0, 2))
@@ -779,6 +904,8 @@ class ChatApp(App[None]):
         for child in list(transcript.children)[1:]:
             child.remove()
         self._exchanges = []
+        self._picture_number = 0
+        self._input().set_text("")
         self.query_one("#welcome", Static).update(self._welcome())
         self._note("Started a new conversation.")
         self._draw_toolbar()
@@ -840,6 +967,7 @@ class ChatApp(App[None]):
         self._note(self._panel("Context", grid, "/compact summarizes now; /clear starts anew."))
 
     def _verbosity_command(self, argument: str) -> None:
+        argument = argument.lower()
         if argument in VERBOSITY:
             self._set_verbosity(argument)
         elif argument:
@@ -968,7 +1096,7 @@ class ChatApp(App[None]):
                 self._work = None
         self._from_worker(self._idle)
 
-    def _request(self, text: str) -> None:
+    def _request(self, text: str, pictures: Sequence[Picture] = ()) -> None:
         if self._session is None:
             self._note(f"Typed requests are off: {self._unavailable}", "warn")
             return
@@ -978,11 +1106,13 @@ class ChatApp(App[None]):
         if work is None:
             return
         now = datetime.now().astimezone().strftime("%H:%M:%S")
-        self._mount(Request(text, f"typed · {now}"))
+        count = len(pictures)
+        shared = "" if not count else " · a picture" if count == 1 else f" · {count} pictures"
+        self._mount(Request(text, f"typed · {now}{shared}"))
         self._exchanges.append(("you", text))
-        self.run_worker(lambda: self._handle(text, work), thread=True, group="request")
+        self.run_worker(lambda: self._handle(text, work, pictures), thread=True, group="request")
 
-    def _handle(self, text: str, work: _Work) -> None:
+    def _handle(self, text: str, work: _Work, pictures: Sequence[Picture] = ()) -> None:
         session = self._session
         hooks = Hooks(
             confirm=self._confirm,
@@ -995,7 +1125,7 @@ class ChatApp(App[None]):
         reply = ""
         try:
             if session is not None:
-                reply = session.handle(text, hooks)
+                reply = session.handle(text, hooks, pictures=pictures)
         except Exception as exc:  # ruff: ignore[blind-except] - shown in the window, never raised
             self._from_worker(self._note, f"Something went wrong: {type(exc).__name__}", "error")
         finally:

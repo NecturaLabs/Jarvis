@@ -13,6 +13,7 @@ from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from textual import events  # ruff: ignore[typing-only-third-party-import] - Textual reads handler annotations
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
@@ -145,7 +146,8 @@ class PromptArea(TextArea):
     """The input: Enter sends; Shift+Enter, Ctrl+J or a backslash then Enter start a new line.
 
     ↑ on the first line and ↓ on the last go to the window (history, or the command menu); Tab
-    takes the highlighted command.
+    takes the highlighted command. Ctrl+V and the terminal's own paste go to the window too, which
+    attaches a picture or puts the text in (`insert_text`).
     """
 
     BINDINGS: ClassVar = [
@@ -154,6 +156,7 @@ class PromptArea(TextArea):
         Binding("tab", "app.complete", show=False, priority=True),
         Binding("up", "up", show=False, priority=True),
         Binding("down", "down", show=False, priority=True),
+        Binding("ctrl+v", "app.paste", show=False, priority=True),
     ]
 
     @dataclass
@@ -167,6 +170,26 @@ class PromptArea(TextArea):
         """↑ on the first line (`up`) or ↓ on the last (not `up`): for the window to handle."""
 
         up: bool
+
+    @dataclass
+    class Pasted(Message):
+        """The terminal pasted `text` (or a file was dropped on it): for the window to place."""
+
+        text: str
+
+    @override
+    async def _on_paste(self, event: events.Paste) -> None:
+        """Hand a paste to the window, which knows a dropped picture from text."""
+        event.prevent_default()
+        event.stop()
+        if not self.read_only:
+            self.post_message(self.Pasted(event.text))
+
+    def insert_text(self, text: str) -> None:
+        """Put `text` where the cursor is, in place of any selection."""
+        result = self.replace(text, *self.selection)
+        self.move_cursor(result.end_location)
+        self.focus()
 
     def action_submit(self) -> None:
         """Enter: send the text, or start a new line after a trailing backslash."""

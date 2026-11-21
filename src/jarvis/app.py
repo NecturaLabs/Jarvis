@@ -271,6 +271,7 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
         names=(config.persona.name,),
         limits=limits,
         memory_file=remembered,
+        pictures=config.strata.pictures,
     )
     return Jarvis(
         agent, model, audit, ops, lambda: speech_hint(config, registry, ops.artist_names())

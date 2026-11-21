@@ -41,6 +41,7 @@ class Origin(StrEnum):
     SPOTIFY = "spotify"
     WEB = "web"
     FILE = "file"
+    PICTURE = "picture"  # a picture the owner shared: what it shows was made by anyone
 
 
 TRUSTED_ORIGINS = frozenset({Origin.SYSTEM, Origin.OWNER_SPEECH, Origin.TOOL_STATUS})

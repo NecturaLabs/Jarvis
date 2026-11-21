@@ -53,6 +53,9 @@ Questions that need the outside world ([ADR 0007](adr/0007-outside-services-for-
 Files Jarvis reads stay on the PC: their text goes only to the local model. While a file's text is in the
 conversation, a search or a place lookup that could carry it out needs your yes first.
 
+Pictures you attach in the chat go only to the local model, shrunk; they are not written to disk, and the
+conversation keeps only their names. The clipboard is read only when you press Ctrl+V in the chat.
+
 No request names you, the PC or Jarvis. Set an operation to `deny` in `[boundaries.classes]` to keep it
 from ever running.
 

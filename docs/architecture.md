@@ -86,8 +86,9 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 | `cli.py` | The `jarvis` command: setup, run, ask, chat, doctor, status, start, stop, restart, logs, unload, pc-audio, spotify-login. `cmd_run` wires the threads and the signal handlers. | Hold logic that tests need elsewhere; it only wires parts together. |
 | `services.py` | The Strata profile and the two systemd user units, rendered and written. | Write a value with a control character into a unit, or a relative program path. |
 | `model.py` | `StrataModel`: the OpenAI-style chat client, plus status, load, warm and unload. | Generate tokens to check health. Use the network beyond Strata's URL. |
-| `chat/app.py` | The Textual window for `jarvis chat`, laid out like Claude Code's: typed requests to the window's own agent, its replies rendered as Markdown while they are written (`Hooks.draft`), the voice service's requests and replies from the audit log, steps shown by verbosity, a yes-or-no choice for questions, Esc to stop a request, slash commands, the `/config` panel and the toolbar. | Trust log text; it shows it as plain characters (a reply's Markdown draws nothing on the terminal). |
+| `chat/app.py` | The Textual window for `jarvis chat`, laid out like Claude Code's: typed requests to the window's own agent, its replies rendered as Markdown while they are written (`Hooks.draft`), the voice service's requests and replies from the audit log, steps shown by verbosity, a yes-or-no choice for questions, Esc to stop a request, slash commands, the `/config` panel, the toolbar, and pictures attached as `[Image #N]` tags (Ctrl+V, a dropped file, `/image`). | Trust log text; it shows it as plain characters (a reply's Markdown draws nothing on the terminal). |
 | `chat/commands.py` | The slash commands and what the menu suggests while one is typed: prefix first, then letters in order, then a command's arguments. | Run anything; the window does. |
+| `chat/clipboard.py` | `read`: what Ctrl+V pastes, from `wl-paste` with a fixed argument list (a picture type before text, then a copied file's address), within 20 MB and 3 s; a reader over either is stopped with its process group. | Pass a media type the clipboard offered on to `wl-paste`, or read the clipboard without a key press. |
 | `chat/history.py` | `InputHistory`: the typed lines ↑ brings back, kept 0600 in `chat-history` under the state folder. | Keep more than `chat.history_size` lines. |
 | `chat/widgets.py` | The window's pieces: requests, replies (Textual's Markdown), steps, the multi-line input and the toolbar line with its meters. | Choose colours other than the terminal's own. |
 | `pc/files.py` | `Boundary` (the read and write roots, resolved through links, and the secrets never touched: `SECRET_NAMES`, `SECRET_PATHS`, `files.deny`, Jarvis's state) and `FileOps`: `list_dir`, `read_file` (text only, in parts by line) and `write_file` (`confirm`; the path bound before the question and checked again before the write, through the folder's descriptor with no link followed at the last name). | Read or write outside the roots, follow a link out of them, open a pipe or device, write a hidden file, make a file executable, or pass file text on as trusted. |
@@ -102,6 +103,7 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 |---|---|
 | `paths.py` | XDG config, state and data folders, and the fixed file names inside them. |
 | `files.py` | `write_atomic`: write through a temp file and a rename. |
+| `pictures.py` | `Picture` and `prepare`: Pillow's PNG, JPEG, WebP, GIF and BMP decoders only, the pixel count checked before decoding (40 million at most), the first frame turned upright and shrunk to 1,568 pixels on its longest side, then encoded again as PNG (JPEG for a large photo); `read_file` (a regular file of at most 20 MB), `pasted_path` (a dropped file's path or `file://` address) and `newest` (the latest screenshot). |
 | `secretfile.py` | `write_private` and `read_private`: mode 0600 files, symlinks and foreign owners refused; the Strata API key reader. |
 | `jsonutil.py` | `obj` and `objs`: typed access to JSON from outside. |
 
@@ -202,7 +204,8 @@ server on its own thread until the callback arrives.
 Child processes Jarvis starts: `pw-record` (microphone and PC audio), `pw-dump` (find app streams),
 `pw-play` (speech and chime), `voxtype transcribe` (one per utterance), `systemctl --user` and
 `journalctl --user` (the lifecycle commands in `cli.py`), `xdg-open` (the login link, unless
-`--no-browser`) and the Spotify app itself (`omarchy-launch-spotify`, when no player is up).
+`--no-browser`), the Spotify app itself (`omarchy-launch-spotify`, when no player is up) and
+`wl-paste` (the chat's Ctrl+V, `chat/clipboard.py`).
 
 Strata is a different service, `jarvis-strata.service`. It listens on `127.0.0.1` with an API key
 that Jarvis reads from the state folder, and it serves only Jarvis. `jarvis.service` starts after it
@@ -232,8 +235,9 @@ falls under its catch-all entry, so a change anywhere still asks for review). Th
 - the Spotify OAuth flow and token files: `spotify/`, `secretfile.py`;
 - the units and the config that become systemd lines: `services.py`, `config.py`;
 - the system prompt: `prompts/core.md`;
-- the web tools: `web/`, above all `web/guard.py` and `web/page.py`.
-
-- the PC-operation tools: `pc/`, above all `pc/files.py`.
+- the web tools: `web/`, above all `web/guard.py` and `web/page.py`;
+- the PC-operation tools: `pc/`, above all `pc/files.py`;
+- pictures: `pictures.py`, which decodes picture bytes anyone may have made, and `chat/clipboard.py`,
+  which starts `wl-paste`.
 
 Report a vulnerability as [SECURITY.md](../SECURITY.md) says.

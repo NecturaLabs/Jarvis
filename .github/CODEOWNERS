@@ -20,4 +20,6 @@
 /src/jarvis/spotify/             @Nectura
 /src/jarvis/web/                 @Nectura
 /src/jarvis/pc/                  @Nectura
+/src/jarvis/pictures.py          @Nectura
+/src/jarvis/chat/clipboard.py    @Nectura
 /deploy/                         @Nectura

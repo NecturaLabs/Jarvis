@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 import re
 import shutil
 import signal
@@ -21,7 +22,7 @@ from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     import numpy as np
     from numpy.typing import NDArray
@@ -306,11 +307,20 @@ def _save_chat_settings(chat: config.ChatConfig) -> None:
     config.save(current.model_copy(update={"chat": chat}))
 
 
+def _screenshot_folders(home: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
+    """Return where Omarchy saves screenshots (its setting first), then the Pictures folder."""
+    chosen = [env.get(name, "") for name in ("OMASNAP_SCREENSHOT_DIR", "OMARCHY_SCREENSHOT_DIR")]
+    folders = [Path(value).expanduser() for value in chosen if value]
+    folders += [home / "Pictures" / "Screenshots", home / "Pictures"]
+    return tuple(dict.fromkeys(folders))
+
+
 def cmd_chat(_args: argparse.Namespace) -> int:
     """Open the chat window: typed requests, and everything Jarvis does, live."""
     import secrets  # ruff: ignore[import-outside-top-level]
 
     from jarvis.activity import AuditTail  # ruff: ignore[import-outside-top-level]
+    from jarvis.chat import clipboard  # ruff: ignore[import-outside-top-level]
     from jarvis.chat.app import ChatApp, Services  # ruff: ignore[import-outside-top-level]
     from jarvis.chat.history import InputHistory  # ruff: ignore[import-outside-top-level]
     from jarvis.sysinfo import Sampler  # ruff: ignore[import-outside-top-level]
@@ -331,6 +341,9 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         save_settings=_save_chat_settings,
         history=InputHistory(paths.state_dir() / "chat-history", cfg.chat.history_size),
         export_dir=documents if documents.is_dir() else Path.home(),
+        paste=clipboard.read,
+        pictures=cfg.strata.pictures,
+        screenshots=_screenshot_folders(Path.home(), os.environ),
     )
     ChatApp(
         AuditTail(paths.audit_file()),
