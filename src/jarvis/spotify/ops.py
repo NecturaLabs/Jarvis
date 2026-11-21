@@ -1,6 +1,7 @@
 """Spotify operations offered to the model. Names and metadata from Spotify are untrusted data."""
 
 import difflib
+import logging
 import operator
 import random
 import re
@@ -15,7 +16,7 @@ from jarvis.jsonutil import obj, objs
 from jarvis.operations import Operation, OperationError, Result, UncertainOutcomeError
 from jarvis.policy import Origin
 from jarvis.spotify.api import SpotifyApi, pick_device
-from jarvis.spotify.errors import NoDeviceError, SpotifyError
+from jarvis.spotify.errors import NoDeviceError, SpotifyAuthError, SpotifyError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -23,8 +24,13 @@ if TYPE_CHECKING:
     from jarvis.config import SpotifyConfig
     from jarvis.spotify.api import Device
 
+log = logging.getLogger(__name__)
+
 DEVICE_WAIT_S = 15.0
 PLAYLIST_TTL_S = 300.0
+QUEUE_BUDGET_S = 30.0
+RECENT_QUEUE_S = 30 * 60.0
+ALREADY_QUEUED = "That's already in the queue."
 NOTHING_PLAYING = "Nothing is playing."
 NO_VOLUME_CONTROL = "This device doesn't allow volume control from here."
 _VOLUME_DISALLOWED = "VOLUME_CONTROL_DISALLOW"
@@ -84,6 +90,11 @@ def _base_title(name: str) -> str:
 def _song_key(item: dict[str, Any]) -> str:
     """Return a song's identity ignoring versions: "Breath - Remix" is the same song as "Breath"."""
     return _letters(_base_title(str(item.get("name", ""))))
+
+
+def _identities(item: dict[str, Any]) -> tuple[str, str]:
+    """Return what makes a track "the same" for the queue: its URI and its song (any version)."""
+    return str(item.get("uri", "")), f"song:{_song_key(item)}"
 
 
 def _unquoted(text: str) -> str:
@@ -165,6 +176,7 @@ class SpotifyOps:
         self._names_at: float | None = None
         self._playlist_cache: list[dict[str, Any]] | None = None
         self._playlist_at = 0.0
+        self._recent: dict[str, float] = {}
 
     def artist_names(self) -> list[str]:
         """Return the owner's artist names (top, followed, recently played), most played first.
@@ -394,74 +406,160 @@ class SpotifyOps:
         label = _names(item) if kind in {"track", "album"} else str(item.get("name", query))
         return Result(f"Now playing the {kind} {label}.", Origin.SPOTIFY)
 
-    def _track_search_query(self, query: str) -> str:
-        """Search only an artist's own songs when the query names an artist."""
-        artists = self._api.search(query, "artist")
-        named = best_match(query, artists[:1], threshold=self._settings.close_match)
-        if named is None:
-            mine = self._library_match(query)
-            named = mine.item if mine is not None and mine.kind == "artist" else None
-        return f'artist:"{named["name"]}"' if named else query
+    def _artist_search(self, name: str) -> tuple[str, str]:
+        """Return the track search for an artist's own songs, and the artist's URI.
 
-    def _distinct_tracks(self, query: str, wanted: int) -> list[dict[str, Any]]:
-        """Collect up to `wanted` different songs for `query`, paging through search results."""
-        search = self._track_search_query(query) if wanted > 1 else query
+        An artist Spotify (or the owner's library, for a misheard name) does not recognise is
+        searched as plain text, with no URI to filter by.
+        """
+        artists = self._api.search(name, "artist")
+        named = best_match(name, artists[:1], threshold=self._settings.close_match)
+        if named is None:
+            mine = self._library_match(name)
+            named = mine.item if mine is not None and mine.kind == "artist" else None
+        if named is None:
+            return name, ""
+        return f'artist:"{_unquoted(str(named["name"]))}"', str(named["uri"])
+
+    def _collect(
+        self, search: str, wanted: int, taken: set[str], deadline: float, by_artist: str
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Collect up to `wanted` different new songs, paging through the search results.
+
+        A song counts once whatever its version; one in `taken` is skipped and counted. With
+        `by_artist` (an artist URI) only that artist's tracks are kept. Paging by the number of
+        entries Spotify returned, and stops at the deadline.
+        """
         picked: list[dict[str, Any]] = []
-        keys: set[str] = set()
+        seen: set[str] = set()
+        skipped = 0
         offset = 0
         for _page in range(self._settings.search_pages):
+            if self._clock() >= deadline:
+                break
             page = self._api.search_page(search, "track", offset=offset)
             offset += page.returned
             if not page.returned:
                 break
             for item in page.items:
-                key = _song_key(item)
-                if item.get("uri") and key not in keys:
-                    keys.add(key)
+                uri, key = _identities(item)
+                by = objs(item.get("artists"))
+                if not item.get("uri") or key in seen:
+                    continue
+                if by_artist and not any(a.get("uri") == by_artist for a in by):
+                    continue
+                seen.add(key)
+                if uri in taken or key in taken:
+                    skipped += 1
+                else:
                     picked.append(item)
             if len(picked) >= wanted:
                 break
-        return picked[:wanted]
+        return picked, skipped
+
+    def _single_song(
+        self, query: str, artist: str, taken: set[str]
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return the one song a title (and artist) names: the best of the first page of hits."""
+        hits = [h for h in self._search_hits(query, "track", artist) if h.get("uri")]
+        best = self._best_hit(hits, query, "track", artist)
+        chosen = best.item if best and best.score >= self._settings.close_match else None
+        chosen = chosen or next(iter(hits), None)
+        if chosen is None:
+            return [], 0
+        uri, key = _identities(chosen)
+        return ([], 1) if uri in taken or key in taken else ([chosen], 0)
+
+    def _queued_now(self) -> set[str]:
+        """Return what is queued or playing, from Spotify and from what Jarvis queued lately.
+
+        Spotify's own list is partial and can lag, so Jarvis also remembers its own queueing for
+        a while. When Spotify's list cannot be read, the memory alone guards.
+
+        Raises:
+            SpotifyAuthError: the login is gone.
+        """
+        now = self._clock()
+        self._recent = {k: t for k, t in self._recent.items() if now - t < RECENT_QUEUE_S}
+        taken = set(self._recent)
+        try:
+            for item in self._api.queue():
+                taken.update(_identities(item))
+        except NoDeviceError:
+            pass
+        except SpotifyAuthError:
+            raise
+        except SpotifyError:
+            log.warning("could not read Spotify's queue; relying on what was queued lately")
+        return taken
+
+    def _candidates(
+        self, args: dict[str, Any], taken: set[str], deadline: float
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Return the songs to queue, how many candidates were skipped, and how many were asked."""
+        count = int(args.get("count", 1))
+        shuffled = bool(args.get("random_order"))
+        query, artist = str(args["query"]), str(args.get("artist") or "").strip()
+        if count == 1 and not shuffled:
+            pool, skipped = self._single_song(query, artist, taken)
+        else:
+            search, by_artist = self._artist_search(artist or query)
+            wanted = self._settings.queue_max * 2 if shuffled else count
+            pool, skipped = self._collect(search, wanted, taken, deadline, by_artist)
+        chosen = self._rng.sample(pool, min(count, len(pool))) if shuffled else pool[:count]
+        return chosen, skipped, count
 
     def queue(self, args: dict[str, Any]) -> Result:
         """Add one or more different songs to the queue, optionally in random order.
+
+        Songs already queued or playing, and songs queued by Jarvis in the last half hour, are
+        left out and replaced from the candidates; the whole operation stops after 30 seconds
+        and reports what it queued.
 
         Raises:
             SpotifyError: Spotify failed before anything was queued.
             UncertainOutcomeError: the first queue request timed out after it was sent.
         """
-        count = int(args.get("count", 1))
-        shuffled = bool(args.get("random_order"))
-        pool = self._distinct_tracks(
-            args["query"], self._settings.queue_max * 2 if shuffled else count
-        )
-        if not pool:
-            return Result(f"No track matched {args['query']!r}.", Origin.TOOL_STATUS, ok=False)
-        tracks = self._rng.sample(pool, min(count, len(pool))) if shuffled else pool[:count]
+        deadline = self._clock() + QUEUE_BUDGET_S
+        tracks, skipped, count = self._candidates(args, self._queued_now(), deadline)
+        if not tracks:
+            if skipped:
+                return Result(ALREADY_QUEUED)
+            if self._clock() >= deadline:
+                return Result("Searching ran out of time, so nothing was queued.", ok=False)
+            return Result(f"No track matched {args['query']!r}.", ok=False)
         queued: list[str] = []
         for item in tracks:
+            if queued and self._clock() >= deadline:
+                return self._partial(queued, count, "it ran out of time.")
             try:
                 self._player_call("POST", "/me/player/queue", params={"uri": item["uri"]})
             except (SpotifyError, UncertainOutcomeError) as exc:
                 if not queued:
                     raise
                 uncertain = isinstance(exc, UncertainOutcomeError)
-                return Result(
-                    f"Queued {len(queued)} of {len(tracks)} ({', '.join(queued)}), then "
-                    + (
-                        "the next one may not have gone through; do not retry."
-                        if uncertain
-                        else f"Spotify failed: {exc}"
-                    ),
-                    Origin.SPOTIFY,
-                    ok=False,
+                return self._partial(
+                    queued,
+                    count,
+                    "the next one may not have gone through; do not retry."
+                    if uncertain
+                    else f"Spotify failed: {exc}",
                 )
             queued.append(_names(item))
+            self._recent.update(dict.fromkeys(_identities(item), self._clock()))
         named = ", ".join(queued[:_NAMED_IN_REPLY])
         more = len(queued) - _NAMED_IN_REPLY
         tail = f" and {more} more" if more > 0 else ""
-        fewer = f" (only {len(queued)} found, {count} asked)" if len(queued) < count else ""
+        new = " new" if skipped else ""
+        fewer = f" (only {len(queued)}{new} found, {count} asked)" if len(queued) < count else ""
         return Result(f"Queued {len(queued)} song(s){fewer}: {named}{tail}.", Origin.SPOTIFY)
+
+    @staticmethod
+    def _partial(queued: list[str], asked: int, why: str) -> Result:
+        """Report a queue request that stopped part-way: what went in, and why it stopped."""
+        return Result(
+            f"Queued {len(queued)} of {asked} ({', '.join(queued)}), then {why}", Origin.SPOTIFY
+        )
 
     def now_playing(self, _args: dict[str, Any]) -> Result:
         """Describe what is playing."""
@@ -749,6 +847,7 @@ class SpotifyOps:
                     "type": "object",
                     "properties": {
                         "query": _QUERY,
+                        "artist": _ARTIST,
                         "count": {
                             "type": "integer",
                             "minimum": 1,
