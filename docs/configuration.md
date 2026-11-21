@@ -164,6 +164,12 @@ microphone, which drops the headset to its low-quality call profile. Check the w
 Jarvis speaks, before and after the change. This setup was checked to load in PipeWire 1.6.9, not yet
 measured on the owner's microphone.
 
+**Warning:** when echo cancellation was applied on the maintainer's PC on 2026-11-21, the PC's sound output
+broke and the change was reverted; the cause is not known yet
+([#13](https://github.com/NecturaLabs/Jarvis/issues/13)). Before trying it, keep the way back at hand: delete
+`60-jarvis-echo-cancel.conf`, run `systemctl --user restart pipewire`, set `audio.source` back to `""` and run
+`jarvis restart`.
+
 ### Azure wake word
 
 Jarvis can listen with an Azure AI Speech custom keyword model instead of LiveKit's `hey_jarvis`
