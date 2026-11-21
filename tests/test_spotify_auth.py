@@ -1,9 +1,11 @@
 """Spotify login and token upkeep: the PKCE flow, validated tokens, refresh and its failures."""
 
 import base64
+import fcntl
 import hashlib
 import http.client
 import json
+import os
 import socket
 import stat
 import threading
@@ -162,7 +164,7 @@ def test_login_stores_a_private_file_with_the_authorization_time(tmp_path: Path)
     assert _saved(path)["authorized_at"] == START
 
 
-def test_an_idle_connection_neither_stops_the_timeout_nor_the_real_answer(tmp_path: Path) -> None:
+def test_an_idle_connection_does_not_stop_the_login_timeout(tmp_path: Path) -> None:
     port = _free_port()
     idle: list[socket.socket] = []
 
@@ -242,6 +244,7 @@ def test_a_malformed_token_answer_is_an_auth_error_on_login(
 @pytest.mark.parametrize(
     "content",
     [
+        b"\xff\xfe\x00garbage",
         "",
         "{",
         "[]",
@@ -253,9 +256,13 @@ def test_a_malformed_token_answer_is_an_auth_error_on_login(
         '{"access_token": "a", "refresh_token": "r", "expires_at": "soon"}',
     ],
 )
-def test_a_damaged_token_file_says_to_log_in_again(tmp_path: Path, content: str) -> None:
+def test_a_damaged_token_file_says_to_log_in_again(tmp_path: Path, content: str | bytes) -> None:
     path = tmp_path / "token.json"
-    write_private(path, content)
+    if isinstance(content, bytes):
+        path.write_bytes(content)
+        path.chmod(0o600)
+    else:
+        write_private(path, content)
 
     with pytest.raises(SpotifyAuthError, match="jarvis spotify-login"):
         _store(path, Accounts(_ok())).access_token()
@@ -515,6 +522,82 @@ def test_has_login_follows_the_file(tmp_path: Path) -> None:
     assert not store.has_login()
     _write(path)
     assert store.has_login()
+
+
+def test_has_login_is_true_for_a_file_that_is_not_text(tmp_path: Path) -> None:
+    path = tmp_path / "token.json"
+    path.write_bytes(b"\xff\xfe\x00garbage")
+    path.chmod(0o600)
+    store = _store(path, Accounts(_ok()))
+
+    assert store.has_login()
+    with pytest.raises(SpotifyAuthError, match="jarvis spotify-login"):
+        store.access_token()
+
+
+def test_a_busy_callback_port_is_an_auth_error_naming_the_config_key(tmp_path: Path) -> None:
+    with socket.socket() as holder:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen()
+        port = int(holder.getsockname()[1])
+
+        with pytest.raises(SpotifyAuthError, match=r"in use.*spotify\.redirect_port"):
+            login("client", port, tmp_path / "token.json", lambda _url: None)
+
+
+def test_a_state_with_non_ascii_characters_is_refused_not_a_crash(tmp_path: Path) -> None:
+    accounts = Accounts(_ok())
+    port = _free_port()
+    seen: list[int] = []
+
+    def show(url: str) -> None:
+        seen.append(_get(port, "/callback?code=x&state=%C3%A9%C3%A9"))
+        _get(port, f"/callback?code=c&state={_query(url)['state']}")
+
+    login("client", port, tmp_path / "token.json", show, http=accounts.client())
+
+    assert seen == [400]
+    assert [form["code"] for form in accounts.forms] == ["c"]
+
+
+def test_a_login_waits_for_the_token_file_lock_before_it_writes(tmp_path: Path) -> None:
+    # A running service refreshing the old grant holds this lock; the fresh login must not be
+    # overwritten by it, so the login writes only once the lock is free.
+    path = tmp_path / "token.json"
+    _write(path, access_token="old-access", refresh_token="old-refresh", authorized_at=START - DAY)
+    port = _free_port()
+    posted = threading.Event()
+    accounts = Accounts(_ok())
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        answer = accounts.handle(request)
+        posted.set()
+        return answer
+
+    def show(url: str) -> None:
+        _get(port, f"/callback?code=c&state={_query(url)['state']}")
+
+    client = httpx.Client(transport=httpx.MockTransport(handle))
+    worker = threading.Thread(
+        target=login,
+        args=("client", port, path, show),
+        kwargs={"http": client, "clock": lambda: START},
+    )
+    lock_fd = os.open(tmp_path / "token.json.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        worker.start()
+        assert posted.wait(5)
+        worker.join(0.3)
+        assert worker.is_alive()
+        assert _saved(path)["access_token"] == "old-access"
+    finally:
+        os.close(lock_fd)
+    worker.join(5)
+
+    assert not worker.is_alive()
+    assert _saved(path)["access_token"] == "acc-1"
+    assert _saved(path)["authorized_at"] == START
 
 
 def test_the_error_family_is_an_operation_failure() -> None:

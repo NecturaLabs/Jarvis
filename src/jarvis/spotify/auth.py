@@ -8,6 +8,7 @@ not extend that, so the grant time is kept beside the tokens.
 
 import base64
 import contextlib
+import errno
 import fcntl
 import hashlib
 import json
@@ -113,7 +114,8 @@ def _handler(result: _Callback, done: threading.Event) -> type[BaseHTTPRequestHa
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             params = urllib.parse.parse_qs(parsed.query)
-            if params.get("state", [""])[0] != result.state or done.is_set():
+            heard = params.get("state", [""])[0]
+            if not secrets.compare_digest(heard.encode(), result.state.encode()) or done.is_set():
                 self._reply(HTTPStatus.BAD_REQUEST, "Login failed.")
                 return
             if "error" in params:
@@ -162,14 +164,19 @@ def login(  # ruff: ignore[too-many-arguments] - `http` and `clock` are test sea
     and ignored; the login keeps waiting for the real answer.
 
     Raises:
-        SpotifyAuthError: the owner did not finish in time, Spotify refused or the token answer
-            was unusable.
+        SpotifyAuthError: the callback port is in use, the owner did not finish in time, Spotify
+            refused or the token answer was unusable.
     """
     verifier, challenge = make_pkce()
     state = secrets.token_urlsafe(24)
     result = _Callback(state=state)
     done = threading.Event()
-    server = _Server(("127.0.0.1", port), _handler(result, done))
+    try:
+        server = _Server(("127.0.0.1", port), _handler(result, done))
+    except OSError as exc:
+        why = "is already in use" if exc.errno == errno.EADDRINUSE else f"can't be used ({exc})"
+        msg = f"the login's callback port {port} {why}; free it or change `spotify.redirect_port`"
+        raise SpotifyAuthError(msg) from exc
     thread = threading.Thread(
         target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
     )
@@ -201,11 +208,8 @@ def login(  # ruff: ignore[too-many-arguments] - `http` and `clock` are test sea
         msg = "Spotify sent no refresh token"
         raise SpotifyAuthError(msg)
     now = clock()
-    write_private_json(
-        token_path,
-        _Record(
-            grant.access_token, grant.refresh_token, now + grant.expires_in, grant.scope, now
-        ).as_json(),
+    TokenStore(client_id, token_path, http, clock=clock).store_login(
+        _Record(grant.access_token, grant.refresh_token, now + grant.expires_in, grant.scope, now)
     )
 
 
@@ -336,8 +340,23 @@ class TokenStore:
         self._last: str | None = None
 
     def has_login(self) -> bool:
-        """Return whether a stored login exists."""
-        return read_private(self._path) is not None
+        """Return whether a stored login file exists, even a damaged or unreadable one.
+
+        `access_token` then fails with the instruction to log in again.
+        """
+        try:
+            return read_private(self._path) is not None
+        except OSError, ValueError:
+            return True
+
+    def store_login(self, record: _Record) -> None:
+        """Replace the stored login with a fresh grant, under the locks a refresh holds.
+
+        A refresh that was running on the old grant has finished before this writes, so it cannot
+        overwrite the new login afterwards.
+        """
+        with self._lock, self._file_lock():
+            self._save(record)
 
     @property
     def authorized_at(self) -> float | None:
@@ -416,6 +435,9 @@ class TokenStore:
         except OSError as exc:
             msg = f"Spotify's saved login can't be used ({exc}); {_LOGIN_AGAIN}"
             raise SpotifyAuthError(msg) from exc
+        except ValueError:  # not UTF-8; the decoder's message would quote file bytes
+            msg = f"Spotify's saved login is damaged; {_LOGIN_AGAIN}"
+            raise SpotifyAuthError(msg) from None
         if text is None:
             msg = f"Spotify is not connected; {_LOGIN_AGAIN}"
             raise SpotifyAuthError(msg)

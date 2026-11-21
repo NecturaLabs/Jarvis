@@ -34,6 +34,8 @@ REFRESH_RETRY_S = 60.0
 QUEUE_BUDGET_S = 30.0
 RECENT_QUEUE_S = 30 * 60.0
 ALREADY_QUEUED = "That's already in the queue."
+QUEUED_LATELY = "I queued that a few minutes ago."
+SAY_WHAT_TO_PLAY = "say what to play"
 NOTHING_PLAYING = "Nothing is playing."
 NO_VOLUME_CONTROL = "This device doesn't allow volume control from here."
 _VOLUME_DISALLOWED = "VOLUME_CONTROL_DISALLOW"
@@ -135,13 +137,36 @@ def _base_title(name: str) -> str:
 
 
 def _song_key(item: dict[str, Any]) -> str:
-    """Return a song's identity ignoring versions: "Breath - Remix" is the same song as "Breath"."""
-    return _letters(_base_title(str(item.get("name", ""))))
+    """Return a song's identity ignoring versions: "Breath - Remix" is the same song as "Breath".
+
+    The identity is the base title with the primary artist (their URI, else their name), so the
+    same title by another artist is another song.
+    """
+    artists = objs(item.get("artists"))
+    primary: dict[str, Any] = artists[0] if artists else {}
+    artist = str(primary.get("uri") or "") or _letters(str(primary.get("name", "")))
+    return f"{_letters(_base_title(str(item.get('name', ''))))}|{artist}"
 
 
 def _identities(item: dict[str, Any]) -> tuple[str, str]:
     """Return what makes a track "the same" for the queue: its URI and its song (any version)."""
     return str(item.get("uri", "")), f"song:{_song_key(item)}"
+
+
+@dataclass(frozen=True, slots=True)
+class _Taken:
+    """The identities of what is queued or playing now, and of what Jarvis queued lately."""
+
+    live: frozenset[str]
+    recent: frozenset[str]
+
+    def holds(self, identity: str) -> bool:
+        """Return whether `identity` is in either set."""
+        return identity in self.live or identity in self.recent
+
+    def is_live(self, item: dict[str, Any]) -> bool:
+        """Return whether Spotify's own queue (or the player) holds this track."""
+        return any(identity in self.live for identity in _identities(item))
 
 
 def _unquoted(text: str) -> str:
@@ -226,6 +251,7 @@ class SpotifyOps:
         self._clock = clock
         self._names: list[str] = []
         self._warm = False
+        self._login_expired = False
         self._playlist_cache: list[dict[str, Any]] | None = None
         self._playlist_at = 0.0
         self._recent: dict[str, float] = {}
@@ -244,10 +270,12 @@ class SpotifyOps:
         A failure is logged and swallowed, and the previous names are kept.
         """
         self._warm = False
+        self._login_expired = False
         try:
             self._api.ensure_login()
             artists = self._api.library(max_age_s=0).get("artist", [])
         except SpotifyLoginExpired:
+            self._login_expired = True
             log.warning("Spotify login has expired; run `jarvis spotify-login`")
             return
         except SpotifyError as exc:
@@ -262,14 +290,16 @@ class SpotifyOps:
     def start_refresh(self, stop: threading.Event) -> threading.Thread:
         """Refresh now and then every `library_refresh_s` on a daemon thread, until `stop` is set.
 
-        A refresh that failed (offline at start-up, say) is tried again after a minute.
+        A refresh that failed (offline at start-up, say) is tried again after a minute; one that
+        failed because the login expired is not, as only a new login can fix that.
         """
 
         def loop() -> None:
             while not stop.is_set():
                 self.refresh()
                 period = self._settings.library_refresh_s
-                if stop.wait(period if self._warm else min(period, REFRESH_RETRY_S)):
+                retry_soon = not (self._warm or self._login_expired)
+                if stop.wait(min(period, REFRESH_RETRY_S) if retry_soon else period):
                     return
 
         thread = threading.Thread(target=loop, name="jarvis-spotify-refresh", daemon=True)
@@ -377,6 +407,12 @@ class SpotifyOps:
         best = max(scored, key=operator.attrgetter("score"), default=None)
         return best if best and best.score >= self._settings.loose_match else None
 
+    def _playlists_cached(self) -> bool:
+        """Return whether the owner's playlists are held from an earlier request."""
+        return (
+            self._playlist_cache is not None and self._clock() - self._playlist_at < PLAYLIST_TTL_S
+        )
+
     def _playlists(self, *, fresh: bool = False) -> list[dict[str, Any]]:
         """Return the owner's playlists, kept for a few minutes."""
         now = self._clock()
@@ -440,8 +476,9 @@ class SpotifyOps:
     def _find_playlist(self, query: str, *, mine: bool) -> _Hit | None:
         """Return a playlist to play: the owner's own first; a public one only if not `mine`."""
         close, loose = self._settings.close_match, self._settings.loose_match
+        was_cached = self._playlists_cached()
         own = self._best_hit(self._playlists(), query, "playlist", "")
-        if own is None or own.score < close:
+        if was_cached and (own is None or own.score < close):
             fresh = self._best_hit(self._playlists(fresh=True), query, "playlist", "")
             own = fresh if fresh and (own is None or fresh.score > own.score) else own
         if own is not None and own.score >= close:
@@ -464,9 +501,30 @@ class SpotifyOps:
         self._start({"uris": uris})
         return Result("Now playing your liked songs, shuffled.", Origin.SPOTIFY)
 
+    @staticmethod
+    def _play_query(args: dict[str, Any]) -> str:
+        """Return what to search for; every kind but the owner's liked songs needs it.
+
+        Raises:
+            OperationError: the request does not say what to play.
+        """
+        query = str(args.get("query") or "")
+        if not query and args["kind"] != "liked":
+            raise OperationError(SAY_WHAT_TO_PLAY)
+        return query
+
+    def check_play(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Refuse a play request that names nothing before it is decided on or confirmed."""
+        self._play_query(args)
+        return args
+
     def play(self, args: dict[str, Any]) -> Result:
-        """Find what was asked for and play it; misheard names fall back to the owner's music."""
-        query, kind = args["query"], args["kind"]
+        """Find what was asked for and play it; misheard names fall back to the owner's music.
+
+        A request that names nothing to play (every kind but liked needs a query) fails with an
+        `OperationError` that says so.
+        """
+        query, kind = self._play_query(args), args["kind"]
         if kind == "liked":
             return self._play_liked()
         artist = str(args.get("artist") or "").strip()
@@ -505,17 +563,17 @@ class SpotifyOps:
         return f'artist:"{_unquoted(str(named["name"]))}"', str(named["uri"])
 
     def _collect(
-        self, search: str, wanted: int, taken: set[str], deadline: float, by_artist: str
-    ) -> tuple[list[dict[str, Any]], int]:
+        self, search: str, wanted: int, taken: _Taken, deadline: float, by_artist: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Collect up to `wanted` different new songs, paging through the search results.
 
-        A song counts once whatever its version; one in `taken` is skipped and counted. With
+        A song counts once whatever its version; one in `taken` is skipped and returned. With
         `by_artist` (an artist URI) only that artist's tracks are kept. Paging by the number of
         entries Spotify returned, and stops at the deadline.
         """
         picked: list[dict[str, Any]] = []
         seen: set[str] = set()
-        skipped = 0
+        skipped: list[dict[str, Any]] = []
         offset = 0
         for _page in range(self._settings.search_pages):
             if self._clock() >= deadline:
@@ -532,8 +590,8 @@ class SpotifyOps:
                 if by_artist and not any(a.get("uri") == by_artist for a in by):
                     continue
                 seen.add(key)
-                if uri in taken or key in taken:
-                    skipped += 1
+                if taken.holds(uri) or taken.holds(key):
+                    skipped.append(item)
                 else:
                     picked.append(item)
             if len(picked) >= wanted:
@@ -541,19 +599,19 @@ class SpotifyOps:
         return picked, skipped
 
     def _single_song(
-        self, query: str, artist: str, taken: set[str]
-    ) -> tuple[list[dict[str, Any]], int]:
+        self, query: str, artist: str, taken: _Taken
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Return the one song a title (and artist) names: the best of the first page of hits."""
         hits = [h for h in self._search_hits(query, "track", artist) if h.get("uri")]
         best = self._best_hit(hits, query, "track", artist)
         chosen = best.item if best and best.score >= self._settings.close_match else None
         chosen = chosen or next(iter(hits), None)
         if chosen is None:
-            return [], 0
+            return [], []
         uri, key = _identities(chosen)
-        return ([], 1) if uri in taken or key in taken else ([chosen], 0)
+        return ([], [chosen]) if taken.holds(uri) or taken.holds(key) else ([chosen], [])
 
-    def _queued_now(self) -> set[str]:
+    def _queued_now(self) -> _Taken:
         """Return what is queued or playing, from Spotify and from what Jarvis queued lately.
 
         Spotify's own list is partial and can lag, so Jarvis also remembers its own queueing for
@@ -564,22 +622,22 @@ class SpotifyOps:
         """
         now = self._clock()
         self._recent = {k: t for k, t in self._recent.items() if now - t < RECENT_QUEUE_S}
-        taken = set(self._recent)
+        live: set[str] = set()
         try:
             for item in self._api.queue():
-                taken.update(_identities(item))
+                live.update(_identities(item))
         except NoDeviceError:
             pass
         except SpotifyAuthError:
             raise
         except SpotifyError:
             log.warning("could not read Spotify's queue; relying on what was queued lately")
-        return taken
+        return _Taken(frozenset(live), frozenset(self._recent))
 
     def _candidates(
-        self, args: dict[str, Any], taken: set[str], deadline: float
-    ) -> tuple[list[dict[str, Any]], int, int]:
-        """Return the songs to queue, how many candidates were skipped, and how many were asked."""
+        self, args: dict[str, Any], taken: _Taken, deadline: float
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+        """Return the songs to queue, the candidates skipped, and how many songs were asked."""
         count = int(args.get("count", 1))
         shuffled = bool(args.get("random_order"))
         query, artist = str(args["query"]), str(args.get("artist") or "").strip()
@@ -595,19 +653,21 @@ class SpotifyOps:
     def queue(self, args: dict[str, Any]) -> Result:
         """Add one or more different songs to the queue, optionally in random order.
 
-        Songs already queued or playing, and songs queued by Jarvis in the last half hour, are
-        left out and replaced from the candidates; the whole operation stops after 30 seconds
-        and reports what it queued.
+        Songs already queued or playing, and songs queued by Jarvis in the last half hour (a send
+        whose outcome is unknown counts), are left out and replaced from the candidates; the whole
+        operation stops after 30 seconds and reports what it queued.
 
         Raises:
             SpotifyError: Spotify failed before anything was queued.
             UncertainOutcomeError: the first queue request timed out after it was sent.
         """
         deadline = self._clock() + QUEUE_BUDGET_S
-        tracks, skipped, count = self._candidates(args, self._queued_now(), deadline)
+        taken = self._queued_now()
+        tracks, skipped, count = self._candidates(args, taken, deadline)
         if not tracks:
             if skipped:
-                return Result(ALREADY_QUEUED)
+                live = any(taken.is_live(item) for item in skipped)
+                return Result(ALREADY_QUEUED if live else QUEUED_LATELY)
             if self._clock() >= deadline:
                 return Result("Searching ran out of time, so nothing was queued.", ok=False)
             return Result(f"No track matched {args['query']!r}.", ok=False)
@@ -618,9 +678,11 @@ class SpotifyOps:
             try:
                 self._player_call("POST", "/me/player/queue", params={"uri": item["uri"]})
             except (SpotifyError, UncertainOutcomeError) as exc:
+                uncertain = isinstance(exc, UncertainOutcomeError)
+                if uncertain:
+                    self._remember(item)
                 if not queued:
                     raise
-                uncertain = isinstance(exc, UncertainOutcomeError)
                 return self._partial(
                     queued,
                     count,
@@ -629,13 +691,17 @@ class SpotifyOps:
                     else f"Spotify failed: {exc}",
                 )
             queued.append(_names(item))
-            self._recent.update(dict.fromkeys(_identities(item), self._clock()))
+            self._remember(item)
         named = ", ".join(queued[:_NAMED_IN_REPLY])
         more = len(queued) - _NAMED_IN_REPLY
         tail = f" and {more} more" if more > 0 else ""
         new = " new" if skipped else ""
         fewer = f" (only {len(queued)}{new} found, {count} asked)" if len(queued) < count else ""
         return Result(f"Queued {len(queued)} song(s){fewer}: {named}{tail}.", Origin.SPOTIFY)
+
+    def _remember(self, item: dict[str, Any]) -> None:
+        """Note that Jarvis sent `item` to the queue, so a quick repeat of the ask is not sent."""
+        self._recent.update(dict.fromkeys(_identities(item), self._clock()))
 
     @staticmethod
     def _partial(queued: list[str], asked: int, why: str) -> Result:
@@ -836,8 +902,9 @@ class SpotifyOps:
         return [
             Operation(
                 "spotify_play",
-                "Play a track, album, artist or playlist on Spotify, or kind=liked for the "
-                "owner's saved songs (shuffled). Use kind=playlist for the owner's playlists, "
+                "Play a track, album, artist or playlist on Spotify (query says which), or "
+                "kind=liked for the owner's saved songs (shuffled; no query). Use kind=playlist "
+                "for the owner's playlists, "
                 'with mine=true when they said "my" playlist. For "the song X by Y" set '
                 "query=X and artist=Y.",
                 {
@@ -854,11 +921,16 @@ class SpotifyOps:
                             "description": "The owner said it is their own playlist",
                         },
                     },
-                    "required": ["query", "kind"],
+                    "required": ["kind"],
                     "additionalProperties": False,
                 },
                 self.play,
-                spoken_summary=lambda a: f"play the {a['kind']} {a['query']}",
+                spoken_summary=lambda a: (
+                    "play your liked songs"
+                    if a["kind"] == "liked"
+                    else f"play the {a['kind']} {a['query']}"
+                ),
+                prepare=self.check_play,
             ),
             Operation(
                 "spotify_pause",
