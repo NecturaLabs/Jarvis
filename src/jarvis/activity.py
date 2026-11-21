@@ -1,7 +1,9 @@
 """What the chat window shows of Jarvis's audit log: new events as they are written, one entry each.
 
-The log holds other people's words (Spotify names, PC-audio speech), so every text is shown as
-plain characters: nothing in it can draw on the terminal or style the window.
+The log holds other people's words (Spotify names, PC-audio speech, web pages), so every text is
+shown as plain characters: nothing in it can draw on the terminal or style the window. A request
+and a reply keep all their words and lines (the window renders a reply as Markdown); a step is one
+line, cut to a readable length.
 """
 
 import contextlib
@@ -121,6 +123,15 @@ class Shown:
         return self.kind == "detail"
 
     @property
+    def level(self) -> str:
+        """The least verbosity that shows it: "replies" (always), "steps" or "everything"."""
+        if self.kind == "detail":
+            return "everything"
+        if self.kind in {"step", "result", "ask"} or (self.kind == "warn" and self.nested):
+            return "steps"
+        return "replies"
+
+    @property
     def starts_turn(self) -> bool:
         """Whether the event opens a request: someone asked Jarvis something."""
         return self.kind in {"you", "pc"}
@@ -135,6 +146,13 @@ def _plain(value: object) -> str:
     return text if len(text) <= MAX_SHOWN_CHARS else text[: MAX_SHOWN_CHARS - 1] + "…"
 
 
+def full_text(value: object) -> str:
+    """Return outside text whole, as printable characters and line breaks only."""
+    lines = str(value).replace("\r\n", "\n").replace("\t", "    ").split("\n")
+    kept = ["".join(c if c.isprintable() else " " for c in line).rstrip() for line in lines]
+    return "\n".join(kept).strip("\n")
+
+
 def _local_time(stamp: object) -> str:
     try:
         return datetime.fromisoformat(str(stamp)).astimezone().strftime("%H:%M:%S")
@@ -143,11 +161,12 @@ def _local_time(stamp: object) -> str:
 
 
 def _action(op: object) -> str:
-    return _plain(str(op).removeprefix("spotify_").replace("_", " "))
+    words = _plain(str(op).removeprefix("spotify_").replace("_", " "))
+    return words[:1].upper() + words[1:]
 
 
 def _request(entry: dict[str, object]) -> _Line:
-    words = _plain(entry.get("text", ""))
+    words = full_text(entry.get("text", ""))
     if entry.get("origin") == "pc_audio":
         return "pc", words, False, "PC audio"
     if entry.get("via") in {"chat", "ask"}:
@@ -155,14 +174,31 @@ def _request(entry: dict[str, object]) -> _Line:
     return "you", words, False, "you, by voice"
 
 
+MAX_ARGUMENT_CHARS = 60
+
+
+def _arguments(value: object) -> str:
+    """Return the gist of a call's arguments: its first words, as `"words"`."""
+    if not isinstance(value, dict):
+        return ""
+    for item in cast("dict[object, object]", value).values():
+        if isinstance(item, str) and item.strip():
+            words = _plain(item)
+            if len(words) > MAX_ARGUMENT_CHARS:
+                words = words[: MAX_ARGUMENT_CHARS - 1] + "…"
+            return f'"{words}"'
+    return ""
+
+
 def _tool_call(entry: dict[str, object]) -> _Line:
     action = _action(entry.get("op", ""))
+    gist = _arguments(entry.get("args"))
     verdict = entry.get("verdict")
     if verdict == "confirm":
-        return "ask", action, False, "needs your yes"
+        return "ask", action, False, f"{gist} · needs your yes" if gist else "needs your yes"
     if verdict in {"deny", "strong"}:
         return "warn", f"{action} refused: {_plain(entry.get('reason', ''))}", False, ""
-    return "step", action, False, ""
+    return "step", action, False, gist
 
 
 def _confirmation(entry: dict[str, object]) -> _Line:
@@ -186,7 +222,7 @@ def _seconds(entry: dict[str, object]) -> str:
 
 
 def _reply(entry: dict[str, object]) -> _Line:
-    return "jarvis", _plain(entry.get("text", "")), False, _seconds(entry)
+    return "jarvis", full_text(entry.get("text", "")), False, _seconds(entry)
 
 
 def _simple(entry: dict[str, object]) -> _Line | None:
@@ -204,6 +240,23 @@ def _simple(entry: dict[str, object]) -> _Line | None:
         "model_error": ("error", f"the model failed: {_plain(entry.get('error', ''))}", False, ""),
         "claimed_without_action": ("detail", "the model claimed an action; asked again", True, ""),
         "claim_replaced": ("warn", "the model claimed an action that was not done", True, ""),
+        "memory_summarized": (
+            "note",
+            f"Compacted the conversation: {entry.get('turns', '?')} earlier turns summarized",
+            False,
+            "",
+        ),
+        "memory_trimmed": (
+            "note",
+            f"Forgot the {entry.get('turns', '?')} oldest turns to make room",
+            False,
+            "",
+        ),
+        "memory_expired": ("note", "Started a new conversation after a long pause", False, ""),
+        "memory_cleared": ("detail", "the conversation was cleared", True, ""),
+        "reply_limit": ("detail", "the reply reached its length limit", True, ""),
+        "result_cleared": ("detail", "cleared an earlier result to make room", True, ""),
+        "spoken_before_tool_call": ("detail", "spoke before a tool call", True, ""),
         "pc_audio_permission": (
             "result",
             f"PC audio may ask again for {_seconds(entry)}",
@@ -232,3 +285,30 @@ def describe(entry: dict[str, object]) -> Shown | None:
     line = (render(entry) if render else _simple(entry)) or ("detail", _plain(event), True, "")
     kind, text, nested, note = line
     return Shown(_local_time(entry.get("ts")), kind, text, nested=nested, note=note)
+
+
+_LABELS = {
+    "web_search": "Searching the web",
+    "web_read": "Reading a page",
+    "reddit_search": "Searching Reddit",
+    "reddit_read": "Reading a Reddit thread",
+    "weather": "Checking the weather",
+    "time": "Checking the time",
+    "read_skill": "Reading its notes",
+    "no_action": "Writing",
+}
+
+
+def working_label(entry: dict[str, object]) -> str | None:
+    """Return what Jarvis is doing after this event, for the working line; None to keep it."""
+    event = entry.get("event")
+    if event == "tool_call":
+        op = str(entry.get("op", ""))
+        if op.startswith("spotify_"):
+            return "Talking to Spotify"
+        return _LABELS.get(op, f"Running {_action(op)}")
+    if event in {"tool_result", "tool_failed", "confirmation", "model_call"}:
+        return "Thinking"
+    if event == "memory_summarized":
+        return "Compacting the conversation"
+    return None

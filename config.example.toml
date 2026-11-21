@@ -36,6 +36,9 @@ tool_text_chars = 8000
 memory_tokens = 12000
 memory_idle_s = 0.0
 resume = true
+verbosity = "replies"
+toolbar = true
+history_size = 1000
 
 # How the jarvis-strata service runs the model; `jarvis setup` writes these into its profile.
 # The paths default to your XDG data folder; set model_file and tokenizer_dir to where you put them.

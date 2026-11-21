@@ -255,7 +255,7 @@ class _ReplyStream:
 
     def __init__(  # ruff: ignore[too-many-arguments] - the stream's settings, keyword-only
         self,
-        speak: Callable[[str], None],
+        speak: Callable[[str], None] | None,
         hooks: Hooks,
         *,
         may_claim: bool,
@@ -346,7 +346,10 @@ class _ReplyStream:
                 self._before_first()
             self._claimed = self._claimed or claims_action(piece)
             self.spoken = words[:end]
-            self._speak(piece.strip())
+            if self._speak is not None:
+                self._speak(piece.strip())
+            if self._hooks.draft is not None:
+                self._hooks.draft(self.spoken)
 
 
 def _inert(text: str) -> str:
@@ -421,7 +424,9 @@ class Hooks:
     takes long; both run beside the model call and have finished before anything else is said.
     `cancelled` turning true (Jarvis is stopping, or the owner spoke over it) ends the request.
     With `speak`, the reply is spoken through it, sentence by sentence and while the model is
-    still writing; `hush` drops what was passed to `speak` and not yet heard.
+    still writing; `hush` drops what was passed to `speak` and not yet heard. `draft` gets the
+    reply as far as it has been written, at the same points, for a window to show it growing;
+    the reply `handle` returns replaces it.
     """
 
     confirm: Callable[[str], bool]
@@ -429,6 +434,7 @@ class Hooks:
     still_waiting: Callable[[], None] = lambda: None
     cancelled: Callable[[], bool] = lambda: False
     speak: Callable[[str], None] | None = None
+    draft: Callable[[str], None] | None = None
     hush: Callable[[], None] = lambda: None
 
 
@@ -733,7 +739,7 @@ class Agent:
 
     def _stream(self, turn: _Turn, hooks: Hooks) -> _ReplyStream | None:
         """Return the stream that speaks the next answer as it is written, when it is spoken."""
-        if hooks.speak is None:
+        if hooks.speak is None and hooks.draft is None:
             return None
         op = self._registry.get(NO_ACTION)
         allowed = op is not None and (

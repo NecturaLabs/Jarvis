@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from jarvis.activity import AuditTail, describe
+from jarvis.activity import AuditTail, describe, working_label
 from jarvis.audit import AuditLog
 
 if TYPE_CHECKING:
@@ -102,7 +102,7 @@ def _line(entry: dict[str, object]) -> str:
         ({"event": "request", "text": "pause", "origin": "pc_audio"}, "pc", "PC audio"),
         ({"event": "request", "text": "pause", "via": "chat"}, "you", "typed"),
         ({"event": "reply", "text": "Paused it.", "seconds": 0.3}, "jarvis", "Paused it."),
-        ({"event": "tool_call", "op": "spotify_pause", "verdict": "allow"}, "step", "pause"),
+        ({"event": "tool_call", "op": "spotify_pause", "verdict": "allow"}, "step", "Pause"),
         ({"event": "tool_call", "op": "spotify_queue", "verdict": "confirm"}, "ask", "yes"),
         ({"event": "tool_call", "op": "x", "verdict": "deny", "reason": "off"}, "warn", "off"),
         ({"event": "confirmation", "approved": True}, "result", "yes"),
@@ -161,16 +161,71 @@ def test_an_unknown_event_still_shows_its_name() -> None:
 
 
 def test_outside_text_cannot_draw_on_the_terminal() -> None:
-    text = _line({"event": "reply", "text": "Glass\x1b[2J Harbor\x07\nNight [b]Circuit[/b]"})
+    text = _line({"event": "reply", "text": "Glass\x1b[2J Harbor\x07\r\nNight [b]Circuit[/b]"})
 
     assert "\x1b" not in text
     assert "\x07" not in text
+    assert "\r" not in text
+    assert "Glass [2J Harbor\nNight [b]Circuit[/b]" in text
+
+
+def test_a_step_stays_one_line() -> None:
+    text = _line({"event": "tool_failed", "op": "web_read", "error": "bad\npage"})
+
     assert "\n" not in text
-    assert "[b]Circuit[/b]" in text
 
 
-def test_a_long_text_is_cut() -> None:
-    assert len(_line({"event": "reply", "text": "la " * 2000})) < 700
+def test_a_reply_is_kept_whole_but_a_step_is_cut() -> None:
+    reply = "la " * 2000
+
+    assert _line({"event": "reply", "text": reply}).startswith(reply.strip())
+    assert len(_line({"event": "tool_failed", "op": "x", "error": "la " * 2000})) < 700
+
+
+def test_a_call_shows_the_gist_of_its_arguments_quietly() -> None:
+    shown = describe(
+        {"event": "tool_call", "op": "web_search", "args": {"query": "moonveil"}, "verdict": "run"}
+    )
+
+    assert shown is not None
+    assert (shown.text, shown.note) == ("Web search", '"moonveil"')
+
+
+@pytest.mark.parametrize(
+    ("entry", "level"),
+    [
+        ({"event": "request", "text": "hi"}, "replies"),
+        ({"event": "reply", "text": "hi"}, "replies"),
+        ({"event": "model_error", "error": "down"}, "replies"),
+        ({"event": "tool_denied", "op": "x", "reason": "no"}, "replies"),
+        ({"event": "memory_summarized", "turns": 3}, "replies"),
+        ({"event": "tool_call", "op": "web_search", "verdict": "run"}, "steps"),
+        ({"event": "tool_result", "op": "web_search", "ok": True, "text": "r"}, "steps"),
+        ({"event": "tool_failed", "op": "web_read", "error": "x"}, "steps"),
+        ({"event": "model_call", "seconds": 1}, "everything"),
+    ],
+)
+def test_each_event_shows_from_its_verbosity_level(entry: dict[str, object], level: str) -> None:
+    shown = describe(entry)
+
+    assert shown is not None
+    assert shown.level == level
+
+
+@pytest.mark.parametrize(
+    ("entry", "label"),
+    [
+        ({"event": "tool_call", "op": "web_search"}, "Searching the web"),
+        ({"event": "tool_call", "op": "spotify_play"}, "Talking to Spotify"),
+        ({"event": "tool_call", "op": "brand_new_op"}, "Running Brand new op"),
+        ({"event": "model_call"}, "Thinking"),
+        ({"event": "request", "text": "hi"}, None),
+    ],
+)
+def test_the_working_line_follows_what_jarvis_does(
+    entry: dict[str, object], label: str | None
+) -> None:
+    assert working_label(entry) == label
 
 
 def test_the_time_is_shown_in_local_time() -> None:

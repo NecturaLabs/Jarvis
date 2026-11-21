@@ -78,6 +78,12 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
 | `resume` | `true` | `true`, `false` | Open the chat on the conversation it had last time, kept 0600 in `~/.local/state/jarvis/chat-conversation.json`. `false` starts each session fresh and deletes the file. |
+| `verbosity` | `replies` | `replies`, `steps`, `everything` | How much of Jarvis's work the chat shows: requests and replies only, plus each step and its result, or plus every model call and detail. Ctrl+O and `/verbosity` change it and save it here. |
+| `toolbar` | `true` | `true`, `false` | The line under the input with the PC's CPU, GPU, VRAM and RAM use, temperatures, and how full the model's context is. |
+| `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
+
+`/config` in the chat changes `verbosity`, `toolbar`, `resume`, `reply_tokens` and `max_steps` and writes
+them here; the last three apply the next time the chat opens.
 
 The chat remembers replies that drew on outside text, as data. While one is remembered, an action with a side
 effect that the model chooses needs your yes; a plain command (`pause`, `volume 40`) does not, since the

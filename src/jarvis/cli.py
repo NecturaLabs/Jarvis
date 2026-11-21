@@ -286,26 +286,60 @@ def _chat_status(cfg: config.Config) -> str:
     return f"voice {voice} · model {model or 'server not running'}"
 
 
+def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
+    """Return what /status adds to the services: versions, the model and where things live."""
+    from jarvis.app import chat_memory_file  # ruff: ignore[import-outside-top-level]
+
+    return [
+        ("jarvis", __version__),
+        ("model", f"{cfg.strata.model_id}, {cfg.strata.context:,} tokens of context"),
+        ("replies", f"up to {cfg.chat.reply_tokens:,} tokens, {cfg.chat.max_steps} model calls"),
+        ("config", str(paths.config_file())),
+        ("conversation", str(chat_memory_file())),
+        ("audit log", str(paths.audit_file())),
+    ]
+
+
+def _save_chat_settings(chat: config.ChatConfig) -> None:
+    """Write the chat's settings into the config file as it is now on disk."""
+    current = config.load()
+    config.save(current.model_copy(update={"chat": chat}))
+
+
 def cmd_chat(_args: argparse.Namespace) -> int:
     """Open the chat window: typed requests, and everything Jarvis does, live."""
+    import secrets  # ruff: ignore[import-outside-top-level]
+
     from jarvis.activity import AuditTail  # ruff: ignore[import-outside-top-level]
-    from jarvis.chat import Ask, ChatApp  # ruff: ignore[import-outside-top-level]
+    from jarvis.chat.app import ChatApp, Services  # ruff: ignore[import-outside-top-level]
+    from jarvis.chat.history import InputHistory  # ruff: ignore[import-outside-top-level]
+    from jarvis.sysinfo import Sampler  # ruff: ignore[import-outside-top-level]
 
     cfg = _load()
-    ask: Ask | None = None
+    session_id = secrets.token_hex(8)
+    agent = None
     unavailable = ""
     try:
-        agent = build(cfg, via="chat").agent
+        agent = build(cfg, via="chat", session=session_id).agent
     except SetupError as exc:
         unavailable = str(exc)
-    else:
-        ask = agent.handle
+    documents = Path.home() / "Documents"
+    services = Services(
+        status=lambda: _chat_status(cfg),
+        details=lambda: _chat_details(cfg),
+        stats=Sampler().sample,
+        save_settings=_save_chat_settings,
+        history=InputHistory(paths.state_dir() / "chat-history", cfg.chat.history_size),
+        export_dir=documents if documents.is_dir() else Path.home(),
+    )
     ChatApp(
         AuditTail(paths.audit_file()),
-        ask,
+        agent,
         unavailable=unavailable,
-        status=lambda: _chat_status(cfg),
         name=cfg.persona.name,
+        settings=cfg.chat,
+        services=services,
+        session_id=session_id,
     ).run()
     return 0
 

@@ -16,7 +16,7 @@ from jarvis import __version__, cli, config, models, paths
 from jarvis import audio as audio_module
 from jarvis import voice as voice_module
 from jarvis.agent import Hooks
-from jarvis.chat import ChatApp
+from jarvis.chat.app import ChatApp
 from jarvis.cli import main
 from jarvis.secretfile import write_private_json
 
@@ -417,7 +417,7 @@ def test_chat_opens_the_window_with_typing_off_until_setup_is_done(
     assert main(["chat"]) == 0
 
     (app,) = opened
-    assert app._ask is None  # pyright: ignore[reportPrivateUsage]
+    assert app._session is None  # pyright: ignore[reportPrivateUsage]
     assert "jarvis setup" in app._unavailable  # pyright: ignore[reportPrivateUsage]
 
 
@@ -425,10 +425,10 @@ def test_chat_sends_typed_requests_to_an_agent_that_marks_its_audit_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     opened = _opened_chat(monkeypatch)
-    vias: list[str | None] = []
+    built: list[tuple[str | None, str]] = []
 
-    def build(_config: object, *, via: str | None = None) -> object:
-        vias.append(via)
+    def build(_config: object, *, via: str | None = None, session: str = "") -> object:
+        built.append((via, session))
 
         def handle(text: str, _hooks: Hooks) -> str:
             return f"heard {text}"
@@ -440,9 +440,13 @@ def test_chat_sends_typed_requests_to_an_agent_that_marks_its_audit_events(
     assert main(["chat"]) == 0
 
     (app,) = opened
-    assert vias == ["chat"]
-    assert app._ask is not None  # pyright: ignore[reportPrivateUsage]
-    assert app._ask("pause", Hooks(confirm=lambda _q: False)) == "heard pause"  # pyright: ignore[reportPrivateUsage]
+    ((via, session),) = built
+    assert via == "chat"
+    assert session
+    assert app._session_id == session  # pyright: ignore[reportPrivateUsage]
+    agent = app._session  # pyright: ignore[reportPrivateUsage]
+    assert agent is not None
+    assert agent.handle("pause", Hooks(confirm=lambda _q: False)) == "heard pause"
 
 
 def _transcribed(monkeypatch: pytest.MonkeyPatch, text: str) -> list[tuple[str, Path | None]]:

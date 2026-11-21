@@ -19,6 +19,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   the context window.
 - The chat gets its own prompt: written replies in Markdown, sources as links. Speech keeps short spoken
   replies.
+- `jarvis chat` is rebuilt closer to Claude Code: replies are rendered as Markdown (tables, lists, code,
+  links) while they are written, and never cut; by default it shows only requests and replies, with a working
+  line that says what Jarvis is doing ("Searching the web… (8s · esc to interrupt)"); Ctrl+O or
+  `/verbosity` shows each step and its result, then every detail. New commands: `/clear` (a new
+  conversation), `/compact`, `/context`, `/verbosity`, `/config`, `/status`, `/copy` and `/export`; the menu
+  narrows as you type and offers a command's arguments. The input takes several lines (Shift+Enter), ↑ and ↓
+  bring back requests from earlier sessions, Ctrl+C clears the input and twice leaves, and a toolbar shows
+  the PC's CPU, GPU, VRAM, RAM and temperatures and how full the model's context is.
 
 - `jarvis chat` is redesigned after Claude Code's terminal interface: a welcome card, each request grouped
   with its steps (`●`) and their results (`⎿`), a working line with Esc to stop the request, a yes-or-no

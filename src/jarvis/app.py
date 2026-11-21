@@ -212,12 +212,13 @@ def chat_memory_file() -> Path:
     return paths.state_dir() / "chat-conversation.json"
 
 
-def build(config: Config, *, via: str | None = None) -> Jarvis:
+def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvis:
     """Assemble the agent from the config.
 
     `via` marks every audit event of this agent with where its requests come from ("chat",
     "ask"); the voice service leaves it out. The chat gets the chat's limits and written replies,
-    and keeps its conversation across sessions when `chat.resume` is on.
+    and keeps its conversation across sessions when `chat.resume` is on. `session` marks the
+    agent's audit events too, so a window can tell its own from others'.
 
     Raises:
         SetupError: the Spotify client ID or the Strata API key is missing.
@@ -234,7 +235,10 @@ def build(config: Config, *, via: str | None = None) -> Jarvis:
     ops = SpotifyOps(
         SpotifyApi(tokens, library_ttl_s=config.spotify.library_refresh_s), config.spotify
     )
-    audit = AuditLog(audit_file(), tags={"via": via} if via else None)
+    tags = {"via": via} if via else {}
+    if session:
+        tags["session"] = session
+    audit = AuditLog(audit_file(), tags=tags or None)
     channel: Channel = "chat" if via == "chat" else "voice"
     limits = channel_limits(config, channel)
     registry = channel_registry(config, ops.operations(), limits, channel)
