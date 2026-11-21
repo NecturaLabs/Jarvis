@@ -23,6 +23,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
@@ -353,8 +354,23 @@ class ChatApp(App[None]):
             line = self._status()
         except Exception as exc:  # ruff: ignore[blind-except] - a status that fails says so
             line = f"status unknown: {type(exc).__name__}"
+        self._from_worker(self._set_status, line)
+
+    def _set_status(self, line: str) -> None:
+        self.query_one("#status", Static).update(line)
+
+    def _from_worker(self, update: Callable[..., object], *args: object) -> None:
+        """Run `update` on the window's thread, from a worker; nothing once the window is gone.
+
+        A worker can finish while the window closes: its widgets may be gone by then.
+        """
+
+        def run() -> None:
+            with contextlib.suppress(NoMatches):
+                update(*args)
+
         with contextlib.suppress(RuntimeError):  # the window has closed
-            self.call_from_thread(self.query_one("#status", Static).update, line)
+            self.call_from_thread(run)
 
     def _tick(self) -> None:
         work = self._work
@@ -556,8 +572,7 @@ class ChatApp(App[None]):
                 self._from_thread("stopped", "result")
             with self._lock:
                 self._work = None
-            with contextlib.suppress(RuntimeError):
-                self.call_from_thread(self._idle)
+            self._from_worker(self._idle)
 
     def _idle(self) -> None:
         if self._ticker is not None:
@@ -570,8 +585,7 @@ class ChatApp(App[None]):
         work.label = label
 
     def _from_thread(self, text: str, kind: str = "note") -> None:
-        with contextlib.suppress(RuntimeError):  # the window has closed
-            self.call_from_thread(self._note, text, kind)
+        self._from_worker(self._note, text, kind)
 
     # A question
 
@@ -582,11 +596,8 @@ class ChatApp(App[None]):
             if self._closing:
                 return False
             self._question = question
-        try:
-            self.call_from_thread(self._open_question, question)
-        except RuntimeError:  # the window has closed
-            return False
-        question.answered.wait()
+        self._from_worker(self._open_question, question)
+        question.answered.wait()  # answered no when the window closes
         return question.answer
 
     def _open_question(self, question: _Question) -> None:
