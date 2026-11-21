@@ -24,5 +24,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   `pc-audio` and `spotify-login`, and a versioned TOML configuration.
 - Community files: contributing guide, code of conduct, support, governance, accessibility, security policy
   and roadmap.
+- `tools/check.sh`, one command for everything CI runs, and checks of the dependency licences and lock
+  sources (`tools/check_licences.py`), the docs (`tools/check_docs.py`) and the workflow files.
+- Tests that cannot reach the network, audio, the real programs Jarvis drives or your home folder
+  (`tests/conftest.py`), and the product rules checked in code (`tests/test_product_rules.py`, Ruff's
+  banned imports).
+- Opt-in git hooks (`tools/install-hooks.sh`) and a read-only idle check (`tools/idle_check.py`).
+- A docs map, an architecture overview, a statement of what Jarvis keeps and sends (`docs/privacy.md`), and
+  recipes and agents for coding agents (`.claude/`, `.codex/`, `.agents/`).
 
 [Unreleased]: https://github.com/NecturaLabs/Jarvis/commits/dev

@@ -35,7 +35,8 @@ What Spotify does with that is set by Spotify's own privacy policy.
 
 ## Removing it
 
-- Delete `~/.local/state/jarvis/` to remove the audit log, the tokens and the key, and clear the journal with
-  `journalctl --user --vacuum-time=1s` if you want the service log gone too (that clears every user unit's log).
+- Delete `~/.local/state/jarvis/` to remove the audit log, the Strata log, the tokens and the key.
+- The service log is in the systemd journal, which keeps and drops it by its own limits (`journald.conf`, see
+  `man journald.conf`). There is no way to remove only Jarvis's lines from it.
 - Remove Jarvis's access to your Spotify account on Spotify's account page, under apps.
 - `jarvis stop` stops both services; the units are in `~/.config/systemd/user/`.
