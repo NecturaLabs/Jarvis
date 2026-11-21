@@ -2,7 +2,8 @@
 
 A local, always-on voice agent for this Omarchy PC: a "Hey Jarvis" wake word, Omarchy's local dictation
 (Voxtype) for speech-to-text, a local model served by Strata for reasoning, typed tools within user-set
-boundaries, and Piper for speech. Python 3.14 (system interpreter, managed by uv), packaged as `jarvis`.
+boundaries, and Kokoro for speech (Piper is the alternative voice). Python 3.14 (system interpreter, managed by
+uv), packaged as `jarvis`.
 The build plan and its decisions are in `docs/plan.md`; read it before changing architecture.
 
 ## Commands
@@ -27,11 +28,13 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
   stop a recording Jarvis did not start.
 - Strata serves only Jarvis. Its model lives at `/data/gaming/ai/strata`, outside the repository. Health
   checks never generate tokens, so the model stays unloaded until a real request.
+- Jarvis runs locally and is free to use and maintain: no hosted model backend, no paid API. Voice activation
+  and speech-to-text stay local too.
 - Jarvis replies by voice only; no desktop notifications.
 
 ## Working on this PC
 
-- Everything an agent runs is silent: start Jarvis, Piper or any audio test with
+- Everything an agent runs is silent: start Jarvis, a voice or any audio test with
   `PIPEWIRE_REMOTE=/nonexistent PULSE_SERVER=unix:/nonexistent` (or the process's own mute). Tests that
   need the real mic or speakers are `local` and are run with the owner.
 - Open nothing on the owner's screen: run windows and terminals hidden; only if that is impossible, on
