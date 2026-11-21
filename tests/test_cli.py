@@ -1,11 +1,12 @@
 """The `jarvis` command, run against a throw-away home: never the owner's config or services."""
 
+import hashlib
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
-from jarvis import __version__, cli, config
+from jarvis import __version__, cli, config, models
 from jarvis.cli import main
 
 if TYPE_CHECKING:
@@ -133,3 +134,124 @@ def test_the_model_client_follows_the_strata_port(monkeypatch: pytest.MonkeyPatc
 
     assert main(["status"]) == 0
     assert seen == ["http://127.0.0.1:9100/v1"]
+
+
+def _known(role: str, content: bytes) -> models.KnownModel:
+    return models.KnownModel(
+        role=role,
+        project=f"Example {role}",
+        version="9.9",
+        sha256=hashlib.sha256(content).hexdigest(),
+        licence="MIT",
+    )
+
+
+def _doctor_config(data: Path) -> None:
+    config.save(config.Config(data_dir=data))
+
+
+def _doctor_lines(capsys: pytest.CaptureFixture[str]) -> list[str]:
+    return capsys.readouterr().out.splitlines()
+
+
+def test_doctor_names_the_release_of_a_model_file_it_recognises(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = home / "models"
+    (data / "wake").mkdir(parents=True)
+    (data / "wake" / "hey_jarvis.onnx").write_bytes(b"wake bytes")
+    _doctor_config(data)
+    monkeypatch.setattr(models, "KNOWN_MODELS", (_known("wake", b"wake bytes"),))
+
+    cli.main(["doctor"])
+
+    out = _doctor_lines(capsys)
+    assert any(
+        line.startswith("ok ") and "Example wake 9.9" in line and "MIT" in line for line in out
+    )
+    assert not any("not a known release" in line for line in out)
+
+
+def test_doctor_notes_an_unknown_digest_without_failing_the_file(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = home / "models"
+    (data / "vad").mkdir(parents=True)
+    (data / "vad" / "silero_vad.onnx").write_bytes(b"other build")
+    _doctor_config(data)
+    monkeypatch.setattr(models, "KNOWN_MODELS", (_known("vad", b"the release"),))
+    digest = hashlib.sha256(b"other build").hexdigest()
+
+    cli.main(["doctor"])
+
+    out = _doctor_lines(capsys)
+    assert any(f"not a known release (sha256 {digest})" in line for line in out)
+    assert not any("FAIL" in line and "silero_vad.onnx" in line for line in out)
+    assert any(line.startswith("ok ") and "silero_vad.onnx" in line for line in out)
+
+
+def test_doctor_still_fails_a_missing_file_and_points_at_the_models_doc(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _doctor_config(home / "models")
+
+    assert cli.main(["doctor"]) == 1
+
+    out = _doctor_lines(capsys)
+    assert any(
+        line.startswith("FAIL") and "hey_jarvis.onnx" in line and "see docs/models.md" in line
+        for line in out
+    )
+    assert not any("docs/playbook" in line for line in out)
+    assert not any("not a known release" in line for line in out)
+
+
+def test_doctor_checks_the_kokoro_files_only_for_a_kokoro_voice(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = home / "models"
+    kokoro = data / "voices" / "kokoro"
+    kokoro.mkdir(parents=True)
+    (kokoro / "kokoro-v1.0.onnx").write_bytes(b"model")
+    (kokoro / "voices-v1.0.bin").write_bytes(b"voices")
+    config.save(config.Config(data_dir=data))
+    monkeypatch.setattr(
+        models,
+        "KNOWN_MODELS",
+        (_known("kokoro-model", b"model"), _known("kokoro-voices", b"voices")),
+    )
+
+    cli.main(["doctor"])
+
+    out = _doctor_lines(capsys)
+    assert any("Example kokoro-model 9.9" in line for line in out)
+    assert any("Example kokoro-voices 9.9" in line for line in out)
+
+    piper = data / "voices"
+    (piper / "en_GB-alan-medium.onnx").write_bytes(b"piper")
+    (piper / "en_GB-alan-medium.onnx.json").write_bytes(b"{}")
+    config.save(config.Config(data_dir=data, audio=config.AudioConfig(voice="en_GB-alan-medium")))
+
+    cli.main(["doctor"])
+
+    out = _doctor_lines(capsys)
+    assert not any("Example kokoro" in line or "kokoro-v1.0" in line for line in out)
+    assert not any("not a known release" in line and "alan" in line for line in out)
+
+
+def test_doctor_fails_a_model_file_it_cannot_read(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = home / "models"
+    (data / "wake").mkdir(parents=True)
+    wake = data / "wake" / "hey_jarvis.onnx"
+    wake.write_bytes(b"wake")
+    wake.chmod(0)
+    _doctor_config(data)
+
+    assert cli.main(["doctor"]) == 1
+
+    assert any(
+        line.startswith("FAIL read ") and "hey_jarvis.onnx" in line
+        for line in _doctor_lines(capsys)
+    )
