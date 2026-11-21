@@ -4,7 +4,11 @@ No test reaches the network: connections go to an in-memory backend behind the r
 the service clients talk to `httpx.MockTransport` with answers shaped like recorded ones.
 """
 
+import gzip
 import socket
+import threading
+import time
+import tracemalloc
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, override
 
@@ -12,6 +16,7 @@ import httpcore
 import httpx
 import pytest
 
+from jarvis.web import guard
 from jarvis.web.arctic import API, ArcticShift, RedditUnavailableError
 from jarvis.web.guard import (
     BlockedDestinationError,
@@ -19,9 +24,10 @@ from jarvis.web.guard import (
     is_public,
     public_addresses,
     public_client,
+    read_capped,
 )
 from jarvis.web.openmeteo import FORECAST, GEOCODE, OpenMeteo, WeatherUnavailableError
-from jarvis.web.page import PageError, PageReader, check_url
+from jarvis.web.page import READ_LIMIT_S, PageError, PageReader, check_url
 from jarvis.web.searxng import SearchUnavailableError, Searxng
 
 if TYPE_CHECKING:
@@ -77,7 +83,9 @@ def _guarded(*answers: bytes) -> tuple[httpx.Client, Wire]:
 # --- the guard ------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("address", ["93.184.215.14", "2606:4700::6810:84e5", "1.1.1.1"])
+@pytest.mark.parametrize(
+    "address", ["93.184.215.14", "2606:4700::6810:84e5", "1.1.1.1", "64:ff9b::5db8:d70e"]
+)
 def test_public_addresses_are_public(address: str) -> None:
     assert is_public(address)
 
@@ -98,6 +106,10 @@ def test_public_addresses_are_public(address: str) -> None:
         "fd00::1",
         "::ffff:127.0.0.1",  # loopback written as IPv6
         "::ffff:10.0.0.1",
+        "::127.0.0.1",  # the deprecated IPv4-compatible form
+        "::5db8:d70e",
+        "64:ff9b::a00:1",  # NAT64 for 10.0.0.1
+        "64:ff9b::7f00:1",  # NAT64 for 127.0.0.1
         "not an address",
     ],
 )
@@ -150,6 +162,26 @@ def test_the_client_does_not_follow_redirects_itself() -> None:
 def test_a_unix_socket_is_refused() -> None:
     with pytest.raises(BlockedDestinationError):
         PublicOnlyBackend(Wire([]), resolve).connect_unix_socket("/run/docker.sock")
+
+
+def test_a_name_that_never_resolves_gives_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    release = threading.Event()
+
+    def stuck(host: str, port: int, **options: object) -> list[tuple[Any, ...]]:
+        release.wait(5)
+        return resolve(host, port, **options)
+
+    monkeypatch.setattr(guard, "DNS_TIMEOUT_S", 0.05)
+    started = time.monotonic()
+    with pytest.raises(BlockedDestinationError, match="too long"):
+        public_addresses("public.example", 443, stuck)
+    release.set()
+    assert time.monotonic() - started < 1
+
+
+def test_a_lookup_error_on_the_helper_thread_reaches_the_caller() -> None:
+    with pytest.raises(BlockedDestinationError, match="does not resolve"):
+        public_addresses("unknown.example", 443, resolve)
 
 
 def test_the_real_resolver_is_looked_up_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -254,6 +286,65 @@ def test_reading_stops_at_the_cap_instead_of_downloading_everything() -> None:
     reader.read("http://public.example/endless")
 
     assert len(pulled) <= 6
+
+
+def test_a_page_that_trickles_in_is_stopped() -> None:
+    now = [0.0]
+
+    def chunks() -> Iterator[bytes]:
+        for _ in range(1000):
+            now[0] += 1.0  # a second per byte
+            yield b"x"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/plain"}, content=chunks())
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(PageError, match="too long"):
+        PageReader(client, clock=lambda: now[0]).read("http://public.example/slow")
+    assert now[0] <= READ_LIMIT_S + 2
+
+
+def test_a_redirect_loop_counts_against_the_same_deadline() -> None:
+    now = [0.0]
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        now[0] += 6.0
+        return httpx.Response(302, headers={"location": "/again"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(PageError, match="too long"):
+        PageReader(client, clock=lambda: now[0]).read("http://public.example/")
+
+
+def test_a_compressed_bomb_inflates_only_to_the_cap() -> None:
+    bomb = gzip.compress(b"a" * 20_000_000)
+    client, _ = _guarded(_http("200 OK", bomb, Content_Type="text/plain", Content_Encoding="gzip"))
+
+    tracemalloc.start()
+    try:
+        page = PageReader(client, max_bytes=10_000).read("http://public.example/bomb")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert 0 < len(page.text) <= 10_000
+    assert peak < 5_000_000  # inflated in full, the body alone would be 20 MB
+
+
+def test_a_gzipped_page_is_read() -> None:
+    client, _ = _guarded(
+        _http("200 OK", gzip.compress(ARTICLE), Content_Type="text/html", Content_Encoding="gzip")
+    )
+
+    assert "white vinegar" in PageReader(client).read("http://public.example/kettle").text
+
+
+def test_an_unknown_compression_is_refused() -> None:
+    client, _ = _guarded(_http("200 OK", b"??", Content_Type="text/html", Content_Encoding="br"))
+
+    with pytest.raises(PageError, match="compression"):
+        PageReader(client).read("http://public.example/")
 
 
 def test_a_file_that_is_not_a_page_is_refused() -> None:
@@ -439,6 +530,22 @@ def test_the_forecast_is_parsed_with_the_units_asked_for() -> None:
     assert forecast.days[2].rain_chance == 0
     assert seen[0].url.params["temperature_unit"] == "fahrenheit"
     assert str(seen[0].url.copy_with(query=None)) == FORECAST
+
+
+def test_an_impossible_date_is_skipped() -> None:
+    daily = {**FORECAST_ANSWER["daily"], "time": ["2026-13-45", "2026-11-22", "2026-11-23"]}
+    meteo, _ = _meteo(forecast={**FORECAST_ANSWER, "daily": daily})
+
+    forecast = meteo.forecast(0, 0, temperature_unit="celsius", wind_unit="kmh")
+
+    assert [d.date for d in forecast.days] == ["2026-11-22", "2026-11-23"]
+
+
+def test_an_answer_over_the_cap_is_refused() -> None:
+    response = httpx.Response(200, content=b"x" * 2000)
+    assert read_capped(response, 2000) == b"x" * 2000
+    with pytest.raises(ValueError, match="too large"):
+        read_capped(httpx.Response(200, content=b"x" * 2001), 2000)
 
 
 def test_a_forecast_with_a_missing_number_fails() -> None:

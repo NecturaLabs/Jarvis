@@ -49,10 +49,18 @@ No request carries anything that names the owner, the PC or the project: the use
   no longer holds. Search results depend on outside engines that rate-limit or block (DuckDuckGo answers
   with a CAPTCHA at times). Arctic Shift is a third-party copy of Reddit and can lag behind it. SearXNG is
   one more container to run: idle, it measured 0.10 % CPU and 134 MiB (`docker stats`, 2026-11-21, on
-  the reference PC), so it is not quite zero CPU while Jarvis waits.
+  the reference PC). Jarvis's own rule is no CPU while idle, and this container breaks it slightly; the owner
+  has not yet accepted or rejected that.
 - Text from all of these is marked as web data: it never raises an operation's class, and while it is in
-  the conversation any action needs a spoken yes. Weather and time answers are built only from numbers,
-  codes and checked identifiers, so they do not count as outside text.
+  the conversation any action needs a spoken yes. Weather and time answers are built from numbers, codes,
+  checked identifiers and the place the model asked about, so they do not count as outside text.
+- Every one of these operations is a read (`side_effect=False`), so none asks for a yes, even after a page
+  is in the conversation. A page can open no address of its own choosing: only an address or thread a
+  search in the session returned can be read, and only on a public address. What remains open is
+  low-bandwidth: a page could steer the model into putting up to 200 characters of the conversation in
+  a search or a place name, which goes to the search engines or Open-Meteo, not to whoever wrote the page.
+  This is accepted for now so research does not ask for a yes at every step; the stricter choice, a yes
+  for any search or lookup while outside text is in the conversation, is open to the owner.
 
 ## Related
 

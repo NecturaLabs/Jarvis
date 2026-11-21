@@ -4,6 +4,7 @@ The archive is a third-party copy of public Reddit, free and without login (docs
 lag behind Reddit by a little. Every title, body and comment is someone else's text.
 """
 
+import json
 import re
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -12,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from jarvis.jsonutil import obj, objs
+from jarvis.web.guard import read_capped
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -73,15 +75,20 @@ class ArcticShift:
         if self._http is None:
             self._http = self._factory()
         try:
-            response = self._http.get(f"{API}{path}", params=params)
+            with self._http.stream("GET", f"{API}{path}", params=params) as response:
+                status = response.status_code
+                body = read_capped(response) if status == HTTPStatus.OK else b""
         except httpx.HTTPError as exc:
             msg = "the Reddit archive didn't answer"
             raise RedditUnavailableError(msg) from exc
-        if response.status_code != HTTPStatus.OK:
-            msg = f"the Reddit archive answered {response.status_code}"
+        except ValueError as exc:
+            msg = "the Reddit archive's answer was too large"
+            raise RedditUnavailableError(msg) from exc
+        if status != HTTPStatus.OK:
+            msg = f"the Reddit archive answered {status}"
             raise RedditUnavailableError(msg)
         try:
-            return objs(obj(response.json()).get("data"))
+            return objs(obj(json.loads(body)).get("data"))
         except ValueError as exc:
             msg = "the Reddit archive answered something that is not JSON"
             raise RedditUnavailableError(msg) from exc

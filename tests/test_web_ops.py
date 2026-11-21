@@ -133,7 +133,9 @@ class Net:
             return httpx.Response(200, json=TREE)
         if request.url.path.endswith("/posts/ids"):
             return httpx.Response(200, json=POSTS)
-        return httpx.Response(200, content=PAGE, headers={"content-type": "text/html"})
+        return httpx.Response(
+            200, stream=httpx.ByteStream(PAGE), headers={"content-type": "text/html"}
+        )
 
     def hosts(self) -> list[str]:
         return [r.url.host for r in self.seen]
@@ -226,7 +228,8 @@ def test_the_time_in_a_named_place_uses_its_zone() -> None:
 
     result = _run(_ops(net), "time_now", place="Tokyo")
 
-    assert result.spoken == "It's 23:05 in Tokyo (JP)."
+    assert result.spoken == "It's 23:05 in Tokyo."
+    assert "Time in Tokyo (JP): 23:05" in result.text
     assert result.origin is Origin.TOOL_STATUS
     assert net.hosts() == ["geocoding-api.open-meteo.com"]
 
@@ -234,7 +237,7 @@ def test_the_time_in_a_named_place_uses_its_zone() -> None:
 def test_an_unknown_place_is_said_so() -> None:
     net = Net()
     net.geo = {}
-    with pytest.raises(OperationError, match="No place called 'Atlantis'"):
+    with pytest.raises(OperationError, match="couldn't find a place called Atlantis"):
         _run(_ops(net), "time_now", place="Atlantis")
 
 
@@ -279,9 +282,11 @@ def test_today_tomorrow_and_the_week() -> None:
     ops = _ops(Net())
 
     assert _run(ops, "weather", when="today").spoken == (
-        "Today: light showers, 1 to 6 degrees, with a 53 percent chance of rain."
+        "Today looks like light showers, 1 to 6 degrees, with a 53 percent chance of rain."
     )
-    assert _run(ops, "weather", when="tomorrow").spoken.startswith("Tomorrow: light rain, 2 to 5")
+    assert _run(ops, "weather", when="tomorrow").spoken.startswith(
+        "Tomorrow looks like light rain, 2 to 5"
+    )
     week = _run(ops, "weather", when="week")
     assert "Saturday: light showers" in week.text
     assert "Monday: clear" in week.text

@@ -4,7 +4,9 @@ Redirects are followed here, one hop at a time, so each new address is checked b
 reached (the connection itself is checked again in `jarvis.web.guard`).
 """
 
+import time
 import warnings
+import zlib
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import TYPE_CHECKING
@@ -16,6 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 MAX_REDIRECTS = 5
+READ_LIMIT_S = 15.0  # a whole read, every redirect and chunk; one read may wait 10 s more
 MAX_BYTES = 2_000_000
 _TEXT_TYPES = frozenset({"text/html", "application/xhtml+xml", "text/plain"})
 _REDIRECTS = frozenset({301, 302, 303, 307, 308})
@@ -32,6 +35,25 @@ class Page:
     url: str
     title: str
     text: str
+
+
+def _inflater(encoding: str) -> Callable[[bytes, int], bytes] | None:
+    """Return the inflate step for a body's `Content-Encoding`, or None when it is not compressed.
+
+    The step takes compressed bytes and the most bytes it may return.
+
+    Raises:
+        PageError: a compression other than gzip or deflate.
+    """
+    name = encoding.strip().lower()
+    if name in {"", "identity"}:
+        return None
+    if name in {"gzip", "x-gzip"}:
+        return zlib.decompressobj(wbits=zlib.MAX_WBITS | 16).decompress
+    if name == "deflate":
+        return zlib.decompressobj().decompress
+    msg = "the page came in a compression Jarvis doesn't read"
+    raise PageError(msg)
 
 
 def check_url(url: str) -> str:
@@ -90,12 +112,15 @@ class PageReader:
         *,
         factory: Callable[[], httpx.Client] | None = None,
         max_bytes: int = MAX_BYTES,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """Use `http` (tests) or a client `factory` makes on first use (no socket while idle)."""
         super().__init__()
         self._http = http
         self._factory = factory
         self._max_bytes = max_bytes
+        self._clock = clock
+        self._deadline = 0.0
 
     def read(self, url: str) -> Page:
         """Return the page at `url`, following at most `MAX_REDIRECTS` redirects.
@@ -110,7 +135,9 @@ class PageReader:
                 raise PageError(msg)
             self._http = self._factory()
         current = check_url(url)
+        self._deadline = self._clock() + READ_LIMIT_S
         for _ in range(MAX_REDIRECTS + 1):
+            self._in_time()
             body, kind, location, status = self._fetch(self._http, current)
             if status in _REDIRECTS:
                 if not location:
@@ -138,7 +165,8 @@ class PageReader:
             PageError: the site is unreachable, too slow, not a page, or the read failed.
         """
         try:
-            with http.stream("GET", url, headers={"Accept": "text/html,text/plain"}) as resp:
+            headers = {"Accept": "text/html,text/plain", "Accept-Encoding": "gzip, deflate"}
+            with http.stream("GET", url, headers=headers) as resp:
                 return self._body(resp)
         except httpx.ConnectError as exc:
             msg = "that site can't be reached from here"
@@ -150,11 +178,21 @@ class PageReader:
             msg = "the page couldn't be read"
             raise PageError(msg) from exc
 
+    def _in_time(self) -> None:
+        """Stop a read that has taken longer than `READ_LIMIT_S` in all.
+
+        Raises:
+            PageError: the time is up.
+        """
+        if self._clock() > self._deadline:
+            msg = "the page took too long to answer"
+            raise PageError(msg)
+
     def _body(self, resp: httpx.Response) -> tuple[str, str, str, int]:
         """Read at most `max_bytes` of an answer that is a page, or note where it redirects.
 
         Raises:
-            PageError: the answer is not text.
+            PageError: the answer is not text, or arrives too slowly.
         """
         if resp.status_code in _REDIRECTS:
             return "", "", resp.headers.get("location", ""), resp.status_code
@@ -162,13 +200,18 @@ class PageReader:
         if resp.status_code == HTTPStatus.OK and kind not in _TEXT_TYPES:
             msg = "that address is not a web page"
             raise PageError(msg)
+        inflate = _inflater(resp.headers.get("content-encoding", ""))
         chunks: list[bytes] = []
         size = 0
-        for chunk in resp.iter_bytes():
+        for raw_chunk in resp.iter_raw():
+            # Inflated here, never more than the cap allows: a small compressed body can hold
+            # gigabytes of text.
+            chunk = inflate(raw_chunk, self._max_bytes - size + 1) if inflate else raw_chunk
             chunks.append(chunk)
             size += len(chunk)
             if size >= self._max_bytes:
                 break
+            self._in_time()
         raw = b"".join(chunks)[: self._max_bytes]
         text = raw.decode(resp.encoding or "utf-8", errors="replace")
         return text, kind, "", resp.status_code

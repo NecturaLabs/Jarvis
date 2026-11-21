@@ -3,8 +3,8 @@
 None of these changes anything, so none needs confirmation; every one sends only what it is asked
 about (a place, a search) to the service named in docs/adr/0007. Text written by someone else
 (search results, pages, Reddit) keeps the `web` origin, so it stays data and never raises a class.
-Weather and time answers carry none: they are built here from numbers, codes and checked
-identifiers only, so they do not make the next action of the request need a yes.
+Weather and time answers carry none: they are built here from numbers, codes, checked
+identifiers and the place the model asked about, so they do not make the next action need a yes.
 
 A page or a Reddit thread can be opened only when a search in this session returned it: the model
 cannot be talked into sending conversation text to an address a page made up.
@@ -39,7 +39,9 @@ MAX_QUERY = 200
 MAX_URL = 2000
 MAX_POST_BODY = 600
 MAX_COMMENT = 300
-NO_HOME = "No home location is set, so name a place. The owner can set weather.place in the config."
+NO_HOME = (
+    "I don't have a home set, so tell me a place. You can set one in the config under weather."
+)
 _REDDIT_POST = re.compile(r"^/r/(?P<sub>[A-Za-z0-9_]{2,21})/comments/(?P<id>[a-z0-9]{1,12})(?:/|$)")
 _UNIT_SIGNS = {"celsius": "°C", "fahrenheit": "°F"}
 _WIND_WORDS = {"kmh": "km/h", "mph": "mph", "ms": "m/s", "kn": "knots"}
@@ -142,7 +144,7 @@ def _weather_result(forecast: Forecast, when: str, where: str) -> Result:
         label = when.capitalize()
         text = f"Weather in {where}. " + _day_line(day, label, sign) + "."
         spoken = (
-            f"{label}: {day.condition}, {_round(day.low)} to {_round(day.high)} degrees, "
+            f"{label} looks like {day.condition}, {_round(day.low)} to {_round(day.high)} degrees, "
             f"with a {day.rain_chance} percent chance of rain."
         )
         return Result(text, spoken=spoken)
@@ -200,13 +202,14 @@ class WebOps:
             found = self._find(place)
             moment = now.astimezone(ZoneInfo(found.zone))
             where = f" in {_where(place, found.country)}"
+            said = f" in {place}"
         else:
             moment = now.astimezone(self._local_zone) if self._local_zone else now.astimezone()
-            where = ""
+            where = said = ""
         clock = spoken_time(moment, twelve_hour=self._clock_config.twelve_hour)
         day = spoken_date(moment.date())
         text = f"Time{where}: {clock}, {day} {moment.year} ({moment.tzname()})."
-        spoken = f"It's {day}{where}." if what == "date" else f"It's {clock}{where}."
+        spoken = f"It's {day}{said}." if what == "date" else f"It's {clock}{said}."
         return Result(text, spoken=spoken)
 
     # --- weather ----------------------------------------------------------------------------
@@ -217,7 +220,7 @@ class WebOps:
         except WeatherUnavailableError as exc:
             raise OperationError(str(exc)) from exc
         if found is None:
-            msg = f"No place called {place!r} was found."
+            msg = f"I couldn't find a place called {place}."
             raise OperationError(msg)
         return found
 

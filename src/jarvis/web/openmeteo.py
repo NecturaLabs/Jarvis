@@ -4,9 +4,11 @@ Only numbers, codes and checked identifiers are taken from the answers, never fr
 weather or time answer carries no outside words (see `jarvis.web.ops`).
 """
 
+import json
 import math
 import re
 from dataclasses import dataclass
+from datetime import date as calendar_date
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -14,6 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 
 from jarvis.jsonutil import obj, objs
+from jarvis.web.guard import read_capped
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -114,6 +117,16 @@ def _number(value: object) -> float:
     return float(value)
 
 
+def _is_date(text: str) -> bool:
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return False
+    try:
+        calendar_date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
 def _condition(code: object) -> str:
     return CONDITIONS.get(int(_number(code)), "unsettled")
 
@@ -146,15 +159,20 @@ class OpenMeteo:
         if self._http is None:
             self._http = self._factory()
         try:
-            response = self._http.get(url, params=params)
+            with self._http.stream("GET", url, params=params) as response:
+                status = response.status_code
+                body = read_capped(response) if status == HTTPStatus.OK else b""
         except httpx.HTTPError as exc:
             msg = "the weather service didn't answer"
             raise WeatherUnavailableError(msg) from exc
-        if response.status_code != HTTPStatus.OK:
-            msg = f"the weather service answered {response.status_code}"
+        except ValueError as exc:
+            msg = "the weather service's answer was too large"
+            raise WeatherUnavailableError(msg) from exc
+        if status != HTTPStatus.OK:
+            msg = f"the weather service answered {status}"
             raise WeatherUnavailableError(msg)
         try:
-            return obj(response.json())
+            return obj(json.loads(body))
         except ValueError as exc:
             msg = "the weather service answered something that is not JSON"
             raise WeatherUnavailableError(msg) from exc
@@ -236,7 +254,7 @@ class OpenMeteo:
             rows.append(cast("list[object]", column))
         days: list[Day] = []
         for date, code, high, low, chance in zip(*rows, strict=False):
-            if not isinstance(date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            if not isinstance(date, str) or not _is_date(date):
                 continue
             days.append(
                 Day(

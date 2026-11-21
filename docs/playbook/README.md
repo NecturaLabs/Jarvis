@@ -44,3 +44,14 @@ traps found along the way. Add a trap the moment it costs time.
   shell and leaves the child running; one such child spun a CPU core and slowed the whole suite about 8 times
   (commit `fb40b3d`).
 - pyright needs `venvPath`/`venv` in `pyrightconfig.json` to see the uv environment.
+- SearXNG (`deploy/searxng/`): `engines: remove: [brave]` under `use_default_settings` crashes it with
+  `KeyError: 'brave'` (other engines refer to it); disable it in the `engines:` list instead. Brave's results come
+  back as `http:///go/v1/…` links that cannot be opened. `cap_drop: ALL` needs `CHOWN`, `SETGID` and `SETUID`
+  added back, and a read-only root breaks the image's certificate update at start. Without `default_lang: en`
+  the engines answer in the public IP's language.
+- Reddit serves no page to Jarvis, so a Reddit link from a web search is read from the Arctic Shift archive
+  (`web/ops.py`); the archive's `/api/posts/search` takes one title word, so Reddit search goes through
+  SearXNG.
+- Trafilatura takes a page's `<h1>` as its title, not `<title>`.
+- Agents never run `jarvis ask` or `run` against the owner's live setup (`run-silent`), so the model's choice
+  of the new tools is checked by the owner by voice, not by an agent.
