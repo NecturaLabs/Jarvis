@@ -5,7 +5,36 @@ Codex (gpt-6.1-sol) as co-author; decisions with lasting consequences are also r
 
 An always-running, voice-activated local agent for this Omarchy PC. You say "Hey Jarvis"; Omarchy's local
 dictation (Voxtype) transcribes; a local model on Strata reasons; typed tools act within boundaries you set;
-Piper answers by voice. First core feature: Spotify.
+Piper answers by voice (Kokoro is the default voice now). First core feature: Spotify.
+
+## Build status
+
+Checked against the code on `feature/spotify-voice-control`. The decisions below stand; this section says
+which parts exist. Details of what is built are in [configuration.md](configuration.md) and
+[models.md](models.md).
+
+| Phase | Status | Built, and where it differs from the text below |
+|---|---|---|
+| 0. Project setup | Built | Git, `AGENTS.md`, docs, uv project, CI. |
+| 1. Strata | Mostly built | `jarvis setup` writes the Strata profile and `jarvis-strata.service` (lazy load, idle unload, `MemoryMax`, 127.0.0.1, API key). Defaults differ from the sketch: `expert_vram_gib` 1.0, no `--mmap-experts` flag, `idle_unload_s` 300, `memory_max` 40G, context 8192. Not recorded in the repository: the 200-request model eval and its gate. Load-refusal below a memory reserve is not built. |
+| 2. Ears | Mostly built | `pw-record` capture, the LiveKit wake word, Silero VAD and the state machine (IDLE, CAPTURE, TRANSCRIBE, THINK, CONFIRM, SPEAK). Transcription is **path B** (`voxtype transcribe`, with Jarvis's own `-c` settings); path A (the daemon contract) is not built, and neither is volume lowering over MPRIS. The wake test runs (8 h, 100 wakes) are not recorded. |
+| 3. Boundaries, setup and voice | Partly built | Built: config (one schema version, no migrations), the policy engine and its decision table, provenance, spoken confirmation bound to one action, the audit log, the agent loop, Kokoro and Piper voices. Not built: the Textual wizard (`jarvis setup` takes flags instead), the `strong` class's keybinding confirmation (such calls are refused), quiet hours, `jarvis pause` and `jarvis confirm`. |
+| 4. Spotify | Built | PKCE login, Web API client, and the operations play (track, album, artist, playlist, liked songs), pause, resume, next, previous, set and change volume, shuffle, repeat, queue, like, now playing. Players are found and Spotify is launched through the Web API; MPRIS is not used. No seek, no separate transfer-to-device or my-playlists operation (playing "my playlist" is `play` with `mine`). |
+| 5. PC operations | Planned | |
+| 6. Research | Planned | No web tools and no SearXNG yet. |
+| 7. Polish | Planned | No follow-up listening, sentence streaming, barge-in or bar indicator. |
+| 8. Hardening | Planned | No `install.sh`, `jarvis update`, rollback or uninstall. `jarvis doctor`, `status`, `logs`, `unload`, `start`, `stop` and `restart` exist. |
+
+Built beyond the plan, each with an ADR: speech heard in PC audio is treated as someone else's
+([0003](adr/0003-pc-audio-is-not-the-owner.md)); plain commands skip the model
+([0004](adr/0004-model-free-path-for-plain-commands.md)); no hosted backend
+([0005](adr/0005-local-only.md)). Also built: a vocabulary hint for speech-to-text, a check that a spoken
+reply does not claim an action no tool did, and `jarvis doctor` hashing model files against pinned releases.
+
+Where the code settled a number the plan left open: a request stops after 90 s (plan: 60 s), the conversation
+keeps the last 4 turns for 5 minutes (plan: about 10), at most 8 tool calls per request, and 0.7 s of
+trailing silence ends an utterance (plan: 1.0 s). Kokoro is the default voice; Piper is still supported
+behind the same speech setting, as the Piper-licence risk below asked.
 
 ## Owner requirements (fixed)
 
@@ -45,7 +74,7 @@ Piper answers by voice. First core feature: Spotify.
   `reasoning_budget_tokens` (0 = unlimited, so set a positive cap); foreground `strata serve --profile … --ready-file`
   for supervisors; mapped low-RAM mode (`--mmap-experts`, or `--resident-budget-gib N`) serves experts through the
   OS file cache, which the kernel can reclaim. `models import --plan` previews only. CLI reinstalled since;
-  model data kept.
+  model data kept. (Since reinstalled: `strata --version` reports 0.2.16, engine build 0.1.62.)
 - Strata's engine runs two model families only (`qwen4exp`: Qwen3.8-Flash-Next; `qwen35moe`: Qwen3.6-35B-A3B);
   no small dense model. Qwen3.6-35B-A3B (Apache-2.0, 35B total / 3B active, 256 experts, top-8) comes as Unsloth
   UD-Q4_K_XL 22.9 GB, UD-Q6_K_XL 32.6 GB, Q8_0 37.8 GB. Its hybrid mode keeps some experts in VRAM and the rest in
@@ -202,9 +231,9 @@ enforced in code before any tool runs.
 
 ## Phases (each ends with measured evidence)
 
-0. **Project setup** — git, AGENTS.md, docs (architecture, playbook, decisions), uv project, CI, private repo,
+0. **Project setup** (built) — git, AGENTS.md, docs (architecture, playbook, decisions), uv project, CI, private repo,
    issue backlog.
-1. **Strata** — install the pinned CLI and engine, download Qwen3.6-35B-A3B UD-Q4_K_XL, `jarvis` profile, user
+1. **Strata** (mostly built) — install the pinned CLI and engine, download Qwen3.6-35B-A3B UD-Q4_K_XL, `jarvis` profile, user
    unit. Size the expert cache to the ~8 GB VRAM limit. Measure on this PC under normal desktop load: cold and warm
    load time, TTFT, decode tok/s, peak RAM/VRAM, CPU use during a reply, release after unload, and a game running
    beside a loaded model.
@@ -212,18 +241,18 @@ enforced in code before any tool runs.
    operation, arguments, abstention and finished task. Gate: >= 95% correct first operation, >= 90% finished
    multi-step tasks, 0 policy-violating calls reaching execution. Fallback: UD-Q6_K_XL under the same VRAM limit
    (more RAM, same VRAM). v1 ends at phase 4 (Spotify by voice); phases 5 and 6 start after the owner confirms it.
-2. **Ears** — capture, wake word, VAD, state machine, both transcription paths measured; pick one. Wake test:
+2. **Ears** (mostly built) — capture, wake word, VAD, state machine, both transcription paths measured; pick one. Wake test:
    8 h of desk audio with music and calls for false wakes, 100 spoken wakes for misses.
-3. **Boundaries, setup and voice** — config + migrations, policy engine with a full decision table, provenance,
+3. **Boundaries, setup and voice** (partly built) — config + migrations, policy engine with a full decision table, provenance,
    confirmation, audit log, the wizard, Piper output, the agent loop with fake-model tests. MVP: "Hey Jarvis, what
    time is it?" spoken back, and a denied action refused correctly.
-4. **Spotify** — client, PKCE login in the wizard, MPRIS transport, device handling. Milestone: play artist / song
+4. **Spotify** (built) — client, PKCE login in the wizard, MPRIS transport, device handling. Milestone: play artist / song
    / playlist, skip, volume, now playing, queue, like, all by voice, with recorded-fixture tests.
-5. **PC operations** — typed operation set, os_skill, optional strong-class shell.
-6. **Research** — SearXNG, search/fetch, URL policy, sourced answers.
-7. **Polish** — follow-up listening, sentence streaming, voice barge-in with echo cancellation, bar indicator,
+5. **PC operations** (planned) — typed operation set, os_skill, optional strong-class shell.
+6. **Research** (planned) — SearXNG, search/fetch, URL policy, sourced answers.
+7. **Polish** (planned) — follow-up listening, sentence streaming, voice barge-in with echo cancellation, bar indicator,
    optional bare-"Jarvis" wake word.
-8. **Hardening** — install/update/rollback/uninstall tested on a clean user, lifecycle cases, docs and playbook.
+8. **Hardening** (planned) — install/update/rollback/uninstall tested on a clean user, lifecycle cases, docs and playbook.
 
 ## Testing
 
