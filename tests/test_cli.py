@@ -622,3 +622,57 @@ def test_pc_audio_is_not_followed_unless_it_is_switched_on(
     run, _ = _cmd_run(monkeypatch, lambda _run, _should_stop: None)
 
     assert run.loops[0]["pc"] is None
+
+
+def _restart_calls(
+    monkeypatch: pytest.MonkeyPatch, started_at: float | None
+) -> list[tuple[str, ...]]:
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(*args: str) -> int:
+        calls.append(args)
+        return 0
+
+    def started(_unit: str) -> float | None:
+        return started_at
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+    monkeypatch.setattr(cli, "_started_at", started)
+    assert cli.main(["restart"]) == 0
+    return calls
+
+
+def test_restart_restarts_strata_when_its_settings_changed_after_it_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jarvis.services import strata_profile_file  # ruff: ignore[import-outside-top-level]
+
+    profile = strata_profile_file()
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text("{}")
+
+    calls = _restart_calls(monkeypatch, profile.stat().st_mtime - 60)
+
+    assert ("restart", "jarvis-strata.service") in calls
+    assert ("restart", "jarvis.service") in calls
+
+
+def test_restart_leaves_a_running_strata_alone_when_nothing_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jarvis.services import strata_profile_file  # ruff: ignore[import-outside-top-level]
+
+    profile = strata_profile_file()
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text("{}")
+
+    calls = _restart_calls(monkeypatch, profile.stat().st_mtime + 60)
+
+    assert ("start", "jarvis-strata.service") in calls
+    assert ("restart", "jarvis-strata.service") not in calls
+
+
+def test_restart_starts_a_stopped_strata(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _restart_calls(monkeypatch, None)
+
+    assert ("start", "jarvis-strata.service") in calls
