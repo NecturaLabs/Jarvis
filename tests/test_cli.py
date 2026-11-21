@@ -19,8 +19,15 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    monkeypatch.setattr(cli, "_unit_state", lambda _unit: "inactive")
-    monkeypatch.setattr(cli, "_systemctl", lambda *_args: 0)
+
+    def inactive(_unit: str) -> str:
+        return "inactive"
+
+    def systemctl(*_args: str) -> int:
+        return 0
+
+    monkeypatch.setattr(cli, "_unit_state", inactive)
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
     return tmp_path
 
 
