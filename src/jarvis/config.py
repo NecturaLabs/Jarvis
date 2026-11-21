@@ -154,7 +154,7 @@ class PersonaConfig(_Section):
 class ClockConfig(_Section):
     """How Jarvis says the time."""
 
-    twelve_hour: bool = False
+    twelve_hour: bool = True
 
 
 POINT = 2  # a latitude and a longitude

@@ -74,9 +74,9 @@ name = "Jarvis"
 tone = "Calm, warm and to the point, like a capable butler with a light touch of dry wit."
 addendum = ""
 
-# twelve_hour = true says "3:42 PM" instead of "15:42".
+# twelve_hour = false says "15:42" instead of "3:42 PM".
 [clock]
-twelve_hour = false
+twelve_hour = true
 
 # Your home, for weather that names no place: a place name such as "Lisbon", or
 # coordinates = [38.72, -9.14] for an exact point (then no lookup is sent).
