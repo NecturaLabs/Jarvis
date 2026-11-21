@@ -168,6 +168,20 @@ def test_resolving_a_name_beyond_loopback_is_refused(hermetic: list[str], host: 
     hermetic.clear()
 
 
+@pytest.mark.parametrize("lookup", ["gethostbyname", "gethostbyname_ex", "gethostbyaddr"])
+def test_the_older_lookups_are_refused_beyond_loopback(hermetic: list[str], lookup: str) -> None:
+    with pytest.raises(Exception, match="resolve") as caught:
+        getattr(socket, lookup)("leak-check.invalid")
+    assert type(caught.value).__name__ == "HermeticError"
+    assert len(hermetic) == 1
+    hermetic.clear()
+
+
+@pytest.mark.parametrize("lookup", ["gethostbyname", "gethostbyname_ex"])
+def test_the_older_lookups_still_resolve_loopback(lookup: str) -> None:
+    assert getattr(socket, lookup)("localhost")
+
+
 @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "::1", None])
 def test_resolving_loopback_still_works(host: str | None) -> None:
     assert socket.getaddrinfo(host, 80)
