@@ -6,6 +6,7 @@ The espeak-ng library and data come from the `piper-tts` wheel already installed
 """
 
 import json
+import os
 import re
 import threading
 import unicodedata
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 
 SAMPLE_RATE = 24000
 MAX_PHONEMES = 510
+MAX_THREADS = 8
 _LANG_SWITCH = re.compile(r"\([^)]+\)")
 _espeak_lock = threading.Lock()
 
@@ -47,6 +49,20 @@ def _espeak_phonemes(text: str, voice: str) -> list[str]:
     return [unicodedata.normalize("NFC", s) for s in sentences if s]
 
 
+def session_options() -> ort.SessionOptions:
+    """Return ONNX Runtime options for the voice model: bounded threads that never spin-wait.
+
+    Measured on a 16-thread CPU: a short reply takes 0.1 s and a long one 0.5 s with 8 threads,
+    the same as with one thread per core, so more threads only take cores from the language model.
+    """
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = min(MAX_THREADS, os.cpu_count() or 1)
+    options.inter_op_num_threads = 1
+    options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    options.add_session_config_entry("session.inter_op.allow_spinning", "0")
+    return options
+
+
 class Kokoro:
     """One Kokoro model and voice pack; `synthesize` returns int16 PCM at 24 kHz."""
 
@@ -59,11 +75,8 @@ class Kokoro:
             ValueError: the voice pack has no voice of that name.
         """
         super().__init__()
-        options = ort.SessionOptions()
-        options.add_session_config_entry("session.intra_op.allow_spinning", "0")
-        options.add_session_config_entry("session.inter_op.allow_spinning", "0")
         self._session = ort.InferenceSession(
-            str(model_path), sess_options=options, providers=["CPUExecutionProvider"]
+            str(model_path), sess_options=session_options(), providers=["CPUExecutionProvider"]
         )
         meta = self._session.get_modelmeta().custom_metadata_map
         self._vocab = cast("dict[str, int]", json.loads(meta["kokoro_config"])["vocab"])
