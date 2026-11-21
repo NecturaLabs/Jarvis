@@ -43,20 +43,63 @@ def system_prompt(config: Config) -> str:
     return text
 
 
+MAX_HINT_NAME_CHARS = 100
+MAX_HINT_CHARS = 800
+MIN_ECHO_WORDS = 4
+
+
+def _fits_hint(name: str) -> bool:
+    """Return whether a library name may go into the hint (it reaches the transcriber's argv)."""
+    if not name.strip() or len(name) > MAX_HINT_NAME_CHARS or not name.isprintable():
+        return False
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def speech_hint(config: Config, registry: Registry, artist_names: list[str]) -> str:
     """Return words speech-to-text should expect.
 
     The assistant's name, what its tools do and the owner's artist names, all taken from the
     config, the registry and the owner's library, so the hint follows what is installed and played.
+    Library names are someone else's text: only short printable ones are used, up to a length cap.
     """
     actions = [
         name.removeprefix("spotify_").replace("_", " ")
         for name in registry.names()
         if name != "no_action"
     ]
-    names = artist_names[: config.audio.hint_names]
-    parts = [f"{config.persona.name}.", ", ".join(actions) + ".", ", ".join(names)]
-    return " ".join(p for p in parts if p.strip(". "))
+    head = " ".join(
+        p for p in (f"{config.persona.name}.", ", ".join(actions) + ".") if p.strip(". ")
+    )
+    names: list[str] = []
+    room = MAX_HINT_CHARS - len(head) - 1
+    for name in filter(_fits_hint, artist_names[: config.audio.hint_names]):
+        cost = len(name) + (2 if names else 0)
+        if cost > room:
+            break
+        names.append(name)
+        room -= cost
+    return f"{head} {', '.join(names)}" if names else head
+
+
+def _words(text: str) -> list[str]:
+    return "".join(ch if ch.isalnum() else " " for ch in text.lower()).split()
+
+
+def echoes_hint(transcript: str, hint: str) -> bool:
+    """Return whether a transcript is only a run of the hint's own words.
+
+    On silence or noise, a transcriber primed with a hint can return the hint itself; that is
+    not a request.
+    """
+    heard = _words(transcript)
+    if len(heard) < MIN_ECHO_WORDS:
+        return False
+    primed = _words(hint)
+    return any(primed[i : i + len(heard)] == heard for i in range(len(primed) - len(heard) + 1))
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +142,7 @@ def build(config: Config) -> Jarvis:
         audit,
         config.boundaries.classes,
         grant_s=config.audio.pc_audio_grant_s,
+        names=(config.persona.name,),
     )
     return Jarvis(
         agent, model, audit, ops, lambda: speech_hint(config, registry, ops.artist_names())
