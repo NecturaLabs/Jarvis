@@ -161,6 +161,18 @@ def _isolate_environment(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
+def _guard_lookup(
+    real: Callable[..., object], refuse: Callable[[str | None], None]
+) -> Callable[..., object]:
+    """Wrap one of the older name lookups so it refuses what `getaddrinfo` refuses."""
+
+    def lookup(host: object, *args: object, **kwargs: object) -> object:
+        refuse(resolve_refusal(host))
+        return real(host, *args, **kwargs)
+
+    return lookup
+
+
 def _guard_network(
     monkeypatch: pytest.MonkeyPatch, refuse: Callable[[str | None], None], allowed_dir: Path
 ) -> None:
@@ -201,6 +213,12 @@ def _guard_network(
     monkeypatch.setattr(socket.socket, "connect_ex", guard_connect(socket.socket.connect_ex))
     monkeypatch.setattr(socket.socket, "sendto", sendto)
     monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    for name in ("gethostbyname", "gethostbyname_ex", "gethostbyaddr"):
+        monkeypatch.setattr(
+            socket,
+            name,
+            _guard_lookup(cast("Callable[..., object]", getattr(socket, name)), refuse),
+        )
 
 
 def _guard_programs(monkeypatch: pytest.MonkeyPatch, refuse: Callable[[str | None], None]) -> None:
