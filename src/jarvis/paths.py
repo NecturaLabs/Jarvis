@@ -37,3 +37,18 @@ def default_data_dir() -> Path:
 def config_file() -> Path:
     """Return the path of `config.toml`."""
     return config_dir() / "config.toml"
+
+
+def strata_key_file() -> Path:
+    """Return the file holding the Strata API key (shared by Jarvis and the Strata unit)."""
+    return state_dir() / "strata.env"
+
+
+def spotify_token_file() -> Path:
+    """Return the Spotify token file."""
+    return state_dir() / "spotify-token.json"
+
+
+def audit_file() -> Path:
+    """Return the audit log path."""
+    return state_dir() / "audit.jsonl"
