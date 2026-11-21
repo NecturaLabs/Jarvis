@@ -18,5 +18,5 @@ gaps or files them as issues, and only then sets the area's date (UTC, `YYYY-MM-
 | Speech output | Kokoro (hexgrad/Kokoro-82M) and Piper (OHF-Voice/piper1-gpl) docs for the pinned releases | never |
 | Web research | SearXNG admin and search API docs, trafilatura docs | never |
 | systemd user services | systemd.service, systemd.exec and systemd.resource-control man pages (systemd in Arch), Arch Wiki systemd/User | never |
-| CI and supply chain | GitHub Actions security hardening guide, Dependabot docs, OpenSSF Scorecard checks | never |
-| Repository basics and docs | GitHub community health docs, agentic-setup `project-setup` repository basics | never |
+| CI and supply chain | GitHub Actions security hardening guide, Dependabot docs, OpenSSF Scorecard checks | 2026-11-21 (open-source audit; gaps filed as #24, #25, #26) |
+| Repository basics and docs | GitHub community health docs, opensource.guide, Contributor Covenant 3.0, Keep a Changelog, REUSE 3.3, agentic-setup `project-setup` repository basics | 2026-11-21 (open-source audit; owner decisions in #26) |
