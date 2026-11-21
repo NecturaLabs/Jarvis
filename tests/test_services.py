@@ -53,6 +53,29 @@ def test_the_strata_unit_for_a_normal_config(tmp_path: Path) -> None:
     assert text.endswith("WantedBy=graphical-session.target\n")
 
 
+def test_a_strata_program_that_is_not_an_absolute_path_never_reaches_the_unit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path, home=Path("relative-strata"))
+
+    def nowhere(_name: str) -> str | None:
+        return None
+
+    monkeypatch.setattr(services.shutil, "which", nowhere)
+
+    with pytest.raises(ConfigError, match="absolute path"):
+        services.strata_unit(cfg, tmp_path / "strata.env")
+
+
+def test_a_jarvis_program_that_is_not_an_absolute_path_never_reaches_the_unit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "executable", "venv/bin/python")
+
+    with pytest.raises(ConfigError, match="absolute path"):
+        services.jarvis_unit()
+
+
 def test_the_strata_unit_keeps_the_servers_own_notes_in_the_journal(tmp_path: Path) -> None:
     """Strata's per-request timings and its notes (an ignored prefix pin) are on its stdout."""
     text = services.strata_unit(_config(tmp_path), tmp_path / "strata.env")
