@@ -55,6 +55,8 @@ prefill = 512
 idle_unload_s = 300
 reasoning_budget_tokens = 512
 memory_max = "40G"
+# vision_file = "/path/to/mmproj-F16.gguf"  # the model's picture reader; unset: no pictures
+vision_idle_s = 120
 
 # Your own Spotify developer app (docs/configuration.md): paste its client ID, or run
 # `jarvis setup --spotify-client-id <id>`.

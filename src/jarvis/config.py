@@ -124,6 +124,14 @@ class StrataConfig(_Section):
     idle_unload_s: int = Field(default=300, ge=30, le=86400)
     reasoning_budget_tokens: int = Field(default=512, gt=0, le=8192)
     memory_max: str = Field(default="40G", pattern=r"^\d+[KMGT]?$")
+    # The picture reader (the model's mmproj file, beside it); unset: Jarvis reads no pictures.
+    vision_file: SafePath = Path()
+    vision_idle_s: int = Field(default=120, ge=10, le=86400)  # the reader stops after this idle
+
+    @property
+    def pictures(self) -> bool:
+        """Whether the model is served with its picture reader."""
+        return self.vision_file != Path()
 
 
 class SpotifyConfig(_Section):

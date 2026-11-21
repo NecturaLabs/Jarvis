@@ -21,6 +21,17 @@ was checked it says so.
   here. The Unsloth quantisation and Strata itself: not checked.
 - Reference machine for every number below: RX 7900 XT, 64 GB RAM, Strata 0.2.16 (engine build 0.1.62).
 
+### Pictures
+
+- The picture reader is the model's own vision projector, `mmproj-F16.gguf` (899,283,584 bytes) from
+  `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` at revision `5bc3e238d916f48a861bac2f8a1990a0e9b7e98d`, the file and
+  revision Strata's own setup pins. Licence: Apache-2.0 (the repository's model card, checked 2026-11-21).
+  `jarvis doctor` checks its sha256 (`71f3cbc1…0f160`).
+- Put it beside the model and set `strata.vision_file` to it, then `jarvis setup` and `jarvis restart`. Strata
+  runs it with its CPU reader (`strata-vision`): on a card under 24 GB Strata keeps it off the VRAM. It starts
+  with the first picture (a few seconds) and stops after `strata.vision_idle_s`; a picture becomes at most 300
+  tokens.
+
 ### Latency
 
 | Request | What happens | Cost |

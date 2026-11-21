@@ -46,6 +46,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Pictures for the model: `strata.vision_file` names the model's picture reader (`mmproj-F16.gguf`, pinned
+  in `jarvis doctor`), and the Strata profile then reads pictures with Strata's processor reader, started by
+  the first picture and stopped after `strata.vision_idle_s` (120 s), so it costs no VRAM and no RAM while
+  unused.
 - PC operations: `pc_stats` ("how's my PC doing": CPU, graphics card, VRAM, memory, temperatures, disks,
   uptime), `list_dir` and `read_file` within `files.read_roots` (home by default), and `write_file` within
   `files.write_roots` (`~/Documents` by default), which always asks first. Keys, tokens, password stores,

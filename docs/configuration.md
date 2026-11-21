@@ -108,6 +108,8 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `idle_unload_s` | `300` | 30 to 86400 | Seconds without a request before Strata frees the model. |
 | `reasoning_budget_tokens` | `512` | 1 to 8192 | Thinking-token cap in the profile. |
 | `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` and `MemoryMax` of the Strata unit. |
+| `vision_file` | unset | path | The model's picture reader (`mmproj-F16.gguf`, [models.md](models.md#pictures)). Set, the profile reads pictures: Strata's reader runs on the processor, in about 0.9 GB of RAM and no VRAM, starts with the first picture and stops after `vision_idle_s`. Unset, Jarvis reads no pictures. |
+| `vision_idle_s` | `120` | 10 to 86400 | Seconds without a picture before the picture reader stops. |
 
 Fixed by Jarvis, not configurable: lazy loading on, one parallel slot, the HIP backend on GPU 0, `--mtp 2`.
 
