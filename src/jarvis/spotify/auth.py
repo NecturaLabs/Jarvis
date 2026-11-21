@@ -19,7 +19,7 @@ import secrets
 import threading
 import time
 import urllib.parse
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, override
@@ -373,18 +373,6 @@ class TokenStore:
             return None
         end = granted + GRANT_LIFETIME_DAYS * _DAY_S
         return math.floor((end - (self._clock() if now is None else now)) / _DAY_S)
-
-    def backfill_authorized_at(self, when: float) -> bool:
-        """Record `when` as the grant time of a login that has none; return whether it wrote."""
-        with self._lock, self._file_lock():
-            try:
-                record = self._load()
-            except SpotifyAuthError:
-                return False
-            if record.authorized_at is not None:
-                return False
-            self._save(replace(record, authorized_at=when))
-            return True
 
     def access_token(self, *, force_refresh: bool = False) -> str:
         """Return a current access token.
