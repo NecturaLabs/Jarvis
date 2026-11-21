@@ -92,15 +92,18 @@ changes as one request moves through.
 | `CAPTURE` | `IDLE` | No speech within `no_speech_timeout_s`. |
 | `CAPTURE` | `TRANSCRIBE` | Trailing silence, or the length cap, ends the utterance. |
 | `TRANSCRIBE` | `THINK` | Voxtype returned text. |
-| `TRANSCRIBE` | `IDLE` | Transcription failed, or the text is empty or a phantom (a say-nothing hallucination). |
+| `TRANSCRIBE` | `SPEAK` | Your own speech could not be transcribed, or came back empty: Jarvis says it did not catch that. |
+| `TRANSCRIBE` | `IDLE` | The text is a phantom (a say-nothing hallucination), or PC audio failed or came back empty. |
 | `THINK` | `SPEAK` | A waiting line while the model loads (then back to `THINK`), or the final reply. |
-| `THINK` | `CONFIRM` | The agent asks for a spoken yes: the question is spoken (`SPEAK`), then the loop listens. |
+| `THINK` | `CONFIRM` | The agent asks for a spoken yes: the question is spoken (`SPEAK`), then the loop listens in `CONFIRM`. |
+| `CONFIRM` | `THINK` or `SPEAK` | The answer is in; the call runs or is dropped, and the reply is spoken. |
 | `SPEAK` | `IDLE` | The reply was spoken, or the request failed after an apology (`_serve`). |
 
 Notes. There is no separate wake state: wake detection runs on the mic frames in `IDLE`. Wake
 detection is paused while Jarvis speaks, and `_speak` drains the capture afterwards so it cannot
-hear itself. The loop does not set `THINK` again after a confirmation; it stays `CONFIRM` until
-the reply is spoken. Every capture has a timeout, and a failed request ends in `IDLE`.
+hear itself. A line spoken while the agent works (`_cue`: a waiting line, a confirmation question)
+moves the loop to `SPEAK` and back to `THINK`. Every capture has a timeout, and a failed request
+ends in `IDLE`.
 
 ## One request, from wake word to spoken reply
 
@@ -116,11 +119,11 @@ the reply is spoken. Every capture has a timeout, and a failed request ends in `
 5. Each call goes through `Agent._run_call`:
    - `operations.validate_args` checks it against the operation's schema; an unknown name or bad
      argument is refused and audited.
-   - `Operation.prepare` may bind "whatever is current" to a concrete target (`spotify_play`,
-     `spotify_change_volume` and `spotify_like`).
    - **The policy decides** here: `policy.decide` returns run, confirm, strong or deny from the
      operation's class (the owner's override, else the default), with the rule that any side effect
      while outside text is in the conversation needs at least a confirmation.
+   - Only when the call is not refused, `Operation.prepare` may bind "whatever is current" to a
+     concrete target (`spotify_play`, `spotify_change_volume` and `spotify_like`).
    - **The confirmation is bound to one exact action**: `action_hash` of the operation and its
      final arguments is computed after `prepare`, before the question, and is the digest the call
      runs and is audited under. `VoiceLoop._ask` speaks the question and listens for an answer;
@@ -174,8 +177,9 @@ in memory only: 4 turns, dropped after 5 minutes idle. The model-file list is in
 
 ## Security-sensitive code
 
-The code that enforces the boundaries is listed in AGENTS.md ("Boundaries") and in
-[`.github/CODEOWNERS`](../.github/CODEOWNERS), so a change to it always asks for review:
+AGENTS.md ("Boundaries") names the security-sensitive areas, and
+[`.github/CODEOWNERS`](../.github/CODEOWNERS) lists most of their files by path (every other file
+falls under its catch-all entry, so a change anywhere still asks for review). The code:
 
 - the policy engine: `policy.py`, `operations.py`, `shortcuts.py` and the call path in `agent.py`;
 - confirmation: `agent.py` and `voice.py`, with `is_yes` in `policy.py`;

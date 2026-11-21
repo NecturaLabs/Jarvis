@@ -94,7 +94,7 @@ behind the same speech setting, as the Piper-licence risk below asked.
 ```
  jarvis.service (user, one process, one agent)
    audio: PipeWire capture 16 kHz mono, timestamped ring buffer
-     └─ state machine: IDLE → WAKE → CAPTURE → TRANSCRIBE → THINK → CONFIRM? → ACT → SPEAK → IDLE
+     └─ state machine: IDLE (wake word) → CAPTURE → TRANSCRIBE → THINK → CONFIRM? → SPEAK → IDLE
           wake: LiveKit hey_jarvis      VAD: Silero (end of speech, no-speech, max duration)
           transcribe: Voxtype (path chosen by measurement, see below)
    agent: OpenAI chat + tools against Strata, step/time/output caps, validated tool calls
