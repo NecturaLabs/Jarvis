@@ -1,22 +1,447 @@
 """Command-line entry point for `jarvis`."""
 
 import argparse
+import logging
+import shutil
+import signal
+import subprocess
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from jarvis import __version__
+from jarvis import __version__, config, paths
+from jarvis.agent import Hooks
+from jarvis.app import SetupError, build, spotify_token_file, strata_key_file
+from jarvis.model import StrataModel
+from jarvis.secretfile import ensure_api_key, read_api_key, read_private
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
+
+WAKE_MODEL = "wake/hey_jarvis.onnx"
+VAD_MODEL = "vad/silero_vad.onnx"
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Return the argument parser for the `jarvis` command."""
     parser = argparse.ArgumentParser(prog="jarvis", description="Local voice agent for Omarchy.")
     parser.add_argument("--version", action="version", version=f"jarvis {__version__}")
+    sub = parser.add_subparsers(dest="command")
+
+    setup = sub.add_parser("setup", help="write the config, the Strata profile and the user units")
+    setup.add_argument("--spotify-client-id", default=None)
+    setup.add_argument(
+        "--data-dir", type=Path, default=None, help="where wake, VAD and voice models live"
+    )
+    setup.add_argument(
+        "--strata-home", type=Path, default=None, help="Strata's data folder (STRATA_DATA_DIR)"
+    )
+    setup.add_argument(
+        "--strata-components-parent", type=Path, default=None, help="XDG_DATA_HOME for Strata"
+    )
+    setup.add_argument("--model-file", type=Path, default=None)
+    setup.add_argument("--tokenizer-dir", type=Path, default=None)
+    setup.add_argument(
+        "--mic", default=None, help="PipeWire source node name (empty: the default source)"
+    )
+    setup.add_argument("--enable", action="store_true", help="enable and start the user units")
+
+    login = sub.add_parser("spotify-login", help="connect Jarvis to your Spotify account (PKCE)")
+    login.add_argument("--no-browser", action="store_true", help="only print the login URL")
+
+    ask = sub.add_parser("ask", help="send one typed request, as if spoken")
+    ask.add_argument("text", nargs="+")
+    ask.add_argument(
+        "--yes", action="store_true", help="answer yes to confirmations (default: ask here)"
+    )
+
+    sub.add_parser("run", help="run the voice loop (what jarvis.service runs)")
+    sub.add_parser("start", help="start Jarvis (the voice service and its model server)")
+    sub.add_parser("stop", help="stop Jarvis and free the model")
+    sub.add_parser("restart", help="restart the voice service (after a config change)")
+    sub.add_parser("logs", help="follow Jarvis's live log (Ctrl+C to leave)")
+    sub.add_parser("doctor", help="check every part without loading the model")
+    sub.add_parser("status", help="show whether the model is loaded")
+    sub.add_parser("unload", help="free the model's memory now")
+    pc = sub.add_parser(
+        "pc-audio", help="let Jarvis take requests from PC audio (Discord by default)"
+    )
+    pc.add_argument("state", nargs="?", choices=["on", "off"], help="omit to show the setting")
+    pc.add_argument(
+        "--apps",
+        nargs="*",
+        metavar="APP",
+        help="which apps to listen to, by process or app name; none listed means all PC audio",
+    )
     return parser
+
+
+def _load() -> config.Config:
+    try:
+        return config.load()
+    except config.ConfigError as exc:
+        print(f"jarvis: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    """Write config, key, Strata profile and units; keep every value already set unless given."""
+    from jarvis import services  # ruff: ignore[import-outside-top-level]
+
+    current = _load()
+    spotify = current.spotify.model_copy(
+        update={"client_id": args.spotify_client_id} if args.spotify_client_id is not None else {}
+    )
+    strata_updates = {
+        key: value
+        for key, value in {
+            "home": args.strata_home,
+            "components_parent": args.strata_components_parent,
+            "model_file": args.model_file,
+            "tokenizer_dir": args.tokenizer_dir,
+        }.items()
+        if value is not None
+    }
+    audio = current.audio.model_copy(update={"source": args.mic} if args.mic is not None else {})
+    updated = current.model_copy(
+        update={
+            "spotify": spotify,
+            "strata": current.strata.model_copy(update=strata_updates),
+            "audio": audio,
+            **({"data_dir": args.data_dir} if args.data_dir is not None else {}),
+        }
+    )
+    updated = config.Config.model_validate(updated.model_dump())
+    config.save(updated)
+    ensure_api_key(strata_key_file())
+    profile = services.write_strata_profile(updated)
+    units = services.write_units(updated, strata_key_file())
+    print(f"config: {paths.config_file()}\nstrata profile: {profile}")
+    print("units: " + ", ".join(str(u) for u in units))
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+    if args.enable:
+        subprocess.run(
+            ["systemctl", "--user", "enable", "--now", services.STRATA_UNIT, services.JARVIS_UNIT],
+            check=False,
+        )
+    if not updated.spotify.client_id:
+        print("next: jarvis setup --spotify-client-id <your app's client ID>")
+    elif read_private(spotify_token_file()) is None:
+        print("next: jarvis spotify-login")
+    return 0
+
+
+def cmd_spotify_login(args: argparse.Namespace) -> int:
+    """Run the PKCE login and store the tokens."""
+    from jarvis.spotify.auth import SpotifyAuthError, login, redirect_uri  # ruff: ignore[import-outside-top-level]
+
+    cfg = _load()
+    if not cfg.spotify.client_id:
+        print(
+            "jarvis: set the client ID first: jarvis setup --spotify-client-id <id>",
+            file=sys.stderr,
+        )
+        return 2
+
+    def show(url: str) -> None:
+        print(f"Redirect URI your app must list: {redirect_uri(cfg.spotify.redirect_port)}")
+        print(f"Open this link and allow access:\n\n{url}\n")
+        if not args.no_browser and shutil.which("xdg-open"):
+            subprocess.Popen(
+                ["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+
+    try:
+        login(cfg.spotify.client_id, cfg.spotify.redirect_port, spotify_token_file(), show)
+    except (SpotifyAuthError, OSError) as exc:
+        print(f"jarvis: Spotify login failed: {exc}", file=sys.stderr)
+        return 1
+    print("Spotify connected.")
+    return 0
+
+
+def _terminal_confirm(question: str) -> bool:
+    try:
+        answer = input(f"{question} [yes/no] ")
+    except EOFError:
+        return False
+    from jarvis.policy import is_yes  # ruff: ignore[import-outside-top-level]
+
+    return is_yes(answer)
+
+
+def cmd_ask(args: argparse.Namespace) -> int:
+    """Answer one typed request and print the reply."""
+    try:
+        jarvis = build(_load())
+    except SetupError as exc:
+        print(f"jarvis: {exc}", file=sys.stderr)
+        return 2
+    confirm: Callable[[str], bool] = (
+        (lambda q: print(q, "-> yes") is None) if args.yes else _terminal_confirm
+    )
+    reply = jarvis.agent.handle(
+        " ".join(args.text), Hooks(confirm=confirm, waking=lambda: print("(waking up)"))
+    )
+    print(reply)
+    return 0
+
+
+def cmd_run(_args: argparse.Namespace) -> int:
+    """Run the voice loop until stopped."""
+    from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
+        AppAudio,
+        Microphone,
+        Speaker,
+        Vad,
+        WakeWord,
+        make_synthesizer,
+        transcribe,
+    )
+    from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level]
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    cfg = _load()
+    try:
+        jarvis = build(cfg)
+    except SetupError as exc:
+        print(f"jarvis: {exc}", file=sys.stderr)
+        return 2
+    data = cfg.data_dir
+    mic = Microphone(cfg.audio.source)
+    wake = WakeWord(data / WAKE_MODEL, cfg.audio.wake_threshold)
+    vad = Vad(data / VAD_MODEL)
+    speaker = Speaker(make_synthesizer(data, cfg.audio.voice, cfg.audio.speech_speed))
+    pc_audio = AppAudio(cfg.audio.pc_audio_apps) if cfg.audio.listen_to_pc else None
+    pc = None
+    if pc_audio is not None:
+        pc = PcListener(
+            pc_audio,
+            WakeWord(data / WAKE_MODEL, cfg.audio.wake_threshold),
+            Vad(data / VAD_MODEL),
+        )
+    stopping = False
+
+    def stop(_signum: int, _frame: object) -> None:
+        nonlocal stopping
+        stopping = True
+        speaker.stop()
+        mic.stop()
+        if pc_audio is not None:
+            pc_audio.stop()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    mic.start()
+    loop = VoiceLoop(
+        jarvis.agent,
+        mic,
+        wake,
+        vad,
+        speaker,
+        cfg.audio,
+        lambda s: transcribe(
+            s,
+            cfg.audio.transcribe_engine,
+            cfg.audio.transcribe_model,
+            jarvis.hint() if cfg.audio.vocabulary_hint else "",
+        ),
+        prewarm=lambda: None if jarvis.model.is_loaded() else jarvis.model.load(),
+        pc=pc,
+    )
+    try:
+        loop.run(lambda: stopping)
+    except Exception:
+        if stopping:
+            return 0
+        raise
+    return 0
+
+
+def cmd_doctor(_args: argparse.Namespace) -> int:
+    """Print one line per check with its fix; never loads the model."""
+    cfg = _load()
+    from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level]
+
+    files = [
+        cfg.data_dir / WAKE_MODEL,
+        cfg.data_dir / VAD_MODEL,
+        *voice_files(cfg.data_dir, cfg.audio.voice),
+    ]
+    state = _strata(cfg).status() if read_api_key(strata_key_file()) else None
+    checks: list[tuple[bool, str, str]] = [
+        (paths.config_file().exists(), f"config {paths.config_file()}", "run jarvis setup"),
+        (bool(cfg.spotify.client_id), "Spotify client ID", "jarvis setup --spotify-client-id <id>"),
+        (read_private(spotify_token_file()) is not None, "Spotify login", "jarvis spotify-login"),
+        *((f.exists(), f"file {f}", "see docs/playbook") for f in files),
+        (cfg.strata.model_file.is_file(), f"model {cfg.strata.model_file}", "set --model-file"),
+        *(
+            (shutil.which(t) is not None, f"tool {t}", f"install {t}")
+            for t in ("pw-record", "pw-play", "voxtype")
+        ),
+        (
+            state is not None,
+            f"Strata server ({state or 'unreachable'})",
+            "systemctl --user start jarvis-strata",
+        ),
+    ]
+    for ok, what, fix in checks:
+        print(f"{'ok ' if ok else 'FAIL'} {what}" + ("" if ok else f"  -> {fix}"))
+    return 0 if all(ok for ok, _, _ in checks) else 1
+
+
+def _strata(cfg: config.Config) -> StrataModel:
+    return StrataModel(cfg.model, read_api_key(strata_key_file()) or "")
+
+
+def cmd_status(_args: argparse.Namespace) -> int:
+    """Print the model state."""
+    state = _strata(_load()).status()
+    print(f"model: {state or 'server unreachable'}")
+    return 0 if state else 1
+
+
+def cmd_unload(_args: argparse.Namespace) -> int:
+    """Free the model now."""
+    ok = _strata(_load()).unload()
+    print("model unloaded" if ok else "could not unload (busy or unreachable)")
+    return 0 if ok else 1
+
+
+def _systemctl(*args: str) -> int:
+    return subprocess.run(["systemctl", "--user", *args], check=False).returncode
+
+
+def _unit_state(unit: str) -> str:
+    done = subprocess.run(
+        ["systemctl", "--user", "is-active", unit], capture_output=True, text=True, check=False
+    )
+    return done.stdout.strip() or "unknown"
+
+
+def cmd_start(_args: argparse.Namespace) -> int:
+    """Start both services."""
+    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
+
+    code = _systemctl("start", STRATA_UNIT, JARVIS_UNIT)
+    print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
+    return code
+
+
+def cmd_stop(_args: argparse.Namespace) -> int:
+    """Stop the voice service, then the model server (which frees the model)."""
+    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
+
+    code = _systemctl("stop", JARVIS_UNIT, STRATA_UNIT)
+    print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
+    return code
+
+
+def cmd_restart(_args: argparse.Namespace) -> int:
+    """Restart the voice service."""
+    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
+
+    code = _systemctl("start", STRATA_UNIT)
+    code = code or _systemctl("restart", JARVIS_UNIT)
+    print(f"jarvis: {_unit_state(JARVIS_UNIT)}")
+    return code
+
+
+def cmd_logs(_args: argparse.Namespace) -> int:
+    """Follow both services' journals."""
+    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
+
+    cmd = [
+        "journalctl",
+        "--user",
+        "-u",
+        JARVIS_UNIT,
+        "-u",
+        STRATA_UNIT,
+        "-f",
+        "-n",
+        "30",
+        "-o",
+        "cat",
+    ]
+    try:
+        return subprocess.run(cmd, check=False).returncode
+    except KeyboardInterrupt:
+        return 0
+
+
+def _pc_audio_summary(audio: config.AudioConfig) -> str:
+    if not audio.listen_to_pc:
+        return "off"
+    apps = ", ".join(audio.pc_audio_apps) or "all PC audio"
+    return f"on ({apps}; a yes lasts {audio.pc_audio_grant_s / 60:g} min)"
+
+
+def _restart_if_running() -> None:
+    from jarvis.services import JARVIS_UNIT  # ruff: ignore[import-outside-top-level]
+
+    if _unit_state(JARVIS_UNIT) == "active":
+        _systemctl("restart", JARVIS_UNIT)
+
+
+def cmd_pc_audio(args: argparse.Namespace) -> int:
+    """Show or set whether Jarvis takes requests heard in PC audio, and from which apps."""
+    cfg = _load()
+    if args.state is None and args.apps is None:
+        print(f"pc audio: {_pc_audio_summary(cfg.audio)}")
+        return 0
+    update: dict[str, object] = {}
+    if args.state is not None:
+        update["listen_to_pc"] = args.state == "on"
+    if args.apps is not None:
+        update["pc_audio_apps"] = list(args.apps)
+    new = cfg.model_copy(update={"audio": cfg.audio.model_copy(update=update)})
+    config.save(config.Config.model_validate(new.model_dump()))
+    print(f"pc audio: {_pc_audio_summary(new.audio)}")
+    _restart_if_running()
+    return 0
+
+
+def cmd_overview(args: argparse.Namespace) -> int:
+    """Show what is running and the model state, then follow the live log."""
+    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
+
+    state = _strata(_load()).status() if _unit_state(STRATA_UNIT) == "active" else None
+    print(f"jarvis: {_unit_state(JARVIS_UNIT)}   model server: {_unit_state(STRATA_UNIT)}", end="")
+    print(f"   model: {state}" if state else "")
+    print(f"pc audio: {_pc_audio_summary(_load().audio)}")
+    print(
+        "commands: jarvis start | stop | restart | status | unload | doctor | logs | ask <text>"
+        " | pc-audio [on|off]"
+    )
+    if _unit_state(JARVIS_UNIT) != "active":
+        print("Jarvis is not running; start it with: jarvis start")
+        return 0
+    if not sys.stdout.isatty():
+        return 0
+    print("live log (Ctrl+C to leave; Jarvis keeps running):")
+    return cmd_logs(args)
+
+
+COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
+    "start": cmd_start,
+    "stop": cmd_stop,
+    "restart": cmd_restart,
+    "logs": cmd_logs,
+    "setup": cmd_setup,
+    "spotify-login": cmd_spotify_login,
+    "ask": cmd_ask,
+    "run": cmd_run,
+    "doctor": cmd_doctor,
+    "status": cmd_status,
+    "unload": cmd_unload,
+    "pc-audio": cmd_pc_audio,
+}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the `jarvis` command and return its exit code."""
-    build_parser().parse_args(argv)
-    return 0
+    args = build_parser().parse_args(argv)
+    if args.command is None:
+        return cmd_overview(args)
+    return COMMANDS[args.command](args)

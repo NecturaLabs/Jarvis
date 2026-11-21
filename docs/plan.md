@@ -15,7 +15,10 @@ Piper answers by voice. First core feature: Spotify.
 - First-time configuration sets boundaries, tone/persona and the core instructions (what Jarvis is).
 - Researches online and operates this PC.
 - No global instructions, skills or plugins except the Omarchy OS skills; no subagents: one main agent.
-- First core feature: Spotify control (owner has Premium).
+- First core feature: Spotify control (owner has Premium). v1 is Spotify management by voice only; PC operations
+  and research come after it works.
+- Light on the PC so gaming stays decent at any time: at most about 8 GB of VRAM while the model is loaded, nothing
+  held when idle, no heavy CPU use between requests. The tasks are simple, so a small model is enough.
 - Replies by voice (Piper); no desktop notifications.
 - Model idle by default (including after reboot), loaded on demand, unloaded when idle.
 - Very easy to set up and maintain. Private repo `necturalabs/jarvis`.
@@ -43,8 +46,14 @@ Piper answers by voice. First core feature: Spotify.
   for supervisors; mapped low-RAM mode (`--mmap-experts`, or `--resident-budget-gib N`) serves experts through the
   OS file cache, which the kernel can reclaim. `models import --plan` previews only. CLI not installed (lost in the
   October reinstall); model data kept.
-- Model kept: Qwen3.8-Flash-Next IQ2_XS at `/data/gaming/ai/strata` (990 PRO NVMe): GGUF 68.0 GB + pack 1.55 GB +
-  MTP 6.93 GB = 76.5 GB, file list and sizes verified after the move. Unused packs and all local image models deleted.
+- Strata's engine runs two model families only (`qwen4exp`: Qwen3.8-Flash-Next; `qwen35moe`: Qwen3.6-35B-A3B);
+  no small dense model. Qwen3.6-35B-A3B (Apache-2.0, 35B total / 3B active, 256 experts, top-8) comes as Unsloth
+  UD-Q4_K_XL 22.9 GB, UD-Q6_K_XL 32.6 GB, Q8_0 37.8 GB. Its hybrid mode keeps some experts in VRAM and the rest in
+  RAM: Strata measured 58-60 tok/s decode on an RTX 3060 12 GB with 37 of 256 experts per layer in VRAM (docs
+  QWEN36.md). `--expert-cache auto` sizes the cache to the free VRAM; a fixed `--expert-cache N` (N x the largest
+  expert blob) and `--vram-reserve-mib` cap it (docs DETAILS.md). Sources read 2026-11-21; not yet measured here.
+- Old model still on disk, unused: Qwen3.8-Flash-Next IQ2_XS at `/data/gaming/ai/strata` (990 PRO NVMe), 76.5 GB
+  (~39 GB RAM + VRAM to run, beyond the VRAM limit above). Kept until phase 1 passes; deleted only on the owner's word.
 - LiveKit WakeWord 2.1.3 (Apache-2.0 code and weights per NOTICE), Python >= 3.11, deps numpy + onnxruntime,
   pretrained `hey_jarvis.onnx`; local detection, no account.
 - Piper: `piper-tts` (OHF-Voice/piper1-gpl, GPL-3.0). Latency on this PC unmeasured.
@@ -99,8 +108,10 @@ enforced in code before any tool runs.
 - Voice barge-in and echo cancellation (PipeWire echo-cancel module) come in the polish phase.
 
 ### Model (Strata)
-- Profile `jarvis`: Qwen3.8-Flash-Next IQ2_XS, 32K context, vision off, `lazy_load` on, `idle_unload_s` 1800,
-  mapped experts (memory the kernel can reclaim), a positive `reasoning_budget_tokens` cap, local access with an
+- Profile `jarvis`: Qwen3.6-35B-A3B UD-Q4_K_XL (files under `/data/gaming/ai/strata`) in hybrid mode with a fixed
+  expert cache sized so the engine's whole VRAM use stays at or under about 8 GB (never `--expert-cache auto`, which
+  takes all free VRAM); 8K context, `--parallel 1`, vision off, `lazy_load` on, `idle_unload_s` 300, mapped experts
+  (`--mmap-experts`, memory the kernel can reclaim), a positive `reasoning_budget_tokens` cap, local access with an
   API key.
 - Under systemd: `strata serve --profile jarvis --ready-file …`, absolute paths, `Restart=on-failure` with backoff,
   `MemoryHigh`/`MemoryMax`. Health checks never generate, so boot and `doctor` leave the model unloaded.
@@ -193,11 +204,14 @@ enforced in code before any tool runs.
 
 0. **Project setup** — git, AGENTS.md, docs (architecture, playbook, decisions), uv project, CI, private repo,
    issue backlog.
-1. **Strata** — install the pinned CLI and engine, adopt IQ2_XS, `jarvis` profile, user unit. Measure on this PC
-   under normal desktop load: cold and warm load time, TTFT, decode tok/s, peak RAM/VRAM, release after unload.
+1. **Strata** — install the pinned CLI and engine, download Qwen3.6-35B-A3B UD-Q4_K_XL, `jarvis` profile, user
+   unit. Size the expert cache to the ~8 GB VRAM limit. Measure on this PC under normal desktop load: cold and warm
+   load time, TTFT, decode tok/s, peak RAM/VRAM, CPU use during a reply, release after unload, and a game running
+   beside a loaded model.
    Model eval: 200+ representative and adversarial requests on Jarvis's real tool schemas, scored on correct
    operation, arguments, abstention and finished task. Gate: >= 95% correct first operation, >= 90% finished
-   multi-step tasks, 0 policy-violating calls reaching execution. Fallback model: Qwen3.6-35B-A3B.
+   multi-step tasks, 0 policy-violating calls reaching execution. Fallback: UD-Q6_K_XL under the same VRAM limit
+   (more RAM, same VRAM). v1 ends at phase 4 (Spotify by voice); phases 5 and 6 start after the owner confirms it.
 2. **Ears** — capture, wake word, VAD, state machine, both transcription paths measured; pick one. Wake test:
    8 h of desk audio with music and calls for false wakes, 100 spoken wakes for misses.
 3. **Boundaries, setup and voice** — config + migrations, policy engine with a full decision table, provenance,
@@ -226,8 +240,10 @@ enforced in code before any tool runs.
 
 ## Risks
 
-- IQ2_XS tool-use quality and latency on gfx1100 — phase 1 gate, fallback model named.
-- Memory under games/Unreal — mapped experts, idle unload, `jarvis unload`, load refusal below a reserve.
+- Tool-use quality and latency of Qwen3.6-35B-A3B in hybrid mode at ~8 GB VRAM on gfx1100 — phase 1 gate,
+  fallback named.
+- Memory and CPU under games/Unreal — fixed VRAM cap, mapped experts, 5-minute idle unload, `jarvis unload`, load
+  refusal below a reserve. Under RAM pressure the kernel drops cached experts and the next reply is slower.
 - Voxtype contention with the owner's dictation — ownership rule or file path B.
 - Spotify policy and quota changes — clear errors; MPRIS transport still works.
 - Prompt injection from web pages, files or metadata — provenance and action-bound confirmation.
