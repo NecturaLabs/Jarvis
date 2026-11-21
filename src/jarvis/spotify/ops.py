@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from jarvis.jsonutil import obj, objs
 from jarvis.operations import Operation, OperationError, Result, UncertainOutcomeError
 from jarvis.policy import Origin
+from jarvis.shortcuts import Shortcut
 from jarvis.spotify.api import SpotifyApi, pick_device
 from jarvis.spotify.errors import NoDeviceError, SpotifyAuthError, SpotifyError
 
@@ -47,6 +48,50 @@ _ARTIST = {
     "maxLength": 120,
     "description": 'The artist, when the request names one ("the song X by Y": query X, artist Y)',
 }
+# Requests that mean one operation and need no model (matched in full, after `normalise`, which
+# strips politeness, punctuation and the assistant's name; it also strips a trailing "now", so
+# "what's playing right now" arrives as "whats playing right").
+_PAUSE = Shortcut(r"(?:pause(?: it| the (?:music|song|playback))?|stop(?: the music| playing)?)")
+_RESUME = Shortcut(
+    r"(?:resume(?: the (?:music|playback))?|continue(?: playing)?|unpause|keep playing|play)"
+)
+_NEXT = Shortcut(
+    r"(?:next(?: (?:song|track|one))?|skip(?: it| this(?: song| track| one)?)?"
+    r"|play the next (?:song|track|one))"
+)
+_PREVIOUS = Shortcut(
+    r"(?:previous(?: (?:song|track|one))?|go back (?:a|one) song"
+    r"|play the previous (?:song|track|one))"
+)
+_SET_VOLUME = Shortcut(
+    r"(?:(?:set|turn) (?:the )?)?volume (?:to )?(?P<percent>\d{1,3})(?: percent|%)?",
+    lambda g: {"percent": int(g["percent"])},
+)
+_VOLUME_STEP = 10
+_LOUDER = Shortcut(
+    r"(?:volume up|turn (?:it|the volume) up|turn up the volume|(?:a bit |a little )?louder)",
+    lambda _g: {"delta": _VOLUME_STEP},
+)
+_QUIETER = Shortcut(
+    r"(?:volume down|turn (?:it|the volume) down|turn down the volume"
+    r"|(?:a bit |a little )?quieter)",
+    lambda _g: {"delta": -_VOLUME_STEP},
+)
+_SHUFFLE_ON = Shortcut(
+    r"(?:shuffle on|turn on shuffle|turn shuffle on|enable shuffle)", lambda _g: {"on": True}
+)
+_SHUFFLE_OFF = Shortcut(
+    r"(?:shuffle off|turn off shuffle|turn shuffle off|disable shuffle|stop shuffling)",
+    lambda _g: {"on": False},
+)
+_NOW_PLAYING = Shortcut(
+    r"(?:(?:whats|what is) (?:playing(?: right)?|this (?:song|track))"
+    r"|what (?:song|track) is this|what am i listening to)"
+)
+_LIKE = Shortcut(
+    r"(?:like this(?: song| track)?|save this (?:song|track)|i like this song"
+    r"|add this song to my (?:library|liked songs))"
+)
 # A bracketed or trailing part that only says which version of a song this is.
 _VERSION_PAREN = re.compile(
     r"\s*[(\[]\s*(?:live|remaster|\d{4}\b|feat\b|ft\b|featuring)[^)\]]*[)\]]", re.IGNORECASE
@@ -123,6 +168,11 @@ def _current(state: dict[str, Any] | None) -> _Current:
         return _Current("unknown", {}, playing)
     kind = "episode" if item.get("type") == "episode" else "track"
     return _Current(kind, item, playing)
+
+
+def _say(sentence: str) -> Result:
+    """Return a finished result whose text and spoken sentence are Jarvis's own."""
+    return Result(sentence, spoken=sentence)
 
 
 @dataclass(frozen=True, slots=True)
@@ -566,23 +616,31 @@ class SpotifyOps:
         state = self._api.player()
         current = _current(state)
         if state is None or current.kind == "nothing":
-            return Result(NOTHING_PLAYING)
+            return _say(NOTHING_PLAYING)
         if current.kind == "ad":
-            return Result("An ad is playing.")
+            return _say("An ad is playing.")
         status = "playing" if current.playing else "paused"
         if current.kind == "unknown":
-            return Result(f"Spotify says it is {status} but not what.")
+            return Result(
+                f"Spotify says it is {status} but not what.", spoken="I can't tell what this is."
+            )
         device = obj(state.get("device"))
         shuffle = "on" if state.get("shuffle_state") else "off"
         if current.kind == "episode":
-            show = obj(current.item.get("show")).get("name", "")
-            what = f"podcast episode {current.item.get('name', '')}, from {show}"
+            title, show = (
+                current.item.get("name", ""),
+                obj(current.item.get("show")).get("name", ""),
+            )
+            what = f"podcast episode {title}, from {show}"
+            said = f"the episode {title}, from {show}"
         else:
             what = f"{_names(current.item)}, from {obj(current.item.get('album')).get('name', '')}"
+            said = _names(current.item)
         return Result(
             f"{status}: {what}; device {device.get('name', '')}, "
             f"volume {device.get('volume_percent')}%, shuffle {shuffle}.",
             Origin.SPOTIFY,
+            spoken=f"This is {said}{'' if current.playing else ', paused'}.",
         )
 
     def _playing_song(self) -> dict[str, Any]:
@@ -608,10 +666,11 @@ class SpotifyOps:
         """Save a track to the owner's library: the one `prepare` bound, else the one playing."""
         song = args if args.get("uri") else self._playing_song()
         self._api.request("PUT", "/me/library", params={"uris": song["uri"]})
-        return Result(f"Saved {song['name']} to your library.", Origin.SPOTIFY)
+        saved = f"Saved {song['name']} to your library."
+        return Result(saved, Origin.SPOTIFY, spoken=saved)
 
     def _command(
-        self, method: str, path: str, done: str, *, refusal_check: str = "", **params: object
+        self, method: str, path: str, done: Result, *, refusal_check: str = "", **params: object
     ) -> Result:
         """Send a command to the active player; with none, nothing is playing and nothing to do.
 
@@ -621,12 +680,12 @@ class SpotifyOps:
         try:
             self._api.request(method, path, params=dict(params) or None)
         except NoDeviceError:
-            return Result(NOTHING_PLAYING)
+            return _say(NOTHING_PLAYING)
         except SpotifyError as exc:
             if exc.status != HTTPStatus.FORBIDDEN or not refusal_check:
                 raise
             return self._already(refusal_check, exc)
-        return Result(done)
+        return done
 
     def _already(self, command: str, refusal: SpotifyError) -> Result:
         """Explain a 403 on pause or resume from the player's state, or pass the refusal on.
@@ -636,14 +695,16 @@ class SpotifyOps:
         state = self._api.player()
         playing = bool(state and state.get("is_playing"))
         if command == "pause" and not playing:
-            return Result("It's already paused." if state else NOTHING_PLAYING)
+            return _say("It's already paused." if state else NOTHING_PLAYING)
         if command == "resume" and playing:
-            return Result("It's already playing.")
+            return _say("It's already playing.")
         raise refusal
 
     def pause(self, _args: dict[str, Any]) -> Result:
         """Pause playback; it never starts Spotify."""
-        return self._command("PUT", "/me/player/pause", "Paused.", refusal_check="pause")
+        return self._command(
+            "PUT", "/me/player/pause", Result("Paused.", spoken="Paused."), refusal_check="pause"
+        )
 
     def resume(self, _args: dict[str, Any]) -> Result:
         """Resume playback, bringing a player up (even starting Spotify) when none is active.
@@ -661,15 +722,19 @@ class SpotifyOps:
             if exc.status != HTTPStatus.FORBIDDEN:
                 raise
             return self._already("resume", exc)
-        return Result("Resumed.")
+        return Result("Resumed.", spoken="Playing again.")
 
     def next_track(self, _args: dict[str, Any]) -> Result:
         """Skip to the next track; it never starts Spotify."""
-        return self._command("POST", "/me/player/next", "Skipped to the next track.")
+        return self._command(
+            "POST", "/me/player/next", Result("Skipped to the next track.", spoken="Skipped.")
+        )
 
     def previous_track(self, _args: dict[str, Any]) -> Result:
         """Go back a track; it never starts Spotify."""
-        return self._command("POST", "/me/player/previous", "Went back a track.")
+        return self._command(
+            "POST", "/me/player/previous", Result("Went back a track.", spoken="Back one.")
+        )
 
     def _set_volume(self, percent: int) -> Result:
         try:
@@ -679,7 +744,7 @@ class SpotifyOps:
             if exc.status == HTTPStatus.FORBIDDEN and refused:
                 return Result(NO_VOLUME_CONTROL, ok=False)
             raise
-        return Result(f"Volume set to {percent} percent.")
+        return Result(f"Volume set to {percent} percent.", spoken=f"Volume's at {percent}.")
 
     def set_volume(self, args: dict[str, Any]) -> Result:
         """Set the player's volume."""
@@ -714,18 +779,24 @@ class SpotifyOps:
         result = self._set_volume(plan["target"])
         if not result.ok:
             return result
-        return Result(f"Volume changed from {plan['current']} to {plan['target']} percent.")
+        return Result(
+            f"Volume changed from {plan['current']} to {plan['target']} percent.",
+            spoken=f"Volume's at {plan['target']}.",
+        )
 
     def shuffle(self, args: dict[str, Any]) -> Result:
         """Turn shuffle on or off."""
         on = bool(args["on"])
         self._player_call("PUT", "/me/player/shuffle", params={"state": "true" if on else "false"})
-        return Result(f"Shuffle {'on' if on else 'off'}.")
+        return Result(
+            f"Shuffle {'on' if on else 'off'}.", spoken=f"Shuffle's {'on' if on else 'off'}."
+        )
 
     def repeat(self, args: dict[str, Any]) -> Result:
         """Set repeat to off, track or context."""
         self._player_call("PUT", "/me/player/repeat", params={"state": args["mode"]})
-        return Result(f"Repeat set to {args['mode']}.")
+        said = {"off": "Repeat's off.", "context": "Repeat's on.", "track": "Repeating this song."}
+        return Result(f"Repeat set to {args['mode']}.", spoken=said[args["mode"]])
 
     def operations(self) -> list[Operation]:
         """Return every Spotify operation with its schema and default class."""
@@ -762,6 +833,7 @@ class SpotifyOps:
                 _NO_ARGS,
                 self.pause,
                 spoken_summary=lambda _a: "pause the music",
+                shortcuts=(_PAUSE,),
             ),
             Operation(
                 "spotify_resume",
@@ -769,6 +841,7 @@ class SpotifyOps:
                 _NO_ARGS,
                 self.resume,
                 spoken_summary=lambda _a: "resume the music",
+                shortcuts=(_RESUME,),
             ),
             Operation(
                 "spotify_next",
@@ -776,6 +849,7 @@ class SpotifyOps:
                 _NO_ARGS,
                 self.next_track,
                 spoken_summary=lambda _a: "skip this track",
+                shortcuts=(_NEXT,),
             ),
             Operation(
                 "spotify_previous",
@@ -783,6 +857,7 @@ class SpotifyOps:
                 _NO_ARGS,
                 self.previous_track,
                 spoken_summary=lambda _a: "go back a track",
+                shortcuts=(_PREVIOUS,),
             ),
             Operation(
                 "spotify_set_volume",
@@ -795,6 +870,7 @@ class SpotifyOps:
                 },
                 self.set_volume,
                 spoken_summary=lambda a: f"set the volume to {a['percent']} percent",
+                shortcuts=(_SET_VOLUME,),
             ),
             Operation(
                 "spotify_change_volume",
@@ -813,6 +889,7 @@ class SpotifyOps:
                     else f"change the volume by {a['delta']}"
                 ),
                 prepare=self.prepare_volume,
+                shortcuts=(_LOUDER, _QUIETER),
             ),
             Operation(
                 "spotify_shuffle",
@@ -825,6 +902,7 @@ class SpotifyOps:
                 },
                 self.shuffle,
                 spoken_summary=lambda a: f"turn shuffle {'on' if a['on'] else 'off'}",
+                shortcuts=(_SHUFFLE_ON, _SHUFFLE_OFF),
             ),
             Operation(
                 "spotify_repeat",
@@ -872,6 +950,7 @@ class SpotifyOps:
                 self.like,
                 spoken_summary=lambda a: f"save {a.get('name', 'this track')} to your library",
                 prepare=lambda _a: self._playing_song(),
+                shortcuts=(_LIKE,),
             ),
             Operation(
                 "spotify_now_playing",
@@ -880,5 +959,6 @@ class SpotifyOps:
                 self.now_playing,
                 side_effect=False,
                 spoken_summary=lambda _a: "check what's playing",
+                shortcuts=(_NOW_PLAYING,),
             ),
         ]
