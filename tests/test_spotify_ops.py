@@ -1,10 +1,12 @@
 """Spotify operations against an in-process fake of the Web API (httpx.MockTransport)."""
 
 import json
+import logging
 import random
+import threading
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 import httpx
 import pytest
@@ -15,8 +17,8 @@ from jarvis.policy import Origin
 from jarvis.secretfile import write_private_json
 from jarvis.spotify.api import API, SpotifyApi
 from jarvis.spotify.auth import TokenStore
-from jarvis.spotify.errors import NoDeviceError, SpotifyError
-from jarvis.spotify.ops import DEVICE_WAIT_S, SpotifyOps, best_match, similarity
+from jarvis.spotify.errors import NoDeviceError, SpotifyAuthError, SpotifyError, SpotifyLoginExpired
+from jarvis.spotify.ops import DEVICE_WAIT_S, REFRESH_RETRY_S, SpotifyOps, best_match, similarity
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -159,29 +161,42 @@ class FakeSpotify:
         return httpx.Response(404, json={"error": {"message": f"no route {path}"}})
 
 
-def build_ops(
-    fake: FakeSpotify,
-    tmp_path: Path,
-    config: SpotifyConfig | None = None,
-    *,
-    seeded: bool = True,
-) -> SpotifyOps:
-    """Build the operations over `fake`: no network, no real launcher, no real sleeping.
-
-    The song order is seeded unless `seeded` is false (then it is the default entropy source).
-    """
+def build_api[T: SpotifyApi](
+    fake: FakeSpotify, tmp_path: Path, settings: SpotifyConfig, api_type: type[T]
+) -> T:
+    """Build a client over `fake` with a valid stored login, no network and no real sleeping."""
     token_file = tmp_path / f"token-{len(list(tmp_path.glob('token-*.json')))}.json"
     write_private_json(
         token_file,
         {"access_token": "a", "refresh_token": "r", "expires_at": time.time() + 3600},
     )
     http = httpx.Client(base_url=API, transport=httpx.MockTransport(fake.handle))
-    api = SpotifyApi(
-        TokenStore("client", token_file), http, sleep=fake.clock.sleep, clock=fake.clock
+    return api_type(
+        TokenStore("client", token_file),
+        http,
+        sleep=fake.clock.sleep,
+        clock=fake.clock,
+        library_ttl_s=settings.library_refresh_s,
     )
+
+
+def build_ops(
+    fake: FakeSpotify,
+    tmp_path: Path,
+    config: SpotifyConfig | None = None,
+    *,
+    seeded: bool = True,
+    api: SpotifyApi | None = None,
+) -> SpotifyOps:
+    """Build the operations over `fake`: no network, no real launcher, no real sleeping.
+
+    The song order is seeded unless `seeded` is false (then it is the default entropy source).
+    `api` lets a test swap in a client that fails on purpose.
+    """
+    settings = config or SpotifyConfig(device_name="pc")
     return SpotifyOps(
-        api,
-        config or SpotifyConfig(device_name="pc"),
+        api or build_api(fake, tmp_path, settings, SpotifyApi),
+        settings,
         launcher=fake.launch,
         # ruff: ignore[suspicious-non-cryptographic-random-usage] - song order
         rng=random.Random(7) if seeded else None,
@@ -506,24 +521,6 @@ def test_queue_reports_fewer_when_spotify_has_fewer(tmp_path: Path) -> None:
 
     assert result.ok
     assert len(fake.queued) == 4
-
-
-def test_artist_names_are_distinct_and_cached(tmp_path: Path) -> None:
-    fake = FakeSpotify(
-        top_artists=[GLASS_HARBOR, GLASS_HARBOR, {"name": "Night Circuit", "uri": "u"}]
-    )
-    ops = build_ops(fake, tmp_path)
-
-    names = ops.artist_names()
-    fetched = len(fake.requests)
-    fake.clock.now += 60
-    assert ops.artist_names() == names
-    assert len(fake.requests) == fetched
-    fake.clock.now += SpotifyConfig().library_refresh_s
-    ops.artist_names()
-    assert len(fake.requests) > fetched
-
-    assert names == ["Glass Harbor", "Night Circuit"]
 
 
 def test_queue_pages_by_what_spotify_actually_returned(tmp_path: Path) -> None:
@@ -1432,3 +1429,179 @@ def test_change_volume_prepare_refuses_without_a_player_or_a_level(tmp_path: Pat
     assert volume.prepare is not None
     with pytest.raises(OperationError, match="can't read the current volume"):
         volume.prepare({"delta": 10})
+
+
+# --- Warm-up: the speech hint never waits on Spotify (8) ---
+
+
+class _Waits(threading.Event):
+    """An event whose waits return at once: the first `rounds` say "go on", then "stop"."""
+
+    def __init__(self, rounds: int) -> None:
+        super().__init__()
+        self.rounds = rounds
+        self.waited: list[float | None] = []
+
+    @override
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waited.append(timeout)
+        return len(self.waited) > self.rounds
+
+
+class _Failing(SpotifyApi):
+    """A client whose login check fails on demand."""
+
+    failure: Exception | None = None
+
+    @override
+    def ensure_login(self) -> None:
+        if self.failure is not None:
+            raise self.failure
+        super().ensure_login()
+
+
+def _failing_ops(fake: FakeSpotify, tmp_path: Path) -> tuple[SpotifyOps, _Failing]:
+    api = build_api(fake, tmp_path, SpotifyConfig(device_name="pc"), _Failing)
+    return build_ops(fake, tmp_path, api=api), api
+
+
+def test_artist_names_never_touch_the_network(tmp_path: Path) -> None:
+    fake = FakeSpotify(top_artists=[GLASS_HARBOR])
+    ops = build_ops(fake, tmp_path)
+
+    assert ops.artist_names() == []
+    fake.clock.now += SpotifyConfig().library_refresh_s * 3
+    assert ops.artist_names() == []
+
+    assert fake.requests == []
+
+
+def test_a_refresh_loads_the_names_distinct_and_in_order(tmp_path: Path) -> None:
+    fake = FakeSpotify(
+        top_artists=[GLASS_HARBOR, GLASS_HARBOR, {"name": "Night Circuit", "uri": "u"}]
+    )
+    ops = build_ops(fake, tmp_path)
+
+    ops.refresh()
+    fetched = len(fake.requests)
+
+    assert ops.artist_names() == ["Glass Harbor", "Night Circuit"]
+    assert len(fake.requests) == fetched
+
+
+def test_every_refresh_reloads_even_inside_the_cache_time(tmp_path: Path) -> None:
+    fake = FakeSpotify(top_artists=[GLASS_HARBOR])
+    ops = build_ops(fake, tmp_path)
+
+    ops.refresh()
+    fake.top_artists.append({"name": "Night Circuit", "uri": "u"})
+    fake.clock.now += 60
+    ops.refresh()
+
+    assert ops.artist_names() == ["Glass Harbor", "Night Circuit"]
+    assert len(fake.calls("GET", "/me/top/artists")) == 2
+
+
+def test_a_failed_refresh_keeps_the_previous_names_and_raises_nothing(tmp_path: Path) -> None:
+    fake = FakeSpotify(top_artists=[GLASS_HARBOR])
+    ops, api = _failing_ops(fake, tmp_path)
+    ops.refresh()
+
+    api.failure = SpotifyError("Spotify is down")
+    ops.refresh()
+
+    assert ops.artist_names() == ["Glass Harbor"]
+
+
+def test_a_lost_login_is_logged_as_a_warning_that_names_the_login_command(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    ops, api = _failing_ops(FakeSpotify(top_artists=[GLASS_HARBOR]), tmp_path)
+    ops.refresh()
+
+    api.failure = SpotifyLoginExpired("expired")
+    with caplog.at_level(logging.WARNING, logger="jarvis.spotify.ops"):
+        ops.refresh()
+
+    assert any(
+        r.levelno == logging.WARNING and "jarvis spotify-login" in r.getMessage()
+        for r in caplog.records
+    )
+    assert ops.artist_names() == ["Glass Harbor"]
+
+
+def test_a_refresh_makes_sure_the_login_is_valid_first(tmp_path: Path) -> None:
+    fake = FakeSpotify()
+    ops, api = _failing_ops(fake, tmp_path)
+    api.failure = SpotifyAuthError("no login; run `jarvis spotify-login`")
+
+    ops.refresh()
+
+    assert fake.requests == []
+
+
+def test_the_refresh_thread_refreshes_now_and_every_period_until_stopped(tmp_path: Path) -> None:
+    fake = FakeSpotify(top_artists=[GLASS_HARBOR])
+    ops = build_ops(fake, tmp_path)
+    stop = _Waits(rounds=2)
+
+    thread = ops.start_refresh(stop)
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert thread.daemon
+    assert stop.waited == [SpotifyConfig().library_refresh_s] * 3
+    assert len(fake.calls("GET", "/me/top/artists")) == 3
+    assert ops.artist_names() == ["Glass Harbor"]
+
+
+def test_the_refresh_thread_does_nothing_when_already_stopped(tmp_path: Path) -> None:
+    fake = FakeSpotify(top_artists=[GLASS_HARBOR])
+    stop = threading.Event()
+    stop.set()
+
+    thread = build_ops(fake, tmp_path).start_refresh(stop)
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert fake.requests == []
+
+
+def test_the_refresh_thread_survives_a_surprise(tmp_path: Path) -> None:
+    fake = FakeSpotify(top_artists=[GLASS_HARBOR])
+    ops, api = _failing_ops(fake, tmp_path)
+    api.failure = RuntimeError("unexpected")
+    stop = _Waits(rounds=1)
+
+    thread = ops.start_refresh(stop)
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert len(stop.waited) == 2
+
+
+def test_a_fuzzy_match_uses_the_warmed_library_even_past_its_time(tmp_path: Path) -> None:
+    fake = FakeSpotify(
+        search={"track": [_track("Something Else", "Other", "spotify:track:other")]},
+        top_tracks=[_track("Second Sun", "Night Circuit", "spotify:track:sun")],
+    )
+    ops = build_ops(fake, tmp_path)
+    ops.refresh()
+    fake.clock.now += SpotifyConfig().library_refresh_s + 10
+
+    ops.play({"query": "secund sun", "kind": "track"})
+
+    assert fake.played == [{"uris": ["spotify:track:sun"]}]
+    assert len(fake.calls("GET", "/me/top/tracks")) == 1
+
+
+def test_a_failed_refresh_is_tried_again_after_a_minute_not_a_period(tmp_path: Path) -> None:
+    fake = FakeSpotify(top_artists=[GLASS_HARBOR])
+    ops, api = _failing_ops(fake, tmp_path)
+    api.failure = SpotifyError("Spotify is down")
+    stop = _Waits(rounds=1)
+
+    thread = ops.start_refresh(stop)
+    thread.join(timeout=5)
+
+    assert stop.waited == [REFRESH_RETRY_S, REFRESH_RETRY_S]

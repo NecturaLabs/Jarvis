@@ -639,3 +639,33 @@ def test_a_lost_login_is_not_hidden_by_the_library(tmp_path: Path) -> None:
 
     with pytest.raises(SpotifyLoginExpired):
         api.library()
+
+
+def test_ensure_login_refreshes_an_expiring_token_without_calling_the_api(tmp_path: Path) -> None:
+    wire = Wire()
+    api, accounts, _ = _make(tmp_path, wire)
+    write_private_json(
+        tmp_path / "token.json",
+        {"access_token": "old", "refresh_token": "r", "expires_at": NOW - 10},
+    )
+
+    api.ensure_login()
+
+    assert accounts.refreshes == 1
+    assert wire.seen == []
+
+
+def test_ensure_login_leaves_a_valid_token_alone(tmp_path: Path) -> None:
+    api, accounts, _ = _make(tmp_path, Wire())
+
+    api.ensure_login()
+
+    assert accounts.refreshes == 0
+
+
+def test_ensure_login_says_so_when_there_is_no_login(tmp_path: Path) -> None:
+    api, _, _ = _make(tmp_path, Wire())
+    (tmp_path / "token.json").unlink()
+
+    with pytest.raises(SpotifyAuthError, match="jarvis spotify-login"):
+        api.ensure_login()

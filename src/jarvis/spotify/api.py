@@ -117,6 +117,14 @@ class SpotifyApi:
         self._library_ttl_s = library_ttl_s
         self._library = _LibraryCache()
 
+    def ensure_login(self) -> None:
+        """Make sure there is a valid access token, refreshing it if it is about to expire.
+
+        It fails with `SpotifyAuthError` when there is no usable login or the refresh fails
+        (`SpotifyLoginExpired` when Spotify no longer accepts the stored one).
+        """
+        self._tokens.access_token()
+
     def request(
         self,
         method: str,
