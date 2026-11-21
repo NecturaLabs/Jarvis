@@ -2,6 +2,7 @@
 
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -251,6 +252,46 @@ def test_a_claim_after_only_failed_tools_is_challenged_with_the_failure() -> Non
         "No problem, paused.",
         "Playing Glass Harbor now.",
         "Here's some Night Circuit, playing now.",
+        "I set the volume to thirty.",
+        "I've set it to 30.",
+        "I changed the volume to 40.",
+        "I've lowered the volume.",
+        "I've raised the volume to 60.",
+        "I muted it.",
+        "The volume is now at 20.",
+        "I've put it on shuffle.",
+        "Set it to thirty.",
+        "Done, anything else?",
+        "Paused, anything else?",
+        "Playing it now, want more?",
+        "I've set it to 30, is that okay?",
+        "Muted.",
+        "It's muted now.",
+        "I turned shuffle on.",
+        "I've turned on shuffle.",
+        "I upped the volume.",
+        "Sure \u2014 I muted it.",
+        '"I muted it."',
+        "Done (anything else?)",
+        "Paused (want more?)",
+        "Done\u3001anything else\uff1f",
+        "Done\uff0canything else?",
+        "Sure \u2014 muted.",
+        "Okay - paused it.",
+        "Sure -- I muted it.",
+        "Done \u2015 anything else?",
+        "Set to 30.",
+        "It's set to 30.",
+        "Sure \u2014 I found it, playing it now.",
+        "Okay - found it, paused.",
+        "Sure - muted, anything else?",
+        "I've set it to what you asked, anything else?",
+        "Playing Bohemian Rhapsody, which is by Queen, okay?",
+        "Muted, until when you're back, okay?",
+        "Will do, muted, anything else?",
+        "Can do, muted, anything else?",
+        "Sure - I paused it, playing next, skipping ahead.",
+        "Okay - found it, playing it now, resuming from the start.",
     ],
 )
 def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
@@ -273,6 +314,38 @@ def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
         "Skipping songs works by voice, just say next.",
         "Added to that, I can queue songs.",
         "Queueing songs is easy: just ask.",
+        "I can set the volume for you.",
+        "Set the volume to what?",
+        "What should I set it to?",
+        "I set out to find it, but nothing came up.",
+        "I'd set it lower at night.",
+        "Shall I put it on shuffle?",
+        "Sure, set it to what?",
+        "Set the volume to what\uff1f",
+        "The volume is set by the system.",
+        "The volume's up to you.",
+        "Set it to what?)",
+        "Do you want it playing, paused, or muted?",
+        "Shuffle on, or shuffle off?",
+        "Muted, or just quieter?",
+        "Set it to what, exactly?",
+        "Sure, set it to what, exactly?",
+        "Set the volume to what, thirty?",
+        "Playing what, exactly?",
+        "Playing which song, the first one?",
+        "Skipping to the next one, or the previous?",
+        "Switched to what, exactly?",
+        "Added to which playlist, this one?",
+        "Playing music, or pausing it?",
+        "I can help with that - playing music, pausing, skipping.",
+        "It's set to repeat already.",
+        "Muted, or just quieter?!",
+        "Here's what I can do - playing, managing queues.",
+        "Spotify - playing, managing queues.",
+        "I can help - playing, or pausing.",
+        "I can do that - playing, and pausing.",
+        "I can control it - playing, volume and mute.",
+        "Here's what I can do - playing, pausing.",
     ],
 )
 def test_an_honest_answer_is_not_a_claim(reply: str) -> None:
@@ -1168,3 +1241,10 @@ def test_a_request_that_waits_for_a_cold_model_gets_the_load_time_too() -> None:
     assert agent.handle("skip", NO_CONFIRM) == "Skipped."
     assert counter.runs == [{"op": "next"}]
     assert model.timeouts[0] == pytest.approx(agent_module.MAX_SECONDS + agent_module.COLD_LOAD_S)
+
+
+def test_a_long_run_of_spaces_is_checked_quickly() -> None:
+    started = time.perf_counter()
+
+    assert not claims_action("Muted" + " " * 50_000 + "?")
+    assert time.perf_counter() - started < 1.0

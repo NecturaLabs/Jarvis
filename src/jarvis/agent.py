@@ -72,12 +72,33 @@ _SUBJECT = (
 )
 _DEED = (
     r"(?:paused|resumed|resuming|playing|skipped|skipping|queued|added|saved|liked|started|"
-    r"stopped|switched|done|turned (?:it |the volume )?(?:up|down)|"
+    r"stopped|switched|done|muted|unmuted|"
+    r"turned (?:it |the volume |shuffle |repeat )?(?:up|down|on|off)|"
+    r"turned (?:on|off) (?:shuffle|repeat)|"
+    r"(?:set|changed|lowered|raised|increased|decreased|upped|muted|unmuted|put) (?:it|that|this|"
+    r"(?:the|your) (?:volume|music|song|track|playlist|queue))|"
+    r"set to (?:\d+|(?:ten|eleven|twelve|\w+teen|\w+ty)\b)|"
     r"volume(?:'s| is| has been)? (?:now )?(?:set|changed|increased|decreased|raised|lowered|"
     r"up|down|at)|"
+    r"the volume(?:'s| is| has been)? (?:now )?(?:at (?:\d+|(?:ten|eleven|twelve|\w+teen|\w+ty)\b)|"
+    r"(?:set|changed|raised|lowered|turned (?:up|down)) to\b)|"
     r"(?:shuffle|repeat)(?:'s| is)? (?:now )?(?:on|off|set))\b"
 )
 _CLAIM = re.compile(_LEAD + _SUBJECT + _DEED, re.IGNORECASE)
+# After a dash only a clause with its own subject counts ("Sure - I muted it"), not a list of
+# what Jarvis can do ("Spotify - playing music, managing queues").
+_CLAIM_AFTER_DASH = re.compile(_LEAD + _SUBJECT.removesuffix("?") + _DEED, re.IGNORECASE)
+# ...or a deed standing alone as the whole clause ("Sure - muted.", "Okay - paused it.").
+_BARE_DEED = re.compile(_LEAD + _DEED + r"(?: (?:it|that|this|now|for you))*[.!]?$", re.IGNORECASE)
+# A question that asks rather than reports: it opens with a question word or an auxiliary, or a
+# clause before its end holds a question word ("Set it to what, exactly?").
+_ASKS = re.compile(
+    r"^(?:do|does|did|shall|should|would|could|can|will|is|are|was|were|want|may)\b(?! do\b)|"
+    # a question word, unless a subject or a verb follows it: "what you asked", "which is by"
+    r"\b(?:what|which|who|whom|where|when|why|how)\b"
+    r"(?! (?:you|i|he|she|they|we|it|is|was|are|were)\b)",
+    re.IGNORECASE,
+)
 _DENIAL = re.compile(
     r"\b(?:not|no|nothing|never|cannot|unable|failed)\b|n't\b|\bcant\b|\bcouldnt\b",
     re.IGNORECASE,
@@ -93,8 +114,12 @@ _DESCRIPTION = re.compile(
     rf"^{_LEAD}{_GERUND}\b(?:[^,.;:!?]{{0,40}}?\b(?:is|are|was|were|works|work|can|will|"
     rf"means|lets|makes|takes)\b|\s*,\s*{_GERUND}\b)|^(?i:added to (?:that|this))\b"
 )
+_LONE_GERUND = re.compile(rf"^{_GERUND}[.!]?$")  # "pausing" in "playing music, pausing, skipping"
 _COURTESY = re.compile(r"^no (?:problem|worries)\b[,.!]?\s*", re.IGNORECASE)  # not a denial
 _SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+|\n+")
+_DASH = re.compile(r"\s*(?:[\u2012\u2013\u2014\u2015\u2212]|--)\s*|\s-\s")
+_CLAUSE_BREAK = re.compile(r"[,\u3001\uff0c(\[]")  # a comma, or an aside opening
+_EDGES = "\"'\u201c\u201d\u2018)]"
 _ACTIONS_NOTE = re.compile(r"^\[actions taken:[^\]]*\]\s*", re.IGNORECASE)
 _REPLY_KEY = '{"reply":"'
 _REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
@@ -105,16 +130,53 @@ def claims_action(reply: str) -> bool:
     """Return True when a reply says that something was done.
 
     Only a sentence or clause that opens with the deed counts ("Paused.", "Sure thing, playing
-    it now."), and never a sentence that denies anything or names a deed as a thing, so an honest
-    "I couldn't find that, so nothing was saved" or "Playing music is my specialty" is left alone.
+    it now.", "I set the volume to thirty.", "Sure - I muted it."). A sentence that denies
+    anything or names a deed as a thing never counts, nor does a question that asks ("Muted, or
+    just quieter?", "Set it to what, exactly?"); in one that only closes with a question, what
+    comes before it still counts ("Done, anything else?"). So an honest "I couldn't find that, so
+    nothing was saved" or "Playing music is my specialty" is left alone.
     """
-    for sentence in _SENTENCE_END.split(reply.replace("\u2019", "'")):
-        text = sentence.strip()
+    for sentence in _SENTENCE_END.split(reply.replace("\u2019", "'").replace("\uff1f", "?")):
+        text = " ".join(sentence.split()).strip(_EDGES + "([")
         if not text or _DENIAL.search(_COURTESY.sub("", text)) or _DESCRIPTION.match(text):
             continue
-        if any(_CLAIM.match(clause.strip()) for clause in text.split(",")):
+        clauses = _clauses(text)
+        if text.rstrip(_EDGES + "!").endswith("?"):
+            before = [words for words, _ in clauses[:-1]]
+            if (
+                _ASKS.match(clauses[0][0])
+                or any(_ASKS.search(words) or words.lower().startswith("or ") for words in before)
+                or clauses[-1][0].lower().startswith("or ")
+            ):
+                continue  # it asks; it reports nothing
+            clauses = clauses[:-1]  # the closing question offers more; what comes before may claim
+        if any(claim for _, claim in clauses):
             return True
     return False
+
+
+def _clauses(text: str) -> list[tuple[str, bool]]:
+    """Split a sentence at commas, asides and dashes; return each clause and whether it claims.
+
+    After a dash a clause counts with its own subject, or as a deed standing alone ("Sure - muted,
+    anything else?") unless the part lists what Jarvis can do ("Spotify - playing music, pausing,
+    skipping", "Spotify - playing, managing queues").
+    """
+    out: list[tuple[str, bool]] = []
+    for index, part in enumerate(_DASH.split(text)):
+        pieces = [w for c in _CLAUSE_BREAK.split(part) if (w := c.strip().strip(_EDGES))]
+        lone = [bool(_LONE_GERUND.match(words)) for words in pieces]
+        listed = sum(lone) > 1  # what Jarvis can do, not what it did
+        for words, gerund in zip(pieces, lone, strict=True):
+            if index == 0:
+                claim = bool(_CLAIM.match(words))
+            else:
+                bare = not listed and not (gerund and len(pieces) > 1)
+                claim = bool(_CLAIM_AFTER_DASH.match(words)) or (
+                    bare and bool(_BARE_DEED.match(words))
+                )
+            out.append((words, claim))
+    return out or [(text, False)]
 
 
 def _complete_prefix(body: str) -> str:
