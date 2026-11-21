@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Git pre-commit hook: refuses a commit while the project's checks (`uv run .lint/check.sh`) or the
+# tests that need no hardware (`pytest -m "not local"`) fail, before CI runs the same. Skipped when the
+# commit stages no Python, stub, shell, TOML, Markdown or YAML file, no uv.lock and nothing in
+# tools/hooks/.
+# Opt in with tools/install-hooks.sh.
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+staged=$(mktemp "${TMPDIR:-/tmp}/jarvis-staged.XXXXXX")
+trap 'rm -f -- "${staged}"' EXIT
+# -z: names are NUL-separated, so spaces, newlines and quotes in a name cannot split or hide one.
+git diff --cached --name-only -z --diff-filter=ACMRD >"${staged}"
+relevant=false
+while IFS= read -r -d '' path; do
+  case "${path}" in
+    *.py | *.pyi | *.sh | *.toml | *.md | *.yml | uv.lock | */uv.lock | tools/hooks/*)
+      relevant=true
+      ;;
+    *) ;;
+  esac
+done <"${staged}"
+if ! "${relevant}"; then
+  echo "pre-commit: skipped, no Python, shell, TOML, Markdown, YAML, uv.lock or hook file is staged." >&2
+  exit 0
+fi
+
+# Git exports repository context to hooks. The tests create their own repositories; keeping GIT_DIR or
+# GIT_INDEX_FILE would make their git commands modify this checkout instead.
+git_context=$(git rev-parse --local-env-vars)
+while IFS= read -r variable; do
+  unset "${variable}"
+done <<<"${git_context}"
+
+echo "pre-commit: uv run .lint/check.sh" >&2
+if ! uv run .lint/check.sh; then
+  echo "pre-commit: the checks found problems; fix them and commit again." >&2
+  exit 1
+fi
+
+echo 'pre-commit: uv run pytest -q -m "not local"' >&2
+if ! PIPEWIRE_REMOTE=/nonexistent PULSE_SERVER=unix:/nonexistent uv run pytest -q -m "not local"; then
+  echo "pre-commit: a test failed; fix it and commit again." >&2
+  exit 1
+fi
