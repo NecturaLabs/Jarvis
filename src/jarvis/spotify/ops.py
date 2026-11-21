@@ -34,6 +34,7 @@ REFRESH_RETRY_S = 60.0
 QUEUE_BUDGET_S = 30.0
 RECENT_QUEUE_S = 30 * 60.0
 ALREADY_QUEUED = "That's already in the queue."
+SAY_WHAT_TO_PLAY = "say what to play"
 NOTHING_PLAYING = "Nothing is playing."
 NO_VOLUME_CONTROL = "This device doesn't allow volume control from here."
 _VOLUME_DISALLOWED = "VOLUME_CONTROL_DISALLOW"
@@ -226,6 +227,7 @@ class SpotifyOps:
         self._clock = clock
         self._names: list[str] = []
         self._warm = False
+        self._login_expired = False
         self._playlist_cache: list[dict[str, Any]] | None = None
         self._playlist_at = 0.0
         self._recent: dict[str, float] = {}
@@ -244,10 +246,12 @@ class SpotifyOps:
         A failure is logged and swallowed, and the previous names are kept.
         """
         self._warm = False
+        self._login_expired = False
         try:
             self._api.ensure_login()
             artists = self._api.library(max_age_s=0).get("artist", [])
         except SpotifyLoginExpired:
+            self._login_expired = True
             log.warning("Spotify login has expired; run `jarvis spotify-login`")
             return
         except SpotifyError as exc:
@@ -262,14 +266,16 @@ class SpotifyOps:
     def start_refresh(self, stop: threading.Event) -> threading.Thread:
         """Refresh now and then every `library_refresh_s` on a daemon thread, until `stop` is set.
 
-        A refresh that failed (offline at start-up, say) is tried again after a minute.
+        A refresh that failed (offline at start-up, say) is tried again after a minute; one that
+        failed because the login expired is not, as only a new login can fix that.
         """
 
         def loop() -> None:
             while not stop.is_set():
                 self.refresh()
                 period = self._settings.library_refresh_s
-                if stop.wait(period if self._warm else min(period, REFRESH_RETRY_S)):
+                retry_soon = not (self._warm or self._login_expired)
+                if stop.wait(min(period, REFRESH_RETRY_S) if retry_soon else period):
                     return
 
         thread = threading.Thread(target=loop, name="jarvis-spotify-refresh", daemon=True)
@@ -377,6 +383,12 @@ class SpotifyOps:
         best = max(scored, key=operator.attrgetter("score"), default=None)
         return best if best and best.score >= self._settings.loose_match else None
 
+    def _playlists_cached(self) -> bool:
+        """Return whether the owner's playlists are held from an earlier request."""
+        return (
+            self._playlist_cache is not None and self._clock() - self._playlist_at < PLAYLIST_TTL_S
+        )
+
     def _playlists(self, *, fresh: bool = False) -> list[dict[str, Any]]:
         """Return the owner's playlists, kept for a few minutes."""
         now = self._clock()
@@ -440,8 +452,9 @@ class SpotifyOps:
     def _find_playlist(self, query: str, *, mine: bool) -> _Hit | None:
         """Return a playlist to play: the owner's own first; a public one only if not `mine`."""
         close, loose = self._settings.close_match, self._settings.loose_match
+        was_cached = self._playlists_cached()
         own = self._best_hit(self._playlists(), query, "playlist", "")
-        if own is None or own.score < close:
+        if was_cached and (own is None or own.score < close):
             fresh = self._best_hit(self._playlists(fresh=True), query, "playlist", "")
             own = fresh if fresh and (own is None or fresh.score > own.score) else own
         if own is not None and own.score >= close:
@@ -464,9 +477,30 @@ class SpotifyOps:
         self._start({"uris": uris})
         return Result("Now playing your liked songs, shuffled.", Origin.SPOTIFY)
 
+    @staticmethod
+    def _play_query(args: dict[str, Any]) -> str:
+        """Return what to search for; every kind but the owner's liked songs needs it.
+
+        Raises:
+            OperationError: the request does not say what to play.
+        """
+        query = str(args.get("query") or "")
+        if not query and args["kind"] != "liked":
+            raise OperationError(SAY_WHAT_TO_PLAY)
+        return query
+
+    def check_play(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Refuse a play request that names nothing before it is decided on or confirmed."""
+        self._play_query(args)
+        return args
+
     def play(self, args: dict[str, Any]) -> Result:
-        """Find what was asked for and play it; misheard names fall back to the owner's music."""
-        query, kind = args["query"], args["kind"]
+        """Find what was asked for and play it; misheard names fall back to the owner's music.
+
+        A request that names nothing to play (every kind but liked needs a query) fails with an
+        `OperationError` that says so.
+        """
+        query, kind = self._play_query(args), args["kind"]
         if kind == "liked":
             return self._play_liked()
         artist = str(args.get("artist") or "").strip()
@@ -836,8 +870,9 @@ class SpotifyOps:
         return [
             Operation(
                 "spotify_play",
-                "Play a track, album, artist or playlist on Spotify, or kind=liked for the "
-                "owner's saved songs (shuffled). Use kind=playlist for the owner's playlists, "
+                "Play a track, album, artist or playlist on Spotify (query says which), or "
+                "kind=liked for the owner's saved songs (shuffled; no query). Use kind=playlist "
+                "for the owner's playlists, "
                 'with mine=true when they said "my" playlist. For "the song X by Y" set '
                 "query=X and artist=Y.",
                 {
@@ -854,11 +889,16 @@ class SpotifyOps:
                             "description": "The owner said it is their own playlist",
                         },
                     },
-                    "required": ["query", "kind"],
+                    "required": ["kind"],
                     "additionalProperties": False,
                 },
                 self.play,
-                spoken_summary=lambda a: f"play the {a['kind']} {a['query']}",
+                spoken_summary=lambda a: (
+                    "play your liked songs"
+                    if a["kind"] == "liked"
+                    else f"play the {a['kind']} {a['query']}"
+                ),
+                prepare=self.check_play,
             ),
             Operation(
                 "spotify_pause",
