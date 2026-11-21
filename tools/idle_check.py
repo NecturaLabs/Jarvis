@@ -5,7 +5,10 @@ Jarvis keeps its model loaded and runs beside games. Holding RAM and VRAM is fin
 must use no GPU and next to no CPU. This reads /proc twice, `--seconds` apart, for each root process
 and every descendant of it, and reports per root:
 
-- CPU: utime + stime from /proc/<pid>/stat, as a percentage of one core;
+- CPU: utime + stime from /proc/<pid>/stat, plus cutime + cstime (the time of children each process
+  has waited for, so a program started and finished inside the window still counts), as a
+  percentage of one core. A process that exits and is waited for by something outside the tree
+  (re-parented to systemd) is lost; use the unit's cgroup if that matters;
 - GPU: the `drm-engine-<name>: <n> ns` counters in /proc/<pid>/fdinfo/* (amdgpu and i915 publish
   them), as a busy percentage per engine, counting each DRM client once (`drm-client-id`);
 - RSS: VmRSS in /proc/<pid>/status summed over the tree at the start and at the end (pages shared
@@ -36,8 +39,11 @@ _KIB_PER_MIB = 1024
 DEFAULT_MAX_CPU_PERCENT = 5.0
 DEFAULT_MAX_RSS_GROWTH_MIB = 50.0
 DEFAULT_MAX_GPU_PERCENT = 1.0
-_UTIME = 11  # utime and stime are fields 14 and 15 of stat; the text after ")" starts at field 3
+# utime, stime, cutime and cstime are fields 14 to 17 of stat; the text after ")" starts at field 3.
+_UTIME = 11
 _STIME = 12
+_CUTIME = 13
+_CSTIME = 14
 _RSS = re.compile(r"^VmRSS:\s+(\d+)\s+kB", re.MULTILINE)
 _ENGINE = re.compile(r"^drm-engine-(?P<name>[^:\s]+):\s+(?P<ns>\d+)\s+ns\s*$")
 _CLIENT = re.compile(r"^drm-client-id:\s+(?P<id>\d+)\s*$")
@@ -60,11 +66,19 @@ class Root:
 
 
 @dataclass(frozen=True, slots=True)
+class Ticks:
+    """CPU time of one process in clock ticks: its own, and that of the children it has reaped."""
+
+    own: int
+    reaped: int
+
+
+@dataclass(frozen=True, slots=True)
 class Snapshot:
     """One reading of a process tree."""
 
     when: float
-    ticks: dict[int, int]
+    ticks: dict[int, Ticks]
     rss_kib: int
     gpu_ns: dict[GpuKey, int]
 
@@ -130,8 +144,8 @@ def descendants(proc: Path, pid: int) -> list[int]:
     return order
 
 
-def cpu_ticks(proc: Path, pid: int) -> int | None:
-    """Return utime + stime of `pid` in clock ticks, or None when it is gone or unreadable."""
+def cpu_ticks(proc: Path, pid: int) -> Ticks | None:
+    """Return the CPU time of `pid`, or None when it is gone or unreadable."""
     try:
         text = (proc / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -139,10 +153,13 @@ def cpu_ticks(proc: Path, pid: int) -> int | None:
     # The command name sits in parentheses and may hold spaces and parentheses: split after the
     # last one.
     fields = text.rpartition(")")[2].split()
-    if len(fields) <= _STIME:
+    if len(fields) <= _CSTIME:
         return None
     try:
-        return int(fields[_UTIME]) + int(fields[_STIME])
+        return Ticks(
+            own=int(fields[_UTIME]) + int(fields[_STIME]),
+            reaped=int(fields[_CUTIME]) + int(fields[_CSTIME]),
+        )
     except ValueError:
         return None
 
@@ -214,8 +231,19 @@ def snapshot(proc: Path, root: int, clock: Callable[[], float]) -> Snapshot | No
 
 
 def _cpu_delta(start: Snapshot, end: Snapshot) -> int:
-    """Ticks used between the snapshots; a process that appeared in between counts in full."""
-    return sum(max(0, ticks - start.ticks.get(pid, 0)) for pid, ticks in end.ticks.items())
+    """Ticks used between the snapshots.
+
+    A process that appeared in between counts in full. A child that exited shows up in its
+    parent's reaped time with its whole life, so what it had used before the window is taken off
+    that again; the result never goes below the processes' own time.
+    """
+    none = Ticks(0, 0)
+    own = sum(max(0, t.own - start.ticks.get(pid, none).own) for pid, t in end.ticks.items())
+    reaped = sum(
+        max(0, t.reaped - start.ticks.get(pid, none).reaped) for pid, t in end.ticks.items()
+    )
+    before = sum(t.own + t.reaped for pid, t in start.ticks.items() if pid not in end.ticks)
+    return own + max(0, reaped - before)
 
 
 def _gpu_delta(start: Snapshot, end: Snapshot) -> dict[str, int]:
