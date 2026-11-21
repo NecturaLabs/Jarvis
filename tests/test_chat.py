@@ -1004,6 +1004,22 @@ def test_the_window_uses_the_assistants_name() -> None:
     _run(test, app)
 
 
+def test_timers_that_come_while_the_window_closes_do_nothing() -> None:
+    tail = FakeTail()
+    app = _app(tail, session=FakeSession(), settings=ChatConfig(toolbar=False))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.pause(0.05)
+        tail.entries.append({"event": "reply", "text": "Paused.", "session": "other"})
+        await app.screen.remove_children()  # as when the window is taken down
+        # The timers' own calls:
+        app._tick()  # pyright: ignore[reportPrivateUsage]
+        app._poll()  # pyright: ignore[reportPrivateUsage]
+        app._refresh_stats()  # pyright: ignore[reportPrivateUsage]
+
+    _run(test, app)
+
+
 def test_steps_carry_their_level_as_a_class() -> None:
     app = _app(FakeTail(list(STEPS)), settings=ChatConfig(verbosity="everything"))
 
