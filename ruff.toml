@@ -18,3 +18,53 @@ known-first-party = ["jarvis"]
 [lint.extend-per-file-ignores]
 # One entry per deliberate exception, with the reason on the line above:
 # "tools/legacy.py" = ["C901"]
+# The checks in tools/ are command-line scripts run by path, not a package, and they report on stdout.
+"tools/*.py" = ["INP001", "T201"]
+# The OAuth callback test makes a real request to the in-process loopback server with the standard
+# library's client (the tests keep httpx out of it); tests/conftest.py allows only loopback ports a test bound.
+"tests/test_spotify_auth.py" = ["TID251"]
+
+# Product rules from AGENTS.md, enforced by lint (tests/test_product_rules.py scans the tree for the
+# rest): Jarvis is local and free, so no hosted-model SDK may be imported. Add the real module path.
+[lint.flake8-tidy-imports.banned-api]
+"openai".msg = "Product rule: no hosted model backend or paid API; Jarvis talks only to the local Strata server (AGENTS.md, Product rules)."
+"anthropic".msg = "Product rule: no hosted model backend or paid API; Jarvis talks only to the local Strata server (AGENTS.md, Product rules)."
+"google.generativeai".msg = "Product rule: no hosted model backend or paid API; Jarvis talks only to the local Strata server (AGENTS.md, Product rules)."
+"google.genai".msg = "Product rule: no hosted model backend or paid API; Jarvis talks only to the local Strata server (AGENTS.md, Product rules)."
+"litellm".msg = "Product rule: no hosted model backend or paid API; Jarvis talks only to the local Strata server (AGENTS.md, Product rules)."
+"cohere".msg = "Product rule: no hosted model backend or paid API; Jarvis talks only to the local Strata server (AGENTS.md, Product rules)."
+"mistralai".msg = "Product rule: no hosted model backend or paid API; Jarvis talks only to the local Strata server (AGENTS.md, Product rules)."
+"groq".msg = "Product rule: no hosted model backend or paid API; Jarvis talks only to the local Strata server (AGENTS.md, Product rules)."
+"together".msg = "Product rule: no hosted model backend or paid API; Jarvis talks only to the local Strata server (AGENTS.md, Product rules)."
+"replicate".msg = "Product rule: no hosted model backend or paid API; Jarvis talks only to the local Strata server (AGENTS.md, Product rules)."
+"huggingface_hub".msg = "Product rule: no hosted model backend or paid API, and models live outside the repository where the owner puts them (AGENTS.md, Product rules)."
+"os.system".msg = "Product rule: boundaries are enforced by typed operations; no shell strings. Use subprocess with an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.popen".msg = "Product rule: boundaries are enforced by typed operations; no shell strings. Use subprocess with an argument list in the files that may (AGENTS.md, Boundaries)."
+"urllib.request".msg = "Product rule: HTTP goes through httpx, and only in the named client modules (tests/test_product_rules.py); no other client reaches a server (AGENTS.md, Product rules)."
+"http.client".msg = "Product rule: HTTP goes through httpx, and only in the named client modules (tests/test_product_rules.py); no other client reaches a server (AGENTS.md, Product rules)."
+"asyncio.create_subprocess_exec".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"asyncio.create_subprocess_shell".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.posix_spawn".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.posix_spawnp".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.execv".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.execve".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.execvp".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.execvpe".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.execl".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.execle".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.execlp".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.execlpe".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.spawnv".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.spawnve".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.spawnvp".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.spawnvpe".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.spawnl".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.spawnle".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.spawnlp".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"os.spawnlpe".msg = "Product rule: boundaries are enforced by typed operations; start a program only with subprocess and an argument list in the files that may (AGENTS.md, Boundaries)."
+"elevenlabs".msg = "Product rule: voice activation and speech-to-text stay local, and no hosted speech or paid API is used (AGENTS.md, Product rules)."
+"deepgram".msg = "Product rule: voice activation and speech-to-text stay local, and no hosted speech or paid API is used (AGENTS.md, Product rules)."
+"assemblyai".msg = "Product rule: voice activation and speech-to-text stay local, and no hosted speech or paid API is used (AGENTS.md, Product rules)."
+"google.cloud.speech".msg = "Product rule: voice activation and speech-to-text stay local, and no hosted speech or paid API is used (AGENTS.md, Product rules)."
+"google.cloud.texttospeech".msg = "Product rule: voice activation and speech-to-text stay local, and no hosted speech or paid API is used (AGENTS.md, Product rules)."
+"azure.cognitiveservices.speech".msg = "Product rule: voice activation and speech-to-text stay local, and no hosted speech or paid API is used (AGENTS.md, Product rules)."

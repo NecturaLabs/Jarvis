@@ -3,6 +3,7 @@
   "pythonVersion": "3.14",
   "venvPath": ".",
   "venv": ".venv",
-  "include": ["src", "tests"],
+  "include": ["src", "tests", "tools"],
+  "extraPaths": ["src", "tools"],
   "exclude": ["**/node_modules", "**/.*", "**/target", "**/vendor"]
 }

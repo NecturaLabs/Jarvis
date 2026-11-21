@@ -6,8 +6,9 @@ traps found along the way. Add a trap the moment it costs time.
 ## Build and check
 
 1. `uv sync` (uses the system Python 3.14; `uv.lock` pins every package with hashes).
-2. `git add` new files, then `uv run .lint/check.sh` — the runner checks tracked files only.
-3. `uv run pytest -q`; `uv run pytest -m local` only on this PC, with the owner when audio is involved.
+2. `git add` new files, then `tools/check.sh` — everything CI runs; the lint checks tracked files only.
+3. `uv run pytest -m local` only on this PC, with the owner when audio is involved. The `run-silent` skill says
+   what an agent may start.
 
 ## Launch and capture
 
@@ -23,6 +24,14 @@ traps found along the way. Add a trap the moment it costs time.
 - Work goes on a `feature/…` branch, merged into `dev`; `main` is released only when the owner asks.
 - Before ending a session: commit and push the branch, update the issue with evidence, and leave the next step
   in the issue.
+
+## Upkeep
+
+- Dependabot proposes package and action updates weekly, a week after each release (`cooldown`). The Python
+  interpreter (`.python-version`, `requires-python`) has no Dependabot ecosystem: bump it by hand, with the CI
+  run on the new version.
+- `tools/idle_check.py --unit jarvis.service --unit jarvis-strata.service` measures the "no CPU or GPU while
+  idle" rule on a running install; it only reads `/proc`.
 
 ## Traps
 

@@ -82,11 +82,15 @@ microphone and use no real audio device.
 
 ```sh
 uv sync                  # install the locked environment
-uv run .lint/check.sh    # Ruff (every rule), format check, pyright strict, shell and editorconfig checks
-uv run pytest -q         # unit tests
+tools/check.sh           # everything CI runs: lint, types, tests, REUSE, licences, docs, advisories
+uv run .lint/check.sh    # lint only: Ruff (every rule), format check, pyright strict, shell and editorconfig
+uv run pytest -q -m "not local"   # tests only
+tools/install-hooks.sh   # optional: run the checks before each commit and check the subject format
 ```
 
-`.lint/check.sh` lints tracked files only, so `git add` new files first. Every check must pass before a
+`.lint/check.sh` lints tracked files only, so `git add` new files first. `tests/conftest.py` gives every test a
+temporary home folder and refuses the network, audio and the real programs Jarvis drives, so a test cannot reach
+your own setup. [tools/README.md](tools/README.md) lists every script. Every check must pass before a
 pull request can merge; fix findings rather than silencing them. Where a suppression is deliberate, put it on
 the narrowest line and give the reason beside it, as the existing `# ruff: ignore[...] - reason` comments do.
 Do not edit `.lint/`; project lint settings go in `ruff.toml` and `pyrightconfig.json`.
@@ -193,7 +197,7 @@ Example: `feat(spotify): queue several songs in one request`.
 ## Before merging
 
 - [ ] Changes are reviewable as individual commits, based on current `dev`.
-- [ ] `uv run .lint/check.sh` and `uv run pytest -q` pass, and the required GitHub Actions checks pass.
+- [ ] `tools/check.sh` passes, and the required GitHub Actions checks pass.
 - [ ] A new or changed tool operation has tests, including a refused and an unconfirmed case.
 - [ ] Anything that can make a sound ran silently, and the pull request says how.
 - [ ] Docs (`README.md`, `docs/configuration.md`, `docs/models.md`, `docs/plan.md`, an ADR where a decision

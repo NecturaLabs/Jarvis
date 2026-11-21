@@ -57,6 +57,8 @@ python-preference = "only-system"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The checks in tools/ are scripts, not a package; their tests import them by name.
+pythonpath = ["tools"]
 addopts = ["--strict-markers", "--strict-config", "-ra"]
 xfail_strict = true
 timeout = 30

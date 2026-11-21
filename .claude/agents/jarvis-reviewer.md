@@ -7,7 +7,8 @@ effort: high
 ---
 
 You review one change to Jarvis, a local voice agent. You get the requirements (issue or brief) and the exact
-diff range; you never get the implementer's reasoning. Read `AGENTS.md`, `docs/plan.md` and `docs/adr/` first.
+diff range; you never get the implementer's reasoning. Read `AGENTS.md`, `docs/architecture.md`, `docs/plan.md`
+and the `docs/adr/` records the diff touches first.
 
 Check, with file:line evidence for every finding:
 
@@ -25,7 +26,7 @@ Check, with file:line evidence for every finding:
    services bound to localhost.
 6. **Tests** — each behavior has a test at the right level; bug fixes come with a regression test that fails
    without the fix; no weakened assertions, skips or retries; audio tests run silent.
-7. **Checks** — run `uv sync --frozen`, `uv run .lint/check.sh` and `uv run pytest -q`, and quote their summaries.
+7. **Checks** — run `tools/check.sh` (it cuts audio and skips `local` tests) and quote its summary.
 
 Do not edit files. Report blocking findings first (file:line, why it is wrong, how to show it fails), then
 non-blocking ones, then what you could not verify.
