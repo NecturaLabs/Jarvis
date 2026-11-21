@@ -26,6 +26,7 @@ _PROGRAMS = [
     "pactl",
     "paplay",
     "hyprctl",
+    "xdg-open",
 ]
 
 
@@ -105,6 +106,71 @@ def test_a_connection_beyond_loopback_is_refused(
     assert "loopback" in str(caught.value)
     assert len(hermetic) == 1
     hermetic.clear()
+
+
+@pytest.mark.parametrize("port", [1, 9])
+@pytest.mark.parametrize("method", ["connect", "connect_ex"])
+def test_a_loopback_port_no_test_bound_is_refused(
+    hermetic: list[str], method: str, port: int
+) -> None:
+    # The owner's real Strata (config default port 8080) and Spotify's callback port live here.
+    with (
+        socket.socket() as sock,
+        pytest.raises(Exception, match="no socket in this test") as caught,
+    ):
+        getattr(sock, method)(("127.0.0.1", port))
+    assert type(caught.value).__name__ == "HermeticError"
+    assert len(hermetic) == 1
+    hermetic.clear()
+
+
+def test_a_loopback_port_bound_with_port_zero_connects() -> None:
+    with socket.socket(socket.AF_INET6) as server:
+        server.bind(("::1", 0))
+        server.listen()
+        with socket.socket(socket.AF_INET6) as client:
+            client.connect(server.getsockname())
+
+
+def test_a_datagram_to_a_bound_loopback_port_is_sent() -> None:
+    with (
+        socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server,
+        socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client,
+    ):
+        server.bind(("127.0.0.1", 0))
+        client.sendto(b"x", server.getsockname())
+        client.sendto(b"y", 0, server.getsockname())
+        assert server.recv(8) == b"x"
+
+
+@pytest.mark.parametrize(
+    "address", [("127.0.0.1", 1), ("192.0.2.1", 53)], ids=["unbound-loopback", "beyond-loopback"]
+)
+def test_a_datagram_to_an_unbound_or_outside_address_is_refused(
+    hermetic: list[str], address: tuple[str, int]
+) -> None:
+    with (
+        socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock,
+        pytest.raises(Exception, match="a test tried to") as caught,
+    ):
+        sock.sendto(b"x", address)
+    assert type(caught.value).__name__ == "HermeticError"
+    assert len(hermetic) == 1
+    hermetic.clear()
+
+
+@pytest.mark.parametrize("host", ["leak-check.invalid", "192.0.2.1", "example.com"])
+def test_resolving_a_name_beyond_loopback_is_refused(hermetic: list[str], host: str) -> None:
+    with pytest.raises(Exception, match="resolve") as caught:
+        socket.getaddrinfo(host, 80)
+    assert type(caught.value).__name__ == "HermeticError"
+    assert len(hermetic) == 1
+    hermetic.clear()
+
+
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "::1", None])
+def test_resolving_loopback_still_works(host: str | None) -> None:
+    assert socket.getaddrinfo(host, 80)
 
 
 @pytest.mark.parametrize("method", ["connect", "connect_ex"])
@@ -266,3 +332,37 @@ def test_a_local_test_is_not_guarded_and_a_swallowed_refusal_still_fails(
     result.stdout.fnmatch_lines(
         ["*ERROR at teardown of test_swallowing_the_refusal_does_not_hide_it*"]
     )
+
+
+_INNER_ENVIRONMENT = """
+import os
+from pathlib import Path
+
+
+def test_inherited_variables_are_gone():
+    for name in ("JARVIS_DEBUG_AUDIO_DIR", "GIT_DIR", "GIT_AUTHOR_NAME", "GIT_SSH_COMMAND"):
+        assert name not in os.environ, name
+    assert os.environ["GIT_CONFIG_NOSYSTEM"] == "1"
+    config = Path(os.environ["GIT_CONFIG_GLOBAL"])
+    assert config.is_file()
+    assert config.read_text() == ""
+    assert not config.resolve().is_relative_to(Path(os.environ["HOME"]).resolve())
+"""
+
+
+def test_the_owners_debug_and_git_variables_are_not_inherited(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JARVIS_DEBUG_AUDIO_DIR", "/somewhere")
+    monkeypatch.setenv("GIT_DIR", "/elsewhere/.git")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Someone")
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i key")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/home/owner/.gitconfig")
+    monkeypatch.delenv("GIT_CONFIG_NOSYSTEM", raising=False)
+    pytester.makeini("[pytest]\nmarkers =\n    local: needs the real PC\n")
+    pytester.makeconftest(_CONFTEST.read_text(encoding="utf-8"))
+    pytester.makepyfile(_INNER_ENVIRONMENT)
+
+    result = pytester.runpytest_inprocess("-p", "no:cacheprovider")
+
+    result.assert_outcomes(passed=1)

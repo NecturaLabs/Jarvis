@@ -7,7 +7,10 @@ new, add it to the rule's allow-list below with a one-line reason, and say why i
 """
 
 import ast
+import json
 import re
+import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +35,11 @@ SUBPROCESS_FILES = {
     "spotify/ops.py": "launches the Spotify client when no device is active",
 }
 
+# Files that may build a path with a `voxtype` component other than the config directory.
+VOXTYPE_PATH_FILES = {
+    "cli.py": "`jarvis doctor` reads (never writes) Voxtype's downloaded model in its data dir",
+}
+
 # Hosts a string literal may point at; everything else is a hosted service Jarvis must not call.
 ALLOWED_HOSTS = {
     "127.0.0.1": "loopback: the local Strata server and the OAuth callback",
@@ -42,7 +50,7 @@ ALLOWED_HOSTS = {
 }
 
 # Words an operation or tool name may not contain: one agent does all the work.
-FORBIDDEN_NAME_WORDS = ("delegate", "subagent", "spawn", "agent")
+FORBIDDEN_NAME_WORDS = ("delegate", "subagent", "spawn", "agent", "assistant", "handoff")
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +130,7 @@ def scan_urls(path: str, source: str) -> list[Finding]:
     """Flag a string literal holding a web address whose host is not allowed."""
     findings: list[Finding] = []
     for line, text in _strings(ast.parse(source)):
-        for match in re.finditer(r"https?://[^\s\"'<>]+", text):
+        for match in re.finditer(r"(?:https?|wss?)://[^\s\"'<>]+", text):
             host = urlsplit(match.group()).hostname
             if host is not None and host not in ALLOWED_HOSTS:
                 findings.append(
@@ -143,34 +151,49 @@ def _path_parts(node: ast.expr) -> list[ast.expr]:
     return [node]
 
 
-def _reaches_config_home(part: ast.expr) -> bool:
-    if isinstance(part, ast.Constant):
-        return part.value == ".config"
-    callee = part.func if isinstance(part, ast.Call) else part
-    name = callee.attr if isinstance(callee, ast.Attribute) else getattr(callee, "id", "")
-    return name in {"xdg_config_home", "config_home"}
+# Calls that build a path out of their arguments.
+_PATH_BUILDERS = frozenset({"Path", "PurePath", "PosixPath", "PurePosixPath", "join", "joinpath"})
+
+
+def _is_voxtype_component(node: ast.expr) -> bool:
+    """Return whether a string constant has a path component that is exactly `voxtype`."""
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "voxtype" in node.value.replace("\\", "/").split("/")
+    )
+
+
+def _builds_voxtype_path(node: ast.AST) -> bool:
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return any(_is_voxtype_component(part) for part in _path_parts(node))
+    if isinstance(node, ast.Call):
+        callee = node.func
+        name = callee.attr if isinstance(callee, ast.Attribute) else getattr(callee, "id", "")
+        return name in _PATH_BUILDERS and any(_is_voxtype_component(arg) for arg in node.args)
+    return False
 
 
 def scan_voxtype_config(path: str, source: str) -> list[Finding]:
-    """Flag a path into the owner's Voxtype config, spelled as text or built with `/`."""
+    """Flag a path into Voxtype's config, spelled as text or built from its parts.
+
+    A built path counts when any component is exactly `voxtype`: an operand of `/`, or an argument
+    of `Path(...)`, `os.path.join(...)` or `joinpath(...)`. Jarvis's own `voxtype.toml` is not one.
+    """
     tree = ast.parse(source)
     message = (
-        "points into ~/.config/voxtype; Jarvis never edits the owner's Voxtype config and uses "
-        "only its integration contract (AGENTS.md, Product rules)."
+        "points into ~/.config/voxtype or builds a path with a `voxtype` component; Jarvis never "
+        "edits the owner's Voxtype config and uses only its integration contract "
+        "(AGENTS.md, Product rules)."
     )
-    findings = [
-        Finding(path, line, message)
-        for line, text in _strings(tree)
-        if ".config/voxtype" in text.replace("\\", "/")
-    ]
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.BinOp):
-            continue
-        parts = _path_parts(node)
-        named = any(isinstance(p, ast.Constant) and p.value == "voxtype" for p in parts)
-        if named and any(_reaches_config_home(p) for p in parts):
-            findings.append(Finding(path, node.lineno, message))
-    return findings
+    lines = {line for line, text in _strings(tree) if ".config/voxtype" in text.replace("\\", "/")}
+    if path not in VOXTYPE_PATH_FILES:
+        lines |= {
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.BinOp | ast.Call) and _builds_voxtype_path(node)
+        }
+    return [Finding(path, line, message) for line in sorted(lines)]
 
 
 def _operation_names(tree: ast.AST) -> Iterator[tuple[int, ast.expr | None]]:
@@ -270,6 +293,9 @@ def test_subprocess_in_a_launcher_passes() -> None:
         "http://example.com:8080/x",
         "https://accounts.spotify.com.evil.example/authorize",
         "see https://hosted.example/ for more",
+        "wss://api.hosted.example/v1/stream",
+        "ws://hosted.example:9000/",
+        "connect to wss://hosted.example/x now",
     ],
 )
 def test_a_hosted_address_is_flagged(literal: str) -> None:
@@ -291,6 +317,9 @@ def test_an_address_in_an_f_string_is_flagged_by_its_literal_part() -> None:
         "https://accounts.spotify.com/authorize",
         "https://api.spotify.com/v1",
         "https://",
+        "ws://127.0.0.1:8080/stream",
+        "wss://localhost/stream",
+        "ws://",
     ],
 )
 def test_a_local_or_spotify_address_passes(literal: str) -> None:
@@ -310,6 +339,18 @@ def test_an_address_in_a_docstring_is_not_a_backend() -> None:
         'P = Path.home() / ".config" / "voxtype" / "config.toml"',
         'P = xdg_config_home() / "voxtype"',
         'P = paths.xdg_config_home() / "voxtype" / "config.toml"',
+        # Built paths: a component that is exactly "voxtype", however the path is assembled.
+        'P = Path(tmp) / "voxtype"',
+        'P = base / "voxtype" / "config.toml"',
+        'P = base / "voxtype/config.toml"',
+        'P = os.path.join(base, "voxtype")',
+        'P = os.path.join(base, "voxtype", "config.toml")',
+        'P = os.path.join(base, ".config/voxtype")',
+        'P = Path(base, "voxtype")',
+        'P = Path("voxtype")',
+        'P = Path(base).joinpath("voxtype", "config.toml")',
+        'P = PurePosixPath("/etc/voxtype")',
+        'P = join(base, "voxtype")',
     ],
 )
 def test_a_path_into_the_owners_voxtype_config_is_flagged(source: str) -> None:
@@ -319,13 +360,29 @@ def test_a_path_into_the_owners_voxtype_config_is_flagged(source: str) -> None:
     assert "~/.config/voxtype" in str(findings[0])
 
 
+def test_a_voxtype_path_is_reported_on_its_own_line() -> None:
+    source = 'a = 1\nP = Path.home() / ".config" / "voxtype" / "config.toml"\nQ = base / "voxtype"'
+    assert [f.line for f in scan_voxtype_config("audio.py", source)] == [2, 3]
+
+
+def test_a_voxtype_data_path_is_allowed_only_where_listed() -> None:
+    source = 'P = xdg_data_home() / "voxtype" / "models"'
+    assert scan_voxtype_config("cli.py", source) == []
+    assert scan_voxtype_config("audio.py", source)
+
+
 @pytest.mark.parametrize(
     "source",
     [
         'P = config_dir() / "voxtype.toml"',
-        'P = Path(tmp) / "voxtype"',
         'P = xdg_config_home() / "jarvis"',
+        'P = Path(base, "voxtype.toml")',
+        'P = os.path.join(base, "not-voxtype")',
+        'P = base / "voxtype-notes"',
         'CMD = ["voxtype", "transcribe"]',
+        'CMD = ("voxtype", "record", "start")',
+        'run(["voxtype", "record", "stop", "--wait", "--json"])',
+        'PROGRAM = "voxtype"',
     ],
 )
 def test_jarvis_own_voxtype_files_pass(source: str) -> None:
@@ -334,7 +391,18 @@ def test_jarvis_own_voxtype_files_pass(source: str) -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["delegate_task", "spawn_helper", "run_subagent", "agent_call", "Ask_Agent", "do_Delegate"],
+    [
+        "delegate_task",
+        "spawn_helper",
+        "run_subagent",
+        "agent_call",
+        "Ask_Agent",
+        "do_Delegate",
+        "ask_assistant",
+        "Assistant_call",
+        "handoff_to_model",
+        "do_Handoff",
+    ],
 )
 def test_a_tool_that_suggests_a_second_agent_is_flagged(name: str) -> None:
     for source in (f'Operation("{name}", "d", {{}}, run)', f'Operation(name="{name}")'):
@@ -359,9 +427,14 @@ def test_ordinary_operation_names_pass() -> None:
 
 
 def test_the_allow_lists_name_real_files() -> None:
-    for path in (*HTTPX_FILES, *SUBPROCESS_FILES):
+    for path in (*HTTPX_FILES, *SUBPROCESS_FILES, *VOXTYPE_PATH_FILES):
         assert (SOURCE / path).is_file(), f"allow-list entry src/jarvis/{path} no longer exists"
-    reasons = [*HTTPX_FILES.values(), *SUBPROCESS_FILES.values(), *ALLOWED_HOSTS.values()]
+    reasons = [
+        *HTTPX_FILES.values(),
+        *SUBPROCESS_FILES.values(),
+        *VOXTYPE_PATH_FILES.values(),
+        *ALLOWED_HOSTS.values(),
+    ]
     assert all(reasons), "every allow-list entry needs a one-line reason"
 
 
@@ -388,3 +461,74 @@ def test_the_tree_never_points_into_the_owners_voxtype_config() -> None:
 def test_the_tree_has_no_second_agent_tool() -> None:
     findings = _scan_tree(scan_operation_names)
     assert not findings, _report(findings)
+
+
+# --- the lint table -------------------------------------------------------------------------------
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+
+# What `ruff.toml` must ban. Written out here (not read from the table) so deleting an entry fails.
+BANNED_MODULES = (
+    "openai",
+    "anthropic",
+    "google.generativeai",
+    "google.genai",
+    "litellm",
+    "cohere",
+    "mistralai",
+    "groq",
+    "together",
+    "replicate",
+    "huggingface_hub",
+    "urllib.request",
+    "http.client",
+    "elevenlabs",
+    "deepgram",
+    "assemblyai",
+    "google.cloud.speech",
+    "google.cloud.texttospeech",
+    "azure.cognitiveservices.speech",
+)
+BANNED_CALLS = (
+    "os.system",
+    "os.popen",
+    "asyncio.create_subprocess_exec",
+    "asyncio.create_subprocess_shell",
+    *(f"os.{name}" for name in ("posix_spawn", "posix_spawnp")),
+    *(f"os.{kind}{suffix}" for kind in ("exec", "spawn") for suffix in ("v", "ve", "vp", "vpe")),
+    *(f"os.{kind}{suffix}" for kind in ("exec", "spawn") for suffix in ("l", "le", "lp", "lpe")),
+)
+
+
+def test_ruff_bans_every_hosted_sdk_and_unlisted_way_to_reach_out(tmp_path: Path) -> None:
+    lines = ["import asyncio", "import os"]
+    lines += [f"import {module}" for module in BANNED_MODULES]
+    lines += [f"_ = {call}" for call in BANNED_CALLS]
+    probe = tmp_path / "probe.py"
+    probe.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "ruff",
+            "check",
+            "--config",
+            str(REPOSITORY / "ruff.toml"),
+            "--select",
+            "TID251",
+            "--no-cache",
+            "--output-format",
+            "json",
+            str(probe),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    reported = [d["message"] for d in json.loads(done.stdout) if d["code"] == "TID251"]
+    for name in (*BANNED_MODULES, *BANNED_CALLS):
+        assert any(m.startswith(f"`{name}` is banned") for m in reported), f"{name} is not banned"
+    assert all("Product rule" in m for m in reported), "every ban names the rule it enforces"
