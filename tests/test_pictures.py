@@ -10,8 +10,8 @@ from PIL import Image
 
 from jarvis.pictures import (
     MAX_SIDE,
-    PictureCache,
     Picture,
+    PictureCache,
     PictureError,
     newest,
     pasted_path,
@@ -204,7 +204,7 @@ def test_the_cache_keeps_the_newest_pictures_privately_once_each(tmp_path: Path)
     cache = PictureCache(tmp_path / "shown", keep=2)
     pictures = [prepare(_png(10 + n, 10), f"p{n}") for n in range(3)]
 
-    paths = []
+    paths: list[Path] = []
     for number, picture in enumerate(pictures):
         path = cache.keep(picture)
         os.utime(path, (1000 + number, 1000 + number))
