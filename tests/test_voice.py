@@ -27,7 +27,9 @@ SPEECH = np.ones(FRAME, dtype=np.int16)
 WAKE = np.full(FRAME, 2, dtype=np.int16)
 REQUEST = [WAKE, SPEECH, SPEECH, SPEECH, *[SILENCE] * 5]
 ANSWER = [SPEECH, SPEECH, *[SILENCE] * 5]
-CFG = AudioConfig(end_silence_s=0.3, no_speech_timeout_s=1.0, confirm_window_s=2.0)
+# Follow-up listening is off here, so each scripted request starts with the wake word; the window
+# has its own tests below.
+CFG = AudioConfig(end_silence_s=0.3, no_speech_timeout_s=1.0, confirm_window_s=2.0, follow_up_s=0)
 WAIT_S = 5.0
 
 
@@ -1021,7 +1023,7 @@ def test_dropping_unheard_words_puts_the_loop_back_to_thinking() -> None:
 
 # Follow-up requests (#11): after a spoken reply, `follow_up_s` of speech needs no wake word.
 FOLLOW_UP = CFG.model_copy(update={"follow_up_s": 1.0})
-FOLLOW_UP_REQUEST = [SPEECH, SPEECH, SPEECH, *[SILENCE] * 5]
+FOLLOW_UP_REQUEST = [SPEECH, SPEECH, SPEECH, SPEECH, *[SILENCE] * 5]  # 0.32 s of speech
 WINDOW_FRAMES = 13  # 1.0 s of 80 ms frames: the window ends after the 13th silent frame
 # A request whose capture uses up every frame (0.3 s of trailing silence is 4 frames), so the
 # window starts at the next frame.
@@ -1049,11 +1051,74 @@ def _follow_loop(
     return _loop(agent, mic, speaker, cfg=cfg, dictating=dictating, transcribe=_texts(*texts))
 
 
-def test_follow_up_listening_is_off_by_default() -> None:
-    assert AudioConfig().follow_up_s == 0
+def test_follow_up_listening_is_on_by_default_for_six_seconds() -> None:
+    """The owner wants it on (#11, 2026-11-21); 0 turns it off."""
+    assert AudioConfig().follow_up_s == pytest.approx(6.0)
+    agent = Agent()
+    cfg = CFG.model_copy(update={"follow_up_s": AudioConfig().follow_up_s})
+
+    _run(_follow_loop(agent, Mic(*REQUEST, *FOLLOW_UP_REQUEST), Speaker(), "a", "b", cfg=cfg))
+
+    assert [text for text, _ in agent.calls] == ["a", "b"]
+
+
+def test_a_window_of_0_turns_follow_up_listening_off() -> None:
     agent = Agent()
 
     _run(_loop(agent, Mic(*REQUEST, *FOLLOW_UP_REQUEST), Speaker()))
+
+    assert len(agent.calls) == 1
+
+
+def _counting(text: str, transcribed: list[int]) -> Callable[[NDArray[np.int16]], str]:
+    def transcribe(samples: NDArray[np.int16]) -> str:
+        transcribed.append(len(samples))
+        return text
+
+    return transcribe
+
+
+@pytest.mark.parametrize("frames", [1, 2, 3])
+def test_too_little_speech_in_the_window_is_dropped_untranscribed(frames: int) -> None:
+    """A cough, a click or one word from the room is not a request."""
+    agent = Agent()
+    speaker = Speaker()
+    transcribed: list[int] = []
+    states: list[State] = []
+    mic = Mic(
+        *EXACT_REQUEST,
+        *[SPEECH] * frames,
+        *[SILENCE] * WINDOW_FRAMES,
+        lambda: states.append(loop.state),
+        *FOLLOW_UP_REQUEST,
+    )
+    loop = _loop(agent, mic, speaker, cfg=FOLLOW_UP, transcribe=_counting("okay", transcribed))
+
+    _run(loop)
+
+    assert len(agent.calls) == 1
+    assert len(transcribed) == 1
+    assert speaker.said == ["Done."]
+    assert states == [State.IDLE]
+
+
+def test_the_window_listens_on_after_too_little_speech() -> None:
+    agent = Agent()
+    transcribed: list[int] = []
+    mic = Mic(*EXACT_REQUEST, SPEECH, *[SILENCE] * 5, *FOLLOW_UP_REQUEST)
+
+    _run(_loop(agent, mic, Speaker(), cfg=FOLLOW_UP, transcribe=_counting("a", transcribed)))
+
+    assert len(agent.calls) == 2
+    assert len(transcribed) == 2
+
+
+def test_the_window_keeps_its_length_across_too_little_speech() -> None:
+    """Speech dropped as too short does not restart the window's time."""
+    agent = Agent()
+    mic = Mic(*EXACT_REQUEST, SPEECH, *[SILENCE] * (WINDOW_FRAMES - 1), *FOLLOW_UP_REQUEST)
+
+    _run(_follow_loop(agent, mic, Speaker()))
 
     assert len(agent.calls) == 1
 

@@ -118,7 +118,7 @@ changes as one request moves through.
 | `SPEAK` | `FOLLOW_UP` | The reply to your own voice was spoken and `audio.follow_up_s` is above 0, and Voxtype is not dictating. |
 | `FOLLOW_UP` | `TRANSCRIBE` | Speech in the window: a request without the wake word. Unclear speech is dropped silently (`TRANSCRIBE` to `IDLE`). |
 | `FOLLOW_UP` | `CAPTURE` | The wake word in the window: a request as usual. |
-| `FOLLOW_UP` | `IDLE` | No speech in the window, Jarvis is stopping, or Voxtype started dictating meanwhile. |
+| `FOLLOW_UP` | `IDLE` | No speech in the window, Jarvis is stopping, or Voxtype started dictating meanwhile. Speech shorter than 0.3 s is dropped untranscribed and the window listens on for the rest of its time. |
 
 Notes. There is no separate wake state: wake detection runs on the mic frames in `IDLE`. While
 Jarvis speaks, the `jarvis-barge-in` thread reads the mic and listens for the wake word
