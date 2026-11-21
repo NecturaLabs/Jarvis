@@ -22,6 +22,9 @@ did not confirm. What exists today and what is in scope:
   video) is someone else's: it is only listened to when the owner turns `listen_to_pc` on, its side effects
   need the owner's spoken yes, and it stays out of the owner's conversation history. A yes does not count if
   voices were heard in PC audio while Jarvis waited for it. See `docs/adr/0003-pc-audio-is-not-the-owner.md`.
+  Known limit: only the apps in `pc_audio_apps` are known as PC audio. On speakers, speech from another app
+  that reaches the microphone is heard as the owner's; headphones or PipeWire echo cancellation
+  (`docs/configuration.md`, "Speakers and other apps' speech") close that gap.
 - **Outside text is data.** Song, artist and playlist names from Spotify are wrapped as data and marked with
   their origin; while such text is in a request, every side-effecting operation needs a spoken yes.
 - **The chat window** (`jarvis chat`) shows outside text, such as Spotify names and PC speech, as plain

@@ -24,9 +24,10 @@ Jarvis reads the file when a command starts, so `jarvis ask`, `status`, `unload`
 current file. The running voice service reads it once, when it starts.
 
 - `audio`, `persona`, `boundaries`, `spotify` and `model` keys: run `jarvis restart`.
-- `strata` keys (and `model.base_url` if you change Strata's port): run `jarvis setup` to rewrite the profile
-  and unit (it keeps every other value), then `jarvis stop` and `jarvis start`. `jarvis restart` only starts
-  Strata if it is stopped; it does not restart a running one.
+- `strata` keys: run `jarvis setup` to rewrite the profile and unit (it keeps every other value), then
+  `jarvis restart`. It restarts Strata too when its profile or unit was rewritten after Strata started, and
+  otherwise leaves a running Strata, and its loaded model, alone. An empty `model.base_url` follows
+  Strata's port; a saved URL that only repeated that port is dropped when the file is read.
 - `jarvis pc-audio on|off` rewrites the file and restarts the voice service itself when it is running.
 
 ## Top level
@@ -118,6 +119,32 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | `pc_audio_cooldown_s` | `5.0` | 0 to 600 | Pause after a PC-audio request during which another is ignored. |
 
 See [the PC-audio ADR](adr/0003-pc-audio-is-not-the-owner.md) for why the last four exist.
+
+### Speakers and other apps' speech
+
+Jarvis knows only the apps in `pc_audio_apps` as PC audio. On speakers, speech from any other app (a video
+in the browser, a game's dialogue) can reach the microphone, and Jarvis hears it as you: it can wake Jarvis,
+and a "yes" in it can answer a question. With headphones nothing reaches the microphone. On speakers,
+PipeWire's echo cancellation removes everything the PC plays from the microphone before Jarvis hears it. It
+is a change to your PipeWire setup, so Jarvis does not make it; to use it, save this as
+`~/.config/pipewire/pipewire.conf.d/60-jarvis-echo-cancel.conf`:
+
+```
+context.modules = [
+  { name = libpipewire-module-echo-cancel
+    args = {
+      library.name = aec/libspa-aec-webrtc
+      monitor.mode = true
+      capture.props = { node.name = "jarvis-aec-capture" }
+      source.props = { node.name = "jarvis-aec-source" node.description = "Microphone for Jarvis" }
+    }
+  }
+]
+```
+
+Then run `systemctl --user restart pipewire`, set `audio.source = "jarvis-aec-source"` and run
+`jarvis restart`. `monitor.mode` takes what the default output plays as the sound to remove, so no new output device
+appears and every app keeps playing where it did.
 
 ## `[persona]`
 
