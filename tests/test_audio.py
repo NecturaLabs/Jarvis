@@ -6,6 +6,7 @@ import queue
 import signal
 import subprocess
 import threading
+import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, override
 
@@ -28,6 +29,7 @@ from jarvis.audio import (
     pw_record_command,
     transcribe,
     voxtype_command,
+    voxtype_settings,
 )
 
 if TYPE_CHECKING:
@@ -557,3 +559,34 @@ def test_stop_cuts_speech_short(tmp_path: Path) -> None:
 
 def test_stop_with_nothing_playing_is_harmless() -> None:
     _speaker(["true"]).stop()
+
+
+def test_voxtype_command_reads_jarvis_settings_first() -> None:
+    cmd = voxtype_command(Path("/x.wav"), model="small.en", settings=Path("/s/voxtype.toml"))
+    assert cmd == [
+        "voxtype",
+        "-c",
+        "/s/voxtype.toml",
+        "--model",
+        "small.en",
+        "transcribe",
+        "/x.wav",
+    ]
+
+
+@pytest.mark.parametrize(("threads", "short"), [(8, True), (2, False)])
+def test_voxtype_settings_hold_the_speed_options(threads: int, short: bool) -> None:
+    settings = tomllib.loads(voxtype_settings(threads, short_window=short))
+    assert settings == {"whisper": {"threads": threads, "context_window_optimization": short}}
+
+
+def test_transcribe_passes_jarvis_settings_to_voxtype() -> None:
+    seen: list[list[str]] = []
+
+    def run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, b"Pause.\n", b"")
+
+    transcribe(SILENCE, settings=Path("/s/voxtype.toml"), run=run)
+
+    assert seen[0][1:3] == ["-c", "/s/voxtype.toml"]

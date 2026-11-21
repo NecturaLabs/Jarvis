@@ -465,9 +465,31 @@ def is_phantom(text: str) -> bool:
     return " ".join(words) in _PHANTOMS
 
 
-def voxtype_command(wav: Path, engine: str = "", model: str = "", prompt: str = "") -> list[str]:
-    """Return the `voxtype transcribe` command; options override the owner's config for one run."""
+def voxtype_settings(threads: int, *, short_window: bool) -> str:
+    """Return Jarvis's own Voxtype config (TOML), read in place of the owner's for its runs.
+
+    Whisper pads every clip to 30 s, so a two-second request costs as much as a long one;
+    `short_window` (Voxtype's `context_window_optimization`) sizes the window to the clip, about
+    five times faster for a spoken command. Whisper.cpp also uses only 4 threads unless told.
+    """
+    return (
+        "[whisper]\n"
+        f"threads = {int(threads)}\n"
+        f"context_window_optimization = {'true' if short_window else 'false'}\n"
+    )
+
+
+def voxtype_command(
+    wav: Path, engine: str = "", model: str = "", prompt: str = "", settings: Path | None = None
+) -> list[str]:
+    """Return the `voxtype transcribe` command; options override the owner's config for one run.
+
+    `settings` is a config file of Jarvis's own (see `voxtype_settings`); the owner's Voxtype
+    config is never changed.
+    """
     cmd = ["voxtype"]
+    if settings is not None:
+        cmd += ["-c", str(settings)]
     if model:
         cmd += ["--model", model]
     if engine:
@@ -484,12 +506,13 @@ def transcribe(  # ruff: ignore[too-many-arguments] - Voxtype's options plus a t
     prompt: str = "",
     timeout_s: float = 60.0,
     *,
+    settings: Path | None = None,
     run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
 ) -> str:
     """Transcribe an utterance with `voxtype transcribe` on a private temporary WAV.
 
-    `prompt` hints Whisper with words it should expect (the owner's artist names). `run` replaces
-    `subprocess.run` in tests.
+    `prompt` hints Whisper with words it should expect (the owner's artist names); `settings` is
+    Jarvis's own Voxtype config file. `run` replaces `subprocess.run` in tests.
 
     Raises:
         AudioError: Voxtype is missing, could not be started with these options, failed or timed
@@ -500,7 +523,7 @@ def transcribe(  # ruff: ignore[too-many-arguments] - Voxtype's options plus a t
         write_wav(wav, samples)
         try:
             done = run(
-                voxtype_command(wav, engine, model, prompt),
+                voxtype_command(wav, engine, model, prompt, settings),
                 capture_output=True,
                 timeout=timeout_s,
                 check=False,

@@ -128,6 +128,8 @@ class AudioConfig(_Section):
     speech_speed: float = Field(default=1.0, ge=0.5, le=2.0)
     transcribe_engine: str = ""
     transcribe_model: str = "base.en"
+    transcribe_threads: int = Field(default=8, ge=1, le=256)
+    transcribe_short_window: bool = True  # size Whisper's window to the clip: ~5x faster
     vocabulary_hint: bool = True
     hint_names: int = Field(default=40, ge=0, le=200)
     listen_to_pc: bool = False

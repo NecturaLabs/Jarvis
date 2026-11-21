@@ -231,7 +231,9 @@ def cmd_run(_args: argparse.Namespace) -> int:
         WakeWord,
         make_synthesizer,
         transcribe,
+        voxtype_settings,
     )
+    from jarvis.files import write_atomic  # ruff: ignore[import-outside-top-level]
     from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level]
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -273,10 +275,17 @@ def cmd_run(_args: argparse.Namespace) -> int:
     signal.signal(signal.SIGINT, stop)
     hint: Callable[[], str] = jarvis.hint if cfg.audio.vocabulary_hint else (lambda: "")
     engine, model = cfg.audio.transcribe_engine, cfg.audio.transcribe_model
+    settings = paths.config_dir() / "voxtype.toml"
+    write_atomic(
+        settings,
+        voxtype_settings(
+            cfg.audio.transcribe_threads, short_window=cfg.audio.transcribe_short_window
+        ),
+    )
 
     def heard(samples: NDArray[np.int16]) -> str:
         primed = hint()
-        text = transcribe(samples, engine, model, primed)
+        text = transcribe(samples, engine, model, primed, settings=settings)
         if primed and echoes_hint(text, primed):
             log.info("ignored a transcript that only repeats the vocabulary hint: %r", text)
             return ""
@@ -293,7 +302,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         heard,
         prewarm=lambda: None if jarvis.model.is_loaded() else jarvis.model.load(),
         pc=pc,
-        transcribe_answer=lambda samples: transcribe(samples, engine, model, ""),
+        transcribe_answer=lambda samples: transcribe(samples, engine, model, "", settings=settings),
         names=(cfg.persona.name,),
     )
     try:

@@ -82,7 +82,7 @@ def speech_hint(config: Config, registry: Registry, artist_names: list[str]) -> 
             break
         names.append(name)
         room -= cost
-    return f"{head} {', '.join(names)}" if names else head
+    return f"{head} {', '.join(names)}." if names else head
 
 
 def _words(text: str) -> list[str]:
