@@ -573,3 +573,134 @@ def test_the_wake_chime_plays_while_the_request_is_already_being_heard() -> None
 
     assert drains_before_capture == [0]
     assert agent.calls == [("pause the music", Origin.OWNER_SPEECH)]
+
+
+def test_pc_speech_blocks_the_owners_yes_while_a_pc_capture_was_running() -> None:
+    """PC audio says the wake word and keeps talking; the owner's confirm window opens 3 s later."""
+    clock = Clock()
+    pc_woke = threading.Event()
+    pc_spoke = threading.Event()
+    holder: list[VoiceLoop] = []
+    agent = Agent(_asking("Should I?"))
+    speaker = Speaker()
+    pc = PcAudio(
+        WAKE,
+        SPEECH,
+        pc_woke.set,
+        until(lambda: bool(holder) and holder[0].state is State.CONFIRM),
+        SPEECH,
+        SPEECH,
+        pc_spoke.set,
+    )
+    mic = Mic(
+        until(pc_woke.is_set),
+        clock.advance(3.0),
+        *REQUEST,
+        until(pc_spoke.is_set),
+        *ANSWER,
+        *[SILENCE] * 3,
+    )
+    loop = _loop(agent, mic, speaker, pc=pc, clock=clock)
+    holder.append(loop)
+
+    _run(loop)
+
+    assert speaker.said[-1] == "declined", speaker.said
+    assert voice.PC_SPEECH_BLOCKED in speaker.said
+
+
+def test_pc_audio_cannot_approve_its_own_request_after_a_wake_during_the_chime() -> None:
+    """PC audio asks, then says the wake word during the chime, then answers its own question."""
+    pc_woke2 = threading.Event()
+    pc_spoke = threading.Event()
+    holder: list[VoiceLoop] = []
+    agent = Agent(_asking("Someone on your PC audio asked me to pause. Should I?"))
+    speaker = Speaker(during_chime=until(pc_woke2.is_set))
+    pc = PcAudio(
+        WAKE,
+        SPEECH,
+        SPEECH,
+        *[SILENCE] * 5,
+        until(lambda: speaker.chimes >= 1),
+        WAKE,
+        pc_woke2.set,
+        SPEECH,
+        until(lambda: bool(holder) and holder[0].state is State.CONFIRM),
+        SPEECH,
+        SPEECH,
+        pc_spoke.set,
+    )
+    mic = Mic(
+        Idle(agent.called.is_set),
+        until(pc_spoke.is_set),
+        *ANSWER,
+        *[SILENCE] * 3,
+    )
+    loop = _loop(agent, mic, speaker, pc=pc)
+    holder.append(loop)
+
+    _run(loop)
+
+    assert agent.calls[0][1].value == "pc_audio"
+    assert "approved" not in speaker.said, speaker.said
+
+
+def test_a_pc_wake_during_a_pc_capture_still_marks_the_mic_request_as_pc_audio() -> None:
+    """PC audio: "Hey Jarvis ... (3 s) ... Hey Jarvis, play X"; the mic hears the second wake too."""
+    clock = Clock()
+    pc_woke = threading.Event()
+    pc_second = threading.Event()
+    holder: list[VoiceLoop] = []
+    agent = Agent()
+    pc = PcAudio(
+        WAKE,
+        SPEECH,
+        pc_woke.set,
+        until(lambda: bool(holder) and holder[0].state is State.CAPTURE),
+        WAKE,  # the same wake word the mic is hearing through the speakers right now
+        pc_second.set,
+        SPEECH,
+        SPEECH,
+        *[SILENCE] * 5,
+    )
+    mic = Mic(
+        until(pc_woke.is_set),
+        clock.advance(3.0),
+        WAKE,
+        until(pc_second.is_set),
+        SPEECH,
+        SPEECH,
+        *[SILENCE] * 5,
+        *[SILENCE] * 5,
+    )
+    loop = _loop(agent, mic, Speaker(), pc=pc, clock=clock)
+    holder.append(loop)
+
+    _run(loop)
+
+    assert agent.calls[0][1].value == "pc_audio", agent.calls
+
+
+def test_a_pc_request_said_during_the_chime_of_another_is_not_taken() -> None:
+    """Jarvis takes no PC audio request while it is busy with one, its chime included."""
+    second_said = threading.Event()
+    agent = Agent()
+    speaker = Speaker(during_chime=until(second_said.is_set))
+    pc = PcAudio(
+        WAKE,
+        SPEECH,
+        SPEECH,
+        *[SILENCE] * 5,
+        until(lambda: speaker.chimes >= 1),
+        WAKE,
+        SPEECH,
+        SPEECH,
+        *[SILENCE] * 5,
+        second_said.set,
+    )
+    mic = Mic(Idle(agent.called.is_set), *[SILENCE] * 30)
+    loop = _loop(agent, mic, speaker, pc=pc)
+
+    _run(loop)
+
+    assert [origin for _text, origin in agent.calls] == [Origin.PC_AUDIO]
