@@ -52,9 +52,8 @@ behind the same speech setting, as the Piper-licence risk below asked.
 - Model kept loaded (owner decision, 2026-11-21, replacing "idle by default, including after reboot"): `jarvis run`
   loads it at start, and `strata.idle_unload_s` may be raised to 86400 so it stays loaded. While idle it holds
   memory but uses no GPU or CPU. Under the default 300 s it is still freed when idle and loaded on the next wake.
-- Very easy to set up and maintain. Private repo `necturalabs/jarvis`.
-- Goes open source once stable and confirmed working to our standards, so everything committed stays
-  publishable from day one.
+- Very easy to set up and maintain. Public repo `NecturaLabs/jarvis`, GPL-3.0-or-later (`docs/adr/0006-gpl-licence.md`).
+- Open source (GPL-3.0-or-later since 2026-11-21); everything committed has been publishable from day one.
 - Agents working on it open nothing on the owner's screen (hidden; else workspace 1) and never stop processes they
   did not start.
 
@@ -217,7 +216,8 @@ enforced in code before any tool runs.
 - Lifecycle: units bound to the graphical session; defined behavior on lock (keep listening, configurable),
   suspend/resume (re-open mic, re-check Strata), mic unplug/replug (wait and re-open), missing `/mnt/models` mount
   (Strata unit fails cleanly, Jarvis says the model is unavailable).
-- Repo `necturalabs/jarvis` (private); CI: ruff, pyright, pytest (unit only, no audio/GPU).
+- Repo `NecturaLabs/jarvis` (public); CI on GitHub-hosted runners: ruff, pyright, pytest (unit only, no audio/GPU),
+  REUSE and pip-audit.
 
 ## Open-source readiness (from day one)
 
@@ -278,7 +278,7 @@ enforced in code before any tool runs.
 - Voxtype contention with the owner's dictation — ownership rule or file path B.
 - Spotify policy and quota changes — clear errors; MPRIS transport still works.
 - Prompt injection from web pages, files or metadata — provenance and action-bound confirmation.
-- Piper is GPL-3.0 — fine for a private repo; revisit if Jarvis is ever distributed.
+- Piper is GPL-3.0-or-later, so Jarvis is published under GPL-3.0-or-later (`docs/adr/0006-gpl-licence.md`).
 
 ## Co-author review record (Codex gpt-6.1-sol)
 
