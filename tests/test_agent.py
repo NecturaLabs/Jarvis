@@ -220,6 +220,11 @@ def test_a_claim_after_only_failed_tools_is_challenged_with_the_failure() -> Non
         "Okay. Shuffle is on.",
         "Done.",
         "I\u2019ve saved it to your library.",
+        "Sure thing, playing it now.",
+        "You got it, skipping this one.",
+        "No problem, paused.",
+        "Playing Glass Harbor now.",
+        "Here's some Night Circuit, playing now.",
     ],
 )
 def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
@@ -236,6 +241,12 @@ def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
         "Nothing is playing right now.",
         "That wasn't paused.",
         "Which playlist do you mean?",
+        "Playing music is my specialty.",
+        "Playing, pausing, skipping, queueing: I can do all of that.",
+        "Playing, pausing, skipping and queueing are all things I do.",
+        "Skipping songs works by voice, just say next.",
+        "Added to that, I can queue songs.",
+        "Queueing songs is easy: just ask.",
     ],
 )
 def test_an_honest_answer_is_not_a_claim(reply: str) -> None:
@@ -1107,3 +1118,12 @@ def test_a_no_action_reply_has_the_actions_note_stripped() -> None:
     agent, _ = _agent(model, [])
 
     assert agent.handle("hi", NO_CONFIRM) == "Hello."
+
+
+def test_a_capability_answer_is_spoken_as_it_is() -> None:
+    answer = "Playing, pausing, skipping, queueing: I can do all of that."
+    model = ScriptedModel([_call("no_action", {"reply": answer})])
+    agent, _ = _agent(model, [])
+
+    assert agent.handle("what can you do", NO_CONFIRM) == answer
+    assert len(model.seen) == 1
