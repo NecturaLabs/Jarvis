@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from jarvis.config import Config, ModelConfig
-from jarvis.model import ModelError, StrataModel
+from jarvis.model import LOAD_TIMEOUT_S, ModelError, StrataModel
 
 TOOLS: list[dict[str, Any]] = [{"type": "function", "function": {"name": "x"}}]
 MESSAGES: list[dict[str, Any]] = [{"role": "user", "content": "hi"}]
@@ -167,3 +167,44 @@ def test_a_call_waits_no_longer_than_the_turn_has_left(asked: float | None, sent
     _model(_answering({"content": "hi"}, seen)).chat(MESSAGES, TOOLS, timeout_s=asked)
 
     assert _read_timeout(seen[0]) == pytest.approx(sent)
+
+
+def test_warming_waits_for_the_server_and_retries_a_busy_answer() -> None:
+    """Regression: the load sent at service start met a server still starting (409) and was lost."""
+    answers = iter([httpx.Response(409), httpx.Response(409), httpx.Response(200, json={})])
+    loads: list[float] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"status": {"value": "unloaded"}}]})
+        loads.append(_read_timeout(request))
+        return next(answers)
+
+    waits: list[float] = []
+    model = StrataModel(
+        ModelConfig(base_url=Config().model_base_url()),
+        "key",
+        transport=httpx.MockTransport(handle),
+        sleep=waits.append,
+    )
+
+    assert model.warm() is True
+    assert len(loads) == 3
+    assert min(loads) >= LOAD_TIMEOUT_S  # a cold load can take minutes
+    assert waits
+
+
+def test_warming_gives_up_on_a_server_that_never_comes_up() -> None:
+    def handle(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    waits: list[float] = []
+    model = StrataModel(
+        ModelConfig(base_url=Config().model_base_url()),
+        "key",
+        transport=httpx.MockTransport(handle),
+        sleep=waits.append,
+    )
+
+    assert model.warm(attempts=5) is False
+    assert len(waits) == 5
