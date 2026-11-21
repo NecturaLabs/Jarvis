@@ -272,3 +272,23 @@ def test_search_runs_only_on_this_machine() -> None:
     with pytest.raises(ValueError, match="on this machine"):
         config.ResearchConfig(searxng_url="https://searx.example.org")
     assert config.ResearchConfig().searxng_url == "http://127.0.0.1:8888"
+
+
+EXAMPLE = Path(__file__).resolve().parent.parent / "config.example.toml"
+
+
+def test_the_example_config_holds_exactly_the_shipped_defaults() -> None:
+    raw = tomllib.loads(EXAMPLE.read_text(encoding="utf-8"))
+
+    assert config.Config.model_validate(raw) == config.Config()
+
+
+def test_the_example_config_names_no_machine_or_person() -> None:
+    text = EXAMPLE.read_text(encoding="utf-8")
+
+    assert str(Path.home()) not in text
+    assert "/home/" not in text
+    raw = tomllib.loads(text)
+    assert not raw["spotify"]["client_id"]
+    assert not raw["weather"]["place"]
+    assert raw["weather"]["coordinates"] == []

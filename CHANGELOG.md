@@ -8,12 +8,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
-- The default Strata context window is 16,384 tokens (was 8,192), and the model sees up to 3,000 characters
+- The default Strata context window is 24,576 tokens (was 8,192), about 8.1 GiB of VRAM with the default model, and the model sees up to 3,000 characters
   of each tool result (was 1,500), so a search and two page reads fit in one request. A saved
   `strata.context` keeps its value; to change it, edit it and run `jarvis setup`.
 
 ### Added
 
+- `config.example.toml`: every setting at its default, with no personal values, to copy to
+  `~/.config/jarvis/config.toml`.
 - The time and date, here or in a named place, and the weather now, today, tomorrow or for the week, at home
   (`[weather]`) or wherever you name, from Open-Meteo. "What time is it" and "what's the weather" skip the
   model.

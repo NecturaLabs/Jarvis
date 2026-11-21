@@ -1,0 +1,96 @@
+# Example Jarvis configuration: every setting at its shipped default.
+# Copy it to ~/.config/jarvis/config.toml and change what you need; a key you leave out keeps its
+# default. docs/configuration.md explains each one. Keep your own copy out of the repository.
+
+schema_version = 1
+# data_dir: default $XDG_DATA_HOME/jarvis (~/.local/share/jarvis); give an absolute path to change it.
+
+# How Jarvis talks to its model, the local Strata server. Empty base_url: Strata's own port.
+[model]
+base_url = ""
+model = "jarvis"
+request_timeout_s = 120.0
+max_tokens = 200
+temperature = 0.2
+
+# How the jarvis-strata service runs the model; `jarvis setup` writes these into its profile.
+# The paths default to your XDG data folder; set model_file and tokenizer_dir to where you put them.
+[strata]
+# home: default $XDG_DATA_HOME/strata; an absolute path.
+# components_parent: default $XDG_DATA_HOME; an absolute path.
+# model_file = "/path/to/your/model.gguf"
+# tokenizer_dir = "/path/to/its/tokenizer"
+model_id = "qwen3.6-35b-a3b-ud-q4_k_xl"
+port = 8080
+context = 24576
+expert_vram_gib = 1.0
+prefill = 512
+idle_unload_s = 300
+reasoning_budget_tokens = 512
+memory_max = "40G"
+
+# Your own Spotify developer app (docs/configuration.md): paste its client ID, or run
+# `jarvis setup --spotify-client-id <id>`.
+[spotify]
+client_id = ""
+redirect_port = 8765
+device_name = ""
+close_match = 0.8
+loose_match = 0.6
+queue_max = 20
+search_pages = 8
+library_refresh_s = 21600.0
+
+# Microphone, wake word, speech to text and voice. Empty source: the default microphone.
+[audio]
+source = ""
+wake_threshold = 0.5
+vad_threshold = 0.5
+no_speech_timeout_s = 4.0
+end_silence_s = 0.7
+max_utterance_s = 20.0
+confirm_window_s = 8.0
+voice = "kokoro:bm_george"
+speech_speed = 1.0
+transcribe_engine = ""
+transcribe_model = "small.en"
+transcribe_threads = 8
+transcribe_short_window = true
+vocabulary_hint = true
+hint_names = 40
+listen_to_pc = false
+pc_audio_apps = ["discord"]
+pc_audio_grant_s = 600.0
+confirm_blocks_on_pc_speech = true
+pc_audio_cooldown_s = 5.0
+
+# Who Jarvis is and how it speaks; addendum is added to the system prompt.
+[persona]
+name = "Jarvis"
+tone = "Calm, warm and to the point, like a capable butler with a light touch of dry wit."
+addendum = ""
+
+# twelve_hour = true says "3:42 PM" instead of "15:42".
+[clock]
+twelve_hour = false
+
+# Your home, for weather that names no place: a place name such as "Lisbon", or
+# coordinates = [38.72, -9.14] for an exact point (then no lookup is sent).
+[weather]
+place = ""
+coordinates = []
+temperature_unit = "celsius"
+wind_unit = "kmh"
+
+# The local SearXNG (deploy/searxng/) and how much of a page or thread the model reads.
+[research]
+searxng_url = "http://127.0.0.1:8888"
+results = 5
+page_chars = 2800
+reddit_comments = 6
+
+[boundaries]
+
+# Per-operation classes: "safe", "confirm", "strong" or "deny". For example:
+# reddit_search = "deny"
+[boundaries.classes]
