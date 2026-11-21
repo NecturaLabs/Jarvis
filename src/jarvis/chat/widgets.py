@@ -22,6 +22,13 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Markdown, OptionList, Static, TextArea
+
+# Textual exports no public way to change how a list is numbered, so these two come from its
+# private module; tests/test_chat.py checks the numbers, and would catch a Textual change.
+from textual.widgets._markdown import (  # ruff: ignore[import-private-name] - see above
+    MarkdownBullet,
+    MarkdownOrderedList,
+)
 from textual.widgets.option_list import Option
 from textual_image.widget import Image
 
@@ -32,6 +39,7 @@ if TYPE_CHECKING:
 
     from rich.console import RenderableType
     from textual.app import ComposeResult
+    from textual.widgets.markdown import MarkdownBlock
 
     from jarvis.activity import Shown
     from jarvis.agent import ContextUse
@@ -125,14 +133,35 @@ class Request(Static):
         self.text = text
 
 
+class ReplyOrderedList(MarkdownOrderedList):
+    """A numbered list whose numbers start at the text's edge, as Claude Code sets them.
+
+    Textual pads each number one space more than the widest needs; that space is taken off, so
+    "1." lines up with a dash and "10." still lines up with "9.".
+    """
+
+    def on_mount(self) -> None:
+        """Take the extra space off this list's own numbers (not a nested list's)."""
+        for row in self.query_children(Horizontal):
+            for bullet in row.query_children(MarkdownBullet):
+                bullet.symbol = bullet.symbol.removeprefix(" ")
+
+
 class ReplyMarkdown(Markdown):
-    """A reply's Markdown, lists marked with a dash at every depth, as Claude Code marks them."""
+    """A reply's Markdown, set as Claude Code sets it: dashes for lists, numbers at the edge."""
 
     BULLETS: ClassVar[list[str]] = ["- "]
 
+    @override
+    def get_block_class(self, block_name: str) -> type[MarkdownBlock]:
+        """Number lists with `ReplyOrderedList`; every other block is Textual's own."""
+        if block_name == "ordered_list_open":
+            return ReplyOrderedList
+        return super().get_block_class(block_name)
 
-class Reply(Horizontal):
-    """A reply: the dot, then the words rendered as Markdown, then how long it took."""
+
+class Reply(Vertical):
+    """A reply: the dot, then the words rendered as Markdown; under them, how long it took."""
 
     def __init__(self, text: str, note: str = "", *, draft: bool = False) -> None:
         """Show `text`; a `draft` is still being written and is replaced when it is whole."""
@@ -142,12 +171,12 @@ class Reply(Horizontal):
 
     @override
     def compose(self) -> ComposeResult:
-        """The mark and the body."""
-        yield Static(DOT, classes="reply-mark")
-        with Vertical(classes="reply-body"):
-            yield ReplyMarkdown(self.text)
-            if self._note:
-                yield Static(self._note, classes="reply-note", markup=False)
+        """The mark and the body, then the note in the mark's column, as Claude Code's is."""
+        with Horizontal(classes="reply-line"):
+            yield Static(DOT, classes="reply-mark")
+            yield ReplyMarkdown(self.text, classes="reply-body")
+        if self._note:
+            yield Static(self._note, classes="reply-note", markup=False)
 
     def write(self, text: str) -> None:
         """Show `text` in place of what the draft held."""
@@ -436,8 +465,9 @@ class PointerList(OptionList):
     _styles: tuple[str, ...] = ()
     _widths: tuple[int, ...] = ()
     _pointed: int | None = None
+    _marks: tuple[tuple[int, ...], ...] | None = None
 
-    def show(
+    def show(  # ruff: ignore[too-many-arguments] - the rows and how to draw them
         self,
         rows: Sequence[tuple[str, ...]],
         styles: tuple[str, ...],
@@ -445,12 +475,16 @@ class PointerList(OptionList):
         highlighted: int = 0,
         *,
         widths: Sequence[int] = (),
+        marks: Sequence[tuple[int, ...]] | None = None,
     ) -> None:
         """List `rows` (their cells styled by `styles`, column by column) and point at one.
 
         `widths` are the columns' least widths, so a list that is filtered keeps its columns
-        where they were.
+        where they were. `marks` makes it a filtered list, as Claude Code draws its command
+        menu: each row's typed letters (places in its first cell) in bold, the chosen row lit
+        whole in the accent and the others dim, no name in bold.
         """
+        self._marks = None if marks is None else tuple(marks)
         self._rows = tuple(rows)
         self._styles = styles
         columns = max((len(row) for row in rows), default=0)
@@ -470,14 +504,21 @@ class PointerList(OptionList):
     def _prompt(self, index: int, *, chosen: bool) -> Text:
         row = self._rows[index]
         text = Text.assemble((f"{CHEVRON} " if chosen else "  ", f"bold {ACCENT}"))
+        filtered = self._marks is not None
         for column, cell in enumerate(row):
             last = column == len(row) - 1
             padded = cell if last else cell + " " * (self._widths[column] - cell_len(cell) + 3)
             if chosen:
-                style = f"bold {ACCENT}" if column == 0 else ACCENT
+                style = f"bold {ACCENT}" if column == 0 and not filtered else ACCENT
             else:
                 style = self._styles[column] if column < len(self._styles) else ""
+            start = len(text)
             text.append(padded, style=style)
+            if column == 0 and self._marks is not None and index < len(self._marks):
+                for place in self._marks[index]:
+                    text.stylize(
+                        "bold" if chosen else "bold default", start + place, start + place + 1
+                    )
         return text
 
     @override

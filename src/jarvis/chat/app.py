@@ -87,7 +87,6 @@ SPINNER = "·✢✳✶✻✽✻✶✳✢"
 PLACEHOLDER = 'Ask anything, or try "what\'s playing?"  (/ for commands)'
 PLACEHOLDER_OFF = "Typed requests are off (see above); / for commands"
 MENU_HINT = "tab completes · enter runs · esc closes"
-MENU_ROWS = 12  # the command menu's most rows; it keeps one height while it is open
 FOOTER_MARGIN = 6  # the footer's margins, left and right
 STATUS_GAP = 2  # between the footer's hint and the services' status
 SHORTCUTS = (
@@ -225,7 +224,11 @@ class ChatApp(App[None]):
         scrollbar-color: ansi_bright_black; scrollbar-color-hover: ansi_white;
         scrollbar-color-active: ansi_white;
     }
-    #transcript { width: 100%; height: 1fr; padding: 0 0 0 1; scrollbar-gutter: stable; }
+    #stage { width: 100%; height: 1fr; layers: transcript menu; }
+    #transcript {
+        layer: transcript; width: 100%; height: 1fr; padding: 0 0 0 1;
+        scrollbar-gutter: stable;
+    }
     #welcome { height: auto; margin: 1 0 0 0; }
     .entry { height: auto; }
     .entry.spaced { margin: 1 0 0 0; }
@@ -234,33 +237,31 @@ class ChatApp(App[None]):
     .reply { height: auto; margin: 1 0 0 0; }
     .reply-mark { width: 2; color: ansi_default; text-style: bold; }
     .reply.draft .reply-mark { color: ansi_bright_black; }
+    .reply-line { height: auto; }
     .reply-body { height: auto; width: 1fr; }
     .reply-note { height: auto; margin: 1 0 0 0; color: ansi_bright_black; }
     .reply Markdown { margin: 0; padding: 0; background: ansi_default; }
     .reply Markdown > *:first-child { margin-top: 0; }
     .reply Markdown > *:last-child { margin-bottom: 0; }
-    .reply Markdown > MarkdownHeader:first-child { margin: 0; }
+    .reply Markdown > MarkdownHeader:first-child { margin: 0 0 1 0; }
     .reply MarkdownH1, .reply MarkdownH2, .reply MarkdownH3,
     .reply MarkdownH4, .reply MarkdownH5, .reply MarkdownH6 {
-        width: 1fr; margin: 1 0 0 0; content-align: left top;
+        width: 1fr; margin: 1 0; content-align: left top;
         color: ansi_default; background: ansi_default; text-style: bold;
     }
     .reply MarkdownH1 { text-style: bold italic underline; }
     .reply MarkdownBlock > .code_inline { color: ansi_blue; }
     .reply MarkdownBullet { color: ansi_default; }
-    .reply MarkdownFence {
-        margin: 1 0; padding: 0 0 0 1; background: ansi_default;
-        border-left: outer ansi_bright_black;
-    }
+    .reply MarkdownFence { margin: 1 0; padding: 0; background: ansi_default; border: none; }
     .reply MarkdownFence > Label { padding: 0; }
     .reply MarkdownBlockQuote {
         margin: 1 0; padding: 0 0 0 1; background: ansi_default;
-        border-left: outer ansi_bright_black; color: ansi_bright_black; text-style: italic;
+        border-left: wide ansi_bright_black; color: ansi_default; text-style: italic;
     }
     .reply MarkdownBlockQuote > MarkdownParagraph { margin: 0; }
     .reply MarkdownTable { width: auto; background: ansi_default; }
-    .reply MarkdownTableContent { keyline: thin ansi_bright_black; }
-    .reply MarkdownTableContent > .header { color: ansi_default; text-style: bold; }
+    .reply MarkdownTableContent { keyline: thin ansi_default; }
+    .reply MarkdownTableContent > .header { color: ansi_default; text-style: none; }
     .reply MarkdownHorizontalRule { border-bottom: solid ansi_bright_black; }
     .picture { height: auto; margin: 1 0 0 2; }
     .picture-image { height: auto; }
@@ -287,8 +288,9 @@ class ChatApp(App[None]):
     #prompt PromptArea:focus { border: none; }
     #pictures { height: auto; margin: 0 3 0 5; color: ansi_bright_black; }
     #menu {
-        margin: 0 3; border: none; background: ansi_default;
-        text-wrap: nowrap; text-overflow: ellipsis;
+        layer: menu; dock: bottom; width: 100%; height: auto; max-height: 8; padding: 0 1 0 3;
+        scrollbar-size-vertical: 0;
+        border: none; background: ansi_default; text-wrap: nowrap; text-overflow: ellipsis;
     }
     OptionList > .option-list--option-highlighted,
     OptionList:focus > .option-list--option-highlighted {
@@ -365,7 +367,9 @@ class ChatApp(App[None]):
     @override
     def compose(self) -> ComposeResult:
         """Lay out the transcript, the working line, the panels, the input and the footer."""
-        yield VerticalScroll(id="transcript")
+        with Vertical(id="stage"):  # the command menu is drawn over the transcript's last lines
+            yield VerticalScroll(id="transcript")
+            yield PointerList(id="menu")
         yield Static("", id="working", markup=False)
         with Vertical(id="question"):
             yield Static("", id="question-text", markup=False)
@@ -386,7 +390,6 @@ class ChatApp(App[None]):
                 id="input",
             )
         yield Static("", id="pictures", markup=False)
-        yield PointerList(id="menu")
         yield Static("", id="shortcuts", markup=False)
         with Horizontal(id="footer"):
             yield Static("", id="hints", markup=False)
@@ -399,7 +402,6 @@ class ChatApp(App[None]):
             self.query_one(widget).display = False
         self.query_one("#question").border_title = f"{self._name} asks"
         self.query_one("#settings").border_title = "Settings"
-        self.query_one("#menu").styles.height = min(len(commands.COMMANDS), MENU_ROWS)
         self._apply_verbosity()
         self.query_one("#toolbar").display = self._settings.toolbar
         transcript = self.query_one("#transcript", VerticalScroll)
@@ -628,14 +630,14 @@ class ChatApp(App[None]):
             self.call_from_thread(run)
 
     def _bottom(self) -> None:
-        """While the command menu or the shortcuts are open they take the footer's place.
+        """While the shortcuts are open, let them take the footer's place.
 
-        As in Claude Code, the menu replaces the hints and the toolbar instead of squeezing the
-        transcript, and the newest entry stays in view.
+        The newest entry stays in view. The command menu is drawn over the transcript instead,
+        as in Claude Code, so it moves nothing.
         """
-        menu = self.query_one("#menu").display or self.query_one("#shortcuts").display
+        shortcuts = self.query_one("#shortcuts").display
         footer, toolbar = self.query_one("#footer"), self.query_one("#toolbar")
-        wanted = (not menu, self._settings.toolbar and not menu)
+        wanted = (not shortcuts, self._settings.toolbar and not shortcuts)
         if (footer.display, toolbar.display) != wanted:
             footer.display, toolbar.display = wanted
             self.call_after_refresh(self._follow_down)
@@ -710,8 +712,9 @@ class ChatApp(App[None]):
         if shown:
             menu.show(
                 [(s.label, s.about) for s in found],
-                ("bold", "bright_black"),
+                ("bright_black", "bright_black"),
                 widths=(max(cell_len(every.label) for every in commands.suggest("/")),),
+                marks=[s.marked for s in found],
             )
         if menu.display != shown:
             menu.display = shown

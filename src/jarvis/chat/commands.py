@@ -48,12 +48,26 @@ class Suggestion:
     value: str
     label: str
     about: str
+    marked: tuple[int, ...] = ()  # where the typed letters are in `label`, shown in bold
 
 
 def _in_order(letters: str, name: str) -> bool:
     """Return whether `letters` appear in `name` in that order."""
     rest = iter(name)
     return all(letter in rest for letter in letters)
+
+
+def _marked(typed: str, name: str) -> tuple[int, ...]:
+    """Return where the letters of `typed` fall in `name`: the start, else the first in order."""
+    if name.startswith(typed):
+        return tuple(range(len(typed)))
+    places: list[int] = []
+    for letter in typed:
+        place = name.find(letter, places[-1] + 1 if places else 0)
+        if place < 0:
+            return ()
+        places.append(place)
+    return tuple(places)
 
 
 def find(name: str) -> Command | None:
@@ -73,7 +87,7 @@ def suggest(value: str) -> list[Suggestion]:
             return []
         typed = rest.strip().lower()
         return [
-            Suggestion(f"{command.name} {choice}", choice, "")
+            Suggestion(f"{command.name} {choice}", choice, "", tuple(range(len(typed))))
             for choice in command.choices
             if choice.startswith(typed)
         ]
@@ -81,6 +95,11 @@ def suggest(value: str) -> list[Suggestion]:
     first = [c for c in COMMANDS if c.name.startswith(typed)]
     later = [c for c in COMMANDS if c not in first and _in_order(typed[1:], c.name[1:])]
     return [
-        Suggestion(c.name + (" " if c.choices else ""), f"{c.name} {c.hint}".strip(), c.about)
+        Suggestion(
+            c.name + (" " if c.choices else ""),
+            f"{c.name} {c.hint}".strip(),
+            c.about,
+            _marked(typed, c.name),
+        )
         for c in first + later
     ]
