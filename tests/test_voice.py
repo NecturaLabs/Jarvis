@@ -3,7 +3,7 @@
 import stat
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import numpy as np
 import pytest
@@ -158,16 +158,35 @@ class Vad:
 
 @dataclass
 class Speaker:
+    """Speaks at once; `broken` fails each speech the way the real speaker does, at its wait."""
+
     said: list[str] = field(default_factory=list[str])
     chimes: int = 0
     broken: bool = False
     during_chime: Callable[[], object] = lambda: None
+    busy: bool = False
+    interruptible: bool = True
+    hushed: int = 0
+    _failed: bool = False
 
     def say(self, text: str) -> None:
+        self.queue(text)
+        self.wait()
+
+    def queue(self, text: str) -> None:
         if self.broken:
+            self._failed = True
+            return
+        self.said.append(text)
+
+    def wait(self) -> None:
+        failed, self._failed = self._failed, False
+        if failed:
             msg = "no audio output"
             raise AudioError(msg)
-        self.said.append(text)
+
+    def hush(self) -> None:
+        self.hushed += 1
 
     def chime(self) -> None:
         self.chimes += 1
@@ -184,9 +203,13 @@ class Agent:
     called: threading.Event = field(default_factory=threading.Event)
 
     def handle(self, text: str, hooks: Hooks, origin: Origin = Origin.OWNER_SPEECH) -> str:
+        """Answer like the real agent: the reply goes to `hooks.speak` unless cancelled."""
         self.calls.append((text, origin))
         self.called.set()
-        return self.reply(text, hooks, origin)
+        reply = self.reply(text, hooks, origin)
+        if hooks.speak is not None and reply and not hooks.cancelled():
+            hooks.speak(reply)
+        return reply
 
 
 def _loop(
@@ -781,3 +804,132 @@ def test_a_pc_wake_heard_after_the_mics_still_marks_the_request_pc_audio() -> No
     _run(loop)
 
     assert [origin for _text, origin in agent.calls] == [Origin.PC_AUDIO]
+
+
+@dataclass
+class Playing(Speaker):
+    """A speaker whose first `holds` speeches keep playing until spoken over or `release`d."""
+
+    holds: int = 1
+    release: threading.Event = field(default_factory=threading.Event)
+    play_s: float = WAIT_S  # how long a held speech plays when nobody speaks over it
+    queued: list[str] = field(default_factory=list[str])
+    on_hush: Callable[[], object] = lambda: None
+    _over: threading.Event = field(default_factory=threading.Event)
+
+    @override
+    def queue(self, text: str) -> None:
+        super().queue(text)
+        self.queued.append(text)
+        self.busy = True
+
+    @override
+    def wait(self) -> None:
+        if self.busy and self.holds > 0:
+            self.holds -= 1
+            for _ in range(int(self.play_s / 0.002)):
+                if self._over.is_set() or self.release.is_set():
+                    break
+                self._over.wait(0.002)
+            else:
+                if self.play_s >= WAIT_S:
+                    pytest.fail("the speech was never spoken over")
+        self.busy = False
+        self._over.clear()
+        super().wait()
+
+    @override
+    def hush(self) -> None:
+        super().hush()
+        self.on_hush()
+        self.busy = False
+        self._over.set()
+
+
+def _replies(*texts: str) -> tuple[Reply, list[Hooks]]:
+    """An agent reply per request, keeping each request's hooks."""
+    seen: list[Hooks] = []
+    remaining = list(texts)
+
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        seen.append(hooks)
+        return remaining.pop(0)
+
+    return reply, seen
+
+
+def test_the_wake_word_while_jarvis_speaks_stops_it_and_takes_the_new_request() -> None:
+    reply, hooks = _replies("Here is a long answer.", "Skipped.")
+    agent = Agent(reply)
+    cancelled_after: list[bool] = []
+    speaker = Playing(on_hush=lambda: cancelled_after.append(hooks[0].cancelled()))
+    mic = Mic(
+        *REQUEST,
+        until(lambda: speaker.busy),
+        SILENCE,
+        WAKE,
+        SPEECH,
+        SPEECH,
+        SPEECH,
+        *[SILENCE] * 5,
+    )
+
+    _run(_loop(agent, mic, speaker))
+
+    assert speaker.hushed == 1
+    assert cancelled_after == [True]  # the first request was told to stop
+    assert len(agent.calls) == 2
+    assert speaker.said == ["Here is a long answer.", "Skipped."]
+    assert speaker.chimes == 2  # the new request is greeted like any other
+
+
+def test_the_owner_can_switch_speaking_over_jarvis_off() -> None:
+    agent = Agent(lambda _t, _h, _o: "Here is a long answer.")
+    speaker = Playing(play_s=0.05)
+    mic = Mic(*REQUEST, WAKE)  # with nobody listening, the wake is only heard after the speech
+
+    _run(_loop(agent, mic, speaker, cfg=CFG.model_copy(update={"barge_in": False})))
+
+    assert speaker.hushed == 0
+
+
+def test_a_sentence_that_would_wake_jarvis_itself_is_not_spoken_over() -> None:
+    agent = Agent(lambda _t, _h, _o: "Hey, Jarvis here.")
+    speaker = Playing(interruptible=False)
+    mic = Mic(*REQUEST, until(lambda: speaker.busy), WAKE, speaker.release.set, SILENCE)
+
+    _run(_loop(agent, mic, speaker))
+
+    assert speaker.hushed == 0
+    assert len(agent.calls) == 1  # the wake frame went to the watcher, which ignored it
+
+
+def test_speaking_over_a_confirmation_question_is_a_no_and_starts_a_new_request() -> None:
+    answers: list[bool] = []
+
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        if answers:
+            return "Fine."
+        answers.append(hooks.confirm("Should I buy it?"))
+        return "Okay, I'll leave it."
+
+    agent = Agent(reply)
+    speaker = Playing()
+    mic = Mic(*REQUEST, until(lambda: speaker.busy), WAKE, *REQUEST[1:])
+
+    _run(_loop(agent, mic, speaker))
+
+    assert answers == [False]
+    assert speaker.said == ["Should I buy it?", "Fine."]
+
+
+def test_streamed_parts_of_a_reply_are_queued_sentence_by_sentence() -> None:
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        assert hooks.speak is not None
+        hooks.speak("**First** part. Second part!")
+        return ""
+
+    speaker = Speaker()
+    _run(_loop(Agent(reply), Mic(*REQUEST), speaker))
+
+    assert speaker.said == ["First part.", "Second part!"]

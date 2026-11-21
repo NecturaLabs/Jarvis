@@ -26,7 +26,7 @@ was checked it says so.
 | Request | What happens | Cost |
 |---|---|---|
 | Plain command: "pause", "next song", "volume 40", "what's playing" | Matched in code, run through the same policy, confirmation and audit as a model call, answered from the operation's own sentence. No model, no load wait. | about 0.3 s |
-| Anything else the model answers (a chat reply is one model call: `no_action` carries the reply) | One prompt read of about 2,100 tokens, then generation | about 3.3 s of prompt reading at about 640 tokens/s, plus generation |
+| Anything else the model answers (a chat reply is one model call: `no_action` carries the reply) | One prompt read of about 2,900 tokens (941 of instructions, 1,970 of the 19 tool schemas; 2,100 before the web tools), then generation; a call after a tool result reads only the new part | about 4.5 s of prompt reading at about 640 tokens/s, plus generation; the first sentence is spoken once it is written ([ADR 0008](adr/0008-speak-while-writing-and-barge-in.md)) |
 | Model not loaded | Cold load | about 107 s with a game running; Jarvis says "One moment, waking up". The request gets 180 s more (270 s in all instead of 90 s); each model call is still capped by `model.request_timeout_s` |
 
 Memory while loaded, idle: about 38 GB of RAM and 7.3 GiB of VRAM at an 8,192-token context, no GPU or CPU
@@ -47,7 +47,11 @@ which has to listen. See
 
 Jarvis marks the system prompt and the tools as Strata's shared prefix (`strata_prefix`, one message) on every
 request that sends tools. The Qwen3.6 engine in Strata 0.1.62 does not use that mark yet, so every request
-still reads the whole prompt. An engine that ignores the mark is harmless; the 3.3 s above is the cost today.
+still reads the whole prompt. An engine that ignores the mark is harmless; the 4.5 s above is the cost today.
+Probed on 2026-11-21: the engine reuses its cache only when a request continues the last prompt and what the
+model wrote after it, token for token (the second call of a request reused about 2,150 tokens); two requests
+that share the system prompt but differ after it reused 0. The engine has no raw `/v1/completions` endpoint
+and ignores `continue_final_message` and `parallel_tool_calls`, so Jarvis cannot prepare the cache itself.
 
 ## Speech to text: Voxtype
 
@@ -74,6 +78,12 @@ daemon and never your Voxtype config or recordings. Each run is
 ## Voices
 
 `audio.voice` picks the voice. Both voices run on the CPU; Kokoro uses at most 8 threads and never spin-waits.
+Jarvis synthesizes one sentence at a time while the one before plays, and cuts the silence before the first
+word to 0.03 s and after each sentence to 0.2 s. Measured on 2026-11-21 with `bm_fable`: a short reply takes
+0.3 to 0.4 s, a first sentence 0.2 to 0.4 s, four sentences 1.4 s. While Strata writes, a two-sentence chunk
+took 1.11 s instead of 0.63 s, and Strata wrote 41 tokens/s instead of 45.7. Before each sentence plays, a
+second copy of the wake model checks it (6 to 33 ms), so a sentence that would trigger the wake word cannot be
+spoken over.
 
 ### Kokoro (default, `kokoro:<name>`)
 

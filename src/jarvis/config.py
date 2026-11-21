@@ -124,6 +124,7 @@ class AudioConfig(_Section):
     end_silence_s: float = Field(default=0.7, gt=0, le=5)
     max_utterance_s: float = Field(default=20.0, gt=1, le=120)
     confirm_window_s: float = Field(default=8.0, gt=1, le=30)
+    barge_in: bool = True  # the wake word stops Jarvis mid-sentence and starts a new request
     voice: str = "kokoro:bm_george"
     speech_speed: float = Field(default=1.0, ge=0.5, le=2.0)
     transcribe_engine: str = ""

@@ -492,10 +492,11 @@ def test_a_hint_no_command_line_can_carry_is_an_audio_error() -> None:
         transcribe(SILENCE, prompt="Glass\x00Harbor")
 
 
+VOICE = np.full(2400, 1000, dtype=np.int16).tobytes()  # 0.1 s of sound (silence is trimmed)
+
+
 def _speaker(player: list[str], grace_s: float = 10.0) -> Speaker:
-    return Speaker(
-        lambda _text: (b"\x00\x00" * 2400, 24000), player=lambda _rate: player, grace_s=grace_s
-    )
+    return Speaker(lambda _text: (VOICE, 24000), player=lambda _rate: player, grace_s=grace_s)
 
 
 def _finishes(action: threading.Thread, seconds: float) -> bool:
@@ -570,7 +571,7 @@ def test_a_stop_while_the_player_is_starting_still_ends_it(tmp_path: Path) -> No
         speakers[0].stop()  # the stop lands before the player is known to the speaker
         return _endless_player(pid_file)
 
-    speaker = Speaker(lambda _text: (b"\0" * 4800, 24000), player=player)
+    speaker = Speaker(lambda _text: (VOICE, 24000), player=player)
     speakers.append(speaker)
     talking = threading.Thread(target=speaker.say, args=("hello",), daemon=True)
     talking.start()

@@ -295,6 +295,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
         AppAudio,
         Microphone,
+        OwnVoiceCheck,
         Speaker,
         Vad,
         WakeWord,
@@ -311,7 +312,12 @@ def cmd_run(_args: argparse.Namespace) -> int:
         return 2
     data = cfg.data_dir
     mic = Microphone(cfg.audio.source)
-    speaker = Speaker(make_synthesizer(data, cfg.audio.voice, cfg.audio.speech_speed))
+    speaker = Speaker(
+        make_synthesizer(data, cfg.audio.voice, cfg.audio.speech_speed),
+        own_wake=OwnVoiceCheck(WakeWord(data / WAKE_MODEL, cfg.audio.wake_threshold))
+        if cfg.audio.barge_in
+        else None,
+    )
     pc_audio = AppAudio(cfg.audio.pc_audio_apps) if cfg.audio.listen_to_pc else None
     stop_requested = threading.Event()
     refresh_stop = threading.Event()

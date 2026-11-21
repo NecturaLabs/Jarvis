@@ -8,12 +8,20 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- Jarvis starts speaking sooner: each sentence of a reply is spoken as soon as the model has written it,
+  synthesized while the one before plays, with the silence before the first word cut from 0.23 s to 0.03 s.
+  A sentence claiming an action is not spoken before an action succeeded
+  ([ADR 0008](docs/adr/0008-speak-while-writing-and-barge-in.md), proposed).
+- The service log's timing line now shows when the first words were ready.
 - The default Strata context window is 24,576 tokens (was 8,192), about 8.1 GiB of VRAM with the default model, and the model sees up to 3,000 characters
   of each tool result (was 1,500), so a search and two page reads fit in one request. A saved
   `strata.context` keeps its value; to change it, edit it and run `jarvis setup`.
 
 ### Added
 
+- Speaking over Jarvis: say the wake word while it talks and it stops and listens to the new request; a
+  question spoken over counts as no. `audio.barge_in = false` turns it off. A sentence that would trigger the
+  wake word itself cannot be spoken over.
 - `config.example.toml`: every setting at its default, with no personal values, to copy to
   `~/.config/jarvis/config.toml`.
 - The time and date, here or in a named place, and the weather now, today, tomorrow or for the week, at home

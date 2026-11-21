@@ -50,6 +50,7 @@ no_speech_timeout_s = 4.0
 end_silence_s = 0.7
 max_utterance_s = 20.0
 confirm_window_s = 8.0
+barge_in = true
 voice = "kokoro:bm_george"
 speech_speed = 1.0
 transcribe_engine = ""

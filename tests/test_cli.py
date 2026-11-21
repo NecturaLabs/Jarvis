@@ -519,6 +519,7 @@ class _Run:
         default_factory=dict[int, Callable[[int, object], None]]
     )
     parts: list[_Part] = field(default_factory=list[_Part])
+    kinds: dict[str, list[_Part]] = field(default_factory=dict[str, list[_Part]])
     refresh: list[threading.Event] = field(default_factory=list[threading.Event])
     warmed: threading.Event = field(default_factory=threading.Event)
     loops: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
@@ -528,6 +529,14 @@ class _Run:
         self.parts.append(made)
         return made
 
+    def maker(self, kind: str) -> Callable[..., _Part]:
+        def make(*args: object, **kwargs: object) -> _Part:
+            made = self.part(*args, **kwargs)
+            self.kinds.setdefault(kind, []).append(made)
+            return made
+
+        return make
+
 
 def _cmd_run(
     monkeypatch: pytest.MonkeyPatch,
@@ -536,7 +545,7 @@ def _cmd_run(
 ) -> tuple[_Run, int]:
     run = _Run()
     for name in ("Microphone", "Speaker", "Vad", "WakeWord", "AppAudio"):
-        monkeypatch.setattr(audio_module, name, run.part)
+        monkeypatch.setattr(audio_module, name, run.maker(name))
 
     def no_voice(*_args: object) -> None:
         return None
@@ -588,7 +597,7 @@ def test_a_stop_signal_only_raises_the_flag_and_the_stopper_ends_everything(
     (refresh,) = run.refresh
     assert refresh.wait(5)
     assert run.warmed.wait(5)
-    mic, speaker, pc_audio = run.parts[:3]
+    (mic,), (speaker,), (pc_audio,) = (run.kinds[k] for k in ("Microphone", "Speaker", "AppAudio"))
     assert mic.started
     assert all(part.stopped.is_set() for part in (mic, speaker, pc_audio))
     assert run.loops[0]["pc"] is not None

@@ -1,13 +1,16 @@
 """The Strata client: what it sends, and that a broken answer never reaches the agent."""
 
 import json
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast, override
 
 import httpx
 import pytest
 
 from jarvis.config import Config, ModelConfig
-from jarvis.model import LOAD_TIMEOUT_S, ModelError, StrataModel
+from jarvis.model import LOAD_TIMEOUT_S, Delta, ModelError, StrataModel
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 TOOLS: list[dict[str, Any]] = [{"type": "function", "function": {"name": "x"}}]
 MESSAGES: list[dict[str, Any]] = [{"role": "user", "content": "hi"}]
@@ -263,3 +266,168 @@ def test_a_retry_after_waiting_for_the_server_gets_only_the_time_left() -> None:
     assert model.chat(MESSAGES, TOOLS, timeout_s=10.0) == {"content": "back"}
     assert _read_timeout(posts[0]) == pytest.approx(10.0)
     assert _read_timeout(posts[1]) == pytest.approx(8.0)
+
+
+def _sse(*events: object, done: bool = True) -> bytes:
+    lines = [f"data: {json.dumps(event)}\n\n" for event in events]
+    return ("".join(lines) + ("data: [DONE]\n\n" if done else "")).encode()
+
+
+def _chunk(delta: dict[str, Any]) -> dict[str, Any]:
+    return {"choices": [{"index": 0, "delta": delta}]}
+
+
+class _Breaking(httpx.SyncByteStream):
+    """A response body that sends `first`, then drops the connection."""
+
+    def __init__(self, first: bytes) -> None:
+        super().__init__()
+        self._first = first
+
+    @override
+    def __iter__(self) -> Iterator[bytes]:
+        yield self._first
+        msg = "connection reset"
+        raise httpx.ReadError(msg)
+
+
+CALL_EVENTS: tuple[dict[str, Any], ...] = (
+    _chunk({"role": "assistant", "content": ""}),
+    _chunk(
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "no_action", "arguments": ""},
+                }
+            ]
+        }
+    ),
+    _chunk({"tool_calls": [{"index": 0, "function": {"arguments": '{"reply":"Hi'}}]}),
+    _chunk({"tool_calls": [{"index": 0, "function": {"arguments": ' there."}'}}]}),
+    {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+)
+
+
+def test_a_streamed_answer_is_passed_on_piece_by_piece_and_returned_whole() -> None:
+    seen: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=_sse(*CALL_EVENTS))
+
+    pieces: list[Delta] = []
+    reply = _model(httpx.MockTransport(handle)).chat(MESSAGES, TOOLS, on_delta=pieces.append)
+
+    assert json.loads(seen[0].content)["stream"] is True
+    assert pieces == [
+        Delta(call=0, name="no_action"),
+        Delta(call=0, arguments='{"reply":"Hi'),
+        Delta(call=0, arguments=' there."}'),
+    ]
+    assert reply == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "no_action", "arguments": '{"reply":"Hi there."}'},
+            }
+        ],
+    }
+
+
+def test_streamed_text_arrives_as_text_pieces() -> None:
+    events = (_chunk({"content": "Paused "}), _chunk({"content": "it."}))
+    transport = httpx.MockTransport(lambda _r: httpx.Response(200, content=_sse(*events)))
+    pieces: list[Delta] = []
+
+    reply = _model(transport).chat(MESSAGES, TOOLS, on_delta=pieces.append)
+
+    assert pieces == [Delta(text="Paused "), Delta(text="it.")]
+    assert reply == {"role": "assistant", "content": "Paused it."}
+
+
+def test_a_stream_dropped_after_a_piece_was_passed_on_is_not_retried() -> None:
+    posts: list[int] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"status": {"value": "loaded"}}]})
+        posts.append(1)
+        return httpx.Response(200, stream=_Breaking(_sse(_chunk({"content": "Half"}), done=False)))
+
+    pieces: list[Delta] = []
+    with pytest.raises(ModelError):
+        _model(httpx.MockTransport(handle)).chat(MESSAGES, TOOLS, on_delta=pieces.append)
+
+    assert posts == [1]
+    assert pieces == [Delta(text="Half")]
+
+
+def test_a_stream_that_fails_before_any_piece_is_retried_once() -> None:
+    posts: list[int] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"status": {"value": "loaded"}}]})
+        posts.append(1)
+        if len(posts) == 1:
+            raise httpx.ConnectError("refused", request=request)
+        return httpx.Response(200, content=_sse(_chunk({"content": "back"})))
+
+    pieces: list[Delta] = []
+    reply = _model(httpx.MockTransport(handle)).chat(MESSAGES, TOOLS, on_delta=pieces.append)
+
+    assert reply == {"role": "assistant", "content": "back"}
+    assert len(posts) == 2
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(500, text="boom"),
+        httpx.Response(200, content=b"data: not json\n\n"),
+        httpx.Response(200, content=_sse(_chunk({"tool_calls": [{"function": {"name": "x"}}]}))),
+    ],
+)
+def test_a_refused_or_unreadable_stream_is_a_model_error(response: httpx.Response) -> None:
+    model = _model(httpx.MockTransport(lambda _request: response))
+
+    with pytest.raises(ModelError):
+        model.chat(MESSAGES, TOOLS, on_delta=lambda _piece: None)
+
+
+def test_a_stream_that_runs_past_its_time_is_a_model_error() -> None:
+    now = [0.0]
+    events = (_chunk({"content": "one "}), _chunk({"content": "two "}), _chunk({"content": "x"}))
+    local = ModelConfig(base_url=Config().model_base_url())
+    model = StrataModel(
+        local,
+        "key",
+        transport=httpx.MockTransport(lambda _r: httpx.Response(200, content=_sse(*events))),
+        clock=lambda: now[0],
+    )
+
+    def slow(_piece: Delta) -> None:
+        now[0] += 3.0
+
+    with pytest.raises(ModelError, match="too long"):
+        model.chat(MESSAGES, TOOLS, timeout_s=5.0, on_delta=slow)
+
+
+def test_an_error_raised_by_the_listener_ends_the_stream_and_is_raised() -> None:
+    class EnoughError(Exception):
+        pass
+
+    def stop(_piece: Delta) -> None:
+        raise EnoughError
+
+    transport = httpx.MockTransport(
+        lambda _r: httpx.Response(200, content=_sse(_chunk({"content": "a"})))
+    )
+    with pytest.raises(EnoughError):
+        _model(transport).chat(MESSAGES, TOOLS, on_delta=stop)
