@@ -20,7 +20,7 @@ service (Foundry or Azure speech) for voice activation, and chose the local Live
 Chosen option: "local only", because nothing the owner says then leaves the PC and there is no bill or account
 to maintain. The model (Strata), speech-to-text (Voxtype), the wake word and the voice all run locally. Config
 keys for a hosted model (`model.provider`, `fallback`, `remote_base_url`, `remote_model`) were added in commit
-`10e5cc8` and removed in `c41039a` before any code read them. Spotify's own API is the one outside service
+`b4c6d69` and removed in `a62872b` before any code read them. Spotify's own API is the one outside service
 Jarvis calls, because controlling Spotify needs it.
 
 ### Consequences

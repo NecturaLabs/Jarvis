@@ -30,5 +30,5 @@ traps found along the way. Add a trap the moment it costs time.
 - Ruff's base config ignores `PT009`/`PT027` for unittest scripts; `ruff.toml` re-selects them for pytest.
 - A test fixture that wraps its process in `sh -c` must `exec` the real program. Otherwise stopping it kills the
   shell and leaves the child running; one such child spun a CPU core and slowed the whole suite about 8 times
-  (commit `1f62327`).
+  (commit `fb40b3d`).
 - pyright needs `venvPath`/`venv` in `pyrightconfig.json` to see the uv environment.
