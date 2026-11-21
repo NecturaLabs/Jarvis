@@ -67,6 +67,7 @@ These are the subcommands `jarvis --help` lists.
 | `jarvis doctor` | Check every part without loading the model. |
 | `jarvis logs` | Follow the live log (Ctrl+C to leave). |
 | `jarvis ask <text>` | Send one typed request as if spoken; `--yes` answers yes to confirmations. |
+| `jarvis chat` | Open a Textual window where you type requests and watch what Jarvis does, live. |
 | `jarvis pc-audio [on\|off]` | Show or set listening to PC audio; `--apps discord,firefox` names the apps, `--all-output` listens to everything the PC plays. |
 | `jarvis run` | Run the voice loop in the foreground. This is what `jarvis.service` runs. |
 | `jarvis --version` | Print the version. |
@@ -90,5 +91,6 @@ uv run pytest -q             # unit tests
 
 ## Licence
 
-Copyright NecturaLabs. All rights reserved. Jarvis depends on Piper (GPL-3.0-or-later), so the licence has to
+Copyright NecturaLabs. All rights reserved. Jarvis depends on Piper (GPL-3.0-or-later; see
+[docs/models.md](docs/models.md) for every dependency), so the licence has to
 be settled before release; see [docs/models.md](docs/models.md).

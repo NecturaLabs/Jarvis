@@ -26,8 +26,8 @@ was checked it says so.
 | Request | What happens | Cost |
 |---|---|---|
 | Plain command: "pause", "next song", "volume 40", "what's playing" | Matched in code, run through the same policy, confirmation and audit as a model call, answered from the operation's own sentence. No model, no load wait. | about 0.3 s |
-| Anything else the model answers | One prompt read of about 2,100 tokens, then generation | about 3.3 s of prompt reading at about 640 tokens/s, plus generation |
-| Model not loaded | Cold load | about 107 s with a game running; Jarvis says "One moment, waking up" |
+| Anything else the model answers (a chat reply is one model call: `no_action` carries the reply) | One prompt read of about 2,100 tokens, then generation | about 3.3 s of prompt reading at about 640 tokens/s, plus generation |
+| Model not loaded | Cold load | about 107 s with a game running; Jarvis says "One moment, waking up". The request gets 180 s more (270 s in all instead of 90 s); each model call is still capped by `model.request_timeout_s` |
 
 Memory while loaded, idle: about 38 GB of RAM and 7.3 GiB of VRAM, no GPU or CPU use. See
 [configuration.md](configuration.md#keeping-the-model-loaded).
@@ -103,5 +103,8 @@ daemon and never your Voxtype config or recordings. Each run is
 | onnxruntime | 1.32.0 | MIT |
 | piper-tts | 1.8.0 | GPL-3.0-or-later |
 | pydantic | 2.12.5 | MIT |
+| textual (the `jarvis chat` window) | 8.2.8 | MIT |
 
-Their own dependencies and the development tools were not checked.
+What textual pulls in: rich 15.0.0, markdown-it-py 4.3.0, mdit-py-plugins 0.7.0, mdurl 0.1.2 and platformdirs
+4.14.8, all MIT (package metadata; the three markdown packages give it as a licence classifier). The other
+packages' own dependencies and the development tools were not checked.

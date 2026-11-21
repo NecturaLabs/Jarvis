@@ -16,7 +16,7 @@ which parts exist. Details of what is built are in [configuration.md](configurat
 | Phase | Status | Built, and where it differs from the text below |
 |---|---|---|
 | 0. Project setup | Built | Git, `AGENTS.md`, docs, uv project, CI. |
-| 1. Strata | Mostly built | `jarvis setup` writes the Strata profile and `jarvis-strata.service` (lazy load, idle unload, `MemoryMax`, 127.0.0.1, API key). Defaults differ from the sketch: `expert_vram_gib` 1.0, no `--mmap-experts` flag, `idle_unload_s` 300, `memory_max` 40G, context 8192. Not recorded in the repository: the 200-request model eval and its gate. Load-refusal below a memory reserve is not built. |
+| 1. Strata | Mostly built | `jarvis setup` writes the Strata profile and `jarvis-strata.service` (lazy load, idle unload, `MemoryMax`, 127.0.0.1, API key). Defaults differ from the sketch: `expert_vram_gib` 1.0, no `--mmap-experts` flag, `idle_unload_s` 300, `memory_max` 40G, context 8192. Not recorded in the repository: the 200-request model eval and its gate. Load-refusal below a memory reserve is not built. `jarvis run` loads the model at start (owner decision 2026-11-21: keep it loaded). |
 | 2. Ears | Mostly built | `pw-record` capture, the LiveKit wake word, Silero VAD and the state machine (IDLE, CAPTURE, TRANSCRIBE, THINK, CONFIRM, SPEAK). Transcription is **path B** (`voxtype transcribe`, with Jarvis's own `-c` settings); path A (the daemon contract) is not built, and neither is volume lowering over MPRIS. The wake test runs (8 h, 100 wakes) are not recorded. |
 | 3. Boundaries, setup and voice | Partly built | Built: config (one schema version, no migrations), the policy engine and its decision table, provenance, spoken confirmation bound to one action, the audit log, the agent loop, Kokoro and Piper voices. Not built: the Textual wizard (`jarvis setup` takes flags instead), the `strong` class's keybinding confirmation (such calls are refused), quiet hours, `jarvis pause` and `jarvis confirm`. |
 | 4. Spotify | Built | PKCE login, Web API client, and the operations play (track, album, artist, playlist, liked songs), pause, resume, next, previous, set and change volume, shuffle, repeat, queue, like, now playing. Players are found and Spotify is launched through the Web API; MPRIS is not used. No seek, no separate transfer-to-device or my-playlists operation (playing "my playlist" is `play` with `mine`). |
@@ -31,7 +31,7 @@ Built beyond the plan, each with an ADR: speech heard in PC audio is treated as 
 ([0005](adr/0005-local-only.md)). Also built: a vocabulary hint for speech-to-text, a check that a spoken
 reply does not claim an action no tool did, and `jarvis doctor` hashing model files against pinned releases.
 
-Where the code settled a number the plan left open: a request stops after 90 s (plan: 60 s), the conversation
+Where the code settled a number the plan left open: a request stops after 90 s, or 270 s when the model must load first (plan: 60 s), the conversation
 keeps the last 4 turns for 5 minutes (plan: about 10), at most 8 tool calls per request, and 0.7 s of
 trailing silence ends an utterance (plan: 1.0 s). Kokoro is the default voice; Piper is still supported
 behind the same speech setting, as the Piper-licence risk below asked.
@@ -46,10 +46,12 @@ behind the same speech setting, as the Piper-licence risk below asked.
 - No global instructions, skills or plugins except the Omarchy OS skills; no subagents: one main agent.
 - First core feature: Spotify control (owner has Premium). v1 is Spotify management by voice only; PC operations
   and research come after it works.
-- Light on the PC so gaming stays decent at any time: at most about 8 GB of VRAM while the model is loaded, nothing
-  held when idle, no heavy CPU use between requests. The tasks are simple, so a small model is enough.
+- Light on the PC so gaming stays decent at any time: no GPU or CPU use while idle and no heavy CPU use between
+  requests (decided 2026-11-21: a loaded idle model may hold RAM and VRAM; Jarvis must run beside games). The tasks are simple, so a small model is enough.
 - Replies by voice (Piper); no desktop notifications.
-- Model idle by default (including after reboot), loaded on demand, unloaded when idle.
+- Model kept loaded (owner decision, 2026-11-21, replacing "idle by default, including after reboot"): `jarvis run`
+  loads it at start, and `strata.idle_unload_s` may be raised to 86400 so it stays loaded. While idle it holds
+  memory but uses no GPU or CPU. Under the default 300 s it is still freed when idle and loaded on the next wake.
 - Very easy to set up and maintain. Private repo `necturalabs/jarvis`.
 - Goes open source once stable and confirmed working to our standards, so everything committed stays
   publishable from day one.
@@ -145,18 +147,18 @@ enforced in code before any tool runs.
 - Under systemd: `strata serve --profile jarvis --ready-file …`, absolute paths, `Restart=on-failure` with backoff,
   `MemoryHigh`/`MemoryMax`. Health checks never generate, so boot and `doctor` leave the model unloaded.
 - Jarvis says "One moment, waking up" when a request finds the model unloaded; `jarvis unload` frees it at once
-  (e.g. before a game). It refuses to load when available memory is below a reserve set in config.
+  (e.g. before a game). It refuses to load when available memory is below a reserve set in config (not built).
 - Survives suspend/resume and engine crashes: the agent retries once after the server is ready again.
 
 ### Agent loop
 - One agent; tools passed as JSON schemas; each assembled tool call is validated (schema + semantic checks) before
   the policy sees it.
-- Caps per request: 6 tool steps, 60 s, output size per tool. Repeated identical calls are stopped.
+- Caps per request: 6 tool steps, 60 s (built as 90 s, plus 180 s more when the model must load first), output size per tool. Repeated identical calls are stopped.
 - Uncertain outcomes (timeout after sending) are never retried blindly for non-idempotent actions (queue, skip,
   like); Jarvis says "I'm not sure that went through" instead.
 - Replies are short and report what happened (tool results, not intentions). v1 speaks complete replies; sentence
   streaming later.
-- Session memory: last ~10 turns, expires after 5 min idle. No follow-up listening in v1 (say "Hey Jarvis" again).
+- Session memory: last ~10 turns (built as 4), expires after 5 min idle. No follow-up listening in v1 (say "Hey Jarvis" again).
 - System prompt: `core.md` (shipped: identity, tools, limits) + persona/tone + owner addendum from setup + a
   rendering of the boundaries + the Omarchy skill index (names and descriptions; full text through `os_skill`).
 

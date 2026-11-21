@@ -24,6 +24,8 @@ did not confirm. What exists today and what is in scope:
   voices were heard in PC audio while Jarvis waited for it. See `docs/adr/0003-pc-audio-is-not-the-owner.md`.
 - **Outside text is data.** Song, artist and playlist names from Spotify are wrapped as data and marked with
   their origin; while such text is in a request, every side-effecting operation needs a spoken yes.
+- **The chat window** (`jarvis chat`) shows outside text, such as Spotify names and PC speech, as plain
+  characters only: control characters are removed and long text is cut (`activity.py`).
 - **Policy and confirmation.** Operations are typed with validated arguments and default deny; unknown
   operations are refused. A confirmation is bound to the hash of one exact action and starts only after
   Jarvis has finished speaking. Anything but a clear yes is a no, and after one no in a request the owner is
