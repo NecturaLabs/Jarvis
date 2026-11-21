@@ -86,11 +86,12 @@ class State(StrEnum):
     THINK = "think"
     CONFIRM = "confirm"
     SPEAK = "speak"
+    FOLLOW_UP = "follow-up"  # listening for a request without the wake word after a reply
 
 
 # While the loop is in these states, a wake word in PC audio is still noted (it may be the same
 # request heard twice); a PC request is only captured while the loop is idle.
-_NOTING_WAKES = frozenset({State.IDLE, State.CAPTURE, State.TRANSCRIBE})
+_NOTING_WAKES = frozenset({State.IDLE, State.CAPTURE, State.TRANSCRIBE, State.FOLLOW_UP})
 
 
 class _Mic(Protocol):
@@ -239,6 +240,7 @@ class VoiceLoop:
         names: Sequence[str] = (),
         clock: Callable[[], float] = time.monotonic,
         pc_retry_s: float = 1.0,
+        dictating: Callable[[], bool] = lambda: False,
     ) -> None:
         """Wire the loop to its parts.
 
@@ -246,6 +248,8 @@ class VoiceLoop:
         confirmation (by default `transcribe`; give one without a vocabulary hint, so the
         hint cannot turn noise into words). `names` are the assistant's names, allowed beside
         a yes. `clock` times wake words for telling one request heard twice from two.
+        `dictating` says whether the owner's own dictation is recording or transcribing; no
+        follow-up request is taken from the microphone meanwhile.
         """
         super().__init__()
         self._agent = agent
@@ -261,6 +265,8 @@ class VoiceLoop:
         self._names = tuple(names)
         self._clock = clock
         self._pc_retry_s = pc_retry_s
+        self._dictating = dictating
+        self._answered = False  # the last request was the owner's and was answered by voice
         self._should_stop: Callable[[], bool] = lambda: False
         self._pc_heard: queue.Queue[_PcRequest] = queue.Queue(maxsize=1)
         self._pc_wake_at: float | None = None  # when PC audio last held the wake word
@@ -434,11 +440,12 @@ class VoiceLoop:
         return True
 
     def _serve(self, request: Callable[[], None]) -> None:
-        """Run one request, then each one the owner starts by speaking over Jarvis.
+        """Run one request, then each one the owner starts by speaking over Jarvis or follows on.
 
         A failure is logged and apologised for, and the loop carries on.
         """
         while True:
+            self._answered = False
             try:
                 request()
             except Exception:
@@ -448,9 +455,77 @@ class VoiceLoop:
             finally:
                 self.state = State.IDLE
             barged_at, self._barged_at = self._barged_at, None
-            if barged_at is None or self._should_stop():
+            if self._should_stop():
                 return
-            request = functools.partial(self.handle_wake, barged_at)
+            if barged_at is not None:
+                request = functools.partial(self.handle_wake, barged_at)
+                continue
+            follow_up = self._follow_up()
+            if follow_up is None:
+                return
+            request = follow_up
+
+    def _follow_up(self) -> Callable[[], None] | None:
+        """Listen for `follow_up_s` after a spoken reply; return the request heard, if any.
+
+        Only after a reply to the owner's own voice has finished playing, and never while the
+        owner dictates: speech in the window then is dictation, not a request. Speech heard while
+        PC audio also held speech is dropped, as it may be a voice from the PC. The wake word
+        inside the window starts a request the usual way.
+        """
+        window_s = self._cfg.follow_up_s
+        if window_s <= 0 or not self._answered:
+            return None
+        if self._dictating():
+            log.info("no follow-up: the owner is dictating")
+            return None
+        self.state = State.FOLLOW_UP
+        woke: list[float] = []
+
+        def frames() -> Iterator[NDArray[np.int16]]:
+            for frame in self._mic.frames():
+                if self._should_stop():
+                    return
+                if self._wake.heard(frame):
+                    woke.append(self._clock())
+                    return
+                yield frame
+
+        self._wake.reset()
+        pc_speech = self._pc_speech
+        started = time.perf_counter()
+        cfg = self._cfg.model_copy(update={"no_speech_timeout_s": window_s})
+        heard = capture_utterance(frames(), self._vad, cfg)
+        self.state = State.IDLE
+        if woke:
+            log.info("wake word in the follow-up window")
+            return functools.partial(self.handle_wake, woke[0])
+        if heard.samples is None or not self._keeps_follow_up(pc_speech):
+            return None
+        log.info("follow-up request without the wake word")
+        self._requests += 1
+        return functools.partial(
+            self._answer,
+            heard.samples,
+            Origin.OWNER_SPEECH,
+            capture_s=time.perf_counter() - started,
+            follow_up=True,
+        )
+
+    def _keeps_follow_up(self, pc_speech: int) -> bool:
+        """Whether speech heard in the follow-up window may be taken as a request.
+
+        `pc_speech` is the PC speech count when the window opened.
+        """
+        if self._should_stop():
+            return False
+        if self._dictating():
+            log.info("dropped a follow-up: the owner started dictating")
+            return False
+        if self._pc_speech != pc_speech:
+            log.info("dropped a follow-up: PC audio held speech meanwhile")
+            return False
+        return True
 
     def handle_wake(self, wake_at: float | None = None) -> None:
         """Capture one request after the wake word (heard at `wake_at`) and answer it."""
@@ -487,16 +562,27 @@ class VoiceLoop:
         *,
         wake_at: float | None = None,
         capture_s: float = 0.0,
+        follow_up: bool = False,
     ) -> None:
-        """Transcribe one captured request and speak the agent's reply."""
+        """Transcribe one captured request and speak the agent's reply.
+
+        A `follow_up` request (heard without the wake word) that cannot be made out is dropped
+        without a word: it may not have been meant for Jarvis.
+        """
         try:
-            self._reply(samples, origin, wake_at=wake_at, capture_s=capture_s)
+            self._reply(samples, origin, wake_at=wake_at, capture_s=capture_s, follow_up=follow_up)
         finally:
             if origin is Origin.PC_AUDIO or (wake_at is not None and self._heard_on_pc(wake_at)):
                 self._pc_done_at = self._clock()
 
     def _reply(
-        self, samples: NDArray[np.int16], origin: Origin, *, wake_at: float | None, capture_s: float
+        self,
+        samples: NDArray[np.int16],
+        origin: Origin,
+        *,
+        wake_at: float | None,
+        capture_s: float,
+        follow_up: bool = False,
     ) -> None:
         self.state = State.TRANSCRIBE
         started = time.perf_counter()
@@ -504,8 +590,9 @@ class VoiceLoop:
             text = self._transcribe(samples)
         except AudioError as exc:
             log.warning("transcription failed: %s", exc)
-            if origin is Origin.OWNER_SPEECH:
+            if origin is Origin.OWNER_SPEECH and not follow_up:
                 self._say("Sorry, I couldn't make that out.")
+                self._answered = True
             return
         stt_s = time.perf_counter() - started
         if origin is Origin.OWNER_SPEECH and wake_at is not None and self._heard_on_pc(wake_at):
@@ -518,7 +605,9 @@ class VoiceLoop:
             log.info("ignored a phantom or empty transcript: %r", text)
             return
         if not text:
-            self._say("Sorry, I didn't catch that.")
+            if not follow_up:
+                self._say("Sorry, I didn't catch that.")
+                self._answered = True
             return
         log.info("heard (%s): %r", origin.value, text)
         self.state = State.THINK
@@ -540,6 +629,7 @@ class VoiceLoop:
             agent_s = time.perf_counter() - started
         finally:
             self._end_speaking()
+        self._answered = from_owner and not self._cancelled()
         first = self._first_words
         log.info(
             "timing: capture %.2f s, transcription %.2f s, first words after %s, agent %.2f s, "
@@ -609,14 +699,15 @@ class VoiceLoop:
 
         A wake word said over Jarvis may come from the call: it is noted, so a barge-in that
         echoes it is the call's request, not the owner's (see `_reply`). While Jarvis waits for
-        a yes, speech in PC audio is counted, so a voice there cannot answer.
+        a yes or a follow-up, speech in PC audio is counted, so a voice there cannot answer or
+        make a request without the wake word.
         """
         if state is State.SPEAK:
             if pc.wake.heard(frame):
                 self._pc_wake_at = self._clock()
                 log.info("wake word in PC audio while Jarvis speaks")
             return True
-        if state is State.CONFIRM:
+        if state in {State.CONFIRM, State.FOLLOW_UP}:
             if pc.vad.speech_probability(frame) >= self._cfg.vad_threshold:
                 self._pc_speech += 1
             return True

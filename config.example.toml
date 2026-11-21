@@ -51,6 +51,7 @@ end_silence_s = 0.7
 max_utterance_s = 20.0
 confirm_window_s = 8.0
 barge_in = true
+follow_up_s = 0.0
 wake_engine = "livekit"
 azure_keyword_model = ""
 azure_python = ""

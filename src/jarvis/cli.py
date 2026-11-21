@@ -354,6 +354,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         Speaker,
         Vad,
         WakeWord,
+        dictation_active,
         make_synthesizer,
     )
     from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level]
@@ -421,6 +422,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         ),
         transcribe_answer=answer,
         names=(cfg.persona.name,),
+        dictating=dictation_active,
     )
     try:
         loop.run(stop_requested.is_set)

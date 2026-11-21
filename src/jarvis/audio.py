@@ -725,6 +725,43 @@ def voxtype_command(
     return [*cmd, "transcribe", str(wav)]
 
 
+# The states `voxtype status` reports in which the owner's dictation is not running (Voxtype's
+# docs/INTEGRATIONS.md lists idle, recording, streaming, transcribing and stopped); any other
+# state, one added later included, counts as dictation.
+_NOT_DICTATING = frozenset({"idle", "stopped"})
+
+
+def dictation_active(
+    run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run, timeout_s: float = 2.0
+) -> bool:
+    """Whether the owner's Voxtype dictation is recording or transcribing.
+
+    Read from `voxtype status --format json`, part of Voxtype's integration contract. A daemon
+    that is not running (a non-zero exit) is not dictating; a status that cannot be run or read
+    counts as dictating, so Jarvis never takes the owner's dictation for a request.
+    """
+    try:
+        done = run(
+            ["voxtype", "status", "--format", "json"],
+            capture_output=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        log.warning("could not read Voxtype's status: %s", exc)
+        return True
+    if done.returncode != 0:
+        return False
+    try:
+        state = obj(json.loads(done.stdout)).get("class")
+    except ValueError:
+        state = None
+    if not isinstance(state, str):
+        log.warning("could not read Voxtype's status: %r", done.stdout[:200])
+        return True
+    return state not in _NOT_DICTATING
+
+
 def transcribe(  # ruff: ignore[too-many-arguments] - Voxtype's options plus a test seam
     samples: NDArray[np.int16],
     engine: str = "",

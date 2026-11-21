@@ -125,6 +125,8 @@ class AudioConfig(_Section):
     max_utterance_s: float = Field(default=20.0, gt=1, le=120)
     confirm_window_s: float = Field(default=8.0, gt=1, le=30)
     barge_in: bool = True  # the wake word stops Jarvis mid-sentence and starts a new request
+    # Seconds after a spoken reply in which the next request needs no wake word; 0 turns it off.
+    follow_up_s: float = Field(default=0.0, ge=0, le=15)
     wake_engine: Literal["livekit", "azure"] = "livekit"
     azure_keyword_model: str = ""  # the Azure custom keyword `.table` file
     azure_python: str = ""  # the Python with the Speech SDK; empty: <data_dir>/azure-wake/venv

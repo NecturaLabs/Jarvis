@@ -22,7 +22,7 @@ which parts exist. Details of what is built are in [configuration.md](configurat
 | 4. Spotify | Built | PKCE login, Web API client, and the operations play (track, album, artist, playlist, liked songs), pause, resume, next, previous, set and change volume, shuffle, repeat, queue, like, now playing. Players are found and Spotify is launched through the Web API; MPRIS is not used. No seek, no separate transfer-to-device or my-playlists operation (playing "my playlist" is `play` with `mine`). |
 | 5. PC operations | Planned | |
 | 6. Research | Mostly built | `deploy/searxng/` (pinned image, JSON on, limiter off, `127.0.0.1:8888`), `web_search`, `web_read` (trafilatura, size caps, public-address checks at every connection and redirect, only pages a search returned), plus `reddit_search` and `reddit_read` (SearXNG and the Arctic Shift archive), `time_now` and `weather` (Open-Meteo), [ADR 0007](adr/0007-outside-services-for-answers.md). Not built: SearXNG in an installer, a spoken check with the owner. |
-| 7. Polish | Partly built | Built: sentence streaming and voice barge-in ([ADR 0008](adr/0008-speak-while-writing-and-barge-in.md)); echo cancellation is a documented PipeWire setup for the owner. Not built: follow-up listening, the bar indicator. |
+| 7. Polish | Partly built | Built: sentence streaming and voice barge-in ([ADR 0008](adr/0008-speak-while-writing-and-barge-in.md)); echo cancellation is a documented PipeWire setup for the owner; follow-up listening (`audio.follow_up_s`, off by default until the owner's live run). Not built: the bar indicator. |
 | 8. Hardening | Planned | No `install.sh`, `jarvis update`, rollback or uninstall. `jarvis doctor`, `status`, `logs`, `unload`, `start`, `stop` and `restart` exist. |
 
 Built beyond the plan, each with an ADR: speech heard in PC audio is treated as someone else's
@@ -162,7 +162,8 @@ enforced in code before any tool runs.
   sentence is spoken while the rest is written, except a sentence claiming an action before any succeeded, and
   nothing more of a message once a tool call follows it; what was already passed on plays to its end
   ([ADR 0008](adr/0008-speak-while-writing-and-barge-in.md)).
-- Session memory: last ~10 turns (built as 4), expires after 5 min idle. No follow-up listening in v1 (say "Hey Jarvis" again).
+- Session memory: last ~10 turns (built as 4), expires after 5 min idle. Follow-up listening is built and off by default: with `audio.follow_up_s` set, the next request
+  within that many seconds of a spoken reply needs no wake word (never while Voxtype is dictating).
 - System prompt: `core.md` (shipped: identity, tools, limits) + persona/tone + owner addendum from setup + a
   rendering of the boundaries + the Omarchy skill index (names and descriptions; full text through `os_skill`).
 

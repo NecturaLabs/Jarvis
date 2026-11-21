@@ -21,6 +21,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Follow-up requests: with `audio.follow_up_s` set (off by default; about 6 s is a good start), the next
+  request within that many seconds of a spoken reply needs no wake word. It never opens while Voxtype
+  dictation is recording or transcribing, and unclear speech in it is dropped without a word.
 - Pull requests check every commit's subject against the Conventional Commits types in `CONTRIBUTING.md`,
   and, from a fork, each commit's DCO sign-off (`tools/check_pr_commits.py`).
 - CI lints the workflow files with actionlint (and shellcheck over their `run:` steps); `tools/check.sh` runs
