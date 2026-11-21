@@ -56,8 +56,9 @@ did not confirm. What exists today and what is in scope:
 
 - **Whose speech is whose.** Speech from the microphone is the owner's. Speech heard in PC audio (a call, a
   video) is someone else's: it is only listened to when the owner turns `listen_to_pc` on, its side effects
-  need the owner's spoken yes, and it stays out of the owner's conversation history. A yes does not count if
-  voices were heard in PC audio while Jarvis waited for it. See
+  need the owner's spoken yes, and it stays out of the owner's conversation history. With
+  `audio.confirm_blocks_on_pc_speech` on (the default), a yes does not count if voices were heard in PC
+  audio while Jarvis waited for it. See
   [ADR 0003](docs/adr/0003-pc-audio-is-not-the-owner.md). Known limit: only the apps in `pc_audio_apps` are
   known as PC audio. On speakers, speech from another app that reaches the microphone is heard as the owner's;
   headphones or PipeWire echo cancellation ([docs/configuration.md](docs/configuration.md), "Speakers and

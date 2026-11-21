@@ -53,7 +53,7 @@ behind the same speech setting, as the Piper-licence risk below asked.
   loads it at start, and `strata.idle_unload_s` may be raised to 86400 so it stays loaded. While idle it holds
   memory but uses no GPU or CPU. Under the default 300 s it is still freed when idle and loaded on the next wake.
 - Very easy to set up and maintain. Public repo `NecturaLabs/jarvis`, GPL-3.0-or-later (`docs/adr/0006-gpl-licence.md`).
-- Open source (GPL-3.0-or-later since 2026-11-21); everything committed has been publishable from day one.
+- Open source (GPL-3.0-or-later since 2026-11-21); everything committed stays publishable.
 - Agents working on it open nothing on the owner's screen (hidden; else workspace 1) and never stop processes they
   did not start.
 
@@ -82,7 +82,7 @@ behind the same speech setting, as the Piper-licence risk below asked.
   RAM: Strata measured 58-60 tok/s decode on an RTX 3060 12 GB with 37 of 256 experts per layer in VRAM (docs
   QWEN36.md). `--expert-cache auto` sizes the cache to the free VRAM; a fixed `--expert-cache N` (N x the largest
   expert blob) and `--vram-reserve-mib` cap it (docs DETAILS.md). Sources read 2026-11-21; not yet measured here.
-- Old model still on disk, unused: Qwen3.8-Flash-Next IQ2_XS at `/data/gaming/ai/strata` (990 PRO NVMe), 76.5 GB
+- Old model still on disk, unused: Qwen3.8-Flash-Next IQ2_XS in the model folder, 76.5 GB
   (~39 GB RAM + VRAM to run, beyond the VRAM limit above). Kept until phase 1 passes; deleted only on the owner's word.
 - LiveKit WakeWord 2.1.3 (Apache-2.0 code and weights per NOTICE), Python >= 3.11, deps numpy + onnxruntime,
   pretrained `hey_jarvis.onnx`; local detection, no account.
@@ -138,7 +138,7 @@ enforced in code before any tool runs.
 - Voice barge-in and echo cancellation (PipeWire echo-cancel module) come in the polish phase.
 
 ### Model (Strata)
-- Profile `jarvis`: Qwen3.6-35B-A3B UD-Q4_K_XL (files under `/data/gaming/ai/strata`) in hybrid mode with a fixed
+- Profile `jarvis`: Qwen3.6-35B-A3B UD-Q4_K_XL (files in the model folder, `strata.model_file`) in hybrid mode with a fixed
   expert cache sized so the engine's whole VRAM use stays at or under about 8 GB (never `--expert-cache auto`, which
   takes all free VRAM); 8K context, `--parallel 1`, vision off, `lazy_load` on, `idle_unload_s` 300, mapped experts
   (`--mmap-experts`, memory the kernel can reclaim), a positive `reasoning_budget_tokens` cap, local access with an
@@ -205,8 +205,8 @@ enforced in code before any tool runs.
 
 - `./install.sh` (idempotent): preflight (Omarchy, PipeWire, Voxtype contract `--wait`, docker, GPU, free disk/RAM);
   the system Python 3.14 through uv and `uv sync --frozen`; installs a pinned Strata release (its engine under
-  `/data/dev`, not `~/.local/share`) and writes the `jarvis` profile
-  pointing at `/data/gaming/ai/strata`; downloads wake-word and Piper voice files with checksums; asks Voxtype to
+  a folder the owner picks, not `~/.local/share`) and writes the `jarvis` profile
+  pointing at the model folder; downloads wake-word and Piper voice files with checksums; asks Voxtype to
   download the transcription model; writes user units; runs `jarvis setup` on first run.
 - `jarvis doctor`: one line per check with its fix; never loads the model unless `--load`.
 - `jarvis update`: `git pull --ff-only`, `uv sync --frozen`, Strata update only when idle, restart units, `doctor`;
@@ -214,14 +214,14 @@ enforced in code before any tool runs.
 - `jarvis status | logs | pause | resume | unload | stop | confirm | setup | uninstall` (uninstall keeps config and
   the model unless asked).
 - Lifecycle: units bound to the graphical session; defined behavior on lock (keep listening, configurable),
-  suspend/resume (re-open mic, re-check Strata), mic unplug/replug (wait and re-open), missing `/data/gaming` mount
+  suspend/resume (re-open mic, re-check Strata), mic unplug/replug (wait and re-open), missing model disk
   (Strata unit fails cleanly, Jarvis says the model is unavailable).
 - Repo `NecturaLabs/jarvis` (public); CI on GitHub-hosted runners: ruff, pyright, pytest (unit only, no audio/GPU),
   REUSE and pip-audit.
 
 ## Open-source readiness (from day one)
 
-- Nothing machine- or owner-specific in code: paths (`/data/gaming/ai/strata`), devices, voices and accounts come
+- Nothing machine- or owner-specific in code: paths (the model folder), devices, voices and accounts come
   from config with documented defaults; tests use fixtures, never the owner's data.
 - History stays publishable: no personal data, tokens, recordings or internal hostnames in any commit; owner
   voice fixtures stay out of the repository unless the owner approves them for publication.

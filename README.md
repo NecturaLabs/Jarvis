@@ -99,8 +99,8 @@ Jarvis is licensed under the GNU General Public License, version 3 or (at your o
 (GPL-3.0-or-later); see [LICENSE](LICENSE). It imports `piper-tts`, which is GPL-3.0-or-later, in the same
 process for both of its voices, so Jarvis as a whole has to be GPL-compatible, and GPL-3.0-or-later is the
 licence the project uses for its own code too. Contributions are accepted under the same licence (inbound =
-outbound). Every dependency, model and voice, with its licence, is listed in [docs/models.md](docs/models.md)
-and [docs/configuration.md](docs/configuration.md).
+outbound). Every dependency, model and voice is listed in [docs/models.md](docs/models.md) and
+[docs/configuration.md](docs/configuration.md), with its licence where it has been checked.
 
 ## Contributing
 
