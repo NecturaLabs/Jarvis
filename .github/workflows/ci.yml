@@ -6,8 +6,7 @@ on:
   pull_request:
     branches: [main, dev]
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
@@ -16,13 +15,11 @@ concurrency:
 jobs:
   check:
     name: Lint, types and tests
-    # Runner: GitHub-hosted for pull requests from forks (never run untrusted code on the self-hosted machine)
-    # and when the repository variable USE_SELF_HOSTED is '0'; the self-hosted runner otherwise.
-    # `github.event.pull_request` is empty on pushes, hence the event_name test first.
-    runs-on: >-
-      ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)
-      && 'ubuntu-latest'
-      || (vars.USE_SELF_HOSTED == '0' && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "x64"]')) }}
+    # GitHub-hosted only: in a public repository a pull request can change this file, so its code
+    # must never reach a persistent machine.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 15
     env:
       # pyproject.toml prefers the system Python on the owner's PC; CI runners get a uv-managed 3.14.
@@ -70,3 +67,15 @@ jobs:
 
       - name: Unit tests
         run: uv run pytest -q -m "not local"
+
+      - name: Licence information (REUSE)
+        run: uv run reuse lint
+
+      - name: Known vulnerabilities in the locked dependencies
+        run: |
+          set -euo pipefail
+          uv export --frozen --all-groups --no-emit-project --no-hashes -q > "$RUNNER_TEMP/requirements.txt"
+          uv run pip-audit --strict --disable-pip --no-deps -r "$RUNNER_TEMP/requirements.txt"
+
+      - name: Pull request commit check self-test
+        run: python3 -B tools/check-pr-commits.py --selftest

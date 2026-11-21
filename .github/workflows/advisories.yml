@@ -1,0 +1,46 @@
+name: Advisories
+
+# CI checks advisories only when code changes. An advisory published against an unchanged uv.lock
+# shows up here within a week.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  advisories:
+    name: pip-audit advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      UV_PYTHON_PREFERENCE: managed
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # One pin per tool, as in ci.yml: bump the version and its sha256 together.
+      - name: Install uv and Python
+        run: |
+          set -euo pipefail
+          . tools/ci-tool-install.sh
+          tools=$RUNNER_TEMP/ci-tools
+          mkdir -p "$tools/bin"
+          ci_fetch https://github.com/astral-sh/uv/releases/download/0.13.9/uv-x86_64-unknown-linux-gnu.tar.gz \
+            a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5 uv-0.13.9.tar.gz
+          tar -xzf "$CI_TOOL_CACHE/uv-0.13.9.tar.gz" -C "$tools"
+          cp "$tools/uv-x86_64-unknown-linux-gnu/uv" "$tools/bin/"
+          UV_PYTHON_INSTALL_DIR=$RUNNER_TEMP/uv-python "$tools/bin/uv" python install --no-bin 3.14
+          echo "UV_PYTHON_INSTALL_DIR=$RUNNER_TEMP/uv-python" >> "$GITHUB_ENV"
+          echo "$tools/bin" >> "$GITHUB_PATH"
+
+      - name: Known vulnerabilities in the locked dependencies
+        run: |
+          set -euo pipefail
+          uv sync --locked --only-group dev
+          uv export --frozen --all-groups --no-emit-project --no-hashes -q > "$RUNNER_TEMP/requirements.txt"
+          uv run --no-sync pip-audit --strict --disable-pip --no-deps -r "$RUNNER_TEMP/requirements.txt"
