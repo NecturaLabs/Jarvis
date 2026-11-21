@@ -89,6 +89,15 @@ The chat remembers replies that drew on outside text, as data. While one is reme
 effect that the model chooses needs your yes; a plain command (`pause`, `volume 40`) does not, since the
 model plays no part in it.
 
+Pictures in the chat need the picture reader (`strata.vision_file`, below). Ctrl+V pastes a copied picture
+as an `[Image #1]` tag in the input, as in Claude Code, or copied text where the cursor is; the terminal's
+own paste (Ctrl+Shift+V) carries only text. A picture file dropped on the terminal, or `/image <path>`,
+attaches that file, and `/image` alone attaches the newest screenshot in `OMASNAP_SCREENSHOT_DIR`,
+`~/Pictures/Screenshots` or `~/Pictures`. Delete a tag to leave its picture out. Each picture is checked
+and shrunk to 1,568 pixels on its longest side before it goes to the model. What a picture shows counts as
+outside text: in that request, an action the model chooses needs your yes. The conversation keeps the
+picture's name, not the picture.
+
 ## `[strata]`: how the `jarvis-strata` service runs the model
 
 These are written into the Strata profile and unit by `jarvis setup`. Strata serves only Jarvis and listens on

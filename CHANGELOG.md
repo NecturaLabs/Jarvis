@@ -46,6 +46,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Pictures in `jarvis chat`, as in Claude Code: Ctrl+V pastes a copied picture as an `[Image #1]` tag (or
+  copied text where the cursor is), a picture file dropped on the terminal or `/image <path>` attaches that
+  file, and `/image` alone the newest screenshot. Pictures are checked and shrunk with Pillow 13.0.0 (new
+  dependency, MIT-CMU) and go only to the local model, which needs `strata.vision_file`. What a picture
+  shows counts as outside text, so an action the model chooses in that request needs your yes.
 - Pictures for the model: `strata.vision_file` names the model's picture reader (`mmproj-F16.gguf`, pinned
   in `jarvis doctor`), and the Strata profile then reads pictures with Strata's processor reader, started by
   the first picture and stopped after `strata.vision_idle_s` (120 s), so it costs no VRAM and no RAM while

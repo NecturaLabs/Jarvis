@@ -114,6 +114,7 @@ def test_action_hash_binds_operation_and_exact_arguments() -> None:
         (Origin.SPOTIFY, False),
         (Origin.WEB, False),
         (Origin.FILE, False),
+        (Origin.PICTURE, False),
     ],
 )
 def test_which_origins_are_trusted(origin: Origin, trusted: bool) -> None:
@@ -122,7 +123,7 @@ def test_which_origins_are_trusted(origin: Origin, trusted: bool) -> None:
 
 def test_every_origin_has_a_stated_trust() -> None:
     # A new origin must be added to the table above, where it starts as untrusted.
-    assert len(Origin) == 8
+    assert len(Origin) == 9
 
 
 @pytest.mark.parametrize(

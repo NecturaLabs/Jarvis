@@ -163,6 +163,7 @@ spoken over.
 | livekit-wakeword | 2.1.3 | Apache-2.0 |
 | numpy | 2.5.5 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 |
 | onnxruntime | 1.32.0 | MIT |
+| pillow (checks and shrinks pictures for the model) | 13.0.0 | MIT-CMU |
 | piper-tts | 1.8.0 | GPL-3.0-or-later |
 | pydantic | 2.14.3 | MIT |
 | textual (the `jarvis chat` window) | 8.2.8 | MIT |

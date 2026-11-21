@@ -7,11 +7,14 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from PIL import Image
 from rich.console import Console
+from textual import events
 from textual.widgets import Markdown, OptionList, Static
 
 from jarvis.agent import ContextUse, Hooks
 from jarvis.chat.app import ChatApp, Services
+from jarvis.chat.clipboard import Clip, ClipboardError
 from jarvis.chat.history import InputHistory
 from jarvis.chat.widgets import Entry, PromptArea, Reply, Request
 from jarvis.config import ChatConfig
@@ -19,11 +22,13 @@ from jarvis.memory import Conversation, Turn
 from jarvis.sysinfo import Gpu, Stats
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
     from textual.pilot import Pilot
     from textual.widget import Widget
+
+    from jarvis.pictures import Picture
 
 SESSION = "s1"
 
@@ -58,14 +63,16 @@ class FakeSession:
     answer: Callable[[str, Hooks], str] = lambda _text, _hooks: "Done."
     memory: Conversation = field(default_factory=lambda: Conversation(budget=1000))
     asked: list[str] = field(default_factory=list[str])
+    pictures: list[list[str]] = field(default_factory=list[list[str]])
     forgotten: int = 0
     compacted: list[bool] = field(default_factory=list[bool])
     use: ContextUse = field(
         default_factory=lambda: ContextUse(9100, 24576, 5100, 2400, 12000, 1, summarized=False)
     )
 
-    def handle(self, text: str, hooks: Hooks) -> str:
+    def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
         self.asked.append(text)
+        self.pictures.append([p.name for p in pictures])
         return self.answer(text, hooks)
 
     def forget(self) -> None:
@@ -792,5 +799,176 @@ def test_steps_carry_their_level_as_a_class() -> None:
         await _until(pilot, lambda: _has(app, "4.6 s"))
         levels = {w.shown.level for w in _transcript(app) if isinstance(w, Entry)}
         assert levels == {"steps", "everything"}
+
+    _run(test, app)
+
+
+# Pictures: Ctrl+V, a pasted or dropped path, and /image
+
+
+def _png(width: int = 40, height: int = 20) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), "red").save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def _clipboard(clip: Clip | Exception) -> Callable[[], Clip]:
+    def read() -> Clip:
+        if isinstance(clip, Exception):
+            raise clip
+        return clip
+
+    return read
+
+
+def _picture_app(session: FakeSession, **services: object) -> ChatApp:
+    return _app(session=session, services=Services(pictures=True, **services))  # pyright: ignore[reportArgumentType]
+
+
+def _attached(app: ChatApp) -> str:
+    return _plain(app.query_one("#pictures", Static).content)
+
+
+def test_ctrl_v_attaches_a_copied_picture_as_a_tag_like_claude_code() -> None:
+    session = FakeSession()
+    app = _picture_app(session, paste=_clipboard(Clip(image=_png(), mime="image/png")))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.press("ctrl+v")
+        await _until(pilot, lambda: "[Image #1]" in _input(app).text)
+        assert "pasted picture" in _attached(app)
+        assert "40x20" in _attached(app)
+        await pilot.press("w", "h", "a", "t", "?")
+        await pilot.press("enter")
+        await _until(pilot, lambda: session.pictures != [])
+        assert session.asked == ["[Image #1] what?"]
+        assert session.pictures == [["pasted picture"]]
+        await _until(pilot, lambda: not app.query_one("#pictures").display)
+
+    _run(test, app)
+
+
+def test_ctrl_v_pastes_copied_text_where_the_cursor_is() -> None:
+    session = FakeSession()
+    app = _picture_app(session, paste=_clipboard(Clip(text="the blue one")))
+
+    async def test(pilot: Pilot[None]) -> None:
+        _input(app).set_text("play ")
+        await pilot.press("ctrl+v")
+        await _until(pilot, lambda: _input(app).text == "play the blue one")
+
+    _run(test, app)
+
+
+def test_ctrl_v_of_a_copied_picture_file_attaches_the_file(tmp_path: Path) -> None:
+    shot = tmp_path / "Shot.png"
+    shot.write_bytes(_png())
+    session = FakeSession()
+    app = _picture_app(session, paste=_clipboard(Clip(text=f"file://{shot}")))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.press("ctrl+v")
+        await _until(pilot, lambda: "[Image #1]" in _input(app).text)
+        assert "Shot.png" in _attached(app)
+
+    _run(test, app)
+
+
+def test_ctrl_v_says_when_nothing_is_copied_or_the_clipboard_fails() -> None:
+    reads = iter([Clip(), ClipboardError("Pasting a picture needs wl-paste")])
+
+    def read() -> Clip:
+        value = next(reads)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    app = _picture_app(FakeSession(), paste=read)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.press("ctrl+v")
+        await _until(pilot, lambda: _has(app, "Nothing is copied"))
+        await pilot.press("ctrl+v")
+        await _until(pilot, lambda: _has(app, "needs wl-paste"))
+        assert not _input(app).text
+
+    _run(test, app)
+
+
+def test_a_picture_is_not_attached_while_the_picture_reader_is_off() -> None:
+    paste = _clipboard(Clip(image=_png(), mime="image/png"))
+    app = _app(session=FakeSession(), services=Services(paste=paste))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.press("ctrl+v")
+        await _until(pilot, lambda: _has(app, "picture reader is off"))
+        assert "[Image" not in _input(app).text
+
+    _run(test, app)
+
+
+def test_a_dropped_picture_file_is_attached_and_other_pastes_stay_text(tmp_path: Path) -> None:
+    shot = tmp_path / "drop me.png"
+    shot.write_bytes(_png())
+    session = FakeSession()
+    app = _picture_app(session)
+
+    async def test(pilot: Pilot[None]) -> None:
+        _input(app).post_message(events.Paste(f"'{shot}'"))
+        await _until(pilot, lambda: "[Image #1]" in _input(app).text)
+        assert "drop me.png" in _attached(app)
+        _input(app).post_message(events.Paste(" and the notes"))
+        await _until(pilot, lambda: _input(app).text.endswith(" and the notes"))
+        assert "[Image #2]" not in _input(app).text
+
+    _run(test, app)
+
+
+def test_deleting_the_tag_leaves_the_picture_out() -> None:
+    session = FakeSession()
+    app = _picture_app(session, paste=_clipboard(Clip(image=_png(), mime="image/png")))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.press("ctrl+v")
+        await _until(pilot, lambda: "[Image #1]" in _input(app).text)
+        _input(app).set_text("never mind")
+        await pilot.pause(0.02)
+        assert not app.query_one("#pictures").display
+        await pilot.press("enter")
+        await _until(pilot, lambda: session.pictures != [])
+        assert session.pictures == [[]]
+
+    _run(test, app)
+
+
+def test_slash_image_attaches_a_file_or_the_newest_screenshot(tmp_path: Path) -> None:
+    named = tmp_path / "Diagram.PNG"
+    named.write_bytes(_png(8, 8))
+    shots = tmp_path / "Screenshots"
+    shots.mkdir()
+    (shots / "screenshot-1.png").write_bytes(_png(16, 9))
+    session = FakeSession()
+    app = _picture_app(session, screenshots=(shots,))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, f"/image {named}")
+        await _until(pilot, lambda: "[Image #1]" in _input(app).text)
+        assert "Diagram.PNG" in _attached(app)
+        await _type(pilot, "/image")
+        await _until(pilot, lambda: "[Image #2]" in _input(app).text)
+        assert "screenshot-1.png" in _attached(app)
+        await _type(pilot, f"/image {tmp_path / 'gone.png'}")
+        await _until(pilot, lambda: _has(app, "no file"))
+
+    _run(test, app)
+
+
+def test_slash_image_without_a_screenshot_says_where_it_looked(tmp_path: Path) -> None:
+    app = _picture_app(FakeSession(), screenshots=(tmp_path,))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/image")
+        await _until(pilot, lambda: _has(app, "No screenshot"))
+        assert _has(app, str(tmp_path))
 
     _run(test, app)

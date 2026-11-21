@@ -763,3 +763,20 @@ def test_doctor_takes_a_full_path_as_the_speech_model(
     cli.main(["doctor"])
 
     assert any(line.startswith("ok ") and str(model) in line for line in _doctor_lines(capsys))
+
+
+def test_screenshots_are_looked_for_where_omarchy_saves_them_then_in_pictures(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path
+    env = {"OMASNAP_SCREENSHOT_DIR": str(tmp_path / "Shots")}
+
+    assert cli._screenshot_folders(home, env) == (  # pyright: ignore[reportPrivateUsage]
+        tmp_path / "Shots",
+        home / "Pictures" / "Screenshots",
+        home / "Pictures",
+    )
+    assert cli._screenshot_folders(home, {}) == (  # pyright: ignore[reportPrivateUsage]
+        home / "Pictures" / "Screenshots",
+        home / "Pictures",
+    )

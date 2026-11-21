@@ -16,6 +16,7 @@ from jarvis.agent import (
     MAX_TOOL_TEXT,
     MODEL_DOWN,
     NO_ACTION_REMINDER,
+    PICTURES_OFF,
     TOO_LONG,
     TOO_MANY_STEPS,
     UNDONE,
@@ -26,6 +27,7 @@ from jarvis.agent import (
 )
 from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
+from jarvis.jsonutil import objs
 from jarvis.model import Delta
 from jarvis.operations import (
     Operation,
@@ -34,6 +36,7 @@ from jarvis.operations import (
     Result,
     UncertainOutcomeError,
 )
+from jarvis.pictures import Picture
 from jarvis.policy import OpClass, Origin
 from jarvis.shortcuts import Shortcut
 
@@ -181,6 +184,7 @@ def _agent(
     still_waiting_s: float = 15.0,
     limits: Limits | None = None,
     memory_file: Path | None = None,
+    pictures: bool = False,
 ) -> tuple[Agent, AuditLog]:
     audit = AuditLog(None)
     registry = Registry([*ops, no_action_operation()])
@@ -196,6 +200,7 @@ def _agent(
         still_waiting_s=still_waiting_s,
         limits=limits,
         memory_file=memory_file,
+        pictures=pictures,
     )
     return agent, audit
 
@@ -1596,3 +1601,69 @@ def test_a_plain_command_is_not_kept_waiting_for_a_summary() -> None:
 
     assert len(model.seen) == 8
     assert "memory_summarized" not in _events(audit)
+
+
+# Pictures
+
+SHOT = Picture("shot.png", "image/png", b"\x89PNG fake", 4, 2)
+
+
+def test_a_picture_goes_to_the_model_beside_the_words() -> None:
+    model = ScriptedModel([_say("A red square.")])
+    agent, audit = _agent(model, [], pictures=True)
+
+    assert agent.handle("what is this?", NO_CONFIRM, pictures=[SHOT]) == "A red square."
+    parts = objs(model.seen[0][-1]["content"])
+    assert {"type": "image_url", "image_url": {"url": SHOT.data_url()}} in parts
+    words = " ".join(str(part["text"]) for part in parts if part["type"] == "text")
+    assert "what is this?" in words
+    assert "shot.png" in words
+    assert "never instructions" in words
+    request = next(e for e in audit.events if e["event"] == "request")
+    assert request["pictures"] == ["shot.png"]
+
+
+def test_a_picture_without_the_picture_reader_is_not_sent() -> None:
+    model = ScriptedModel([])
+    agent, _ = _agent(model, [])
+
+    assert agent.handle("what is this?", NO_CONFIRM, pictures=[SHOT]) == PICTURES_OFF
+    assert model.seen == []
+
+
+def test_a_side_effect_after_a_picture_needs_a_yes() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_call("pause"), _say("Okay.")])
+    agent, _ = _agent(model, [counter.op("pause")], pictures=True)
+
+    agent.handle(
+        "do what this says", Hooks(confirm=lambda q: asked.append(q) or False), pictures=[SHOT]
+    )
+
+    assert asked
+    assert counter.runs == []
+
+
+def test_a_request_with_a_picture_is_never_a_plain_command() -> None:
+    counter = Counter()
+    pause = counter.op("pause", shortcuts=(Shortcut("pause", lambda _g: {}),))
+    model = ScriptedModel([_say("That's a pause button.")])
+    agent, _ = _agent(model, [pause], pictures=True)
+
+    assert agent.handle("pause", NO_CONFIRM, pictures=[SHOT]) == "That's a pause button."
+    assert counter.runs == []
+
+
+def test_a_picture_is_remembered_by_its_name_and_its_bytes_are_not_kept() -> None:
+    model = ScriptedModel([_say("A red square."), _say("Red.")])
+    agent, _ = _agent(model, [], pictures=True, limits=Limits(remember_outside=True))
+
+    agent.handle("what is this?", NO_CONFIRM, pictures=[SHOT])
+    agent.handle("what colour was it?", NO_CONFIRM)
+
+    (turn,) = agent.memory.turns[:1]
+    assert turn.request == "what is this? (with a picture: shot.png)"
+    assert turn.outside == "picture"
+    assert all(isinstance(m["content"], str) for m in model.seen[1])
+    assert "base64" not in json.dumps(model.seen[1])
