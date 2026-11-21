@@ -41,8 +41,7 @@ form, `type(scope): summary` (CONTRIBUTING.md, Commit messages). Edit this body 
 
 ## Checks
 
-- [ ] `uv run .lint/check.sh` passes
-- [ ] `uv run pytest -q` passes
+- [ ] `tools/check.sh` passes (lint, types, tests, REUSE, licences, docs, advisories)
 - [ ] Tool operations are tested, including a refused and an unconfirmed case
 - [ ] Docs updated where affected: `README.md`, `docs/configuration.md`, `docs/models.md`, `docs/plan.md`,
       an ADR if a decision changed, and `CHANGELOG.md` (Unreleased)
