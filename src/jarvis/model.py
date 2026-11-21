@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 LOAD_TIMEOUT_S = 300.0  # a cold load from disk took about 110 s while a game ran
 WARM_ATTEMPTS = 60
 WARM_RETRY_S = 2.0
+DEFAULT_MAX_TOKENS = 400
 
 
 class ModelError(Exception):
@@ -41,7 +42,7 @@ class Delta:
 class ChatModel(Protocol):
     """What the agent needs from a model."""
 
-    def chat(
+    def chat(  # ruff: ignore[too-many-arguments] - one call's settings, all keyword-only
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
@@ -49,12 +50,15 @@ class ChatModel(Protocol):
         require_tool: bool = False,
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Return the assistant message; with `require_tool`, the model must call a tool.
 
         `timeout_s` caps how long this one call may wait (the time the request has left). With
         `on_delta`, the answer is streamed and each piece is passed to it as it arrives; an
-        exception it raises ends the call and is raised from here.
+        exception it raises ends the call and is raised from here. `max_tokens` caps the answer.
+        The message also carries `finish_reason` ("length" when the cap cut it) and `usage`
+        (the server's token counts) when the server sent them.
         """
         ...
 
@@ -73,7 +77,8 @@ def _message(response: httpx.Response) -> dict[str, Any]:
         msg = f"model server answered {response.status_code}: {response.text[:200]}"
         raise ModelError(msg)
     try:
-        choices = objs(obj(response.json()).get("choices"))
+        data = obj(response.json())
+        choices = objs(data.get("choices"))
     except ValueError as exc:
         msg = f"model server sent an unexpected answer: {exc}"
         raise ModelError(msg) from exc
@@ -81,7 +86,14 @@ def _message(response: httpx.Response) -> dict[str, Any]:
     if not isinstance(message, dict):
         msg = "model server sent an answer without a message"
         raise ModelError(msg)
-    return cast("dict[str, Any]", message)
+    answer = dict(cast("dict[str, Any]", message))
+    finish = choices[0].get("finish_reason")
+    if isinstance(finish, str):
+        answer["finish_reason"] = finish
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+        answer["usage"] = usage
+    return answer
 
 
 def _events(lines: Iterator[str]) -> Iterator[dict[str, Any]]:
@@ -109,6 +121,8 @@ class _Assembly:
 
     content: str = ""
     calls: dict[int, dict[str, Any]] = field(default_factory=dict[int, dict[str, Any]])
+    finish_reason: str = ""
+    usage: dict[str, Any] = field(default_factory=dict[str, Any])
 
     def add(self, delta: dict[str, Any]) -> list[Delta]:
         pieces: list[Delta] = []
@@ -140,6 +154,10 @@ class _Assembly:
         message: dict[str, Any] = {"role": "assistant", "content": self.content}
         if self.calls:
             message["tool_calls"] = [self.calls[i] for i in sorted(self.calls)]
+        if self.finish_reason:
+            message["finish_reason"] = self.finish_reason
+        if self.usage:
+            message["usage"] = self.usage
         return message
 
 
@@ -219,7 +237,7 @@ class StrataModel:
             return False
         return response.status_code < 300  # ruff: ignore[magic-value-comparison]
 
-    def chat(
+    def chat(  # ruff: ignore[too-many-arguments] - one call's settings, all keyword-only
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
@@ -227,6 +245,7 @@ class StrataModel:
         require_tool: bool = False,
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Send one chat completion with thinking off; retry once after a dropped connection.
 
@@ -241,7 +260,7 @@ class StrataModel:
         body: dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,
-            "max_tokens": self.config.max_tokens,
+            "max_tokens": max_tokens or DEFAULT_MAX_TOKENS,
             "temperature": self.config.temperature,
             "reasoning_effort": "none",
             "chat_template_kwargs": {"enable_thinking": False},
@@ -264,6 +283,7 @@ class StrataModel:
                     if on_delta is None:
                         return _message(client.post("/chat/completions", json=body))
                     body["stream"] = True
+                    body["stream_options"] = {"include_usage": True}
                     with client.stream("POST", "/chat/completions", json=body) as response:
                         return self._streamed(response, deadline, on_delta, passed_on)
             except httpx.TransportError as exc:
@@ -296,13 +316,19 @@ class StrataModel:
             if self.clock() > deadline:
                 msg = "model server took too long to answer"
                 raise ModelError(msg)
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                answer.usage = cast("dict[str, Any]", usage)
             choices = objs(event.get("choices"))
             if not choices:
                 continue
             for piece in answer.add(obj(choices[0].get("delta"))):
                 passed_on.append(piece)
                 on_delta(piece)
-            finished = finished or choices[0].get("finish_reason") is not None
+            reason = choices[0].get("finish_reason")
+            if isinstance(reason, str):
+                answer.finish_reason = reason
+                finished = True
         if not finished:  # cut off: what arrived is not the whole answer
             msg = "model server's answer ended before it was finished"
             raise ModelError(msg)

@@ -47,11 +47,41 @@ current file. The running voice service reads it once, when it starts.
 |---|---|---|---|
 | `base_url` | empty | empty, or an `http://` or `https://` URL on `127.0.0.1`, `localhost` or `::1`; no user name or password | Empty means `http://127.0.0.1:<strata.port>/v1`. |
 | `model` | `jarvis` | text | The model name sent in each request. |
-| `request_timeout_s` | `120.0` | above 0, up to 600 | Longest one model call may wait. A request also stops after 90 s in total. |
-| `max_tokens` | `200` | 1 to 4096 | Reply length cap per model call. |
+| `request_timeout_s` | `120.0` | above 0, up to 600 | Longest one model call may wait. A request also stops after `agent.max_seconds` (`chat.max_seconds` in the chat) in total. |
 | `temperature` | `0.2` | 0 to 2 | Sampling temperature. |
 
-Jarvis sends every request with thinking switched off.
+Jarvis sends every request with thinking switched off. Older versions saved `max_tokens` here; a file
+that still holds it loads, and the key is ignored: the reply cap is now `reply_tokens` in `[agent]` and
+`[chat]`.
+
+## `[agent]`: what one spoken request may do, and what Jarvis remembers
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `max_steps` | `8` | 1 to 100 | Most model calls in one request. |
+| `max_tool_calls` | `12` | 1 to 200 | Most tool calls in one request. |
+| `max_seconds` | `90.0` | 10 to 3600 | Longest one request may take (180 s more when the model must load first). |
+| `reply_tokens` | `400` | 64 to 8192 | Most tokens the model writes in one answer. The prompt asks for replies that fit; a reply the cap ends anyway is kept and says it was cut short. |
+| `tool_text_chars` | `3000` | 500 to 50000 | Most characters of one tool result the model reads. |
+| `memory_tokens` | `6000` | 0 to 200000 | Room the remembered conversation may take of the context window. When it outgrows it, the model summarizes the oldest turns (the latest two stay word for word); if that fails, the oldest are dropped. Jarvis uses less when the window cannot hold it beside the prompt, a reply and two tool results. |
+| `memory_idle_s` | `1800.0` | 0 or more | Forget the conversation after this long without a request; `0` never forgets. |
+
+A spoken reply that drew on outside text (a web page, a song name) is left out of later requests, as before;
+the chat keeps it (see below).
+
+## `[chat]`: the same for typed requests in `jarvis chat`
+
+The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
+`max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
+`memory_tokens` `12000` and `memory_idle_s` `0.0` (never forget), plus:
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `resume` | `true` | `true`, `false` | Open the chat on the conversation it had last time, kept 0600 in `~/.local/state/jarvis/chat-conversation.json`. `false` starts each session fresh and deletes the file. |
+
+The chat remembers replies that drew on outside text, as data. While one is remembered, an action with a side
+effect that the model chooses needs your yes; a plain command (`pause`, `volume 40`) does not, since the
+model plays no part in it.
 
 ## `[strata]`: how the `jarvis-strata` service runs the model
 
@@ -66,7 +96,7 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `tokenizer_dir` | unset | path | The model's tokenizer folder. `--tokenizer-dir`. |
 | `model_id` | `qwen3.6-35b-a3b-ud-q4_k_xl` | text | The model's name inside Strata's profile. |
 | `port` | `8080` | 1024 to 65535 | Strata's port on `127.0.0.1`. |
-| `context` | `24576` | 2048 to 262144 | Context window in tokens (`--max-context`). Each 1,000 tokens more costs about 0.05 GiB of VRAM ([models.md](models.md)). It holds the prompt and the tool schemas (about 2,800 tokens together), the last 4 turns and up to 8 tool results of up to 3,000 characters each, enough for a search and two page reads. |
+| `context` | `24576` | 2048 to 262144 | Context window in tokens (`--max-context`). Each 1,000 tokens more costs about 0.05 GiB of VRAM ([models.md](models.md)). It holds the prompt and the tool schemas (about 5,000 tokens together), the remembered conversation (`agent.memory_tokens` or `chat.memory_tokens`), one reply and the request's tool results; when a long request outgrows it, its oldest tool results are cleared down to their start. |
 | `expert_vram_gib` | `1.0` | 0 to 64 | VRAM budget for expert weights kept on the GPU, passed as `--expert-vram`; the rest of the experts stay in host memory. |
 | `prefill` | `512` | 128 to 8192 | Prompt-reading chunk size (`--prefill`). |
 | `idle_unload_s` | `300` | 30 to 86400 | Seconds without a request before Strata frees the model. |
@@ -232,7 +262,7 @@ With neither set, Jarvis asks you to name a place.
 |---|---|---|---|
 | `searxng_url` | `http://127.0.0.1:8888` | an `http://` or `https://` URL on `127.0.0.1`, `localhost` or `::1` | The local SearXNG Jarvis searches through. |
 | `results` | `5` | 1 to 8 | Results per search when the model does not ask for a number. |
-| `page_chars` | `2800` | 500 to 2800 | Most characters of a page or Reddit thread passed to the model. |
+| `page_chars` | `2800` | 500 to 50000 | Most characters of a page or Reddit thread passed to the model for a spoken request, within `agent.tool_text_chars`. The chat reads up to its own `tool_text_chars`. |
 | `reddit_comments` | `6` | 1 to 10 | Top comments read from a Reddit thread. |
 
 Search needs the SearXNG container running; without it Jarvis says search isn't running, and everything

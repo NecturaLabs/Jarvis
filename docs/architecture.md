@@ -49,13 +49,15 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 
 | Module | Owns | Must not |
 |---|---|---|
-| `agent.py` | `Agent`: one request into at most 6 model steps and 8 tool calls; history; the time budget; provenance on message parts; running each call through validation, policy, confirmation and audit; the check that a reply does not claim an action no tool did. | Run an operation that policy refused. Talk to the owner except through `Hooks`. |
+| `agent.py` | `Agent`: one request into at most `max_steps` model calls and `max_tool_calls` tool calls within `max_seconds` (`[agent]` for speech, `[chat]` for the chat window); each answer capped at `reply_tokens` (a reply the cap ends is kept and says so); the oldest tool results of a long request cleared to fit the context window; the remembered conversation (`memory.py`), summarized by the model when it outgrows its room; provenance on message parts; running each call through validation, policy, confirmation and audit; the check that a reply does not claim an action no tool did. | Run an operation that policy refused. Talk to the owner except through `Hooks`. |
 | `policy.py` | `Origin` (provenance), `OpClass`, `decide` (the decision table), `action_hash`, `is_yes`. Plain data and pure functions. | Do I/O, or let text from outside the owner's speech raise an operation's class. |
 | `operations.py` | `Operation`, `Registry`, `Result`, argument validation against a flat JSON schema, the error types. | Accept an unknown argument or an unknown operation. |
 | `shortcuts.py` | Plain commands ("pause", "volume 40") that skip the model: normalising and matching a request to one call. | Guess. A request that fits two calls, or none exactly, matches nothing. |
 | `audit.py` | `AuditLog`: append-only JSONL, mode 0600, rotated once at 5 MiB. | Fail the caller; a write error goes to the service log. |
 | `app.py` | `build`: assembles the model client, Spotify, operations, prompt, audit log and agent from the config; the `no_action` operation; the speech-to-text vocabulary hint. | Hold state of its own beyond the objects it returns. |
-| `prompts/core.md` | The shipped system prompt, with `{name}` and `{tone}` filled in by `app.py`. | Be the only guard: boundaries are enforced in code, not in this prompt. |
+| `prompts/core.md`, `prompts/voice.md`, `prompts/chat.md` | The shipped system prompt: what Jarvis does and how it acts (`core.md`), then how it replies, spoken (`voice.md`) or written in Markdown within the chat's reply budget (`chat.md`). `app.py` fills in the name, tone, skills and word budget. | Be the only guard: boundaries are enforced in code, not in this prompt. |
+| `prompts/skills/*.md`, `skills.py` | Jarvis's own skills: instructions for a kind of task (web research, game look-ups), listed by name and description in the prompt and read whole through the safe `read_skill` operation. | Read anything but the shipped skill files. |
+| `memory.py` | `Conversation`: the remembered turns and a summary of older ones, measured in estimated tokens against a budget; a turn that drew on outside text is kept as `<data>`; the chat's conversation is saved 0600 in the state folder between sessions. | Decide what is trusted: the agent marks outside turns and keeps side effects behind a yes while one is remembered. |
 
 ### Operations and Spotify
 
@@ -140,7 +142,8 @@ line spoken while the agent works (`_cue`: a waiting line, a confirmation questi
 3. `agent.py`, `Agent.handle`: records a `request` audit event. A request that is not the
    owner's is wrapped as someone else's words and kept out of the history.
 4. `shortcuts.match`: a plain command skips the model and becomes a tool call. Anything else goes to
-   `StrataModel.chat` with the system prompt, the last 4 turns and the tool schemas.
+   `StrataModel.chat` with the system prompt, the remembered conversation (summarized first when it
+   outgrew its budget) and the tool schemas.
 5. Each call goes through `Agent._run_call`:
    - `operations.validate_args` checks it against the operation's schema; an unknown name or bad
      argument is refused and audited.
@@ -206,8 +209,9 @@ Config, state and model files are described in
 [configuration.md](configuration.md#where-things-live). In short: `config.toml` and the generated
 Strata profile and Voxtype settings under the config folder; the Strata API key, Spotify tokens,
 audit log and Strata log under the state folder (the first two mode 0600); model files in
-`data_dir`. `paths.py` is the only module that knows the folder names. Conversation history is kept
-in memory only: 4 turns, dropped after 5 minutes idle. The model-file list is in
+`data_dir`. `paths.py` is the only module that knows the folder names. The voice service keeps its
+conversation in memory only and drops it after `agent.memory_idle_s`; the chat saves its own, 0600,
+in `chat-conversation.json` under the state folder. The model-file list is in
 [models.md](models.md).
 
 ## Security-sensitive code

@@ -2,9 +2,10 @@
 
 from dataclasses import dataclass
 from importlib.resources import files
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
-from jarvis.agent import Agent
+from jarvis import paths, skills
+from jarvis.agent import Agent, Limits
 from jarvis.audit import AuditLog
 from jarvis.model import StrataModel
 from jarvis.operations import Operation, Registry, Result
@@ -22,14 +23,19 @@ from jarvis.web.searxng import Searxng
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from jarvis.config import Config
 
 
-MAX_REPLY_CHARS = 1000
+MAX_REPLY_CHARS = 4000
+CHARS_PER_REPLY_TOKEN = 8  # generous: the token cap, not this, keeps a reply to length
+WORDS_PER_TOKEN = 0.5  # a cautious count of English words a reply token holds
+
+type Channel = Literal["voice", "chat"]
 
 
-def no_action_operation() -> Operation:
+def no_action_operation(max_reply_chars: int = MAX_REPLY_CHARS) -> Operation:
     """Return the explicit "nothing to do" choice the model makes for questions and chat.
 
     Its `reply` is the model's own answer, so a greeting or a question takes one model call.
@@ -46,8 +52,8 @@ def no_action_operation() -> Operation:
             "properties": {
                 "reply": {
                     "type": "string",
-                    "maxLength": MAX_REPLY_CHARS,
-                    "description": "What to say to the owner, as you would say it aloud.",
+                    "maxLength": max_reply_chars,
+                    "description": "Your reply to the owner, as they will hear or read it.",
                 }
             },
             "additionalProperties": False,
@@ -60,15 +66,31 @@ def no_action_operation() -> Operation:
     )
 
 
-def system_prompt(config: Config) -> str:
-    """Render the shipped core prompt with the owner's persona and addendum."""
-    core = files("jarvis").joinpath("prompts/core.md").read_text(encoding="utf-8")
-    text = core.replace("{name}", config.persona.name).replace("{tone}", config.persona.tone)
+def system_prompt(config: Config, channel: Channel = "voice") -> str:
+    """Render the shipped prompt for a channel with the owner's persona, skills and addendum.
+
+    The voice prompt asks for short spoken replies; the chat prompt for written Markdown that fits
+    the chat's reply budget.
+    """
+    prompts = files("jarvis").joinpath("prompts")
+    core = prompts.joinpath("core.md").read_text(encoding="utf-8")
+    style = prompts.joinpath(f"{channel}.md").read_text(encoding="utf-8")
+    words = int(round(config.chat.reply_tokens * WORDS_PER_TOKEN, -1))
+    fill = {
+        "skills": skills.prompt_section(skills.shipped()),
+        "name": config.persona.name,
+        "tone": config.persona.tone,
+        "words": str(words),
+    }
+    text = core + "\n" + style
+    for key, value in fill.items():
+        text = text.replace("{" + key + "}", value)
     if config.persona.addendum.strip():
         text += f"\nThe owner's own instructions:\n{config.persona.addendum.strip()}\n"
     return text
 
 
+PAGE_HEADROOM = 200  # a read page's title line, within the channel's tool_text_chars
 MAX_HINT_NAME_CHARS = 100
 MAX_HINT_CHARS = 800
 MIN_ECHO_WORDS = 4
@@ -156,11 +178,46 @@ class SetupError(Exception):
     """Something setup provides is missing."""
 
 
+def channel_limits(config: Config, channel: Channel) -> Limits:
+    """Return the limits of a channel: the chat's own, or the voice service's."""
+    section = config.chat if channel == "chat" else config.agent
+    return Limits.of(section, config.strata.context, remember_outside=channel == "chat")
+
+
+def channel_registry(
+    config: Config, spotify: list[Operation], limits: Limits, channel: Channel
+) -> Registry:
+    """Return every operation a channel's agent is offered, sized to its limits.
+
+    A read page fills the chat's room for one result; spoken requests keep the configured length.
+    """
+    room = limits.tool_text_chars - PAGE_HEADROOM
+    pages = room if channel == "chat" else min(config.research.page_chars, room)
+    web = config.model_copy(
+        update={"research": config.research.model_copy(update={"page_chars": pages})}
+    )
+    shipped = skills.shipped()
+    return Registry(
+        [
+            *spotify,
+            *web_operations(web),
+            *([skills.skill_operation(shipped)] if shipped else []),
+            no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
+        ]
+    )
+
+
+def chat_memory_file() -> Path:
+    """Return where the chat keeps its conversation between sessions."""
+    return paths.state_dir() / "chat-conversation.json"
+
+
 def build(config: Config, *, via: str | None = None) -> Jarvis:
     """Assemble the agent from the config.
 
     `via` marks every audit event of this agent with where its requests come from ("chat",
-    "ask"); the voice service leaves it out.
+    "ask"); the voice service leaves it out. The chat gets the chat's limits and written replies,
+    and keeps its conversation across sessions when `chat.resume` is on.
 
     Raises:
         SetupError: the Spotify client ID or the Strata API key is missing.
@@ -178,15 +235,22 @@ def build(config: Config, *, via: str | None = None) -> Jarvis:
         SpotifyApi(tokens, library_ttl_s=config.spotify.library_refresh_s), config.spotify
     )
     audit = AuditLog(audit_file(), tags={"via": via} if via else None)
-    registry = Registry([*ops.operations(), *web_operations(config), no_action_operation()])
+    channel: Channel = "chat" if via == "chat" else "voice"
+    limits = channel_limits(config, channel)
+    registry = channel_registry(config, ops.operations(), limits, channel)
+    remembered = chat_memory_file() if channel == "chat" else None
+    if remembered is not None and not config.chat.resume:
+        remembered.unlink(missing_ok=True)
     agent = Agent(
         model,
         registry,
-        system_prompt(config),
+        system_prompt(config, channel),
         audit,
         config.boundaries.classes,
         grant_s=config.audio.pc_audio_grant_s,
         names=(config.persona.name,),
+        limits=limits,
+        memory_file=remembered,
     )
     return Jarvis(
         agent, model, audit, ops, lambda: speech_hint(config, registry, ops.artist_names())

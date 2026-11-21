@@ -10,8 +10,32 @@ schema_version = 1
 base_url = ""
 model = "jarvis"
 request_timeout_s = 120.0
-max_tokens = 200
 temperature = 0.2
+
+# How much one spoken request may do, and how much of the talk Jarvis remembers. reply_tokens caps
+# each answer the model writes; memory_tokens is the room the conversation may take of the model's
+# context (older turns are summarized to stay within it); memory_idle_s forgets it after that long
+# without a request (0: never).
+[agent]
+max_steps = 8
+max_tool_calls = 12
+max_seconds = 90.0
+reply_tokens = 400
+tool_text_chars = 3000
+memory_tokens = 6000
+memory_idle_s = 1800.0
+
+# The same for typed requests in `jarvis chat`, with room for longer written work. resume opens the
+# chat on its last conversation (/clear starts a new one).
+[chat]
+max_steps = 30
+max_tool_calls = 40
+max_seconds = 600.0
+reply_tokens = 2048
+tool_text_chars = 8000
+memory_tokens = 12000
+memory_idle_s = 0.0
+resume = true
 
 # How the jarvis-strata service runs the model; `jarvis setup` writes these into its profile.
 # The paths default to your XDG data folder; set model_file and tokenizer_dir to where you put them.

@@ -14,7 +14,7 @@ was checked it says so.
 - Jarvis writes the Strata profile and the `jarvis-strata.service` unit (`jarvis setup`). Strata listens on
   `127.0.0.1` only, loads the model on the first real request and frees it after `strata.idle_unload_s`.
   Health checks (`jarvis status`, `jarvis doctor`) never generate, so they never load it.
-- Requests go to Strata's OpenAI-style chat API with thinking off, a token cap (`model.max_tokens`) and the
+- Requests go to Strata's OpenAI-style chat API with thinking off, a token cap per answer (`agent.reply_tokens`, `chat.reply_tokens`) and the
   tools as JSON schemas.
 - The model file lives outside the repository; point `jarvis setup --model-file` and `--tokenizer-dir` at it.
 - Licence: Apache-2.0 for Qwen3.6-35B-A3B according to `docs/plan.md`; not rechecked against the model card

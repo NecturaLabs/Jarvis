@@ -54,6 +54,7 @@ class ScriptedModel:
         require_tool: bool = False,  # ruff: ignore[unused-method-argument]
         timeout_s: float | None = None,  # ruff: ignore[unused-method-argument]
         on_delta: object = None,  # ruff: ignore[unused-method-argument]
+        max_tokens: int | None = None,  # ruff: ignore[unused-method-argument]
     ) -> dict[str, Any]:
         self.calls += 1
         self.seen.append(messages)
@@ -489,6 +490,7 @@ class ForbiddenModel:
         require_tool: bool = False,  # ruff: ignore[unused-method-argument]
         timeout_s: float | None = None,  # ruff: ignore[unused-method-argument]
         on_delta: object = None,  # ruff: ignore[unused-method-argument]
+        max_tokens: int | None = None,  # ruff: ignore[unused-method-argument]
     ) -> dict[str, Any]:
         self.used.append("chat")
         pytest.fail("the model was called for a plain command")
