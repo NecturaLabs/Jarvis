@@ -82,13 +82,16 @@ microphone and use no real audio device.
 
 ```sh
 uv sync                  # install the locked environment
-tools/check.sh           # everything CI runs: lint, types, tests, REUSE, licences, docs, advisories
+tools/check.sh           # everything CI runs: lint, types, workflows, tests, REUSE, licences, docs, advisories
 uv run .lint/check.sh    # lint only: Ruff (every rule), format check, pyright strict, shell and editorconfig
+actionlint               # the workflow files in .github/workflows/, with shellcheck over their run: steps
 uv run pytest -q -m "not local"   # tests only
 tools/install-hooks.sh   # optional: run the checks before each commit and check the subject format
 ```
 
-`.lint/check.sh` lints tracked files only, so `git add` new files first. `tests/conftest.py` gives every test a
+`.lint/check.sh` lints tracked files only, so `git add` new files first. CI runs [actionlint](https://github.com/rhysd/actionlint)
+at the version pinned in `.github/workflows/ci.yml`; install it from your distribution (`pacman -S actionlint`
+on Arch) or from its releases. Without it `tools/check.sh` reports the workflow check as not run and exits 3. `tests/conftest.py` gives every test a
 temporary home folder and refuses the network, audio and the real programs Jarvis drives, so a test cannot reach
 your own setup. [tools/README.md](tools/README.md) lists every script. Every check must pass before a
 pull request can merge; fix findings rather than silencing them. Where a suppression is deliberate, put it on
