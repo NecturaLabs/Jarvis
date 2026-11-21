@@ -168,5 +168,25 @@
     "name": "area:ci",
     "color": "c5def5",
     "description": "CI, lint and supply chain"
+  },
+  {
+    "name": "good first issue",
+    "color": "7057ff",
+    "description": "Bounded, well-described work suited to a first contribution."
+  },
+  {
+    "name": "help wanted",
+    "color": "008672",
+    "description": "Ready for a contributor to pick up."
+  },
+  {
+    "name": "area:security",
+    "color": "c5def5",
+    "description": "Credential storage, trust boundaries, privacy and execution safety."
+  },
+  {
+    "name": "area:accessibility",
+    "color": "c5def5",
+    "description": "Keyboard access, focus, AccessKit and screen readers."
   }
 ]
