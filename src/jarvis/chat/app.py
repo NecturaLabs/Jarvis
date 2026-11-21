@@ -11,7 +11,8 @@ no, as by voice. A picture is attached as Claude Code does it: Ctrl+V pastes a c
 text), a file dropped on the terminal or `/image` attaches that file, and each shows as an
 `[Image #N]` tag in the input; deleting the tag leaves the picture out. The layout follows Claude
 Code's terminal interface, and the colours are the terminal's own, so the window takes the Omarchy
-theme.
+theme. Everything lines up on two columns: the marks of the transcript, the input's border and the
+working line on the first, and the words, the caret and the footer two cells in.
 """
 
 import contextlib
@@ -30,7 +31,6 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import OptionList, Static
-from textual.widgets.option_list import Option
 
 from jarvis.activity import Shown, describe, full_text, working_label
 from jarvis.agent import PICTURES_OFF, Hooks
@@ -44,6 +44,7 @@ from jarvis.chat.widgets import (
     Entry,
     Note,
     PictureView,
+    PointerList,
     PromptArea,
     Reply,
     Request,
@@ -81,6 +82,11 @@ RESUMED_TURNS = 12  # remembered turns shown when the window opens on an earlier
 PASTED_NAME = "pasted picture"  # what a picture from the clipboard is called
 MAX_CAPTION = 200
 SPINNER = "·✢✳✶✻✽✻✶✳✢"
+PLACEHOLDER = 'Ask anything, or try "what\'s playing?"  (/ for commands)'
+PLACEHOLDER_OFF = "Typed requests are off (see above); / for commands"
+MENU_HINT = "tab completes · enter runs · esc closes"
+FOOTER_MARGIN = 6  # the footer's margins, left and right
+STATUS_GAP = 2  # between the footer's hint and the services' status
 SHORTCUTS = (
     ("enter", "send"),
     ("shift+enter", "new line (or \\ then enter)"),
@@ -186,6 +192,11 @@ SETTINGS = (
 )
 
 
+def _joined(*parts: str) -> str:
+    """Return the parts that say something, between dots."""
+    return " · ".join(part for part in parts if part)
+
+
 def _shown_value(value: object) -> str:
     if value is True:
         return "on"
@@ -200,28 +211,52 @@ class ChatApp(App[None]):
     TITLE = "Jarvis"
     CSS = """
     Screen { layout: vertical; background: ansi_default; }
-    #transcript {
-        height: 1fr; padding: 0 1; scrollbar-size-vertical: 1;
-        scrollbar-background: ansi_default; scrollbar-color: ansi_bright_black;
-        scrollbar-color-hover: ansi_white; scrollbar-color-active: ansi_white;
+    VerticalScroll, OptionList {
+        scrollbar-size-vertical: 1; scrollbar-background: ansi_default;
+        scrollbar-background-hover: ansi_default; scrollbar-background-active: ansi_default;
+        scrollbar-color: ansi_bright_black; scrollbar-color-hover: ansi_white;
+        scrollbar-color-active: ansi_white;
     }
+    #transcript { width: 100%; height: 1fr; padding: 0 0 0 1; scrollbar-gutter: stable; }
     #welcome { height: auto; margin: 1 0 0 0; }
     .entry { height: auto; }
     .entry.spaced { margin: 1 0 0 0; }
     .note { margin: 1 0 0 0; }
-    .request {
-        height: auto; margin: 1 0 0 0; padding: 0 1 0 0;
-        background: ansi_black; color: ansi_default;
-    }
+    .request { height: auto; margin: 1 0 0 0; padding: 0 2 0 0; }
     .reply { height: auto; margin: 1 0 0 0; }
     .reply-mark { width: 2; color: ansi_default; text-style: bold; }
     .reply.draft .reply-mark { color: ansi_bright_black; }
     .reply-body { height: auto; width: 1fr; }
     .reply-note { height: auto; color: ansi_bright_black; }
     .reply Markdown { margin: 0; padding: 0; background: ansi_default; }
+    .reply Markdown > *:first-child { margin-top: 0; }
     .reply Markdown > *:last-child { margin-bottom: 0; }
-    .reply MarkdownTable { width: auto; }
-    .reply MarkdownFence { padding: 0 1; background: ansi_black; }
+    .reply Markdown > MarkdownHeader:first-child { margin: 0 0 1 0; }
+    .reply MarkdownH1, .reply MarkdownH2, .reply MarkdownH3,
+    .reply MarkdownH4, .reply MarkdownH5, .reply MarkdownH6 {
+        width: 1fr; margin: 1 0; content-align: left top;
+        color: ansi_default; background: ansi_default; text-style: bold;
+    }
+    .reply MarkdownH1 { text-style: bold underline; }
+    .reply MarkdownH3, .reply MarkdownH4, .reply MarkdownH5, .reply MarkdownH6 {
+        text-style: bold italic;
+    }
+    .reply MarkdownBlock > .code_inline { color: ansi_blue; }
+    .reply MarkdownBullet { color: ansi_bright_black; }
+    .reply MarkdownFence {
+        margin: 1 0; padding: 0 0 0 1; background: ansi_default;
+        border-left: outer ansi_bright_black;
+    }
+    .reply MarkdownFence > Label { padding: 0; }
+    .reply MarkdownBlockQuote {
+        margin: 1 0; padding: 0 0 0 1; background: ansi_default;
+        border-left: outer ansi_bright_black; color: ansi_bright_black; text-style: italic;
+    }
+    .reply MarkdownBlockQuote > MarkdownParagraph { margin: 0; }
+    .reply MarkdownTable { width: auto; background: ansi_default; }
+    .reply MarkdownTableContent { keyline: thin ansi_bright_black; }
+    .reply MarkdownTableContent > .header { color: ansi_default; text-style: bold; }
+    .reply MarkdownHorizontalRule { border-bottom: solid ansi_bright_black; }
     .picture { height: auto; margin: 1 0 0 2; }
     .picture-image { height: auto; }
     .picture-caption { height: auto; color: ansi_bright_black; }
@@ -234,28 +269,32 @@ class ChatApp(App[None]):
         height: auto; margin: 1 1 0 1; padding: 0 1;
         border: round ansi_yellow; border-title-color: ansi_yellow;
     }
-    #settings { border: round ansi_cyan; border-title-color: ansi_cyan; }
-    #question-text { height: auto; }
+    #settings { border: round ansi_bright_black; border-title-color: ansi_default; }
+    #question-text { height: auto; margin: 0 0 1 0; }
     #choices, #settings-list { height: auto; border: none; padding: 0; background: ansi_default; }
-    .panel-hint { height: auto; color: ansi_bright_black; }
-    #prompt { height: auto; margin: 1 1 0 1; border: round ansi_bright_black; }
-    #prompt:focus-within { border: round ansi_white; }
-    #caret { width: 2; padding: 0; color: ansi_default; text-style: bold; }
+    .panel-hint { height: auto; margin: 1 0 0 0; color: ansi_bright_black; }
+    #prompt { height: auto; margin: 1 1 0 1; padding: 0 1; border: round ansi_bright_black; }
+    #caret { width: 2; padding: 0; color: ansi_bright_black; text-style: bold; }
+    #prompt:focus-within #caret { color: ansi_cyan; }
     #prompt PromptArea {
         height: auto; max-height: 12; border: none; padding: 0; background: ansi_default;
     }
     #prompt PromptArea:focus { border: none; }
-    #pictures { height: auto; margin: 0 3; color: ansi_bright_black; }
-    #menu { height: auto; max-height: 10; margin: 0 3; border: none; background: ansi_default; }
-    OptionList > .option-list--option-highlighted {
-        background: ansi_default; color: ansi_cyan; text-style: bold;
+    #pictures { height: auto; margin: 0 3 0 5; color: ansi_bright_black; }
+    #menu { height: auto; max-height: 12; margin: 0 3; border: none; background: ansi_default; }
+    OptionList > .option-list--option-highlighted,
+    OptionList:focus > .option-list--option-highlighted {
+        background: ansi_default; color: ansi_default; text-style: none;
     }
-    OptionList:focus > .option-list--option-highlighted { background: ansi_default; }
+    OptionList > .option-list--option-hover { background: ansi_default; }
     #shortcuts { height: auto; margin: 0 3; color: ansi_bright_black; }
     #footer { height: 1; margin: 0 3; }
-    #hints { width: 1fr; color: ansi_bright_black; }
-    #status { width: auto; color: ansi_bright_black; }
-    #toolbar { height: auto; margin: 0 3; }
+    #hints { width: 1fr; color: ansi_bright_black; text-wrap: nowrap; text-overflow: ellipsis; }
+    #status {
+        width: auto; max-width: 50%; padding: 0 0 0 2; color: ansi_bright_black;
+        text-wrap: nowrap; text-overflow: ellipsis;
+    }
+    #toolbar { height: 1; margin: 0 3; text-wrap: nowrap; text-overflow: ellipsis; }
     """
     BINDINGS: ClassVar = [
         Binding("ctrl+q", "quit", "Quit", priority=True),
@@ -325,7 +364,7 @@ class ChatApp(App[None]):
             yield ChoiceList(id="choices")
             yield Static("enter, 1 or y: yes · 2, n or esc: no", classes="panel-hint")
         with Vertical(id="settings"):
-            yield OptionList(id="settings-list")
+            yield PointerList(id="settings-list")
             yield Static(
                 "enter changes · esc closes · * applies the next time the chat opens",
                 classes="panel-hint",
@@ -333,13 +372,13 @@ class ChatApp(App[None]):
         with Horizontal(id="prompt"):
             yield Static(CHEVRON, id="caret")
             yield PromptArea(
-                placeholder='Ask anything, or try "what\'s playing?"  (/ for commands)',
+                placeholder=PLACEHOLDER if self._session is not None else PLACEHOLDER_OFF,
                 compact=True,
                 highlight_cursor_line=False,
                 id="input",
             )
         yield Static("", id="pictures", markup=False)
-        yield OptionList(id="menu")
+        yield PointerList(id="menu")
         yield Static("", id="shortcuts", markup=False)
         with Horizontal(id="footer"):
             yield Static("", id="hints", markup=False)
@@ -477,8 +516,9 @@ class ChatApp(App[None]):
             if shown is None:
                 continue
             if shown.kind in {"you", "pc"}:
+                pc = shown.kind == "pc"  # the request itself says "PC audio"
                 self._mount(
-                    Request(shown.text, f"{shown.note} · {shown.time}", pc=shown.kind == "pc")
+                    Request(shown.text, _joined("" if pc else shown.note, shown.time), pc=pc)
                 )
                 self._exchanges.append(("you", shown.text))
             elif shown.kind == "jarvis":
@@ -521,6 +561,7 @@ class ChatApp(App[None]):
     def _set_status(self, line: str) -> None:
         self._status = line
         self.query_one("#status", Static).update(line)
+        self._tick()
 
     def _refresh_stats(self) -> None:
         if self._services.stats is not None and self._settings.toolbar:
@@ -544,7 +585,13 @@ class ChatApp(App[None]):
 
     def _draw_toolbar(self) -> None:
         use = self._session.context_use() if self._session is not None else None
-        self.query_one("#toolbar", Static).update(toolbar("", self._stats, use))
+        width = max(0, self.size.width - FOOTER_MARGIN)
+        self.query_one("#toolbar", Static).update(toolbar("", self._stats, use, width))
+
+    def on_resize(self) -> None:
+        """Fit the footer and the toolbar to the new width."""
+        self._tick()
+        self._draw_toolbar()
 
     def _from_worker(self, update: Callable[..., object], *args: object) -> None:
         """Run `update` on the window's thread, from a worker; nothing once the window is gone.
@@ -567,14 +614,20 @@ class ChatApp(App[None]):
         if work is None:
             working.display = False
             idle = f"? for shortcuts · {VERBOSITY_ABOUT[level]} (ctrl+o)"
+            room = self.size.width - FOOTER_MARGIN - len(self._status) - STATUS_GAP
+            if len(idle) > room:
+                idle = f"? for shortcuts · ctrl+o: {level}"
+            if self.query_one("#menu").display:
+                idle = MENU_HINT
             hints.update("" if self._question is not None else idle)
             return
         seconds = int(self._clock() - work.started)
         frame = SPINNER[int(self._clock() / TICK_S) % len(SPINNER)]
         stopping = work.stop.is_set()
-        label = "Stopping" if stopping else work.label
+        asking = self._question is not None
+        label = "Stopping" if stopping else "Waiting for your answer" if asking else work.label
         line = Text.assemble((f"{frame} {label}…", "cyan"), (f" ({seconds}s", "bright_black"))
-        if not stopping:
+        if not stopping and not asking:
             line.append(" · esc to interrupt", style="bright_black")
         line.append(")", style="bright_black")
         working.update(line)
@@ -615,23 +668,14 @@ class ChatApp(App[None]):
         return grid
 
     def _menu(self, value: str) -> None:
-        menu = self.query_one("#menu", OptionList)
+        menu = self.query_one("#menu", PointerList)
         found = commands.suggest(value)
-        if not found or [s.value.strip() for s in found] == [value.strip().lower()]:
-            menu.display = False
-            return
-        width = max(len(s.label) for s in found) + 3
-        menu.clear_options()
-        for suggestion in found:
-            menu.add_option(
-                Option(
-                    Text.assemble(
-                        (f"{suggestion.label:<{width}}", "bold"), (suggestion.about, "bright_black")
-                    )
-                )
-            )
-        menu.highlighted = 0
-        menu.display = True
+        shown = bool(found) and [s.value.strip() for s in found] != [value.strip().lower()]
+        if shown:
+            menu.show([(s.label, s.about) for s in found], ("bold", "bright_black"))
+        if menu.display != shown:
+            menu.display = shown
+            self._tick()
 
     def _menu_choice(self) -> str | None:
         menu = self.query_one("#menu", OptionList)
@@ -693,6 +737,7 @@ class ChatApp(App[None]):
         for widget in ("#menu", "#shortcuts"):
             if self.query_one(widget).display:
                 self.query_one(widget).display = False
+                self._tick()
                 return
         work = self._work
         if work is not None and not work.stop.is_set():
@@ -748,6 +793,7 @@ class ChatApp(App[None]):
         self._input().set_text("")
         self.query_one("#menu").display = False
         self.query_one("#shortcuts").display = False
+        self._tick()
         self._recall = 0
         if not text:
             return
@@ -911,6 +957,7 @@ class ChatApp(App[None]):
         grid.add_row(Text(STAR, style="cyan"), Text(title, style="bold"))
         grid.add_row("", body)
         if footer:
+            grid.add_row("", "")
             grid.add_row("", Text(footer, style="bright_black"))
         return grid
 
@@ -1046,23 +1093,17 @@ class ChatApp(App[None]):
         self.query_one("#settings-list", OptionList).focus()
 
     def _fill_settings(self, highlighted: int = 0) -> None:
-        listing = self.query_one("#settings-list", OptionList)
-        listing.clear_options()
-        width = max(len(s.label) for s in SETTINGS) + 4
-        for setting in SETTINGS:
-            value = _shown_value(getattr(self._settings, setting.key))
-            later = "" if setting.live else " *"
-            listing.add_option(
-                Option(
-                    Text.assemble(
-                        (f"{setting.label:<{width}}", ""),
-                        (value, "bold cyan"),
-                        (later, "bright_black"),
-                    ),
-                    id=setting.key,
-                )
+        rows = [
+            (
+                setting.label,
+                _shown_value(getattr(self._settings, setting.key)),
+                "" if setting.live else "*",
             )
-        listing.highlighted = highlighted
+            for setting in SETTINGS
+        ]
+        self.query_one("#settings-list", PointerList).show(
+            rows, ("", "bold", "bright_black"), [s.key for s in SETTINGS], highlighted
+        )
 
     def _close_settings(self) -> None:
         self.query_one("#settings").display = False
@@ -1127,8 +1168,8 @@ class ChatApp(App[None]):
             return
         now = datetime.now().astimezone().strftime("%H:%M:%S")
         count = len(pictures)
-        shared = "" if not count else " · a picture" if count == 1 else f" · {count} pictures"
-        self._mount(Request(text, f"typed · {now}{shared}"))
+        shared = "" if not count else "a picture" if count == 1 else f"{count} pictures"
+        self._mount(Request(text, _joined("typed", now, shared)))
         self._exchanges.append(("you", text))
         self.run_worker(lambda: self._handle(text, work, pictures), thread=True, group="request")
 
@@ -1206,10 +1247,8 @@ class ChatApp(App[None]):
     def _open_question(self, question: _Question) -> None:
         question.shown_at = self._clock()
         self.query_one("#question-text", Static).update(Text(question.text, style="bold"))
-        choices = self.query_one("#choices", OptionList)
-        choices.clear_options()
-        choices.add_options([Option("1. Yes", id="yes"), Option("2. No", id="no")])
-        choices.highlighted = 0
+        choices = self.query_one("#choices", ChoiceList)
+        choices.show([("1. Yes",), ("2. No",)], ("",), ["yes", "no"])
         self.query_one("#question").display = True
         self.query_one("#prompt").display = False
         choices.focus()

@@ -6,10 +6,11 @@ from typing import TYPE_CHECKING
 import pytest
 from rich.console import Console
 
+from jarvis.activity import Shown
 from jarvis.agent import ContextUse
 from jarvis.chat import commands
 from jarvis.chat.history import InputHistory
-from jarvis.chat.widgets import meter, tokens_short, toolbar
+from jarvis.chat.widgets import entry_renderable, meter, tokens_short, toolbar
 from jarvis.sysinfo import Gpu, Sampler, Stats
 
 if TYPE_CHECKING:
@@ -158,6 +159,23 @@ def test_the_toolbar_shows_each_figure_it_has() -> None:
     assert "compacts soon" not in line
 
 
+def test_the_toolbar_fits_a_narrow_window_on_one_line() -> None:
+    stats = Stats(7.5, 53.0, 33 * GIB, 60 * GIB, Gpu(41, 10 * GIB, 20 * GIB, 67.0))
+    use = ContextUse(9100, 24576, 5100, 2400, 12000, 1, summarized=False)
+
+    wide = toolbar("", stats, use, width=200)
+    narrow = toolbar("", stats, use, width=74)
+    narrower = toolbar("", stats, use, width=66)
+
+    assert "°" in _plain(wide)
+    assert narrow.cell_len <= 74
+    for part in ("CPU 8%", "GPU 41%", "VRAM 10.0/20.0G", "RAM 33.0/60.0G", "9.1k/24.6k"):
+        assert part in _plain(narrow)
+    assert narrower.cell_len <= 66
+    for part in ("CPU 8%", "GPU 41%", "VRAM 10/20G", "RAM 33/60G", "9.1k/24.6k"):
+        assert part in _plain(narrower)
+
+
 def test_the_toolbar_warns_before_the_conversation_is_compacted() -> None:
     use = ContextUse(20000, 24576, 5100, 11000, 12000, 9, summarized=False)
 
@@ -178,3 +196,19 @@ def test_a_meter_fills_to_its_share_and_never_past_it() -> None:
     assert len(meter(1.7, 10)) == 10
     assert meter(0.3, 10).spans[0].style == "green"
     assert meter(0.95, 10).spans[0].style == "red"
+
+
+# Entries
+
+
+def test_a_steps_details_are_quiet_beside_its_bold_name() -> None:
+    console = Console(width=120, file=io.StringIO(), color_system="standard")
+    shown = Shown("", "step", "Web search", note='"red pandas"')
+
+    segments = list(console.render(entry_renderable(shown)))
+
+    name = next(s for s in segments if "Web search" in s.text)
+    detail = next(s for s in segments if "red pandas" in s.text)
+    assert name.style is not None
+    assert name.style.bold
+    assert detail.style is None or not detail.style.bold

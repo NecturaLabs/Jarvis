@@ -16,7 +16,7 @@ class Command:
 
     name: str
     about: str
-    hint: str = ""  # what follows the name, as the menu shows it: "[replies|steps|everything]"
+    hint: str = ""  # what follows the name, as the menu shows it: "[level]"
     choices: tuple[str, ...] = ()  # the arguments it takes, offered after the name
 
 
@@ -27,8 +27,8 @@ COMMANDS = (
     Command("/context", "how full the model's context is"),
     Command(
         "/verbosity",
-        "how much of Jarvis's work to show (also ctrl+o)",
-        "[replies|steps|everything]",
+        "how much of the work to show: replies, steps or everything (also ctrl+o)",
+        "[level]",
         VERBOSITY,
     ),
     Command("/config", "the chat's settings"),
