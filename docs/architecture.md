@@ -38,8 +38,8 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 
 | Module | Owns | Must not |
 |---|---|---|
-| `voice.py` | `VoiceLoop` and its `State`: wake, capture, transcribe, think, confirm, speak; the PC-audio listener; `speakable` and `spoken_question`. | Decide what an operation may do (that is `policy.py`). Touch a device directly; it uses `audio.py` objects. |
-| `audio.py` | The `pw-record` microphone and per-app capture (`Microphone`, `AppAudio`), the wake word (LiveKit's `WakeWord`, or `AzureWake` talking to the helper), Silero VAD, `voxtype transcribe`, the `pw-play` speaker, voice selection. | Edit Voxtype's config or use its daemon. It runs only `voxtype transcribe`, with Jarvis's own settings file. Start the Azure helper any way but `azure_wake_command` (no network). |
+| `voice.py` | `VoiceLoop` and its `State`: wake, capture, transcribe, think, confirm, speak, follow-up; the PC-audio listener; `speakable` and `spoken_question`. | Decide what an operation may do (that is `policy.py`). Touch a device directly; it uses `audio.py` objects. |
+| `audio.py` | The `pw-record` microphone and per-app capture (`Microphone`, `AppAudio`), the wake word (LiveKit's `WakeWord`, or `AzureWake` talking to the helper), Silero VAD, `voxtype transcribe`, whether your dictation is running (`voxtype status`), the `pw-play` speaker, voice selection. | Edit Voxtype's config or drive its daemon. It runs only `voxtype transcribe`, with Jarvis's own settings file, and reads `voxtype status`. Start the Azure helper any way but `azure_wake_command` (no network). |
 | `azure_wake_helper.py` | MIT. A separate program, run with its own Python, that feeds audio from standard input to an Azure custom keyword model and prints `wake` ([ADR 0010](adr/0010-azure-keyword-wake-word.md)). | Be imported by Jarvis, import Jarvis, or run with a network. |
 | `kokoro.py` | Kokoro text to speech on ONNX Runtime, phonemized by espeak-ng. | Play audio. It returns samples. |
 | `sentences.py` | Where a sentence of a reply ends (`sentence_end`, `split_sentences`), so speech starts before the reply is whole; every end is also one for `agent.claims_action`. | Decide what may be spoken; the agent's reply stream does. |
@@ -115,6 +115,10 @@ changes as one request moves through.
 | `THINK` | `CONFIRM` | The agent asks for a spoken yes: the question is spoken (`SPEAK`), then the loop listens in `CONFIRM`. |
 | `CONFIRM` | `THINK` or `SPEAK` | The answer is in; the call runs or is dropped, and the reply is spoken. |
 | `SPEAK` | `IDLE` | The reply was spoken, or the request failed after an apology (`_serve`). |
+| `SPEAK` | `FOLLOW_UP` | The reply to your own voice was spoken and `audio.follow_up_s` is above 0, and Voxtype is not dictating. |
+| `FOLLOW_UP` | `TRANSCRIBE` | Speech in the window: a request without the wake word. Unclear speech is dropped silently (`TRANSCRIBE` to `IDLE`). |
+| `FOLLOW_UP` | `CAPTURE` | The wake word in the window: a request as usual. |
+| `FOLLOW_UP` | `IDLE` | No speech in the window, Jarvis is stopping, or Voxtype started dictating meanwhile. |
 
 Notes. There is no separate wake state: wake detection runs on the mic frames in `IDLE`. While
 Jarvis speaks, the `jarvis-barge-in` thread reads the mic and listens for the wake word

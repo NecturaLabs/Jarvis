@@ -24,6 +24,7 @@ from jarvis.audio import (
     app_record_command,
     app_stream_serials,
     capture_sources,
+    dictation_active,
     is_phantom,
     match_app_streams,
     parse_transcript,
@@ -659,3 +660,56 @@ def test_a_piper_voice_speaks_at_the_configured_speed(
 
     (setting,) = _FakePiperVoice.loaded[0].settings
     assert getattr(setting, "length_scale", None) == pytest.approx(0.6)
+
+
+def _status(
+    stdout: bytes, returncode: int = 0
+) -> Callable[..., subprocess.CompletedProcess[bytes]]:
+    """A `voxtype status` that prints `stdout`, recording the command it was given."""
+
+    def run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        assert cmd == ["voxtype", "status", "--format", "json"]
+        return subprocess.CompletedProcess(cmd, returncode, stdout, b"")
+
+    return run
+
+
+@pytest.mark.parametrize(
+    ("state", "dictating"),
+    [
+        ("idle", False),
+        ("stopped", False),
+        ("recording", True),
+        ("streaming", True),
+        ("transcribing", True),
+        ("a-state-added-later", True),
+    ],
+)
+def test_dictation_is_read_from_voxtypes_status(state: str, dictating: bool) -> None:
+    out = f'{{"text": "x", "alt": "{state}", "class": "{state}", "tooltip": "t"}}'.encode()
+    assert dictation_active(run=_status(out)) is dictating
+
+
+def test_no_daemon_means_no_dictation() -> None:
+    assert dictation_active(run=_status(b"", returncode=1)) is False
+
+
+@pytest.mark.parametrize("stdout", [b"", b"not json", b"[]", b'{"alt": 3}', b"{}"])
+def test_a_status_that_cannot_be_read_counts_as_dictating(stdout: bytes) -> None:
+    assert dictation_active(run=_status(stdout)) is True
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        FileNotFoundError("voxtype"),
+        PermissionError("voxtype"),
+        subprocess.TimeoutExpired("voxtype", 2),
+    ],
+    ids=["missing", "not allowed", "timed out"],
+)
+def test_a_status_that_cannot_run_counts_as_dictating(failure: Exception) -> None:
+    def run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise failure
+
+    assert dictation_active(run=run) is True

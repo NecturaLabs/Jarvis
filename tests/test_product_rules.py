@@ -42,7 +42,8 @@ HTTPCORE_FILES = {
 # Files that may import subprocess: the only places that start another program.
 SUBPROCESS_FILES = {
     "cli.py": "systemctl, journalctl, the browser, and `jarvis doctor`'s no-network check",
-    "audio.py": "pw-record, pw-play, pw-dump, `voxtype transcribe` (Voxtype's contract) and the "
+    "audio.py": "pw-record, pw-play, pw-dump, `voxtype transcribe` and `voxtype status` (Voxtype's "
+    "contract) and the "
     "Azure keyword helper, only inside `unshare --net` (ADR 0010)",
     "spotify/ops.py": "launches the Spotify client when no device is active",
 }

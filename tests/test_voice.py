@@ -223,6 +223,8 @@ def _loop(
     cfg: AudioConfig = CFG,
     clock: Clock | None = None,
     pc_wake: Wake | None = None,
+    dictating: Callable[[], bool] = lambda: False,
+    transcribe: Callable[[NDArray[np.int16]], str] | None = None,
 ) -> VoiceLoop:
     listener = None if pc is None else PcListener(pc, pc_wake or Wake(), Vad())
     return VoiceLoop(
@@ -232,12 +234,13 @@ def _loop(
         Vad(),
         speaker,
         cfg,
-        lambda _samples: heard,
+        transcribe or (lambda _samples: heard),
         pc=listener,
         transcribe_answer=answer,
         names=("Jarvis",),
         clock=clock or Clock(),
         pc_retry_s=0,
+        dictating=dictating,
     )
 
 
@@ -1014,3 +1017,232 @@ def test_dropping_unheard_words_puts_the_loop_back_to_thinking() -> None:
     _run(loop)
 
     assert states == [State.THINK]
+
+
+# Follow-up requests (#11): after a spoken reply, `follow_up_s` of speech needs no wake word.
+FOLLOW_UP = CFG.model_copy(update={"follow_up_s": 1.0})
+FOLLOW_UP_REQUEST = [SPEECH, SPEECH, SPEECH, *[SILENCE] * 5]
+WINDOW_FRAMES = 13  # 1.0 s of 80 ms frames: the window ends after the 13th silent frame
+# A request whose capture uses up every frame (0.3 s of trailing silence is 4 frames), so the
+# window starts at the next frame.
+EXACT_REQUEST = [WAKE, SPEECH, SPEECH, SPEECH, *[SILENCE] * 4]
+
+
+def _texts(*texts: str) -> Callable[[NDArray[np.int16]], str]:
+    """A transcriber that hears `texts` in turn, then the last one again."""
+    heard = list(texts) or ["pause the music"]
+
+    def transcribe(_samples: NDArray[np.int16]) -> str:
+        return heard.pop(0) if len(heard) > 1 else heard[0]
+
+    return transcribe
+
+
+def _follow_loop(
+    agent: Agent,
+    mic: Mic,
+    speaker: Speaker,
+    *texts: str,
+    cfg: AudioConfig = FOLLOW_UP,
+    dictating: Callable[[], bool] = lambda: False,
+) -> VoiceLoop:
+    return _loop(agent, mic, speaker, cfg=cfg, dictating=dictating, transcribe=_texts(*texts))
+
+
+def test_follow_up_listening_is_off_by_default() -> None:
+    assert AudioConfig().follow_up_s == 0
+    agent = Agent()
+
+    _run(_loop(agent, Mic(*REQUEST, *FOLLOW_UP_REQUEST), Speaker()))
+
+    assert len(agent.calls) == 1
+
+
+def test_speech_right_after_a_reply_is_the_next_request_without_the_wake_word() -> None:
+    agent = Agent()
+    speaker = Speaker()
+    mic = Mic(*REQUEST, *FOLLOW_UP_REQUEST)
+
+    _run(_follow_loop(agent, mic, speaker, "pause the music", "and turn it down"))
+
+    assert agent.calls == [
+        ("pause the music", Origin.OWNER_SPEECH),
+        ("and turn it down", Origin.OWNER_SPEECH),
+    ]
+    assert speaker.said == ["Done.", "Done."]
+    assert speaker.chimes == 1  # only the wake word is greeted
+
+
+def test_a_follow_up_opens_another_window() -> None:
+    agent = Agent()
+
+    _run(
+        _follow_loop(
+            agent, Mic(*REQUEST, *FOLLOW_UP_REQUEST, *FOLLOW_UP_REQUEST), Speaker(), "a", "b", "c"
+        )
+    )
+
+    assert [text for text, _ in agent.calls] == ["a", "b", "c"]
+
+
+def test_silence_through_the_window_goes_back_to_waiting_for_the_wake_word() -> None:
+    agent = Agent()
+    states: list[State] = []
+    mic = Mic(
+        *EXACT_REQUEST,
+        *[SILENCE] * WINDOW_FRAMES,
+        lambda: states.append(loop.state),
+        *FOLLOW_UP_REQUEST,
+    )
+    loop = _follow_loop(agent, mic, Speaker())
+
+    _run(loop)
+
+    assert len(agent.calls) == 1
+    assert states == [State.IDLE]
+
+
+def test_speech_just_inside_the_window_is_taken() -> None:
+    agent = Agent()
+    mic = Mic(*EXACT_REQUEST, *[SILENCE] * (WINDOW_FRAMES - 1), *FOLLOW_UP_REQUEST)
+
+    _run(_follow_loop(agent, mic, Speaker()))
+
+    assert len(agent.calls) == 2
+
+
+def test_the_loop_is_in_its_follow_up_state_while_the_window_is_open() -> None:
+    states: list[State] = []
+    mic = Mic(*REQUEST, SILENCE, lambda: states.append(loop.state), *[SILENCE] * WINDOW_FRAMES)
+    loop = _follow_loop(Agent(), mic, Speaker())
+
+    _run(loop)
+
+    assert states == [State.FOLLOW_UP]
+
+
+def test_the_wake_word_inside_the_window_starts_one_request() -> None:
+    agent = Agent()
+    speaker = Speaker()
+
+    _run(_follow_loop(agent, Mic(*REQUEST, SILENCE, *REQUEST), speaker, "a", "b"))
+
+    assert [text for text, _ in agent.calls] == ["a", "b"]
+    assert speaker.chimes == 2  # greeted like any wake
+
+
+def test_no_window_opens_while_the_owner_is_dictating() -> None:
+    agent = Agent()
+
+    _run(_follow_loop(agent, Mic(*REQUEST, *FOLLOW_UP_REQUEST), Speaker(), dictating=lambda: True))
+
+    assert len(agent.calls) == 1
+
+
+def test_speech_in_the_window_is_dropped_when_dictation_started_meanwhile() -> None:
+    agent = Agent()
+    dictating = [False]
+    mic = Mic(*REQUEST, SPEECH, lambda: dictating.__setitem__(0, True), *FOLLOW_UP_REQUEST[1:])
+
+    _run(_follow_loop(agent, mic, Speaker(), dictating=lambda: dictating[0]))
+
+    assert len(agent.calls) == 1
+
+
+def test_an_unclear_follow_up_is_dropped_without_an_apology() -> None:
+    agent = Agent()
+    speaker = Speaker()
+
+    _run(_follow_loop(agent, Mic(*REQUEST, *FOLLOW_UP_REQUEST), speaker, "pause the music", ""))
+
+    assert len(agent.calls) == 1
+    assert speaker.said == ["Done."]
+
+
+def test_a_confirmation_answer_is_not_taken_for_a_follow_up() -> None:
+    agent = Agent(_asking("Delete it?"))
+    speaker = Speaker()
+    mic = Mic(*REQUEST, until(lambda: speaker.said != []), *ANSWER, *FOLLOW_UP_REQUEST)
+
+    _run(_follow_loop(agent, mic, speaker))
+
+    assert len(agent.calls) == 2  # the request, then the follow-up; the yes was the answer
+    assert speaker.said[1] == "approved"
+
+
+def test_no_window_follows_a_request_heard_in_pc_audio() -> None:
+    agent = Agent()
+    pc = PcAudio(*REQUEST)
+    mic = Mic(Idle(lambda: len(agent.calls) == 1), *FOLLOW_UP_REQUEST)
+
+    _run(_loop(agent, mic, Speaker(), pc=pc, cfg=FOLLOW_UP, clock=Clock()))
+
+    assert [origin for _, origin in agent.calls] == [Origin.PC_AUDIO]
+
+
+def test_no_window_opens_once_jarvis_is_stopping() -> None:
+    agent = Agent()
+    stop = threading.Event()
+    loop = _follow_loop(agent, Mic(*REQUEST, stop.set, *FOLLOW_UP_REQUEST), Speaker())
+
+    loop.run(stop.is_set)
+
+    assert len(agent.calls) == 1
+
+
+def test_a_wake_without_a_request_opens_no_window() -> None:
+    agent = Agent()
+
+    _run(_follow_loop(agent, Mic(WAKE, *[SILENCE] * 14, *FOLLOW_UP_REQUEST), Speaker()))
+
+    assert agent.calls == []
+
+
+def test_the_window_does_not_even_open_while_the_owner_is_dictating() -> None:
+    states: list[State] = []
+    mic = Mic(*EXACT_REQUEST, SILENCE, lambda: states.append(loop.state), SILENCE)
+    loop = _follow_loop(Agent(), mic, Speaker(), dictating=lambda: True)
+
+    _run(loop)
+
+    assert states == [State.IDLE]
+
+
+def test_speech_in_the_window_is_dropped_when_jarvis_starts_stopping() -> None:
+    agent = Agent()
+    stop = threading.Event()
+    loop = _follow_loop(agent, Mic(*EXACT_REQUEST, SPEECH, SPEECH, stop.set, SPEECH), Speaker())
+
+    loop.run(stop.is_set)
+
+    assert len(agent.calls) == 1
+
+
+def test_a_follow_up_is_dropped_when_pc_audio_held_speech_in_the_window() -> None:
+    """A voice on a call reaching the mic must not become a request without the wake word."""
+    holder: list[VoiceLoop] = []
+    pc_spoke = threading.Event()
+    agent = Agent()
+    pc = PcAudio(
+        until(lambda: bool(holder) and holder[0].state is State.FOLLOW_UP),
+        SPEECH,
+        SPEECH,
+        pc_spoke.set,
+    )
+    mic = Mic(*EXACT_REQUEST, until(pc_spoke.is_set), *FOLLOW_UP_REQUEST)
+    loop = _loop(agent, mic, Speaker(), pc=pc, cfg=FOLLOW_UP, transcribe=_texts("a", "b"))
+    holder.append(loop)
+
+    _run(loop)
+
+    assert [text for text, _ in agent.calls] == ["a"]
+
+
+def test_a_follow_up_is_taken_when_pc_audio_was_quiet() -> None:
+    agent = Agent()
+    pc = PcAudio(SILENCE)
+    mic = Mic(*EXACT_REQUEST, until(pc.ended.is_set), *FOLLOW_UP_REQUEST)
+
+    _run(_loop(agent, mic, Speaker(), pc=pc, cfg=FOLLOW_UP, transcribe=_texts("a", "b")))
+
+    assert [text for text, _ in agent.calls] == ["a", "b"]
