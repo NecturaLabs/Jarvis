@@ -41,8 +41,9 @@ HTTPCORE_FILES = {
 
 # Files that may import subprocess: the only places that start another program.
 SUBPROCESS_FILES = {
-    "cli.py": "systemctl, journalctl and the browser for `jarvis` commands",
-    "audio.py": "pw-record, pw-play, pw-dump and `voxtype transcribe` (Voxtype's contract)",
+    "cli.py": "systemctl, journalctl, the browser, and `jarvis doctor`'s no-network check",
+    "audio.py": "pw-record, pw-play, pw-dump, `voxtype transcribe` (Voxtype's contract) and the "
+    "Azure keyword helper, only inside `unshare --net` (ADR 0010)",
     "spotify/ops.py": "launches the Spotify client when no device is active",
 }
 
@@ -564,3 +565,39 @@ def test_ruff_bans_every_hosted_sdk_and_unlisted_way_to_reach_out(tmp_path: Path
     for name in (*BANNED_MODULES, *BANNED_CALLS):
         assert any(m.startswith(f"`{name}` is banned") for m in reported), f"{name} is not banned"
     assert all("Product rule" in m for m in reported), "every ban names the rule it enforces"
+
+
+AZURE_HELPER = "src/jarvis/azure_wake_helper.py"
+TID251_EXCEPTIONS = {"tests/test_spotify_auth.py", AZURE_HELPER}
+
+
+def test_only_the_listed_files_may_skip_the_banned_imports() -> None:
+    import tomllib  # ruff: ignore[import-outside-top-level] - only this test reads ruff.toml
+
+    ignores = tomllib.loads((REPOSITORY / "ruff.toml").read_text(encoding="utf-8"))["lint"][
+        "extend-per-file-ignores"
+    ]
+    skipping = {path for path, rules in ignores.items() if "TID251" in rules}
+
+    assert skipping == TID251_EXCEPTIONS
+
+
+def test_only_the_azure_helper_imports_the_speech_sdk_and_jarvis_never_imports_the_helper() -> None:
+    sdk = "azure.cognitiveservices.speech"
+    for path in sorted(SOURCE.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        names = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        } | {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+        relative = path.relative_to(REPOSITORY).as_posix()
+        if relative == AZURE_HELPER:
+            assert sdk in names
+            assert not any(name.startswith("jarvis") for name in names)
+        else:
+            assert not any(name.startswith("azure") for name in names), relative
+            assert "jarvis.azure_wake_helper" not in names or relative.startswith("tests/"), (
+                relative
+            )

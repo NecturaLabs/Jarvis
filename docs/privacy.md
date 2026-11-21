@@ -18,6 +18,9 @@ deleted straight after. Jarvis keeps no recordings unless you set `JARVIS_DEBUG_
 request there (mode 0600) for debugging.
 
 The model runs in the `jarvis-strata` service on `127.0.0.1`; your requests never leave the PC to reach it.
+With the Azure wake word on, the audio Jarvis listens to goes to a helper process on the PC that runs
+Microsoft's Speech SDK in a network namespace with no network, so neither the audio nor the SDK's telemetry
+can leave the PC ([ADR 0010](adr/0010-azure-keyword-wake-word.md)).
 Jarvis sends no telemetry and checks for no updates.
 
 ## What leaves your PC

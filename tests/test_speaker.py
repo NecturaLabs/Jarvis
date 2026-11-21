@@ -157,7 +157,7 @@ def test_a_sentence_that_sounds_like_the_wake_word_cannot_be_spoken_over(
     tmp_path: Path,
 ) -> None:
     pid_file = tmp_path / "pid"
-    speaker = Speaker(_voice, player=_endless(pid_file), own_wake=lambda _pcm, _rate: True)
+    speaker = Speaker(_voice, player=_endless(pid_file), own_wake=lambda _pcm, _rate, _text: True)
     try:
         assert speaker.interruptible
         speaker.queue("hey jarvis")
@@ -172,7 +172,7 @@ def test_a_sentence_that_sounds_like_the_wake_word_cannot_be_spoken_over(
 
 def test_ordinary_speech_can_be_spoken_over(tmp_path: Path) -> None:
     pid_file = tmp_path / "pid"
-    speaker = Speaker(_voice, player=_endless(pid_file), own_wake=lambda _pcm, _rate: False)
+    speaker = Speaker(_voice, player=_endless(pid_file), own_wake=lambda _pcm, _rate, _text: False)
     try:
         speaker.queue("paused")
         _until(pid_file.exists)
@@ -298,7 +298,7 @@ def test_a_failing_own_voice_check_counts_as_wake_like_and_the_sentence_still_pl
 ) -> None:
     pid_file = tmp_path / "pid"
 
-    def broken(_pcm: bytes, _rate: int) -> bool:
+    def broken(_pcm: bytes, _rate: int, _text: str) -> bool:
         msg = "wake model broke"
         raise RuntimeError(msg)
 
@@ -336,7 +336,7 @@ def test_a_wake_like_sentence_after_a_hush_is_still_guarded(tmp_path: Path) -> N
     speaker = Speaker(
         lambda _t: (_sound(1000, seconds=2.0), RATE),
         player=player,
-        own_wake=lambda _pcm, _rate: bool(starts),  # wake-like from the second sentence on
+        own_wake=lambda _pcm, _rate, _text: bool(starts),  # wake-like from the second sentence on
     )
     try:
         speaker.queue("ordinary")
@@ -357,7 +357,7 @@ def test_a_hush_during_the_own_voice_check_leaves_the_speaker_interruptible(
     player, _ = _recorder(tmp_path)
     checking, release = threading.Event(), threading.Event()
 
-    def slow_check(_pcm: bytes, _rate: int) -> bool:
+    def slow_check(_pcm: bytes, _rate: int, _text: str) -> bool:
         checking.set()
         release.wait(WAIT_S)
         return True

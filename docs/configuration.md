@@ -102,7 +102,10 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
 | `source` | empty | PipeWire source node name | Microphone. Empty means the default source. `--mic`. |
-| `wake_threshold` | `0.5` | above 0, below 1 | Wake word score needed. Higher means fewer false wakes and more misses. |
+| `wake_threshold` | `0.5` | above 0, below 1 | LiveKit's wake word score needed. Higher means fewer false wakes and more misses. The service log shows each wake's score. |
+| `wake_engine` | `livekit` | `livekit` or `azure` | Which wake word model listens. `azure` uses your Azure custom keyword model; see [Azure wake word](#azure-wake-word). `jarvis wake livekit\|azure`. |
+| `azure_keyword_model` | empty | path to a `.table` file | The Azure custom keyword model. `jarvis wake azure --model FILE`. |
+| `azure_python` | empty | path to a Python | The Python that has the Speech SDK. Empty means `<data_dir>/azure-wake/venv/bin/python`. |
 | `vad_threshold` | `0.5` | above 0, below 1 | Speech probability that counts as speech. |
 | `no_speech_timeout_s` | `4.0` | above 0, up to 30 | Silence after the wake word before Jarvis gives up. |
 | `end_silence_s` | `0.7` | above 0, up to 5 | Trailing silence that ends a request. |
@@ -159,6 +162,30 @@ built-in microphone: after a WirePlumber restart the module can fall back to a B
 microphone, which drops the headset to its low-quality call profile. Check the wake word, idle and while
 Jarvis speaks, before and after the change. This setup was checked to load in PipeWire 1.6.9, not yet
 measured on the owner's microphone.
+
+### Azure wake word
+
+Jarvis can listen with an Azure AI Speech custom keyword model instead of LiveKit's `hey_jarvis`
+([ADR 0010](adr/0010-azure-keyword-wake-word.md)). The model is a `.table` file you train in Speech Studio
+(Custom Keyword) and download from the project's Models page. It runs on your PC: Microsoft's Speech SDK is
+loaded only by a small helper that Jarvis starts with no network at all, so nothing reaches Microsoft.
+
+1. Put the SDK in its own environment (it is closed source, so it is never one of Jarvis's packages):
+
+   ```sh
+   uv venv --python 3.14 <data_dir>/azure-wake/venv
+   uv pip install --python <data_dir>/azure-wake/venv/bin/python azure-cognitiveservices-speech==1.53.1
+   ```
+
+2. Keep the `.table` file outside the repository (for example under `<data_dir>/azure-wake/`) and switch:
+   `jarvis wake azure --model <file>.table`. `jarvis wake livekit` switches back; `jarvis wake` shows which
+   one listens. Each switch restarts the voice service.
+3. `jarvis doctor` checks the model file, the Python and that a namespace with no network can be made.
+
+If the Azure model cannot start, Jarvis says so in the log and listens with LiveKit's instead. The model's own
+threshold decides, so `wake_threshold` does not apply to it. An Azure model trained with "Containing single
+keyword" also wakes on "Jarvis" alone; while one listens, a sentence in which Jarvis says its own name cannot
+be spoken over.
 
 ## `[persona]`
 
