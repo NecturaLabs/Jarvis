@@ -64,9 +64,7 @@ def spoken_question(text: str) -> str:
 
 
 FRAME_S = FRAME / RATE
-MIN_ANSWER_SPEECH_S = (
-    0.15  # two frames: a spoken "yes" holds about 0.3 s of speech, a click one frame
-)
+MIN_ANSWER_SPEECH_S = 0.15  # two 80 ms frames; a click or knock is usually one
 PRE_ROLL_FRAMES = 3
 WAKE_DEDUPE_S = 2.0
 SORRY_INTERNAL = "Sorry, something went wrong on my side."
