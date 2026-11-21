@@ -1108,6 +1108,24 @@ def test_a_request_stops_after_the_step_limit() -> None:
     assert len(model.seen) == MAX_STEPS
 
 
+def test_the_last_step_answers_from_what_was_found_instead_of_giving_up() -> None:
+    counter = Counter()
+    replies = [
+        _call("search", {"q": "a"}, "c1"),
+        _call("search", {"q": "b"}, "c2"),
+        _say("The Fairy Wand is the usual pick at level 40."),
+    ]
+    model = ScriptedModel(replies)
+    agent, _ = _agent(model, [counter.op("search")], limits=Limits(max_steps=3))
+
+    reply = agent.handle("which wand", NO_CONFIRM)
+
+    assert reply == "The Fairy Wand is the usual pick at level 40."
+    assert model.tools_offered[-1] == 0  # the last call may only answer
+    assert "answer" in model.seen[-1][-1]["content"].lower()
+    assert len(counter.runs) == 2
+
+
 def test_a_strong_operation_is_refused_even_when_the_owner_would_say_yes() -> None:
     counter = Counter()
     asked: list[str] = []
