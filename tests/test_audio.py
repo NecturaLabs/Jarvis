@@ -296,8 +296,8 @@ def test_capture_sources_names_what_feeds_one_process() -> None:
 
 
 def _tone(byte: int) -> list[str]:
-    """A capture command that writes the same byte forever."""
-    return ["sh", "-c", f"tr '\\0' '\\{byte:03o}' </dev/zero"]
+    """A capture command that writes the same byte forever (exec: stopping it stops the writer)."""
+    return ["sh", "-c", f"exec tr '\\0' '\\{byte:03o}' </dev/zero"]
 
 
 def _value(byte: int) -> int:

@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from jarvis import __version__, cli, config, models, paths
+from jarvis.agent import Hooks
+from jarvis.chat import ChatApp
 from jarvis.cli import main
 from jarvis.secretfile import write_private_json
 
@@ -348,3 +350,41 @@ def test_doctor_without_a_spotify_login_fails_that_line(
     _doctor_config(home / "models")
 
     assert _login_line(capsys).startswith("FAIL")
+
+
+def _opened_chat(monkeypatch: pytest.MonkeyPatch) -> list[ChatApp]:
+    opened: list[ChatApp] = []
+    monkeypatch.setattr(ChatApp, "run", lambda self, *_a, **_k: opened.append(self))
+    return opened
+
+
+def test_chat_opens_the_window_with_typing_off_until_setup_is_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = _opened_chat(monkeypatch)
+
+    assert main(["chat"]) == 0
+
+    (app,) = opened
+    assert app._ask is None  # pyright: ignore[reportPrivateUsage]
+    assert "jarvis setup" in app._unavailable  # pyright: ignore[reportPrivateUsage]
+
+
+def test_chat_sends_typed_requests_to_an_agent_that_marks_its_audit_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = _opened_chat(monkeypatch)
+    vias: list[str | None] = []
+
+    def build(_config: object, *, via: str | None = None) -> object:
+        vias.append(via)
+        return SimpleNamespace(agent=SimpleNamespace(handle=lambda text, _hooks: f"heard {text}"))
+
+    monkeypatch.setattr(cli, "build", build)
+
+    assert main(["chat"]) == 0
+
+    (app,) = opened
+    assert vias == ["chat"]
+    assert app._ask is not None  # pyright: ignore[reportPrivateUsage]
+    assert app._ask("pause", Hooks(confirm=lambda _q: False)) == "heard pause"  # pyright: ignore[reportPrivateUsage]
