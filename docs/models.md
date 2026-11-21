@@ -107,7 +107,7 @@ daemon and never your Voxtype config or recordings. Each run is
 | numpy | 2.5.5 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 |
 | onnxruntime | 1.32.0 | MIT |
 | piper-tts | 1.8.0 | GPL-3.0-or-later |
-| pydantic | 2.12.5 | MIT |
+| pydantic | 2.14.3 | MIT |
 | textual (the `jarvis chat` window) | 8.2.8 | MIT |
 
 What textual pulls in: rich 15.0.0, markdown-it-py 4.3.0, mdit-py-plugins 0.7.0, mdurl 0.1.2 and platformdirs

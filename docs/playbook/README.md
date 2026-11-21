@@ -35,6 +35,9 @@ traps found along the way. Add a trap the moment it costs time.
 
 ## Traps
 
+- `dev` and `main` refuse a commit that has not passed CI. A merge commit made on `dev` is new, so push it to
+  the topic branch first, let CI pass on it there, then push it to `dev`: the check belongs to the commit.
+
 - `.lint/check.sh` on an empty index passes without checking anything. Stage first.
 - Ruff's base config ignores `PT009`/`PT027` for unittest scripts; `ruff.toml` re-selects them for pytest.
 - A test fixture that wraps its process in `sh -c` must `exec` the real program. Otherwise stopping it kills the
