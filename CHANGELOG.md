@@ -61,6 +61,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 - The check that Jarvis does not claim an action no tool did now also catches "I set the volume to
   thirty", "I've lowered the volume", "I muted it", "The volume is now at 20" and "Sure — I muted it".
-  A question such as "Shall I put it on shuffle?" is not a claim, but "Done, anything else?" still is.
+  A question that asks ("Shall I put it on shuffle?", "Muted, or just quieter?") is not a claim, but
+  "Done, anything else?" still is.
 
 [Unreleased]: https://github.com/NecturaLabs/Jarvis/commits/dev

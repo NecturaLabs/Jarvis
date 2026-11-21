@@ -77,6 +77,7 @@ _DEED = (
     r"turned (?:on|off) (?:shuffle|repeat)|"
     r"(?:set|changed|lowered|raised|increased|decreased|upped|muted|unmuted|put) (?:it|that|this|"
     r"(?:the|your) (?:volume|music|song|track|playlist|queue))|"
+    r"set to (?:\d+|(?:ten|eleven|twelve|\w+teen|\w+ty)\b)|"
     r"volume(?:'s| is| has been)? (?:now )?(?:set|changed|increased|decreased|raised|lowered|"
     r"up|down|at)|"
     r"the volume(?:'s| is| has been)? (?:now )?(?:at (?:\d+|(?:ten|eleven|twelve|\w+teen|\w+ty)\b)|"
@@ -87,6 +88,15 @@ _CLAIM = re.compile(_LEAD + _SUBJECT + _DEED, re.IGNORECASE)
 # After a dash only a clause with its own subject counts ("Sure - I muted it"), not a list of
 # what Jarvis can do ("Spotify - playing music, managing queues").
 _CLAIM_AFTER_DASH = re.compile(_LEAD + _SUBJECT.removesuffix("?") + _DEED, re.IGNORECASE)
+# ...or a deed standing alone as the whole clause ("Sure - muted.", "Okay - paused it.").
+_BARE_DEED = re.compile(_LEAD + _DEED + r"(?: (?:it|that|this|now|for you))*[.!]?$", re.IGNORECASE)
+# A question that asks rather than reports: it opens with a question word or an auxiliary, or a
+# clause before its end holds a question word ("Set it to what, exactly?").
+_ASKS = re.compile(
+    r"^(?:do|does|did|shall|should|would|could|can|will|is|are|was|were|want|may)\b|"
+    r"\b(?:what|which|who|whom|where|when|why|how)\b",
+    re.IGNORECASE,
+)
 _DENIAL = re.compile(
     r"\b(?:not|no|nothing|never|cannot|unable|failed)\b|n't\b|\bcant\b|\bcouldnt\b",
     re.IGNORECASE,
@@ -104,8 +114,9 @@ _DESCRIPTION = re.compile(
 )
 _COURTESY = re.compile(r"^no (?:problem|worries)\b[,.!]?\s*", re.IGNORECASE)  # not a denial
 _SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+|\n+")
-_DASH = re.compile(r"\s*[\u2014\u2013]\s*|\s-\s")
-_QUOTES = "\"'\u201c\u201d\u2018()[]"
+_DASH = re.compile(r"\s*(?:[\u2012\u2013\u2014\u2015\u2212]|--)\s*|\s-\s")
+_CLAUSE_BREAK = re.compile(r"[,\u3001\uff0c(\[]")  # a comma, or an aside opening
+_EDGES = "\"'\u201c\u201d\u2018)]"
 _ACTIONS_NOTE = re.compile(r"^\[actions taken:[^\]]*\]\s*", re.IGNORECASE)
 _REPLY_KEY = '{"reply":"'
 _REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
@@ -116,25 +127,49 @@ def claims_action(reply: str) -> bool:
     """Return True when a reply says that something was done.
 
     Only a sentence or clause that opens with the deed counts ("Paused.", "Sure thing, playing
-    it now.", "I set the volume to thirty.", "Sure - I muted it."), and never the question that
-    ends a sentence, a sentence that denies anything or one that names a deed as a thing, so an
-    honest "Shall I put it on shuffle?", "I couldn't find that, so nothing was saved" or "Playing
-    music is my specialty" is left alone, while "Done, anything else?" is still a claim.
+    it now.", "I set the volume to thirty.", "Sure - I muted it."). A sentence that denies
+    anything or names a deed as a thing never counts, nor does a question that asks ("Muted, or
+    just quieter?", "Set it to what, exactly?"); in one that only closes with a question, what
+    comes before it still counts ("Done, anything else?"). So an honest "I couldn't find that, so
+    nothing was saved" or "Playing music is my specialty" is left alone.
     """
     for sentence in _SENTENCE_END.split(reply.replace("\u2019", "'").replace("\uff1f", "?")):
-        text = sentence.strip().strip(_QUOTES)
+        text = sentence.strip().strip(_EDGES + "([")
         if not text or _DENIAL.search(_COURTESY.sub("", text)) or _DESCRIPTION.match(text):
             continue
-        clauses: list[tuple[str, re.Pattern[str]]] = []
-        for index, part in enumerate(_DASH.split(text)):
-            for number, clause in enumerate(part.split(",")):
-                pattern = _CLAIM_AFTER_DASH if index > 0 and number == 0 else _CLAIM
-                clauses.append((clause.strip().strip(_QUOTES), pattern))
-        if sentence.strip().rstrip(_QUOTES).endswith("?"):
-            clauses = clauses[:-1]  # the question offers to act; a clause before it may still claim
-        if any(pattern.match(clause) for clause, pattern in clauses):
+        clauses = _clauses(text)
+        if text.rstrip(_EDGES).endswith("?"):
+            before = [words for words, _ in clauses[:-1]]
+            if (
+                _ASKS.match(clauses[0][0])
+                or any(_ASKS.search(words) or words.lower().startswith("or ") for words in before)
+                or clauses[-1][0].lower().startswith("or ")
+            ):
+                continue  # it asks; it reports nothing
+            clauses = clauses[:-1]  # the closing question offers more; what comes before may claim
+        if any(claim for _, claim in clauses):
             return True
     return False
+
+
+def _clauses(text: str) -> list[tuple[str, bool]]:
+    """Split a sentence at commas, asides and dashes; return each clause and whether it claims.
+
+    After a dash only a clause with its own subject counts, or a deed that is its part's only
+    clause, so "Spotify - playing music, managing queues" lists rather than reports.
+    """
+    out: list[tuple[str, bool]] = []
+    for index, part in enumerate(_DASH.split(text)):
+        pieces = [w for c in _CLAUSE_BREAK.split(part) if (w := c.strip().strip(_EDGES))]
+        for words in pieces:
+            if index == 0:
+                claim = bool(_CLAIM.match(words))
+            else:
+                claim = bool(_CLAIM_AFTER_DASH.match(words)) or (
+                    len(pieces) == 1 and bool(_BARE_DEED.match(words))
+                )
+            out.append((words, claim))
+    return out or [(text, False)]
 
 
 def _complete_prefix(body: str) -> str:
