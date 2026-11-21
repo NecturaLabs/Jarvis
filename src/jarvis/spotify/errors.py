@@ -5,10 +5,28 @@ Words that Spotify wrote (error messages, names) are untrusted: an error built f
 """
 
 from jarvis.operations import OperationError
+from jarvis.policy import Origin
 
 
 class SpotifyError(OperationError):
-    """Spotify refused or failed a request."""
+    """Spotify refused or failed a request.
+
+    `status` and `reason` are Spotify's HTTP status and error reason when it answered, so a caller
+    can tell "already paused" from "not allowed" without reading the message.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        origin: Origin = Origin.TOOL_STATUS,
+        status: int | None = None,
+        reason: str = "",
+    ) -> None:
+        """Keep the message, the origin of its words and Spotify's status and reason."""
+        super().__init__(message, origin=origin)
+        self.status = status
+        self.reason = reason
 
 
 class NoDeviceError(SpotifyError):

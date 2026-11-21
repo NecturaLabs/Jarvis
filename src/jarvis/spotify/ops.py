@@ -119,7 +119,7 @@ class SpotifyOps:
         due = self._names_at is None or now - self._names_at >= self._settings.library_refresh_s
         if due:
             try:
-                artists = self._api.library().get("artist", [])
+                artists = self._api.library(max_age_s=0).get("artist", [])
             except SpotifyError:
                 return self._names
             self._names = list(dict.fromkeys(str(a["name"]) for a in artists if a.get("name")))
