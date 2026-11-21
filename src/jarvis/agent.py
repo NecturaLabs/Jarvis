@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 
 MAX_STEPS = 6
 MAX_SECONDS = 90.0
+COLD_LOAD_S = 180.0  # extra time when the model must load first (measured ~107 s while gaming)
 MIN_CALL_S = 1.0  # a model call always gets at least this long
 MAX_CALLS_PER_TURN = 8
 MAX_TOOL_TEXT = 1500
@@ -212,6 +213,7 @@ class _Turn:
     messages: list[dict[str, Any]]
     started: float
     cues: _Cues
+    limit_s: float = MAX_SECONDS
     foreign: bool = False
     untrusted: bool = False
     nudged: bool = False
@@ -345,12 +347,13 @@ class Agent:
     def _converse(self, hooks: Hooks, turn: _Turn) -> str:
         """Let the model work through the request within the step and time limits."""
         if self._model.is_loaded() is False:
+            turn.limit_s += COLD_LOAD_S
             turn.cues.start()
         try:
             for step in range(MAX_STEPS):
                 if hooks.cancelled():
                     return ""
-                if self._clock() - turn.started > MAX_SECONDS:
+                if self._clock() - turn.started > turn.limit_s:
                     return TOO_LONG
                 done = self._step(turn, hooks, step)
                 if done is not None:
@@ -371,7 +374,7 @@ class Agent:
                 turn.messages,
                 tools,
                 require_tool=not turn.actions,
-                timeout_s=max(MIN_CALL_S, MAX_SECONDS - (began - turn.started)),
+                timeout_s=max(MIN_CALL_S, turn.limit_s - (began - turn.started)),
             )
         except Exception as exc:  # ruff: ignore[blind-except] - any model failure becomes a spoken apology
             self._audit.record("model_error", error=str(exc)[:MAX_AUDIT_TEXT])
@@ -459,7 +462,7 @@ class Agent:
         if turn.calls > MAX_CALLS_PER_TURN:
             self._audit.record("tool_budget", limit=MAX_CALLS_PER_TURN)
             return Result("Error: too many actions in one request, so this was not run.", ok=False)
-        if self._clock() - turn.started > MAX_SECONDS:
+        if self._clock() - turn.started > turn.limit_s:
             return Result("Error: the request ran out of time, so this was not run.", ok=False)
         return self._run_call(call, hooks, turn, untrusted=untrusted)
 
