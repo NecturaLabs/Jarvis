@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from importlib.resources import files
 from typing import TYPE_CHECKING
 
-from jarvis import paths
 from jarvis.agent import Agent
 from jarvis.audit import AuditLog
 from jarvis.model import StrataModel
 from jarvis.operations import Operation, Registry, Result
+from jarvis.paths import audit_file, spotify_token_file, strata_key_file  # re-exported for callers
 from jarvis.secretfile import read_api_key
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
@@ -16,24 +16,8 @@ from jarvis.spotify.ops import SpotifyOps
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from jarvis.config import Config
-
-
-def strata_key_file() -> Path:
-    """Return the file holding the Strata API key (shared by Jarvis and the Strata unit)."""
-    return paths.state_dir() / "strata.env"
-
-
-def spotify_token_file() -> Path:
-    """Return the Spotify token file."""
-    return paths.state_dir() / "spotify-token.json"
-
-
-def audit_file() -> Path:
-    """Return the audit log path."""
-    return paths.state_dir() / "audit.jsonl"
 
 
 def no_action_operation() -> Operation:
