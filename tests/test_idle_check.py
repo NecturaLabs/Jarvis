@@ -40,13 +40,17 @@ class FakeProc:
         )
         (folder / "fdinfo").mkdir(exist_ok=True)
 
-    def set_cpu(self, pid: int, ticks: int, *, comm: str = "worker", reaped: int = 0) -> None:
+    def set_cpu(
+        self, pid: int, ticks: int, *, comm: str = "worker", reaped: int = 0, ppid: int = 1
+    ) -> None:
         # Fields 3 to 17: state, ppid, pgrp, session, tty_nr, tpgid, flags, minflt, cminflt, majflt,
         # cmajflt, utime, stime, cutime, cstime. Half the ticks go to user time, half to system
         # time; `reaped` is the time of children this process has waited for (cutime + cstime).
         user, system = ticks - ticks // 2, ticks // 2
         c_user, c_system = reaped - reaped // 2, reaped // 2
-        after_comm = f"S 1 1 1 0 -1 0 0 0 0 0 {user} {system} {c_user} {c_system} 20 0 1 0 12345"
+        after_comm = (
+            f"S {ppid} 1 1 0 -1 0 0 0 0 0 {user} {system} {c_user} {c_system} 20 0 1 0 12345"
+        )
         (self.root / str(pid) / "stat").write_text(
             f"{pid} ({comm}) {after_comm}\n", encoding="utf-8"
         )
@@ -216,7 +220,8 @@ def test_a_child_started_during_the_window_counts_in_full(proc: FakeProc) -> Non
 
 def test_a_child_that_exits_during_the_window_counts_through_its_parent(proc: FakeProc) -> None:
     proc.process(100, cpu_ticks=100, children=[200])
-    proc.process(200, cpu_ticks=5000)
+    proc.process(200)
+    proc.set_cpu(200, 5000, ppid=100)
 
     def finish() -> None:  # the child works 300 more ticks, exits and is waited for
         proc.set_children(100, [])
@@ -563,3 +568,22 @@ def test_a_drm_client_without_engine_counters_is_not_reported_as_no_client(
         "gpu: no GPU engine time published (no DRM client, or one without drm-engine counters)"
         in out
     )
+
+
+def test_a_process_that_leaves_the_tree_does_not_hide_the_trees_work(proc: FakeProc) -> None:
+    """A grandchild re-parented to systemd took its earlier time with it; nothing reaped it here."""
+    proc.process(100, children=[200])
+    proc.process(200, cpu_ticks=10, children=[300])
+    proc.set_cpu(200, 10, ppid=100)
+    proc.process(300, cpu_ticks=3000)
+    proc.set_cpu(300, 3000, ppid=200)
+
+    def finish() -> None:  # 200 exits and is reaped by 100; 300 moves to systemd; 100 reaps 2100
+        proc.set_children(100, [])
+        proc.remove(200)
+        proc.remove(300)
+        proc.set_cpu(100, 0, reaped=10 + 2100)
+
+    (result,), _ = _measure(proc, [Root("svc", 100)], finish)
+
+    assert result.cpu_percent == pytest.approx(70.0)
