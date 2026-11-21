@@ -54,7 +54,9 @@ default (`audio.listen_to_pc`). When it is on:
   themselves and cannot leave text in the owner's conversation.
 - **Bad:** a yes opens a window in which PC audio can ask for more, so the window length is a trade-off the
   owner sets. A request can be lost to the cooldown or to a busy loop, and the owner must be at the PC to
-  answer.
+  answer. Only the apps in `pc_audio_apps` are known as PC audio: on speakers, another app's speech that
+  reaches the microphone is heard as the owner's. Headphones or PipeWire echo cancellation close that gap
+  (`docs/configuration.md`, "Speakers and other apps' speech").
 
 ## Related
 

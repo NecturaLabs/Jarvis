@@ -27,7 +27,8 @@ current file. The running voice service reads it once, when it starts.
 - `strata` keys: run `jarvis setup` to rewrite the profile and unit (it keeps every other value), then
   `jarvis restart`. It restarts Strata too when its profile or unit was rewritten after Strata started, and
   otherwise leaves a running Strata, and its loaded model, alone. An empty `model.base_url` follows
-  Strata's port; a saved URL that only repeated that port is dropped when the file is read.
+  Strata's port; a saved URL that only repeated that port is dropped when the file is read, and
+  `jarvis doctor` fails a saved URL on another port than Strata's.
 - `jarvis pc-audio on|off` rewrites the file and restarts the voice service itself when it is running.
 
 ## Top level
@@ -107,7 +108,7 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | `voice` | `kokoro:bm_george` | text | `kokoro:<name>` for a Kokoro voice, otherwise a Piper voice name. See [models.md](models.md). |
 | `speech_speed` | `1.0` | 0.5 to 2.0 | Speaking speed, for Kokoro and Piper voices. |
 | `transcribe_engine` | empty | text | Voxtype `--engine`. Empty means Voxtype's own. |
-| `transcribe_model` | `small.en` | text | Voxtype `--model`. Empty means Voxtype's own. The model must already be downloaded. |
+| `transcribe_model` | `small.en` | text | Voxtype `--model`: a model name or a full path to a model file. Empty means Voxtype's own. The model must already be downloaded; `jarvis doctor` checks Whisper models. |
 | `transcribe_threads` | `8` | 1 to 256 | Whisper threads, written to Jarvis's own Voxtype settings file. |
 | `transcribe_short_window` | `true` | true or false | Size Whisper's window to the clip (`context_window_optimization`); much faster for short commands. |
 | `vocabulary_hint` | `true` | true or false | Prime speech-to-text with Jarvis's name, its actions and your artist names. |
