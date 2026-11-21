@@ -522,13 +522,41 @@ def cmd_stop(_args: argparse.Namespace) -> int:
     return code
 
 
+def _started_at(unit: str) -> float | None:
+    """Return when `unit` last became active (Unix time), or None when it is not running."""
+    show = ["show", unit, "-p", "ActiveEnterTimestamp", "--timestamp=unix", "--value"]
+    done = subprocess.run(
+        ["systemctl", "--user", *show],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    stamp = done.stdout.strip().removeprefix("@")
+    if _unit_state(unit) != "active" or not stamp.isdigit():
+        return None
+    return float(stamp)
+
+
+def _strata_changed_since(started: float) -> bool:
+    """Return whether Strata's profile or unit was rewritten after it started."""
+    from jarvis import services  # ruff: ignore[import-outside-top-level]
+
+    files = (services.strata_profile_file(), services.unit_dir() / services.STRATA_UNIT)
+    return any(path.exists() and path.stat().st_mtime > started for path in files)
+
+
 def cmd_restart(_args: argparse.Namespace) -> int:
-    """Restart the voice service."""
+    """Restart the voice service; restart Strata too when its settings changed since it started.
+
+    A running Strata is otherwise left alone, so the model stays loaded.
+    """
     from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
 
-    code = _systemctl("start", STRATA_UNIT)
+    started = _started_at(STRATA_UNIT)
+    changed = started is not None and _strata_changed_since(started)
+    code = _systemctl("restart" if changed else "start", STRATA_UNIT)
     code = code or _systemctl("restart", JARVIS_UNIT)
-    print(f"jarvis: {_unit_state(JARVIS_UNIT)}")
+    print(f"jarvis: {_unit_state(JARVIS_UNIT)}" + (", model server restarted" if changed else ""))
     return code
 
 
