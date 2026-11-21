@@ -211,7 +211,7 @@ def test_the_local_time_needs_no_network() -> None:
     result = _run(_ops(net), "time_now")
 
     assert result.spoken == "It's 15:05."
-    assert "Saturday, 21 November 2026" in result.text
+    assert result.text == "Time: 15:05."  # the owner asked for the time, not the date
     assert result.origin is Origin.TOOL_STATUS
     assert net.seen == []
 
@@ -220,7 +220,9 @@ def test_the_date_and_a_twelve_hour_clock() -> None:
     assert spoken_time(datetime(2026, 1, 1, 0, 7, tzinfo=UTC), twelve_hour=True) == "12:07 AM"
     assert spoken_time(datetime(2026, 1, 1, 15, 42, tzinfo=UTC), twelve_hour=True) == "3:42 PM"
     assert spoken_date(datetime(2026, 11, 21, tzinfo=UTC).date()) == "Saturday, 21 November"
-    assert _run(_ops(Net()), "time_now", what="date").spoken == "It's Saturday, 21 November."
+    asked_date = _run(_ops(Net()), "time_now", what="date")
+    assert asked_date.spoken == "It's Saturday, 21 November."
+    assert asked_date.text == "Date: Saturday, 21 November 2026."  # the date alone, not the time
 
 
 def test_the_time_in_a_named_place_uses_its_zone() -> None:
@@ -229,9 +231,16 @@ def test_the_time_in_a_named_place_uses_its_zone() -> None:
     result = _run(_ops(net), "time_now", place="Tokyo")
 
     assert result.spoken == "It's 23:05 in Tokyo."
-    assert "Time in Tokyo (JP): 23:05" in result.text
+    assert result.text == "Time in Tokyo (JP): 23:05."
     assert result.origin is Origin.TOOL_STATUS
     assert net.hosts() == ["geocoding-api.open-meteo.com"]
+
+
+def test_the_date_in_a_named_place_uses_its_zone() -> None:
+    result = _run(_ops(Net()), "time_now", what="date", place="Tokyo")
+
+    assert result.spoken == "It's Saturday, 21 November in Tokyo."
+    assert result.text == "Date in Tokyo (JP): Saturday, 21 November 2026."
 
 
 def test_an_unknown_place_is_said_so() -> None:
