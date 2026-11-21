@@ -20,3 +20,15 @@ htmlcov/
 # Local environment
 .env
 .env.*
+
+# Models, recordings, keys and tokens never belong in git
+*.wav
+*.onnx
+*.npz
+*.pem
+*.key
+config.toml
+spotify-token.json
+strata.env
+model.env
+audit.jsonl*
