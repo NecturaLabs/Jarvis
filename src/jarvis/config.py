@@ -68,27 +68,13 @@ class _Section(BaseModel):
 
 
 class ModelConfig(_Section):
-    """Which model answers: the local Strata server, or a hosted OpenAI-compatible endpoint."""
+    """How Jarvis talks to its model, the local Strata server."""
 
     base_url: Endpoint = ""  # empty: the local Strata server (see `Config.model_base_url`)
     model: str = "jarvis"
     request_timeout_s: float = Field(default=120.0, gt=0, le=600)
     max_tokens: int = Field(default=200, gt=0, le=4096)
     temperature: float = Field(default=0.2, ge=0, le=2)
-    provider: Literal["strata", "openai"] = "strata"
-    fallback: bool = True  # use the other backend when the chosen one fails
-    # The hosted endpoint, e.g. Azure AI Foundry. Its API key never lives in the config.
-    remote_base_url: Endpoint = ""
-    remote_model: str = ""
-
-    @model_validator(mode="after")
-    def _remote_is_complete(self) -> Self:
-        if self.provider == "openai":
-            for key in ("remote_base_url", "remote_model"):
-                if not getattr(self, key):
-                    msg = f'provider "openai" needs {key}'
-                    raise ValueError(msg)
-        return self
 
 
 class StrataConfig(_Section):
