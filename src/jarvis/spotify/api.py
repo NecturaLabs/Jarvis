@@ -52,6 +52,8 @@ _QUOTA = "QUOTA_EXCEEDED"
 _GATEWAY_ERRORS = frozenset(
     {HTTPStatus.BAD_GATEWAY, HTTPStatus.SERVICE_UNAVAILABLE, HTTPStatus.GATEWAY_TIMEOUT}
 )
+# A gateway gives up on the server behind it with these; that server may still have run the command.
+_UPSTREAM_TIMEOUTS = frozenset({HTTPStatus.BAD_GATEWAY, HTTPStatus.GATEWAY_TIMEOUT})
 # Failures after which a request may already have reached Spotify.
 _MAY_HAVE_BEEN_SENT = (
     httpx.ReadTimeout,
@@ -59,6 +61,7 @@ _MAY_HAVE_BEEN_SENT = (
     httpx.RemoteProtocolError,
     httpx.WriteError,
     httpx.WriteTimeout,
+    httpx.DecodingError,
 )
 
 
@@ -136,13 +139,15 @@ class SpotifyApi:
         """Send one request, refreshing the token once on 401.
 
         A GET is retried once on a transport error or a 502, 503 or 504. A 429 is retried once
-        when Spotify says to wait two seconds or less (it was not executed); a longer wait or an
-        exhausted quota is reported. A mutating request that failed after it may have been sent
-        raises `UncertainOutcomeError` and is never replayed.
+        when Spotify says to wait two seconds or less (it was not executed); a longer or unknown
+        wait or an exhausted quota is reported. A mutating request that failed after it may have
+        been sent (a transport failure, an unreadable answer, a 502 or a 504) raises
+        `UncertainOutcomeError` and is never replayed.
 
         Raises:
             SpotifyError: Spotify answered with an error (`NoDeviceError` when no device is
                 active), a quota limit or could not be reached.
+            UncertainOutcomeError: a mutating request failed after it may have been sent.
             SpotifyLoginExpired: Spotify rejected the login even after a token refresh.
         """
         read = method == "GET"
@@ -178,16 +183,17 @@ class SpotifyApi:
                 continue
             if status == HTTPStatus.TOO_MANY_REQUESTS:
                 wait = self._rate_limit_wait(method, path, response)
-                if waited or wait > MAX_RETRY_AFTER_S:
-                    seconds = math.ceil(wait)
-                    msg = (
-                        "Spotify's request limit was reached; try again in "
-                        f"{seconds} second{'' if seconds == 1 else 's'}"
-                    )
-                    raise SpotifyError(msg, status=status)
+                if wait is None or waited or wait > MAX_RETRY_AFTER_S:
+                    raise SpotifyError(self._limit_message(wait), status=status)
                 waited = True
                 self._sleep(wait)
                 continue
+            if not read and status in _UPSTREAM_TIMEOUTS:
+                log.warning("Spotify %s %s: %s after the command was sent", method, path, status)
+                msg = (
+                    "Spotify did not answer after the command was sent; it may or may not have run"
+                )
+                raise UncertainOutcomeError(msg)
             return self._parse(method, path, response)
 
     @staticmethod
@@ -215,8 +221,20 @@ class SpotifyApi:
         code = reason if isinstance(reason, str) and _REASON.fullmatch(reason) else ""
         return code, message[:_DETAIL_CHARS] if isinstance(message, str) else ""
 
-    def _rate_limit_wait(self, method: str, path: str, response: httpx.Response) -> float:
-        """Return how long Spotify wants us to wait after a 429.
+    @staticmethod
+    def _limit_message(wait: float | None) -> str:
+        """Say how long to wait after a 429 that is not retried, or that it is unknown."""
+        if wait is None:
+            return "Spotify's request limit was reached; how long to wait is unknown"
+        seconds = math.ceil(wait)
+        plural = "" if seconds == 1 else "s"
+        return f"Spotify's request limit was reached; try again in {seconds} second{plural}"
+
+    def _rate_limit_wait(self, method: str, path: str, response: httpx.Response) -> float | None:
+        """Return how long Spotify wants us to wait after a 429, or None when it said something odd.
+
+        A missing or unreadable header means a short default wait; a number that is negative or
+        not finite (`inf`, `nan`) is an unknown wait.
 
         Raises:
             SpotifyError: the 429 says the developer quota is used up; waiting will not help.
@@ -227,9 +245,10 @@ class SpotifyApi:
             msg = "Spotify's daily developer quota is used up"
             raise SpotifyError(msg, status=response.status_code, reason=reason)
         try:
-            return max(0.0, float(response.headers["Retry-After"]))
+            wait = float(response.headers["Retry-After"])
         except KeyError, ValueError:
             return DEFAULT_RETRY_AFTER_S
+        return wait if math.isfinite(wait) and wait >= 0 else None
 
     def _parse(self, method: str, path: str, response: httpx.Response) -> object:
         status = response.status_code

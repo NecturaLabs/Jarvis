@@ -15,7 +15,13 @@ import httpx
 import pytest
 
 from jarvis.config import SpotifyConfig
-from jarvis.operations import Operation, OperationError, UncertainOutcomeError
+from jarvis.operations import (
+    ArgumentError,
+    Operation,
+    OperationError,
+    UncertainOutcomeError,
+    validate_args,
+)
 from jarvis.policy import Origin
 from jarvis.secretfile import write_private_json
 from jarvis.spotify import ops as ops_module
@@ -431,6 +437,39 @@ def test_liked_songs_play_the_owners_saved_tracks_shuffled(tmp_path: Path) -> No
     assert not fake.calls("GET", "/search")
 
 
+def test_liked_songs_need_no_query(tmp_path: Path) -> None:
+    fake = FakeSpotify(saved=[_track("Song 1", "Night Circuit", "spotify:track:1")])
+    play = find_op(build_ops(fake, tmp_path), "spotify_play")
+
+    args = validate_args(play, {"kind": "liked"})
+    result = play.run(args)
+
+    assert args == {"kind": "liked"}
+    assert result.ok
+    assert fake.played == [{"uris": ["spotify:track:1"]}]
+
+
+@pytest.mark.parametrize("kind", ["track", "album", "artist", "playlist"])
+def test_every_other_kind_says_to_name_what_to_play(tmp_path: Path, kind: str) -> None:
+    fake = FakeSpotify()
+    play = find_op(build_ops(fake, tmp_path), "spotify_play")
+    args = validate_args(play, {"kind": kind})
+
+    assert play.prepare is not None
+    with pytest.raises(OperationError, match="say what to play"):
+        play.prepare(args)
+    with pytest.raises(OperationError, match="say what to play"):
+        play.run(args)
+    assert fake.requests == []
+
+
+def test_an_empty_query_is_still_refused_by_validation(tmp_path: Path) -> None:
+    play = find_op(build_ops(FakeSpotify(), tmp_path), "spotify_play")
+
+    with pytest.raises(ArgumentError, match="query must not be empty"):
+        validate_args(play, {"kind": "track", "query": " "})
+
+
 def test_liked_songs_with_nothing_saved_say_so(tmp_path: Path) -> None:
     fake = FakeSpotify()
 
@@ -555,6 +594,32 @@ def test_playlists_are_not_fetched_again_for_every_request(tmp_path: Path) -> No
     ops.play({"query": "gym", "kind": "playlist", "mine": True})
 
     assert len(fake.calls("GET", "/me/playlists")) == 1
+
+
+def test_a_public_playlist_request_fetches_the_owners_playlists_once(tmp_path: Path) -> None:
+    fake = FakeSpotify(
+        playlists=[{"name": "Chill", "uri": "spotify:playlist:chill"}],
+        search={"playlist": [{"name": "Gym Mix", "uri": "spotify:playlist:gym"}]},
+    )
+
+    result = build_ops(fake, tmp_path).play({"query": "Gym Mix", "kind": "playlist"})
+
+    assert result.ok
+    assert fake.played == [{"context_uri": "spotify:playlist:gym"}]
+    assert len(fake.calls("GET", "/me/playlists")) == 1
+
+
+def test_a_cached_miss_fetches_the_playlists_again_once(tmp_path: Path) -> None:
+    fake = FakeSpotify(
+        playlists=[{"name": "Chill", "uri": "spotify:playlist:chill"}],
+        search={"playlist": [{"name": "Gym Mix", "uri": "spotify:playlist:gym"}]},
+    )
+    ops = build_ops(fake, tmp_path)
+    ops.play({"query": "chill", "kind": "playlist", "mine": True})
+
+    ops.play({"query": "Gym Mix", "kind": "playlist"})
+
+    assert len(fake.calls("GET", "/me/playlists")) == 2
 
 
 def spotify_error(
@@ -1018,6 +1083,7 @@ def test_another_volume_refusal_keeps_its_error(tmp_path: Path) -> None:
 # --- The queue: no song twice (5) ---
 
 ALREADY_QUEUED = "That's already in the queue."
+QUEUED_LATELY = "I queued that a few minutes ago."
 
 
 def test_asking_for_the_same_song_twice_in_a_row_queues_it_once(tmp_path: Path) -> None:
@@ -1031,7 +1097,7 @@ def test_asking_for_the_same_song_twice_in_a_row_queues_it_once(tmp_path: Path) 
     assert first.ok
     assert "Low Tide" in first.text
     assert second.ok
-    assert second.text == ALREADY_QUEUED
+    assert second.text == QUEUED_LATELY
     assert second.origin is Origin.TOOL_STATUS
     assert fake.queued == ["spotify:track:lowtide"]
 
@@ -1044,7 +1110,8 @@ def test_a_later_request_inside_half_an_hour_is_still_a_repeat(tmp_path: Path) -
     fake.clock.now += 29 * 60
     again = ops.queue({"query": "low tide"})
 
-    assert again.text == ALREADY_QUEUED
+    assert again.ok
+    assert again.text == QUEUED_LATELY
     assert fake.queued == ["spotify:track:lowtide"]
 
 
@@ -1181,8 +1248,112 @@ def test_an_unreadable_queue_still_leaves_the_memory_of_what_was_added(tmp_path:
     second = ops.queue({"query": "low tide"})
 
     assert first.ok
-    assert second.text == ALREADY_QUEUED
+    assert second.text == QUEUED_LATELY
     assert fake.queued == ["spotify:track:lowtide"]
+
+
+def test_a_song_in_the_live_queue_and_one_queued_lately_are_told_apart(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": [LOW_TIDE]})
+    ops = build_ops(fake, tmp_path)
+    ops.queue({"query": "low tide"})
+
+    lately = ops.queue({"query": "low tide"})
+    fake.queue_items.append(LOW_TIDE)
+    live = ops.queue({"query": "low tide"})
+
+    assert fake.queued == ["spotify:track:lowtide"]
+    assert (lately.ok, lately.text, lately.origin) == (True, QUEUED_LATELY, Origin.TOOL_STATUS)
+    assert (live.ok, live.text, live.origin) == (True, ALREADY_QUEUED, Origin.TOOL_STATUS)
+
+
+def test_the_same_title_by_another_artist_is_a_different_song(tmp_path: Path) -> None:
+    stay_a = _track("Stay", "Glass Harbor", "spotify:track:a")
+    stay_b = _track("Stay", "Night Circuit", "spotify:track:b")
+    fake = FakeSpotify(search={"track": [stay_b]}, queue_items=[stay_a])
+
+    result = build_ops(fake, tmp_path).queue({"query": "Stay", "artist": "Night Circuit"})
+
+    assert result.text.startswith("Queued 1 song(s)")
+    assert fake.queued == ["spotify:track:b"]
+
+
+def test_the_same_title_by_another_artist_is_not_held_back_by_the_memory(tmp_path: Path) -> None:
+    stay_a = _track("Stay", "Glass Harbor", "spotify:track:a")
+    stay_b = _track("Stay", "Night Circuit", "spotify:track:b")
+    fake = FakeSpotify(
+        by_query={
+            ('track:"Stay" artist:"Glass Harbor"', "track"): [stay_a],
+            ('track:"Stay" artist:"Night Circuit"', "track"): [stay_b],
+        }
+    )
+    ops = build_ops(fake, tmp_path)
+
+    ops.queue({"query": "Stay", "artist": "Glass Harbor"})
+    again = ops.queue({"query": "Stay", "artist": "Night Circuit"})
+    repeat = ops.queue({"query": "Stay", "artist": "Glass Harbor"})
+
+    assert again.text.startswith("Queued 1 song(s)")
+    assert repeat.text == QUEUED_LATELY
+    assert fake.queued == ["spotify:track:a", "spotify:track:b"]
+
+
+def test_two_artists_songs_with_one_title_are_both_collected(tmp_path: Path) -> None:
+    tracks = [
+        _track("Stay", "Glass Harbor", "spotify:track:a"),
+        _track("Stay", "Night Circuit", "spotify:track:b"),
+        _track("Stay (Live)", "Night Circuit", "spotify:track:b-live"),
+    ]
+    fake = FakeSpotify(search={"track": tracks})
+
+    build_ops(fake, tmp_path).queue({"query": "Stay", "count": 3})
+
+    assert fake.queued == ["spotify:track:a", "spotify:track:b"]
+
+
+def test_a_version_by_the_same_artist_without_a_uri_is_the_same_song(tmp_path: Path) -> None:
+    def unlinked(name: str, artist: str, uri: str) -> dict[str, Any]:
+        return {**_track(name, artist, uri), "artists": [{"name": artist}]}
+
+    queued = unlinked("Low Tide", "Glass Harbor", "spotify:track:queued")
+    fake = FakeSpotify(
+        search={"track": [unlinked("Low Tide (Live)", "glass harbor", "spotify:track:live")]},
+        queue_items=[queued],
+    )
+    other = FakeSpotify(
+        search={"track": [unlinked("Low Tide", "Night Circuit", "spotify:track:cover")]},
+        queue_items=[queued],
+    )
+
+    same = build_ops(fake, tmp_path).queue({"query": "low tide"})
+    different = build_ops(other, tmp_path).queue({"query": "low tide"})
+
+    assert same.text == ALREADY_QUEUED
+    assert different.text.startswith("Queued 1 song(s)")
+
+
+def test_a_song_whose_outcome_is_unknown_is_remembered_as_queued(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": [LOW_TIDE]})
+    ops = build_ops(fake, tmp_path)
+    fake.script("POST", "/me/player/queue", httpx.ReadTimeout("slow"))
+
+    with pytest.raises(UncertainOutcomeError):
+        ops.queue({"query": "low tide"})
+    again = ops.queue({"query": "low tide"})
+
+    assert again.text == QUEUED_LATELY
+    assert len(fake.calls("POST", "/me/player/queue")) == 1
+
+
+def test_a_song_whose_outcome_is_unknown_part_way_is_remembered_too(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": _catalogue(6)})
+    ops = build_ops(fake, tmp_path)
+    fake.script("POST", "/me/player/queue", httpx.Response(204), httpx.ReadTimeout("slow"))
+
+    ops.queue({"query": "Night Circuit", "count": 3})
+    again = ops.queue({"query": "Night Circuit", "count": 2})
+
+    assert fake.queued == [f"spotify:track:{i}" for i in range(4)]
+    assert again.text.startswith("Queued 2 song(s)")
 
 
 def test_a_song_whose_queueing_failed_may_be_asked_for_again(tmp_path: Path) -> None:
@@ -1611,6 +1782,17 @@ def test_a_failed_refresh_is_tried_again_after_a_minute_not_a_period(tmp_path: P
     assert stop.waited == [REFRESH_RETRY_S, REFRESH_RETRY_S]
 
 
+def test_an_expired_login_is_not_retried_every_minute(tmp_path: Path) -> None:
+    ops, api = _failing_ops(FakeSpotify(top_artists=[GLASS_HARBOR]), tmp_path)
+    api.failure = SpotifyLoginExpired("expired")
+    stop = _Waits(rounds=2)
+
+    thread = ops.start_refresh(stop)
+    thread.join(timeout=5)
+
+    assert stop.waited == [SpotifyConfig().library_refresh_s] * 3
+
+
 # --- What goes over the wire, and what ships (9) ---
 
 
@@ -1806,7 +1988,7 @@ SHIPPED: list[tuple[str, str, bool, dict[str, Any]]] = [
                 "mine": {"type": "boolean"},
                 "query": {"maxLength": 120, "minLength": 1, "type": "string"},
             },
-            "required": ["query", "kind"],
+            "required": ["kind"],
             "type": "object",
         },
     ),
@@ -1879,6 +2061,8 @@ SHIPPED: list[tuple[str, str, bool, dict[str, Any]]] = [
 ]
 SUMMARIES: list[tuple[str, dict[str, Any], str]] = [
     ("spotify_play", {"kind": "track", "query": "Low Tide"}, "play the track Low Tide"),
+    ("spotify_play", {"kind": "liked"}, "play your liked songs"),
+    ("spotify_play", {"kind": "liked", "query": "my liked songs"}, "play your liked songs"),
     ("spotify_pause", {}, "pause the music"),
     ("spotify_resume", {}, "resume the music"),
     ("spotify_next", {}, "skip this track"),
