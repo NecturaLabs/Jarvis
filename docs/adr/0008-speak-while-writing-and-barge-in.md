@@ -1,6 +1,6 @@
 # ADR: Speak a reply while the model writes it, and let the owner speak over Jarvis
 
-**Status:** proposed
+**Status:** accepted
 **Date:** 2026-11-21
 
 ## Context and problem statement
@@ -53,7 +53,8 @@ For speaking over Jarvis:
 
 ## Decision outcome
 
-Proposed to the owner, built as described; the owner accepts it or chooses the stricter option above.
+Accepted on 2026-11-21. The owner asked for the open decisions to be researched and settled; the research
+is below.
 
 Speak finished sentences as they are written, and listen for the wake word while speaking, after checking
 that each of Jarvis's own sentences does not trigger it. The rules, all in code:
@@ -64,11 +65,16 @@ that each of Jarvis's own sentences does not trigger it. The rules, all in code:
   action already succeeded in this request; the claim check then decides on the whole reply as before.
   Sentence ends are a subset of the claim check's, so checking the pieces gives the same answer as checking
   the whole.
-- Once a tool call follows spoken words, nothing more of that message is spoken, the audio not yet heard is
-  dropped, and the audit log records `spoken_before_tool_call`. The same happens when the `no_action` call
-  turns out to be refused (its arguments are checked only once whole) or not alone; an exact copy of it,
-  which the agent drops, changes nothing. This relaxes #12's constraint: words that passed the claim check
-  may be heard before a call in the same message, or from a reply call that is then refused.
+- Once a tool call follows spoken words, nothing more of that message is spoken and the audit log records
+  `spoken_before_tool_call`. Sentences of the message's text already passed on play to their end, because
+  they passed the claim check and hushing them cut a word in half; a sentence that says something was done
+  (let through because an earlier action succeeded) is hushed at the call, as its own call may fail. A hush
+  also ends the sentence playing then, so a preamble in the same message can still be cut, and a short claim
+  that finished playing before the call began has been heard. Words of a `no_action` reply that turns
+  out to be refused (its arguments are checked only once whole) or is not the only call are dropped unless
+  already heard; an exact copy of the call, which the agent drops, changes nothing. This relaxes
+  #12's constraint: words that passed the claim check may be heard before a call in the same message, or
+  from a reply call that is then refused.
 - When the claim check challenges the whole reply, the sentences already heard stay heard and the corrected
   answer follows them.
 - A stream that ends without the server saying it is finished is a model failure, not a reply.
@@ -97,3 +103,27 @@ to 0.035 on the wake model (the threshold is 0.5), and only lines like "Hey, Jar
   the wake model at a level the direct check did not see; the owner's room check (a `local` test) decides.
 - The first model call still reads the whole prompt; a Strata engine that honours `strata_prefix` removes
   about 4.5 s from every request.
+
+## Research
+
+Read on 2026-11-21:
+
+- Pipecat and LiveKit Agents both speak text the model writes before a tool call, and on a barge-in keep
+  only the words the user heard
+  ([Pipecat](https://github.com/pipecat-ai/pipecat/blob/main/src/pipecat/processors/aggregators/llm_response_universal.py),
+  [LiveKit turns](https://docs.livekit.io/agents/logic/turns/)). LiveKit users report as a defect a preamble cut
+  off after its first word when the tool starts
+  ([thread, 2026-05-18](https://community.livekit.io/t/we-need-to-talk-about-pre-tool-call-speech/1152));
+  that is why the message's text now plays to its end.
+- OpenAI's voice guidance asks for one short sentence before a slow tool and "only say an action was
+  completed after the tool call succeeds", in the prompt only
+  ([voice prompting guide](https://developers.openai.com/api/docs/guides/voice-prompting)). Jarvis enforces
+  the same in code with the claim check. A Retell thread reports an agent that announced a transfer and
+  never ran it ([thread](https://community.retellai.com/t/agent-speaks-the-transfer-announcement-but-never-executes-the-transfer-tool/3487)),
+  the failure the hold prevents.
+- No framework documents wake-word barge-in. Practitioner projects lower the threshold during playback or
+  ignore the mic for a while after speech. Both make a real barge-in harder; Jarvis's per-sentence check
+  leaves the threshold as it is and only guards the sentences that score above it.
+- PipeWire's echo-cancel module removes what the PC plays from the microphone;
+  [configuration.md](../configuration.md#speakers-and-other-apps-speech) gives the setup. Setting it up is
+  the owner's choice, since it changes the PipeWire setup.

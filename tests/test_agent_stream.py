@@ -134,7 +134,7 @@ def test_a_claim_before_any_action_is_never_spoken_while_streaming() -> None:
     assert counter.runs == []
 
 
-def test_words_before_a_tool_call_stop_and_what_was_not_heard_is_dropped() -> None:
+def test_words_before_a_tool_call_stop_but_what_was_said_plays_to_its_end() -> None:
     counter = Counter()
     first = _call("pause")
     first["content"] = "Let me look. One moment."
@@ -144,11 +144,10 @@ def test_words_before_a_tool_call_stop_and_what_was_not_heard_is_dropped() -> No
 
     assert agent.handle("pause", ear.hooks()) == "Paused."
 
-    # "One moment." was not finished when the call began, so it is never said, and what was not
-    # heard yet is dropped as soon as the call begins, not once the whole call is written.
+    # "One moment." was not finished when the call began, so it is never said; "Let me look."
+    # passed the claim check, so it is heard to its end rather than cut off mid-word.
     assert ear.heard == ["Let me look.", "Paused."]
-    assert ear.hushes == 1
-    assert ear.hushed_at[0] < len(stream_pieces(first, model.piece))
+    assert ear.hushes == 0
     assert counter.runs == [{"op": "pause"}]
     assert "spoken_before_tool_call" in _events(audit)
 
@@ -320,7 +319,7 @@ def test_an_exact_copy_of_the_reply_call_does_not_cut_the_reply() -> None:
     assert ear.heard == ["Alpha one.", "Beta two.", "Gamma three."]
 
 
-def test_a_call_after_a_held_claim_still_drops_and_audits_what_was_said() -> None:
+def test_a_call_after_a_held_claim_never_says_the_claim_and_audits_what_was_said() -> None:
     counter = Counter()
     first = _call("pause")
     first["content"] = "Let me look. Paused it. One moment."
@@ -332,7 +331,7 @@ def test_a_call_after_a_held_claim_still_drops_and_audits_what_was_said() -> Non
 
     assert ear.heard[0] == "Let me look."
     assert "Paused it." not in ear.heard
-    assert ear.hushes == 1
+    assert ear.hushes == 0
     assert _events(audit).count("spoken_before_tool_call") == 1
 
 
@@ -379,3 +378,67 @@ def test_nothing_is_delivered_after_the_request_was_cancelled() -> None:
     agent.handle("talk", ear.hooks())
 
     assert ear.heard == []
+
+
+def test_a_claim_said_before_its_own_call_is_dropped_where_not_heard() -> None:
+    # An earlier action succeeded, so the claim was not held; its own call then fails, so the
+    # claim was not true: the speaker is hushed at the call, as for a reply that is not one.
+    counter = Counter()
+    second = _call("volume")
+    second["content"] = "Volume is set to thirty. One moment."
+    model = ScriptedModel([_call("pause"), second, _say("I could not change the volume.")])
+    ear = Ear(model)
+    agent, audit = _agent(
+        model, [counter.op("pause"), counter.op("volume", error=RuntimeError("down"))]
+    )
+
+    agent.handle("pause and set the volume to thirty", ear.hooks())
+
+    assert claims_action("Volume is set to thirty.")
+    assert ear.heard[0] == "Volume is set to thirty."
+    assert ear.hushes == 1
+    assert _events(audit).count("spoken_before_tool_call") == 1
+
+
+def test_words_before_a_lone_reply_call_are_heard_and_audited() -> None:
+    first = _call("no_action", {"reply": "Hello there."})
+    first["content"] = "Let me look. One moment."
+    model = ScriptedModel([first])
+    ear = Ear(model)
+    agent, audit = _agent(model, [])
+
+    assert agent.handle("hello", ear.hooks()) == "Hello there."
+
+    assert ear.heard == ["Let me look.", "Hello there."]
+    assert ear.hushes == 0
+    assert _events(audit).count("spoken_before_tool_call") == 1
+
+
+def test_words_before_a_refused_reply_call_stay_heard_and_are_audited_once() -> None:
+    bad = _call("no_action")
+    bad["content"] = "Let me look. One moment."
+    bad["tool_calls"][0]["function"]["arguments"] = '{"reply": "Hello there.", "x": 1}'
+    model = ScriptedModel([bad, _call("no_action", {"reply": "Hi."})])
+    ear = Ear(model)
+    agent, audit = _agent(model, [])
+
+    assert agent.handle("hello", ear.hooks()) == "Hi."
+
+    assert ear.heard == ["Let me look.", "Hi."]
+    assert ear.hushes == 0
+    assert _events(audit).count("spoken_before_tool_call") == 1
+
+
+def test_a_claim_before_a_lone_reply_call_is_hushed_and_the_reply_still_heard() -> None:
+    counter = Counter()
+    second = _call("no_action", {"reply": "All set."})
+    second["content"] = "Volume is set to thirty. One moment."
+    model = ScriptedModel([_call("pause"), second])
+    ear = Ear(model)
+    agent, audit = _agent(model, [counter.op("pause")])
+
+    assert agent.handle("pause", ear.hooks()) == "All set."
+
+    assert ear.heard == ["Volume is set to thirty.", "All set."]
+    assert ear.hushes == 1
+    assert _events(audit).count("spoken_before_tool_call") == 1
