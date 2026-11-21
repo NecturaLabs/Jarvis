@@ -704,3 +704,70 @@ def test_a_pc_request_said_during_the_chime_of_another_is_not_taken() -> None:
     _run(loop)
 
     assert [origin for _text, origin in agent.calls] == [Origin.PC_AUDIO]
+
+
+@dataclass
+class WindowWake:
+    """Like the real wake model: fires on the third of three wake frames; reset clears them."""
+
+    seen: list[int] = field(default_factory=list[int])
+
+    def heard(self, frame: NDArray[np.int16]) -> bool:
+        self.seen = [*self.seen[-2:], int(frame[0])]
+        return self.seen == [3, 4, 5]
+
+    def reset(self) -> None:
+        self.seen = []
+
+
+def test_a_pc_wake_heard_after_the_mics_still_marks_the_request_pc_audio() -> None:
+    """The PC stream finishes the second wake word two frames after the mic does."""
+    first, second, third = (np.full(FRAME, value, dtype=np.int16) for value in (3, 4, 5))
+    clock = Clock()
+    pc_woke = threading.Event()
+    pc_second = threading.Event()
+    holder: list[VoiceLoop] = []
+    agent = Agent()
+    pc = PcAudio(
+        first,
+        second,
+        third,
+        SPEECH,
+        pc_woke.set,
+        first,
+        until(lambda: bool(holder) and holder[0].state is State.CAPTURE),
+        second,
+        third,
+        pc_second.set,
+        SPEECH,
+        SPEECH,
+        *[SILENCE] * 5,
+    )
+    mic = Mic(
+        until(pc_woke.is_set),
+        clock.advance(3.0),
+        WAKE,
+        until(pc_second.is_set),
+        SPEECH,
+        SPEECH,
+        *[SILENCE] * 10,
+    )
+    loop = VoiceLoop(
+        agent,
+        mic,
+        Wake(),
+        Vad(),
+        Speaker(),
+        CFG,
+        lambda _samples: "pause the music",
+        pc=PcListener(pc, WindowWake(), Vad()),
+        transcribe_answer=lambda _samples: "yes",
+        names=("Jarvis",),
+        clock=clock,
+        pc_retry_s=0,
+    )
+    holder.append(loop)
+
+    _run(loop)
+
+    assert [origin for _text, origin in agent.calls] == [Origin.PC_AUDIO]
