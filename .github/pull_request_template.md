@@ -1,26 +1,52 @@
-<!-- Title: type(scope): summary, at most 72 characters (Conventional Commits). One focused change per PR; split a
-refactor from a behavior change. Self-review the diff before asking for review, and edit this body whenever the change
-does. -->
+<!--
+One focused change per pull request; a refactor goes in its own. The title takes commit-subject
+form, `type(scope): summary` (CONTRIBUTING.md, Commit messages). Edit this body whenever the change does.
+-->
 
 ## Summary
-<!-- What changed and why, in a few lines a reader understands without the diff: the problem, the fix, any decision
-or shortcoming a reviewer should know. -->
+
+<!-- What was wrong or missing, what this does about it and why. Name any decision or shortcoming
+     a reviewer should know about. -->
 
 ## Issue
-<!-- Refs #N. "Closes #N" closes the issue only when this merges into the default branch; after a merge into any other
-branch, close it by hand with its evidence. No tracked issue: "None: <why>". -->
+
+<!-- Closes #N when this completes the issue's acceptance criteria, Refs #N when it does part of
+     it, or None: <why>. -->
 
 ## Review focus
-<!-- Where to look hardest (risky logic, security, a judgment call) and what is safe to skim (generated or mechanical
-changes). -->
+
+<!-- Where to look hardest (risky logic, security, a judgment call), and what is safe to skim. -->
 
 ## Verification
-<!-- What ran and what it showed, written here: counts, results, numbers, the lines that matter. Do not point at
-scratch folders: they do not last. Attach screenshots or paste the figures. -->
-- Sync: `uv sync --frozen`
-- Lint and types: `uv run .lint/check.sh`
-- Tests: `uv run pytest -q`
-- Local tests (this PC, with the owner for audio): `uv run pytest -m local`
 
-## Not verified
-<!-- What was not run or seen, and why. Write "nothing" only when every applicable check above ran. -->
+<!-- What you ran, what you saw, and what you could not check. Write the results here: counts,
+     numbers, the lines that matter. "Tests pass" alone is not enough. -->
+
+- Ran:
+- Saw:
+- Could not check, and why: <!-- "nothing" only when every applicable check ran. Tests marked `local` need
+  real hardware and never run in CI; say if your change touches what they cover. -->
+
+## Visible change
+
+<!-- For a change to the chat window, a command's output or the docs a reader sees: paste before and
+     after text or a screenshot. Never commit one taken only for a pull request. If nothing visible
+     changes, one line is enough:
+     No visible change: <why> -->
+
+## Audio
+
+<!-- If the change plays, records or listens to sound, say how it was kept silent (for example
+     PIPEWIRE_REMOTE=/nonexistent PULSE_SERVER=unix:/nonexistent), or write "No audio change". -->
+
+## Checks
+
+- [ ] `uv run .lint/check.sh` passes
+- [ ] `uv run pytest -q` passes
+- [ ] Tool operations are tested, including a refused and an unconfirmed case
+- [ ] Docs updated where affected: `README.md`, `docs/configuration.md`, `docs/models.md`, `docs/plan.md`,
+      an ADR if a decision changed, and `CHANGELOG.md` (Unreleased)
+- [ ] New dependency, model or voice: licence checked and compatible with GPL-3.0-or-later
+- [ ] No tokens, recordings, personal data or personal paths
+- [ ] Every commit is signed off (`git commit -s`)
+- [ ] Plain wording: no filler, praise or restatement; the summary leads with what changed and why
