@@ -8,6 +8,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- `jarvis chat` is redesigned after Claude Code's terminal interface: a welcome card, each request grouped
+  with its steps (`●`) and their results (`⎿`), a working line with Esc to stop the request, a yes-or-no
+  choice for questions (1 or y, 2, n or Esc), a `/` command menu, ↑ and ↓ for earlier requests, `?` for the
+  shortcuts, Ctrl+O for every step, and the terminal's own colours, so it follows the Omarchy theme. A typed
+  request shows at once.
 - Jarvis says the time on a 12-hour clock ("3:42 PM") by default; `clock.twelve_hour = false` keeps "15:42".
 - Jarvis starts speaking sooner. Each sentence of a reply is spoken as soon as the model has written it and
   synthesized while the one before plays. The silence before the first word is cut from 0.23 s to 0.03 s. A

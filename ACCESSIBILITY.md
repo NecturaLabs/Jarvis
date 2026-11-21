@@ -21,7 +21,7 @@ page says what it offers today, what it does not, and where the gaps are tracked
 
 - `jarvis chat` opens a terminal window where you type requests and read everything Jarvis does, live:
   what you said, what it did, what it refused and what it replied, as text, whether the request was typed or
-  spoken. A question that needs a yes is answered by typing.
+  spoken. A question that needs a yes opens a choice: 1 or y for yes, 2, n or Esc for no.
 - `jarvis ask <text>` sends one typed request and prints the reply, with no audio device needed.
 - Jarvis still speaks its replies aloud in both cases; there is no setting to turn speech off yet.
 
@@ -29,15 +29,19 @@ page says what it offers today, what it does not, and where the gaps are tracked
 
 Jarvis has no pointer-only controls. Setup and every command run from the terminal
 ([README](README.md#everyday-commands)). In the chat window the cursor starts in the input line; Enter sends,
-`/help` lists the commands, `/clear` empties the window, and `/quit` or Ctrl+Q leaves.
+Esc stops a request, ↑ and ↓ bring back earlier requests, `/` lists the commands (Tab completes one), `?` on an
+empty line shows the shortcuts, Ctrl+O shows every step, Ctrl+L empties the window, and `/quit` or Ctrl+Q
+leaves.
 
 ## The chat window
 
 - The window is a terminal application (Textual), so it uses your terminal's font, size, colours and
   zoom, and works with a terminal screen reader. Whether a given reader announces new lines as they arrive
   has not been tested.
-- Colour only reinforces meaning: each line starts with a label ("You:", "Jarvis:", "PC audio:", "not done:",
-  "refused") and the status line is text.
+- The window uses the terminal's own colours (an ANSI theme), so it follows the Omarchy theme.
+- Colour only reinforces meaning. A request starts with `❯` and says who asked ("you, typed", "you, by
+  voice", "PC audio:"); each step and the reply start with `●`, and a step's result sits under it after `⎿`.
+  Words, not colour, say when something was refused, not done or failed, and the status line is text.
 - Text from outside, such as song names and PC speech, is shown as plain characters, with control
   characters removed.
 
