@@ -291,7 +291,8 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
 
 
 def _strata(cfg: config.Config) -> StrataModel:
-    return StrataModel(cfg.model, read_api_key(strata_key_file()) or "")
+    local = cfg.model.model_copy(update={"base_url": cfg.model_base_url()})
+    return StrataModel(local, read_api_key(strata_key_file()) or "")
 
 
 def cmd_status(_args: argparse.Namespace) -> int:

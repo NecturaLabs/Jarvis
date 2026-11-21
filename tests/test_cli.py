@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -49,3 +50,21 @@ def test_pc_audio_without_arguments_changes_nothing(
 
     assert main(["pc-audio"]) == 0
     assert not (tmp_path / "jarvis" / "config.toml").exists()
+
+
+def test_the_model_client_follows_the_strata_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    config.save(config.Config(strata=config.StrataConfig(port=9100)))
+    seen: list[str] = []
+
+    def fake_model(model: config.ModelConfig, _key: str) -> SimpleNamespace:
+        seen.append(model.base_url)
+        return SimpleNamespace(status=lambda: "unloaded")
+
+    monkeypatch.setattr(cli, "StrataModel", fake_model)
+
+    assert main(["status"]) == 0
+    assert seen == ["http://127.0.0.1:9100/v1"]
