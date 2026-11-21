@@ -7,7 +7,7 @@ gaps or files them as issues, and only then sets the area's date (UTC, `YYYY-MM-
 | Area | Held to | Last audit |
 |---|---|---|
 | Python code and packaging | Python 3.14 docs (docs.python.org/3.14), PEP 8, PEP 621, uv docs (docs.astral.sh/uv) | never |
-| Lint, types and formatting | Ruff docs (docs.astral.sh/ruff, 0.17.3), pyright configuration docs (1.1.412), agentic-setup `lint/python` | never |
+| Lint, types and formatting | Ruff docs (docs.astral.sh/ruff, 0.17.5), pyright configuration docs (1.1.414), agentic-setup `lint/python` | never |
 | Tests | pytest 9.2 docs (docs.pytest.org), agentic-setup `testing` skill | never |
 | Audio pipeline | PipeWire docs (docs.pipewire.org), python-sounddevice docs, LiveKit WakeWord README 2.1.3, Silero VAD README | never |
 | Voxtype integration | Voxtype `docs/INTEGRATIONS.md` and `CONFIGURATION.md` for the installed release | never |

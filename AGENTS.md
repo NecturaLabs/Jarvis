@@ -62,7 +62,11 @@ These hold on the maintainer's machine; elsewhere, use your own folders and keep
 
 - `feature/`, `bugfix/`, `docs/`, `chore/` … branches merge into `dev` (the working branch). `main` is the
   release branch: merge and push to it only when the owner asks. A pull request only when the owner asks for one.
-- Conventional Commits; push every commit on a non-release branch at once.
+- Conventional Commits; push every commit on a non-release branch at once. Commits are signed (the repository's
+  local git config holds the SSH signing key).
+- `dev` and `main` take only a commit that already passed CI (rulesets "CI for dev" and "CI for main"). Make the
+  merge commit locally, push it to the topic branch first (`git push origin HEAD:<topic>`), wait for CI there,
+  then push the same commit to `dev`.
 
 ## Open source
 
