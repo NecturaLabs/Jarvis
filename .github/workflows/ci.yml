@@ -2,7 +2,22 @@ name: CI
 
 on:
   push:
-    branches: [main, dev, "feature/**", "bugfix/**", "hotfix/**", "refactor/**", "docs/**", "test/**", "chore/**"]
+    # One prefix per branch type in CONTRIBUTING.md, so every branch is checked before its pull request.
+    branches:
+      - main
+      - dev
+      - "feature/**"
+      - "bugfix/**"
+      - "hotfix/**"
+      - "refactor/**"
+      - "docs/**"
+      - "test/**"
+      - "chore/**"
+      - "ci/**"
+      - "build/**"
+      - "perf/**"
+      - "style/**"
+      - "revert/**"
   pull_request:
     branches: [main, dev]
 
