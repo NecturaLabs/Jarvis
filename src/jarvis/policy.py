@@ -12,7 +12,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
 
 class OpClass(StrEnum):
@@ -117,19 +117,45 @@ def decide(
     return Decision(verdict, reason, cls)
 
 
-YES_WORDS = frozenset(
-    {"yes", "yeah", "yep", "yup", "sure", "confirm", "confirmed", "do it", "go ahead", "please do"}
+_YES = frozenset(
+    {
+        "yes",
+        "yeah",
+        "yep",
+        "yup",
+        "sure",
+        "ok",
+        "okay",
+        "confirm",
+        "confirmed",
+        "absolutely",
+        "definitely",
+        "do it",
+        "go ahead",
+        "go for it",
+        "please do",
+        "of course",
+    }
 )
+_BESIDE_A_YES = frozenset({"please", "thanks", "thank", "you", "then", "and", "that"})
+_ALLOWED = _BESIDE_A_YES | {word for phrase in _YES for word in phrase.split()}
+_LONGEST_YES = 6
 
 
-_SHORT_ANSWER_WORDS = 3
+def _spoken_words(text: str) -> list[str]:
+    return "".join(ch for ch in text.casefold() if ch.isalpha() or ch.isspace()).split()
 
 
-def is_yes(transcript: str) -> bool:
-    """Return True only for a clear spoken yes; anything else (or silence) is no."""
-    words = "".join(ch for ch in transcript.lower() if ch.isalpha() or ch.isspace()).split()
-    phrase = " ".join(words)
-    return bool(phrase) and (
-        phrase in YES_WORDS
-        or (len(words) <= _SHORT_ANSWER_WORDS and words[0] in YES_WORDS and "no" not in words)
-    )
+def is_yes(transcript: str, names: Iterable[str] = ()) -> bool:
+    """Return True only for a clear spoken yes; anything else (or silence) is no.
+
+    An answer counts only when it holds a yes and nothing but words that go with one, so "yes"
+    followed by any word this does not know ("yes, don't", "yeah, nah", "sure, not now") is a no.
+    `names` are what the assistant is called: "yes, Jarvis" is still a yes.
+    """
+    called = {word for name in names for word in _spoken_words(name)}
+    words = [word for word in _spoken_words(transcript) if word not in called]
+    if not words or len(words) > _LONGEST_YES or not _ALLOWED.issuperset(words):
+        return False
+    phrase = f" {' '.join(words)} "
+    return any(f" {yes} " in phrase for yes in _YES)

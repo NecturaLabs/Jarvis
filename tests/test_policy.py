@@ -1,8 +1,18 @@
+"""The decision table, the action identity and what counts as a spoken yes."""
+
 from dataclasses import dataclass
 
 import pytest
 
-from jarvis.policy import OpClass, Verdict, action_hash, decide, is_yes
+from jarvis.policy import (
+    TRUSTED_ORIGINS,
+    OpClass,
+    Origin,
+    Verdict,
+    action_hash,
+    decide,
+    is_yes,
+)
 
 
 @dataclass(frozen=True)
@@ -20,8 +30,12 @@ class _Op:
         (OpClass.SAFE, False, True, Verdict.RUN),
         (OpClass.CONFIRM, True, False, Verdict.CONFIRM),
         (OpClass.CONFIRM, True, True, Verdict.CONFIRM),
+        (OpClass.CONFIRM, False, True, Verdict.CONFIRM),
+        (OpClass.STRONG, True, False, Verdict.STRONG),
         (OpClass.STRONG, True, True, Verdict.STRONG),
+        (OpClass.STRONG, False, True, Verdict.STRONG),
         (OpClass.DENY, True, False, Verdict.DENY),
+        (OpClass.DENY, True, True, Verdict.DENY),
         (OpClass.DENY, False, True, Verdict.DENY),
     ],
 )
@@ -62,13 +76,83 @@ def test_action_hash_binds_operation_and_exact_arguments() -> None:
     assert base != action_hash("spotify_queue", {"query": "a", "kind": "track"})
 
 
-@pytest.mark.parametrize("said", ["yes", "Yes.", "yeah sure", "go ahead", "yep do it"])
+@pytest.mark.parametrize(
+    ("origin", "trusted"),
+    [
+        (Origin.SYSTEM, True),
+        (Origin.OWNER_SPEECH, True),
+        (Origin.TOOL_STATUS, True),
+        (Origin.PC_AUDIO, False),
+        (Origin.MODEL, False),
+        (Origin.SPOTIFY, False),
+        (Origin.WEB, False),
+        (Origin.FILE, False),
+    ],
+)
+def test_which_origins_are_trusted(origin: Origin, trusted: bool) -> None:
+    assert (origin in TRUSTED_ORIGINS) is trusted
+
+
+def test_every_origin_has_a_stated_trust() -> None:
+    # A new origin must be added to the table above, where it starts as untrusted.
+    assert len(Origin) == 8
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "yes",
+        "Yes.",
+        "Yeah, sure.",
+        "go ahead",
+        "yep do it",
+        "Yes, please.",
+        "okay",
+        "Sure, go ahead.",
+        "yes do it",
+        "Of course.",
+        "Yes, thank you.",
+        "do it",
+    ],
+)
 def test_clear_yes(said: str) -> None:
     assert is_yes(said)
 
 
+def test_the_assistants_name_does_not_spoil_a_yes() -> None:
+    assert is_yes("Yes, Jarvis.", names=("Jarvis",))
+    assert is_yes("Jarvis, go ahead", names=("Jarvis",))
+    assert not is_yes("Yes, Jarvis.")
+
+
 @pytest.mark.parametrize(
-    "said", ["", "no", "yes no", "no yes", "maybe", "yes but play something else instead"]
+    "said",
+    [
+        "",
+        "   ",
+        "no",
+        "yes no",
+        "no yes",
+        "maybe",
+        "yes but play something else instead",
+        "yeah nah",
+        "yes dont",
+        "Yes, don't.",
+        "yes not now",
+        "yeah nope",
+        "sure not really",
+        "yes cancel that",
+        "yes stop",
+        "yep wait",
+        "yes never",
+        "yes yes yes yes yes yes yes",
+        "please",
+        "do that",
+        "thank you",
+        "of course not",
+        "yes and no",
+        "Jarvis",
+    ],
 )
 def test_anything_else_is_no(said: str) -> None:
-    assert not is_yes(said)
+    assert not is_yes(said, names=("Jarvis",))
