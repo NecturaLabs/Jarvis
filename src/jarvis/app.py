@@ -282,6 +282,7 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
         limits=limits,
         memory_file=remembered,
         pictures=config.strata.pictures,
+        bypass_consent=config.boundaries.bypass_consent,
     )
     return Jarvis(
         agent, model, audit, ops, lambda: speech_hint(config, registry, ops.artist_names())

@@ -53,6 +53,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `boundaries.bypass_consent`, on by default (the owner's choice): Jarvis acts without asking for a yes,
+  including after outside text and for requests heard in PC audio; an operation set to `deny` is still
+  refused, and each bypassed question is audited. `jarvis consent ask` turns asking back on, `jarvis consent
+  bypass` off again.
 - `jarvis chat` shows pictures: ask to see something and Jarvis searches SearXNG's image category
   (`image_search`) and draws the best result in the window (`show_image`), with kitty's graphics protocol
   through textual-image 0.14.2 (new dependency, LGPL-3.0-or-later). A read page offers its own picture too.

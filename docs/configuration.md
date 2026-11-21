@@ -319,6 +319,16 @@ A file's text is data, like a web page: while it is in the conversation, side ef
 and so do the operations that send words off the PC (`web_search`, `reddit_search`, and `weather` or
 `time_now` for a named place), so a file's contents cannot leave in a search without you seeing it.
 
+## `[boundaries]`: whether Jarvis asks first
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `bypass_consent` | `true` | `true`, `false` | `true`: Jarvis never asks for a yes. Every action that would need one runs at once and is audited as run with consent bypassed: `confirm` and `strong` actions, side effects after outside or file text, searches while file text is in the conversation, and requests heard in PC audio. An operation set to `deny` is still refused. `false`: Jarvis asks as described below. `jarvis consent ask` or `jarvis consent bypass` switches it and restarts the voice service. |
+
+With consent bypassed, text from a web page, a file, a picture or a call's audio can steer actions with no
+question in between. Turn asking on (`jarvis consent ask`) before letting Jarvis read pages or listen to PC
+audio you do not trust.
+
 ## `[boundaries.classes]`
 
 A table from operation name to a class: `safe` (runs), `confirm` (needs your spoken yes), `strong`

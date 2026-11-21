@@ -132,6 +132,8 @@ write_roots = ["~/Documents"]
 deny = []
 
 [boundaries]
+# true: act without asking (deny still refuses); false: ask for a yes first. `jarvis consent ask|bypass`.
+bypass_consent = true
 
 # Per-operation classes: "safe", "confirm", "strong" or "deny". For example:
 # reddit_search = "deny"

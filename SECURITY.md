@@ -57,7 +57,10 @@ did not confirm. What exists today and what is in scope:
 
 - **Whose speech is whose.** Speech from the microphone is the owner's. Speech heard in PC audio (a call, a
   video) is someone else's: it is only listened to when the owner turns `listen_to_pc` on, its side effects
-  need the owner's spoken yes, and it stays out of the owner's conversation history. With
+  need the owner's spoken yes, and it stays out of the owner's conversation history. Everything in this
+  list that asks for a yes asks only with `boundaries.bypass_consent = false`; the default, `true` (the
+  owner's choice), runs such actions without asking and audits each as bypassed. That is configured
+  behaviour, not a vulnerability. With
   `audio.confirm_blocks_on_pc_speech` on (the default), a yes does not count if voices were heard in PC
   audio while Jarvis waited for it. See
   [ADR 0003](docs/adr/0003-pc-audio-is-not-the-owner.md). Known limit: only the apps in `pc_audio_apps` are

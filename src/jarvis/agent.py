@@ -23,7 +23,7 @@ from jarvis.operations import (
     validate_args,
 )
 from jarvis.pictures import PICTURE_TOKENS
-from jarvis.policy import TRUSTED_ORIGINS, Origin, Verdict, action_hash, decide
+from jarvis.policy import TRUSTED_ORIGINS, Decision, Origin, Verdict, action_hash, decide
 from jarvis.sentences import sentence_end
 
 if TYPE_CHECKING:
@@ -582,6 +582,7 @@ class Agent:
         limits: Limits | None = None,
         memory_file: Path | None = None,
         pictures: bool = False,
+        bypass_consent: bool = False,
     ) -> None:
         """Wire the agent to its model, operations, prompt, audit log and the owner's classes.
 
@@ -591,6 +592,8 @@ class Agent:
         may take before the owner hears a second waiting line. `memory_file` keeps the
         conversation across sessions: it is read now and written after every request.
         `pictures` says whether the model can see pictures (Strata's picture reader is on).
+        With `bypass_consent` (`boundaries.bypass_consent`) nothing is asked: an action that
+        would need a yes runs, and is audited as run with consent bypassed; `deny` still refuses.
         """
         super().__init__()
         self._model = model
@@ -611,6 +614,7 @@ class Agent:
         self._names = tuple(names)
         self._still_waiting_s = still_waiting_s
         self._pictures = pictures
+        self._bypass_consent = bypass_consent
 
     def _memory_budget(self) -> int:
         """Return the room for the conversation: the setting, within what the window leaves.
@@ -1123,6 +1127,7 @@ class Agent:
             untrusted_in_context=tainted,
             private_in_context=private,
         )
+        decision, consent = self._consent(decision)
         stopped = _REFUSALS.get(decision.verdict)
         if stopped is None and op.prepare is not None:
             bound = self._attempt(op.prepare, op, args, asked_for)
@@ -1138,6 +1143,7 @@ class Agent:
             action=digest,
             verdict=decision.verdict.value,
             reason=decision.reason,
+            **consent,
         )
         if stopped is not None:
             return stopped
@@ -1160,6 +1166,18 @@ class Agent:
             **shown,
         )
         return result
+
+    def _consent(self, decision: Decision) -> tuple[Decision, dict[str, str]]:
+        """Return the decision to act on, and the audit fields of a question that was bypassed.
+
+        With consent bypassed, a verdict that would ask (`confirm`, `strong`) runs; `deny` holds.
+        """
+        if not self._bypass_consent or decision.verdict not in {Verdict.CONFIRM, Verdict.STRONG}:
+            return decision, {}
+        bypassed = Decision(
+            Verdict.RUN, f"{decision.reason}; not asked: consent is bypassed", decision.op_class
+        )
+        return bypassed, {"consent": "bypassed", "would_need": decision.verdict.value}
 
     def _question(self, op: Operation, args: dict[str, Any], turn: _Turn) -> str:
         summary = op.spoken_summary(args)
