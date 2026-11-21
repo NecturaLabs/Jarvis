@@ -12,8 +12,8 @@ maintainer's PC").
   The test suite does this for every test through `tests/conftest.py`; a script or a manual run must do it itself.
 - Safe anywhere: `uv run jarvis --help`, `uv run jarvis doctor`, `uv run jarvis status`, the test suite, `tools/check.sh`.
 - Touch the owner's config, services, Spotify account or screen: `jarvis setup` (it rewrites the config, the Strata
-  profile and the user units, and reloads systemd, even without `--enable`), `pc-audio on|off` (rewrites the config
-  and restarts the voice service), `start`, `stop`, `restart`, `run`, `ask`, `unload`, `spotify-login` and `chat`.
+  profile, the Strata API key and the user units, and reloads systemd, even without `--enable`), `pc-audio` with
+  any argument (`on`, `off`, `--apps` or `--all-output` rewrite the config and restart a running voice service), `start`, `stop`, `restart`, `run`, `ask`, `unload`, `spotify-login` and `chat`.
   Agents never run these against the owner's live setup; the owner does. To try one, point `XDG_CONFIG_HOME`,
   `XDG_STATE_HOME` and `XDG_DATA_HOME` at a temporary folder and cut the audio; `setup` and `pc-audio` still call
   `systemctl --user`, so do not run them even then.
