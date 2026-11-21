@@ -134,7 +134,7 @@ def test_a_claim_before_any_action_is_never_spoken_while_streaming() -> None:
     assert counter.runs == []
 
 
-def test_words_before_a_tool_call_stop_and_what_was_not_heard_is_dropped() -> None:
+def test_words_before_a_tool_call_stop_but_what_was_said_plays_to_its_end() -> None:
     counter = Counter()
     first = _call("pause")
     first["content"] = "Let me look. One moment."
@@ -144,11 +144,10 @@ def test_words_before_a_tool_call_stop_and_what_was_not_heard_is_dropped() -> No
 
     assert agent.handle("pause", ear.hooks()) == "Paused."
 
-    # "One moment." was not finished when the call began, so it is never said, and what was not
-    # heard yet is dropped as soon as the call begins, not once the whole call is written.
+    # "One moment." was not finished when the call began, so it is never said; "Let me look."
+    # passed the claim check, so it is heard to its end rather than cut off mid-word.
     assert ear.heard == ["Let me look.", "Paused."]
-    assert ear.hushes == 1
-    assert ear.hushed_at[0] < len(stream_pieces(first, model.piece))
+    assert ear.hushes == 0
     assert counter.runs == [{"op": "pause"}]
     assert "spoken_before_tool_call" in _events(audit)
 
@@ -320,7 +319,7 @@ def test_an_exact_copy_of_the_reply_call_does_not_cut_the_reply() -> None:
     assert ear.heard == ["Alpha one.", "Beta two.", "Gamma three."]
 
 
-def test_a_call_after_a_held_claim_still_drops_and_audits_what_was_said() -> None:
+def test_a_call_after_a_held_claim_never_says_the_claim_and_audits_what_was_said() -> None:
     counter = Counter()
     first = _call("pause")
     first["content"] = "Let me look. Paused it. One moment."
@@ -332,7 +331,7 @@ def test_a_call_after_a_held_claim_still_drops_and_audits_what_was_said() -> Non
 
     assert ear.heard[0] == "Let me look."
     assert "Paused it." not in ear.heard
-    assert ear.hushes == 1
+    assert ear.hushes == 0
     assert _events(audit).count("spoken_before_tool_call") == 1
 
 

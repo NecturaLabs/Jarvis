@@ -169,7 +169,9 @@ class _ReplyStream:
     `no_action` call that comes first. A sentence that says something was done waits for the
     whole answer unless an action already succeeded in this request (the claim check then
     decides on the whole reply). Once a tool call follows, nothing more of the message is
-    spoken and what was not yet heard is dropped.
+    spoken; sentences of its text already passed on still play to their end, as they passed the
+    claim check, but words of a `no_action` reply that turns out not to be the answer are
+    dropped where they were not yet heard.
     """
 
     def __init__(
@@ -223,11 +225,15 @@ class _ReplyStream:
         self._speak_ready()
 
     def stop(self) -> None:
-        """Speak no more of this message; drop what was passed on and not yet heard."""
+        """Speak no more of this message; drop the unheard words of a reply that is not one.
+
+        The message's own text plays to its end: cutting it at the call left half a word.
+        """
         self._held = True
         if self.spoken and not self.cut:
             self.cut = True
-            self._hooks.hush()
+            if self._source == "reply":
+                self._hooks.hush()
 
     def rest(self, reply: str) -> str:
         """Return the part of the final `reply` not spoken yet (all of it if it changed)."""

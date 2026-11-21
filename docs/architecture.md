@@ -156,7 +156,8 @@ line spoken while the agent works (`_cue`: a waiting line, a confirmation questi
 7. The reply is streamed (`StrataModel.chat` with `on_delta`): `agent._ReplyStream` passes each
    finished sentence (`sentences.sentence_end`) of the message's text, or of a first `no_action`
    call's `reply`, to `Hooks.speak` while the model writes on. It holds a sentence claiming an
-   action before any succeeded, and stops (and hushes) once a tool call follows.
+   action before any succeeded, and stops once a tool call follows: sentences of the text already
+   passed on play out, the unheard words of a `no_action` reply that is not the answer are hushed.
    `Agent._final` checks the whole reply that claims an action when no tool succeeded; it
    challenges the model once, then speaks a plain "I didn't manage that". `Agent._deliver` speaks
    what was not streamed yet. `voice.speakable` turns each part into plain words and
