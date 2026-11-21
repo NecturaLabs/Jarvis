@@ -1202,6 +1202,19 @@ def test_replacements_come_from_the_pool_so_the_count_is_still_met(tmp_path: Pat
     ]
 
 
+def test_several_songs_skip_another_version_of_one_already_in_the_queue(tmp_path: Path) -> None:
+    tracks = [
+        _track("Low Tide (Remastered 2011)", "Glass Harbor", "spotify:track:remaster"),
+        _track("Second Sun", "Glass Harbor", "spotify:track:sun"),
+        _track("Paper Boats", "Glass Harbor", "spotify:track:boats"),
+    ]
+    fake = FakeSpotify(search={"track": tracks}, queue_items=[LOW_TIDE])
+
+    build_ops(fake, tmp_path).queue({"query": "Glass Harbor", "count": 2})
+
+    assert fake.queued == ["spotify:track:sun", "spotify:track:boats"]
+
+
 def test_a_second_request_for_more_songs_by_the_artist_adds_different_ones(
     tmp_path: Path,
 ) -> None:
