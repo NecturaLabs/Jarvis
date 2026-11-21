@@ -58,7 +58,10 @@ FAILED_REMINDER = (
     "what went wrong, without saying that anything was done."
 )
 
-_LEAD = r"(?:(?:ok|okay|sure|alright|right|done|got it|certainly|of course)[,.!]? +)?"
+_LEAD = (
+    r"(?:(?:ok|okay|sure|sure thing|alright|right|done|got it|you got it|no problem|no worries|"
+    r"certainly|of course)[,.!]? +)?"
+)
 _SUBJECT = (
     r"(?:(?:i've|i have|i) (?:just |now )?|(?:i'm|i am) (?:now )?|"
     r"(?:it's|it is|it has been|that's|that is) (?:now )?|now |"
@@ -76,6 +79,18 @@ _DENIAL = re.compile(
     r"\b(?:not|no|nothing|never|cannot|unable|failed)\b|n't\b|\bcant\b|\bcouldnt\b",
     re.IGNORECASE,
 )
+_GERUND = (
+    r"(?i:playing|pausing|skipping|queueing|queuing|resuming|liking|saving|adding|changing|"
+    r"shuffling|repeating)"
+)
+# "Playing music is my specialty", "Skipping works by voice", "Playing, pausing and skipping":
+# a deed named as a thing, not reported as done. The verbs are lowercase on purpose, so a song
+# title ("Playing This Is Home") still reads as a claim.
+_DESCRIPTION = re.compile(
+    rf"^{_LEAD}{_GERUND}\b(?:[^,.;:!?]{{0,40}}?\b(?:is|are|was|were|works|work|can|will|"
+    rf"means|lets|makes|takes)\b|\s*,\s*{_GERUND}\b)|^(?i:added to (?:that|this))\b"
+)
+_COURTESY = re.compile(r"^no (?:problem|worries)\b[,.!]?\s*", re.IGNORECASE)  # not a denial
 _SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+|\n+")
 _ACTIONS_NOTE = re.compile(r"^\[actions taken:[^\]]*\]\s*", re.IGNORECASE)
 
@@ -83,13 +98,15 @@ _ACTIONS_NOTE = re.compile(r"^\[actions taken:[^\]]*\]\s*", re.IGNORECASE)
 def claims_action(reply: str) -> bool:
     """Return True when a reply says that something was done.
 
-    Only a sentence that opens with the deed counts ("Paused.", "I've queued three songs."), and
-    never one that denies anything, so an honest "I couldn't find that, so nothing was saved" or
-    "I can help with playing music" is left alone.
+    Only a sentence or clause that opens with the deed counts ("Paused.", "Sure thing, playing
+    it now."), and never a sentence that denies anything or names a deed as a thing, so an honest
+    "I couldn't find that, so nothing was saved" or "Playing music is my specialty" is left alone.
     """
     for sentence in _SENTENCE_END.split(reply.replace("\u2019", "'")):
         text = sentence.strip()
-        if text and not _DENIAL.search(text) and _CLAIM.match(text):
+        if not text or _DENIAL.search(_COURTESY.sub("", text)) or _DESCRIPTION.match(text):
+            continue
+        if any(_CLAIM.match(clause.strip()) for clause in text.split(",")):
             return True
     return False
 
