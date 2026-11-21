@@ -38,7 +38,7 @@ def test_a_plain_request_maps_to_its_operation(said: str, expected: Matched) -> 
         "Don't pause",
         "Play the song Skip",
         "What does pause do?",
-        "Pause. And then play Bad Omens",
+        "Pause. And then play Glass Harbor",
         "halt",
         "pause " * 30,
     ],

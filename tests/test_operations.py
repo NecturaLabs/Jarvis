@@ -37,9 +37,9 @@ PLAY = _op(
 
 
 def test_valid_arguments_are_cleaned() -> None:
-    args = {"query": "  bad omens ", "kind": "track", "percent": 40.0, "on": True}
+    args = {"query": "  low tide ", "kind": "track", "percent": 40.0, "on": True}
     assert validate_args(PLAY, args) == {
-        "query": "bad omens",
+        "query": "low tide",
         "kind": "track",
         "percent": 40,
         "on": True,
