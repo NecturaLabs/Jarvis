@@ -74,6 +74,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `docs/configuration.md` warns that its echo-cancel setup broke the PC's sound output when it was applied
+  on 2026-11-21, and says how to undo it.
 - Asked the time, Jarvis says only the time, and asked the date, only the date: the time tool no longer
   hands the model both, and the core prompt tells it to answer only what was asked.
 - The check that Jarvis does not claim an action no tool did now also catches "I set the volume to
