@@ -322,6 +322,16 @@ def test_the_answer_is_transcribed_without_the_vocabulary_hint() -> None:
     assert speaker.said[-1] == "approved"
 
 
+def test_a_yes_heard_in_a_blip_of_noise_is_a_no() -> None:
+    """Whisper hears "Okay." in a short noise the VAD let through: too little speech for a yes."""
+    agent = Agent(_asking("Should I?"))
+    speaker = Speaker()
+
+    _run(_loop(agent, Mic(*REQUEST, SPEECH, *[SILENCE] * 5), speaker, answer=lambda _s: "Okay."))
+
+    assert speaker.said == ["Should I?", "declined"]
+
+
 def test_yes_with_the_assistants_name_is_a_yes() -> None:
     agent = Agent(_asking("Should I?"))
     speaker = Speaker()

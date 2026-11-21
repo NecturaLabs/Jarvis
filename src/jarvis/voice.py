@@ -64,6 +64,9 @@ def spoken_question(text: str) -> str:
 
 
 FRAME_S = FRAME / RATE
+MIN_ANSWER_SPEECH_S = (
+    0.15  # two frames: a spoken "yes" holds about 0.3 s of speech, a click one frame
+)
 PRE_ROLL_FRAMES = 3
 WAKE_DEDUPE_S = 2.0
 SORRY_INTERNAL = "Sorry, something went wrong on my side."
@@ -134,6 +137,7 @@ class Utterance:
 
     samples: NDArray[np.int16] | None
     reason: str
+    speech_s: float = 0.0  # how long the VAD rated the audio as speech
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,8 +156,10 @@ def capture_utterance(
     started = False
     silent_s = 0.0
     waited_s = 0.0
+    speech_s = 0.0
     for frame in frames:
         speech = vad.speech_probability(frame) >= cfg.vad_threshold
+        speech_s += FRAME_S if speech else 0.0
         if not started:
             recent = [*recent[-(PRE_ROLL_FRAMES - 1) :], frame]
             waited_s += FRAME_S
@@ -166,10 +172,10 @@ def capture_utterance(
         kept.append(frame)
         silent_s = 0.0 if speech else silent_s + FRAME_S
         if silent_s >= cfg.end_silence_s:
-            return Utterance(np.concatenate(kept), "end of speech")
+            return Utterance(np.concatenate(kept), "end of speech", speech_s)
         if len(kept) * FRAME_S >= cfg.max_utterance_s:
-            return Utterance(np.concatenate(kept), "length cap")
-    return Utterance(np.concatenate(kept) if kept else None, "stream ended")
+            return Utterance(np.concatenate(kept), "length cap", speech_s)
+    return Utterance(np.concatenate(kept) if kept else None, "stream ended", speech_s)
 
 
 def keep_for_debugging(samples: NDArray[np.int16]) -> None:
@@ -289,6 +295,10 @@ class VoiceLoop:
         cfg = self._cfg.model_copy(update={"no_speech_timeout_s": self._cfg.confirm_window_s})
         heard = capture_utterance(self._mic.frames(), self._vad, cfg)
         if heard.samples is None:
+            return False
+        if heard.speech_s < MIN_ANSWER_SPEECH_S:
+            # Whisper turns a short noise into "Okay." or "Yes."; a spoken yes is longer.
+            log.info("the answer held %.2f s of speech; too little for a yes", heard.speech_s)
             return False
         try:
             answer = self._transcribe_answer(heard.samples)
