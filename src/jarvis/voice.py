@@ -69,6 +69,9 @@ def spoken_question(text: str) -> str:
 
 FRAME_S = FRAME / RATE
 MIN_ANSWER_SPEECH_S = 0.15  # two 80 ms frames; a click or knock is usually one
+# A request heard without the wake word must hold more speech than a cough, a click or a word
+# from the room: four 80 ms frames.
+MIN_FOLLOW_UP_SPEECH_S = 0.3
 PRE_ROLL_FRAMES = 3
 WAKE_DEDUPE_S = 2.0
 SORRY_INTERNAL = "Sorry, something went wrong on my side."
@@ -470,8 +473,9 @@ class VoiceLoop:
 
         Only after a reply to the owner's own voice has finished playing, and never while the
         owner dictates: speech in the window then is dictation, not a request. Speech heard while
-        PC audio also held speech is dropped, as it may be a voice from the PC. The wake word
-        inside the window starts a request the usual way.
+        PC audio also held speech is dropped, as it may be a voice from the PC. Speech too short
+        for a request (a cough, a click) is dropped untranscribed and the window listens on for
+        the rest of its time. The wake word inside the window starts a request the usual way.
         """
         window_s = self._cfg.follow_up_s
         if window_s <= 0 or not self._answered:
@@ -480,7 +484,36 @@ class VoiceLoop:
             log.info("no follow-up: the owner is dictating")
             return None
         self.state = State.FOLLOW_UP
+        pc_speech = self._pc_speech
+        started = time.perf_counter()
+        try:
+            woke_at, samples = self._listen_for_follow_up(window_s)
+        finally:
+            self.state = State.IDLE
+        if woke_at is not None:
+            log.info("wake word in the follow-up window")
+            return functools.partial(self.handle_wake, woke_at)
+        if samples is None or not self._keeps_follow_up(pc_speech):
+            return None
+        log.info("follow-up request without the wake word")
+        self._requests += 1
+        return functools.partial(
+            self._answer,
+            samples,
+            Origin.OWNER_SPEECH,
+            capture_s=time.perf_counter() - started,
+            follow_up=True,
+        )
+
+    def _listen_for_follow_up(
+        self, window_s: float
+    ) -> tuple[float | None, NDArray[np.int16] | None]:
+        """Listen through the window; return when the wake word was heard, or the request heard.
+
+        Speech too short for a request is dropped, and the rest of the window listened to.
+        """
         woke: list[float] = []
+        read = [0]  # frames read since the window opened
 
         def frames() -> Iterator[NDArray[np.int16]]:
             for frame in self._mic.frames():
@@ -489,28 +522,21 @@ class VoiceLoop:
                 if self._wake.heard(frame):
                     woke.append(self._clock())
                     return
+                read[0] += 1
                 yield frame
 
         self._wake.reset()
-        pc_speech = self._pc_speech
-        started = time.perf_counter()
-        cfg = self._cfg.model_copy(update={"no_speech_timeout_s": window_s})
-        heard = capture_utterance(frames(), self._vad, cfg)
-        self.state = State.IDLE
-        if woke:
-            log.info("wake word in the follow-up window")
-            return functools.partial(self.handle_wake, woke[0])
-        if heard.samples is None or not self._keeps_follow_up(pc_speech):
-            return None
-        log.info("follow-up request without the wake word")
-        self._requests += 1
-        return functools.partial(
-            self._answer,
-            heard.samples,
-            Origin.OWNER_SPEECH,
-            capture_s=time.perf_counter() - started,
-            follow_up=True,
-        )
+        while (left_s := window_s - read[0] * FRAME_S) > 0:
+            cfg = self._cfg.model_copy(update={"no_speech_timeout_s": left_s})
+            heard = capture_utterance(frames(), self._vad, cfg)
+            if woke:
+                return woke[0], None
+            if heard.samples is None:
+                return None, None
+            if heard.speech_s >= MIN_FOLLOW_UP_SPEECH_S:
+                return None, heard.samples
+            log.info("dropped %.2f s of speech in the follow-up window: too short", heard.speech_s)
+        return None, None
 
     def _keeps_follow_up(self, pc_speech: int) -> bool:
         """Whether speech heard in the follow-up window may be taken as a request.
