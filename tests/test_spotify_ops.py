@@ -15,7 +15,13 @@ import httpx
 import pytest
 
 from jarvis.config import SpotifyConfig
-from jarvis.operations import Operation, OperationError, UncertainOutcomeError
+from jarvis.operations import (
+    ArgumentError,
+    Operation,
+    OperationError,
+    UncertainOutcomeError,
+    validate_args,
+)
 from jarvis.policy import Origin
 from jarvis.secretfile import write_private_json
 from jarvis.spotify import ops as ops_module
@@ -431,6 +437,39 @@ def test_liked_songs_play_the_owners_saved_tracks_shuffled(tmp_path: Path) -> No
     assert not fake.calls("GET", "/search")
 
 
+def test_liked_songs_need_no_query(tmp_path: Path) -> None:
+    fake = FakeSpotify(saved=[_track("Song 1", "Night Circuit", "spotify:track:1")])
+    play = find_op(build_ops(fake, tmp_path), "spotify_play")
+
+    args = validate_args(play, {"kind": "liked"})
+    result = play.run(args)
+
+    assert args == {"kind": "liked"}
+    assert result.ok
+    assert fake.played == [{"uris": ["spotify:track:1"]}]
+
+
+@pytest.mark.parametrize("kind", ["track", "album", "artist", "playlist"])
+def test_every_other_kind_says_to_name_what_to_play(tmp_path: Path, kind: str) -> None:
+    fake = FakeSpotify()
+    play = find_op(build_ops(fake, tmp_path), "spotify_play")
+    args = validate_args(play, {"kind": kind})
+
+    assert play.prepare is not None
+    with pytest.raises(OperationError, match="say what to play"):
+        play.prepare(args)
+    with pytest.raises(OperationError, match="say what to play"):
+        play.run(args)
+    assert fake.requests == []
+
+
+def test_an_empty_query_is_still_refused_by_validation(tmp_path: Path) -> None:
+    play = find_op(build_ops(FakeSpotify(), tmp_path), "spotify_play")
+
+    with pytest.raises(ArgumentError, match="query must not be empty"):
+        validate_args(play, {"kind": "track", "query": " "})
+
+
 def test_liked_songs_with_nothing_saved_say_so(tmp_path: Path) -> None:
     fake = FakeSpotify()
 
@@ -555,6 +594,32 @@ def test_playlists_are_not_fetched_again_for_every_request(tmp_path: Path) -> No
     ops.play({"query": "gym", "kind": "playlist", "mine": True})
 
     assert len(fake.calls("GET", "/me/playlists")) == 1
+
+
+def test_a_public_playlist_request_fetches_the_owners_playlists_once(tmp_path: Path) -> None:
+    fake = FakeSpotify(
+        playlists=[{"name": "Chill", "uri": "spotify:playlist:chill"}],
+        search={"playlist": [{"name": "Gym Mix", "uri": "spotify:playlist:gym"}]},
+    )
+
+    result = build_ops(fake, tmp_path).play({"query": "Gym Mix", "kind": "playlist"})
+
+    assert result.ok
+    assert fake.played == [{"context_uri": "spotify:playlist:gym"}]
+    assert len(fake.calls("GET", "/me/playlists")) == 1
+
+
+def test_a_cached_miss_fetches_the_playlists_again_once(tmp_path: Path) -> None:
+    fake = FakeSpotify(
+        playlists=[{"name": "Chill", "uri": "spotify:playlist:chill"}],
+        search={"playlist": [{"name": "Gym Mix", "uri": "spotify:playlist:gym"}]},
+    )
+    ops = build_ops(fake, tmp_path)
+    ops.play({"query": "chill", "kind": "playlist", "mine": True})
+
+    ops.play({"query": "Gym Mix", "kind": "playlist"})
+
+    assert len(fake.calls("GET", "/me/playlists")) == 2
 
 
 def spotify_error(
@@ -1611,6 +1676,17 @@ def test_a_failed_refresh_is_tried_again_after_a_minute_not_a_period(tmp_path: P
     assert stop.waited == [REFRESH_RETRY_S, REFRESH_RETRY_S]
 
 
+def test_an_expired_login_is_not_retried_every_minute(tmp_path: Path) -> None:
+    ops, api = _failing_ops(FakeSpotify(top_artists=[GLASS_HARBOR]), tmp_path)
+    api.failure = SpotifyLoginExpired("expired")
+    stop = _Waits(rounds=2)
+
+    thread = ops.start_refresh(stop)
+    thread.join(timeout=5)
+
+    assert stop.waited == [SpotifyConfig().library_refresh_s] * 3
+
+
 # --- What goes over the wire, and what ships (9) ---
 
 
@@ -1806,7 +1882,7 @@ SHIPPED: list[tuple[str, str, bool, dict[str, Any]]] = [
                 "mine": {"type": "boolean"},
                 "query": {"maxLength": 120, "minLength": 1, "type": "string"},
             },
-            "required": ["query", "kind"],
+            "required": ["kind"],
             "type": "object",
         },
     ),
@@ -1879,6 +1955,8 @@ SHIPPED: list[tuple[str, str, bool, dict[str, Any]]] = [
 ]
 SUMMARIES: list[tuple[str, dict[str, Any], str]] = [
     ("spotify_play", {"kind": "track", "query": "Low Tide"}, "play the track Low Tide"),
+    ("spotify_play", {"kind": "liked"}, "play your liked songs"),
+    ("spotify_play", {"kind": "liked", "query": "my liked songs"}, "play your liked songs"),
     ("spotify_pause", {}, "pause the music"),
     ("spotify_resume", {}, "resume the music"),
     ("spotify_next", {}, "skip this track"),
