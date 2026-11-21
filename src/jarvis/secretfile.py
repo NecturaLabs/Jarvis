@@ -5,28 +5,18 @@ import json
 import os
 import secrets
 import stat
-import tempfile
-from pathlib import Path
+from typing import TYPE_CHECKING
 
+from jarvis.files import write_atomic
 
-def _fill(fd: int, data: str) -> None:
-    os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(data)
-        handle.flush()
-        os.fsync(handle.fileno())
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def write_private(path: Path, data: str) -> None:
     """Write `data` to `path` atomically with mode 0600, creating a 0700 parent."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    try:
-        _fill(fd, data)
-        Path(tmp).replace(path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    write_atomic(path, data, 0o600)
 
 
 def read_private(path: Path) -> str | None:
