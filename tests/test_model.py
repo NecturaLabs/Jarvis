@@ -208,3 +208,29 @@ def test_warming_gives_up_on_a_server_that_never_comes_up() -> None:
 
     assert model.warm(attempts=5) is False
     assert len(waits) == 5
+
+
+SYSTEM: dict[str, Any] = {"role": "system", "content": "be brief"}
+
+
+def _sent(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    seen: list[httpx.Request] = []
+    _model(_answering({"role": "assistant", "content": "hello"}, seen)).chat(messages, tools)
+    return cast("dict[str, Any]", json.loads(seen[0].content))
+
+
+def test_the_system_prompt_and_tools_are_marked_as_the_shared_prefix() -> None:
+    body = _sent([SYSTEM, *MESSAGES], TOOLS)
+
+    assert body["strata_prefix"] == {"messages": 1}
+
+
+@pytest.mark.parametrize(
+    ("messages", "tools"),
+    [([SYSTEM, *MESSAGES], []), (MESSAGES, TOOLS), ([SYSTEM], TOOLS)],
+    ids=["no tools", "no system prompt", "nothing after the system prompt"],
+)
+def test_no_shared_prefix_is_marked_when_it_is_not_the_usual_one(
+    messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+) -> None:
+    assert "strata_prefix" not in _sent(messages, tools)

@@ -168,6 +168,10 @@ class StrataModel:
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "required" if require_tool else "auto"
+            if len(messages) > 1 and messages[0].get("role") == "system":
+                # Strata keeps the system prompt and tools read once, pinned, so a request reads
+                # only its own words (an engine without pin support ignores the mark).
+                body["strata_prefix"] = {"messages": 1}
         limit = self.config.request_timeout_s
         if timeout_s is not None:
             limit = min(limit, timeout_s)
