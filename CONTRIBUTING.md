@@ -61,7 +61,8 @@ additional terms or conditions. Please sign off each commit (`git commit -s`) to
 [Developer Certificate of Origin](https://developercertificate.org/): that you wrote the change or otherwise
 have the right to submit it under this licence. GitHub signs off web commits only in a repository that turns
 on "Require contributors to sign off on web-based commits", and your fork may not have it on. Where it is
-off, use `git commit -s`, or `git rebase --signoff` for commits you already made.
+off, use `git commit -s`, or `git rebase --signoff` for commits you already made. CI checks the sign-off on
+pull requests from forks ([Commit messages](#commit-messages)).
 
 A pull request from a fork runs CI with a read-only token and no secrets, once a maintainer has approved the
 run.
@@ -194,6 +195,13 @@ in the imperative and at most 72 characters.
 - Breaking changes: `!` after the scope and a `BREAKING CHANGE:` footer.
 - Security fixes: the `security` scope or a `Security:` footer naming the advisory (`Security: GHSA-...`).
 - End each commit with a `Signed-off-by:` trailer (`git commit -s`).
+
+The "Pull request commits" check runs `tools/check_pr_commits.py` on every pull request: each commit except
+merges needs a subject in this form, and in a pull request from a fork each commit needs a `Signed-off-by:`
+trailer with its author's name and email. When it fails, it names each commit and how to fix it: `git commit
+--amend` for the last commit's subject, `git rebase -i <base>` for an earlier one, and `git commit --amend
+--no-edit --signoff` or `git rebase --signoff <base>` for a missing sign-off. Run it yourself with
+`python3 -B tools/check_pr_commits.py origin/dev HEAD --signoff required`.
 
 Example: `feat(spotify): queue several songs in one request`.
 

@@ -21,6 +21,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Pull requests check every commit's subject against the Conventional Commits types in `CONTRIBUTING.md`,
+  and, from a fork, each commit's DCO sign-off (`tools/check_pr_commits.py`).
 - CI lints the workflow files with actionlint (and shellcheck over their `run:` steps); `tools/check.sh` runs
   it too when `actionlint` is installed.
 - An Azure custom keyword model can be the wake word instead of LiveKit's: `audio.wake_engine = "azure"`

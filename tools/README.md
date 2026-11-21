@@ -11,4 +11,5 @@ a file here is not listed.
 | `idle_check.py` | Reads `/proc` for a running unit or PID and fails on CPU or GPU use or memory growth while idle. Starts and stops nothing. | the maintainer, `tests/test_idle_local.py` |
 | `install-hooks.sh` | Points this clone's `core.hooksPath` at `tools/hooks/` (`--uninstall` undoes it). | you, once, if you want the hooks |
 | `hooks/` | `pre-commit` runs lint and tests when the commit stages code or docs; `commit-msg` checks the Conventional Commits subject and warns on a missing sign-off. | git, after `install-hooks.sh` |
+| `check_pr_commits.py` | Every non-merge commit in a range has a Conventional Commits subject with a listed type, and, with `--signoff required`, a sign-off naming its author. | CI (`pull-request-commits.yml`), you |
 | `ci-tool-install.sh` | Pinned downloads of uv, the shell checkers and actionlint, verified by sha256. | CI |
