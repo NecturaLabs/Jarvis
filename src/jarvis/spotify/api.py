@@ -1,32 +1,65 @@
 """A small Spotify Web API client: playback, search, library and devices.
 
-A request whose result is unknown (a timeout after it was sent) raises `UncertainOutcomeError` and
-is never replayed. Quota errors (429) are reported, never retried in a loop.
+A request whose result is unknown (a failure after it may have been sent) raises
+`UncertainOutcomeError` and is never replayed. Reads are retried once on a transient failure;
+a rate limit is waited out only when it is short. Quota errors are reported, never looped on.
 """
 
+import logging
+import math
+import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any
+from itertools import starmap
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
 from jarvis.jsonutil import obj, objs
 from jarvis.operations import UncertainOutcomeError
+from jarvis.policy import Origin
+from jarvis.spotify.errors import NoDeviceError, SpotifyAuthError, SpotifyError, SpotifyLoginExpired
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from jarvis.spotify.auth import TokenStore
 
+log = logging.getLogger(__name__)
+
 API = "https://api.spotify.com/v1"
-SEARCH_LIMIT = 5
-
-
-class SpotifyError(Exception):
-    """Spotify refused or failed a request."""
-
-
-class NoDeviceError(SpotifyError):
-    """No Spotify player is available to play on."""
+SEARCH_LIMIT = 10
+PLAYLIST_PAGE = 50
+MAX_PLAYLISTS = 500
+RETRY_DELAY_S = 0.3
+MAX_RETRY_AFTER_S = 2.0
+DEFAULT_RETRY_AFTER_S = 1.0
+DEVICE_POLL_S = 1.0
+LIBRARY_TTL_S = 6 * 3600.0
+_LIBRARY_RETRY_S = 60.0
+# (part, path, parameters, keys to descend before `items`)
+_LIBRARY_PARTS: tuple[tuple[str, str, dict[str, Any], tuple[str, ...]], ...] = (
+    ("top_artists", "/me/top/artists", {"limit": 50}, ()),
+    ("followed", "/me/following", {"type": "artist", "limit": 50}, ("artists",)),
+    ("top_tracks", "/me/top/tracks", {"limit": 50}, ()),
+    ("recent", "/me/player/recently-played", {"limit": 50}, ()),
+)
+_DETAIL_CHARS = 160
+_REASON = re.compile(r"[A-Z_]{1,40}")
+_NO_DEVICE = "NO_ACTIVE_DEVICE"
+_QUOTA = "QUOTA_EXCEEDED"
+_GATEWAY_ERRORS = frozenset(
+    {HTTPStatus.BAD_GATEWAY, HTTPStatus.SERVICE_UNAVAILABLE, HTTPStatus.GATEWAY_TIMEOUT}
+)
+# Failures after which a request may already have reached Spotify.
+_MAY_HAVE_BEEN_SENT = (
+    httpx.ReadTimeout,
+    httpx.ReadError,
+    httpx.RemoteProtocolError,
+    httpx.WriteError,
+    httpx.WriteTimeout,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,16 +72,58 @@ class Device:
     is_active: bool
 
 
+@dataclass(frozen=True, slots=True)
+class SearchPage:
+    """One page of search hits: the real items, and how many entries Spotify returned.
+
+    Spotify may return null entries; `returned` counts them, so the next page starts at
+    `offset + returned`.
+    """
+
+    items: list[dict[str, Any]]
+    returned: int
+
+
+@dataclass(slots=True)
+class _LibraryCache:
+    parts: dict[str, list[dict[str, Any]]] = field(default_factory=dict[str, list[dict[str, Any]]])
+    result: dict[str, list[dict[str, Any]]] | None = None
+    loaded_at: float | None = None
+
+
 class SpotifyApi:
     """Calls the Web API with the owner's token."""
 
-    def __init__(self, tokens: TokenStore, http: httpx.Client | None = None) -> None:
-        """Use `tokens` for auth; `http` is injectable for tests."""
+    def __init__(
+        self,
+        tokens: TokenStore,
+        http: httpx.Client | None = None,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+        library_ttl_s: float = LIBRARY_TTL_S,
+    ) -> None:
+        """Use `tokens` for auth; `http`, `sleep` and `clock` are injectable for tests.
+
+        `library_ttl_s` is how long `library()` keeps its answer.
+        """
         super().__init__()
         self._tokens = tokens
         self._http = http or httpx.Client(
             base_url=API, timeout=httpx.Timeout(10.0, connect=5.0), trust_env=False
         )
+        self._sleep = sleep
+        self._clock = clock
+        self._library_ttl_s = library_ttl_s
+        self._library = _LibraryCache()
+
+    def ensure_login(self) -> None:
+        """Make sure there is a valid access token, refreshing it if it is about to expire.
+
+        It fails with `SpotifyAuthError` when there is no usable login or the refresh fails
+        (`SpotifyLoginExpired` when Spotify no longer accepts the stored one).
+        """
+        self._tokens.access_token()
 
     def request(
         self,
@@ -60,13 +135,21 @@ class SpotifyApi:
     ) -> object:
         """Send one request, refreshing the token once on 401.
 
+        A GET is retried once on a transport error or a 502, 503 or 504. A 429 is retried once
+        when Spotify says to wait two seconds or less (it was not executed); a longer wait or an
+        exhausted quota is reported. A mutating request that failed after it may have been sent
+        raises `UncertainOutcomeError` and is never replayed.
+
         Raises:
             SpotifyError: Spotify answered with an error (`NoDeviceError` when no device is
                 active), a quota limit or could not be reached.
-            UncertainOutcomeError: a mutating request timed out after it was sent.
+            SpotifyLoginExpired: Spotify rejected the login even after a token refresh.
         """
-        for attempt in (1, 2):
-            token = self._tokens.access_token(force_refresh=attempt == 2)  # ruff: ignore[magic-value-comparison]
+        read = method == "GET"
+        force = refreshed = retried = waited = False
+        while True:
+            token = self._tokens.access_token(force_refresh=force)
+            force = False
             try:
                 response = self._http.request(
                     method,
@@ -75,40 +158,96 @@ class SpotifyApi:
                     json=json,
                     headers={"Authorization": f"Bearer {token}"},
                 )
-            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                msg = f"could not reach Spotify: {exc}"
-                raise SpotifyError(msg) from exc
-            except httpx.TimeoutException as exc:
-                if method == "GET":
-                    msg = "Spotify did not answer in time"
-                    raise SpotifyError(msg) from exc
-                msg = "Spotify did not answer in time after the command was sent"
-                raise UncertainOutcomeError(msg) from exc
             except httpx.HTTPError as exc:
-                msg = f"Spotify request failed: {exc}"
-                raise SpotifyError(msg) from exc
-            if response.status_code == HTTPStatus.UNAUTHORIZED and attempt == 1:
+                if read and not retried:
+                    retried = True
+                    self._sleep(RETRY_DELAY_S)
+                    continue
+                raise self._transport_failure(method, path, exc, read=read) from exc
+            status = response.status_code
+            if status == HTTPStatus.UNAUTHORIZED:
+                if refreshed:
+                    log.warning("Spotify %s %s: 401 again after a token refresh", method, path)
+                    msg = "Spotify rejected the login; log in again: run `jarvis spotify-login`"
+                    raise SpotifyLoginExpired(msg, status=status)
+                refreshed = force = True
                 continue
-            return self._parse(response)
-        msg = "Spotify rejected the login; run `jarvis spotify-login` again"
-        raise SpotifyError(msg)
+            if read and not retried and status in _GATEWAY_ERRORS:
+                retried = True
+                self._sleep(RETRY_DELAY_S)
+                continue
+            if status == HTTPStatus.TOO_MANY_REQUESTS:
+                wait = self._rate_limit_wait(method, path, response)
+                if waited or wait > MAX_RETRY_AFTER_S:
+                    seconds = math.ceil(wait)
+                    msg = (
+                        "Spotify's request limit was reached; try again in "
+                        f"{seconds} second{'' if seconds == 1 else 's'}"
+                    )
+                    raise SpotifyError(msg, status=status)
+                waited = True
+                self._sleep(wait)
+                continue
+            return self._parse(method, path, response)
 
     @staticmethod
-    def _parse(response: httpx.Response) -> object:
+    def _transport_failure(
+        method: str, path: str, exc: httpx.HTTPError, *, read: bool
+    ) -> SpotifyError | UncertainOutcomeError:
+        log.warning("Spotify %s %s failed: %s", method, path, type(exc).__name__)
+        if not read and isinstance(exc, _MAY_HAVE_BEEN_SENT):
+            msg = "Spotify did not answer after the command was sent; it may or may not have run"
+            return UncertainOutcomeError(msg)
+        if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+            return SpotifyError("could not reach Spotify")
+        if isinstance(exc, httpx.TimeoutException):
+            return SpotifyError("Spotify did not answer in time")
+        return SpotifyError("Spotify request failed")
+
+    @staticmethod
+    def _error_info(response: httpx.Response) -> tuple[str, str]:
+        """Return Spotify's error `reason` (a bare code) and `message` (untrusted text)."""
+        try:
+            error = obj(obj(response.json()).get("error"))
+        except ValueError:
+            return "", ""
+        reason, message = error.get("reason"), error.get("message")
+        code = reason if isinstance(reason, str) and _REASON.fullmatch(reason) else ""
+        return code, message[:_DETAIL_CHARS] if isinstance(message, str) else ""
+
+    def _rate_limit_wait(self, method: str, path: str, response: httpx.Response) -> float:
+        """Return how long Spotify wants us to wait after a 429.
+
+        Raises:
+            SpotifyError: the 429 says the developer quota is used up; waiting will not help.
+        """
+        reason, _message = self._error_info(response)
+        log.warning("Spotify %s %s: 429 %s", method, path, reason)
+        if reason == _QUOTA:
+            msg = "Spotify's daily developer quota is used up"
+            raise SpotifyError(msg, status=response.status_code, reason=reason)
+        try:
+            return max(0.0, float(response.headers["Retry-After"]))
+        except KeyError, ValueError:
+            return DEFAULT_RETRY_AFTER_S
+
+    def _parse(self, method: str, path: str, response: httpx.Response) -> object:
         status = response.status_code
-        if status == HTTPStatus.TOO_MANY_REQUESTS:
-            msg = "Spotify's request limit was reached; try again later"
-            raise SpotifyError(msg)
-        if status == HTTPStatus.NOT_FOUND and "NO_ACTIVE_DEVICE" in response.text:
-            msg = "no active Spotify device"
-            raise NoDeviceError(msg)
         if status >= HTTPStatus.BAD_REQUEST:
-            try:
-                detail = obj(obj(response.json()).get("error")).get("message", "")
-            except ValueError:
-                detail = response.text[:120]
-            msg = f"Spotify answered {status}: {detail}"
-            raise SpotifyError(msg)
+            reason, message = self._error_info(response)
+            log.warning("Spotify %s %s: %s %s", method, path, status, reason)
+            no_device = reason == _NO_DEVICE or (
+                status == HTTPStatus.NOT_FOUND
+                and (_NO_DEVICE in response.text or "no active device" in message.casefold())
+            )
+            if no_device:
+                msg = "no active Spotify device"
+                raise NoDeviceError(msg, status=status, reason=reason)
+            if message:
+                msg = f"Spotify answered {status}: {message}"
+                raise SpotifyError(msg, origin=Origin.SPOTIFY, status=status, reason=reason)
+            msg = f"Spotify answered {status}"
+            raise SpotifyError(msg, status=status, reason=reason)
         if status == HTTPStatus.NO_CONTENT or not response.content:
             return None
         try:
@@ -131,61 +270,123 @@ class SpotifyApi:
         ]
 
     def wait_for_device(self, preferred: str, seconds: float) -> Device | None:
-        """Poll for a usable device (the preferred one by name if given) for up to `seconds`."""
-        deadline = time.monotonic() + seconds
+        """Poll for a usable device for up to `seconds`.
+
+        With a `preferred` name, other devices are passed over until the deadline: one of them is
+        then returned as a last resort (a phone must not win over the PC that is still starting).
+        """
+        deadline = self._clock() + seconds
         while True:
             found = pick_device(self.devices(), preferred)
-            if found or time.monotonic() >= deadline:
+            named = found is not None and found.name.casefold() == preferred.casefold()
+            if found and (named or not preferred):
                 return found
-            time.sleep(1.0)
+            if self._clock() >= deadline:
+                return found
+            self._sleep(DEVICE_POLL_S)
+
+    def transfer(self, device_id: str, *, play: bool) -> None:
+        """Move playback to `device_id`, starting it or not."""
+        self.request("PUT", "/me/player", json={"device_ids": [device_id], "play": play})
 
     def player(self) -> dict[str, Any] | None:
-        """Return the playback state, or None when nothing is playing anywhere."""
-        state = obj(self.request("GET", "/me/player"))
+        """Return the playback state, or None when nothing is playing anywhere.
+
+        Podcast episodes are included: without `additional_types` Spotify sends a null `item`.
+        """
+        state = obj(self.request("GET", "/me/player", params={"additional_types": "episode"}))
         return state or None
 
-    def search(self, query: str, kind: str, *, offset: int = 0) -> list[dict[str, Any]]:
+    def queue(self) -> list[dict[str, Any]]:
+        """Return what is playing and queued, the playing item first (Spotify caps the list)."""
+        data = obj(self.request("GET", "/me/player/queue"))
+        current = obj(data.get("currently_playing"))
+        return ([current] if current else []) + objs(data.get("queue"))
+
+    def search_page(self, query: str, kind: str, *, offset: int = 0) -> SearchPage:
         """Return one page of items of one kind (track, album, artist, playlist).
 
-        This app's Spotify access returns at most about five items a page and refuses a limit
-        above ten, so callers that need more page with `offset`.
+        Spotify allows at most ten per page; callers that need more continue at
+        `offset + returned`.
         """
         params = {"q": query, "type": kind, "limit": SEARCH_LIMIT, "offset": offset}
-        data = obj(self.request("GET", "/search", params=params))
-        return objs(obj(data.get(f"{kind}s")).get("items"))
+        raw = obj(self.request("GET", "/search", params=params))
+        entries = obj(raw.get(f"{kind}s")).get("items")
+        return SearchPage(objs(entries), _count(entries))
+
+    def search(self, query: str, kind: str, *, offset: int = 0) -> list[dict[str, Any]]:
+        """Return the items of one search page, without null entries."""
+        return self.search_page(query, kind, offset=offset).items
 
     def my_playlists(self) -> list[dict[str, Any]]:
-        """Return the owner's playlists (first 50)."""
-        return objs(obj(self.request("GET", "/me/playlists", params={"limit": 50})).get("items"))
+        """Return the owner's playlists, paging until there is no next page (up to 500)."""
+        playlists: list[dict[str, Any]] = []
+        offset = 0
+        while len(playlists) < MAX_PLAYLISTS:
+            params = {"limit": PLAYLIST_PAGE, "offset": offset}
+            data = obj(self.request("GET", "/me/playlists", params=params))
+            entries = data.get("items")
+            playlists += objs(entries)
+            if not data.get("next") or not entries:
+                break
+            offset += _count(entries)
+        return playlists[:MAX_PLAYLISTS]
 
-    def _optional(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
-        """GET something that only helps matching; a refusal (e.g. a missing scope) gives {}."""
+    def saved_tracks(self) -> list[dict[str, Any]]:
+        """Return up to 50 of the owner's saved ("liked") tracks, newest first."""
+        data = obj(self.request("GET", "/me/tracks", params={"limit": 50}))
+        tracks = [obj(item.get("track")) for item in objs(data.get("items"))]
+        return [t for t in tracks if t.get("uri")]
+
+    def _library_part(
+        self, name: str, path: str, params: dict[str, Any], inside: tuple[str, ...]
+    ) -> bool:
+        """Fetch one part of the library; on a failure keep the previous good list.
+
+        Raises:
+            SpotifyAuthError: the login is gone, which no old list can paper over.
+        """
         try:
-            return obj(self.request("GET", path, params=params))
+            data = obj(self.request("GET", path, params=params))
+        except SpotifyAuthError:
+            raise
         except SpotifyError:
-            return {}
+            return False
+        for key in inside:
+            data = obj(data.get(key))
+        self._library.parts[name] = objs(data.get("items"))
+        return True
 
-    def library(self) -> dict[str, list[dict[str, Any]]]:
-        """Return the owner's own artists, tracks and albums (top, followed, recently played)."""
-        top_artists = objs(self._optional("/me/top/artists", {"limit": 50}).get("items"))
-        followed = objs(
-            obj(
-                self._optional("/me/following", {"type": "artist", "limit": 50}).get("artists")
-            ).get("items")
-        )
-        top_tracks = objs(self._optional("/me/top/tracks", {"limit": 50}).get("items"))
-        recent = [
-            obj(i.get("track"))
-            for i in objs(self._optional("/me/player/recently-played", {"limit": 50}).get("items"))
-        ]
-        tracks = [t for t in top_tracks + recent if t.get("uri")]
-        artists = top_artists + followed + [a for t in tracks for a in objs(t.get("artists"))]
+    def library(self, *, max_age_s: float | None = None) -> dict[str, list[dict[str, Any]]]:
+        """Return the owner's own artists, tracks and albums (top, followed, recently played).
+
+        The answer is kept for `max_age_s` (default: the client's time to live); when one endpoint
+        fails, the previous good list for that part is kept. A lost login is raised.
+        """
+        ttl = self._library_ttl_s if max_age_s is None else max_age_s
+        now = self._clock()
+        cache = self._library
+        if cache.result is not None and cache.loaded_at is not None and now - cache.loaded_at < ttl:
+            return cache.result
+        loaded = list(starmap(self._library_part, _LIBRARY_PARTS))
+        parts = cache.parts
+        recent = [obj(i.get("track")) for i in parts.get("recent", [])]
+        tracks = [t for t in parts.get("top_tracks", []) + recent if t.get("uri")]
+        artists = parts.get("top_artists", []) + parts.get("followed", [])
+        artists += [a for t in tracks for a in objs(t.get("artists"))]
         albums = [obj(t.get("album")) for t in tracks]
-        return {
+        cache.result = {
             "artist": [a for a in artists if a.get("uri")],
             "track": tracks,
             "album": [a for a in albums if a.get("uri")],
         }
+        cache.loaded_at = now if any(loaded) else now - ttl + _LIBRARY_RETRY_S
+        return cache.result
+
+
+def _count(value: object) -> int:
+    """Return how many entries a JSON list holds, null ones included."""
+    return len(cast("list[object]", value)) if isinstance(value, list) else 0
 
 
 def pick_device(devices: list[Device], preferred: str) -> Device | None:
