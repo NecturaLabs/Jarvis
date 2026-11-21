@@ -5,18 +5,66 @@ unloaded after boot until the first real request. `jarvis.service` runs the voic
 """
 
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jarvis import paths
+from jarvis.config import ConfigError
+from jarvis.files import write_atomic
 
 if TYPE_CHECKING:
     from jarvis.config import Config
 
 STRATA_UNIT = "jarvis-strata.service"
 JARVIS_UNIT = "jarvis.service"
+
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_NEEDS_QUOTES = re.compile(r"""[\s"'\\;]""")
+_SETUP_ERROR = 2  # `jarvis run` exits with this when setup is missing; restarting cannot fix it
+
+
+def _checked(value: str, what: str) -> str:
+    """Return `value` when it is safe to write into a unit line.
+
+    Raises:
+        ConfigError: it holds a control character (a newline would add a directive) or ends in a
+            backslash (which would continue the line).
+    """
+    if _CONTROL.search(value):
+        msg = f"{what} holds a control character and cannot be written into a systemd unit"
+        raise ConfigError(msg)
+    if value.endswith("\\"):
+        msg = f"{what} ends in a backslash and cannot be written into a systemd unit"
+        raise ConfigError(msg)
+    return value
+
+
+def _quoted(text: str) -> str:
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def exec_word(value: str, what: str = "value") -> str:
+    """Return `value` as one word of an `ExecStart=` line (systemd.service(5), "Command lines").
+
+    Specifiers (`%`) and environment references (`$`) are doubled so they stay literal; a word with
+    whitespace, quotes, a backslash or a semicolon is double-quoted.
+    """
+    word = _checked(value, what).replace("%", "%%").replace("$", "$$")
+    return _quoted(word) if _NEEDS_QUOTES.search(word) or not word else word
+
+
+def _environment(name: str, value: str) -> str:
+    """Return an `Environment=` line (specifiers doubled; `$` is literal there)."""
+    assignment = f"{name}={_checked(value, name).replace('%', '%%')}"
+    return f"Environment={_quoted(assignment) if _NEEDS_QUOTES.search(assignment) else assignment}"
+
+
+def _path(value: object, what: str) -> str:
+    """Return a path-valued setting: the rest of the line, so spaces need no quotes."""
+    return _checked(str(value), what).replace("%", "%%")
 
 
 def strata_profile_file() -> Path:
@@ -65,8 +113,7 @@ def strata_profile(config: Config) -> dict[str, object]:
 def write_strata_profile(config: Config) -> Path:
     """Write the Strata run config (no secrets: the key comes from the unit's environment)."""
     path = strata_profile_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(strata_profile(config), indent=1) + "\n", encoding="utf-8")
+    write_atomic(path, json.dumps(strata_profile(config), indent=1) + "\n")
     return path
 
 
@@ -76,29 +123,46 @@ def _strata_bin(config: Config) -> str:
 
 
 def strata_unit(config: Config, key_file: Path) -> str:
-    """Return the `jarvis-strata.service` unit text."""
+    """Return the `jarvis-strata.service` unit text.
+
+    A value that cannot be written safely into a unit (a control character in it) is a ConfigError.
+    """
     s = config.strata
+    condition = (
+        f"ConditionPathExists={_path(s.model_file, 'model_file')}\n"
+        if s.model_file != Path()
+        else ""
+    )
+    start = " ".join(
+        [
+            exec_word(_strata_bin(config), "strata executable"),
+            "serve --profile",
+            exec_word(str(strata_profile_file()), "profile file"),
+            "\\\n  --ready-file",
+            exec_word(str(strata_ready_file()), "ready file"),
+            "--quiet",
+        ]
+    )
+    memory = _path(s.memory_max, "memory_max")
     return f"""[Unit]
 Description=Strata model server for Jarvis (lazy load, idle unload)
 PartOf=graphical-session.target
 After=graphical-session.target
-ConditionPathExists={s.model_file}
-
+{condition}
 [Service]
 Type=simple
-Environment=STRATA_DATA_DIR={s.home}
-Environment=XDG_DATA_HOME={s.components_parent}
+{_environment("STRATA_DATA_DIR", str(s.home))}
+{_environment("XDG_DATA_HOME", str(s.components_parent))}
 Environment=PIPEWIRE_REMOTE=/nonexistent
 Environment=PULSE_SERVER=unix:/nonexistent
-EnvironmentFile={key_file}
-ExecStart={_strata_bin(config)} serve --profile {strata_profile_file()} \\
-  --ready-file {strata_ready_file()} --quiet
+EnvironmentFile={_path(key_file, "key file")}
+ExecStart={start}
 Restart=on-failure
 RestartSec=5
 RestartSteps=5
 RestartMaxDelaySec=120
-MemoryHigh={s.memory_max}
-MemoryMax={s.memory_max}
+MemoryHigh={memory}
+MemoryMax={memory}
 TimeoutStopSec=45
 
 [Install]
@@ -108,7 +172,7 @@ WantedBy=graphical-session.target
 
 def jarvis_unit() -> str:
     """Return the `jarvis.service` unit text (the voice loop)."""
-    exe = Path(sys.executable).parent / "jarvis"
+    exe = exec_word(str(Path(sys.executable).parent / "jarvis"), "jarvis executable")
     return f"""[Unit]
 Description=Jarvis voice agent
 PartOf=graphical-session.target
@@ -119,6 +183,7 @@ Wants={STRATA_UNIT}
 Type=simple
 ExecStart={exe} run
 Restart=on-failure
+RestartPreventExitStatus={_SETUP_ERROR}
 RestartSec=5
 RestartSteps=5
 RestartMaxDelaySec=120
@@ -136,12 +201,16 @@ def unit_dir() -> Path:
 
 
 def write_units(config: Config, key_file: Path) -> list[Path]:
-    """Write both unit files and return their paths."""
+    """Write both unit files and return their paths.
+
+    Both texts are rendered, and so checked, before the first file is written: a ConfigError leaves
+    the existing units untouched.
+    """
+    texts = ((STRATA_UNIT, strata_unit(config, key_file)), (JARVIS_UNIT, jarvis_unit()))
     directory = unit_dir()
-    directory.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
-    for name, text in ((STRATA_UNIT, strata_unit(config, key_file)), (JARVIS_UNIT, jarvis_unit())):
+    for name, text in texts:
         path = directory / name
-        path.write_text(text, encoding="utf-8")
+        write_atomic(path, text)
         written.append(path)
     return written

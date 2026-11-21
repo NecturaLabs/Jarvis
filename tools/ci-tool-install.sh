@@ -21,7 +21,7 @@ ci_fetch() {
   if [[ -f ${file} ]] && echo "${sha}  ${file}" | sha256sum -c --quiet >/dev/null 2>&1; then
     return 0
   fi
-  curl -fsSL --retry 5 --retry-all-errors "${url}" -o "${file}.part" || {
+  curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors "${url}" -o "${file}.part" || {
     rm -f "${file}.part"
     return 1
   }

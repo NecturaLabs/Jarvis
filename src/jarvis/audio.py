@@ -465,38 +465,46 @@ def voxtype_command(wav: Path, engine: str = "", model: str = "", prompt: str = 
     return [*cmd, "transcribe", str(wav)]
 
 
-def transcribe(
+def transcribe(  # ruff: ignore[too-many-arguments] - Voxtype's options plus a test seam
     samples: NDArray[np.int16],
     engine: str = "",
     model: str = "",
     prompt: str = "",
     timeout_s: float = 60.0,
+    *,
+    run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
 ) -> str:
     """Transcribe an utterance with `voxtype transcribe` on a private temporary WAV.
 
-    `prompt` hints Whisper with words it should expect (the owner's artist names).
+    `prompt` hints Whisper with words it should expect (the owner's artist names). `run` replaces
+    `subprocess.run` in tests.
 
     Raises:
-        AudioError: Voxtype failed or timed out.
+        AudioError: Voxtype is missing, could not be started with these options, failed or timed
+            out.
     """
     with tempfile.TemporaryDirectory(prefix="jarvis-") as tmp:
         wav = Path(tmp) / "utterance.wav"
         write_wav(wav, samples)
         try:
-            done = subprocess.run(
+            done = run(
                 voxtype_command(wav, engine, model, prompt),
                 capture_output=True,
-                text=True,
                 timeout=timeout_s,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
             msg = "transcription timed out"
             raise AudioError(msg) from exc
+        except (OSError, ValueError) as exc:
+            # ValueError: an argument the system cannot pass on (a NUL in the hint).
+            msg = f"voxtype could not be started: {exc}"
+            raise AudioError(msg) from exc
     if done.returncode != 0:
-        msg = f"voxtype transcribe failed ({done.returncode}): {done.stderr.strip()[-200:]}"
+        detail = done.stderr.decode("utf-8", errors="replace").strip()[-200:]
+        msg = f"voxtype transcribe failed ({done.returncode}): {detail}"
         raise AudioError(msg)
-    return parse_transcript(done.stdout)
+    return parse_transcript(done.stdout.decode("utf-8", errors="replace"))
 
 
 KOKORO_PREFIX = "kokoro:"
@@ -532,35 +540,56 @@ def make_synthesizer(
     return run
 
 
+def pw_play_command(rate: int) -> list[str]:
+    """Return the `pw-play` command for raw mono 16-bit PCM on standard input."""
+    return ["pw-play", "--raw", "--rate", str(rate), "--channels", "1", "--format", "s16", "-"]
+
+
+PLAY_GRACE_S = 10.0  # how long playback may run past the sound's own length before it is ended
+
+
 class Speaker:
     """Speaks through `pw-play` with a synthesizer from `make_synthesizer`."""
 
-    def __init__(self, synthesize: Callable[[str], tuple[bytes, int]]) -> None:
-        """Use `synthesize` for text to speech."""
+    def __init__(
+        self,
+        synthesize: Callable[[str], tuple[bytes, int]],
+        *,
+        player: Callable[[int], list[str]] = pw_play_command,
+        grace_s: float = PLAY_GRACE_S,
+    ) -> None:
+        """Use `synthesize` for text to speech; `player` builds the playback command for a rate."""
         super().__init__()
         self._synthesize = synthesize
+        self._player = player
+        self._grace_s = grace_s
         self._proc: subprocess.Popen[bytes] | None = None
-        self._lock = threading.Lock()
 
     def say(self, text: str) -> None:
-        """Speak `text` and return once playback has drained (or was stopped)."""
+        """Speak `text` and return once playback has drained (or was stopped).
+
+        A player that cannot be started or does not finish is an `AudioError`.
+        """
         pcm, rate = self._synthesize(text)
         if pcm:
             self._play(pcm, rate)
 
     def _play(self, pcm: bytes, rate: int) -> None:
-        cmd = ["pw-play", "--raw", "--rate", str(rate), "--channels", "1", "--format", "s16", "-"]
-        with self._lock:
-            self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            proc = self._proc
+        cmd = self._player(rate)
         try:
-            assert proc.stdin is not None  # ruff: ignore[assert]
-            proc.stdin.write(pcm)
-            proc.stdin.close()
-        except BrokenPipeError:
-            pass
-        proc.wait()
-        with self._lock:
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except OSError as exc:
+            msg = f"could not start {cmd[0]}: {exc}"
+            raise AudioError(msg) from exc
+        self._proc = proc
+        try:
+            proc.communicate(pcm, timeout=len(pcm) / (2 * rate) + self._grace_s)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            proc.communicate()
+            msg = f"{cmd[0]} did not finish playing"
+            raise AudioError(msg) from exc
+        finally:
             self._proc = None
 
     def chime(self) -> None:
@@ -575,7 +604,12 @@ class Speaker:
         self._play(pcm, rate)
 
     def stop(self) -> None:
-        """Stop speaking now."""
-        with self._lock:
-            if self._proc is not None:
-                self._proc.terminate()
+        """Stop speaking now.
+
+        Takes no lock, so it is safe from any thread, a signal handler included: it only signals
+        the player that is running at this moment, if there is one.
+        """
+        proc = self._proc
+        if proc is not None:
+            with contextlib.suppress(OSError):
+                proc.terminate()
