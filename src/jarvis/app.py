@@ -136,8 +136,11 @@ class SetupError(Exception):
     """Something setup provides is missing."""
 
 
-def build(config: Config) -> Jarvis:
+def build(config: Config, *, via: str | None = None) -> Jarvis:
     """Assemble the agent from the config.
+
+    `via` marks every audit event of this agent with where its requests come from ("chat",
+    "ask"); the voice service leaves it out.
 
     Raises:
         SetupError: the Spotify client ID or the Strata API key is missing.
@@ -154,7 +157,7 @@ def build(config: Config) -> Jarvis:
     ops = SpotifyOps(
         SpotifyApi(tokens, library_ttl_s=config.spotify.library_refresh_s), config.spotify
     )
-    audit = AuditLog(audit_file())
+    audit = AuditLog(audit_file(), tags={"via": via} if via else None)
     registry = Registry([*ops.operations(), no_action_operation()])
     agent = Agent(
         model,

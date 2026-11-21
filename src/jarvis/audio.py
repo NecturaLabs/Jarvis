@@ -599,6 +599,7 @@ class Speaker:
         self._player = player
         self._grace_s = grace_s
         self._proc: subprocess.Popen[bytes] | None = None
+        self._stopped = threading.Event()
 
     def say(self, text: str) -> None:
         """Speak `text` and return once playback has drained (or was stopped).
@@ -611,12 +612,17 @@ class Speaker:
 
     def _play(self, pcm: bytes, rate: int) -> None:
         cmd = self._player(rate)
+        if self._stopped.is_set():
+            return
         try:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
         except OSError as exc:
             msg = f"could not start {cmd[0]}: {exc}"
             raise AudioError(msg) from exc
         self._proc = proc
+        if self._stopped.is_set():  # a stop that came while the player was starting
+            with contextlib.suppress(OSError):
+                proc.terminate()
         try:
             proc.communicate(pcm, timeout=len(pcm) / (2 * rate) + self._grace_s)
         except subprocess.TimeoutExpired as exc:
@@ -639,11 +645,12 @@ class Speaker:
         self._play(pcm, rate)
 
     def stop(self) -> None:
-        """Stop speaking now.
+        """Stop speaking now and for good (Jarvis is shutting down).
 
-        Takes no lock, so it is safe from any thread, a signal handler included: it only signals
-        the player that is running at this moment, if there is one.
+        Takes no lock, so it is safe from any thread, a signal handler included: it signals the
+        player that is running at this moment, if there is one, and no player starts after it.
         """
+        self._stopped.set()
         proc = self._proc
         if proc is not None:
             with contextlib.suppress(OSError):

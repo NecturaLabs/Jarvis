@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 
 MAX_STEPS = 6
 MAX_SECONDS = 90.0
+COLD_LOAD_S = 180.0  # extra time when the model must load first (measured ~107 s while gaming)
 MIN_CALL_S = 1.0  # a model call always gets at least this long
 MAX_CALLS_PER_TURN = 8
 MAX_TOOL_TEXT = 1500
@@ -58,7 +59,10 @@ FAILED_REMINDER = (
     "what went wrong, without saying that anything was done."
 )
 
-_LEAD = r"(?:(?:ok|okay|sure|alright|right|done|got it|certainly|of course)[,.!]? +)?"
+_LEAD = (
+    r"(?:(?:ok|okay|sure|sure thing|alright|right|done|got it|you got it|no problem|no worries|"
+    r"certainly|of course)[,.!]? +)?"
+)
 _SUBJECT = (
     r"(?:(?:i've|i have|i) (?:just |now )?|(?:i'm|i am) (?:now )?|"
     r"(?:it's|it is|it has been|that's|that is) (?:now )?|now |"
@@ -76,6 +80,18 @@ _DENIAL = re.compile(
     r"\b(?:not|no|nothing|never|cannot|unable|failed)\b|n't\b|\bcant\b|\bcouldnt\b",
     re.IGNORECASE,
 )
+_GERUND = (
+    r"(?i:playing|pausing|skipping|queueing|queuing|resuming|liking|saving|adding|changing|"
+    r"shuffling|repeating)"
+)
+# "Playing music is my specialty", "Skipping works by voice", "Playing, pausing and skipping":
+# a deed named as a thing, not reported as done. The verbs are lowercase on purpose, so a song
+# title ("Playing This Is Home") still reads as a claim.
+_DESCRIPTION = re.compile(
+    rf"^{_LEAD}{_GERUND}\b(?:[^,.;:!?]{{0,40}}?\b(?:is|are|was|were|works|work|can|will|"
+    rf"means|lets|makes|takes)\b|\s*,\s*{_GERUND}\b)|^(?i:added to (?:that|this))\b"
+)
+_COURTESY = re.compile(r"^no (?:problem|worries)\b[,.!]?\s*", re.IGNORECASE)  # not a denial
 _SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+|\n+")
 _ACTIONS_NOTE = re.compile(r"^\[actions taken:[^\]]*\]\s*", re.IGNORECASE)
 
@@ -83,13 +99,15 @@ _ACTIONS_NOTE = re.compile(r"^\[actions taken:[^\]]*\]\s*", re.IGNORECASE)
 def claims_action(reply: str) -> bool:
     """Return True when a reply says that something was done.
 
-    Only a sentence that opens with the deed counts ("Paused.", "I've queued three songs."), and
-    never one that denies anything, so an honest "I couldn't find that, so nothing was saved" or
-    "I can help with playing music" is left alone.
+    Only a sentence or clause that opens with the deed counts ("Paused.", "Sure thing, playing
+    it now."), and never a sentence that denies anything or names a deed as a thing, so an honest
+    "I couldn't find that, so nothing was saved" or "Playing music is my specialty" is left alone.
     """
     for sentence in _SENTENCE_END.split(reply.replace("\u2019", "'")):
         text = sentence.strip()
-        if text and not _DENIAL.search(text) and _CLAIM.match(text):
+        if not text or _DENIAL.search(_COURTESY.sub("", text)) or _DESCRIPTION.match(text):
+            continue
+        if any(_CLAIM.match(clause.strip()) for clause in text.split(",")):
             return True
     return False
 
@@ -195,6 +213,7 @@ class _Turn:
     messages: list[dict[str, Any]]
     started: float
     cues: _Cues
+    limit_s: float = MAX_SECONDS
     foreign: bool = False
     untrusted: bool = False
     nudged: bool = False
@@ -328,12 +347,13 @@ class Agent:
     def _converse(self, hooks: Hooks, turn: _Turn) -> str:
         """Let the model work through the request within the step and time limits."""
         if self._model.is_loaded() is False:
+            turn.limit_s += COLD_LOAD_S
             turn.cues.start()
         try:
             for step in range(MAX_STEPS):
                 if hooks.cancelled():
                     return ""
-                if self._clock() - turn.started > MAX_SECONDS:
+                if self._clock() - turn.started > turn.limit_s:
                     return TOO_LONG
                 done = self._step(turn, hooks, step)
                 if done is not None:
@@ -354,7 +374,7 @@ class Agent:
                 turn.messages,
                 tools,
                 require_tool=not turn.actions,
-                timeout_s=max(MIN_CALL_S, MAX_SECONDS - (began - turn.started)),
+                timeout_s=max(MIN_CALL_S, turn.limit_s - (began - turn.started)),
             )
         except Exception as exc:  # ruff: ignore[blind-except] - any model failure becomes a spoken apology
             self._audit.record("model_error", error=str(exc)[:MAX_AUDIT_TEXT])
@@ -442,7 +462,7 @@ class Agent:
         if turn.calls > MAX_CALLS_PER_TURN:
             self._audit.record("tool_budget", limit=MAX_CALLS_PER_TURN)
             return Result("Error: too many actions in one request, so this was not run.", ok=False)
-        if self._clock() - turn.started > MAX_SECONDS:
+        if self._clock() - turn.started > turn.limit_s:
             return Result("Error: the request ran out of time, so this was not run.", ok=False)
         return self._run_call(call, hooks, turn, untrusted=untrusted)
 

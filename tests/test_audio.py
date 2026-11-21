@@ -296,8 +296,8 @@ def test_capture_sources_names_what_feeds_one_process() -> None:
 
 
 def _tone(byte: int) -> list[str]:
-    """A capture command that writes the same byte forever."""
-    return ["sh", "-c", f"tr '\\0' '\\{byte:03o}' </dev/zero"]
+    """A capture command that writes the same byte forever (exec: stopping it stops the writer)."""
+    return ["sh", "-c", f"exec tr '\\0' '\\{byte:03o}' </dev/zero"]
 
 
 def _value(byte: int) -> int:
@@ -555,6 +555,34 @@ def test_stop_cuts_speech_short(tmp_path: Path) -> None:
         assert stopped
     finally:
         _end(tmp_path / "pid")
+
+
+def test_a_stop_while_the_player_is_starting_still_ends_it(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pid"
+    speakers: list[Speaker] = []
+
+    def player(_rate: int) -> list[str]:
+        speakers[0].stop()  # the stop lands before the player is known to the speaker
+        return _endless_player(pid_file)
+
+    speaker = Speaker(lambda _text: (b"\0" * 4800, 24000), player=player)
+    speakers.append(speaker)
+    talking = threading.Thread(target=speaker.say, args=("hello",), daemon=True)
+    talking.start()
+    try:
+        assert _finishes(talking, 5)
+    finally:
+        _end(pid_file)
+
+
+def test_a_stopped_speaker_says_nothing_more(tmp_path: Path) -> None:
+    heard = tmp_path / "heard.raw"
+    speaker = _speaker(["sh", "-c", f"cat > {heard}"])
+
+    speaker.stop()
+    speaker.say("hello")
+
+    assert not heard.exists()
 
 
 def test_stop_with_nothing_playing_is_harmless() -> None:

@@ -21,6 +21,7 @@ dependencies = [
     "onnxruntime==1.32.0",
     "piper-tts==1.8.0",
     "pydantic==2.12.5",
+    "textual==8.2.8",
 ]
 
 [project.scripts]
