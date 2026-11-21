@@ -27,8 +27,12 @@ class ChatModel(Protocol):
         tools: list[dict[str, Any]],
         *,
         require_tool: bool = False,
+        timeout_s: float | None = None,
     ) -> dict[str, Any]:
-        """Return the assistant message; with `require_tool`, the model must call a tool."""
+        """Return the assistant message; with `require_tool`, the model must call a tool.
+
+        `timeout_s` caps how long this one call may wait (the time the request has left).
+        """
         ...
 
     def is_loaded(self) -> bool | None:
@@ -116,8 +120,12 @@ class StrataModel:
         tools: list[dict[str, Any]],
         *,
         require_tool: bool = False,
+        timeout_s: float | None = None,
     ) -> dict[str, Any]:
         """Send one chat completion with thinking off; retry once after a dropped connection.
+
+        The call waits at most `timeout_s` (when given) and never longer than the configured
+        request timeout.
 
         Raises:
             ModelError: the server refused, failed or stayed unreachable.
@@ -133,9 +141,12 @@ class StrataModel:
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "required" if require_tool else "auto"
+        limit = self.config.request_timeout_s
+        if timeout_s is not None:
+            limit = min(limit, timeout_s)
         for attempt in (1, 2):
             try:
-                with self._client(self.config.request_timeout_s) as client:
+                with self._client(limit) as client:
                     response = client.post("/chat/completions", json=body)
             except httpx.TransportError as exc:
                 if attempt == 2 or isinstance(exc, httpx.ReadTimeout):  # ruff: ignore[magic-value-comparison]

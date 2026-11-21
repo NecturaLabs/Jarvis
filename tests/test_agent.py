@@ -66,6 +66,7 @@ class ScriptedModel:
     loaded: bool | None = True
     error: Exception | None = None
     during: Callable[[], object] = lambda: None
+    timeouts: list[float | None] = field(default_factory=list[float | None])
 
     def chat(
         self,
@@ -73,7 +74,9 @@ class ScriptedModel:
         tools: list[dict[str, Any]],
         *,
         require_tool: bool = False,
+        timeout_s: float | None = None,
     ) -> dict[str, Any]:
+        self.timeouts.append(timeout_s)
         self.tools_offered.append(len(tools))
         self.seen.append([dict(m) for m in messages])
         self.required.append(require_tool)
@@ -717,6 +720,24 @@ def test_a_call_is_not_started_once_the_request_is_out_of_time() -> None:
 
     assert agent.handle("queue two", NO_CONFIRM) == TOO_LONG
     assert len(counter.runs) == 1
+
+
+def test_each_model_call_may_take_only_the_time_the_request_has_left() -> None:
+    clock = Clock()
+    counter = Counter()
+
+    def slow() -> None:
+        clock.now += 30
+
+    model = ScriptedModel([_call("next"), _say("Skipped.")])
+    agent, _ = _agent(model, [counter.op("next", then=slow)], clock=clock)
+
+    agent.handle("skip", NO_CONFIRM)
+
+    assert model.timeouts == [
+        pytest.approx(agent_module.MAX_SECONDS),
+        pytest.approx(agent_module.MAX_SECONDS - 30),
+    ]
 
 
 def test_a_request_stops_after_the_step_limit() -> None:

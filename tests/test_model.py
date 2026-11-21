@@ -1,7 +1,7 @@
 """The Strata client: what it sends, and that a broken answer never reaches the agent."""
 
 import json
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -153,3 +153,17 @@ def test_a_retry_waits_for_the_server_with_the_injected_sleep() -> None:
     assert model.chat(MESSAGES, TOOLS) == {"content": "back"}
     assert naps == [1.0, 1.0]
     assert len(gets) == 3
+
+
+def _read_timeout(request: httpx.Request) -> float:
+    timeout = request.extensions["timeout"]
+    assert isinstance(timeout, dict)
+    return float(cast("dict[str, float]", timeout)["read"])
+
+
+@pytest.mark.parametrize(("asked", "sent"), [(None, 120.0), (3.5, 3.5), (999.0, 120.0)])
+def test_a_call_waits_no_longer_than_the_turn_has_left(asked: float | None, sent: float) -> None:
+    seen: list[httpx.Request] = []
+    _model(_answering({"content": "hi"}, seen)).chat(MESSAGES, TOOLS, timeout_s=asked)
+
+    assert _read_timeout(seen[0]) == pytest.approx(sent)
