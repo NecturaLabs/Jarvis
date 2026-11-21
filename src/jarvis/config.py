@@ -165,9 +165,13 @@ class Config(_Section):
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
     boundaries: BoundariesConfig = Field(default_factory=BoundariesConfig)
 
+    def strata_url(self) -> str:
+        """Return the URL of the local Strata server, on its configured port."""
+        return f"http://127.0.0.1:{self.strata.port}/v1"
+
     def model_base_url(self) -> str:
         """Return the local model server's URL: the explicit setting, else Strata's own port."""
-        return self.model.base_url or f"http://127.0.0.1:{self.strata.port}/v1"
+        return self.model.base_url or self.strata_url()
 
 
 class ConfigError(Exception):
@@ -193,10 +197,22 @@ def load(path: Path | None = None) -> Config:
         msg = f"{path}: schema_version {version} is not supported (expected {SCHEMA_VERSION})"
         raise ConfigError(msg)
     try:
-        return Config.model_validate(raw)
+        cfg = Config.model_validate(raw)
     except ValueError as exc:
         msg = f"{path}: {exc}"
         raise ConfigError(msg) from exc
+    return _without_derived_url(cfg)
+
+
+def _without_derived_url(cfg: Config) -> Config:
+    """Drop a saved model URL that only repeats the one derived from Strata's port.
+
+    Older versions saved the derived URL; kept, it would pin the model to that port when the
+    Strata port is changed later.
+    """
+    if cfg.model.base_url != cfg.strata_url():
+        return cfg
+    return cfg.model_copy(update={"model": cfg.model.model_copy(update={"base_url": ""})})
 
 
 _TOML_ESCAPES = {

@@ -112,6 +112,23 @@ def test_the_model_url_is_derived_from_the_strata_port_unless_set() -> None:
     assert explicit.model_base_url() == "http://127.0.0.1:9000/v1"
 
 
+def test_a_saved_url_that_only_repeats_the_strata_port_follows_it_later(tmp_path: Path) -> None:
+    """Older versions saved the derived URL; it must not pin the model to the old port."""
+    cfg = _load_text(
+        tmp_path, '[model]\nbase_url = "http://127.0.0.1:8080/v1"\n[strata]\nport = 8080\n'
+    )
+    moved = cfg.model_copy(update={"strata": cfg.strata.model_copy(update={"port": 9100})})
+
+    assert not cfg.model.base_url
+    assert moved.model_base_url() == "http://127.0.0.1:9100/v1"
+
+
+def test_a_saved_url_for_another_port_is_kept(tmp_path: Path) -> None:
+    cfg = _load_text(tmp_path, '[model]\nbase_url = "http://127.0.0.1:9000/v1"\n')
+
+    assert cfg.model.base_url == "http://127.0.0.1:9000/v1"
+
+
 @pytest.mark.parametrize(
     "url",
     [
