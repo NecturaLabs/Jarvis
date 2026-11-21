@@ -13,20 +13,13 @@ import httpx
 
 from jarvis.jsonutil import obj, objs
 from jarvis.operations import UncertainOutcomeError
+from jarvis.spotify.errors import NoDeviceError, SpotifyError
 
 if TYPE_CHECKING:
     from jarvis.spotify.auth import TokenStore
 
 API = "https://api.spotify.com/v1"
 SEARCH_LIMIT = 5
-
-
-class SpotifyError(Exception):
-    """Spotify refused or failed a request."""
-
-
-class NoDeviceError(SpotifyError):
-    """No Spotify player is available to play on."""
 
 
 @dataclass(frozen=True, slots=True)
