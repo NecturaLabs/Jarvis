@@ -8,6 +8,18 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- Jarvis remembers the conversation. Instead of the last 4 turns, forgotten after 5 minutes, it keeps as
+  much as fits a token budget (`agent.memory_tokens` 6,000 for speech, `chat.memory_tokens` 12,000 for the
+  chat) and has the model summarize the oldest turns when it outgrows it. Speech forgets after 30 idle
+  minutes; the chat never does and resumes its conversation when it opens again (`chat.resume`).
+- Replies are no longer cut. The model is told its length and capped in tokens (`agent.reply_tokens` 400,
+  `chat.reply_tokens` 2,048, was `model.max_tokens` 200); a reply that reaches the cap anyway is kept and
+  says so. A request may take more steps (speech 8 model calls and 12 tool calls, the chat 30 and 40 within
+  10 minutes; all in `[agent]` and `[chat]`), and a long one clears its oldest tool results to stay within
+  the context window.
+- The chat gets its own prompt: written replies in Markdown, sources as links. Speech keeps short spoken
+  replies.
+
 - `jarvis chat` is redesigned after Claude Code's terminal interface: a welcome card, each request grouped
   with its steps (`●`) and their results (`⎿`), a working line with Esc to stop the request, a yes-or-no
   choice for questions (1 or y, 2, n or Esc), a `/` command menu, ↑ and ↓ for earlier requests, `?` for the
@@ -25,6 +37,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   `strata.context` keeps its value; to change it, edit it and run `jarvis setup`.
 
 ### Added
+
+- Skills: Jarvis's own instructions for web research and game look-ups, listed in its prompt and read
+  through the safe `read_skill` operation before such a task.
 
 - Follow-up requests: the next request within `audio.follow_up_s` (6 s; 0 turns it off) of a spoken reply
   needs no wake word. It never opens while Voxtype dictation is recording or transcribing; a sound too

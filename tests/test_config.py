@@ -78,7 +78,22 @@ def test_shipped_defaults_are_the_safe_ones() -> None:
     assert cfg.audio.confirm_blocks_on_pc_speech is True
     assert cfg.audio.pc_audio_cooldown_s == pytest.approx(5.0)
     assert not cfg.model.base_url
-    assert cfg.model.max_tokens == 200
+    assert cfg.agent.reply_tokens == 400
+    assert cfg.chat.reply_tokens == 2048
+    assert cfg.chat.resume is True
+
+
+def test_a_saved_reply_cap_from_an_older_version_still_loads(tmp_path: Path) -> None:
+    cfg = _load_text(tmp_path, "[model]\nmax_tokens = 200\n")
+
+    assert cfg.agent.reply_tokens == 400
+
+
+@pytest.mark.parametrize("section", ["agent", "chat"])
+def test_the_reply_and_memory_limits_must_fit_their_ranges(tmp_path: Path, section: str) -> None:
+    for text in ("reply_tokens = 10", "max_steps = 0", "memory_tokens = -1"):
+        with pytest.raises(config.ConfigError):
+            _load_text(tmp_path, f"[{section}]\n{text}\n")
 
 
 def test_an_unknown_key_is_refused(tmp_path: Path) -> None:
@@ -89,8 +104,8 @@ def test_an_unknown_key_is_refused(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "[model]\nmax_tokens = 0\n",
-        "[model]\nmax_tokens = 5000\n",
+        "[agent]\nreply_tokens = 0\n",
+        "[chat]\nreply_tokens = 9000\n",
         "[model]\ntemperature = 3.0\n",
         "[strata]\nport = 80\n",
         "[audio]\nwake_threshold = 1.0\n",
@@ -216,8 +231,9 @@ def test_a_non_default_config_round_trips_with_the_new_keys(tmp_path: Path) -> N
         data_dir=Path("/data/with space/jarvis"),
         model=config.ModelConfig(
             base_url="http://localhost:9000/v1",
-            max_tokens=123,
         ),
+        agent=config.AgentConfig(reply_tokens=123, memory_idle_s=0),
+        chat=config.ChatConfig(max_steps=50, resume=False),
         strata=config.StrataConfig(memory_max="12G", port=9000),
         audio=config.AudioConfig(confirm_blocks_on_pc_speech=False, pc_audio_cooldown_s=12.5),
     )

@@ -219,6 +219,23 @@ def test_the_stream_cap_is_the_no_action_reply_cap() -> None:
     assert MAX_STREAMED_CHARS == app.MAX_REPLY_CHARS
 
 
+def test_the_stream_stops_at_the_reply_cap_of_the_registered_no_action() -> None:
+    sentence = "This is one sentence of a long answer."
+    reply = " ".join([sentence] * 20)
+    too_long = _call("no_action", {"reply": reply})
+    model = ScriptedModel([too_long, _say("Short.")])
+    ear = Ear(model)
+    registry = Registry([app.no_action_operation(200)])
+    agent = Agent(model, registry, "system", AuditLog(None), {}, clock=Clock())
+
+    agent.handle("talk", ear.hooks())
+
+    first_call = len(stream_pieces(too_long, model.piece))
+    streamed = [h for h, at in zip(ear.heard, ear.when, strict=True) if at <= first_call]
+    assert streamed
+    assert sum(len(h) + 1 for h in streamed) <= 200 + 1
+
+
 def test_without_a_speak_hook_the_model_is_not_streamed() -> None:
     model = ScriptedModel([_call("no_action", {"reply": "Hi."})])
     agent, _ = _agent(model, [])

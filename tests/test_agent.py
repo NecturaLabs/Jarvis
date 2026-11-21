@@ -11,7 +11,6 @@ import pytest
 from jarvis import agent as agent_module
 from jarvis.agent import (
     FAILED_REMINDER,
-    HISTORY_TURNS,
     MAX_CALLS_PER_TURN,
     MAX_STEPS,
     MAX_TOOL_TEXT,
@@ -22,6 +21,7 @@ from jarvis.agent import (
     UNDONE,
     Agent,
     Hooks,
+    Limits,
     claims_action,
 )
 from jarvis.app import no_action_operation
@@ -39,6 +39,7 @@ from jarvis.shortcuts import Shortcut
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
 
 def _call(name: str, args: dict[str, Any] | None = None, call_id: str = "c1") -> dict[str, Any]:
@@ -87,6 +88,7 @@ class ScriptedModel:
     streamed: list[bool] = field(default_factory=list[bool])
     piece: int = 3  # characters per streamed piece
     after_piece: Callable[[int], object] = lambda _number: None
+    max_tokens: list[int | None] = field(default_factory=list[int | None])
 
     def chat(
         self,
@@ -96,7 +98,9 @@ class ScriptedModel:
         require_tool: bool = False,
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
+        self.max_tokens.append(max_tokens)
         self.timeouts.append(timeout_s)
         self.tools_offered.append(len(tools))
         self.seen.append([dict(m) for m in messages])
@@ -171,6 +175,8 @@ def _agent(
     grant_s: float = 600.0,
     names: tuple[str, ...] = (),
     still_waiting_s: float = 15.0,
+    limits: Limits | None = None,
+    memory_file: Path | None = None,
 ) -> tuple[Agent, AuditLog]:
     audit = AuditLog(None)
     registry = Registry([*ops, no_action_operation()])
@@ -184,6 +190,8 @@ def _agent(
         grant_s=grant_s,
         names=names,
         still_waiting_s=still_waiting_s,
+        limits=limits,
+        memory_file=memory_file,
     )
     return agent, audit
 
@@ -684,8 +692,8 @@ def test_only_registered_names_reach_the_history() -> None:
     assert remembered.startswith("[actions taken: unknown operation -> not done]")
 
 
-def test_history_keeps_only_the_last_turns() -> None:
-    turns = HISTORY_TURNS + 2
+def test_the_conversation_is_remembered_beyond_a_few_turns() -> None:
+    turns = 8
     model = ScriptedModel([m for _ in range(turns) for m in (_call("no_action"), _say("Hi."))])
     agent, _ = _agent(model, [])
 
@@ -693,20 +701,260 @@ def test_history_keeps_only_the_last_turns() -> None:
         agent.handle(f"hello {number}", NO_CONFIRM)
 
     last = model.seen[-2]
-    assert len(last) == 1 + 2 * HISTORY_TURNS + 1
-    assert last[1] == {"role": "user", "content": "hello 1"}
+    assert len(last) == 1 + 2 * (turns - 1) + 1
+    assert last[1] == {"role": "user", "content": "hello 0"}
 
 
 def test_history_is_forgotten_after_a_long_silence() -> None:
     clock = Clock()
     model = ScriptedModel([_call("no_action"), _say("Hi."), _call("no_action"), _say("Hi.")])
-    agent, _ = _agent(model, [], clock=clock)
+    agent, audit = _agent(model, [], clock=clock)
 
     agent.handle("hello", NO_CONFIRM)
-    clock.now += agent_module.HISTORY_IDLE_S + 1
+    clock.now += agent_module.MEMORY_IDLE_S + 1
     agent.handle("hello again", NO_CONFIRM)
 
     assert [m["role"] for m in model.seen[2]] == ["system", "user"]
+    assert "memory_expired" in _events(audit)
+
+
+def test_an_idle_time_of_0_never_forgets() -> None:
+    clock = Clock()
+    model = ScriptedModel([_call("no_action"), _say("Hi."), _call("no_action"), _say("Hi.")])
+    agent, _ = _agent(model, [], clock=clock, limits=Limits(memory_idle_s=0))
+
+    agent.handle("hello", NO_CONFIRM)
+    clock.now += 10 * 86400
+    agent.handle("hello again", NO_CONFIRM)
+
+    assert model.seen[2][1] == {"role": "user", "content": "hello"}
+
+
+def _chatty(turns: int, words: int = 60) -> list[dict[str, Any]]:
+    return [m for n in range(turns) for m in (_call("no_action"), _say(f"Reply {n}. " * words))]
+
+
+def test_a_conversation_over_its_budget_is_summarized_before_the_next_request() -> None:
+    model = ScriptedModel([*_chatty(4), _say("They talked about kettles."), *_chatty(1)])
+    agent, audit = _agent(model, [], limits=Limits(memory_tokens=700))
+
+    for number in range(5):
+        agent.handle(f"request {number}", NO_CONFIRM)
+
+    summary_call = model.seen[8]
+    assert summary_call[0]["content"].startswith("You keep the memory of a conversation")
+    assert "request 0" in summary_call[1]["content"]
+    assert model.tools_offered[8] == 0
+    assert model.max_tokens[8] == agent_module.SUMMARY_TOKENS
+    after = model.seen[9]
+    assert "They talked about kettles." in after[1]["content"]
+    assert all("request 0" not in str(m["content"]) for m in after[1:])
+    assert after[-1] == {"role": "user", "content": "request 4"}
+    assert "memory_summarized" in _events(audit)
+
+
+def test_the_latest_turns_are_never_folded_into_the_summary() -> None:
+    model = ScriptedModel([*_chatty(4), _say("Summary."), *_chatty(1)])
+    agent, _ = _agent(model, [], limits=Limits(memory_tokens=700))
+
+    for number in range(5):
+        agent.handle(f"request {number}", NO_CONFIRM)
+
+    remembered = [m["content"] for m in model.seen[9] if m["role"] == "user"]
+    assert "request 2" in remembered
+    assert "request 3" in remembered
+
+
+def test_when_the_summary_fails_the_oldest_turns_are_dropped_to_fit() -> None:
+    model = ScriptedModel([*_chatty(4)])
+    agent, audit = _agent(model, [], limits=Limits(memory_tokens=700))
+    for number in range(4):
+        agent.handle(f"request {number}", NO_CONFIRM)
+    model.error = RuntimeError("down")
+
+    agent.handle("request 4", NO_CONFIRM)
+
+    assert "memory_trimmed" in _events(audit)
+    assert agent.memory.cost() <= 700
+
+
+def test_compact_folds_every_turn_but_the_latest_on_request() -> None:
+    model = ScriptedModel([*_chatty(3), _say("We said hello three times.")])
+    agent, _ = _agent(model, [])
+    for number in range(3):
+        agent.handle(f"hello {number}", NO_CONFIRM)
+
+    assert agent.compact(everything=True)
+
+    assert agent.memory.summary == "We said hello three times."
+    assert [turn.request for turn in agent.memory.turns] == ["hello 2"]
+
+
+def test_forget_starts_a_new_conversation() -> None:
+    model = ScriptedModel([*_chatty(2)])
+    agent, audit = _agent(model, [])
+    agent.handle("hello", NO_CONFIRM)
+
+    agent.forget()
+    agent.handle("hello again", NO_CONFIRM)
+
+    assert [m["role"] for m in model.seen[2]] == ["system", "user"]
+    assert "memory_cleared" in _events(audit)
+
+
+def test_the_conversation_is_kept_in_its_file_across_sessions(tmp_path: Path) -> None:
+    saved = tmp_path / "conversation.json"
+    first, _ = _agent(ScriptedModel(_chatty(1)), [], memory_file=saved)
+    first.handle("my cat is called Miso", NO_CONFIRM)
+    model = ScriptedModel(_chatty(1))
+    second, _ = _agent(model, [], memory_file=saved)
+
+    second.handle("what is my cat called?", NO_CONFIRM)
+
+    assert model.seen[0][1] == {"role": "user", "content": "my cat is called Miso"}
+    assert saved.stat().st_mode & 0o777 == 0o600
+
+
+def test_forget_also_empties_the_saved_conversation(tmp_path: Path) -> None:
+    saved = tmp_path / "conversation.json"
+    first, _ = _agent(ScriptedModel(_chatty(1)), [], memory_file=saved)
+    first.handle("hello", NO_CONFIRM)
+    first.forget()
+    model = ScriptedModel(_chatty(1))
+    second, _ = _agent(model, [], memory_file=saved)
+
+    second.handle("hello again", NO_CONFIRM)
+
+    assert [m["role"] for m in model.seen[0]] == ["system", "user"]
+
+
+def test_with_remember_outside_a_reply_from_outside_data_is_kept_as_data() -> None:
+    replies = [_call("search"), _say("The page says <b>hi</b>."), _call("no_action"), _say("Hi.")]
+    model = ScriptedModel(replies)
+    limits = Limits(remember_outside=True)
+    agent, _ = _agent(model, [Counter().op("search", origin=Origin.WEB)], limits=limits)
+
+    agent.handle("search", NO_CONFIRM)
+    agent.handle("hello", NO_CONFIRM)
+
+    remembered = model.seen[2][2]["content"]
+    assert remembered.startswith('[actions taken: search -> ok] <data origin="web">')
+    assert "&lt;b&gt;hi&lt;/b&gt;" in remembered
+
+
+def test_remembered_outside_data_puts_side_effects_the_model_chooses_behind_a_yes() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_call("search"), _say("Found it."), _call("play"), _say("Playing.")])
+    ops = [counter.op("search", origin=Origin.WEB), counter.op("play")]
+    agent, _ = _agent(model, ops, limits=Limits(remember_outside=True))
+
+    agent.handle("search", NO_CONFIRM)
+    agent.handle("play it", Hooks(confirm=lambda q: asked.append(q) or False))
+
+    assert len(asked) == 1
+    assert [r["op"] for r in counter.runs] == ["search"]
+
+
+def test_a_plain_command_runs_without_a_yes_despite_remembered_outside_data() -> None:
+    counter = Counter()
+    pause = counter.op("pause", spoken="Paused.", shortcuts=(Shortcut("pause", lambda _g: {}),))
+    model = ScriptedModel([_call("search"), _say("Found it.")])
+    agent, _ = _agent(
+        model,
+        [counter.op("search", origin=Origin.WEB), pause],
+        limits=Limits(remember_outside=True),
+    )
+
+    agent.handle("search", NO_CONFIRM)
+    reply = agent.handle("pause", NO_CONFIRM)
+
+    assert reply == "Paused."
+    assert [r["op"] for r in counter.runs] == ["search", "pause"]
+
+
+def test_every_model_call_is_capped_at_the_reply_tokens() -> None:
+    model = ScriptedModel([_call("search"), _say("Found it.")])
+    agent, _ = _agent(model, [Counter().op("search")], limits=Limits(reply_tokens=1234))
+
+    agent.handle("search", NO_CONFIRM)
+
+    assert model.max_tokens == [1234, 1234]
+
+
+def test_a_reply_the_token_cap_ended_is_kept_whole_and_says_so() -> None:
+    cut = {**_say("Here is the first half of a long answer"), "finish_reason": "length"}
+    model = ScriptedModel([_call("search"), cut])
+    agent, audit = _agent(model, [Counter().op("search")])
+
+    reply = agent.handle("search", NO_CONFIRM)
+
+    assert reply == f"Here is the first half of a long answer {agent_module.CUT_SHORT}"
+    assert "reply_limit" in _events(audit)
+
+
+def test_a_reply_call_the_token_cap_ended_mid_way_keeps_its_words() -> None:
+    cut = {
+        "role": "assistant",
+        "content": "",
+        "finish_reason": "length",
+        "tool_calls": [
+            {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "no_action", "arguments": '{"reply": "A long story about'},
+            }
+        ],
+    }
+    model = ScriptedModel([cut])
+    agent, _ = _agent(model, [])
+
+    reply = agent.handle("tell me a story", NO_CONFIRM)
+
+    assert reply == f"A long story about {agent_module.CUT_SHORT}"
+
+
+def test_old_results_of_a_long_request_are_cleared_to_fit_the_context() -> None:
+    page = "w" * 9000
+    replies = [_call("read", {"q": str(n)}, f"c{n}") for n in range(4)] + [_say("Done.")]
+    model = ScriptedModel(replies)
+    limits = Limits(context_tokens=8000, reply_tokens=500, tool_text_chars=9000, memory_tokens=0)
+    agent, audit = _agent(model, [Counter().op("read", text=page)], limits=limits)
+
+    agent.handle("read them all", NO_CONFIRM)
+
+    last = model.seen[-1]
+    estimate = sum(len(str(m.get("content") or "")) / 3 + 8 for m in last)
+    assert estimate + limits.reply_tokens <= limits.context_tokens
+    results = [m["content"] for m in last if m["role"] == "tool"]
+    assert results[0].endswith("(the rest was cleared to make room)")
+    assert last[-1]["content"] == page
+    assert "result_cleared" in _events(audit)
+
+
+def test_the_step_and_call_limits_come_from_the_limits() -> None:
+    counter = Counter()
+    replies = [_call("queue", {"q": str(i)}, f"c{i}") for i in range(4)]
+    model = ScriptedModel(replies)
+    agent, _ = _agent(model, [counter.op("queue")], limits=Limits(max_steps=3))
+
+    reply = agent.handle("queue", NO_CONFIRM)
+
+    assert reply == TOO_MANY_STEPS
+    assert len(model.seen) == 3
+
+
+def test_context_use_reports_the_servers_count() -> None:
+    answer = {**_say("Hi."), "usage": {"prompt_tokens": 900, "completion_tokens": 40}}
+    model = ScriptedModel([_call("no_action"), answer])
+    agent, _ = _agent(model, [], limits=Limits(context_tokens=24576))
+
+    agent.handle("hello", NO_CONFIRM)
+    use = agent.context_use()
+
+    assert use.used == 940
+    assert use.window == 24576
+    assert use.turns == 1
 
 
 def test_a_reply_made_from_outside_data_is_left_out_of_later_turns() -> None:
@@ -1248,3 +1496,17 @@ def test_a_long_run_of_spaces_is_checked_quickly() -> None:
 
     assert not claims_action("Muted" + " " * 50_000 + "?")
     assert time.perf_counter() - started < 1.0
+
+
+def test_a_plain_command_is_not_kept_waiting_for_a_summary() -> None:
+    counter = Counter()
+    pause = counter.op("pause", spoken="Paused.", shortcuts=(Shortcut("pause", lambda _g: {}),))
+    model = ScriptedModel([*_chatty(4)])
+    agent, audit = _agent(model, [pause], limits=Limits(memory_tokens=700))
+    for number in range(4):
+        agent.handle(f"request {number}", NO_CONFIRM)
+
+    assert agent.handle("pause", NO_CONFIRM) == "Paused."
+
+    assert len(model.seen) == 8
+    assert "memory_summarized" not in _events(audit)

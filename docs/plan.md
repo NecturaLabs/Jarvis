@@ -32,7 +32,7 @@ Built beyond the plan, each with an ADR: speech heard in PC audio is treated as 
 reply does not claim an action no tool did, and `jarvis doctor` hashing model files against pinned releases.
 
 Where the code settled a number the plan left open: a request stops after 90 s, or 270 s when the model must load first (plan: 60 s), the conversation
-keeps the last 4 turns for 5 minutes (plan: about 10), at most 8 tool calls per request, 3,000 characters of each result passed to the model (raised from 1,500 for research), and 0.7 s of
+is token-budgeted and summarized (plan: about 10 turns), speech allows 8 model calls and 12 tool calls per request and the chat 30 and 40 (`[agent]`, `[chat]`), 3,000 characters of each result for speech and 8,000 in the chat, and 0.7 s of
 trailing silence ends an utterance (plan: 1.0 s). Kokoro is the default voice; Piper is still supported
 behind the same speech setting, as the Piper-licence risk below asked.
 
@@ -162,7 +162,9 @@ enforced in code before any tool runs.
   sentence is spoken while the rest is written, except a sentence claiming an action before any succeeded, and
   nothing more of a message once a tool call follows it; what was already passed on plays to its end
   ([ADR 0008](adr/0008-speak-while-writing-and-barge-in.md)).
-- Session memory: last ~10 turns (built as 4), expires after 5 min idle. Follow-up listening is built and on by default: the next request within `audio.follow_up_s`
+- Session memory: the conversation is token-budgeted (`agent.memory_tokens`, `chat.memory_tokens`) and
+  summarized by the model when it outgrows that room; speech forgets it after 30 min idle, the chat keeps it
+  across sessions. Follow-up listening is built and on by default: the next request within `audio.follow_up_s`
   (6 s) of a spoken reply needs no wake word (never while Voxtype is dictating).
 - System prompt: `core.md` (shipped: identity, tools, limits) + persona/tone + owner addendum from setup + a
   rendering of the boundaries + the Omarchy skill index (names and descriptions; full text through `os_skill`).

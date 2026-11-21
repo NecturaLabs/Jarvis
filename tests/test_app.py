@@ -3,14 +3,17 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.agent import HISTORY_TURNS, MAX_CALLS_PER_TURN, MAX_TOOL_TEXT, Agent, Hooks
+from jarvis.agent import Agent, Hooks
 from jarvis.app import (
     MAX_HINT_CHARS,
+    PAGE_HEADROOM,
+    Channel,
+    channel_limits,
+    channel_registry,
     echoes_hint,
     no_action_operation,
     speech_hint,
     system_prompt,
-    web_operations,
 )
 from jarvis.audit import AuditLog
 from jarvis.config import AudioConfig, Config, PersonaConfig
@@ -93,19 +96,46 @@ def test_speech_hint_ends_as_a_sentence(names: list[str]) -> None:
     assert speech_hint(Config(), Registry([_op("spotify_pause")]), names).endswith(".")
 
 
-def test_the_default_context_holds_a_full_research_request(tmp_path: Path) -> None:
-    # The prompt and every tool schema, the remembered turns, a whole request's tool results at
-    # their cap, and the reply, counted at a conservative 3 characters per token.
+@pytest.mark.parametrize("channel", ["voice", "chat"])
+def test_the_default_context_holds_the_whole_remembered_conversation(
+    tmp_path: Path, channel: Channel
+) -> None:
+    # The prompt, every tool schema, one reply and two tool results at their cap leave room for
+    # the configured memory, so the defaults never squeeze it.
     config = Config()
     spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
-    registry = Registry([*spotify.operations(), *web_operations(config), no_action_operation()])
-    fixed = len(system_prompt(config)) + len(json.dumps(registry.tool_schemas()))
-    results = MAX_CALLS_PER_TURN * MAX_TOOL_TEXT
-    history = HISTORY_TURNS * 1200
-    tokens = (fixed + results + history) / 3 + config.model.max_tokens
+    limits = channel_limits(config, channel)
+    registry = channel_registry(config, spotify.operations(), limits, channel)
+    agent = Agent(
+        _Model([]), registry, system_prompt(config, channel), AuditLog(None), {}, limits=limits
+    )
 
-    assert tokens <= config.strata.context
-    assert config.research.page_chars + 200 <= MAX_TOOL_TEXT
+    assert agent.memory.budget == limits.memory_tokens
+    assert config.research.page_chars + PAGE_HEADROOM <= limits.tool_text_chars
+
+
+def test_the_chat_reads_a_page_to_its_own_room(tmp_path: Path) -> None:
+    config = Config()
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+    limits = channel_limits(config, "chat")
+
+    registry = channel_registry(config, spotify.operations(), limits, "chat")
+
+    assert registry.get("web_read") is not None
+    assert registry.get("read_skill") is not None
+    reply = registry.get("no_action")
+    assert reply is not None
+    assert reply.parameters["properties"]["reply"]["maxLength"] >= limits.reply_tokens * 4
+
+
+def test_the_chat_prompt_asks_for_markdown_and_the_voice_prompt_for_speech() -> None:
+    chat = system_prompt(Config(), "chat")
+    voice = system_prompt(Config(), "voice")
+
+    assert "Markdown" in chat
+    assert "spoken" in voice
+    assert "read_skill" in chat
+    assert "web-research" in voice
 
 
 def test_a_read_page_reaches_the_model_at_its_configured_length() -> None:

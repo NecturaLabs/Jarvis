@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from jarvis.config import Config, ModelConfig
-from jarvis.model import LOAD_TIMEOUT_S, Delta, ModelError, StrataModel
+from jarvis.model import DEFAULT_MAX_TOKENS, LOAD_TIMEOUT_S, Delta, ModelError, StrataModel
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -338,6 +338,7 @@ def test_a_streamed_answer_is_passed_on_piece_by_piece_and_returned_whole() -> N
                 "function": {"name": "no_action", "arguments": '{"reply":"Hi there."}'},
             }
         ],
+        "finish_reason": "tool_calls",
     }
 
 
@@ -349,7 +350,7 @@ def test_streamed_text_arrives_as_text_pieces() -> None:
     reply = _model(transport).chat(MESSAGES, TOOLS, on_delta=pieces.append)
 
     assert pieces == [Delta(text="Paused "), Delta(text="it.")]
-    assert reply == {"role": "assistant", "content": "Paused it."}
+    assert reply == {"role": "assistant", "content": "Paused it.", "finish_reason": "stop"}
 
 
 def test_a_stream_dropped_after_a_piece_was_passed_on_is_not_retried() -> None:
@@ -383,7 +384,7 @@ def test_a_stream_that_fails_before_any_piece_is_retried_once() -> None:
     pieces: list[Delta] = []
     reply = _model(httpx.MockTransport(handle)).chat(MESSAGES, TOOLS, on_delta=pieces.append)
 
-    assert reply == {"role": "assistant", "content": "back"}
+    assert reply == {"role": "assistant", "content": "back", "finish_reason": "stop"}
     assert len(posts) == 2
 
 
@@ -438,3 +439,43 @@ def test_an_error_raised_by_the_listener_ends_the_stream_and_is_raised() -> None
     )
     with pytest.raises(EnoughError):
         _model(transport).chat(MESSAGES, TOOLS, on_delta=stop)
+
+
+def test_each_call_carries_its_own_token_cap() -> None:
+    seen: list[httpx.Request] = []
+    model = _model(_answering({"role": "assistant", "content": "hello"}, seen))
+
+    model.chat(MESSAGES, [], max_tokens=2048)
+    model.chat(MESSAGES, [])
+
+    assert json.loads(seen[0].content)["max_tokens"] == 2048
+    assert json.loads(seen[1].content)["max_tokens"] == DEFAULT_MAX_TOKENS
+
+
+def test_a_whole_answer_keeps_its_finish_reason_and_token_counts() -> None:
+    usage = {"prompt_tokens": 1200, "completion_tokens": 30, "total_tokens": 1230}
+
+    def handle(_request: httpx.Request) -> httpx.Response:
+        choice = {"message": {"role": "assistant", "content": "hi"}, "finish_reason": "length"}
+        return httpx.Response(200, json={"choices": [choice], "usage": usage})
+
+    reply = _model(httpx.MockTransport(handle)).chat(MESSAGES, [])
+
+    assert reply["finish_reason"] == "length"
+    assert reply["usage"] == usage
+
+
+def test_a_streamed_answer_asks_for_and_keeps_the_token_counts() -> None:
+    seen: list[httpx.Request] = []
+    usage = {"prompt_tokens": 800, "completion_tokens": 12}
+    tail: dict[str, Any] = {"choices": [], "usage": usage}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=_sse(_chunk({"content": "ok"}), FINISH, tail))
+
+    reply = _model(httpx.MockTransport(handle)).chat(MESSAGES, [], on_delta=lambda _d: None)
+
+    assert json.loads(seen[0].content)["stream_options"] == {"include_usage": True}
+    assert reply["usage"] == usage
+    assert reply["finish_reason"] == "stop"

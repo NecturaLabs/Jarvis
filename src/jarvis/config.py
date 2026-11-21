@@ -73,8 +73,37 @@ class ModelConfig(_Section):
     base_url: Endpoint = ""  # empty: the local Strata server (see `Config.model_base_url`)
     model: str = "jarvis"
     request_timeout_s: float = Field(default=120.0, gt=0, le=600)
-    max_tokens: int = Field(default=200, gt=0, le=4096)
     temperature: float = Field(default=0.2, ge=0, le=2)
+
+
+class AgentConfig(_Section):
+    """How much one spoken request may do, and how much of the talk Jarvis remembers.
+
+    `reply_tokens` caps what the model writes in one go, so a reply is kept short by the model,
+    never cut afterwards. `memory_tokens` is the room the remembered conversation may take of the
+    model's context; older turns are summarized to stay within it.
+    """
+
+    max_steps: int = Field(default=8, ge=1, le=100)  # model calls in one request
+    max_tool_calls: int = Field(default=12, ge=1, le=200)
+    max_seconds: float = Field(default=90.0, ge=10, le=3600)
+    reply_tokens: int = Field(default=400, ge=64, le=8192)
+    tool_text_chars: int = Field(default=3000, ge=500, le=50000)  # of one tool result
+    memory_tokens: int = Field(default=6000, ge=0, le=200000)
+    memory_idle_s: float = Field(default=1800.0, ge=0)  # forget after this long unused; 0 never
+
+
+class ChatConfig(AgentConfig):
+    """The same limits for typed requests in `jarvis chat`, with room for longer, written work."""
+
+    max_steps: int = Field(default=30, ge=1, le=100)
+    max_tool_calls: int = Field(default=40, ge=1, le=200)
+    max_seconds: float = Field(default=600.0, ge=10, le=3600)
+    reply_tokens: int = Field(default=2048, ge=64, le=8192)
+    tool_text_chars: int = Field(default=8000, ge=500, le=50000)
+    memory_tokens: int = Field(default=12000, ge=0, le=200000)
+    memory_idle_s: float = Field(default=0.0, ge=0)
+    resume: bool = True  # open the chat on the conversation it had last time
 
 
 class StrataConfig(_Section):
@@ -191,7 +220,7 @@ class ResearchConfig(_Section):
 
     searxng_url: Endpoint = "http://127.0.0.1:8888"
     results: int = Field(default=5, ge=1, le=8)
-    page_chars: int = Field(default=2800, ge=500, le=2800)  # within the agent's MAX_TOOL_TEXT
+    page_chars: int = Field(default=2800, ge=500, le=50000)  # within the channel's tool_text_chars
     reddit_comments: int = Field(default=6, ge=1, le=10)
 
 
@@ -207,6 +236,8 @@ class Config(_Section):
     schema_version: int = SCHEMA_VERSION
     data_dir: SafePath = Field(default_factory=paths.default_data_dir)
     model: ModelConfig = Field(default_factory=ModelConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
+    chat: ChatConfig = Field(default_factory=ChatConfig)
     strata: StrataConfig = Field(default_factory=StrataConfig)
     spotify: SpotifyConfig = Field(default_factory=SpotifyConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
@@ -247,12 +278,25 @@ def load(path: Path | None = None) -> Config:
     if version != SCHEMA_VERSION:
         msg = f"{path}: schema_version {version} is not supported (expected {SCHEMA_VERSION})"
         raise ConfigError(msg)
+    _drop_retired(raw)
     try:
         cfg = Config.model_validate(raw)
     except ValueError as exc:
         msg = f"{path}: {exc}"
         raise ConfigError(msg) from exc
     return _without_derived_url(cfg)
+
+
+# Keys older versions wrote that now live elsewhere; a saved file still holding one stays valid.
+_RETIRED = {"model": ("max_tokens",)}  # now [agent] and [chat] reply_tokens
+
+
+def _drop_retired(raw: dict[str, object]) -> None:
+    for section, keys in _RETIRED.items():
+        table = raw.get(section)
+        if isinstance(table, dict):
+            for key in keys:
+                cast("dict[str, object]", table).pop(key, None)
 
 
 def _without_derived_url(cfg: Config) -> Config:
