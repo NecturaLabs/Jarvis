@@ -323,3 +323,50 @@ def test_a_hushed_speaker_is_not_busy_at_once(tmp_path: Path) -> None:
         assert not speaker.busy  # the next request need not wait for the old player to close
     finally:
         _end(pid_file)
+
+
+def test_a_wake_like_sentence_after_a_hush_is_still_guarded(tmp_path: Path) -> None:
+    pid_file, first_pid = tmp_path / "pid2", tmp_path / "pid1"
+    starts: list[int] = []
+
+    def player(rate: int) -> list[str]:
+        starts.append(rate)
+        return _stuck(first_pid if len(starts) == 1 else pid_file)(rate)
+
+    speaker = Speaker(
+        lambda t: (_sound(1000, seconds=2.0), RATE),
+        player=player,
+        own_wake=lambda _pcm, _rate: bool(starts),  # wake-like from the second sentence on
+    )
+    try:
+        speaker.queue("ordinary")
+        _until(first_pid.exists)
+        speaker.hush()
+        speaker.queue("hey jarvis")  # wake-like; the hushed player is closed before the check
+        _until(pid_file.exists)
+        assert not speaker.interruptible
+    finally:
+        speaker.hush()
+        _end(first_pid)
+        _end(pid_file)
+
+
+def test_a_hush_during_the_own_voice_check_leaves_the_speaker_interruptible(
+    tmp_path: Path,
+) -> None:
+    player, _ = _recorder(tmp_path)
+    checking, release = threading.Event(), threading.Event()
+
+    def slow_check(_pcm: bytes, _rate: int) -> bool:
+        checking.set()
+        release.wait(WAIT_S)
+        return True
+
+    speaker = Speaker(_voice, player=player, own_wake=slow_check)
+    speaker.queue("hey jarvis")
+    assert checking.wait(WAIT_S)
+    speaker.hush()
+    release.set()
+    speaker.wait()
+
+    assert speaker.interruptible

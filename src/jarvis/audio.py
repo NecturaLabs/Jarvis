@@ -798,9 +798,11 @@ class Speaker:
         if not pcm:
             return
         if self._sounds_like_wake(pcm, rate):
-            log.info("a sentence sounds like the wake word; it cannot be spoken over")
             with self._lock:
+                if run != self._run:  # hushed during the check: it will not be played
+                    return
                 self._guarded = True
+            log.info("a sentence sounds like the wake word; it cannot be spoken over")
         proc = self._proc or self._open(rate, run)
         if proc is not None:
             self._write(proc, pcm, run)
@@ -847,15 +849,20 @@ class Speaker:
         assert stdin is not None  # ruff: ignore[assert] - started with a pipe
         fd = stdin.fileno()
         view = memoryview(pcm)
+        progress = time.monotonic()
         while view:
             if not self._current(run):
                 return
+            if time.monotonic() - progress > self._grace_s:
+                msg = "the player stopped taking sound"
+                raise AudioError(msg)
             _, ready, _ = select.select([], [fd], [], self._grace_s)
             try:
                 if not ready:
                     msg = "the player stopped taking sound"
                     raise AudioError(msg)
                 view = view[os.write(fd, view[:WRITE_STEP]) :]
+                progress = time.monotonic()
             except BlockingIOError:
                 continue  # the pipe filled between select and write
             except OSError as exc:

@@ -338,6 +338,8 @@ class VoiceLoop:
             return
         self._begin_speaking()
         self._speaker.queue(words)
+        if self._barged_at is not None:  # spoken over while it was being queued
+            self._speaker.hush()
         self._end_speaking()
 
     def _utter(self, text: str) -> None:

@@ -53,6 +53,8 @@ For speaking over Jarvis:
 
 ## Decision outcome
 
+Proposed to the owner, built as described; the owner accepts it or chooses the stricter option above.
+
 Speak finished sentences as they are written, and listen for the wake word while speaking, after checking
 that each of Jarvis's own sentences does not trigger it. The rules, all in code:
 
