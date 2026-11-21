@@ -1141,6 +1141,4 @@ def test_a_request_that_waits_for_a_cold_model_gets_the_load_time_too() -> None:
 
     assert agent.handle("skip", NO_CONFIRM) == "Skipped."
     assert counter.runs == [{"op": "next"}]
-    assert model.timeouts[0] == pytest.approx(
-        agent_module.MAX_SECONDS + agent_module.COLD_LOAD_S
-    )
+    assert model.timeouts[0] == pytest.approx(agent_module.MAX_SECONDS + agent_module.COLD_LOAD_S)
