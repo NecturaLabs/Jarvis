@@ -2,16 +2,20 @@
 # SPDX-License-Identifier: MIT
 # pyright: reportMissingImports=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 # pyright: reportUnknownArgumentType=false, reportMissingTypeStubs=false
+# pyright: reportAttributeAccessIssue=false
 """Listen for an Azure custom keyword in raw audio: the helper behind `audio.wake_engine = "azure"`.
 
 Jarvis never imports this file. It runs as its own program, with the Python of a separate
 environment that holds Microsoft's Speech SDK, inside a namespace with no network
-(`jarvis.audio.azure_wake_command`), so the SDK cannot send anything off the PC. It is under the MIT
-licence, not Jarvis's GPL, so it may be combined with that closed-source SDK; Jarvis only talks to
-it through pipes.
+(`jarvis.audio.azure_wake_command`), so the SDK cannot reach anything over the network. It is under
+the MIT licence, not Jarvis's GPL, so it may be combined with that closed-source SDK; Jarvis only
+talks to it through pipes.
 
 Standard input: raw 16 kHz mono signed 16-bit audio. Standard output: the line `ready` once the
-model is loaded, then `wake` each time the keyword is heard. It ends when its input does.
+model has been tried on a moment of silence, then `wake <sample>` each time the keyword is heard,
+where <sample> counts the input's samples up to the keyword's end. It ends when its input does.
+A model the SDK cannot use is said on standard error, with exit code 1. With `--check` it only
+tries the model and exits.
 """
 
 import sys
@@ -23,13 +27,44 @@ if TYPE_CHECKING:
 
 RATE = 16000
 CHUNK = 2560  # 80 ms: Jarvis writes frames of this size
+PROBE_BYTES = RATE  # half a second of silence, enough for the SDK to load the model
+TICKS_PER_S = 10_000_000  # the SDK's offsets and durations are in 100 ns ticks
+CHECK_ARGS = 2  # the model file and --check
 
 
-def listen(sdk: ModuleType, model_file: str, source: BinaryIO, out: TextIO) -> int:
+def _failure(sdk: ModuleType, result: object) -> str | None:
+    """Return why a recognition ended in an error, or None when it ended normally."""
+    if result.reason != sdk.ResultReason.Canceled:
+        return None
+    details = result.cancellation_details
+    if details.reason != sdk.CancellationReason.Error:
+        return None
+    lines = str(details.error_details).strip().splitlines()
+    return lines[0] if lines else "the Speech SDK failed"
+
+
+def _fmt(sdk: ModuleType) -> object:
+    return sdk.audio.AudioStreamFormat(samples_per_second=RATE, bits_per_sample=16, channels=1)
+
+
+def probe(sdk: ModuleType, model: object) -> str | None:
+    """Try `model` on half a second of silence; return why it cannot be used, or None."""
+    stream = sdk.audio.PushAudioInputStream(stream_format=_fmt(sdk))
+    recognizer = sdk.KeywordRecognizer(sdk.audio.AudioConfig(stream=stream))
+    future = recognizer.recognize_once_async(model)
+    stream.write(b"\0" * PROBE_BYTES)
+    stream.close()
+    return _failure(sdk, future.get())
+
+
+def listen(sdk: ModuleType, model_file: str, source: BinaryIO, out: TextIO, err: TextIO) -> int:
     """Feed `source` to the keyword model in `model_file`; write a line to `out` per keyword."""
     model = sdk.KeywordRecognitionModel(model_file)
-    fmt = sdk.audio.AudioStreamFormat(samples_per_second=RATE, bits_per_sample=16, channels=1)
-    stream = sdk.audio.PushAudioInputStream(stream_format=fmt)
+    why = probe(sdk, model)
+    if why is not None:
+        err.write(f"the keyword model cannot be used: {why}\n")
+        return 1
+    stream = sdk.audio.PushAudioInputStream(stream_format=_fmt(sdk))
     recognizer = sdk.KeywordRecognizer(sdk.audio.AudioConfig(stream=stream))
 
     def pump() -> None:
@@ -42,20 +77,40 @@ def listen(sdk: ModuleType, model_file: str, source: BinaryIO, out: TextIO) -> i
     out.flush()
     while True:
         result = recognizer.recognize_once_async(model).get()
-        if result.reason != sdk.ResultReason.RecognizedKeyword:
-            return 0  # the input ended (or the recognizer stopped): nothing more to hear
-        out.write("wake\n")
-        out.flush()
+        if result.reason == sdk.ResultReason.RecognizedKeyword:
+            end = (result.offset + result.duration) * RATE // TICKS_PER_S
+            out.write(f"wake {end}\n")
+            out.flush()
+            continue
+        why = _failure(sdk, result)
+        if why is not None:
+            err.write(f"the keyword recognizer stopped: {why}\n")
+            return 1
+        return 0  # the input ended: nothing more to hear
+
+
+def check(sdk: ModuleType, model_file: str, out: TextIO, err: TextIO) -> int:
+    """Only try the model (`jarvis doctor`); return 0 when it can be used."""
+    why = probe(sdk, sdk.KeywordRecognitionModel(model_file))
+    if why is not None:
+        err.write(f"the keyword model cannot be used: {why}\n")
+        return 1
+    out.write("ok\n")
+    return 0
 
 
 def main() -> int:
     """Run on standard input and output with the model file named on the command line."""
-    if len(sys.argv) != 2:  # ruff: ignore[magic-value-comparison] - the program and the model file
-        sys.stderr.write("usage: azure_wake_helper.py <keyword model .table>\n")
+    args = sys.argv[1:]
+    if not args or len(args) > CHECK_ARGS or args[1:] not in ([], ["--check"]):
+        sys.stderr.write("usage: azure_wake_helper.py <keyword model .table> [--check]\n")
         return 2
-    import azure.cognitiveservices.speech as sdk  # ruff: ignore[import-outside-top-level] - only the helper's own Python has it
+    # The one import of the Speech SDK in the tree (ADR 0010); only the helper's own Python has it.
+    import azure.cognitiveservices.speech as sdk  # ruff: ignore[import-outside-top-level, banned-api]
 
-    return listen(sdk, sys.argv[1], sys.stdin.buffer, sys.stdout)
+    if args[1:]:
+        return check(sdk, args[0], sys.stdout, sys.stderr)
+    return listen(sdk, args[0], sys.stdin.buffer, sys.stdout, sys.stderr)
 
 
 if __name__ == "__main__":

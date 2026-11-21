@@ -6,13 +6,21 @@ import threading
 import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
 
 from jarvis import azure_wake_helper, cli, config
-from jarvis.audio import FRAME, AudioError, AzureWake, OwnVoiceCheck, azure_wake_command
+from jarvis.audio import (
+    FRAME,
+    RATE,
+    AudioError,
+    AzureWake,
+    FallbackWake,
+    OwnVoiceCheck,
+    azure_wake_command,
+)
 from jarvis.cli import main
 
 if TYPE_CHECKING:
@@ -23,16 +31,16 @@ if TYPE_CHECKING:
 QUIET = np.zeros(FRAME, dtype=np.int16)
 WAIT_S = 5.0
 
-# A stand-in for the helper: "ready", then a "wake" after the first frame it reads.
+# A stand-in for the helper: "ready", then, after its fourth frame, a keyword that ended there.
 FAKE_HELPER = """
 import sys
 out = sys.stdout
 out.write("ready\\n"); out.flush()
-first = True
+frames = 0
 while chunk := sys.stdin.buffer.read(2560):
-    if first:
-        out.write("wake\\n"); out.flush()
-        first = False
+    frames += 1
+    if frames == 4:
+        out.write("wake 5120\\n"); out.flush()
 """
 
 
@@ -69,12 +77,72 @@ def test_a_wake_line_from_the_helper_is_heard_once() -> None:
 def test_reset_forgets_a_wake_not_yet_reported() -> None:
     wake = AzureWake(_fake(FAKE_HELPER))
     try:
-        wake.heard(QUIET)
-        time.sleep(0.3)  # the helper has answered the frame by now
+        for _ in range(4):
+            wake.heard(QUIET)
+        assert _until(lambda: bool(wake._wakes))  # pyright: ignore[reportPrivateUsage]
         wake.reset()
         assert not wake.heard(QUIET)
+        assert wake.after_wake() == []
     finally:
         wake.close()
+
+
+def test_the_words_right_after_the_keyword_are_handed_to_the_request() -> None:
+    wake = AzureWake(_fake(FAKE_HELPER))
+    numbered = np.arange(20 * FRAME, dtype=np.int16)
+    try:
+        sent = 0
+        found = False
+        while not found and sent < 20:
+            found = wake.heard(numbered[sent * FRAME : (sent + 1) * FRAME])
+            sent += 1
+        assert found
+        lead = np.concatenate(wake.after_wake())
+        # From a quarter second before the keyword's end (sample 5120) to the last frame sent.
+        assert lead[0] == 5120 - RATE // 4
+        assert lead[-1] == sent * FRAME - 1
+        assert wake.after_wake() == []
+    finally:
+        wake.close()
+
+
+def test_a_helper_that_closed_its_input_is_an_audio_error() -> None:
+    script = "import os, sys, time; os.close(0); print('ready', flush=True); time.sleep(30)"
+    wake = AzureWake(_fake(script))
+    try:
+        time.sleep(0.2)
+
+        def feed() -> None:
+            for _ in range(5):
+                wake.heard(QUIET)
+
+        with pytest.raises(AudioError, match="stopped"):
+            feed()
+    finally:
+        wake.close()
+
+
+def test_a_helper_that_dies_after_ready_hands_over_to_livekit() -> None:
+    class Backup:
+        def __init__(self) -> None:
+            super().__init__()
+            self.frames = 0
+
+        def heard(self, frame: NDArray[np.int16]) -> bool:
+            self.frames += frame.size
+            return True
+
+        def reset(self) -> None:
+            self.frames = 0
+
+    backup = Backup()
+    script = "import sys; print('ready', flush=True); sys.stderr.write('model broke\\n')"
+    wake = FallbackWake(AzureWake(_fake(script)), lambda: backup)
+
+    assert _until(lambda: wake.heard(QUIET))
+    assert backup.frames > 0
+    assert wake.after_wake() == []
+    wake.close()
 
 
 def test_a_helper_that_never_gets_ready_is_an_audio_error_with_its_reason() -> None:
@@ -125,44 +193,58 @@ class _Stream:
         self.fed.append(b"")
 
 
-class _Recognizer:
-    """The SDK's keyword recognizer: each recognition ends with the next reason in the list."""
+def _result(reason: str, *, error: str = "", offset_s: float = 0.0) -> SimpleNamespace:
+    ended = "error" if error else "end"
+    return SimpleNamespace(
+        reason=reason,
+        offset=int(offset_s * 10_000_000),
+        duration=10_000_000,  # one second
+        cancellation_details=SimpleNamespace(reason=ended, error_details=error),
+    )
 
-    def __init__(self, reasons: list[str]) -> None:
+
+class _Recognizer:
+    """The SDK's keyword recognizer: each recognition ends with the next result in the list."""
+
+    def __init__(self, results: list[SimpleNamespace]) -> None:
         super().__init__()
-        self.reasons = reasons
+        self.results = results
 
     def recognize_once_async(self, _model: object) -> SimpleNamespace:
-        reason = self.reasons.pop(0)
-        return SimpleNamespace(get=lambda: SimpleNamespace(reason=reason))
+        result = self.results.pop(0)
+        return SimpleNamespace(get=lambda: result)
 
 
-def _fake_sdk(reasons: list[str], fed: list[bytes]) -> ModuleType:
+END = _result("canceled")  # the input ended
+
+
+def _fake_sdk(results: list[SimpleNamespace], fed: list[bytes]) -> ModuleType:
+    """A stand-in for the Speech SDK; the first result answers the helper's probe."""
     sdk = ModuleType("fake_speech_sdk")
-    stream = _Stream(fed)
-    recognizer = _Recognizer(reasons)
+    recognizer = _Recognizer(results)
 
     def model(path: str) -> tuple[str, str]:
         return ("model", path)
 
     def stream_format(**settings: int) -> dict[str, int]:
+        assert settings == {"samples_per_second": 16000, "bits_per_sample": 16, "channels": 1}
         return settings
 
     def push_stream(stream_format: object) -> _Stream:
-        assert stream_format == {"samples_per_second": 16000, "bits_per_sample": 16, "channels": 1}
-        return stream
+        assert stream_format
+        return _Stream(fed)
 
     def audio_config(stream: _Stream) -> _Stream:
         return stream
 
-    def keyword_recognizer(config: _Stream) -> _Recognizer:
-        assert config is stream
+    def keyword_recognizer(_config: _Stream) -> _Recognizer:
         return recognizer
 
     sdk.__dict__.update(
         KeywordRecognitionModel=model,
         KeywordRecognizer=keyword_recognizer,
-        ResultReason=SimpleNamespace(RecognizedKeyword="keyword"),
+        ResultReason=SimpleNamespace(RecognizedKeyword="keyword", Canceled="canceled"),
+        CancellationReason=SimpleNamespace(Error="error"),
         audio=SimpleNamespace(
             AudioStreamFormat=stream_format,
             PushAudioInputStream=push_stream,
@@ -172,16 +254,48 @@ def _fake_sdk(reasons: list[str], fed: list[bytes]) -> ModuleType:
     return sdk
 
 
-def test_the_helper_says_ready_then_one_wake_per_keyword_until_its_input_ends() -> None:
+def test_the_helper_says_ready_then_where_each_keyword_ended_until_its_input_ends() -> None:
     fed: list[bytes] = []
-    out = io.StringIO()
-    sdk = _fake_sdk(["keyword", "keyword", "canceled"], fed)
+    out, err = io.StringIO(), io.StringIO()
+    results = [END, _result("keyword", offset_s=0.5), _result("keyword", offset_s=3.0), END]
+    sdk = _fake_sdk(results, fed)
 
-    assert azure_wake_helper.listen(sdk, "hey.table", io.BytesIO(b"\x00" * 6000), out) == 0
+    assert azure_wake_helper.listen(sdk, "hey.table", io.BytesIO(b"\x00" * 6000), out, err) == 0
 
-    assert out.getvalue() == "ready\nwake\nwake\n"
-    assert _until(lambda: fed[-1:] == [b""])
-    assert b"".join(fed) == b"\x00" * 6000
+    assert out.getvalue() == "ready\nwake 24000\nwake 64000\n"  # (offset + 1 s) at 16 kHz
+    assert not err.getvalue()
+    assert _until(lambda: b"".join(fed).count(b"\x00") >= 16000 + 6000)
+
+
+def test_a_model_the_sdk_rejects_is_said_before_ready_and_ends_the_helper() -> None:
+    out, err = io.StringIO(), io.StringIO()
+    sdk = _fake_sdk([_result("canceled", error="0xc (SPXERR_UNSUPPORTED_FORMAT)\n[stack]")], [])
+
+    assert azure_wake_helper.listen(sdk, "bad.table", io.BytesIO(b""), out, err) == 1
+
+    assert not out.getvalue()
+    assert "SPXERR_UNSUPPORTED_FORMAT" in err.getvalue()
+    assert "[stack]" not in err.getvalue()
+
+
+def test_a_recognizer_error_after_ready_ends_the_helper_with_its_reason() -> None:
+    out, err = io.StringIO(), io.StringIO()
+    sdk = _fake_sdk([END, _result("canceled", error="0x5 (SPXERR_RUNTIME_ERROR)")], [])
+
+    assert azure_wake_helper.listen(sdk, "hey.table", io.BytesIO(b""), out, err) == 1
+
+    assert out.getvalue() == "ready\n"
+    assert "SPXERR_RUNTIME_ERROR" in err.getvalue()
+
+
+def test_the_helper_check_only_tries_the_model() -> None:
+    out, err = io.StringIO(), io.StringIO()
+    assert azure_wake_helper.check(_fake_sdk([END], []), "hey.table", out, err) == 0
+    assert out.getvalue() == "ok\n"
+
+    bad = _fake_sdk([_result("canceled", error="0xc (SPXERR_UNSUPPORTED_FORMAT)")], [])
+    assert azure_wake_helper.check(bad, "bad.table", io.StringIO(), err) == 1
+    assert "SPXERR_UNSUPPORTED_FORMAT" in err.getvalue()
 
 
 def test_the_helper_imports_nothing_from_jarvis() -> None:
@@ -270,14 +384,14 @@ def test_azure_with_a_model_listens_through_the_no_network_helper(
     table.write_bytes(b"model")
     started: list[list[str]] = []
 
-    def azure(command: list[str]) -> str:
+    def azure(command: list[str]) -> object:
         started.append(command)
-        return "az"
+        return object()
 
     monkeypatch.setattr(jarvis.audio, "AzureWake", azure)
     cfg = _engine(monkeypatch, wake_engine="azure", azure_keyword_model=str(table))
 
-    assert cast("object", cli.wake_word(cfg)) == "az"
+    assert isinstance(cli.wake_word(cfg), FallbackWake)
     assert started[0][:3] == ["unshare", "--map-current-user", "--net"]
     assert started[0][4] == str(cfg.data_dir / cli.AZURE_PYTHON)
     assert started[0][-1] == str(table)
@@ -309,4 +423,77 @@ def test_switching_to_azure_without_a_model_says_livekit_stays(
 
     assert main(["wake", "azure"]) == 0
 
-    assert "keeps LiveKit's" in capsys.readouterr().out
+    assert "listens with LiveKit's" in capsys.readouterr().out
+
+
+def test_switching_with_no_arguments_only_shows_the_setting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: pytest.fail("no restart"))
+
+    assert main(["wake"]) == 0
+
+    assert capsys.readouterr().out.startswith("wake word: LiveKit")
+
+
+def _azure_cfg(tmp_path: Path) -> config.Config:
+    table = tmp_path / "hey.table"
+    table.write_bytes(b"model")
+    python = tmp_path / "python"
+    python.write_text("")
+    cfg = config.Config()
+    audio = cfg.audio.model_copy(
+        update={
+            "wake_engine": "azure",
+            "azure_keyword_model": str(table),
+            "azure_python": str(python),
+        }
+    )
+    return cfg.model_copy(update={"audio": audio})
+
+
+def test_the_doctor_tries_the_azure_model_in_its_helper(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ran: list[list[str]] = []
+
+    def run(cmd: list[str], **_kw: object) -> SimpleNamespace:
+        ran.append(cmd)
+        return SimpleNamespace(returncode=1, stderr="the keyword model cannot be used: 0xc\n")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    checks = cli._azure_checks(_azure_cfg(tmp_path))  # pyright: ignore[reportPrivateUsage]
+
+    assert [ok for ok, _, _ in checks] == [True, True, False]
+    assert "0xc" in checks[-1][1]
+    assert ran[0][:3] == ["unshare", "--map-current-user", "--net"]
+    assert ran[0][-1] == "--check"
+
+
+def test_the_doctor_checks_nothing_azure_with_livekit() -> None:
+    assert cli._azure_checks(config.Config()) == []  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.local
+def test_the_helper_namespace_has_no_network() -> None:
+    import subprocess  # ruff: ignore[import-outside-top-level] - only this local test runs it
+
+    probe = (
+        "import socket\n"
+        "for host in ('1.1.1.1', '127.0.0.1'):\n"
+        "    s = socket.socket()\n"
+        "    s.settimeout(2)\n"
+        "    try:\n"
+        "        s.connect((host, 53))\n"
+        "        raise SystemExit(f'reached {host}')\n"
+        "    except OSError:\n"
+        "        pass\n"
+    )
+    done = subprocess.run(
+        ["unshare", "--map-current-user", "--net", "--", sys.executable, "-I", "-c", probe],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert done.returncode == 0, done.stderr

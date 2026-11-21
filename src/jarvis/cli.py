@@ -26,13 +26,14 @@ if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
 
-    from jarvis.audio import AzureWake, WakeWord
+    from jarvis.audio import FallbackWake, WakeWord
 
 log = logging.getLogger(__name__)
 
 WAKE_MODEL = "wake/hey_jarvis.onnx"
 VAD_MODEL = "vad/silero_vad.onnx"
 AZURE_PYTHON = "azure-wake/venv/bin/python"
+AZURE_CHECK_S = 30.0
 WAKE_NAME = re.compile(r"\bjarvis\b", re.IGNORECASE)  # what an Azure model also wakes on
 
 
@@ -47,7 +48,7 @@ def _azure_files(cfg: config.Config) -> tuple[Path, Path]:
     return model, python
 
 
-def wake_word(cfg: config.Config) -> WakeWord | AzureWake:
+def wake_word(cfg: config.Config) -> WakeWord | FallbackWake:
     """Return the wake word detector `audio.wake_engine` names.
 
     An Azure model that cannot start (no model file, no helper Python) falls back to LiveKit's,
@@ -56,9 +57,13 @@ def wake_word(cfg: config.Config) -> WakeWord | AzureWake:
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
         AudioError,
         AzureWake,
+        FallbackWake,
         WakeWord,
         azure_wake_command,
     )
+
+    def livekit() -> WakeWord:
+        return WakeWord(cfg.data_dir / WAKE_MODEL, cfg.audio.wake_threshold)
 
     if cfg.audio.wake_engine == "azure":
         model, python = _azure_files(cfg)
@@ -71,8 +76,8 @@ def wake_word(cfg: config.Config) -> WakeWord | AzureWake:
                 log.warning("the Azure wake word could not start (%s); using LiveKit's", exc)
             else:
                 log.info("listening with the Azure keyword model %s", model.name)
-                return wake
-    return WakeWord(cfg.data_dir / WAKE_MODEL, cfg.audio.wake_threshold)
+                return FallbackWake(wake, livekit)
+    return livekit()
 
 
 def _app_names(value: str) -> list[str]:
@@ -343,6 +348,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
     """Run the voice loop until stopped."""
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
         AppAudio,
+        FallbackWake,
         Microphone,
         OwnVoiceCheck,
         Speaker,
@@ -396,10 +402,11 @@ def cmd_run(_args: argparse.Namespace) -> int:
     threading.Thread(target=jarvis.model.warm, name="jarvis-model-warm", daemon=True).start()
     request, answer = _transcribers(cfg, jarvis.hint)
     mic.start()
+    wakes = [wake_word(cfg), *([wake_word(cfg)] if pc_audio is not None else [])]
     loop = VoiceLoop(
         jarvis.agent,
         mic,
-        wake_word(cfg),
+        wakes[0],
         Vad(data / VAD_MODEL),
         speaker,
         cfg.audio,
@@ -409,7 +416,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         if pc_audio is None
         else PcListener(
             pc_audio,
-            wake_word(cfg),
+            wakes[-1],
             Vad(data / VAD_MODEL),
         ),
         transcribe_answer=answer,
@@ -421,6 +428,10 @@ def cmd_run(_args: argparse.Namespace) -> int:
         if stop_requested.is_set():
             return 0
         raise
+    finally:
+        for wake in wakes:  # an Azure helper ends with its input; end it now, not at exit
+            if isinstance(wake, FallbackWake):
+                wake.close()
     return 0
 
 
@@ -560,36 +571,55 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
 
 
 def _azure_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
-    """Return the checks for the Azure wake word when `audio.wake_engine` is "azure"."""
+    """Return the checks for the Azure wake word when `audio.wake_engine` is "azure".
+
+    The last one runs the helper itself, with no network, to try the model as Jarvis would.
+    """
+    from jarvis.audio import azure_env, azure_wake_command  # ruff: ignore[import-outside-top-level]
+
     if cfg.audio.wake_engine != "azure":
         return []
     model, python = _azure_files(cfg)
-    no_net = (
-        subprocess.run(
-            ["unshare", "--map-current-user", "--net", "--", "true"],
-            capture_output=True,
-            check=False,
-        )
-        if shutil.which("unshare")
-        else None
-    )
-    return [
+    have_model = bool(cfg.audio.azure_keyword_model) and model.is_file()
+    checks = [
         (
-            bool(cfg.audio.azure_keyword_model) and model.is_file(),
+            have_model,
             f"Azure keyword model {cfg.audio.azure_keyword_model or '(not set)'}",
-            "set audio.azure_keyword_model to the .table file (docs/configuration.md)",
+            "jarvis wake azure --model <file>.table",
         ),
         (
             python.is_file(),
             f"Azure wake Python {python}",
             "create it as docs/configuration.md says (Azure wake word)",
         ),
-        (
-            no_net is not None and no_net.returncode == 0,
-            "a namespace with no network for the Azure helper (unshare --net)",
-            "enable unprivileged user namespaces (kernel.unprivileged_userns_clone)",
-        ),
     ]
+    if not (have_model and python.is_file()):
+        return checks
+    try:
+        done = subprocess.run(
+            azure_wake_command(python, model, check=True),
+            capture_output=True,
+            text=True,
+            env=azure_env(),
+            timeout=AZURE_CHECK_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        reason = str(exc)
+    else:
+        reason = "" if done.returncode == 0 else (done.stderr.strip().splitlines() or ["?"])[0]
+    checks.append(
+        (
+            not reason,
+            "the Azure model loads in its helper, with no network"
+            + (f" ({reason[:160]})" if reason else ""),
+            (
+                "a namespace needs user.max_user_namespaces above 0; a rejected model needs "
+                "a fresh download from Speech Studio"
+            ),
+        )
+    )
+    return checks
 
 
 def _strata(cfg: config.Config) -> StrataModel:
@@ -767,7 +797,10 @@ def cmd_wake(args: argparse.Namespace) -> int:
     config.save(config.Config.model_validate(new.model_dump()))
     print(f"wake word: {_wake_summary(new.audio)}")
     if new.audio.wake_engine == "azure" and not Path(new.audio.azure_keyword_model).is_file():
-        print("no Azure keyword model is set yet: Jarvis keeps LiveKit's until one is (--model)")
+        print(
+            "no Azure keyword model file found: Jarvis listens with LiveKit's until "
+            "`jarvis wake azure --model FILE` names one"
+        )
     _restart_if_running()
     return 0
 

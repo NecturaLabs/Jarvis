@@ -24,9 +24,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   or `jarvis wake azure --model FILE`, and `jarvis wake livekit` to switch back. Microsoft's Speech SDK runs
   only in a separate MIT-licensed helper with no network; an Azure model that cannot start falls back to
   LiveKit's, and `jarvis doctor` checks the setup
-  ([ADR 0010](docs/adr/0010-azure-keyword-wake-word.md)).
+  ([ADR 0010](docs/adr/0010-azure-keyword-wake-word.md)). While an Azure model listens, a sentence that
+  says "Jarvis" cannot be spoken over.
 - The service log shows the score of each LiveKit wake, to tune `audio.wake_threshold` against false wakes.
-
 - Speaking over Jarvis: say the wake word while it talks and it stops and listens to the new request; a
   question spoken over counts as no. `audio.barge_in = false` turns it off. A sentence that would trigger the
   wake word itself cannot be spoken over.

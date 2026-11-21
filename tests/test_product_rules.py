@@ -568,7 +568,7 @@ def test_ruff_bans_every_hosted_sdk_and_unlisted_way_to_reach_out(tmp_path: Path
 
 
 AZURE_HELPER = "src/jarvis/azure_wake_helper.py"
-TID251_EXCEPTIONS = {"tests/test_spotify_auth.py", AZURE_HELPER}
+TID251_EXCEPTIONS = {"tests/test_spotify_auth.py"}
 
 
 def test_only_the_listed_files_may_skip_the_banned_imports() -> None:
@@ -601,3 +601,17 @@ def test_only_the_azure_helper_imports_the_speech_sdk_and_jarvis_never_imports_t
             assert "jarvis.azure_wake_helper" not in names or relative.startswith("tests/"), (
                 relative
             )
+
+
+def test_only_the_speech_sdk_import_in_its_helper_skips_the_ban_inline() -> None:
+    skipping: list[str] = []
+    for path in sorted(SOURCE.rglob("*.py")):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if "ignore[" in line and "banned-api" in line:
+                skipping.append(
+                    f"{path.relative_to(REPOSITORY).as_posix()}:{number}:{line.strip()}"
+                )
+
+    assert len(skipping) == 1, skipping
+    assert skipping[0].startswith(AZURE_HELPER)
+    assert "import azure.cognitiveservices.speech as sdk" in skipping[0]

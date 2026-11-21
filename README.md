@@ -13,8 +13,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
 ## What it does today
 
 - **Wake word:** a local "Hey Jarvis" model (LiveKit wake word) listens on your microphone. Your own Azure
-  custom keyword model can listen instead, still on the PC with no network (`jarvis wake azure`; see
-  [the ADR](docs/adr/0010-azure-keyword-wake-word.md)). Silero VAD finds the end of your request.
+  custom keyword model can listen instead, still on the PC with no network (`jarvis wake azure`; setup in
+  [Azure wake word](docs/configuration.md#azure-wake-word)). Silero VAD finds the end of your request.
 - **Speech to text:** Voxtype, run with Jarvis's own settings file. Your own Voxtype configuration is never
   edited.
 - **Reasoning:** one agent on a local Qwen3.6-35B-A3B model served by Strata. Plain commands such as "pause",

@@ -168,7 +168,8 @@ measured on the owner's microphone.
 Jarvis can listen with an Azure AI Speech custom keyword model instead of LiveKit's `hey_jarvis`
 ([ADR 0010](adr/0010-azure-keyword-wake-word.md)). The model is a `.table` file you train in Speech Studio
 (Custom Keyword) and download from the project's Models page. It runs on your PC: Microsoft's Speech SDK is
-loaded only by a small helper that Jarvis starts with no network at all, so nothing reaches Microsoft.
+loaded only by a small helper that Jarvis starts with no network, so it cannot send anything to Microsoft.
+The helper still runs as you, with your files and local sockets.
 
 1. Put the SDK in its own environment (it is closed source, so it is never one of Jarvis's packages):
 
@@ -179,8 +180,8 @@ loaded only by a small helper that Jarvis starts with no network at all, so noth
 
 2. Keep the `.table` file outside the repository (for example under `<data_dir>/azure-wake/`) and switch:
    `jarvis wake azure --model <file>.table`. `jarvis wake livekit` switches back; `jarvis wake` shows which
-   one listens. Each switch restarts the voice service.
-3. `jarvis doctor` checks the model file, the Python and that a namespace with no network can be made.
+   one listens. Each switch restarts the voice service if it is running.
+3. With `audio.wake_engine = "azure"`, `jarvis doctor` checks the model file, the Python and that a namespace with no network can be made.
 
 If the Azure model cannot start, Jarvis says so in the log and listens with LiveKit's instead. The model's own
 threshold decides, so `wake_threshold` does not apply to it. An Azure model trained with "Containing single

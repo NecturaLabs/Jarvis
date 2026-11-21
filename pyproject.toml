@@ -3,8 +3,8 @@ name = "jarvis"
 version = "0.1.0"
 description = "Local always-on voice agent for Omarchy: wake word, Voxtype dictation, a Strata model and Spotify control."
 readme = "README.md"
-license = "GPL-3.0-or-later"
-license-files = ["LICENSE"]
+license = "GPL-3.0-or-later AND MIT"  # the Azure wake helper alone is MIT (ADR 0010)
+license-files = ["LICENSE", "LICENSES/*.txt"]
 authors = [{ name = "NecturaLabs" }]
 requires-python = ">=3.14"
 keywords = ["voice-assistant", "wake-word", "speech", "spotify", "local-llm", "omarchy"]

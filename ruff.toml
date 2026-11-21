@@ -23,10 +23,6 @@ known-first-party = ["jarvis"]
 # The OAuth callback test makes a real request to the in-process loopback server with the standard
 # library's client (the tests keep httpx out of it); tests/conftest.py allows only loopback ports a test bound.
 "tests/test_spotify_auth.py" = ["TID251"]
-# The Azure keyword helper is the one place the Speech SDK may be imported: Jarvis never imports it,
-# runs it with a separate Python and only inside a namespace with no network (ADR 0010), so the SDK
-# keeps voice activation on the PC. tests/test_product_rules.py pins this exception to this file.
-"src/jarvis/azure_wake_helper.py" = ["TID251"]
 
 # Product rules from AGENTS.md, enforced by lint (tests/test_product_rules.py scans the tree for the
 # rest): Jarvis is local and free, so no hosted-model SDK may be imported. Add the real module path.

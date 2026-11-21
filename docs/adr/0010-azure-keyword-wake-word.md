@@ -44,16 +44,24 @@ Chosen: a separate helper process, switchable with `audio.wake_engine` (`"liveki
   the PC. This is enforced in code (`jarvis.audio.azure_wake_command`) and tested.
 - The microphone stays Jarvis's: each 80 ms frame is written to the helper, which answers `wake` when the
   keyword is heard. Writes never block: a helper that falls behind drops audio, not Jarvis.
-- An Azure model that cannot start falls back to LiveKit's, so a switch never leaves Jarvis deaf; `jarvis
-  doctor` names the missing part. The PC-audio listener uses the chosen engine too.
-- The Azure models also wake on "Jarvis" alone, which LiveKit's model does not, so while one is chosen a
+- The helper tries the model on half a second of silence before it says it is ready, so a model the SDK
+  rejects is caught at start. An Azure model that cannot start, or whose helper dies later, falls back to
+  LiveKit's, so a switch never leaves Jarvis deaf; `jarvis doctor` runs the same check and names the cause.
+- A detection arrives a little after the keyword; the helper reports where the keyword ended, and the
+  audio since then (from 0.25 s before it) starts the request, so words said straight after are kept. The PC-audio listener uses the chosen engine too.
+- The owner's Azure models also wake on "Jarvis" alone (a model trained with "Containing single keyword"
+  does), which LiveKit's model does not, so while one is chosen a
   sentence Jarvis says that holds its own name cannot be spoken over (the own-voice check of
   [ADR 0008](0008-speak-while-writing-and-barge-in.md)).
 
 ### Consequences
 
 - Good: the owner can try the Azure models against the false wakes and switch back with one command.
-- Good: nothing the SDK does can leave the PC, and Jarvis's own code and licence are unchanged by it.
+- Good: the SDK cannot reach the network, and Jarvis's own code and licence are unchanged by it.
+- Bad: the namespace cuts only the network. The helper runs as the owner, so the SDK can still read the
+  owner's files and reach local sockets (the session D-Bus); a mount namespace would be the next step.
+- Bad: the own-voice check still uses LiveKit's model for the sound; with an Azure model, only a sentence
+  naming Jarvis is held, so another sentence the Azure model mishears could still interrupt Jarvis.
 - Bad: one more environment to set up by hand, and one more process (about 51 MiB, measured with Microsoft's
   sample keyword model) using about 2.4 % of one core while it listens, against about 1.4 % for LiveKit's.
 - Bad: the model's own threshold decides; `audio.wake_threshold` does not apply to it. Speech Studio stops

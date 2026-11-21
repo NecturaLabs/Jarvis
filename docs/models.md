@@ -124,7 +124,8 @@ spoken over.
   GPL-compatible, telemetry). The SDK is not a Jarvis dependency: it lives in its own environment, and the
   helper runs in a separate process with no network ([ADR 0010](adr/0010-azure-keyword-wake-word.md)).
   Measured with Microsoft's sample model: about 51 MiB and 2.4 % of one core while listening, and a keyword
-  heard 0.3 to 0.6 s after it was said. Setup: [configuration.md](configuration.md#azure-wake-word).
+  heard 0.3 to 0.6 s after the word ended. The `.table` model is your own, trained under Microsoft's terms for the Speech service, and is never
+  shipped with Jarvis. Setup: [configuration.md](configuration.md#azure-wake-word).
 - **End of speech:** Silero VAD 6.2.3 at `<data_dir>/vad/silero_vad.onnx`, MIT as pinned in `models.py`; not
   rechecked upstream. Threshold and timings: `audio.vad_threshold`, `no_speech_timeout_s`, `end_silence_s`,
   `max_utterance_s`.
