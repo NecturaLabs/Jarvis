@@ -13,6 +13,11 @@ cd "$(dirname "$0")/.."
 
 marker="# jarvis-hook: installed by tools/install-hooks.sh"
 hooks=(pre-commit commit-msg)
+legacy=tools/hooks # what an earlier version of this script set core.hooksPath to
+if [[ ${1:-} == --uninstall && $(git config --local --get core.hooksPath || true) == "${legacy}" ]]; then
+  git config --local --unset core.hooksPath
+  echo "removed the old setting core.hooksPath = ${legacy}"
+fi
 folder=$(git rev-parse --git-path hooks)
 effective=$(git config --show-scope --get core.hooksPath || true)
 
@@ -20,6 +25,10 @@ ours() { [[ -f $1 && ! -L $1 ]] && grep -qxF -- "${marker}" "$1"; }
 
 case "${1:-}" in
   --uninstall)
+    if [[ -n ${effective} ]]; then
+      echo "not uninstalling: core.hooksPath is set (${effective}); its hooks are not this script's to remove" >&2
+      exit 1
+    fi
     removed=0
     for hook in "${hooks[@]}"; do
       if ours "${folder}/${hook}"; then
@@ -35,7 +44,7 @@ case "${1:-}" in
     ;;
   "")
     if [[ -n ${effective} ]]; then
-      echo "not installing: core.hooksPath is set (${effective}), so git would not run hooks from ${folder}; unset it first" >&2
+      echo "not installing: core.hooksPath is set (${effective}), so git would not run hooks from ${folder}; unset it first (tools/install-hooks.sh --uninstall undoes the old tools/hooks setting)" >&2
       exit 1
     fi
     for hook in "${hooks[@]}"; do
