@@ -367,8 +367,21 @@ class Agent:
         if not calls:
             return self._final(turn, _ACTIONS_NOTE.sub("", _text(message).strip()) or "Done.")
         turn.messages.append({"role": "assistant", "content": _text(message), "tool_calls": calls})
-        self._run_calls(calls, hooks, turn)
-        return None
+        results = self._run_calls(calls, hooks, turn)
+        answer = self._no_action_reply(calls, results)
+        return None if answer is None else self._final(turn, answer)
+
+    @staticmethod
+    def _no_action_reply(calls: list[dict[str, Any]], results: list[Result]) -> str | None:
+        """Return the words a lone no_action call carried, or None when the model must answer.
+
+        They are the model's own answer, so they get the same claim check as a reply in words.
+        """
+        if len(calls) != 1 or str(obj(calls[0].get("function")).get("name")) != NO_ACTION:
+            return None
+        (result,) = results
+        answer = _ACTIONS_NOTE.sub("", result.spoken.strip()).strip() if result.ok else ""
+        return answer or None
 
     def _final(self, turn: _Turn, reply: str) -> str | None:
         """Return the reply to speak, or None after asking the model to correct a false claim.

@@ -1054,3 +1054,56 @@ def test_a_question_that_cannot_be_asked_counts_as_no() -> None:
     agent.handle("play", Hooks(confirm=broken))
 
     assert counter.runs == []
+
+
+def test_a_no_action_reply_is_spoken_without_a_second_model_call() -> None:
+    model = ScriptedModel([_call("no_action", {"reply": "Hey. What are we listening to?"})])
+    agent, _ = _agent(model, [])
+
+    assert agent.handle("hi", NO_CONFIRM) == "Hey. What are we listening to?"
+    assert len(model.seen) == 1
+
+
+def test_a_no_action_reply_that_claims_an_action_is_challenged() -> None:
+    model = ScriptedModel(
+        [_call("no_action", {"reply": "Paused it for you."}), _say("Nothing changed.")]
+    )
+    agent, audit = _agent(model, [])
+
+    assert agent.handle("hi", NO_CONFIRM) == "Nothing changed."
+    assert model.seen[1][-1]["content"] == NO_ACTION_REMINDER
+    assert "claimed_without_action" in _events(audit)
+
+
+@pytest.mark.parametrize("reply", ["", "   "], ids=["empty", "blank"])
+def test_a_no_action_without_words_asks_the_model_for_them(reply: str) -> None:
+    model = ScriptedModel([_call("no_action", {"reply": reply}), _say("Hello.")])
+    agent, _ = _agent(model, [])
+
+    assert agent.handle("hi", NO_CONFIRM) == "Hello."
+    assert len(model.seen) == 2
+
+
+def test_a_no_action_reply_beside_another_call_is_not_spoken() -> None:
+    counter = Counter()
+    both = _both(_call("pause"), _call("no_action", {"reply": "Hi there."}))
+    model = ScriptedModel([both, _say("Paused it for you.")])
+    agent, _ = _agent(model, [counter.op("pause")])
+
+    assert agent.handle("pause", NO_CONFIRM) == "Paused it for you."
+    assert counter.runs == [{"op": "pause"}]
+
+
+def test_a_no_action_reply_that_is_not_text_is_never_spoken() -> None:
+    model = ScriptedModel([_call("no_action", {"reply": 5}), _say("Hello.")])
+    agent, audit = _agent(model, [])
+
+    assert agent.handle("hi", NO_CONFIRM) == "Hello."
+    assert "tool_rejected" in _events(audit)
+
+
+def test_a_no_action_reply_has_the_actions_note_stripped() -> None:
+    model = ScriptedModel([_call("no_action", {"reply": "[actions taken: none] Hello."})])
+    agent, _ = _agent(model, [])
+
+    assert agent.handle("hi", NO_CONFIRM) == "Hello."
