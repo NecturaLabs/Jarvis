@@ -41,13 +41,16 @@ class Result:
     """What an operation returns to the model, with the origin of its text.
 
     `spoken` is a finished sentence for the owner. An operation sets it when its result needs no
-    wording by the model, which lets a shortcut request be answered without the model.
+    wording by the model, which lets a shortcut request be answered without the model. `picture`
+    is a picture file the chat shows (with its `caption`), from Jarvis's own picture folder.
     """
 
     text: str
     origin: Origin = Origin.TOOL_STATUS
     ok: bool = True
     spoken: str = ""
+    picture: str = ""
+    caption: str = ""
 
 
 @dataclass(frozen=True, slots=True)

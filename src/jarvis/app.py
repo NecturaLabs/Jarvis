@@ -13,6 +13,7 @@ from jarvis.operations import Operation, Registry, Result
 from jarvis.paths import audit_file, spotify_token_file, strata_key_file  # re-exported for callers
 from jarvis.pc.files import Boundary, FileOps
 from jarvis.pc.stats import StatsOps
+from jarvis.pictures import PictureCache
 from jarvis.secretfile import read_api_key
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
@@ -164,8 +165,11 @@ class Jarvis:
     hint: Callable[[], str]
 
 
-def web_operations(config: Config) -> list[Operation]:
-    """Return the time, weather, web and Reddit operations, with clients made on first use."""
+def web_operations(config: Config, shown: PictureCache | None = None) -> list[Operation]:
+    """Return the time, weather, web and Reddit operations, with clients made on first use.
+
+    With `shown`, where the chat keeps the pictures it shows, the picture operations come too.
+    """
     return WebOps(
         config,
         Clients(
@@ -174,6 +178,7 @@ def web_operations(config: Config) -> list[Operation]:
             reddit=ArcticShift(factory=public_client),
             pages=PageReader(factory=public_client),
         ),
+        shown=shown,
     ).operations()
 
 
@@ -215,12 +220,17 @@ def channel_registry(
     return Registry(
         [
             *spotify,
-            *web_operations(web),
+            *web_operations(web, chat_pictures() if channel == "chat" else None),
             *pc_operations(config, limits),
             *([skills.skill_operation(shipped)] if shipped else []),
             no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
         ]
     )
+
+
+def chat_pictures() -> PictureCache:
+    """Return where the chat keeps the pictures it shows (0600, the newest 50)."""
+    return PictureCache(paths.state_dir() / "chat-pictures")
 
 
 def chat_memory_file() -> Path:

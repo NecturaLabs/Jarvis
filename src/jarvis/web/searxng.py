@@ -1,5 +1,6 @@
 """The client of the local SearXNG instance (`deploy/searxng/`); it never reaches another host."""
 
+import re
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import TYPE_CHECKING
@@ -30,6 +31,29 @@ class Hit:
     snippet: str
 
 
+@dataclass(frozen=True, slots=True)
+class ImageHit:
+    """One picture an image search found: someone else's title, the picture and its page.
+
+    `width` and `height` are what the search engine reported, 0 when it did not say.
+    """
+
+    title: str
+    image_url: str
+    page_url: str
+    width: int
+    height: int
+
+
+# "1920x1080", "2464 x 1643", and with a multiplication sign.
+_RESOLUTION = re.compile(r"^\s*(\d{1,6})\s*[xX\u00d7]\s*(\d{1,6})\s*$")
+
+
+def _size(text: object) -> tuple[int, int]:
+    match = _RESOLUTION.match(str(text or ""))
+    return (int(match[1]), int(match[2])) if match else (0, 0)
+
+
 def _clean(text: object, limit: int) -> str:
     return " ".join(str(text or "").split())[:limit]
 
@@ -41,6 +65,15 @@ def _openable(url: str) -> bool:
     except ValueError:
         return False
     return parts.scheme in {"http", "https"} and bool(parts.hostname) and not parts.username
+
+
+def _fetchable(url: str) -> bool:
+    """Return whether a picture's URL is one the page reader may fetch: a standard port too."""
+    try:
+        port = urlsplit(url).port
+    except ValueError:
+        return False
+    return _openable(url) and port in {None, 80, 443}
 
 
 class Searxng:
@@ -59,18 +92,17 @@ class Searxng:
         self._http = http
         self._factory = factory or (lambda: httpx.Client(timeout=TIMEOUT, trust_env=False))
 
-    def search(self, query: str, *, limit: int, site: str = "") -> list[Hit]:
-        """Return up to `limit` results for `query`, optionally only from `site` (a host and path).
+    def _results(self, params: dict[str, str | int]) -> list[dict[str, object]]:
+        """Return the raw results SearXNG answers for `params`.
 
         Raises:
             SearchUnavailableError: SearXNG is not running, timed out or answered an error.
         """
         if self._http is None:
             self._http = self._factory()
-        text = f"site:{site} {query}" if site else query
         try:
             response = self._http.get(
-                f"{self._base}/search", params={"q": text, "format": "json", "safesearch": 1}
+                f"{self._base}/search", params={**params, "format": "json", "safesearch": 1}
             )
         except httpx.HTTPError as exc:
             msg = "search isn't running on this PC"
@@ -79,10 +111,17 @@ class Searxng:
             msg = f"search answered {response.status_code}"
             raise SearchUnavailableError(msg)
         try:
-            results = objs(obj(response.json()).get("results"))
+            return objs(obj(response.json()).get("results"))
         except ValueError as exc:
             msg = "search answered something that is not JSON"
             raise SearchUnavailableError(msg) from exc
+
+    def search(self, query: str, *, limit: int, site: str = "") -> list[Hit]:
+        """Return up to `limit` results for `query`, optionally only from `site` (a host and path).
+
+        SearXNG not running, timing out or answering an error raises `SearchUnavailableError`.
+        """
+        results = self._results({"q": f"site:{site} {query}" if site else query})
         hits: list[Hit] = []
         for result in results:
             url = str(result.get("url") or "")
@@ -98,3 +137,24 @@ class Searxng:
             if len(hits) >= limit:
                 break
         return hits
+
+    def images(self, query: str, *, limit: int) -> list[ImageHit]:
+        """Return up to `limit` pictures for `query` that Jarvis may fetch, each picture once.
+
+        SearXNG not running, timing out or answering an error raises `SearchUnavailableError`.
+        """
+        results = self._results({"q": query, "categories": "images"})
+        found: list[ImageHit] = []
+        for result in results:
+            image = str(result.get("img_src") or "")
+            if not _fetchable(image) or any(hit.image_url == image for hit in found):
+                continue
+            page = str(result.get("url") or "")
+            page = page if _openable(page) else ""
+            title = _clean(result.get("title"), MAX_TITLE)
+            width, height = _size(result.get("resolution"))
+            host = urlsplit(page or image).hostname or ""
+            found.append(ImageHit(title or host, image, page, width, height))
+            if len(found) >= limit:
+                break
+        return found

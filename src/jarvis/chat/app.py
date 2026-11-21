@@ -43,6 +43,7 @@ from jarvis.chat.widgets import (
     ChoiceList,
     Entry,
     Note,
+    PictureView,
     PromptArea,
     Reply,
     Request,
@@ -65,7 +66,7 @@ if TYPE_CHECKING:
     from jarvis.chat.clipboard import Clip
     from jarvis.chat.history import InputHistory
     from jarvis.memory import Conversation
-    from jarvis.pictures import Picture
+    from jarvis.pictures import Picture, PictureCache
     from jarvis.sysinfo import Stats
 
 
@@ -78,6 +79,7 @@ QUIT_WINDOW_S = 2.0  # a second Ctrl+C this soon after the first leaves
 MAX_ENTRIES = 600  # transcript widgets kept; older ones are removed
 RESUMED_TURNS = 12  # remembered turns shown when the window opens on an earlier conversation
 PASTED_NAME = "pasted picture"  # what a picture from the clipboard is called
+MAX_CAPTION = 200
 SPINNER = "·✢✳✶✻✽✻✶✳✢"
 SHORTCUTS = (
     ("enter", "send"),
@@ -148,6 +150,7 @@ class Services:
     pictures: bool = False  # the model can see pictures
     screenshots: tuple[Path, ...] = ()  # where `/image` looks for the newest screenshot
     home: Path = field(default_factory=Path.home)  # what `~/` means in a pasted path
+    shown: PictureCache | None = None  # where the pictures Jarvis shows are kept
 
 
 @dataclass(slots=True)
@@ -219,6 +222,9 @@ class ChatApp(App[None]):
     .reply Markdown > *:last-child { margin-bottom: 0; }
     .reply MarkdownTable { width: auto; }
     .reply MarkdownFence { padding: 0 1; background: ansi_black; }
+    .picture { height: auto; margin: 1 0 0 2; }
+    .picture-image { height: auto; }
+    .picture-caption { height: auto; color: ansi_bright_black; }
     .level-steps, .level-everything { display: none; }
     Screen.-steps .level-steps { display: block; }
     Screen.-everything .level-steps, Screen.-everything .level-everything { display: block; }
@@ -465,6 +471,8 @@ class ChatApp(App[None]):
                 self._follow(entry)
                 if entry.get("event") in {"request", "reply"}:
                     continue  # shown as it was sent, and as it was written
+                if entry.get("event") == "tool_result" and entry.get("picture"):
+                    self._show_shown(entry)
             shown = describe(entry)
             if shown is None:
                 continue
@@ -478,6 +486,18 @@ class ChatApp(App[None]):
                 self._exchanges.append(("jarvis", shown.text))
             else:
                 self._mount(Entry(shown))
+
+    def _show_shown(self, entry: dict[str, object]) -> None:
+        """Draw a picture this window's agent showed, if it is in the chat's picture folder."""
+        cache = self._services.shown
+        path = Path(str(entry.get("picture")))
+        if cache is None or not cache.holds(path):
+            return
+        caption = " ".join(full_text(entry.get("caption", "")).split())[:MAX_CAPTION]
+        try:
+            self._mount(PictureView(path, caption))
+        except OSError:
+            self._note("The picture couldn't be drawn.", "warn")
 
     def _follow(self, entry: dict[str, object]) -> None:
         """Keep the working line on what this window's request is doing."""

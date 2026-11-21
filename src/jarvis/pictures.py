@@ -8,6 +8,8 @@ picture reader turns each picture into at most `PICTURE_TOKENS` tokens of the mo
 """
 
 import base64
+import contextlib
+import hashlib
 import io
 import os
 import stat
@@ -30,6 +32,9 @@ JPEG_QUALITY = 85
 FORMATS = ("PNG", "JPEG", "WEBP", "GIF", "BMP")
 SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"})
 FORMATS_SAID = "PNG, JPEG, WebP, GIF or BMP"
+SHOWN_SIDE = 1024  # a picture shown in the chat: enough for a terminal's width
+KEPT_PICTURES = 50
+_EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg"}
 
 
 class PictureError(Exception):
@@ -186,3 +191,50 @@ def newest(folders: Iterable[Path]) -> Path | None:
             except OSError:
                 continue
     return max(found)[1] if found else None
+
+
+class PictureCache:
+    """The pictures the chat shows: written once, 0600 in a 0700 folder, the newest few kept.
+
+    Each is named after its content, so a picture shown twice is one file. The chat reads only
+    files in this folder.
+    """
+
+    def __init__(self, folder: Path, keep: int = KEPT_PICTURES) -> None:
+        """Keep at most `keep` pictures in `folder`."""
+        super().__init__()
+        self.folder = folder
+        self._keep = keep
+
+    def keep(self, picture: Picture) -> Path:
+        """Write `picture` (if it is not there yet), drop the oldest beyond the limit, return it.
+
+        A folder or file that cannot be written raises `OSError`.
+        """
+        self.folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        digest = hashlib.sha256(picture.data).hexdigest()[:24]
+        path = self.folder / f"{digest}{_EXTENSIONS.get(picture.mime, '.png')}"
+        if path.is_file():
+            os.utime(path)
+        else:
+            temp = path.with_suffix(".part")
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(picture.data)
+            temp.replace(path)
+        self._prune()
+        return path
+
+    def _prune(self) -> None:
+        kept = [
+            (entry.stat().st_mtime, Path(entry.path))
+            for entry in os.scandir(self.folder)
+            if Path(entry.name).suffix in _EXTENSIONS.values() and entry.is_file()
+        ]
+        for _, old in sorted(kept, reverse=True)[self._keep :]:
+            with contextlib.suppress(OSError):
+                old.unlink()
+
+    def holds(self, path: Path) -> bool:
+        """Return whether `path` is a picture file this cache wrote."""
+        return path.parent == self.folder and path.suffix in _EXTENSIONS.values() and path.is_file()

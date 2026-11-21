@@ -10,6 +10,7 @@ from PIL import Image
 
 from jarvis.pictures import (
     MAX_SIDE,
+    PictureCache,
     Picture,
     PictureError,
     newest,
@@ -197,3 +198,25 @@ def test_no_picture_in_the_folders_is_none(tmp_path: Path) -> None:
     (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
 
     assert newest([tmp_path, tmp_path / "missing"]) is None
+
+
+def test_the_cache_keeps_the_newest_pictures_privately_once_each(tmp_path: Path) -> None:
+    cache = PictureCache(tmp_path / "shown", keep=2)
+    pictures = [prepare(_png(10 + n, 10), f"p{n}") for n in range(3)]
+
+    paths = []
+    for number, picture in enumerate(pictures):
+        path = cache.keep(picture)
+        os.utime(path, (1000 + number, 1000 + number))
+        paths.append(path)
+    again = cache.keep(pictures[2])
+
+    assert again == paths[2]
+    assert sorted(p.name for p in (tmp_path / "shown").iterdir()) == sorted(
+        p.name for p in paths[1:]
+    )
+    assert (tmp_path / "shown").stat().st_mode & 0o777 == 0o700
+    assert paths[2].stat().st_mode & 0o777 == 0o600
+    assert cache.holds(paths[2])
+    assert not cache.holds(paths[0])
+    assert not cache.holds(tmp_path / "shown" / ".." / "shown" / paths[2].name)

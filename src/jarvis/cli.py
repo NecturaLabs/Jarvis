@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 from jarvis import __version__, config, models, paths
 from jarvis.agent import Hooks
-from jarvis.app import SetupError, build, echoes_hint
+from jarvis.app import SetupError, build, chat_pictures, echoes_hint
 from jarvis.model import StrataModel
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
@@ -344,6 +344,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         paste=clipboard.read,
         pictures=cfg.strata.pictures,
         screenshots=_screenshot_folders(Path.home(), os.environ),
+        shown=chat_pictures(),
     )
     ChatApp(
         AuditTail(paths.audit_file()),

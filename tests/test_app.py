@@ -11,6 +11,7 @@ from jarvis.app import (
     Channel,
     channel_limits,
     channel_registry,
+    chat_pictures,
     echoes_hint,
     no_action_operation,
     pc_operations,
@@ -211,3 +212,17 @@ def test_jarvis_own_state_is_never_readable_through_the_file_operations(tmp_path
 
     with pytest.raises(OperationError, match="private"):
         ops["read_file"].run({"path": str(state / "spotify-token.json")})
+
+
+def test_only_the_chat_offers_pictures_and_keeps_them_in_its_own_folder(tmp_path: Path) -> None:
+    config = Config()
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+
+    chat = channel_registry(config, spotify.operations(), channel_limits(config, "chat"), "chat")
+    voice = channel_registry(config, spotify.operations(), channel_limits(config, "voice"), "voice")
+
+    assert chat.get("image_search") is not None
+    assert chat.get("show_image") is not None
+    assert voice.get("image_search") is None
+    assert voice.get("show_image") is None
+    assert chat_pictures().folder == paths.state_dir() / "chat-pictures"
