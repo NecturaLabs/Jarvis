@@ -7,6 +7,7 @@ per-request timings (no request text) go to the journal.
 
 import contextlib
 import json
+import os
 import re
 import shutil
 import sys
@@ -94,8 +95,57 @@ def strata_ready_file() -> Path:
     return paths.state_dir() / "strata-ready.json"
 
 
+READER = "strata-vision"  # Strata's picture reader on the processor, in each engine folder
+READER_MAX_TOKENS = 300  # the tokens one picture may become (Strata's own default for this reader)
+READER_THREADS_CAP = 16
+
+
+class StrataSetupError(ConfigError):
+    """Something the Strata profile needs is missing from the Strata install."""
+
+
+def _reader(config: Config) -> Path:
+    """Return the picture reader of the newest Strata engine folder.
+
+    Strata moves the reader to the engine in use when it starts, so any installed one serves.
+
+    Raises:
+        StrataSetupError: no engine folder carries the reader.
+    """
+    engines = config.strata.components_parent / "strata" / "components" / "engine"
+    found = sorted(engines.glob(f"*/{READER}")) if engines.is_dir() else []
+    if not found:
+        msg = f"no picture reader ({READER}) in {engines}; install the Strata engine first"
+        raise StrataSetupError(msg)
+    return found[-1]
+
+
+def _vision(config: Config) -> dict[str, object]:
+    """Return the profile's picture section: the reader on the processor, started on demand.
+
+    It runs in RAM, not in the VRAM that games and the model's experts use, and only from the first
+    picture until `vision_idle_s` without one ("elastic").
+    """
+    s = config.strata
+    threads = max(1, min((os.cpu_count() or 8) // 2, READER_THREADS_CAP))
+    return {
+        "exe": str(_reader(config)),
+        "mmproj": str(s.vision_file),
+        "model": str(s.model_file),
+        "gpu": False,
+        "max_tokens": READER_MAX_TOKENS,
+        "threads": threads,
+        "elastic": True,
+        "elastic_idle_s": s.vision_idle_s,
+    }
+
+
 def strata_profile(config: Config) -> dict[str, object]:
-    """Return the Strata run config: Jarvis's model, capped VRAM, lazy load, idle unload."""
+    """Return the Strata run config: Jarvis's model, capped VRAM, lazy load, idle unload.
+
+    With `strata.vision_file` set it also reads pictures (`_vision`, which raises
+    `StrataSetupError` when the Strata engine has no picture reader).
+    """
     s = config.strata
     args = [
         "--native", str(s.model_file),
@@ -104,7 +154,10 @@ def strata_profile(config: Config) -> dict[str, object]:
         "--mtp", "2",
         "--expert-vram", f"{s.expert_vram_gib:g}",
     ]  # fmt: skip
-    return {
+    vision = _vision(config) if s.pictures else None
+    if vision is not None:
+        args.append("--vision")
+    profile: dict[str, object] = {
         "exe": "component:strata-engine",
         "args": args,
         "args_written": args,
@@ -125,6 +178,9 @@ def strata_profile(config: Config) -> dict[str, object]:
         "idle_unload_s": s.idle_unload_s,
         "reasoning_budget_tokens": s.reasoning_budget_tokens,
     }
+    if vision is not None:
+        profile["vision"] = vision
+    return profile
 
 
 def _write_if_changed(path: Path, text: str) -> None:

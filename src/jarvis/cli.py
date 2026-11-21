@@ -479,6 +479,8 @@ def _model_files(cfg: config.Config) -> list[tuple[str, Path]]:
     if cfg.audio.voice.startswith(KOKORO_PREFIX):
         model, voices = voice_files(cfg.data_dir, cfg.audio.voice)
         found += [("kokoro-model", model), ("kokoro-voices", voices)]
+    if cfg.strata.pictures:
+        found.append(("vision", cfg.strata.vision_file))
     return found
 
 

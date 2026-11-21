@@ -251,3 +251,47 @@ def test_the_profile_is_written_atomically(tmp_path: Path) -> None:
     path = services.write_strata_profile(_config(tmp_path))
 
     assert sorted(p.name for p in path.parent.iterdir()) == [path.name]
+
+
+def _engine(tmp_path: Path, *versions: str) -> Path:
+    root = tmp_path / "components" / "strata" / "components" / "engine"
+    for version in versions:
+        (root / version).mkdir(parents=True)
+        (root / version / "strata").write_bytes(b"")
+        (root / version / "strata-vision").write_bytes(b"")
+    return root
+
+
+def test_without_a_picture_reader_the_profile_reads_no_pictures(tmp_path: Path) -> None:
+    profile = json.loads(json.dumps(services.strata_profile(_config(tmp_path))))
+
+    assert "vision" not in profile
+    assert "--vision" not in profile["args"]
+
+
+def test_the_picture_reader_runs_on_the_processor_and_only_when_a_picture_comes(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "0.1.60-x", "0.1.62-x")
+    reader = tmp_path / "models" / "mmproj-F16.gguf"
+    cfg = _config(tmp_path, vision_file=reader, vision_idle_s=90)
+
+    profile = json.loads(json.dumps(services.strata_profile(cfg)))
+
+    assert "--vision" in profile["args"]
+    vision = profile["vision"]
+    assert vision["exe"] == str(engine / "0.1.62-x" / "strata-vision")
+    assert vision["mmproj"] == str(reader)
+    assert vision["model"] == str(cfg.strata.model_file)
+    assert vision["gpu"] is False  # in RAM, not in the VRAM games need
+    assert vision["elastic"] is True  # started by the first picture, stopped when idle
+    assert vision["elastic_idle_s"] == 90
+    assert vision["max_tokens"] > 0
+    assert 1 <= vision["threads"] <= 16
+
+
+def test_a_picture_reader_without_the_engine_program_is_a_setup_error(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, vision_file=tmp_path / "models" / "mmproj-F16.gguf")
+
+    with pytest.raises(services.StrataSetupError, match="picture reader"):
+        services.strata_profile(cfg)

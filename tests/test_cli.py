@@ -201,6 +201,28 @@ def test_doctor_notes_an_unknown_digest_without_failing_the_file(
     assert any(line.startswith("ok ") and "silero_vad.onnx" in line for line in out)
 
 
+def test_doctor_verifies_the_picture_reader_when_pictures_are_on(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    reader = home / "models" / "mmproj-F16.gguf"
+    reader.parent.mkdir(parents=True)
+    reader.write_bytes(b"reader bytes")
+    strata = config.StrataConfig(vision_file=reader)
+    config.save(config.Config(data_dir=home / "models", strata=strata))
+    monkeypatch.setattr(models, "KNOWN_MODELS", (_known("vision", b"reader bytes"),))
+
+    cli.main(["doctor"])
+
+    out = _doctor_lines(capsys)
+    assert any(line.startswith("ok ") and "mmproj-F16.gguf" in line for line in out)
+
+
+def test_the_picture_reader_pin_is_the_release_strata_names() -> None:
+    (pin,) = [m for m in models.KNOWN_MODELS if m.role == "vision"]
+    assert pin.sha256 == "71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160"
+    assert pin.licence == "Apache-2.0"
+
+
 def test_doctor_still_fails_a_missing_file_and_points_at_the_models_doc(
     home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

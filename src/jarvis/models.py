@@ -20,7 +20,7 @@ CHUNK_SIZE = 1 << 20
 class KnownModel:
     """One file of one upstream release."""
 
-    role: str  # which file it is: wake, vad, kokoro-model, kokoro-voices
+    role: str  # which file it is: wake, vad, kokoro-model, kokoro-voices, vision
     project: str
     version: str  # the release's version or tag
     sha256: str
@@ -62,6 +62,13 @@ KNOWN_MODELS: tuple[KnownModel, ...] = (
         project="Kokoro ONNX (kokoro-onnx release voices-v1.0.bin)",
         version="model-files-v1.1",
         sha256="bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
+        licence="Apache-2.0",
+    ),
+    KnownModel(
+        role="vision",
+        project="Qwen3.6-35B-A3B picture reader (unsloth/Qwen3.6-35B-A3B-MTP-GGUF mmproj-F16.gguf)",
+        version="5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
+        sha256="71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160",
         licence="Apache-2.0",
     ),
 )
