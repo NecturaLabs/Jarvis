@@ -27,7 +27,7 @@ import tomllib
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
@@ -66,11 +66,12 @@ _LGPL: Final = re.compile(r"lgpl-\d(?:\.\d)?(?:-only|-or-later)?")
 # `[[licenses.exceptions]]`: it widens only that distribution, and only by the ids named.
 EXCEPTIONS: Final[dict[str, tuple[frozenset[str], str]]] = {
     "reuse": (
-        frozenset({"CC-BY-SA-4.0"}),
+        frozenset({"CC-BY-SA-4.0", "LicenseRef-Proprietary-Classifier"}),
         (
             "REUSE's METADATA says its documentation (not code) is CC-BY-SA-4.0, which is one-way "
             "compatible with GPL-3.0 (unsure: from the CC and FSF statements, not read here); it "
-            "is a development tool, never distributed with Jarvis"
+            "also carries `License :: Other/Proprietary License` beside the free licences of its "
+            "License field, unexplained. It is a development tool, never distributed with Jarvis"
         ),
     ),
 }
@@ -87,6 +88,20 @@ class Override:
 # Keyed by the normalised distribution name (lower case, runs of - _ . as one -). Used only when
 # the metadata gives no usable licence; one the metadata has outgrown is reported for removal.
 OVERRIDES: Final[dict[str, Override]] = {
+    "jinja2": Override(
+        "BSD-3-Clause",
+        (
+            "only the `BSD License` classifier; LICENSE.txt in jinja2-3.1.6.dist-info/licenses is "
+            "the three-clause BSD text ('Neither the name of the copyright holder ...')"
+        ),
+    ),
+    "nodeenv": Override(
+        "BSD-3-Clause",
+        (
+            "only the `BSD License` classifier; LICENSE in nodeenv-1.12.0.dist-info/licenses is a "
+            "three-clause BSD text (source, binary and no-endorsement clauses, no advertising one)"
+        ),
+    ),
     "protobuf": Override(
         "BSD-3-Clause",
         (
@@ -97,12 +112,18 @@ OVERRIDES: Final[dict[str, Override]] = {
     ),
 }
 
+# Classifiers that name no single licence the check can judge: "BSD License" covers the 4-clause
+# licence too, which is not GPL-compatible, so a distribution with only that needs an OVERRIDES
+# entry read from its LICENSE file. "Other/Proprietary" is a finding wherever it appears.
+AMBIGUOUS_CLASSIFIERS: Final = frozenset({"License :: OSI Approved :: BSD License"})
+PROPRIETARY_CLASSIFIER: Final = "License :: Other/Proprietary License"
+# An EXCEPTIONS id that lets one distribution carry the proprietary classifier.
+PROPRIETARY_ID: Final = "LicenseRef-Proprietary-Classifier"
+
 # `License ::` classifiers that name a licence, as the id they stand for. A classifier that is only
 # "OSI Approved" or "DFSG approved" names none and is ignored; an unlisted one is a finding.
 CLASSIFIERS: Final = {
     "License :: OSI Approved :: MIT License": "MIT",
-    # The classifier does not say 2 or 3 clauses; both are on the allow-list.
-    "License :: OSI Approved :: BSD License": "BSD-3-Clause",
     "License :: OSI Approved :: Apache Software License": "Apache-2.0",
     "License :: OSI Approved :: ISC License (ISCL)": "ISC",
     "License :: OSI Approved :: Python Software Foundation License": "PSF-2.0",
@@ -129,6 +150,7 @@ CLASSIFIERS: Final = {
 NEUTRAL_CLASSIFIERS: Final = frozenset({"License :: OSI Approved", "License :: DFSG approved"})
 
 PYPI: Final = "https://pypi.org/simple"
+PYPI_FILES: Final = "https://files.pythonhosted.org/"
 # `source` tables of the project itself in uv.lock.
 PROJECT_SOURCES: Final = ({"editable": "."}, {"virtual": "."})
 
@@ -301,9 +323,19 @@ def resolve(dist: Dist) -> Resolved:
         node = parse_expression(text)
         if node is not None and all(_spdx_like(t) for t in terms(node)):
             return Resolved(node, text, "License")
+    return _from_classifiers(dist)
+
+
+def _from_classifiers(dist: Dist) -> Resolved:
+    """The licence the `License ::` classifiers name, or the problem with them."""
     named = [
         c for c in dist.classifiers if c.startswith("License ::") and c not in NEUTRAL_CLASSIFIERS
     ]
+    ambiguous = [c for c in named if c in AMBIGUOUS_CLASSIFIERS]
+    if ambiguous:
+        return Resolved(
+            None, "", "classifiers", f"licence classifier {ambiguous[0]!r} is ambiguous"
+        )
     unknown = [c for c in named if c not in CLASSIFIERS]
     if unknown:
         return Resolved(None, "", "classifiers", f"unmapped licence classifier {unknown[0]!r}")
@@ -345,6 +377,9 @@ def check_distributions(dists: Iterable[Dist], project: str) -> list[str]:
         if node is None:
             continue
         extra = EXCEPTIONS.get(key, (frozenset[str](), ""))[0]
+        if PROPRIETARY_CLASSIFIER in dist.classifiers and PROPRIETARY_ID not in extra:
+            problems.append(f"{where}: has the classifier {PROPRIETARY_CLASSIFIER!r}")
+            continue
         if not passes(node, lambda i, extra=extra: is_allowed(i, extra)):
             bad = sorted({t for t in terms(node) if not is_allowed(t, extra)})
             problems.append(
@@ -352,6 +387,24 @@ def check_distributions(dists: Iterable[Dist], project: str) -> list[str]:
                 f"for distribution with GPL-3.0-or-later: {', '.join(bad)}"
             )
     return problems
+
+
+def _foreign_downloads(package: dict[str, Any]) -> list[str]:
+    """The sdist and wheel urls of a lock entry that are not PyPI's file host.
+
+    uv downloads from the url written beside each file, whatever the entry's `source` says.
+    """
+    files: list[object] = [package.get("sdist")]
+    wheels: object = package.get("wheels")
+    if isinstance(wheels, list):
+        files.extend(cast("list[object]", wheels))
+    foreign: list[str] = []
+    for entry in files:
+        if isinstance(entry, dict):
+            url = cast("dict[str, object]", entry).get("url")
+            if not (isinstance(url, str) and url.startswith(PYPI_FILES)):
+                foreign.append(str(url))
+    return foreign
 
 
 def check_lock(text: str, project: str) -> list[str]:
@@ -368,6 +421,10 @@ def check_lock(text: str, project: str) -> list[str]:
         name = str(package.get("name", ""))
         source = package.get("source")
         line = line_of.get(normalise(name), 1)
+        problems.extend(
+            f"uv.lock:{line}: package {name} downloads from {url}; only {PYPI_FILES} is allowed"
+            for url in _foreign_downloads(package)
+        )
         if source == {"registry": PYPI}:
             continue
         if source in PROJECT_SOURCES and normalise(name) == normalise(project):

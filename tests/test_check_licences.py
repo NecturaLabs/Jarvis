@@ -107,7 +107,6 @@ def test_a_short_spdx_license_field_is_used() -> None:
 @pytest.mark.parametrize(
     ("licence", "expected"),
     [
-        ("BSD", "BSD-3-Clause"),
         ("MIT License", "MIT"),
         ("Apache 2.0", "Apache-2.0"),
         ("Apache License\n Version 2.0, January 2004\n ...", "Apache-2.0"),
@@ -115,7 +114,6 @@ def test_a_short_spdx_license_field_is_used() -> None:
 )
 def test_free_text_license_falls_back_to_the_classifiers(licence: str, expected: str) -> None:
     classifiers = {
-        "BSD-3-Clause": "License :: OSI Approved :: BSD License",
         "MIT": "License :: OSI Approved :: MIT License",
         "Apache-2.0": "License :: OSI Approved :: Apache Software License",
     }
@@ -289,3 +287,44 @@ def test_main_prints_findings_and_exits_one(
 def test_main_rejects_arguments(capsys: pytest.CaptureFixture[str]) -> None:
     assert cl.main(["--bogus"]) == 2
     assert "usage" in capsys.readouterr().err
+
+
+FILES = "https://files.pythonhosted.org/packages/aa/bb/good-1.0"
+
+
+def test_lock_downloads_from_pypi_files_are_clean() -> None:
+    lock = LOCK + (
+        f'sdist = {{ url = "{FILES}.tar.gz", hash = "sha256:00" }}\n'
+        f'wheels = [\n    {{ url = "{FILES}-py3-none-any.whl", hash = "sha256:11" }},\n]\n'
+    )
+    assert cl.check_lock(lock, "jarvis") == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        'sdist = { url = "https://evil.example.invalid/good-1.0.tar.gz", hash = "sha256:00" }',
+        'wheels = [\n    { url = "https://evil.example.invalid/good-1.0-py3-none-any.whl" },\n]',
+        'sdist = { url = "http://files.pythonhosted.org/packages/good-1.0.tar.gz" }',
+        'sdist = { url = "https://files.pythonhosted.org.evil.invalid/good-1.0.tar.gz" }',
+    ],
+)
+def test_a_download_from_anywhere_but_pypi_files_is_reported(field: str) -> None:
+    """uv installs from the url written in the lock; a PyPI `source` beside it proves nothing."""
+    [finding] = cl.check_lock(LOCK + field + "\n", "jarvis")
+    assert finding.startswith("uv.lock:9: package good downloads from ")
+
+
+def test_a_bare_bsd_classifier_is_not_taken_as_three_clause() -> None:
+    """The classifier does not say how many clauses; the 4-clause licence is not GPL-compatible."""
+    [finding] = cl.check_distributions(
+        [dist(classifiers=("License :: OSI Approved :: BSD License",))], "jarvis"
+    )
+    assert "BSD License" in finding
+
+
+def test_a_proprietary_classifier_is_reported_whatever_the_license_field_says() -> None:
+    [finding] = cl.check_distributions(
+        [dist(licence="MIT", classifiers=("License :: Other/Proprietary License",))], "jarvis"
+    )
+    assert "Proprietary" in finding
