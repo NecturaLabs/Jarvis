@@ -47,9 +47,9 @@ daemon and never your Voxtype config or recordings. Each run is
   default on) under `[whisper]`. Whisper pads every clip to a 30 s window, so without the short window a
   two-second request costs as much as a long one; with it a short command took 0.29 s instead of 1.66 s
   (commit `141c2bf`, measured with `small.en`). Whisper.cpp also uses only 4 threads unless told otherwise.
-- **Model:** `audio.transcribe_model`, default `base.en`; it must already be downloaded through Voxtype. In
-  that same measurement `small.en` took 0.29 s on a short command against 0.49 s for `base.en`, and was more
-  accurate.
+- **Model:** `audio.transcribe_model`, default `small.en`; it must already be downloaded through Voxtype
+  (`voxtype setup model`), and `jarvis doctor` checks that it is. In that same measurement `small.en` took
+  0.29 s on a short command against 0.49 s for `base.en`, and was more accurate.
 - **Hint:** when `audio.vocabulary_hint` is on, `--initial-prompt` carries Jarvis's name, its actions and up to
   `audio.hint_names` of your artist names, shortened, `Jarvis. play, pause, next. Glass Harbor, Night Circuit.`
   It always ends with a full stop: without it Whisper re-decoded short clips and took 1.8 s. A transcript that
@@ -76,8 +76,8 @@ daemon and never your Voxtype config or recordings. Each run is
 ### Piper (any other `audio.voice` value)
 
 - `piper-tts` 1.8.0 (OHF-Voice/piper1-gpl). Put a voice at `<data_dir>/voices/<name>.onnx` with
-  `<name>.onnx.json` beside it and set `audio.voice = "<name>"`. `audio.speech_speed` does not apply to
-  Piper voices.
+  `<name>.onnx.json` beside it and set `audio.voice = "<name>"`. `audio.speech_speed` sets Piper's length
+  scale (the voice's own scale divided by the speed).
 - Licence: `piper-tts` is GPL-3.0-or-later (package metadata). Each Piper voice has its own licence: not
   checked. Because Jarvis imports `piper-tts` for both voices, the release licence has to be settled before
   Jarvis is published (see `docs/plan.md`, Open-source readiness).

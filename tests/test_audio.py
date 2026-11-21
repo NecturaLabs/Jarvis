@@ -8,7 +8,8 @@ import subprocess
 import threading
 import tomllib
 from pathlib import Path
-from typing import TYPE_CHECKING, override
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, ClassVar, override
 
 import numpy as np
 import pytest
@@ -114,13 +115,17 @@ def test_voxtype_command_passes_overrides_before_the_subcommand() -> None:
     )
     assert cmd == [
         "voxtype",
-        "--model",
-        "large-v3-turbo",
-        "--initial-prompt",
-        "Glass Harbor, Night Circuit",
+        "--model=large-v3-turbo",
+        "--initial-prompt=Glass Harbor, Night Circuit",
         "transcribe",
         "/x.wav",
     ]
+
+
+def test_a_hint_that_starts_with_a_dash_stays_the_hint() -> None:
+    cmd = voxtype_command(Path("/x.wav"), engine="-v", model="-c", prompt="--help, Low Tide")
+
+    assert cmd[1:4] == ["--model=-c", "--engine=-v", "--initial-prompt=--help, Low Tide"]
 
 
 def test_voxtype_command_without_overrides_uses_the_owners_config() -> None:
@@ -595,8 +600,7 @@ def test_voxtype_command_reads_jarvis_settings_first() -> None:
         "voxtype",
         "-c",
         "/s/voxtype.toml",
-        "--model",
-        "small.en",
+        "--model=small.en",
         "transcribe",
         "/x.wav",
     ]
@@ -618,3 +622,39 @@ def test_transcribe_passes_jarvis_settings_to_voxtype() -> None:
     transcribe(SILENCE, settings=Path("/s/voxtype.toml"), run=run)
 
     assert seen[0][1:3] == ["-c", "/s/voxtype.toml"]
+
+
+class _FakePiperVoice:
+    """Stands in for `piper.PiperVoice`: notes the synthesis settings it is given."""
+
+    loaded: ClassVar[list[_FakePiperVoice]] = []
+
+    def __init__(self, length_scale: float) -> None:
+        super().__init__()
+        self.config = SimpleNamespace(length_scale=length_scale)
+        self.settings: list[object] = []
+
+    @classmethod
+    def load(cls, _path: Path) -> _FakePiperVoice:
+        voice = cls(1.2)
+        cls.loaded.append(voice)
+        return voice
+
+    def synthesize(self, _text: str, syn_config: object = None) -> list[object]:
+        self.settings.append(syn_config)
+        return [SimpleNamespace(sample_rate=22050, audio_int16_bytes=b"\x00\x00")]
+
+
+def test_a_piper_voice_speaks_at_the_configured_speed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import piper  # ruff: ignore[import-outside-top-level] - only this test needs it
+
+    _FakePiperVoice.loaded.clear()
+    monkeypatch.setattr(piper, "PiperVoice", _FakePiperVoice)
+
+    speak = audio_module.make_synthesizer(tmp_path, "en_GB-alan-medium", 2.0)
+    assert speak("Low Tide") == (b"\x00\x00", 22050)
+
+    (setting,) = _FakePiperVoice.loaded[0].settings
+    assert getattr(setting, "length_scale", None) == pytest.approx(0.6)

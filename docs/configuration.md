@@ -40,7 +40,7 @@ current file. The running voice service reads it once, when it starts.
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
-| `base_url` | empty | empty, `https://...`, or `http://` to `127.0.0.1`, `localhost` or `::1`; no user name or password | Empty means `http://127.0.0.1:<strata.port>/v1`. |
+| `base_url` | empty | empty, or an `http://` or `https://` URL on `127.0.0.1`, `localhost` or `::1`; no user name or password | Empty means `http://127.0.0.1:<strata.port>/v1`. |
 | `model` | `jarvis` | text | The model name sent in each request. |
 | `request_timeout_s` | `120.0` | above 0, up to 600 | Longest one model call may wait. A request also stops after 90 s in total. |
 | `max_tokens` | `200` | 1 to 4096 | Reply length cap per model call. |
@@ -104,9 +104,9 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | `max_utterance_s` | `20.0` | above 1, up to 120 | Longest request. |
 | `confirm_window_s` | `8.0` | above 1, up to 30 | How long Jarvis waits for the answer to a confirmation question. |
 | `voice` | `kokoro:bm_george` | text | `kokoro:<name>` for a Kokoro voice, otherwise a Piper voice name. See [models.md](models.md). |
-| `speech_speed` | `1.0` | 0.5 to 2.0 | Speaking speed. Applies to Kokoro voices only. |
+| `speech_speed` | `1.0` | 0.5 to 2.0 | Speaking speed, for Kokoro and Piper voices. |
 | `transcribe_engine` | empty | text | Voxtype `--engine`. Empty means Voxtype's own. |
-| `transcribe_model` | `base.en` | text | Voxtype `--model`. Empty means Voxtype's own. The model must already be downloaded. |
+| `transcribe_model` | `small.en` | text | Voxtype `--model`. Empty means Voxtype's own. The model must already be downloaded. |
 | `transcribe_threads` | `8` | 1 to 256 | Whisper threads, written to Jarvis's own Voxtype settings file. |
 | `transcribe_short_window` | `true` | true or false | Size Whisper's window to the clip (`context_window_optimization`); much faster for short commands. |
 | `vocabulary_hint` | `true` | true or false | Prime speech-to-text with Jarvis's name, its actions and your artist names. |

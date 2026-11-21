@@ -490,12 +490,14 @@ def voxtype_command(
     cmd = ["voxtype"]
     if settings is not None:
         cmd += ["-c", str(settings)]
+    # The `--option=value` form keeps a value that starts with a dash (a song name in the hint)
+    # from being read as another option.
     if model:
-        cmd += ["--model", model]
+        cmd.append(f"--model={model}")
     if engine:
-        cmd += ["--engine", engine]
+        cmd.append(f"--engine={engine}")
     if prompt:
-        cmd += ["--initial-prompt", prompt]
+        cmd.append(f"--initial-prompt={prompt}")
     return [*cmd, "transcribe", str(wav)]
 
 
@@ -563,12 +565,14 @@ def make_synthesizer(
 
         kokoro = Kokoro(files[0], files[1], voice.removeprefix(KOKORO_PREFIX), speed=speed)
         return lambda text: (kokoro.synthesize(text).tobytes(), SAMPLE_RATE)
-    from piper import PiperVoice  # ruff: ignore[import-outside-top-level] - heavy
+    from piper import PiperVoice, SynthesisConfig  # ruff: ignore[import-outside-top-level] - heavy
 
     piper = PiperVoice.load(files[0])
+    # Piper's length scale is the time per sound, so a faster speed is a shorter one.
+    settings = SynthesisConfig(length_scale=piper.config.length_scale / speed)
 
     def run(text: str) -> tuple[bytes, int]:
-        chunks = list(piper.synthesize(text))
+        chunks = list(piper.synthesize(text, settings))
         rate = chunks[0].sample_rate if chunks else 22050
         return b"".join(chunk.audio_int16_bytes for chunk in chunks), rate
 
