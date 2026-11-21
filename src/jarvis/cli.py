@@ -24,7 +24,11 @@ VAD_MODEL = "vad/silero_vad.onnx"
 
 
 def _app_names(value: str) -> list[str]:
-    """Return the app names of a comma-separated `--apps` value; an empty name is an error."""
+    """Return the app names of a comma-separated `--apps` value.
+
+    Raises:
+        argparse.ArgumentTypeError: a name is empty.
+    """
     names = [name.strip() for name in value.split(",")]
     if not all(names):
         msg = "name at least one app and no empty names (to hear all PC audio use --all-output)"
@@ -82,12 +86,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--apps",
         type=_app_names,
         metavar="A,B",
-        help="the apps to listen to, comma-separated, by process or app name (--apps discord,firefox)",
+        help="apps to listen to, comma-separated, by process or app name (--apps discord,firefox)",
     )
     which.add_argument(
         "--all-output",
         action="store_true",
-        help="listen to all PC audio, not only named apps (anything playing can then speak to Jarvis)",
+        help="listen to all PC audio, not only named apps (anything playing can speak to Jarvis)",
     )
     return parser
 
