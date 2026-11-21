@@ -10,8 +10,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 - Under each chat reply: "✻ Worked for 4m 41s · done 7:37 PM · 50 TPS" (how long it took, when it was done,
   and how fast the model wrote, from Strata's own timings), with a blank line above it. Headings have a blank
-  line above and none below. Typing `/` opens the command menu in place of the footer and toolbar, as in
-  Claude Code, so the transcript keeps its size; `/exit` leaves (`/quit` still works).
+  line above and none below, and are set as Claude Code sets them: bold, the first level also italic and
+  underlined; list items are marked with a dash in the text's own colour. Typing `/` opens the command menu
+  in place of the footer and toolbar, as in Claude Code. The menu keeps one height and its columns while
+  you type, with one line a command, so the window no longer shifts at each key; `/exit` leaves (`/quit`
+  still works).
 - Jarvis remembers the conversation. Instead of the last 4 turns, forgotten after 5 minutes, it keeps as
   much as fits a token budget (`agent.memory_tokens` 6,000 for speech, `chat.memory_tokens` 11,500 for the
   chat) and has the model summarize the oldest turns when it outgrows it. Speech forgets after 30 idle
