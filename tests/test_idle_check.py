@@ -40,11 +40,13 @@ class FakeProc:
         )
         (folder / "fdinfo").mkdir(exist_ok=True)
 
-    def set_cpu(self, pid: int, ticks: int, *, comm: str = "worker") -> None:
-        # Fields 3 to 15: state, ppid, pgrp, session, tty_nr, tpgid, flags, minflt, cminflt, majflt,
-        # cmajflt, utime, stime. Half the ticks go to user time, half to system time.
+    def set_cpu(self, pid: int, ticks: int, *, comm: str = "worker", reaped: int = 0) -> None:
+        # Fields 3 to 17: state, ppid, pgrp, session, tty_nr, tpgid, flags, minflt, cminflt, majflt,
+        # cmajflt, utime, stime, cutime, cstime. Half the ticks go to user time, half to system
+        # time; `reaped` is the time of children this process has waited for (cutime + cstime).
         user, system = ticks - ticks // 2, ticks // 2
-        after_comm = f"S 1 1 1 0 -1 0 0 0 0 0 {user} {system} 0 0 20 0 1 0 12345"
+        c_user, c_system = reaped - reaped // 2, reaped // 2
+        after_comm = f"S 1 1 1 0 -1 0 0 0 0 0 {user} {system} {c_user} {c_system} 20 0 1 0 12345"
         (self.root / str(pid) / "stat").write_text(
             f"{pid} ({comm}) {after_comm}\n", encoding="utf-8"
         )
@@ -210,6 +212,30 @@ def test_a_child_started_during_the_window_counts_in_full(proc: FakeProc) -> Non
     (result,), _ = _measure(proc, [Root("svc", 100)], spawn)
 
     assert result.cpu_percent == pytest.approx(10.0)
+
+
+def test_a_child_that_exits_during_the_window_counts_through_its_parent(proc: FakeProc) -> None:
+    proc.process(100, cpu_ticks=100, children=[200])
+    proc.process(200, cpu_ticks=5000)
+
+    def finish() -> None:  # the child works 300 more ticks, exits and is waited for
+        proc.set_children(100, [])
+        proc.remove(200)
+        proc.set_cpu(100, 130, reaped=5300)
+
+    (result,), _ = _measure(proc, [Root("svc", 100)], finish)
+
+    assert result.cpu_percent == pytest.approx(11.0)
+
+
+def test_short_lived_children_never_seen_still_count(proc: FakeProc) -> None:
+    """A loop that starts a busy program over and over shows only in the parent's reaped time."""
+    proc.process(100, cpu_ticks=100)
+
+    (result,), _ = _measure(proc, [Root("svc", 100)], lambda: proc.set_cpu(100, 100, reaped=600))
+
+    assert result.cpu_percent == pytest.approx(20.0)
+    assert result.problems
 
 
 def test_a_child_that_exits_does_not_count_negatively(proc: FakeProc) -> None:
