@@ -84,8 +84,8 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 | `cli.py` | The `jarvis` command: setup, run, ask, chat, doctor, status, start, stop, restart, logs, unload, pc-audio, spotify-login. `cmd_run` wires the threads and the signal handlers. | Hold logic that tests need elsewhere; it only wires parts together. |
 | `services.py` | The Strata profile and the two systemd user units, rendered and written. | Write a value with a control character into a unit, or a relative program path. |
 | `model.py` | `StrataModel`: the OpenAI-style chat client, plus status, load, warm and unload. | Generate tokens to check health. Use the network beyond Strata's URL. |
-| `chat.py` | The Textual window for `jarvis chat`: typed requests, a live view of the audit log. | Trust log text; it shows it as plain characters. |
-| `activity.py` | `AuditTail` (follows the audit log) and the one-line description of each event for the chat window. | Write the log. |
+| `chat.py` | The Textual window for `jarvis chat`, laid out like Claude Code's: typed requests, a live view of the audit log grouped by request, a yes-or-no choice for questions, Esc to stop a request. | Trust log text; it shows it as plain characters. |
+| `activity.py` | `AuditTail` (follows the audit log) and how the chat window shows each event: its kind, words, a quiet note, and whether it belongs to the step above. | Write the log. |
 | `config.py` | `config.toml`: a validated, versioned pydantic schema. | Accept an unknown key or a value with a control character. |
 
 ### Support

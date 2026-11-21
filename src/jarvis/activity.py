@@ -1,4 +1,4 @@
-"""What the chat window shows of Jarvis's audit log: new events as they are written, one line each.
+"""What the chat window shows of Jarvis's audit log: new events as they are written, one entry each.
 
 The log holds other people's words (Spotify names, PC-audio speech), so every text is shown as
 plain characters: nothing in it can draw on the terminal or style the window.
@@ -102,11 +102,31 @@ def _entry(line: bytes) -> dict[str, object] | None:
 
 @dataclass(frozen=True, slots=True)
 class Shown:
-    """One event as the window shows it: local time, a kind that picks its colour, the words."""
+    """One event as the window shows it.
+
+    `kind` picks its mark and colour; a `nested` event belongs to the step above it (a result, an
+    answer); `note` is said after the words, quietly (how a request came in, how long a reply
+    took); a `detail` is shown only when the owner asks for every detail.
+    """
 
     time: str
     kind: str
     text: str
+    nested: bool = False
+    note: str = ""
+
+    @property
+    def detail(self) -> bool:
+        """Whether the event is shown only with every detail on."""
+        return self.kind == "detail"
+
+    @property
+    def starts_turn(self) -> bool:
+        """Whether the event opens a request: someone asked Jarvis something."""
+        return self.kind in {"you", "pc"}
+
+
+type _Line = tuple[str, str, bool, str]  # kind, text, nested, note
 
 
 def _plain(value: object) -> str:
@@ -126,36 +146,38 @@ def _action(op: object) -> str:
     return _plain(str(op).removeprefix("spotify_").replace("_", " "))
 
 
-def _request(entry: dict[str, object]) -> tuple[str, str]:
+def _request(entry: dict[str, object]) -> _Line:
     words = _plain(entry.get("text", ""))
     if entry.get("origin") == "pc_audio":
-        return "pc", f"PC audio: {words}"
+        return "pc", words, False, "PC audio"
     if entry.get("via") in {"chat", "ask"}:
-        return "you", f"You (typed): {words}"
-    return "you", f"You: {words}"
+        return "you", words, False, "you, typed"
+    return "you", words, False, "you, by voice"
 
 
-def _tool_call(entry: dict[str, object]) -> tuple[str, str]:
+def _tool_call(entry: dict[str, object]) -> _Line:
     action = _action(entry.get("op", ""))
     verdict = entry.get("verdict")
     if verdict == "confirm":
-        return "step", f"→ {action} (needs your yes)"
+        return "ask", action, False, "needs your yes"
     if verdict in {"deny", "strong"}:
-        return "warn", f"→ {action} refused: {_plain(entry.get('reason', ''))}"
-    return "step", f"→ {action}"
+        return "warn", f"{action} refused: {_plain(entry.get('reason', ''))}", False, ""
+    return "step", action, False, ""
 
 
-def _confirmation(entry: dict[str, object]) -> tuple[str, str]:
+def _confirmation(entry: dict[str, object]) -> _Line:
     if entry.get("approved") is True:
-        return "step", "  you said yes"
+        return "result", "you said yes", True, ""
     if entry.get("asked") is False:
-        return "warn", "  no: not asked again after an earlier no"
-    return "warn", "  no yes, so nothing was done"
+        return "warn", "no: not asked again after an earlier no", True, ""
+    return "warn", "no yes, so nothing was done", True, ""
 
 
-def _tool_result(entry: dict[str, object]) -> tuple[str, str]:
+def _tool_result(entry: dict[str, object]) -> _Line:
     words = _plain(entry.get("text", ""))
-    return ("detail", f"  {words}") if entry.get("ok") else ("warn", f"  not done: {words}")
+    return (
+        ("result", words, True, "") if entry.get("ok") else ("warn", f"not done: {words}", True, "")
+    )
 
 
 def _seconds(entry: dict[str, object]) -> str:
@@ -163,26 +185,31 @@ def _seconds(entry: dict[str, object]) -> str:
     return f"{value} s" if isinstance(value, int | float) else "?"
 
 
-def _reply(entry: dict[str, object]) -> tuple[str, str]:
-    return "jarvis", f"Jarvis: {_plain(entry.get('text', ''))}  ({_seconds(entry)})"
+def _reply(entry: dict[str, object]) -> _Line:
+    return "jarvis", _plain(entry.get("text", "")), False, _seconds(entry)
 
 
-def _simple(entry: dict[str, object]) -> tuple[str, str] | None:
+def _simple(entry: dict[str, object]) -> _Line | None:
     op = _action(entry.get("op", ""))
-    lines: dict[str, tuple[str, str]] = {
-        "shortcut": ("step", f"→ {op} (without the model)"),
-        "tool_failed": ("warn", f"  {op} failed: {_plain(entry.get('error', ''))}"),
-        "tool_uncertain": ("warn", f"  {op}: not sure it went through"),
-        "tool_rejected": ("warn", f"  {op} rejected: {_plain(entry.get('reason', ''))}"),
-        "tool_denied": ("warn", f"  {op} refused: {_plain(entry.get('reason', ''))}"),
-        "tool_repeated": ("detail", f"  {op} already done in this request"),
-        "tool_budget": ("warn", "  too many actions in one request"),
-        "tool_duplicates_dropped": ("detail", "  dropped copies of the same call"),
-        "model_call": ("detail", f"  model answered in {_seconds(entry)}"),
-        "model_error": ("error", f"  the model failed: {_plain(entry.get('error', ''))}"),
-        "claimed_without_action": ("detail", "  the model claimed an action; asked again"),
-        "claim_replaced": ("warn", "  the model claimed an action that was not done"),
-        "pc_audio_permission": ("step", f"  PC audio may ask again for {_seconds(entry)}"),
+    lines: dict[str, _Line] = {
+        "shortcut": ("step", op, False, "without the model"),
+        "tool_failed": ("warn", f"{op} failed: {_plain(entry.get('error', ''))}", True, ""),
+        "tool_uncertain": ("warn", f"{op}: not sure it went through", True, ""),
+        "tool_rejected": ("warn", f"{op} rejected: {_plain(entry.get('reason', ''))}", False, ""),
+        "tool_denied": ("warn", f"{op} refused: {_plain(entry.get('reason', ''))}", False, ""),
+        "tool_repeated": ("detail", f"{op} already done in this request", True, ""),
+        "tool_budget": ("warn", "too many actions in one request", True, ""),
+        "tool_duplicates_dropped": ("detail", "dropped copies of the same call", True, ""),
+        "model_call": ("detail", f"model answered in {_seconds(entry)}", True, ""),
+        "model_error": ("error", f"the model failed: {_plain(entry.get('error', ''))}", False, ""),
+        "claimed_without_action": ("detail", "the model claimed an action; asked again", True, ""),
+        "claim_replaced": ("warn", "the model claimed an action that was not done", True, ""),
+        "pc_audio_permission": (
+            "result",
+            f"PC audio may ask again for {_seconds(entry)}",
+            True,
+            "",
+        ),
     }
     return lines.get(str(entry.get("event")))
 
@@ -202,5 +229,6 @@ def describe(entry: dict[str, object]) -> Shown | None:
     if not isinstance(event, str) or not event:
         return None
     render = _EVENTS.get(event)
-    kind, text = (render(entry) if render else _simple(entry)) or ("detail", _plain(event))
-    return Shown(_local_time(entry.get("ts")), kind, text)
+    line = (render(entry) if render else _simple(entry)) or ("detail", _plain(event), True, "")
+    kind, text, nested, note = line
+    return Shown(_local_time(entry.get("ts")), kind, text, nested=nested, note=note)

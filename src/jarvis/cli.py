@@ -283,7 +283,7 @@ def _chat_status(cfg: config.Config) -> str:
 
     voice = _unit_state(JARVIS_UNIT)
     model = _strata(cfg).status() if _unit_state(STRATA_UNIT) == "active" else None
-    return f"voice service: {voice}   model: {model or 'server not running'}"
+    return f"voice {voice} · model {model or 'server not running'}"
 
 
 def cmd_chat(_args: argparse.Namespace) -> int:
@@ -305,7 +305,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         ask,
         unavailable=unavailable,
         status=lambda: _chat_status(cfg),
-        names=(cfg.persona.name,),
+        name=cfg.persona.name,
     ).run()
     return 0
 
