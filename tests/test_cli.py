@@ -676,3 +676,55 @@ def test_restart_starts_a_stopped_strata(monkeypatch: pytest.MonkeyPatch) -> Non
     calls = _restart_calls(monkeypatch, None)
 
     assert ("start", "jarvis-strata.service") in calls
+
+
+def test_a_strata_start_time_is_read_to_the_microsecond() -> None:
+    assert cli.parse_systemd_time("Sat 2026-11-21 04:40:30.157367 UTC") == pytest.approx(
+        1795236030.157367
+    )
+    assert cli.parse_systemd_time("") is None
+    assert cli.parse_systemd_time("n/a") is None
+
+
+def test_files_written_just_before_strata_started_in_the_same_second_are_no_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jarvis.services import strata_profile_file  # ruff: ignore[import-outside-top-level]
+
+    profile = strata_profile_file()
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text("{}")
+
+    calls = _restart_calls(monkeypatch, profile.stat().st_mtime + 0.001)
+
+    assert ("restart", "jarvis-strata.service") not in calls
+
+
+def test_doctor_fails_a_saved_model_url_that_misses_the_strata_port(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    paths.config_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.config_file().write_text(
+        '[model]\nbase_url = "http://127.0.0.1:8080/v1"\n[strata]\nport = 9100\n', encoding="utf-8"
+    )
+
+    assert cli.main(["doctor"]) == 1
+
+    assert any(
+        line.startswith("FAIL") and "model.base_url" in line and "9100" in line
+        for line in _doctor_lines(capsys)
+    )
+
+
+def test_doctor_takes_a_full_path_as_the_speech_model(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    model = home / "whisper" / "ggml-custom.bin"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"model")
+    audio = config.AudioConfig(transcribe_model=str(model))
+    config.save(config.Config(data_dir=home / "models", audio=audio))
+
+    cli.main(["doctor"])
+
+    assert any(line.startswith("ok ") and str(model) in line for line in _doctor_lines(capsys))
