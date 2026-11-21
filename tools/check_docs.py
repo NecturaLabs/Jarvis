@@ -18,9 +18,12 @@ usage error). It reads only the files git tracks, never untracked ones. The rule
      covered by naming the directory)
   7. every `.claude/skills/<name>/SKILL.md` has a byte-identical `.agents/skills/<name>/SKILL.md`
      and the other way round
+  8. every `.claude/agents/<name>.md` has a `.codex/agents/<name>.toml` with the same name,
+     description and instructions, and the other way round
 
-A rule whose index file does not exist yet is reported as a finding, never skipped. Code fences and
-inline code are not read for links. Standard library only.
+A tracked symbolic link is reported and never followed. A rule whose index file does not exist yet
+is reported as a finding, never skipped. Code fences and inline code are not read for links.
+Standard library only.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from functools import cached_property
@@ -126,7 +130,9 @@ def tracked_files(root: Path) -> list[str]:
         capture_output=True,
         text=True,
     ).stdout
-    return sorted(f for f in out.split("\0") if f and (root / f).is_file())
+    return sorted(
+        f for f in out.split("\0") if f and ((root / f).is_symlink() or (root / f).is_file())
+    )
 
 
 def excluded_file(path: str) -> bool:
@@ -324,15 +330,71 @@ def check_skill_mirror(tree: Tree) -> list[str]:
     return problems
 
 
+def _front_matter(text: str) -> tuple[dict[str, str], str] | None:
+    """The `key: value` lines between the opening `---` lines, and the body after them."""
+    match = re.fullmatch(r"---\n(.*?)\n---\n\n(.*)", text, re.DOTALL)
+    if match is None:
+        return None
+    fields = dict(line.split(": ", 1) for line in match[1].splitlines() if ": " in line)
+    return fields, match[2]
+
+
+def _codex_mismatch(markdown: str, toml_text: str) -> str | None:
+    """Why a Codex agent file does not mirror its Claude agent file, or None when it does."""
+    parsed = _front_matter(markdown)
+    if parsed is None:
+        return "its Claude agent has no front matter to compare"
+    fields, body = parsed
+    try:
+        codex = tomllib.loads(toml_text)
+    except tomllib.TOMLDecodeError as exc:
+        return f"is not valid TOML ({exc})"
+    for key, want in (("name", fields.get("name")), ("description", fields.get("description"))):
+        if codex.get(key) != want:
+            return f"{key} differs from the Claude agent"
+    if codex.get("developer_instructions") != body:
+        return "developer_instructions differ from the Claude agent's instructions"
+    return None
+
+
+def check_agent_mirror(tree: Tree) -> list[str]:
+    """Rule 8: `.claude/agents/<name>.md` and `.codex/agents/<name>.toml` say the same."""
+    pattern = re.compile(r"\.(claude|codex)/agents/([^/]+)\.(md|toml)")
+    agents: dict[str, set[str]] = {"claude": set(), "codex": set()}
+    for name in tree.files:
+        match = pattern.fullmatch(name)
+        if match and (match[1], match[3]) in {("claude", "md"), ("codex", "toml")}:
+            agents[match[1]].add(match[2])
+    problems: list[str] = []
+    for agent in sorted(agents["claude"] | agents["codex"]):
+        claude = f".claude/agents/{agent}.md"
+        codex = f".codex/agents/{agent}.toml"
+        if agent not in agents["codex"]:
+            problems.append(f"{claude}:1: no mirror {codex}")
+        elif agent not in agents["claude"]:
+            problems.append(f"{codex}:1: no mirror {claude}")
+        elif (why := _codex_mismatch(tree.text(claude), tree.text(codex))) is not None:
+            problems.append(f"{codex}:1: {why}")
+    return problems
+
+
 def check(root: Path, files: Iterable[str]) -> list[str]:
-    """Every finding for the tracked `files` of the repository at `root`."""
-    tree = Tree(root, frozenset(files))
+    """Every finding for the tracked `files` of the repository at `root`.
+
+    A tracked symbolic link is reported and left out: following one could read a file outside the
+    repository, such as a private one.
+    """
+    names = set(files)
+    links = sorted(n for n in names if (root / n).is_symlink())
+    tree = Tree(root, frozenset(names - set(links)))
     return [
+        *(f"{link}:1: a symbolic link; the docs check does not follow it" for link in links),
         *check_indexed(tree),
         *check_references(tree),
         *check_architecture(tree),
         *check_tools(tree),
         *check_skill_mirror(tree),
+        *check_agent_mirror(tree),
     ]
 
 

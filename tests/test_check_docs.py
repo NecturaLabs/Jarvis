@@ -327,6 +327,57 @@ def test_skills_that_differ_by_a_byte_are_reported(tmp_path: Path) -> None:
     assert only(problems) == ".agents/skills/s/SKILL.md:1: differs from .claude/skills/s/SKILL.md"
 
 
+# Rule 8: the agent mirror for Codex.
+
+AGENT_MD = "---\nname: r\ndescription: Reviews.\n---\n\nYou review.\n"
+AGENT_TOML = (
+    'name = "r"\ndescription = "Reviews."\ndeveloper_instructions = """\nYou review.\n"""\n'
+)
+
+
+def test_an_agent_and_its_codex_mirror_that_match_are_clean(tmp_path: Path) -> None:
+    changes: dict[str, str | None] = {
+        ".claude/agents/r.md": AGENT_MD,
+        ".codex/agents/r.toml": AGENT_TOML,
+    }
+    assert findings(tmp_path, changes) == []
+
+
+def test_an_agent_without_a_codex_mirror_is_reported_both_ways(tmp_path: Path) -> None:
+    problems = findings(tmp_path, {".claude/agents/r.md": AGENT_MD})
+    assert only(problems) == ".claude/agents/r.md:1: no mirror .codex/agents/r.toml"
+    problems = findings(tmp_path, {".codex/agents/r.toml": AGENT_TOML})
+    assert only(problems) == ".codex/agents/r.toml:1: no mirror .claude/agents/r.md"
+
+
+@pytest.mark.parametrize(
+    "toml",
+    [
+        AGENT_TOML.replace("You review.", "You approve."),
+        AGENT_TOML.replace('"Reviews."', '"Approves."'),
+        AGENT_TOML.replace('name = "r"', 'name = "x"'),
+        "not toml = = =\n",
+    ],
+)
+def test_a_codex_mirror_that_differs_is_reported(tmp_path: Path, toml: str) -> None:
+    problems = findings(tmp_path, {".claude/agents/r.md": AGENT_MD, ".codex/agents/r.toml": toml})
+    assert only(problems).startswith(".codex/agents/r.toml:1: ")
+
+
+# Symbolic links are never followed: a tracked link could point at a private file.
+
+
+def test_a_tracked_symlink_is_reported_and_not_read(tmp_path: Path) -> None:
+    secret = tmp_path / "outside.md"
+    secret.write_text("`src/private/secret-path.py`\n", encoding="utf-8")
+    files = write(tmp_path, dict(GOOD))
+    (tmp_path / "docs" / "link.md").symlink_to(secret)
+
+    problems = cd.check(tmp_path, [*files, "docs/link.md"])
+
+    assert problems == ["docs/link.md:1: a symbolic link; the docs check does not follow it"]
+
+
 # Reading only tracked files, and the command line.
 
 
