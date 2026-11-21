@@ -2,7 +2,8 @@
 # Git commit-msg hook: refuses a subject that is not a Conventional Commit (`type(scope)?!?: summary`,
 # the types in CONTRIBUTING.md) and warns when there is no Signed-off-by line. It never changes the
 # message. Merge, Revert, fixup! and squash! subjects pass.
-# Opt in with tools/install-hooks.sh.
+# Opt in with tools/install-hooks.sh, which copies this file into the repository's own hooks folder.
+# jarvis-hook: installed by tools/install-hooks.sh
 set -euo pipefail
 
 message_file=${1:?usage: commit-msg <message file>}
