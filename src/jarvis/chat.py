@@ -5,9 +5,10 @@ and that agent do is read from the shared audit log, so both show in one place. 
 agent asks is answered by typing, and anything but a clear yes is a no, as by voice.
 """
 
+import contextlib
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ClassVar, Protocol
+from typing import TYPE_CHECKING, ClassVar, Protocol, override
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -102,6 +103,7 @@ class ChatApp(App[None]):
         self._closing = False
         self._question: _Question | None = None
 
+    @override
     def compose(self) -> ComposeResult:
         """Lay out the activity, the status line and the input."""
         yield RichLog(id="activity", wrap=True, markup=False, highlight=False)
@@ -209,10 +211,8 @@ class ChatApp(App[None]):
                 self._busy = False
 
     def _from_thread(self, text: str, kind: str = "note") -> None:
-        try:
+        with contextlib.suppress(RuntimeError):  # the window has closed
             self.call_from_thread(self._note, text, kind)
-        except RuntimeError:
-            pass  # the window has closed
 
     def _confirm(self, text: str) -> bool:
         """Ask the owner in the window and wait for the typed answer (no when it closes)."""

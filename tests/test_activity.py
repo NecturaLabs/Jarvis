@@ -143,7 +143,7 @@ def test_the_time_is_shown_in_local_time() -> None:
     shown = describe({"ts": "not a time", "event": "reply", "text": "hi"})
 
     assert shown is not None
-    assert shown.time == ""
+    assert not shown.time
 
 
 def test_an_entry_without_an_event_name_is_skipped() -> None:
