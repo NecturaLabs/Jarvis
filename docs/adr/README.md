@@ -14,3 +14,4 @@ edited once accepted; a later decision supersedes it with a new record that link
 | [0007](0007-outside-services-for-answers.md) | Reach SearXNG's engines, Open-Meteo and Arctic Shift to answer questions | accepted |
 | [0008](0008-speak-while-writing-and-barge-in.md) | Speak a reply while the model writes it, and let the owner speak over Jarvis | accepted |
 | [0009](0009-lookups-without-a-yes-and-searxng-idle.md) | Settle ADR 0007's open points: read-only lookups need no yes after web text, and SearXNG keeps running while idle | accepted |
+| [0010](0010-azure-keyword-wake-word.md) | Offer an Azure custom keyword model as a second wake word, run offline in its own process | accepted |

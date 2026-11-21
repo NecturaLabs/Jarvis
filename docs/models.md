@@ -48,6 +48,9 @@ which has to listen. See
 Jarvis marks the system prompt and the tools as Strata's shared prefix (`strata_prefix`, one message) on every
 request that sends tools. The Qwen3.6 engine in Strata 0.1.62 does not use that mark yet, so every request
 still reads the whole prompt. An engine that ignores the mark is harmless; the 4.5 s above is the cost today.
+Strata's own tracker has it as [issue #5145](https://github.com/Niko1221/Strata/issues/5145): the Qwen3.6
+engine drops the mark and keeps no checkpoints between requests, which its author calls a new feature, not
+a small fix (still so in 0.2.17).
 Probed on 2026-11-21: the engine reuses its cache only when a request continues the last prompt and what the
 model wrote after it, token for token (the second call of a request reused about 2,150 tokens); two requests
 that share the system prompt but differ after it reused 0. The engine has no raw `/v1/completions` endpoint
@@ -115,6 +118,14 @@ spoken over.
 - **Wake word:** the LiveKit `hey_jarvis` model, run by `livekit-wakeword` 2.1.3 on CPU, at
   `<data_dir>/wake/hey_jarvis.onnx`. Threshold: `audio.wake_threshold`. Licence: Apache-2.0 for the code
   (package metadata) and the weights (the wheel's `NOTICE`); the file is pinned to release 2.1.3 in `models.py`.
+- **Azure wake word (optional, `audio.wake_engine = "azure"`):** your own Azure custom keyword `.table`
+  model, heard by `src/jarvis/azure_wake_helper.py` (MIT) with Microsoft's Speech SDK
+  (`azure-cognitiveservices-speech` 1.53.1, Microsoft Software License Terms: closed source, not
+  GPL-compatible, telemetry). The SDK is not a Jarvis dependency: it lives in its own environment, and the
+  helper runs in a separate process with no network ([ADR 0010](adr/0010-azure-keyword-wake-word.md)).
+  Measured with Microsoft's sample model: about 51 MiB and 2.4 % of one core while listening, and a keyword
+  heard 0.3 to 0.6 s after the word ended. The `.table` model is your own, trained under Microsoft's terms for the Speech service, and is never
+  shipped with Jarvis. Setup: [configuration.md](configuration.md#azure-wake-word).
 - **End of speech:** Silero VAD 6.2.3 at `<data_dir>/vad/silero_vad.onnx`, MIT as pinned in `models.py`; not
   rechecked upstream. Threshold and timings: `audio.vad_threshold`, `no_speech_timeout_s`, `end_silence_s`,
   `max_utterance_s`.

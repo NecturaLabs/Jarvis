@@ -36,6 +36,7 @@ FORBIDDEN_PROGRAMS = frozenset(
         "paplay",
         "hyprctl",
         "xdg-open",
+        "unshare",
     }
 )
 _LOOPBACK_NAMES = frozenset({"localhost", "ip6-localhost"})

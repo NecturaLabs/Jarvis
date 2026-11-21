@@ -5,6 +5,7 @@ through Voxtype's documented `voxtype transcribe FILE` contract (path B in docs/
 Jarvis never touches Voxtype's daemon, config or the owner's recordings.
 """
 
+import collections
 import contextlib
 import json
 import logging
@@ -387,7 +388,9 @@ class WakeWord:
     def heard(self, frame: NDArray[np.int16]) -> bool:
         """Feed one frame; return True when the wake phrase was detected."""
         scores = self._model.predict(frame)
-        if max(scores.values(), default=0.0) >= self._threshold:
+        score = max(scores.values(), default=0.0)
+        if score >= self._threshold:
+            log.info("wake word score %.2f (threshold %.2f)", score, self._threshold)
             self._model.reset()
             return True
         return False
@@ -395,6 +398,225 @@ class WakeWord:
     def reset(self) -> None:
         """Forget audio heard so far."""
         self._model.reset()
+
+
+AZURE_HELPER = Path(__file__).with_name("azure_wake_helper.py")
+AZURE_READY_S = 30.0  # how long the helper may take to load and try its model
+AZURE_CLOSE_S = 1.0  # how long the helper may take to end once its input closes
+AZURE_HISTORY = 40  # frames kept (3.2 s), so the words right after the keyword are not lost
+AZURE_LEAD_BACK = RATE // 4  # start a request 0.25 s before the keyword's reported end
+AZURE_ERR_LINES = 20
+
+
+def azure_wake_command(python: Path, model: Path, *, check: bool = False) -> list[str]:
+    """Return the command that runs the Azure keyword helper with no network.
+
+    `unshare --net` gives the helper a network namespace with only a loopback that is down, so the
+    closed-source Speech SDK it loads cannot reach anything over the network (AGENTS.md: voice
+    activation stays local). It still runs as the owner, so local files and sockets are not
+    walled off; ADR 0010 says what that leaves. `-I` stops the helper's Python reading environment
+    variables, the user site folder or the current folder. With `check` it only tries the model.
+    """
+    cmd = ["unshare", "--map-current-user", "--net", "--", str(python), "-I", str(AZURE_HELPER)]
+    return [*cmd, str(model), *(["--check"] if check else [])]
+
+
+def azure_env() -> dict[str, str]:
+    """Return the helper's environment: only what it needs, none of Jarvis's own."""
+    return {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
+
+
+class AzureWake:
+    """An Azure custom keyword model (a `.table` file), heard by a helper process.
+
+    The helper (`jarvis.azure_wake_helper`) runs in its own Python, with no network; frames are
+    written to it as they come, and each `wake <sample>` line it prints is one detection that
+    ended at that sample. The model's own threshold decides, so `audio.wake_threshold` does not
+    apply. A detection arrives a few frames after the keyword, so the frames since its end are
+    kept and handed to the request (`after_wake`).
+    """
+
+    def __init__(self, command: list[str], ready_s: float = AZURE_READY_S) -> None:
+        """Start the helper with `command` and wait until it has tried its model.
+
+        Raises:
+            AudioError: the helper could not start, rejected the model, or was not ready in time.
+        """
+        super().__init__()
+        self._lock = threading.Lock()
+        self._wakes: list[int | None] = []
+        self._dropped = False
+        self._written = 0  # samples handed to the helper
+        self._history: collections.deque[tuple[int, NDArray[np.int16]]] = collections.deque(
+            maxlen=AZURE_HISTORY
+        )
+        self._lead: list[NDArray[np.int16]] = []
+        self._errors: collections.deque[str] = collections.deque(maxlen=AZURE_ERR_LINES)
+        self._ready = False
+        try:
+            self._proc = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=azure_env(),
+            )
+        except OSError as exc:
+            msg = f"could not start the Azure wake helper: {exc}"
+            raise AudioError(msg) from exc
+        stdout, stdin, stderr = self._proc.stdout, self._proc.stdin, self._proc.stderr
+        if stdout is None or stdin is None or stderr is None:  # pragma: no cover - Popen gave pipes
+            msg = "the Azure wake helper has no pipes"
+            raise AudioError(msg)
+        self._stdin = stdin.fileno()
+        self._stdin_file = stdin
+        answered = threading.Event()  # "ready", or the helper's output ended first
+        threading.Thread(
+            target=self._read, args=(stdout, answered), name="jarvis-azure-wake", daemon=True
+        ).start()
+        self._err_reader = threading.Thread(
+            target=self._read_errors, args=(stderr,), name="jarvis-azure-wake-err", daemon=True
+        )
+        self._err_reader.start()
+        if not answered.wait(ready_s) or not self._ready:
+            self.close()
+            msg = f"the Azure wake helper did not start: {self._why()}"
+            raise AudioError(msg)
+        os.set_blocking(self._stdin, False)  # a stalled helper drops frames, never Jarvis
+
+    def _read(self, stdout: IO[bytes], answered: threading.Event) -> None:
+        try:
+            for line in stdout:
+                word, _, value = line.strip().partition(b" ")
+                if word == b"ready":
+                    self._ready = True
+                    answered.set()
+                elif word == b"wake":
+                    with self._lock:
+                        self._wakes.append(int(value) if value.isdigit() else None)
+        finally:
+            answered.set()
+
+    def _read_errors(self, stderr: IO[bytes]) -> None:
+        for line in stderr:  # drained, so a chatty helper never blocks on a full pipe
+            text = line.decode(errors="replace").rstrip()
+            if text:
+                self._errors.append(text[:300])
+                log.debug("azure wake helper: %s", text)
+
+    def _why(self) -> str:
+        self._err_reader.join(timeout=AZURE_CLOSE_S)
+        found = [line for line in self._errors if not line.startswith(("/", "["))]
+        if found:
+            return found[-1]
+        code = self._proc.poll()
+        return "no answer in time" if code is None else f"exit code {code}"
+
+    def heard(self, frame: NDArray[np.int16]) -> bool:
+        """Feed one frame; return True when the helper heard the keyword since the last call.
+
+        Raises:
+            AudioError: the helper has stopped.
+        """
+        if self._proc.poll() is not None:
+            msg = f"the Azure wake helper stopped: {self._why()}"
+            raise AudioError(msg)
+        pcm = frame.astype(np.int16)
+        try:
+            os.write(self._stdin, pcm.tobytes())  # one frame is below PIPE_BUF: all or nothing
+        except BlockingIOError:
+            if not self._dropped:
+                log.warning("the Azure wake helper is behind; dropping audio until it catches up")
+            self._dropped = True
+        except OSError as exc:
+            msg = f"the Azure wake helper stopped: {exc.strerror or exc}"
+            raise AudioError(msg) from exc
+        else:
+            self._dropped = False
+            self._history.append((self._written, pcm))
+            self._written += pcm.size
+        with self._lock:
+            wakes, self._wakes = self._wakes, []
+        if not wakes:
+            return False
+        self._lead = self._since(wakes[-1])
+        return True
+
+    def _since(self, end: int | None) -> list[NDArray[np.int16]]:
+        if end is None:
+            return []
+        start = max(0, end - AZURE_LEAD_BACK)
+        lead: list[NDArray[np.int16]] = []
+        for first, pcm in self._history:
+            if first + pcm.size > start:
+                lead.append(pcm[max(0, start - first) :])
+        return lead
+
+    def after_wake(self) -> list[NDArray[np.int16]]:
+        """Return, once, the frames heard since the last detected keyword ended."""
+        lead, self._lead = self._lead, []
+        return lead
+
+    def reset(self) -> None:
+        """Forget a detection not yet reported and the audio kept for it."""
+        with self._lock:
+            self._wakes = []
+        self._lead = []
+        self._history.clear()
+
+    def close(self) -> None:
+        """End the helper (its input closes; it is killed if it does not end at once)."""
+        with contextlib.suppress(OSError, ValueError):
+            self._stdin_file.close()
+        try:
+            self._proc.wait(timeout=AZURE_CLOSE_S)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.wait()
+
+
+class FallbackWake:
+    """Listens with an Azure model until its helper fails, then with LiveKit's for good.
+
+    A helper that dies mid-run (a model the SDK rejects later, a crash) is said in the log once,
+    and Jarvis keeps listening instead of stopping.
+    """
+
+    def __init__(self, primary: AzureWake, fallback: Callable[[], _WakeModel]) -> None:
+        """Use `primary`; on its failure, the wake word `fallback` makes."""
+        super().__init__()
+        self._primary: AzureWake | None = primary
+        self._make = fallback
+        self._backup: _WakeModel | None = None
+
+    def heard(self, frame: NDArray[np.int16]) -> bool:
+        """Feed one frame to whichever model listens; True when it heard the wake word."""
+        if self._primary is not None:
+            try:
+                return self._primary.heard(frame)
+            except AudioError as exc:
+                log.warning("%s; listening with LiveKit's wake word from now on", exc)
+                self._primary.close()
+                self._primary = None
+        if self._backup is None:
+            self._backup = self._make()
+        return self._backup.heard(frame)
+
+    def after_wake(self) -> list[NDArray[np.int16]]:
+        """Return the frames heard since the keyword ended (Azure only)."""
+        return self._primary.after_wake() if self._primary is not None else []
+
+    def reset(self) -> None:
+        """Forget audio heard so far."""
+        if self._primary is not None:
+            self._primary.reset()
+        if self._backup is not None:
+            self._backup.reset()
+
+    def close(self) -> None:
+        """End the helper, if it still runs."""
+        if self._primary is not None:
+            self._primary.close()
 
 
 class Vad:
@@ -631,13 +853,20 @@ class OwnVoiceCheck:
     It uses its own copy of the wake model, so the listening one keeps its state.
     """
 
-    def __init__(self, wake: _WakeModel) -> None:
-        """Check with `wake`, a wake model used for nothing else."""
+    def __init__(self, wake: _WakeModel, names: re.Pattern[str] | None = None) -> None:
+        """Check with `wake`, a wake model used for nothing else.
+
+        `names` matches a sentence whose words alone would wake Jarvis: an Azure keyword model
+        also wakes on "Jarvis" without "Hey", and only LiveKit's model checks the sound here.
+        """
         super().__init__()
         self._wake = wake
+        self._names = names
 
-    def __call__(self, pcm: bytes, rate: int) -> bool:
-        """Return True when the wake model hears its phrase in `pcm` (int16 at `rate`)."""
+    def __call__(self, pcm: bytes, rate: int, text: str = "") -> bool:
+        """Return True when `text` names the wake word or the wake model hears it in `pcm`."""
+        if self._names is not None and self._names.search(text):
+            return True
         samples = np.concatenate([to_16k(pcm, rate), np.zeros(RATE // 2, dtype=np.int16)])
         self._wake.reset()
         try:
@@ -663,12 +892,13 @@ class Speaker:
         *,
         player: Callable[[int], list[str]] = pw_play_command,
         grace_s: float = PLAY_GRACE_S,
-        own_wake: Callable[[bytes, int], bool] | None = None,
+        own_wake: Callable[[bytes, int, str], bool] | None = None,
         linger_s: float = LINGER_S,
     ) -> None:
         """Use `synthesize` for text to speech; `player` builds the playback command for a rate.
 
-        `own_wake` tells whether a synthesized sentence would trigger the wake word itself.
+        `own_wake` tells whether a synthesized sentence (its sound, its rate and its text) would
+        trigger the wake word itself.
         """
         super().__init__()
         self._synthesize = synthesize
@@ -797,7 +1027,7 @@ class Speaker:
         pcm = trim_silence(pcm, rate, lead_s=LEAD_KEEP_S if first else None, tail_s=TAIL_KEEP_S)
         if not pcm:
             return
-        if self._sounds_like_wake(pcm, rate):
+        if self._sounds_like_wake(pcm, rate, text):
             with self._lock:
                 if run != self._run:  # hushed during the check: it will not be played
                     return
@@ -807,12 +1037,12 @@ class Speaker:
         if proc is not None:
             self._write(proc, pcm, run)
 
-    def _sounds_like_wake(self, pcm: bytes, rate: int) -> bool:
+    def _sounds_like_wake(self, pcm: bytes, rate: int, text: str) -> bool:
         """Return whether `pcm` would trigger the wake word; a check that fails counts as yes."""
         if self._own_wake is None:
             return False
         try:
-            return self._own_wake(pcm, rate)
+            return self._own_wake(pcm, rate, text)
         except Exception:
             log.exception("the own-voice wake check failed")
             return True  # the safe answer: this sentence cannot be spoken over

@@ -9,6 +9,7 @@ Every state has a timeout, and a request that fails is apologised for without en
 
 import contextlib
 import functools
+import itertools
 import logging
 import os
 import queue
@@ -18,7 +19,7 @@ import time
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -107,6 +108,19 @@ class _PcAudio(Protocol):
 class _Wake(Protocol):
     def heard(self, frame: NDArray[np.int16]) -> bool: ...
     def reset(self) -> None: ...
+
+
+@runtime_checkable
+class _Leads(Protocol):
+    """A wake word heard late (the Azure helper): it keeps the audio since the keyword ended."""
+
+    def after_wake(self) -> list[NDArray[np.int16]]: ...
+
+
+def _with_lead(wake: object, frames: Iterator[NDArray[np.int16]]) -> Iterator[NDArray[np.int16]]:
+    """Return `frames`, after the frames a late wake word kept since its keyword ended."""
+    lead = wake.after_wake() if isinstance(wake, _Leads) else []
+    return itertools.chain(lead, frames)
 
 
 class _Vad(Protocol):
@@ -450,7 +464,7 @@ class VoiceLoop:
         self._chiming.start()
         self.state = State.CAPTURE
         started = time.perf_counter()
-        heard = capture_utterance(self._mic.frames(), self._vad, self._cfg)
+        heard = capture_utterance(_with_lead(self._wake, self._mic.frames()), self._vad, self._cfg)
         if heard.samples is None:
             log.info("wake without a request (%s)", heard.reason)
             self.state = State.IDLE
@@ -620,7 +634,8 @@ class VoiceLoop:
     ) -> None:
         requests = self._requests
         threading.Thread(target=self._prewarm, daemon=True).start()
-        heard = capture_utterance(self._pc_tap(pc, frames, requests), pc.vad, self._cfg)
+        tap = _with_lead(pc.wake, self._pc_tap(pc, frames, requests))
+        heard = capture_utterance(tap, pc.vad, self._cfg)
         if self._requests == requests and self.state is not State.CONFIRM:
             # Ended by itself. A capture the tap cut short keeps the wake model as it is, so a
             # wake word still being heard on the PC is not lost (it marks the mic's request).

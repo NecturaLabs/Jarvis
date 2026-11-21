@@ -39,7 +39,8 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 | Module | Owns | Must not |
 |---|---|---|
 | `voice.py` | `VoiceLoop` and its `State`: wake, capture, transcribe, think, confirm, speak; the PC-audio listener; `speakable` and `spoken_question`. | Decide what an operation may do (that is `policy.py`). Touch a device directly; it uses `audio.py` objects. |
-| `audio.py` | The `pw-record` microphone and per-app capture (`Microphone`, `AppAudio`), the wake word, Silero VAD, `voxtype transcribe`, the `pw-play` speaker, voice selection. | Edit Voxtype's config or use its daemon. It runs only `voxtype transcribe`, with Jarvis's own settings file. |
+| `audio.py` | The `pw-record` microphone and per-app capture (`Microphone`, `AppAudio`), the wake word (LiveKit's `WakeWord`, or `AzureWake` talking to the helper), Silero VAD, `voxtype transcribe`, the `pw-play` speaker, voice selection. | Edit Voxtype's config or use its daemon. It runs only `voxtype transcribe`, with Jarvis's own settings file. Start the Azure helper any way but `azure_wake_command` (no network). |
+| `azure_wake_helper.py` | MIT. A separate program, run with its own Python, that feeds audio from standard input to an Azure custom keyword model and prints `wake` ([ADR 0010](adr/0010-azure-keyword-wake-word.md)). | Be imported by Jarvis, import Jarvis, or run with a network. |
 | `kokoro.py` | Kokoro text to speech on ONNX Runtime, phonemized by espeak-ng. | Play audio. It returns samples. |
 | `sentences.py` | Where a sentence of a reply ends (`sentence_end`, `split_sentences`), so speech starts before the reply is whole; every end is also one for `agent.claims_action`. | Decide what may be spoken; the agent's reply stream does. |
 | `models.py` | The pinned sha256 of each model file Jarvis loads, for `jarvis doctor`. | Download anything or fail a request over a digest. |
@@ -126,7 +127,8 @@ line spoken while the agent works (`_cue`: a waiting line, a confirmation questi
 
 ## One request, from wake word to spoken reply
 
-1. `audio.py`: `Microphone` streams 80 ms frames from `pw-record`. `WakeWord` scores each frame.
+1. `audio.py`: `Microphone` streams 80 ms frames from `pw-record`. `WakeWord` scores each frame (or
+   `AzureWake` passes it to the Azure helper, with `audio.wake_engine = "azure"`).
 2. `voice.py`: `handle_wake` calls `capture_utterance` (Silero `Vad` finds the end of speech) and
    `_reply` runs `audio.transcribe` (`voxtype transcribe`). Speech from the mic is tagged
    `Origin.OWNER_SPEECH`; speech captured from PC audio is tagged `Origin.PC_AUDIO`, and the same
@@ -175,6 +177,7 @@ Threads in the `jarvis run` process:
 | PC watcher | `VoiceLoop._watch_pc`: scans PC audio for the wake word and hands one request at a time to the main thread. Only with `audio.listen_to_pc`. |
 | `jarvis-speech` | `Speaker._work`: synthesizes queued sentences in order and hands them to one `pw-play` while they keep coming. |
 | `jarvis-barge-in` | `VoiceLoop._watch_speech`: while Jarvis speaks, reads the mic for the wake word. Only with `audio.barge_in`. |
+| `jarvis-azure-wake` | `AzureWake._read`: reads the Azure helper's `ready` and `wake` lines. Only with `audio.wake_engine = "azure"`. |
 | `jarvis-stopper` | Waits for SIGTERM or SIGINT, then stops the speaker, mic and PC capture. |
 | `jarvis-model-warm` | Loads the model at start, off the request path. |
 | `jarvis-spotify-refresh` | Keeps the Spotify login and library fresh. |
