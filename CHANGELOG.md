@@ -25,4 +25,4 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - Community files: contributing guide, code of conduct, support, governance, accessibility, security policy
   and roadmap.
 
-[Unreleased]: https://github.com/NecturaLabs/jarvis/commits/dev
+[Unreleased]: https://github.com/NecturaLabs/Jarvis/commits/dev

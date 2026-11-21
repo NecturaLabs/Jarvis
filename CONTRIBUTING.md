@@ -6,13 +6,13 @@ privately, as [SECURITY.md](SECURITY.md) says, never in a public issue.
 
 ## Your first contribution
 
-1. Find an issue: [`good first issue`](https://github.com/NecturaLabs/jarvis/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
-   and [`help wanted`](https://github.com/NecturaLabs/jarvis/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
+1. Find an issue: [`good first issue`](https://github.com/NecturaLabs/Jarvis/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+   and [`help wanted`](https://github.com/NecturaLabs/Jarvis/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
    mark ones that are ready to pick up. Say in the issue that you are working on it. [docs/roadmap.md](docs/roadmap.md)
    lists what is planned.
-2. To report a bug, use the [issue forms](https://github.com/NecturaLabs/jarvis/issues/new/choose) after
+2. To report a bug, use the [issue forms](https://github.com/NecturaLabs/Jarvis/issues/new/choose) after
    searching for a duplicate. To propose a feature or agree the approach for a large change, start a
-   [discussion](https://github.com/NecturaLabs/jarvis/discussions) first; a pull request that arrives
+   [discussion](https://github.com/NecturaLabs/Jarvis/discussions) first; a pull request that arrives
    unannounced may not fit.
 3. Fork the repository, clone it and make a branch named `<type>/<topic>` (`feature/`, `bugfix/`, `docs/`,
    `chore/`, for example `bugfix/confirmation-timeout`).
@@ -21,7 +21,7 @@ privately, as [SECURITY.md](SECURITY.md) says, never in a public issue.
 5. Open a pull request against `dev`, fill in the template and link the issue. `dev` is the default branch
    and takes all work; `main` only takes `dev` when a release is cut. Only the maintainer merges.
 
-Questions about using Jarvis go to [Discussions](https://github.com/NecturaLabs/jarvis/discussions)
+Questions about using Jarvis go to [Discussions](https://github.com/NecturaLabs/Jarvis/discussions)
 ([SUPPORT.md](SUPPORT.md)).
 
 ## What fits Jarvis
@@ -100,7 +100,7 @@ change it only when the requirement it covers has changed, and say so.
 
 ## Issues and pull requests
 
-[GitHub Issues](https://github.com/NecturaLabs/jarvis/issues) hold the backlog, defects and follow-ups. Before
+[GitHub Issues](https://github.com/NecturaLabs/Jarvis/issues) hold the backlog, defects and follow-ups. Before
 starting, check for an existing issue and record partial progress there; close it only when its acceptance
 criteria are met.
 

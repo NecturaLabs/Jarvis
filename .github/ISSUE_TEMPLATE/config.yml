@@ -1,14 +1,14 @@
 blank_issues_enabled: false
 contact_links:
 - name: Search existing issues
-  url: https://github.com/NecturaLabs/jarvis/issues
+  url: https://github.com/NecturaLabs/Jarvis/issues
   about: Find related work and record progress on the existing issue when possible.
 - name: Contributor and triage guide
-  url: https://github.com/NecturaLabs/jarvis/blob/dev/CONTRIBUTING.md#issues-and-pull-requests
+  url: https://github.com/NecturaLabs/Jarvis/blob/dev/CONTRIBUTING.md#issues-and-pull-requests
   about: Read issue types, labels, acceptance criteria and verification conventions.
 - name: Report a security vulnerability
-  url: https://github.com/NecturaLabs/jarvis/security/advisories/new
+  url: https://github.com/NecturaLabs/Jarvis/security/advisories/new
   about: Report security problems privately, never in a public issue (see SECURITY.md).
 - name: Ask a question
-  url: https://github.com/NecturaLabs/jarvis/discussions
+  url: https://github.com/NecturaLabs/Jarvis/discussions
   about: Questions about using Jarvis and ideas go to Discussions (see SUPPORT.md).

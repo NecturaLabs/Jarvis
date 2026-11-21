@@ -1,7 +1,7 @@
 # Roadmap
 
 What Jarvis plans, and what it will not do. The detail lives in
-[GitHub Issues](https://github.com/NecturaLabs/jarvis/issues), ordered by priority (`priority:p0-critical` to
+[GitHub Issues](https://github.com/NecturaLabs/Jarvis/issues), ordered by priority (`priority:p0-critical` to
 `priority:p3-low`); this page names the themes and links them. [docs/plan.md](plan.md) holds the design and
 says which parts are built.
 

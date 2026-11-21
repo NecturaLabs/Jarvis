@@ -120,9 +120,9 @@ Tests marked `local` need real hardware and services and never run in CI (`uv ru
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to contribute
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): how we treat each other (Contributor Covenant 3.0)
 - [SUPPORT.md](SUPPORT.md): where to get help; questions go to
-  [Discussions](https://github.com/NecturaLabs/jarvis/discussions)
+  [Discussions](https://github.com/NecturaLabs/Jarvis/discussions)
 - [SECURITY.md](SECURITY.md): report a vulnerability privately
 - [GOVERNANCE.md](GOVERNANCE.md): who decides what
 - [ACCESSIBILITY.md](ACCESSIBILITY.md): what Jarvis offers today, and its gaps
 - [CHANGELOG.md](CHANGELOG.md) and [docs/roadmap.md](docs/roadmap.md): what changed and what is planned
-- [Issues](https://github.com/NecturaLabs/jarvis/issues): the backlog
+- [Issues](https://github.com/NecturaLabs/Jarvis/issues): the backlog
