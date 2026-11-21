@@ -81,7 +81,8 @@ daemon and never your Voxtype config or recordings. Each run is
   is only a run of the hint's own words is dropped. The answer to a confirmation question is transcribed
   without a hint, so noise cannot turn into words.
 - Whisper's stock phrases on silence ("thank you for watching") are ignored.
-- Licence: Voxtype and the Whisper models: not checked.
+- Licence: Voxtype is MIT (its Arch package), Whisper's code and weights are MIT (openai/whisper) and the
+  `ggml-*.bin` conversions come from whisper.cpp, MIT; checked on 2026-11-21.
 
 ## Voices
 
@@ -101,8 +102,18 @@ spoken over.
   `model-files-v1.1` release. `jarvis doctor` checks their sha256 against the pinned release.
 - Phonemes come from espeak-ng, whose library and data ship inside the `piper-tts` wheel, so the Piper package
   is installed and imported even when you use Kokoro.
-- Licence: Apache-2.0 for the Kokoro weights, as pinned in `models.py` and in the `kokoro.py` header; not
-  rechecked against the model card.
+- Licence: Apache-2.0 for the Kokoro-82M v1.0 weights and voices, rechecked against the
+  [model card](https://huggingface.co/hexgrad/Kokoro-82M) on 2026-11-21. The card says it was trained only on
+  public-domain audio, audio under permissive licences (Apache, MIT and the like) and synthetic audio from
+  closed TTS models; two of its datasets are CC BY: Koniwa `tnc` (CC BY 3.0) and SIWIS (CC BY 4.0). The ONNX
+  export and `voices-v1.0.bin` come from [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx), MIT. Jarvis
+  ships none of these files; you download them.
+- Time to first audio, measured on 2026-11-21 on this PC (Ryzen 7 9800X3D, desktop load about 2.5): one
+  first sentence of a typical reply (one to nine words) took a median 0.24 s to synthesize and trim, 0.28 s at
+  the 90th percentile and 0.30 s at most, over 23 sentences, with `bm_george` and with `bm_fable` alike. The first
+  sentence after loading the voice took 0.40 s with the files in the page cache and 0.96 s from cold. Opening
+  the player and the 0.03 s of kept silence come on top; the time from the end of the owner's speech to the
+  first word is in [ADR 0008](adr/0008-speak-while-writing-and-barge-in.md).
 
 ### Piper (any other `audio.voice` value)
 
