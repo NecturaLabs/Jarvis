@@ -131,11 +131,19 @@ def cmd_setup(args: argparse.Namespace) -> int:
             **({"data_dir": args.data_dir} if args.data_dir is not None else {}),
         }
     )
-    updated = config.Config.model_validate(updated.model_dump())
+    try:
+        updated = config.Config.model_validate(updated.model_dump())
+    except ValueError as exc:
+        print(f"jarvis: setup value refused: {exc}", file=sys.stderr)
+        return 2
     config.save(updated)
     ensure_api_key(strata_key_file())
-    profile = services.write_strata_profile(updated)
-    units = services.write_units(updated, strata_key_file())
+    try:
+        profile = services.write_strata_profile(updated)
+        units = services.write_units(updated, strata_key_file())
+    except config.ConfigError as exc:
+        print(f"jarvis: {exc}", file=sys.stderr)
+        return 2
     print(f"config: {paths.config_file()}\nstrata profile: {profile}")
     print("units: " + ", ".join(str(u) for u in units))
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)

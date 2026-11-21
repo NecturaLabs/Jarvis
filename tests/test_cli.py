@@ -255,3 +255,42 @@ def test_doctor_fails_a_model_file_it_cannot_read(
         line.startswith("FAIL read ") and "hey_jarvis.onnx" in line
         for line in _doctor_lines(capsys)
     )
+
+
+def _stub_subprocess(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def run(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    return calls
+
+
+def test_setup_writes_the_config_profile_and_units_under_the_home(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _stub_subprocess(monkeypatch)
+    model = home / "models" / "q4.gguf"
+
+    assert main(["setup", "--model-file", str(model), "--spotify-client-id", "abc"]) == 0
+
+    assert config.load().strata.model_file == model
+    assert (home / "config" / "systemd" / "user" / "jarvis.service").is_file()
+    assert (home / "config" / "jarvis" / "strata-profile.json").is_file()
+    assert (home / "state" / "jarvis" / "strata.env").is_file()
+    assert calls == [["systemctl", "--user", "daemon-reload"]]
+    assert "next: jarvis spotify-login" in capsys.readouterr().out
+
+
+def test_setup_refuses_a_value_that_cannot_go_into_a_unit(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _stub_subprocess(monkeypatch)
+
+    assert main(["setup", "--model-file", "/models/a\nExecStart=/bin/evil"]) == 2
+
+    assert "model_file" in capsys.readouterr().err
+    assert calls == []
+    assert not (home / "config").exists()
