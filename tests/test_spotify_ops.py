@@ -1571,6 +1571,58 @@ def test_like_prepare_refuses_when_nothing_is_playing(tmp_path: Path) -> None:
         like.prepare({})
 
 
+def test_play_binds_the_item_it_asks_about(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": [LOW_TIDE]})
+    play = find_op(build_ops(fake, tmp_path), "spotify_play")
+    assert play.prepare is not None
+
+    bound = play.prepare({"query": "low tide", "kind": "track"})
+
+    assert bound["uri"] == "spotify:track:lowtide"
+    assert play.spoken_summary(bound) == "play the track Low Tide by Glass Harbor"
+
+
+def test_play_plays_exactly_what_it_asked_about(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"track": [LOW_TIDE]})
+    play = find_op(build_ops(fake, tmp_path), "spotify_play")
+    assert play.prepare is not None
+    bound = play.prepare({"query": "low tide", "kind": "track"})
+    fake.search = {"track": [_track("Low Tide", "Night Circuit", "spotify:track:other")]}
+
+    result = play.run(bound)
+
+    assert result.ok
+    assert fake.played == [{"uris": ["spotify:track:lowtide"]}]
+    assert fake.searches == [("low tide", "track")]
+
+
+def test_play_that_found_nothing_when_asked_does_not_search_again(tmp_path: Path) -> None:
+    fake = FakeSpotify()
+    play = find_op(build_ops(fake, tmp_path), "spotify_play")
+    assert play.prepare is not None
+    bound = play.prepare({"query": "low tide", "kind": "track"})
+    searched = len(fake.searches)
+
+    result = play.run(bound)
+
+    assert not result.ok
+    assert fake.played == []
+    assert len(fake.searches) == searched
+
+
+def test_a_long_or_odd_track_name_is_spoken_short_and_plain(tmp_path: Path) -> None:
+    odd = _track("Low Tide\n" + "la " * 300, "Glass Harbor", "spotify:track:odd")
+    fake = FakeSpotify(state={**playing_state(), "item": odd})
+    like = find_op(build_ops(fake, tmp_path), "spotify_like")
+    assert like.prepare is not None
+
+    question = like.spoken_summary(like.prepare({}))
+
+    assert len(question) <= 140
+    assert "\n" not in question
+    assert question.startswith("save Low Tide la")
+
+
 def test_change_volume_binds_the_level_it_will_set(tmp_path: Path) -> None:
     fake = FakeSpotify(state=playing_state(volume=40))
     volume = find_op(build_ops(fake, tmp_path), "spotify_change_volume")
