@@ -168,6 +168,7 @@ def test_a_second_401_says_to_log_in_again(tmp_path: Path) -> None:
         httpx.ReadError("reset"),
         httpx.RemoteProtocolError("cut off"),
         httpx.WriteError("broken pipe"),
+        httpx.DecodingError("garbled body"),
     ],
 )
 def test_a_mutating_call_that_may_have_been_sent_is_uncertain_and_never_replayed(
@@ -243,7 +244,39 @@ def test_a_get_gives_up_after_the_second_gateway_error(tmp_path: Path) -> None:
     assert len(wire.seen) == 2
 
 
-@pytest.mark.parametrize(("method", "status"), [("GET", 500), ("PUT", 503), ("POST", 502)])
+@pytest.mark.parametrize("status", [502, 504])
+@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE"])
+def test_a_gateway_timeout_on_a_mutating_call_is_uncertain_and_never_replayed(
+    tmp_path: Path, method: str, status: int
+) -> None:
+    # A gateway answers 502 or 504 when the server behind it did not reply in time; the command
+    # may have run there.
+    wire = Wire()
+    wire.on(method, "/x", _error(status, "upstream"))
+    api, _, clock = _make(tmp_path, wire)
+
+    with pytest.raises(UncertainOutcomeError):
+        api.request(method, "/x")
+
+    assert len(wire.seen) == 1
+    assert clock.slept == []
+
+
+def test_a_mutating_call_whose_answer_cannot_be_decoded_is_uncertain(tmp_path: Path) -> None:
+    wire = Wire()
+    unreadable = httpx.Response(
+        200, headers={"content-encoding": "gzip"}, stream=httpx.ByteStream(b"not gzip")
+    )
+    wire.on("POST", "/x", unreadable)
+    api, _, _ = _make(tmp_path, wire)
+
+    with pytest.raises(UncertainOutcomeError):
+        api.request("POST", "/x")
+
+    assert len(wire.seen) == 1
+
+
+@pytest.mark.parametrize(("method", "status"), [("GET", 500), ("PUT", 503), ("POST", 500)])
 def test_other_failures_are_not_retried(tmp_path: Path, method: str, status: int) -> None:
     wire = Wire()
     wire.on(method, "/x", _error(status, "no"))
@@ -285,6 +318,21 @@ def test_a_long_rate_limit_says_how_long_to_wait(tmp_path: Path) -> None:
 
     with pytest.raises(SpotifyError, match="37 seconds"):
         api.request("PUT", "/x")
+
+    assert clock.slept == []
+    assert len(wire.seen) == 1
+
+
+@pytest.mark.parametrize("wait", ["inf", "-inf", "nan", "-1"])
+def test_a_rate_limit_with_an_unusable_wait_time_is_reported_without_waiting(
+    tmp_path: Path, wait: str
+) -> None:
+    wire = Wire()
+    wire.on("GET", "/x", _error(429, **{"Retry-After": wait}))
+    api, _, clock = _make(tmp_path, wire)
+
+    with pytest.raises(SpotifyError, match="how long to wait is unknown"):
+        api.request("GET", "/x")
 
     assert clock.slept == []
     assert len(wire.seen) == 1
