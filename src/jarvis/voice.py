@@ -1,8 +1,8 @@
-"""The voice loop: IDLE -> WAKE -> CAPTURE -> TRANSCRIBE -> THINK -> CONFIRM? -> SPEAK -> IDLE.
+"""The voice loop: IDLE -> CAPTURE -> TRANSCRIBE -> THINK -> CONFIRM? -> SPEAK -> IDLE.
 
-One thread owns the microphone. Wake detection is off while Jarvis speaks (its own voice is
-drained from the capture), so it cannot trigger itself. Every state has a timeout, and a request
-that fails is apologised for without ending the loop.
+One thread owns the microphone and listens for the wake word while IDLE. Wake detection is off
+while Jarvis speaks (its own voice is drained from the capture), so it cannot trigger itself.
+Every state has a timeout, and a request that fails is apologised for without ending the loop.
 """
 
 import contextlib
