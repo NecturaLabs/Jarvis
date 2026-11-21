@@ -73,8 +73,10 @@ _SUBJECT = (
 _DEED = (
     r"(?:paused|resumed|resuming|playing|skipped|skipping|queued|added|saved|liked|started|"
     r"stopped|switched|done|turned (?:it |the volume )?(?:up|down)|"
-    r"volume(?:'s| is| has been)? (?:now )?(?:set|changed|increased|decreased|raised|lowered|"
-    r"up|down|at)|"
+    r"(?:set|changed|lowered|raised|increased|decreased|muted|unmuted|put) (?:it|that|this|"
+    r"(?:the|your) (?:volume|music|song|track|playlist|queue))|"
+    r"(?:the )?volume(?:'s| is| has been)? (?:now )?(?:set|changed|increased|decreased|raised|"
+    r"lowered|up|down|at)|"
     r"(?:shuffle|repeat)(?:'s| is)? (?:now )?(?:on|off|set))\b"
 )
 _CLAIM = re.compile(_LEAD + _SUBJECT + _DEED, re.IGNORECASE)
@@ -105,12 +107,18 @@ def claims_action(reply: str) -> bool:
     """Return True when a reply says that something was done.
 
     Only a sentence or clause that opens with the deed counts ("Paused.", "Sure thing, playing
-    it now."), and never a sentence that denies anything or names a deed as a thing, so an honest
-    "I couldn't find that, so nothing was saved" or "Playing music is my specialty" is left alone.
+    it now.", "I set the volume to thirty."), and never a question, a sentence that denies anything
+    or one that names a deed as a thing, so an honest "Shall I put it on shuffle?", "I couldn't
+    find that, so nothing was saved" or "Playing music is my specialty" is left alone.
     """
     for sentence in _SENTENCE_END.split(reply.replace("\u2019", "'")):
         text = sentence.strip()
-        if not text or _DENIAL.search(_COURTESY.sub("", text)) or _DESCRIPTION.match(text):
+        if (
+            not text
+            or text.endswith("?")  # a question offers to act; it does not say it acted
+            or _DENIAL.search(_COURTESY.sub("", text))
+            or _DESCRIPTION.match(text)
+        ):
             continue
         if any(_CLAIM.match(clause.strip()) for clause in text.split(",")):
             return True

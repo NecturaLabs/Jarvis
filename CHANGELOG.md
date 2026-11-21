@@ -58,3 +58,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   recipes and agents for coding agents (`.claude/`, `.codex/`, `.agents/`).
 
 [Unreleased]: https://github.com/NecturaLabs/Jarvis/commits/dev
+
+### Fixed
+
+- The check that Jarvis does not claim an action no tool did now also catches "I set the volume to
+  thirty", "I've lowered the volume", "I muted it" and "The volume is now at 20"; a question such as
+  "Shall I put it on shuffle?" is never taken for a claim.

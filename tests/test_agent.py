@@ -251,6 +251,15 @@ def test_a_claim_after_only_failed_tools_is_challenged_with_the_failure() -> Non
         "No problem, paused.",
         "Playing Glass Harbor now.",
         "Here's some Night Circuit, playing now.",
+        "I set the volume to thirty.",
+        "I've set it to 30.",
+        "I changed the volume to 40.",
+        "I've lowered the volume.",
+        "I've raised the volume to 60.",
+        "I muted it.",
+        "The volume is now at 20.",
+        "I've put it on shuffle.",
+        "Set it to thirty.",
     ],
 )
 def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
@@ -273,6 +282,12 @@ def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
         "Skipping songs works by voice, just say next.",
         "Added to that, I can queue songs.",
         "Queueing songs is easy: just ask.",
+        "I can set the volume for you.",
+        "Set the volume to what?",
+        "What should I set it to?",
+        "I set out to find it, but nothing came up.",
+        "I'd set it lower at night.",
+        "Shall I put it on shuffle?",
     ],
 )
 def test_an_honest_answer_is_not_a_claim(reply: str) -> None:
