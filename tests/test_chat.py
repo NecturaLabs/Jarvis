@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from PIL import Image
 from rich.console import Console
+from rich.text import Text
 from textual import events
 from textual.containers import VerticalScroll
 from textual.widgets import Markdown, OptionList, Static
@@ -18,7 +19,16 @@ from jarvis.chat import commands
 from jarvis.chat.app import ChatApp, Services
 from jarvis.chat.clipboard import Clip, ClipboardError
 from jarvis.chat.history import InputHistory
-from jarvis.chat.widgets import Entry, PictureView, PointerList, PromptArea, Reply, Request
+from jarvis.chat.widgets import (
+    ACCENT,
+    CHEVRON,
+    Entry,
+    PictureView,
+    PointerList,
+    PromptArea,
+    Reply,
+    Request,
+)
 from jarvis.config import ChatConfig
 from jarvis.memory import Conversation, Turn
 from jarvis.pictures import Picture, PictureCache
@@ -210,24 +220,67 @@ def test_a_long_reply_is_shown_whole_as_markdown() -> None:
     _run(test, app)
 
 
+CLAUDE_CODE_SAMPLE = """# Katanas
+
+Some text.
+
+## Where
+
+- one
+- two
+
+### Steps
+
+1. Go.
+2. Look.
+
+| Name | Kind |
+|---|---|
+| Moonveil | katana |
+
+```python
+print("hi")
+```
+
+> A quote.
+
+Done."""
+
+
 def test_a_reply_is_set_as_claude_code_sets_it() -> None:
-    reply = "# Katanas\n\nSome text.\n\n## Where\n\n- one\n- two\n\n### Summary\n\nDone."
-    app = _app(session=FakeSession(lambda _t, _h: reply))
+    app = _app(session=FakeSession(lambda _t, _h: CLAUDE_CODE_SAMPLE))
 
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "compare them")
-        await _until(pilot, lambda: bool(app.query("MarkdownH3")))
-        await pilot.pause(0.05)
+        await _until(pilot, lambda: bool(app.query(".reply-note")))
+        await pilot.pause(0.1)
         title, part, small = (
             app.query_one(kind) for kind in ("MarkdownH1", "MarkdownH2", "MarkdownH3")
         )
         assert {"bold", "italic", "underline"} <= set(str(title.styles.text_style).split())
         for heading in (part, small):
             assert set(str(heading.styles.text_style).split()) == {"bold"}
-        assert heading.styles.margin.bottom == 0  # the owner: no gap under a heading
-        bullets = list(app.query("MarkdownBullet"))
-        assert [_plain(bullet.render()).strip() for bullet in bullets] == ["-", "-"]
-        assert bullets[0].styles.color.ansi == -1  # the terminal's own text colour, not dimmed
+        paragraph = app.query("MarkdownParagraph").first()
+        bullets = app.query_one("MarkdownBulletList")
+        # One blank line under each heading and one above, never two.
+        assert paragraph.region.y == title.region.bottom + 1
+        assert part.region.y == paragraph.region.bottom + 1
+        assert bullets.region.y == part.region.bottom + 1
+        marks = [_plain(bullet.render()).rstrip() for bullet in app.query("MarkdownBullet")]
+        assert marks == ["-", "-", "1.", "2."]  # dashes, and numbers with no space before them
+        assert app.query("MarkdownBullet").first().styles.color.ansi == -1  # not dimmed
+        fence = app.query_one("MarkdownFence")
+        assert fence.styles.border_left[0] in {"", "none"}  # code sits in the text's column
+        assert fence.region.x == paragraph.region.x
+        quote = app.query_one("MarkdownBlockQuote")
+        assert quote.styles.color.ansi == -1  # italic words in the text's colour, a dim bar
+        assert "italic" in str(quote.styles.text_style)
+        header = app.query_one("MarkdownTableContent > .header")
+        assert "bold" not in str(header.styles.text_style)  # a plain header, as Claude Code's
+        assert header.styles.color.ansi == -1
+        reply = next(w for w in _transcript(app) if isinstance(w, Reply))
+        note, mark = reply.query_one(".reply-note"), reply.query_one(".reply-mark")
+        assert note.region.x == mark.region.x  # "✻ Worked for …" under the reply's dot
 
     _run(test, app)
 
@@ -1233,40 +1286,64 @@ def test_a_spoken_reply_from_the_log_gets_the_same_line() -> None:
     _run(test, app)
 
 
-def test_the_command_menu_takes_the_footers_place_instead_of_squeezing_the_transcript() -> None:
+def test_the_command_menu_is_drawn_over_the_transcript_right_above_the_input() -> None:
     app = _app(session=FakeSession())
 
     async def test(pilot: Pilot[None]) -> None:
-        height = app.query_one("#transcript").size.height
+        def layout() -> tuple[object, ...]:
+            return (
+                app.query_one("#transcript").region,
+                app.query_one("#prompt").region,
+                app.query_one("#footer").display,
+                app.query_one("#toolbar").display,
+            )
+
+        await pilot.pause(0.05)
+        before = layout()
         _input(app).set_text("/")
         await _until(pilot, lambda: app.query_one("#menu").display)
         await pilot.pause(0.05)
-        assert not app.query_one("#footer").display
-        assert not app.query_one("#toolbar").display
-        menu_rows = app.query_one("#menu").size.height
-        assert app.query_one("#transcript").size.height >= height - menu_rows + 2
+        menu = app.query_one("#menu").region
+        assert layout() == before  # as in Claude Code, nothing moves
+        assert menu.bottom == app.query_one("#prompt").region.y - 1  # one line above the input
+        assert app.query_one("#transcript").region.contains_region(menu)
+        for typed in ("/c", "/co", "/con", "/e", "/"):
+            _input(app).set_text(typed)
+            await pilot.pause(0.05)
+            assert layout() == before, typed
         await pilot.press("escape")
         await pilot.pause(0.05)
-        assert app.query_one("#footer").display
-        assert app.query_one("#toolbar").display
+        assert layout() == before
 
     _run(test, app)
 
 
-def test_the_menu_keeps_one_height_while_the_owner_types_so_nothing_jumps() -> None:
+def test_the_menu_marks_the_typed_letters_and_lights_the_whole_chosen_row() -> None:
     app = _app(session=FakeSession())
 
     async def test(pilot: Pilot[None]) -> None:
-        _input(app).set_text("/")
+        _input(app).set_text("/co")
         await _until(pilot, lambda: app.query_one("#menu").display)
         await pilot.pause(0.05)
-        menu, transcript = app.query_one("#menu"), app.query_one("#transcript")
-        heights = (menu.outer_size.height, transcript.size.height)
-        for typed in ("/c", "/co", "/con", "/conf", "/e"):
-            _input(app).set_text(typed)
-            await pilot.pause(0.05)
-            assert menu.display
-            assert (menu.outer_size.height, transcript.size.height) == heights, typed
+        menu = app.query_one("#menu", PointerList)
+        rows = [menu.get_option_at_index(i).prompt for i in range(menu.option_count)]
+        assert all(isinstance(row, Text) for row in rows)
+        chosen, other = rows[0], rows[1]
+        assert isinstance(chosen, Text)
+        assert isinstance(other, Text)
+        assert chosen.plain.lstrip().startswith(f"{CHEVRON} /compact")
+
+        def bold_at(row: Text, place: int) -> bool:
+            return any(
+                span.start <= place < span.end and "bold" in str(span.style) for span in row.spans
+            )
+
+        for row in (chosen, other):
+            start = row.plain.index("/co")
+            assert all(bold_at(row, start + offset) for offset in range(3)), row.plain
+        assert not bold_at(other, other.plain.index("/co") + 3)  # the letters not typed are not
+        end = len(chosen.plain.rstrip())  # the chosen row is lit to its end, description too
+        assert any(ACCENT in str(span.style) and span.end >= end for span in chosen.spans)
 
     _run(test, app)
 
