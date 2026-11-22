@@ -1510,9 +1510,9 @@ def test_the_real_stopper_stops_a_child_this_test_started(
     stopper = PidfdStopper()
     handle = stopper.open(child.pid)
 
-    def only_this_child(fd: int, signum: int, *rest: object) -> None:
+    def only_this_child(fd: int, signum: int) -> None:
         assert fd == handle  # the pidfd of the child started above, never anything else
-        REAL_PIDFD_SEND(fd, signum, *rest)  # pyright: ignore[reportArgumentType]
+        REAL_PIDFD_SEND(fd, signum)
 
     monkeypatch.setattr(signal, "pidfd_send_signal", only_this_child)
     try:

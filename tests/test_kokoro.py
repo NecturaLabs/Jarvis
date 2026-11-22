@@ -1,4 +1,4 @@
-# ruff: file-ignore[ambiguous-unicode-character-string, ambiguous-unicode-character-comment]
+# ruff: file-ignore[ambiguous-unicode-character-string, ambiguous-unicode-character-comment] - the tests hold Kokoro's IPA phoneme symbols
 """Kokoro's session settings and its own logic, against a stand-in model."""
 
 import json
@@ -171,8 +171,8 @@ def test_espeak_turns_text_into_ids_of_the_models_vocabulary(
 ) -> None:
     """The phonemizer ships in the `piper-tts` wheel, so this needs no model file."""
     voice, _session = _kokoro(tmp_path, monkeypatch)
-    phonemes = kokoro._espeak_phonemes("Hello world. Good morning.", "en-gb-x-rp")  # pyright: ignore[reportPrivateUsage]
-    voice._vocab = {char: number for number, char in enumerate(sorted(set("".join(phonemes))))}  # pyright: ignore[reportPrivateUsage]
+    phonemes = kokoro._espeak_phonemes("Hello world. Good morning.", "en-gb-x-rp")  # pyright: ignore[reportPrivateUsage] - espeak's phonemizer, used to derive a vocabulary
+    voice._vocab = {char: number for number, char in enumerate(sorted(set("".join(phonemes))))}  # pyright: ignore[reportPrivateUsage] - the stand-in model has no public way to set its vocabulary
 
     sentences = voice.tokens("Hello world. Good morning.")
 
@@ -245,9 +245,9 @@ def test_the_table_is_off_unless_asked_for(tmp_path: Path, monkeypatch: pytest.M
     _say(monkeypatch, ["kˈæfeɪ"])
     vocab = {char: number for number, char in enumerate(sorted(V1_VOCAB), start=1)}
     plain, _ = _kokoro(tmp_path, monkeypatch)
-    plain._vocab = vocab  # pyright: ignore[reportPrivateUsage]
+    plain._vocab = vocab  # pyright: ignore[reportPrivateUsage] - the stand-in model has no public way to set its vocabulary
     mapped, _ = _kokoro(tmp_path, monkeypatch, phoneme_map=True)
-    mapped._vocab = vocab  # pyright: ignore[reportPrivateUsage]
+    mapped._vocab = vocab  # pyright: ignore[reportPrivateUsage] - the stand-in model has no public way to set its vocabulary
 
     as_text = {number: char for char, number in vocab.items()}
     assert "".join(as_text[i] for i in plain.tokens("Cafe")[0]) == "kˈæfeɪ"
@@ -263,7 +263,7 @@ def test_the_table_follows_the_voices_dialect(
     heard: dict[str, str] = {}
     for name in ("am_adam", "bm_george"):
         voice, _ = _kokoro(tmp_path, monkeypatch, voice=name, phoneme_map=True)
-        voice._vocab = vocab  # pyright: ignore[reportPrivateUsage]
+        voice._vocab = vocab  # pyright: ignore[reportPrivateUsage] - the stand-in model has no public way to set its vocabulary
         heard[name] = "".join(as_text[i] for i in voice.tokens("x")[0])
 
     assert heard == {"am_adam": "ɡˈOt ɡˈəʊ", "bm_george": "ɡˈɔʊt ɡˈQ"}

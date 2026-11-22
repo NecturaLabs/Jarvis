@@ -579,7 +579,7 @@ class WakeWord:
         as it would be for a single model.
         """
         super().__init__()
-        from livekit.wakeword import WakeWordModel  # ruff: ignore[import-outside-top-level] - heavy import, only when listening
+        from livekit.wakeword import WakeWordModel
 
         self._model = WakeWordModel(sess_options=quiet_session_options())
         error: OSError | ValueError | None = None
@@ -1264,7 +1264,7 @@ def make_synthesizer(
     """
     files = voice_files(data_dir, voice)
     if voice.startswith(KOKORO_PREFIX):
-        from jarvis.kokoro import SAMPLE_RATE, Kokoro  # ruff: ignore[import-outside-top-level] - heavy
+        from jarvis.kokoro import SAMPLE_RATE, Kokoro
 
         kokoro = Kokoro(
             files[0],
@@ -1274,7 +1274,7 @@ def make_synthesizer(
             phoneme_map=phoneme_map,
         )
         return lambda text: (kokoro.synthesize(text).tobytes(), SAMPLE_RATE)
-    from piper import PiperVoice, SynthesisConfig  # ruff: ignore[import-outside-top-level] - heavy
+    from piper import PiperVoice, SynthesisConfig
 
     piper = PiperVoice.load(files[0])
     # Piper's length scale is the time per sound, so a faster speed is a shorter one.

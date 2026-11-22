@@ -5,7 +5,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -1839,11 +1839,12 @@ def test_what_a_write_puts_in_a_file_is_kept_out_of_the_audit_log(tmp_path: Path
     assert (home / "Documents" / "diary.md").read_text(encoding="utf-8") == secret_text + "\n"
     assert "4417" not in json.dumps(audit.events, default=str)
     call = next(e for e in audit.events if e["event"] == "tool_call")
-    assert call["args"]["content"] == {  # pyright: ignore[reportIndexIssue]
+    logged = cast("dict[str, object]", call["args"])
+    assert logged["content"] == {
         "sha256": hashlib.sha256(secret_text.encode()).hexdigest(),
         "chars": len(secret_text),
     }
-    assert call["args"]["path"] == str(home / "Documents" / "diary.md")  # pyright: ignore[reportIndexIssue]
+    assert logged["path"] == str(home / "Documents" / "diary.md")
 
 
 # --- how many actions may run in a while (issue #30, A7) ----------------------------------------

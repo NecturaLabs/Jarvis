@@ -18,11 +18,30 @@ known-first-party = ["jarvis"]
 [lint.extend-per-file-ignores]
 # One entry per deliberate exception, with the reason on the line above:
 # "tools/legacy.py" = ["C901"]
-# The checks in tools/ are command-line scripts run by path, not a package, and they report on stdout.
-"tools/*.py" = ["INP001", "T201"]
+# The checks in tools/ are command-line scripts run by path, not a package.
+"tools/*.py" = ["INP001"]
 # The OAuth callback test makes a real request to the in-process loopback server with the standard
 # library's client (the tests keep httpx out of it); tests/conftest.py allows only loopback ports a test bound.
 "tests/test_spotify_auth.py" = ["TID251"]
+# These tests import a lazy module at the top because it is what they test; the other tests defer it.
+"tests/test_chat.py" = ["TID253"]
+"tests/test_cli.py" = ["TID253"]
+"tests/test_kokoro.py" = ["TID253"]
+
+# These modules are heavy to import (Textual, ONNX models, Piper, LiveKit, an HTML extractor, the Azure
+# SDK in its own helper) and most commands and the idle service never use them, so they load inside the
+# function that needs them. Ruff then allows that import there without a suppression (PLC0415) and
+# rejects a top-level import of them (TID253). `jarvis.audio` and `jarvis.voice` are lazy in cli.py too
+# but `voice.py` and the tests import `jarvis.audio` at the top, so their deferrals carry a reason instead.
+[lint.flake8-tidy-imports]
+banned-module-level-imports = [
+  "azure.cognitiveservices.speech",
+  "jarvis.chat.app",
+  "jarvis.kokoro",
+  "livekit",
+  "piper",
+  "trafilatura",
+]
 
 # Product rules from AGENTS.md, enforced by lint (tests/test_product_rules.py scans the tree for the
 # rest): Jarvis is local and free, so no hosted-model SDK may be imported. Add the real module path.

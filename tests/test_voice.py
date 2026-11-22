@@ -101,7 +101,7 @@ class Mic:
 
     def frames(self) -> Iterator[NDArray[np.int16]]:
         # A plain loop, not `yield from`: closing one abandoned reader must not end the stream.
-        for frame in self._frames:  # ruff: ignore[yield-in-for-loop]
+        for frame in self._frames:  # ruff: ignore[yield-in-for-loop] - `yield from` would end the stream when a reader closes
             yield frame
 
     def drain(self) -> None:
@@ -117,7 +117,7 @@ class PcAudio:
         self.ended = threading.Event()
 
     def _session(self) -> Generator[NDArray[np.int16]]:
-        for frame in self._frames:  # ruff: ignore[yield-in-for-loop]
+        for frame in self._frames:  # ruff: ignore[yield-in-for-loop] - `yield from` would end the script when a session closes
             yield frame
         self.ended.set()
         pause = threading.Event()

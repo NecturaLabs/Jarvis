@@ -4,6 +4,7 @@ import json
 import stat
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -443,7 +444,7 @@ def test_the_voice_services_own_memory_limit_is_unchanged() -> None:
 def _args(profile: dict[str, object]) -> list[str]:
     args = profile["args"]
     assert isinstance(args, list)
-    return [str(a) for a in args]  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+    return [str(a) for a in cast("list[object]", args)]
 
 
 def test_the_prompt_chunk_defaults_to_512(tmp_path: Path) -> None:

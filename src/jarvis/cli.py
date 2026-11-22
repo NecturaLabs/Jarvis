@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -15,13 +16,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from jarvis import __version__, config, control, models, paths
+from jarvis import __version__, config, control, models, paths, services
+from jarvis.activity import AuditTail
 from jarvis.agent import Hooks
-from jarvis.app import SetupError, build, chat_pictures, echoes_hint, strata_model
+from jarvis.app import SetupError, build, chat_memory_file, chat_pictures, echoes_hint, strata_model
 from jarvis.audit import AuditLog
+from jarvis.chat import clipboard
+from jarvis.chat.history import InputHistory
 from jarvis.confirmkey import ConfirmKey
+from jarvis.files import write_atomic
 from jarvis.paths import spotify_token_file, strata_key_file
+from jarvis.policy import is_yes
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
+from jarvis.services import JARVIS_UNIT, STRATA_UNIT
+from jarvis.spotify.auth import SpotifyAuthError, TokenStore, login, redirect_uri
+from jarvis.sysinfo import Sampler
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -64,7 +73,7 @@ def wake_files(cfg: config.Config) -> list[Path]:
 
 def livekit_wake(cfg: config.Config) -> WakeWord:
     """Return LiveKit's detector for the wake words that are on (it skips any unusable file)."""
-    from jarvis.audio import WakeWord  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import WakeWord  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     return WakeWord(wake_files(cfg), cfg.audio.wake_threshold)
 
@@ -75,7 +84,7 @@ def wake_word(cfg: config.Config) -> WakeWord | FallbackWake:
     An Azure model that cannot start (no model file, no helper Python) falls back to LiveKit's,
     so a switch never leaves Jarvis deaf; `jarvis doctor` says why.
     """
-    from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
         AudioError,
         AzureWake,
         FallbackWake,
@@ -224,8 +233,6 @@ def _load() -> config.Config:
 
 def cmd_setup(args: argparse.Namespace) -> int:
     """Write config, key, Strata profile and units; keep every value already set unless given."""
-    from jarvis import services  # ruff: ignore[import-outside-top-level]
-
     current = _load()
     spotify = current.spotify.model_copy(
         update={"client_id": args.spotify_client_id} if args.spotify_client_id is not None else {}
@@ -283,8 +290,6 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 def cmd_spotify_login(args: argparse.Namespace) -> int:
     """Run the PKCE login and store the tokens."""
-    from jarvis.spotify.auth import SpotifyAuthError, login, redirect_uri  # ruff: ignore[import-outside-top-level]
-
     cfg = _load()
     if not cfg.spotify.client_id:
         print(
@@ -315,7 +320,6 @@ def _terminal_confirm(question: str) -> bool:
         answer = input(f"{question} [yes/no] ")
     except EOFError:
         return False
-    from jarvis.policy import is_yes  # ruff: ignore[import-outside-top-level]
 
     return is_yes(answer)
 
@@ -338,8 +342,6 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
 
 def _chat_status(cfg: config.Config) -> str:
-    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
-
     voice = _unit_state(JARVIS_UNIT)
     model = _strata(cfg).status() if _unit_state(STRATA_UNIT) == "active" else None
     return f"voice {voice} · model {model or 'server not running'}"
@@ -347,8 +349,6 @@ def _chat_status(cfg: config.Config) -> str:
 
 def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
     """Return what /status adds to the services: versions, the model and where things live."""
-    from jarvis.app import chat_memory_file  # ruff: ignore[import-outside-top-level]
-
     return [
         ("jarvis", __version__),
         ("model", f"{cfg.strata.model_id}, {cfg.strata.context:,} tokens of context"),
@@ -375,13 +375,7 @@ def _screenshot_folders(home: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
 
 def cmd_chat(_args: argparse.Namespace) -> int:
     """Open the chat window: typed requests, and everything Jarvis does, live."""
-    import secrets  # ruff: ignore[import-outside-top-level]
-
-    from jarvis.activity import AuditTail  # ruff: ignore[import-outside-top-level]
-    from jarvis.chat import clipboard  # ruff: ignore[import-outside-top-level]
-    from jarvis.chat.app import ChatApp, Services  # ruff: ignore[import-outside-top-level]
-    from jarvis.chat.history import InputHistory  # ruff: ignore[import-outside-top-level]
-    from jarvis.sysinfo import Sampler  # ruff: ignore[import-outside-top-level]
+    from jarvis.chat.app import ChatApp, Services
 
     cfg = _load()
     session_id = secrets.token_hex(8)
@@ -426,8 +420,7 @@ def _transcribers(cfg: config.Config, hint: Callable[[], str]) -> tuple[_Transcr
     Both run Voxtype with Jarvis's own speed settings, written here; the owner's Voxtype config
     is never touched.
     """
-    from jarvis.audio import transcribe, voxtype_settings  # ruff: ignore[import-outside-top-level]
-    from jarvis.files import write_atomic  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import transcribe, voxtype_settings  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     audio = cfg.audio
     engine, model = audio.transcribe_engine, audio.transcribe_model
@@ -457,7 +450,7 @@ def _never() -> bool:
 
 def _speaker(cfg: config.Config) -> Speaker:
     """Return the speaker, which hears its own wake word only when barge-in is on."""
-    from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
         OwnVoiceCheck,
         Speaker,
         make_synthesizer,
@@ -488,7 +481,7 @@ def _serve_controls(handler: control.Controls, audit: AuditLog) -> control.Contr
 
 def cmd_run(_args: argparse.Namespace) -> int:
     """Run the voice loop until stopped."""
-    from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
         MIC_STALL_S,
         AppAudio,
         Microphone,
@@ -497,7 +490,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         VoxtypeWatch,
         screen_locked,
     )
-    from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level]
+    from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, which loads numpy and ONNX Runtime
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     cfg = _load()
@@ -586,7 +579,7 @@ def _run_until_stopped(
     wakes: list[WakeWord | FallbackWake],
 ) -> int:
     """Run `loop` with Voxtype's status followed, then end what the run started."""
-    from jarvis.audio import FallbackWake  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import FallbackWake  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     try:
         voxtype.start()
@@ -606,7 +599,7 @@ def _run_until_stopped(
 
 def _model_files(cfg: config.Config) -> list[tuple[str, Path]]:
     """Return the (role, file) pairs the doctor can check against a known release."""
-    from jarvis.audio import KOKORO_PREFIX, voice_files  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import KOKORO_PREFIX, voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     found = [*(("wake", path) for path in wake_files(cfg)), ("vad", cfg.data_dir / VAD_MODEL)]
     if cfg.audio.voice.startswith(KOKORO_PREFIX):
@@ -645,7 +638,7 @@ def _whisper_model(cfg: config.Config) -> list[tuple[bool, str, str]]:
 
     Other engines keep their models in their own forms, so Voxtype itself reports on those.
     """
-    from jarvis import audio as audio_module  # ruff: ignore[import-outside-top-level]
+    from jarvis import audio as audio_module  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     audio = cfg.audio
     name = audio.transcribe_model
@@ -691,8 +684,6 @@ def _spotify_login(cfg: config.Config) -> tuple[bool, str, str]:
 
     Spotify ends a login six months after it was granted; refreshing does not extend it.
     """
-    from jarvis.spotify.auth import TokenStore  # ruff: ignore[import-outside-top-level]
-
     fix = "jarvis spotify-login"
     tokens = TokenStore(cfg.spotify.client_id, spotify_token_file())
     if not tokens.has_login():
@@ -713,7 +704,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     matches no known release is only a note.
     """
     cfg = _load()
-    from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     wake_check, wake_notes = _wake_checks(cfg)
     files = [
@@ -787,7 +778,7 @@ def _source_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
     instead of failing; the check is what tells a mistyped name from a working one. With no
     source set, the default microphone is used and there is nothing to check.
     """
-    from jarvis.audio import pw_dump, source_found  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import pw_dump, source_found  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     source = cfg.audio.source
     if not source:
@@ -816,7 +807,7 @@ def _lock_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
 
     With `audio.listen_when_locked` off, a lock state that cannot be read keeps Jarvis deaf.
     """
-    from jarvis.audio import lock_state  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import lock_state  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     if cfg.audio.listen_when_locked:
         return []
@@ -831,7 +822,7 @@ def _azure_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
 
     The last one runs the helper itself, with no network, to try the model as Jarvis would.
     """
-    from jarvis.audio import azure_env, azure_wake_command  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import azure_env, azure_wake_command  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     if cfg.audio.wake_engine != "azure":
         return []
@@ -997,8 +988,6 @@ def _unit_state(unit: str) -> str:
 
 def cmd_start(_args: argparse.Namespace) -> int:
     """Start both services."""
-    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
-
     _systemctl("reset-failed", STRATA_UNIT, JARVIS_UNIT)
     code = _systemctl("start", STRATA_UNIT, JARVIS_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
@@ -1007,8 +996,6 @@ def cmd_start(_args: argparse.Namespace) -> int:
 
 def cmd_stop(_args: argparse.Namespace) -> int:
     """Stop the voice service, then the model server (which frees the model)."""
-    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
-
     code = _systemctl("stop", JARVIS_UNIT, STRATA_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
     return code
@@ -1052,8 +1039,6 @@ def _started_at(unit: str) -> float | None:
 
 def _strata_changed_since(started: float) -> bool:
     """Return whether Strata's profile or unit was rewritten after it started."""
-    from jarvis import services  # ruff: ignore[import-outside-top-level]
-
     files = (services.strata_profile_file(), services.unit_dir() / services.STRATA_UNIT)
     return any(path.exists() and path.stat().st_mtime > started for path in files)
 
@@ -1063,8 +1048,6 @@ def cmd_restart(_args: argparse.Namespace) -> int:
 
     A running Strata is otherwise left alone, so the model stays loaded.
     """
-    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
-
     _systemctl("reset-failed", STRATA_UNIT, JARVIS_UNIT)
     started = _started_at(STRATA_UNIT)
     changed = started is not None and _strata_changed_since(started)
@@ -1076,8 +1059,6 @@ def cmd_restart(_args: argparse.Namespace) -> int:
 
 def cmd_logs(_args: argparse.Namespace) -> int:
     """Follow both services' journals."""
-    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
-
     cmd = [
         "journalctl",
         "--user",
@@ -1105,8 +1086,6 @@ def _pc_audio_summary(audio: config.AudioConfig) -> str:
 
 
 def _restart_if_running() -> None:
-    from jarvis.services import JARVIS_UNIT  # ruff: ignore[import-outside-top-level]
-
     if _unit_state(JARVIS_UNIT) == "active":
         # A restart counts against the start limit (5 in 15 min): clear it first, so a few
         # config changes in a row do not leave the voice service stopped.
@@ -1209,8 +1188,6 @@ def _print_wake_models(cfg: config.Config) -> None:
 
 def cmd_overview(args: argparse.Namespace) -> int:
     """Show what is running and the model state, then follow the live log."""
-    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
-
     state = _strata(_load()).status() if _unit_state(STRATA_UNIT) == "active" else None
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}   model server: {_unit_state(STRATA_UNIT)}", end="")
     print(f"   model: {state}" if state else "")
