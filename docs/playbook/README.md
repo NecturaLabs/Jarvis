@@ -39,17 +39,26 @@ traps found along the way. Add a trap the moment it costs time.
 
 The fake-clock tests (`tests/test_first_audio_timing.py`) prove the order and the overlap: the first sentence
 reaches the speaker before the model has finished, each sentence once, in order. How many real seconds that is
-worth depends on the model's speed, so only the owner measures it, with the model loaded (`jarvis status`):
+worth depends on the model's speed, so only the owner measures it, with the model loaded (check `jarvis status`):
 
 - `uv run tools/first_audio.py` (`--runs 5`, `--prompt "..."` to change the questions) sends typed requests to
-  the configured model server through the real agent and prints, per request and as median, 90th percentile
-  and maximum, `first` (the first sentence handed to the speaker), `done` (the whole reply written, which is
-  when speech would start without streaming) and `saved` (the difference). It plays nothing, loads and starts
-  nothing, writes no audit log and gives the agent no tool; it refuses (exit 2) when the server is down or the
-  model is not loaded.
+  the configured model server through the real agent and prints a table per request with `first` (the first
+  sentence handed to the speaker), `done` (the whole reply written, which is when speech would start without
+  streaming) and `saved` (the difference), then the median, 90th percentile and maximum of each. It refuses
+  (exit 2) when the server is down or the model is not loaded, and again if the model is unloaded between two
+  requests, sending nothing then. It plays nothing, loads and starts nothing, writes no audit log, and the agent
+  has only `no_action`. A request the model failed (an error, the step or time cap, a reply cut at the token
+  limit) is shown as failed, left out of the medians, and makes the run exit 3.
+- Read the numbers with these limits, which the script also prints:
+  - The agent offers only `no_action`, so its prompt is far smaller than Jarvis's real one (about 2,900 tokens
+    with every tool, [models.md](../models.md)). The absolute `first` and `done` are therefore lower than in
+    real use; only `saved` carries over.
+  - "Before" is `done` of the same streamed run, not a separate run without streaming.
+  - Only the warm state is measured: the model is already loaded. The cold case (a model that must load first)
+    stays open in #12 for the owner.
 - The request-to-first-audio figure is `first` plus the voice's time for one sentence (Kokoro: a median 0.24 s,
   [models.md](../models.md)) and the player's start; the before figure is `done` plus the same. Record both
-  medians and the 90th percentiles in #12.
+  medians and the 90th percentiles in #12, with those limits.
 
 ## Owner runs for the service units (#33)
 

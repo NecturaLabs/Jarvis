@@ -121,9 +121,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
-- `tools/first_audio.py` times, on a loaded model, when the first sentence of a reply reaches the speaker
-  against when the whole reply is written (#12); fake-clock tests prove the first sentence is handed over while
-  the model is still writing, each sentence once and in order.
+- `tools/first_audio.py` times, on a loaded model, how long the first sentence of a reply takes to reach the
+  speaker and how long the whole reply takes to write (#12). Fake-clock tests show the first sentence goes to the
+  speaker while the model is still writing, and each sentence goes once, in order.
 - `audio.wake_words` picks which LiveKit wake word models listen, side by side, each
   `<data_dir>/wake/<name>.onnx`; `hey_jarvis` and `yo_jarvis` are on by default. `jarvis wake --words
   hey_jarvis,yo_jarvis` sets the list and `jarvis wake` shows every model in the folder as on or off. A
