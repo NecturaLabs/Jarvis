@@ -27,7 +27,8 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
 - Boundaries are enforced in code before any tool runs, never only in the prompt: typed operations,
   default deny, provenance on every message part, confirmation bound to one exact action, an audit log.
 - Voxtype is driven only through these commands: `voxtype transcribe` (with `-q`, `-c <Jarvis's own
-  file>`, `--model`, `--engine`, `--initial-prompt`), `voxtype status --format json` and, in
+  file>`, `--model`, `--engine`, `--initial-prompt`), `voxtype status --format json` (also with
+  `--follow --extended`, one long-lived reader instead of polling), and, in
   `jarvis doctor`, `voxtype info models --json --engine …` (owner's decision, 2026-11-22, #34). The
   daemon's `record start --file …` and `record stop --wait --json` are its contract if that path is ever
   built. A new Voxtype command needs the owner's yes. Never edit `~/.config/voxtype/` and never stop a
