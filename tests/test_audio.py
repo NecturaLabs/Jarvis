@@ -1335,7 +1335,7 @@ def test_a_stop_between_the_two_halves_of_a_start_does_not_touch_the_new_capture
 
     class StopsWhileStarting(real_thread):
         def __init__(self, *args: object, **kwargs: object) -> None:
-            super().__init__(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+            super().__init__(*args, **kwargs)  # pyright: ignore[reportArgumentType] - passes Thread's own arguments through untyped
             target = kwargs.get("target")
             if getattr(target, "__name__", "") == "_read":
                 mic.stop()
