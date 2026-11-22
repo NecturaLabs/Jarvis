@@ -472,6 +472,8 @@ class VoiceLoop:
             self._muted = False
             try:
                 request()
+            except MicPausedError:
+                log.info("the request ended: Jarvis was paused")
             except Exception:
                 log.exception("the request failed")
                 if not self._cancelled():

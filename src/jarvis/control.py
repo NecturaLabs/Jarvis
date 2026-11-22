@@ -139,6 +139,7 @@ class Controls:
         self._model = model
         self._audit = audit or _NoAudit()
         self._model_turn = threading.Lock()  # an unload and a load never overlap
+        self._commands = threading.Lock()
         self._background = background
         self._clock = clock
         self._sleep = sleep
@@ -169,11 +170,12 @@ class Controls:
 
     def _pause(self) -> dict[str, Any]:
         self._loop.hush()
-        changed = self._mic.pause()
+        with self._commands:  # a pause and a resume arriving together are taken in turn
+            changed = self._mic.pause()
+            self._pauses += changed
+            pause = self._pauses
         self._audit.record("control", command="pause", changed=changed)
         if changed:
-            self._pauses += 1
-            pause = self._pauses
             self._background(lambda: self._unload_when_idle(pause))
         return {"paused": True, "changed": changed}
 
@@ -186,16 +188,19 @@ class Controls:
                 log.info("paused: unloading the model")
                 self._model.unload()
 
-    def _warm(self) -> None:
+    def _warm(self, resume: int) -> None:
         with self._model_turn:
-            self._model.warm()
+            if resume == self._pauses and not self._mic.paused:  # not paused again meanwhile
+                self._model.warm()
 
     def _resume(self) -> dict[str, Any]:
-        changed = self._mic.resume()
+        with self._commands:
+            changed = self._mic.resume()
+            self._pauses += changed  # a pause's unload still waiting is now stale
+            resume = self._pauses
         self._audit.record("control", command="resume", changed=changed)
         if changed:
-            self._pauses += 1  # a pause's unload still waiting is now stale
-            self._background(self._warm)
+            self._background(lambda: self._warm(resume))
         return {"paused": False, "changed": changed}
 
 
