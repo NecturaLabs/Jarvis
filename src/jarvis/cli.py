@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -15,13 +16,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from jarvis import __version__, config, control, models, paths
+from jarvis import __version__, config, control, models, paths, services
+from jarvis.activity import AuditTail
 from jarvis.agent import Hooks
-from jarvis.app import SetupError, build, chat_pictures, echoes_hint, strata_model
+from jarvis.app import SetupError, build, chat_memory_file, chat_pictures, echoes_hint, strata_model
 from jarvis.audit import AuditLog
+from jarvis.chat import clipboard
+from jarvis.chat.history import InputHistory
 from jarvis.confirmkey import ConfirmKey
+from jarvis.files import write_atomic
 from jarvis.paths import spotify_token_file, strata_key_file
+from jarvis.policy import is_yes
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
+from jarvis.services import JARVIS_UNIT, STRATA_UNIT
+from jarvis.spotify.auth import SpotifyAuthError, TokenStore, login, redirect_uri
+from jarvis.sysinfo import Sampler
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -189,8 +198,6 @@ def _load() -> config.Config:
 
 def cmd_setup(args: argparse.Namespace) -> int:
     """Write config, key, Strata profile and units; keep every value already set unless given."""
-    from jarvis import services  # ruff: ignore[import-outside-top-level]
-
     current = _load()
     spotify = current.spotify.model_copy(
         update={"client_id": args.spotify_client_id} if args.spotify_client_id is not None else {}
@@ -248,8 +255,6 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 def cmd_spotify_login(args: argparse.Namespace) -> int:
     """Run the PKCE login and store the tokens."""
-    from jarvis.spotify.auth import SpotifyAuthError, login, redirect_uri  # ruff: ignore[import-outside-top-level]
-
     cfg = _load()
     if not cfg.spotify.client_id:
         print(
@@ -280,7 +285,6 @@ def _terminal_confirm(question: str) -> bool:
         answer = input(f"{question} [yes/no] ")
     except EOFError:
         return False
-    from jarvis.policy import is_yes  # ruff: ignore[import-outside-top-level]
 
     return is_yes(answer)
 
@@ -303,7 +307,6 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
 
 def _chat_status(cfg: config.Config) -> str:
-    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
 
     voice = _unit_state(JARVIS_UNIT)
     model = _strata(cfg).status() if _unit_state(STRATA_UNIT) == "active" else None
@@ -312,8 +315,6 @@ def _chat_status(cfg: config.Config) -> str:
 
 def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
     """Return what /status adds to the services: versions, the model and where things live."""
-    from jarvis.app import chat_memory_file  # ruff: ignore[import-outside-top-level]
-
     return [
         ("jarvis", __version__),
         ("model", f"{cfg.strata.model_id}, {cfg.strata.context:,} tokens of context"),
@@ -340,13 +341,7 @@ def _screenshot_folders(home: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
 
 def cmd_chat(_args: argparse.Namespace) -> int:
     """Open the chat window: typed requests, and everything Jarvis does, live."""
-    import secrets  # ruff: ignore[import-outside-top-level]
-
-    from jarvis.activity import AuditTail  # ruff: ignore[import-outside-top-level]
-    from jarvis.chat import clipboard  # ruff: ignore[import-outside-top-level]
     from jarvis.chat.app import ChatApp, Services  # ruff: ignore[import-outside-top-level]
-    from jarvis.chat.history import InputHistory  # ruff: ignore[import-outside-top-level]
-    from jarvis.sysinfo import Sampler  # ruff: ignore[import-outside-top-level]
 
     cfg = _load()
     session_id = secrets.token_hex(8)
@@ -392,7 +387,6 @@ def _transcribers(cfg: config.Config, hint: Callable[[], str]) -> tuple[_Transcr
     is never touched.
     """
     from jarvis.audio import transcribe, voxtype_settings  # ruff: ignore[import-outside-top-level]
-    from jarvis.files import write_atomic  # ruff: ignore[import-outside-top-level]
 
     audio = cfg.audio
     engine, model = audio.transcribe_engine, audio.transcribe_model
@@ -657,8 +651,6 @@ def _spotify_login(cfg: config.Config) -> tuple[bool, str, str]:
 
     Spotify ends a login six months after it was granted; refreshing does not extend it.
     """
-    from jarvis.spotify.auth import TokenStore  # ruff: ignore[import-outside-top-level]
-
     fix = "jarvis spotify-login"
     tokens = TokenStore(cfg.spotify.client_id, spotify_token_file())
     if not tokens.has_login():
@@ -938,8 +930,6 @@ def _unit_state(unit: str) -> str:
 
 def cmd_start(_args: argparse.Namespace) -> int:
     """Start both services."""
-    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
-
     _systemctl("reset-failed", STRATA_UNIT, JARVIS_UNIT)
     code = _systemctl("start", STRATA_UNIT, JARVIS_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
@@ -948,8 +938,6 @@ def cmd_start(_args: argparse.Namespace) -> int:
 
 def cmd_stop(_args: argparse.Namespace) -> int:
     """Stop the voice service, then the model server (which frees the model)."""
-    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
-
     code = _systemctl("stop", JARVIS_UNIT, STRATA_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
     return code
@@ -993,8 +981,6 @@ def _started_at(unit: str) -> float | None:
 
 def _strata_changed_since(started: float) -> bool:
     """Return whether Strata's profile or unit was rewritten after it started."""
-    from jarvis import services  # ruff: ignore[import-outside-top-level]
-
     files = (services.strata_profile_file(), services.unit_dir() / services.STRATA_UNIT)
     return any(path.exists() and path.stat().st_mtime > started for path in files)
 
@@ -1004,8 +990,6 @@ def cmd_restart(_args: argparse.Namespace) -> int:
 
     A running Strata is otherwise left alone, so the model stays loaded.
     """
-    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
-
     _systemctl("reset-failed", STRATA_UNIT, JARVIS_UNIT)
     started = _started_at(STRATA_UNIT)
     changed = started is not None and _strata_changed_since(started)
@@ -1017,8 +1001,6 @@ def cmd_restart(_args: argparse.Namespace) -> int:
 
 def cmd_logs(_args: argparse.Namespace) -> int:
     """Follow both services' journals."""
-    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
-
     cmd = [
         "journalctl",
         "--user",
@@ -1046,7 +1028,6 @@ def _pc_audio_summary(audio: config.AudioConfig) -> str:
 
 
 def _restart_if_running() -> None:
-    from jarvis.services import JARVIS_UNIT  # ruff: ignore[import-outside-top-level]
 
     if _unit_state(JARVIS_UNIT) == "active":
         # A restart counts against the start limit (5 in 15 min): clear it first, so a few
@@ -1127,8 +1108,6 @@ def _wake_summary(audio: config.AudioConfig) -> str:
 
 def cmd_overview(args: argparse.Namespace) -> int:
     """Show what is running and the model state, then follow the live log."""
-    from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
-
     state = _strata(_load()).status() if _unit_state(STRATA_UNIT) == "active" else None
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}   model server: {_unit_state(STRATA_UNIT)}", end="")
     print(f"   model: {state}" if state else "")
