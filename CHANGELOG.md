@@ -121,6 +121,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `jarvis doctor` now loads each wake word file that is on and fails one that does not load, and notes a
+  `wake_thresholds` name that is not in `wake_words`. `jarvis wake` shows each model's own threshold in its
+  first line, and the log names every wake word that passed in a frame, not only the highest.
 - Each wake word can have its own threshold (`[audio.wake_thresholds]`, such as `jarvis = 0.85`); the
   others keep `audio.wake_threshold`. A bare one-word wake needs a higher score than "hey jarvis" to keep
   false wakes down: on the trainer's test set, `jarvis` falsely woke 4.9 times an hour at

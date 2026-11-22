@@ -706,7 +706,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     cfg = _load()
     from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
-    wake_check, wake_notes = _wake_checks(cfg)
+    wake_checks, wake_notes = _wake_checks(cfg)
     files = [
         cfg.data_dir / VAD_MODEL,
         *voice_files(cfg.data_dir, cfg.audio.voice),
@@ -717,7 +717,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         (paths.config_file().exists(), f"config {paths.config_file()}", "run jarvis setup"),
         (bool(cfg.spotify.client_id), "Spotify client ID", "jarvis setup --spotify-client-id <id>"),
         _spotify_login(cfg),
-        wake_check,
+        *wake_checks,
         *((f.exists(), f"file {f}", "see docs/models.md") for f in files),
         *unreadable,
         *_whisper_model(cfg),
@@ -747,12 +747,15 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     return 0 if all(ok for ok, _, _ in checks) else 1
 
 
-def _wake_checks(cfg: config.Config) -> tuple[tuple[bool, str, str], list[str]]:
-    """Return the check that a wake word that is on has its model file, and notes for the rest.
+def _wake_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[str]]:
+    """Return the checks on the wake word files that are on, and notes for the rest.
 
     Jarvis listens with the models it finds, so only having none fails; a phrase that is on but
-    not trained yet is a note.
+    not trained yet is a note. A file that is there but does not load, as the runtime would load
+    it, fails too, and so does a note for each `wake_thresholds` name that is not on.
     """
+    from jarvis.audio import wake_load_errors  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
+
     files = wake_files(cfg)
     folder = cfg.data_dir / WAKE_DIR
     found = [path for path in files if path.is_file()]
@@ -762,13 +765,25 @@ def _wake_checks(cfg: config.Config) -> tuple[tuple[bool, str, str], list[str]]:
         f"wake word files ({names})" if found else f"wake word files: none found in {folder}",
         "see docs/models.md",
     )
+    checks: list[tuple[bool, str, str]] = [check]
+    if found:
+        checks.extend(
+            (False, f"wake word file {path} does not load ({reason})", "see docs/models.md")
+            for path, reason in wake_load_errors(found).items()
+        )
     notes = [
         f"note: wake word {path.stem} is on but has no file {path}; train it (docs/models.md) "
         "or drop it with `jarvis wake --words`"
         for path in files
         if path not in found
     ]
-    return check, notes
+    notes.extend(
+        f"note: wake_thresholds names {name}, which is not in wake_words, so it does nothing; "
+        "check the spelling or turn it on with `jarvis wake --words`"
+        for name in cfg.audio.wake_thresholds
+        if name not in cfg.audio.wake_words
+    )
+    return checks, notes
 
 
 def _source_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
@@ -1169,7 +1184,12 @@ def cmd_wake(args: argparse.Namespace) -> int:
 def _wake_summary(audio: config.AudioConfig) -> str:
     if audio.wake_engine == "azure":
         return f"Azure keyword model {audio.azure_keyword_model or '(not set)'}"
-    return f"LiveKit {', '.join(audio.wake_words)} (threshold {audio.wake_threshold})"
+    own = "".join(
+        f"; {name} {audio.wake_thresholds[name]}"
+        for name in audio.wake_words
+        if name in audio.wake_thresholds
+    )
+    return f"LiveKit {', '.join(audio.wake_words)} (threshold {audio.wake_threshold}{own})"
 
 
 def _print_wake_models(cfg: config.Config) -> None:
