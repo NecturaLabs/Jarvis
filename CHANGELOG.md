@@ -125,6 +125,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   LiveKit project's key, `tools/wake_ungated.py` runs the trainer without the gated test sets (#37), and
   `tools/wake_bench.py` scores models on 55 local voices and about 24 hours of real media, alone and
   together as Jarvis runs them. [docs/playbook/wake-training.md](docs/playbook/wake-training.md) says how.
+- `jarvis doctor` now loads each wake word file that is on and fails one that does not load, and notes a
+  `wake_thresholds` name that is not in `wake_words`. `jarvis wake` shows each model's own threshold in its
+  first line, and the log names every wake word that passed in a frame, not only the highest.
 - Each wake word can have its own threshold (`[audio.wake_thresholds]`, such as `jarvis = 0.85`); the
   others keep `audio.wake_threshold`. Models score on different scales: on the trainer's reduced test set
   the trained `jarvis` falsely woke 5 times in about an hour at 0.5. `jarvis wake` shows a model's own

@@ -1,16 +1,18 @@
 """Choosing which LiveKit wake word models Jarvis listens for (`audio.wake_words`)."""
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import pydantic
 import pytest
 
-from jarvis import cli, config
+from jarvis import audio, cli, config
 from jarvis.cli import main
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
+
+    import onnxruntime as ort
 
 
 class _LiveKit:
@@ -116,7 +118,7 @@ def test_the_wake_listing_shows_a_wake_word_s_own_threshold(
     assert main(["wake"]) == 0
 
     out = capsys.readouterr().out
-    assert "LiveKit hey_jarvis, jarvis (threshold 0.5)" in out
+    assert "LiveKit hey_jarvis, jarvis (threshold 0.5; jarvis 0.85)" in out
     assert "  on  hey_jarvis\n" in out
     assert "  on  jarvis (threshold 0.85)\n" in out
 
@@ -207,12 +209,14 @@ def test_the_wake_listing_leaves_out_files_wake_words_cannot_name(
 
 
 def test_the_doctor_passes_with_one_wake_word_file_and_notes_the_untrained_one(
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     cfg = config.load()
     _models(cfg.data_dir, "hey_jarvis")
 
-    check, notes = cli._wake_checks(cfg)  # pyright: ignore[reportPrivateUsage] - the doctor's wake check
+    _fake_loader(monkeypatch)
+    (check, *_), notes = cli._wake_checks(cfg)  # pyright: ignore[reportPrivateUsage] - the doctor's wake check
 
     assert check[0]
     assert check[1] == "wake word files (hey_jarvis)"
@@ -223,7 +227,7 @@ def test_the_doctor_passes_with_one_wake_word_file_and_notes_the_untrained_one(
 
 
 def test_the_doctor_fails_when_no_wake_word_that_is_on_has_a_file() -> None:
-    check, _notes = cli._wake_checks(config.load())  # pyright: ignore[reportPrivateUsage] - the doctor's wake check
+    (check, *_), _notes = cli._wake_checks(config.load())  # pyright: ignore[reportPrivateUsage] - the doctor's wake check
 
     assert not check[0]
     assert check[1] == f"wake word files: none found in {config.load().data_dir / 'wake'}"
@@ -278,3 +282,128 @@ def test_azure_that_cannot_start_falls_back_to_the_wake_words_that_are_on(
 
     assert isinstance(wake, _LiveKit)
     assert [path.name for path in wake.paths] == ["jarvis.onnx", "yo_jarvis.onnx"]
+
+
+class _Loader:
+    """Stands in for `livekit.wakeword.WakeWordModel`: loads what the test allows."""
+
+    bad: ClassVar[dict[str, Exception]] = {}
+    loaded: ClassVar[list[Path]] = []
+
+    def __init__(self, *, sess_options: ort.SessionOptions) -> None:
+        super().__init__()
+        # The doctor loads with the runtime's quiet options, not one thread per core.
+        assert sess_options.intra_op_num_threads == 1
+        assert sess_options.inter_op_num_threads == 1
+
+    def load_model(self, path: Path) -> None:
+        if path.name in self.bad:
+            raise self.bad[path.name]
+        self.loaded.append(path)
+
+
+def _fake_loader(monkeypatch: pytest.MonkeyPatch, **bad: Exception) -> None:
+    monkeypatch.setattr(_Loader, "bad", {f"{name}.onnx": exc for name, exc in bad.items()})
+    monkeypatch.setattr(_Loader, "loaded", [])
+    monkeypatch.setattr("livekit.wakeword.WakeWordModel", _Loader)
+
+
+def test_the_doctor_fails_a_wake_word_file_that_does_not_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = config.load()
+    _models(cfg.data_dir, "hey_jarvis", "yo_jarvis")
+    _fake_loader(monkeypatch, yo_jarvis=ValueError("not a streaming model"))
+
+    checks, _notes = cli._wake_checks(cfg)  # pyright: ignore[reportPrivateUsage] - the doctor's wake check
+
+    assert [c[0] for c in checks] == [True, False]
+    assert checks[1][1].startswith("wake word yo_jarvis does not load: ")
+    assert "not a streaming model" in checks[1][1]
+    assert _Loader.loaded == [cfg.data_dir / "wake" / "hey_jarvis.onnx"]
+
+
+def test_the_doctor_does_not_try_to_load_a_wake_word_that_has_no_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = config.load()
+    _fake_loader(monkeypatch)
+
+    checks, _notes = cli._wake_checks(cfg)  # pyright: ignore[reportPrivateUsage] - the doctor's wake check
+
+    assert len(checks) == 1
+    assert not _Loader.loaded
+
+
+def test_the_doctor_notes_a_threshold_for_a_name_that_is_not_a_wake_word(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = config.load()
+    audio = cfg.audio.model_copy(
+        update={"wake_words": ["jarvis"], "wake_thresholds": {"jarvis": 0.85, "jarivs": 0.8}}
+    )
+    _fake_loader(monkeypatch)
+
+    _checks, notes = cli._wake_checks(cfg.model_copy(update={"audio": audio}))  # pyright: ignore[reportPrivateUsage] - the doctor's wake check
+
+    flagged = [n for n in notes if "jarivs" in n]
+    assert len(flagged) == 1
+    assert flagged[0].startswith("note: wake_thresholds names jarivs")
+    assert not any("names jarvis" in n for n in notes)
+
+
+def test_the_wake_header_shows_each_own_threshold(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: pytest.fail("no restart"))
+    cfg = config.load()
+    audio = cfg.audio.model_copy(
+        update={
+            "wake_words": ["hey_jarvis", "jarvis", "yo_jarvis"],
+            "wake_thresholds": {"jarvis": 0.85, "off_word": 0.9},
+        }
+    )
+    config.save(cfg.model_copy(update={"audio": audio}))
+
+    assert main(["wake"]) == 0
+
+    assert "LiveKit hey_jarvis, jarvis, yo_jarvis (threshold 0.5; jarvis 0.85)" in (
+        capsys.readouterr().out
+    )
+
+
+def _voxtype_cannot_say(_engine: str) -> frozenset[str] | None:
+    return None
+
+
+def test_the_doctor_prints_a_wake_word_file_that_does_not_load_and_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = config.load()
+    config.save(cfg)
+    _models(cfg.data_dir, "hey_jarvis", "yo_jarvis")
+    _fake_loader(monkeypatch, yo_jarvis=ValueError("not a streaming model"))
+    monkeypatch.setattr(audio, "installed_models", _voxtype_cannot_say)
+
+    status = main(["doctor"])
+
+    out = capsys.readouterr().out.splitlines()
+    assert status == 1
+    assert any(
+        line.startswith("FAIL wake word yo_jarvis does not load: not a streaming model")
+        for line in out
+    )
+
+
+def test_the_load_check_names_a_missing_file_and_a_file_that_is_not_a_model(
+    tmp_path: Path,
+) -> None:
+    junk = tmp_path / "junk.onnx"
+    junk.write_bytes(b"not a model")
+    missing = tmp_path / "missing.onnx"
+
+    errors = audio.wake_load_errors([junk, missing])
+
+    assert set(errors) == {junk, missing}
+    assert "not found" in errors[missing]
+    assert "not a valid ONNX model" in errors[junk]
