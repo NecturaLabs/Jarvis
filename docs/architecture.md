@@ -225,8 +225,9 @@ Threads in the `jarvis run` process:
 Every thread Jarvis starts is a daemon thread, so Python ends the process without waiting for any. That
 is deliberate (#32): Python's docs warn that a daemon thread may stop in the middle of its work, but
 here every state file is replaced whole through `files.write_atomic` (the private ones too), so a
-thread cut off mid-write leaves the old file, and `cmd_run`'s `finally` closes the control socket, the Voxtype watcher and the Azure helper explicitly.
-No lost write has been seen; make a thread non-daemon, stopped by an event, only if one is.
+thread cut off mid-write leaves the old file, and `cmd_run`'s `finally` closes the control socket, the
+Voxtype watcher and the Azure helper explicitly. No lost write has been seen; make a thread
+non-daemon, stopped by an event, only if one is.
 
 `jarvis chat` runs the agent on a Textual worker thread. `jarvis spotify-login` runs a loopback HTTP
 server on its own thread until the callback arrives.
