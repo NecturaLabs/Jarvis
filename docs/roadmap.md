@@ -19,8 +19,9 @@ says which parts are built.
   of a sourced answer and SearXNG in the installer remain (#10, #20).
 - **Voice polish**: speaking the first sentence while the rest is generated (#12) and follow-up requests
   without the wake word (#11) are built and wait for live measurements; the bare word "Jarvis" (#15) is built
-  as the Azure keyword model and waits for the owner's trained model. Still to build: interrupting Jarvis by
-  voice without its own voice waking it (#13) and a state indicator in the Omarchy bar (#14).
+  as the Azure keyword model and waits for the owner's trained model; the Omarchy bar module (#14) is built
+  and waits for the owner to add it ([configuration](configuration.md#the-omarchy-bar-module-14)). Still to
+  build: interrupting Jarvis by voice without its own voice waking it (#13).
 - **Accessibility** (not filed as issues yet): a text-only way to use Jarvis and a screen-reader check of
   the chat window; see [ACCESSIBILITY.md](../ACCESSIBILITY.md).
 

@@ -527,3 +527,61 @@ In code, whatever the model says:
   `elephant`, `fcitx5`, Omarchy's own `omarchy-*` helpers, Voxtype and Strata. A name is checked in full
   (a program's executable, or a script's file name), not only its first 15 characters. The list, with the
   reason for each, is in `src/jarvis/pc/processes.py`.
+
+## The Omarchy bar module (#14)
+
+Omarchy's bar is part of `omarchy-shell` (Quickshell), not Waybar. It takes a custom module with `"type":
+"command"`: it runs the `exec` command through `bash -lc` every `interval` seconds, shows the `text` of the
+Waybar-style JSON line the command prints, shows its `tooltip` on hover, highlights the module when its `class`
+includes `active`, and runs `onClick`, `onRightClick` and `onMiddleClick` through bash. `tools/bar_status.py`
+is that command for Jarvis. Nothing here edits your Omarchy files: add the two things below yourself.
+
+1. Link the script where Omarchy's bar documentation keeps its scripts (any path works; use your clone's):
+
+   ```bash
+   mkdir -p ~/.config/omarchy/bar/scripts
+   ln -s <your Jarvis clone>/tools/bar_status.py ~/.config/omarchy/bar/scripts/jarvis-status
+   ```
+
+2. Add this entry to a section of `bar.layout` in `~/.config/omarchy/shell.json`, for example at the end of
+   `right`. The shell reloads the file when you save it:
+
+   ```json
+   {
+     "id": "jarvis",
+     "type": "command",
+     "exec": "~/.config/omarchy/bar/scripts/jarvis-status",
+     "interval": 5,
+     "tooltip": "Jarvis",
+     "onClick": "jarvis pause",
+     "onRightClick": "jarvis resume"
+   }
+   ```
+
+Remove the entry (and the link) to take the module away. The only actions it offers are the two fixed ones:
+a left click runs `jarvis pause` and a right click `jarvis resume`; the tooltip says so.
+
+What the bar shows comes from one `jarvis status --json` reading, which never loads the model or generates
+a token: it asks the running Jarvis over its control socket and, when Jarvis is not running, asks the model
+server how it is.
+
+| Shown (class) | When |
+|---|---|
+| `idle` | waiting for the wake word |
+| `listening`, `thinking`, `speaking`, `model-loading` (highlighted) | the request in flight, or the model on its way into memory |
+| `paused` | after `jarvis pause`, until `jarvis resume` |
+| `unavailable` | Jarvis is running but cannot work: the microphone was lost or the model server is down |
+| `not-running` | `jarvis status` says `running: false` |
+| `timeout` | `jarvis status` did not answer in 8 seconds (it is stopped) |
+| `failed` | `jarvis` is not on the bar's `PATH`, or `jarvis status` exited with an error |
+| `malformed` | its answer is not a status reading (not JSON, an unknown or missing state, over 4 KB) |
+
+The tooltip is built from fixed texts; of the reading only the model's state (`loaded`, `unloaded`, `loading`,
+`failed`, `unreachable`, `missing`) is shown, and only when it is a plain lowercase word, because Omarchy's guidance
+treats tooltip text as a place where markup in outside data could be read.
+
+The bar has no way to be told of a change, so the module polls: every 5 seconds the bar starts the script,
+which starts `jarvis status --json` and exits. On this PC (2026-11-22, Python 3.14, Jarvis not running) a poll
+took 0.21 s of CPU (10 runs: 2.1 s), so about 4 % of one core averaged over the interval, and nothing between
+polls. A longer `interval` costs less and shows a short state (`speaking`, `thinking`) less often; a poll
+never overlaps the last, so a stuck `jarvis` cannot pile up processes.

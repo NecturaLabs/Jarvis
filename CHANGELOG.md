@@ -121,6 +121,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- A state indicator for the Omarchy bar (#14): `tools/bar_status.py` turns one `jarvis status --json` reading
+  into the bar's text, tooltip and class for idle, listening, thinking, speaking, paused, model loading and
+  unavailable, and into a state of its own for a Jarvis that is not running, a timeout, a failed command and an
+  unreadable answer. The module offers only a left click for `jarvis pause` and a right click for `jarvis
+  resume`, polls every 5 seconds (about 0.2 s of CPU a poll) and never loads the model. The entry to add to
+  `~/.config/omarchy/shell.json` is in [configuration](docs/configuration.md#the-omarchy-bar-module-14);
+  nothing is installed for you.
 - `audio.wake_words` picks which LiveKit wake word models listen, side by side, each
   `<data_dir>/wake/<name>.onnx`; `hey_jarvis` and `yo_jarvis` are on by default. `jarvis wake --words
   hey_jarvis,yo_jarvis` sets the list and `jarvis wake` shows every model in the folder as on or off. A
