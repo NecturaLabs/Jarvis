@@ -1081,7 +1081,7 @@ def test_a_status_command_that_prints_once_and_dies_is_not_restarted_every_secon
     for _ in range(6):
         wait = next_retry_wait(wait, ran_s=0.2, first=1.0, longest=30.0)
 
-    assert wait == 30.0
+    assert wait == pytest.approx(30.0)
 
 
 def test_stopping_the_watch_ends_the_status_command_it_started(

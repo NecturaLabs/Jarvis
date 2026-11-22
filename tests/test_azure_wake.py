@@ -642,4 +642,3 @@ def test_only_the_lead_frames_that_start_before_the_keywords_end_are_its_tail() 
     assert keyword_tail(lead) == 3  # now it starts right at the end: it is the request's
     assert keyword_tail(lead[:2]) == 2
     assert keyword_tail([]) == 0
-

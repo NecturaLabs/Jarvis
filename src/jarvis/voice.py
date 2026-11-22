@@ -140,8 +140,10 @@ class _Wake(Protocol):
 
 @runtime_checkable
 class _Leads(Protocol):
-    """A wake word heard late (the Azure helper): it keeps the audio from just before the keyword
-    ended (`audio.AZURE_LEAD_BACK`) to its detection."""
+    """A wake word heard late (the Azure helper), which keeps the audio up to its detection.
+
+    That audio starts `audio.AZURE_LEAD_BACK` before the keyword ended.
+    """
 
     def after_wake(self) -> list[NDArray[np.int16]]: ...
 
