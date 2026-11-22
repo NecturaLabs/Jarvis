@@ -185,11 +185,18 @@ class SpotifyConfig(_Section):
 VAD_EXIT_MARGIN = 0.15  # how far below the entry threshold speech goes on, as Silero's own does
 VAD_EXIT_FLOOR = 0.01
 
+# A wake word model's name: its file `<data_dir>/wake/<name>.onnx`, so never a path.
+WakeWordName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9_]{0,39}$")]
+
 
 class AudioConfig(_Section):
     """Microphone, wake word, end-of-speech and voice settings."""
 
     source: str = ""
+    # The LiveKit wake word models listened for, each `<data_dir>/wake/<name>.onnx`.
+    wake_words: list[WakeWordName] = Field(
+        default_factory=lambda: ["hey_jarvis", "yo_jarvis"], min_length=1, max_length=8
+    )
     wake_threshold: float = Field(default=0.5, gt=0, lt=1)
     vad_threshold: float = Field(default=0.5, gt=0, lt=1)
     # Once speech has started it goes on while the probability stays above this; 0 means
@@ -224,6 +231,13 @@ class AudioConfig(_Section):
     pc_audio_grant_s: float = Field(default=600.0, ge=0, le=86400)
     confirm_blocks_on_pc_speech: bool = True
     pc_audio_cooldown_s: float = Field(default=5.0, ge=0, le=600)
+
+    @model_validator(mode="after")
+    def _wake_words_are_distinct(self) -> Self:
+        if len(set(self.wake_words)) != len(self.wake_words):
+            msg = "wake_words must not name a model twice"
+            raise ValueError(msg)
+        return self
 
     @model_validator(mode="after")
     def _exit_is_not_above_entry(self) -> Self:

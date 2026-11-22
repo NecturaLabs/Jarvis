@@ -197,6 +197,7 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
 | `source` | empty | PipeWire source node name | Microphone: a node name or serial. Empty means the default source. `jarvis doctor` checks that it names a microphone (an `Audio/Source` node) that PipeWire lists. A capture that sends no audio for 5 s counts as lost and is reopened. `--mic`. |
+| `wake_words` | `["hey_jarvis", "yo_jarvis"]` | 1 to 8 names, lowercase letters, digits and `_` | The LiveKit wake word models that listen, side by side: each is `<data_dir>/wake/<name>.onnx`, and any of them wakes Jarvis. A name whose file is missing is left out with a warning in the log, and `jarvis doctor` reports it. `jarvis wake --words hey_jarvis,yo_jarvis` sets the list; `jarvis wake` lists every model in that folder as on or off. Only `hey_jarvis` is downloaded; train others as [Models](models.md#wake-word-and-end-of-speech) says. |
 | `wake_threshold` | `0.5` | above 0, below 1 | LiveKit's wake word score needed. Higher means fewer false wakes and more misses. The service log shows each wake's score. |
 | `wake_engine` | `livekit` | `livekit` or `azure` | Which wake word model listens. `azure` uses your Azure custom keyword model; see [Azure wake word](#azure-wake-word). `jarvis wake livekit\|azure`. |
 | `azure_keyword_model` | empty | path to a `.table` file | The Azure custom keyword model. `jarvis wake azure --model FILE`. |

@@ -464,9 +464,9 @@ def test_with_an_azure_model_a_sentence_naming_jarvis_cannot_be_spoken_over() ->
 class _LiveKit:
     """Stands in for LiveKit's model, which needs its file."""
 
-    def __init__(self, path: Path, threshold: float) -> None:
+    def __init__(self, paths: list[Path], threshold: float) -> None:
         super().__init__()
-        self.loaded = (path, threshold)
+        self.loaded = (paths, threshold)
 
 
 def _engine(monkeypatch: pytest.MonkeyPatch, **audio: object) -> config.Config:

@@ -2,6 +2,7 @@
 
 import contextlib
 import json
+import logging
 import os
 import queue
 import signal
@@ -1326,7 +1327,7 @@ def _wake_word(
         return model
 
     monkeypatch.setattr("livekit.wakeword.WakeWordModel", make)
-    wake = WakeWord(Path("/nonexistent/hey_jarvis.onnx"), threshold)
+    wake = WakeWord([Path("/nonexistent/hey_jarvis.onnx")], threshold)
     assert loaded == [[Path("/nonexistent/hey_jarvis.onnx")]]
     return wake, model
 
@@ -1415,3 +1416,14 @@ def test_a_voxtype_that_cannot_run_says_nothing() -> None:
         raise FileNotFoundError(cmd[0])
 
     assert installed_models("whisper", run=missing) is None
+
+
+def test_the_wake_word_logs_which_phrase_was_heard(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    wake, _model = _wake_word(monkeypatch, [{"hey_jarvis": 0.2, "yo_jarvis": 0.9}])
+
+    with caplog.at_level(logging.INFO):
+        assert wake.heard(np.zeros(FRAME, dtype=np.int16))
+
+    assert "wake word yo_jarvis score 0.90" in caplog.text

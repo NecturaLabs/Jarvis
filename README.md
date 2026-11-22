@@ -12,7 +12,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
 
 ## What it does today
 
-- **Wake word:** a local "Hey Jarvis" model (LiveKit wake word) listens on your microphone. Your own Azure
+- **Wake word:** local LiveKit wake word models listen on your microphone: "Hey Jarvis", plus any phrase you
+  trained yourself, each turned on or off with `jarvis wake --words`. Your own Azure
   custom keyword model can listen instead, still on the PC with no network (`jarvis wake azure`; setup in
   [Azure wake word](docs/configuration.md#azure-wake-word)). Silero VAD finds the end of your request.
 - **Speech to text:** Voxtype, run with Jarvis's own settings file. Your own Voxtype configuration is never
@@ -105,7 +106,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis logs` | Follow the live log (Ctrl+C to leave). |
 | `jarvis ask <text>` | Send one typed request as if spoken; `--yes` answers yes to confirmations. |
 | `jarvis chat` | Open a Textual window where you type requests and watch what Jarvis does, live. |
-| `jarvis wake [livekit\|azure]` | Show or switch the wake word model; `--model FILE` names the Azure `.table` file. |
+| `jarvis wake [livekit\|azure]` | Show or switch the wake word model; `--model FILE` names the Azure `.table` file; `--words hey_jarvis,yo_jarvis` picks the LiveKit models that listen. |
 | `jarvis pc-audio [on\|off]` | Show or set listening to PC audio; `--apps discord,firefox` names the apps, `--all-output` listens to everything the PC plays. |
 | `jarvis run` | Run the voice loop in the foreground. This is what `jarvis.service` runs. |
 | `jarvis --version` | Print the version. |
