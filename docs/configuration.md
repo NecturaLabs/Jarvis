@@ -117,14 +117,47 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `port` | `8080` | 1024 to 65535 | Strata's port on `127.0.0.1`. |
 | `context` | `24576` | 2048 to 262144 | Context window in tokens (`--max-context`). Each 1,000 tokens more costs about 0.05 GiB of VRAM ([models.md](models.md)). It holds the prompt and the tool schemas (about 5,000 tokens together), the remembered conversation (`agent.memory_tokens` or `chat.memory_tokens`), one reply and the request's tool results; when a long request outgrows it, its oldest tool results are cleared down to their start. |
 | `expert_vram_gib` | `1.0` | 0 to 64 | VRAM budget for expert weights kept on the GPU, passed as `--expert-vram`; the rest of the experts stay in host memory. |
-| `prefill` | `512` | 128 to 8192 | Prompt-reading chunk size (`--prefill`). |
+| `prefill` | `512` | 128 to 8192, or `"auto"` | Prompt-reading chunk size (`--prefill`). `"auto"` leaves the size to Strata (the value its own setup writes). Strata's tuner lists 512 among the sizes it avoids for this model, because smaller chunks read long prompts slower, so `"auto"`, 2048 and 4096 are worth measuring on your card before changing the default ([models.md](models.md#prompt-chunk-size)). |
 | `idle_unload_s` | `300` | 30 to 86400 | Seconds without a request before Strata frees the model. |
 | `reasoning_budget_tokens` | `512` | 1 to 8192 | Thinking-token cap in the profile. |
-| `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` and `MemoryMax` of the Strata unit. |
+| `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` of the Strata unit. `MemoryMax` is derived from it, 10% above (44G for 40G; a size that does not divide evenly is rounded up and written in bytes), so there is no second key. Past `MemoryHigh` the kernel throttles the unit and reclaims its memory; past `MemoryMax` it kills the unit. |
+| `vram_reserve_mib` | `0` (unset) | 0, or 100 to 65536 | VRAM in MiB the engine leaves free for other programs, passed as `--vram-reserve-mib`. `0` passes nothing, so Strata's own default (700) applies. Set it only after a game that grows once the model is loaded either fails or does not. A card with at most about 8 GB of VRAM cannot start with a reserve (Strata's tuner never tries one there). |
 | `vision_file` | unset | path | The model's picture reader (`mmproj-F16.gguf`, [models.md](models.md#pictures)). Set, the profile reads pictures: Strata's reader runs on the processor, in about 0.9 GB of RAM and no VRAM, starts with the first picture and stops after `vision_idle_s`. Unset, Jarvis reads no pictures. |
 | `vision_idle_s` | `120` | 10 to 86400 | Seconds without a picture before the picture reader stops. |
 
 Fixed by Jarvis, not configurable: lazy loading on, one parallel slot, the HIP backend on GPU 0, `--mtp 2`.
+
+### What the two units set
+
+Both units are written by `jarvis setup`; their text is `jarvis_unit` and `strata_unit` in `src/jarvis/services.py`.
+
+| Setting | `jarvis.service` | `jarvis-strata.service` |
+|---|---|---|
+| `NoNewPrivileges=yes`, `LockPersonality=yes`, `RestrictSUIDSGID=yes` | yes | yes |
+| `UMask=0077` (what the unit creates is private to you) | no | yes |
+| `SystemCallArchitectures=native` | yes | no |
+| `CPUWeight=50` (half the default, so a game started by Steam in the same `app.slice` wins a CPU contest) | yes | yes |
+| `StartLimitIntervalSec=15min`, `StartLimitBurst=5` (in `[Unit]`) | yes | yes |
+| `MemoryHigh` / `MemoryMax` | none / `4G` | `memory_max` / 10% above it |
+
+- The voice service keeps your session's umask, so a file the file tools write at your request gets the
+  mode it asks for (0644, a folder 0755).
+- `NoNewPrivileges` is inherited by programs the voice service starts, directly or through `uwsm-app` (the
+  way the Omarchy launcher starts Spotify; tested with a stand-in command, 2026-11-22).
+- Not set, each for a reason: `ProtectKernelModules=` and `ProtectKernelLogs=` on the voice service (in a user
+  unit they put it in a private user namespace, which Spotify and every other program it starts would inherit),
+  `RestrictNamespaces=` (the Azure wake word helper runs under `unshare --map-current-user --net`),
+  `MemoryDenyWriteExecute=` (onnxruntime and Strata's HIP path may compile code at run time), `ProtectHome=` and
+  `ProtectSystem=` (config, state and models live under home and on `/data`), `PrivateNetwork=` and `IPAddressDeny=`
+  (Spotify, Open-Meteo and web reads), `RestrictRealtime=` (`pw-record` and `pw-play` are not shown to
+  do without real-time scheduling), `Nice=` and the `idle` scheduling policies (a reply would starve while a game
+  runs; the model is paged in from disk, so `IOSchedulingClass=idle` would slow it too). `IOWeight=` does nothing: the
+  user manager delegates only the `cpu`, `memory` and `pids` controllers.
+- The start limit: a unit that fails five times in 15 minutes stays `failed` and shows in `jarvis status` instead
+  of restarting for ever (each Strata restart reads the model again). `jarvis start` and `jarvis restart` run
+  `systemctl --user reset-failed` first, so they bring a failed unit back.
+- These options were checked with transient units on this PC (`systemd-run --user`), not with the model loaded
+  on the GPU; [the playbook](playbook/README.md#owner-runs-for-the-service-units-33) lists what the owner still runs.
 
 ### Keeping the model loaded
 

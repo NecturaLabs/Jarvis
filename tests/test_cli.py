@@ -396,6 +396,45 @@ def test_setup_writes_the_config_profile_and_units_under_the_home(
     assert "next: jarvis spotify-login" in capsys.readouterr().out
 
 
+def test_setup_with_enable_clears_a_failed_state_before_starting_the_units(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _stub_subprocess(monkeypatch)
+    model = home / "models" / "q4.gguf"
+
+    assert main(["setup", "--model-file", str(model), "--enable"]) == 0
+
+    units = ["jarvis-strata.service", "jarvis.service"]
+    assert calls == [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "reset-failed", *units],
+        ["systemctl", "--user", "enable", "--now", *units],
+    ]
+
+
+def test_a_config_command_clears_a_failed_state_before_restarting_jarvis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The start limit counts restarts too: five config changes in 15 minutes must not leave the
+    # voice service stopped.
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(*args: str) -> int:
+        calls.append(args)
+        return 0
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+
+    def active(_unit: str) -> str:
+        return "active"
+
+    monkeypatch.setattr(cli, "_unit_state", active)
+
+    cli._restart_if_running()  # pyright: ignore[reportPrivateUsage] - the helper three commands share
+
+    assert calls == [("reset-failed", "jarvis.service"), ("restart", "jarvis.service")]
+
+
 def test_setup_refuses_a_value_that_cannot_go_into_a_unit(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -812,6 +851,47 @@ def test_restart_starts_a_stopped_strata(monkeypatch: pytest.MonkeyPatch) -> Non
     assert ("start", "jarvis-strata.service") in calls
 
 
+def test_start_clears_a_failed_state_before_starting_both_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A unit that hit its start limit stays `failed` until reset (#33).
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(*args: str) -> int:
+        calls.append(args)
+        return 0
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+
+    assert cli.main(["start"]) == 0
+    assert calls == [
+        ("reset-failed", "jarvis-strata.service", "jarvis.service"),
+        ("start", "jarvis-strata.service", "jarvis.service"),
+    ]
+
+
+def test_a_failed_reset_does_not_stop_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `reset-failed` fails for a unit that is not loaded; `start` then says what is wrong.
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(*args: str) -> int:
+        calls.append(args)
+        return 1 if args[0] == "reset-failed" else 0
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+
+    assert cli.main(["start"]) == 0
+    assert calls[-1][0] == "start"
+
+
+def test_restart_clears_a_failed_state_before_starting_anything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _restart_calls(monkeypatch, None)
+
+    assert calls[0] == ("reset-failed", "jarvis-strata.service", "jarvis.service")
+
+
 def test_a_strata_start_time_is_read_to_the_microsecond() -> None:
     assert cli.parse_systemd_time("Sat 2026-11-21 04:40:30.157367 UTC") == pytest.approx(
         1795236030.157367
@@ -936,3 +1016,17 @@ def test_a_systemctl_call_that_hangs_is_given_up(
     assert real_systemctl("stop", "jarvis.service") == 1
     assert "did not finish" in capsys.readouterr().out
     assert timeouts == [cli.SYSTEMCTL_S]
+
+
+def test_doctor_points_an_unreachable_strata_at_jarvis_start(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # No Strata key here, so the server counts as unreachable. `jarvis start` also clears a start
+    # limit, which a bare `systemctl --user start` would be refused by.
+    _doctor_config(home / "models")
+
+    cli.main(["doctor"])
+
+    line = next(shown for shown in _doctor_lines(capsys) if "Strata server" in shown)
+    assert line.startswith("FAIL")
+    assert line.endswith("-> jarvis start (it clears a start limit first)")

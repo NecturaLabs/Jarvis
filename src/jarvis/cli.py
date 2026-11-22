@@ -228,10 +228,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print("units: " + ", ".join(str(u) for u in units))
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, timeout=SYSTEMCTL_S)
     if args.enable:
+        units = [services.STRATA_UNIT, services.JARVIS_UNIT]
+        # A unit stopped by its start limit refuses to start until its failed state is cleared.
         subprocess.run(
-            ["systemctl", "--user", "enable", "--now", services.STRATA_UNIT, services.JARVIS_UNIT],
-            check=False,
-            timeout=SYSTEMCTL_S,
+            ["systemctl", "--user", "reset-failed", *units], check=False, timeout=SYSTEMCTL_S
+        )
+        subprocess.run(
+            ["systemctl", "--user", "enable", "--now", *units], check=False, timeout=SYSTEMCTL_S
         )
     if not updated.spotify.client_id:
         print("next: jarvis setup --spotify-client-id <your app's client ID>")
@@ -674,7 +677,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         (
             state is not None,
             f"Strata server ({state or 'unreachable'})",
-            "systemctl --user start jarvis-strata",
+            "jarvis start (it clears a start limit first)",
         ),
     ]
     for ok, what, fix in checks:
@@ -852,6 +855,7 @@ def cmd_start(_args: argparse.Namespace) -> int:
     """Start both services."""
     from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
 
+    _systemctl("reset-failed", STRATA_UNIT, JARVIS_UNIT)
     code = _systemctl("start", STRATA_UNIT, JARVIS_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
     return code
@@ -917,6 +921,7 @@ def cmd_restart(_args: argparse.Namespace) -> int:
     """
     from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
 
+    _systemctl("reset-failed", STRATA_UNIT, JARVIS_UNIT)
     started = _started_at(STRATA_UNIT)
     changed = started is not None and _strata_changed_since(started)
     code = _systemctl("restart" if changed else "start", STRATA_UNIT)
@@ -959,6 +964,9 @@ def _restart_if_running() -> None:
     from jarvis.services import JARVIS_UNIT  # ruff: ignore[import-outside-top-level]
 
     if _unit_state(JARVIS_UNIT) == "active":
+        # A restart counts against the start limit (5 in 15 min): clear it first, so a few
+        # config changes in a row do not leave the voice service stopped.
+        _systemctl("reset-failed", JARVIS_UNIT)
         _systemctl("restart", JARVIS_UNIT)
 
 

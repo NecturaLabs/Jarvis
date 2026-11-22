@@ -35,6 +35,30 @@ traps found along the way. Add a trap the moment it costs time.
 - `tools/idle_check.py --unit jarvis.service --unit jarvis-strata.service` measures the "no CPU or GPU while
   idle" rule on a running install; it only reads `/proc`.
 
+## Owner runs for the service units (#33)
+
+The unit text and its tests are in the repository; these need this PC's hardware, so only the owner runs them
+(after `jarvis setup`, which rewrites both units, then `jarvis restart`):
+
+- Hardening: `jarvis doctor` passes (with `audio.wake_engine = "azure"`, the Azure model check too), a real wake
+  and a spoken answer work, and Strata loads and answers on the GPU. Check what the units really got with
+  `systemctl --user show jarvis.service jarvis-strata.service -p NoNewPrivileges -p UMask -p CPUWeight -p MemoryHigh -p MemoryMax`
+  and `systemd-analyze --user security jarvis.service jarvis-strata.service --no-pager`.
+- Memory: `MemoryPeak` of both units after a week of use, then choose a `MemoryHigh` for `jarvis.service`
+  (it has none today; its `MemoryMax` is 4G).
+- CPU: a timed reply while a game runs, before and after `CPUWeight=50`, with the game's own frame time.
+- Start limit: force a failure (point `strata.model_file` at a file that exists but is not a model, then
+  `jarvis setup`), see five tries in 15 minutes leave the
+  unit `failed` in `jarvis status`, then `jarvis start` brings it back.
+- Prefill and VRAM reserve: `strata.prefill` `"auto"`, 2048 and 4096 against 512 on the usual 2,900-token
+  request: prompt tokens per second, time to the first word, VRAM (`drm-memory-vram` in `/proc/<pid>/fdinfo`,
+  as [models.md](../models.md) does), idle and with a game running. Change the default only if the numbers
+  favour it. Set `strata.vram_reserve_mib` only after a game that grows after the model loaded fails or does not.
+
+Decision on SearXNG, 2026-11-22: `read_only: true` stays off. The container is loopback-only with
+`cap_drop: ALL` and `no-new-privileges`, so the gain is small, and the certificate update at start needs
+writable paths nobody has listed.
+
 ## Traps
 
 - `dev` and `main` refuse a commit that has not passed CI. A merge commit made on `dev` is new, so push it to
