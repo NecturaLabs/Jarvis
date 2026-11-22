@@ -5,6 +5,7 @@ import asyncio
 import io
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -40,10 +41,11 @@ from jarvis.pictures import Picture, PictureCache
 from jarvis.sysinfo import Gpu, Stats
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Awaitable, Callable, Sequence
     from pathlib import Path
     from typing import Any
 
+    from textual.app import App
     from textual.pilot import Pilot
     from textual.widget import Widget
 
@@ -154,20 +156,20 @@ async def _until(pilot: Pilot[None], ready: Callable[[], bool]) -> None:
     raise AssertionError("the window never got there")
 
 
-def _input(app: ChatApp) -> PromptArea:
+def _input(app: App[None]) -> PromptArea:
     return app.query_one("#input", PromptArea)
 
 
 async def _type(pilot: Pilot[None], text: str) -> None:
-    _input(pilot.app).set_text(text)  # pyright: ignore[reportArgumentType]
+    _input(pilot.app).set_text(text)
     await pilot.pause(0.02)
     await pilot.press("enter")
 
 
-def _run(test: Callable[[Pilot[None]], object], app: ChatApp) -> None:
+def _run(test: Callable[[Pilot[None]], Awaitable[object]], app: ChatApp) -> None:
     async def body() -> None:
         async with app.run_test(size=(120, 40)) as pilot:
-            await test(pilot)  # pyright: ignore[reportGeneralTypeIssues]
+            await test(pilot)
 
     asyncio.run(body())
 
@@ -175,9 +177,24 @@ def _run(test: Callable[[Pilot[None]], object], app: ChatApp) -> None:
 def _app(
     tail: FakeTail | None = None,
     session: FakeSession | None = None,
-    **kw: object,
+    *,
+    unavailable: str = "",
+    name: str = "Jarvis",
+    settings: ChatConfig | None = None,
+    services: Services | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> ChatApp:
-    return ChatApp(tail or FakeTail(), session, poll_s=0.01, session_id=SESSION, **kw)  # pyright: ignore[reportArgumentType]
+    return ChatApp(
+        tail or FakeTail(),
+        session,
+        unavailable=unavailable,
+        name=name,
+        settings=settings,
+        services=services,
+        session_id=SESSION,
+        poll_s=0.01,
+        clock=clock,
+    )
 
 
 # A request and its reply
@@ -1066,8 +1083,15 @@ def _clipboard(clip: Clip | Exception) -> Callable[[], Clip]:
     return read
 
 
-def _picture_app(session: FakeSession, **services: object) -> ChatApp:
-    return _app(session=session, services=Services(pictures=True, **services))  # pyright: ignore[reportArgumentType]
+def _picture_app(
+    session: FakeSession,
+    *,
+    paste: Callable[[], Clip] | None = None,
+    screenshots: tuple[Path, ...] = (),
+) -> ChatApp:
+    return _app(
+        session=session, services=Services(pictures=True, paste=paste, screenshots=screenshots)
+    )
 
 
 def _attached(app: ChatApp) -> str:
