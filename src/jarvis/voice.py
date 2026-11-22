@@ -639,7 +639,7 @@ class VoiceLoop:
         the rest of its time. The wake word inside the window starts a request the usual way.
         """
         window_s = self._cfg.follow_up_s
-        if window_s <= 0 or not self._answered or self._paused():
+        if window_s <= 0 or not self._answered:
             return None
         if self._using_voxtype():
             log.info("no follow-up: the owner is dictating or in a meeting")
@@ -742,7 +742,9 @@ class VoiceLoop:
         heard = capture_utterance(until_dictation(), self._vad, self._cfg, lead_frames=lead)
         if dictated[0] or self._dictating() is True:
             # The owner's own dictation started meanwhile: what was said is going into it.
-            self._note_dictation_ignored("a request being captured")
+            self._note_dictation_ignored(
+                "a request being captured", reason="dictation started mid-request"
+            )
             self.state = State.IDLE
             return
         if heard.samples is None or heard.speech_s < MIN_REQUEST_SPEECH_S:
@@ -1045,10 +1047,10 @@ class VoiceLoop:
         self._note_dictation_ignored(what)
         return True
 
-    def _note_dictation_ignored(self, what: str) -> None:
+    def _note_dictation_ignored(self, what: str, reason: str = "dictating") -> None:
         log.info("%s was ignored: the owner is dictating", what)
         if self._audit is not None:
-            self._audit.record("wake_ignored", reason="dictating")
+            self._audit.record("wake_ignored", reason=reason)
 
     def _ignored_while_locked(self, what: str) -> bool:
         if not self._locked():

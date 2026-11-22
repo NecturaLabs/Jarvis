@@ -265,8 +265,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 - Your Voxtype dictation starting while Jarvis is capturing a request now drops that request: before, what you
   dictated could be transcribed and answered as a request. Jarvis stops capturing, says nothing, records one
-  `wake_ignored` event and never touches Voxtype's recording (#3). A pause that lands while the follow-up window
-  is open no longer lets speech heard just before it be taken as a request (#11).
+  `wake_ignored` event and never touches Voxtype's recording (#3). A pause that lands after the last
+  frame of a reply's follow-up window was read, and before the request heard in it is taken, no longer lets
+  that request through (#11).
 - `jarvis pause`, `resume` and every other stop of the microphone, and a restart of the Voxtype status
   follower, no longer leak the capture's pipe (#32). A stop waits at most half a second for the reader of a
   capture whose command left a child holding the pipe, and keeps that pipe instead of closing it under the

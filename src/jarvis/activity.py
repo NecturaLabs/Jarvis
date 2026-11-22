@@ -285,7 +285,14 @@ def _simple(entry: dict[str, object]) -> _Line | None:
             False,
             "",
         ),
-        "wake_ignored": ("note", "Ignored the wake word: you were dictating", False, ""),
+        "wake_ignored": (
+            "note",
+            "Dropped a request: you started dictating"
+            if entry.get("reason") == "dictation started mid-request"
+            else "Ignored the wake word: you were dictating",
+            False,
+            "",
+        ),
         "control_refused": (
             "warn",
             "refused the confirm key from a program Jarvis started"

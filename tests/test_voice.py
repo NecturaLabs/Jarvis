@@ -1382,7 +1382,9 @@ def test_speech_in_the_window_is_dropped_when_dictation_started_meanwhile() -> N
     assert len(agent.calls) == 1
 
 
-def test_no_window_opens_when_jarvis_is_paused_while_it_replies() -> None:
+def test_no_window_opens_after_a_reply_that_ends_in_a_pause() -> None:
+    # A regression guard for the whole loop: `_next_request` already ends on a pause, so this
+    # does not isolate the guard inside `_follow_up`.
     paused = [False]
     states: list[State] = []
 
@@ -1993,22 +1995,53 @@ def test_dictation_that_starts_mid_request_drops_it_without_a_word() -> None:
 
     assert agent.calls == []
     assert speaker.said == []
-    assert [(e["event"], e["reason"]) for e in audit.events] == [("wake_ignored", "dictating")]
+    assert [(e["event"], e["reason"]) for e in audit.events] == [
+        ("wake_ignored", "dictation started mid-request")
+    ]
+
+
+class CountingMic(Mic):
+    """A `Mic` that counts the frames handed out."""
+
+    def __init__(self, *steps: Step) -> None:
+        super().__init__(*steps)
+        self.read = 0
+
+    @override
+    def frames(self) -> Iterator[NDArray[np.int16]]:
+        for frame in super().frames():
+            self.read += 1
+            yield frame
+
+
+def test_the_capture_stops_at_the_frame_where_dictation_starts() -> None:
+    # The capture would run on through the speech and the silence after it; it must stop at once.
+    # The loop goes on listening afterwards, so the frame count is read when dictation is looked at.
+    first_dictated_frame = 4
+    mic = CountingMic(WAKE, *[SPEECH] * 20, *[SILENCE] * 5)
+    looked_at: list[int] = []
+
+    def dictating() -> bool:
+        looked_at.append(mic.read)
+        return mic.read >= first_dictated_frame
+
+    _run(_loop(Agent(), mic, Speaker(), dictating=dictating, audit=AuditLog(None)))
+
+    # The wake word, then one look per frame of the capture up to the one that showed it.
+    assert looked_at == [1, 2, 3, 4]
 
 
 def test_dictation_over_before_the_capture_ends_still_drops_the_request() -> None:
-    # Dictation seen on one frame and gone by the end of the capture: what came before is still
-    # cut, as the speech may have gone into it.
+    # Dictation that is on only for the look after the last frame (never during the capture) is
+    # still seen: the post-capture re-check cuts the request, as the speech may have gone into it.
     agent = Agent()
-    started = [False]
+    mic = CountingMic(WAKE, SPEECH, SPEECH, SPEECH, *[SILENCE] * 5)
+    looked_at: list[int] = []
 
     def dictating() -> bool:
-        seen, started[0] = started[0], False  # true for one look only
-        return seen
-
-    mic = Mic(
-        WAKE, SPEECH, SPEECH, SPEECH, lambda: started.__setitem__(0, True), SPEECH, *[SILENCE] * 5
-    )
+        repeat = bool(looked_at) and looked_at[-1] == mic.read
+        looked_at.append(mic.read)
+        return repeat  # true only for a look that follows no new frame: the re-check
 
     _run(_loop(agent, mic, Speaker(), dictating=dictating, audit=AuditLog(None)))
 

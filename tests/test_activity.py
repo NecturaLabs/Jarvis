@@ -323,6 +323,19 @@ def test_a_wake_word_ignored_during_dictation_shows_as_a_note() -> None:
     assert (shown.kind, shown.text) == ("note", "Ignored the wake word: you were dictating")
 
 
+def test_a_request_dropped_when_dictation_started_shows_as_a_note() -> None:
+    shown = describe(
+        {
+            "ts": "2026-11-22T10:00:00+00:00",
+            "event": "wake_ignored",
+            "reason": "dictation started mid-request",
+        }
+    )
+
+    assert shown is not None
+    assert (shown.kind, shown.text) == ("note", "Dropped a request: you started dictating")
+
+
 @pytest.mark.parametrize(
     ("entry", "text"),
     [
