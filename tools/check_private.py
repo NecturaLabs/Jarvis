@@ -49,6 +49,7 @@ ALLOWED_EMAIL: Final = re.compile(
     .*@(?:[a-z0-9-]+\.)*(?:example|invalid|test|localhost)(?:\.[a-z]+)?$  # RFC 2606 names
     | .*@(?:[a-z0-9-]+\.)*example\.(?:com|net|org)$
     | .*@users\.noreply\.github\.com$
+    | (?:support|noreply)@github\.com$  # GitHub's bots, Dependabot's sign-off among them
     | .*@necturalabs\.com$
     | .*@\d+\.service$  # a systemd unit such as user@1000.service
     """

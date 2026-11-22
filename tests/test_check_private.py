@@ -22,7 +22,7 @@ def test_example_and_project_addresses_pass() -> None:
     text = (
         "a@example.invalid b@mail.example.org 1+x@users.noreply.github.com support@necturalabs.com"
     )
-    assert problems(text + " user@1000.service") == []
+    assert problems(text + " user@1000.service support@github.com") == []
 
 
 def test_a_real_address_is_refused() -> None:
