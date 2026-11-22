@@ -222,12 +222,20 @@ Threads in the `jarvis run` process:
 | `jarvis-spotify-refresh` | Keeps the Spotify login and library fresh. |
 | Short-lived | A model prewarm on each wake, the chime, the "waking up" lines (`jarvis-waking` and a timer). |
 
-Every thread Jarvis starts is a daemon thread, so Python ends the process without waiting for any. That
-is deliberate (#32): Python's docs warn that a daemon thread may stop in the middle of its work, but
-here every state file is replaced whole through `files.write_atomic` (the private ones too), so a
-thread cut off mid-write leaves the old file, and `cmd_run`'s `finally` closes the control socket, the
+Every thread Jarvis starts itself (`threading.Thread` and the waiting-line timer) is a daemon thread, so
+Python ends the process without waiting for any. That is deliberate (#32): Python's docs warn that a
+daemon thread may stop in the middle of its work. Most state files are replaced whole through
+`files.write_atomic` (the private ones too), so a thread cut off mid-write leaves the old file. Two
+files are not: `actions.json` (`ratelimit.py`) is written over in place and then cut to length, so a
+cut-off write leaves the old count, or old bytes behind new ones, which the next reader takes as
+damaged and starts again; and the audit log (`audit.py`) is appended to with one `os.write`, so a
+cut-off append can leave one partial last line. `cmd_run`'s `finally` closes the control socket, the
 Voxtype watcher and the Azure helper explicitly. No lost write has been seen; make a thread
 non-daemon, stopped by an event, only if one is.
+
+The exception is `jarvis chat`: Textual's `run_worker(..., thread=True)` workers (the agent request,
+status and stats reads, picture and paste handling) are not daemon threads, so the process waits for
+them when the window closes.
 
 `jarvis chat` runs the agent on a Textual worker thread. `jarvis spotify-login` runs a loopback HTTP
 server on its own thread until the callback arrives.

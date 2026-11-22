@@ -640,8 +640,8 @@ def test_chat_opens_the_window_with_typing_off_until_setup_is_done(
     assert main(["chat"]) == 0
 
     (app,) = opened
-    assert app._session is None  # pyright: ignore[reportPrivateUsage]
-    assert "jarvis setup" in app._unavailable  # pyright: ignore[reportPrivateUsage]
+    assert app._session is None  # pyright: ignore[reportPrivateUsage] - the chat app's session, held until the first request
+    assert "jarvis setup" in app._unavailable  # pyright: ignore[reportPrivateUsage] - why the chat app is unavailable, shown in its window
 
 
 def test_chat_sends_typed_requests_to_an_agent_that_marks_its_audit_events(
@@ -666,8 +666,8 @@ def test_chat_sends_typed_requests_to_an_agent_that_marks_its_audit_events(
     ((via, session),) = built
     assert via == "chat"
     assert session
-    assert app._session_id == session  # pyright: ignore[reportPrivateUsage]
-    agent = app._session  # pyright: ignore[reportPrivateUsage]
+    assert app._session_id == session  # pyright: ignore[reportPrivateUsage] - the chat app's session id, which no public name shows
+    agent = app._session  # pyright: ignore[reportPrivateUsage] - the chat app's agent, built on the first request
     assert agent is not None
     assert agent.handle("pause", Hooks(confirm=lambda _q: False)) == "heard pause"
 
@@ -692,7 +692,7 @@ def test_requests_are_transcribed_with_the_hint_and_answers_without(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     heard = _transcribed(monkeypatch, "pause")
-    request, answer = cli._transcribers(config.Config(), lambda: "Jarvis. play, pause.")  # pyright: ignore[reportPrivateUsage]
+    request, answer = cli._transcribers(config.Config(), lambda: "Jarvis. play, pause.")  # pyright: ignore[reportPrivateUsage] - the helper that builds both transcribers
 
     assert request(SAMPLES) == "pause"
     assert answer(SAMPLES) == "pause"
@@ -708,7 +708,7 @@ def test_a_transcript_that_only_repeats_the_hint_is_dropped(
 ) -> None:
     hint = "Jarvis. play, pause, skip, queue songs."
     _transcribed(monkeypatch, "play, pause, skip, queue songs.")
-    request, _ = cli._transcribers(config.Config(), lambda: hint)  # pyright: ignore[reportPrivateUsage]
+    request, _ = cli._transcribers(config.Config(), lambda: hint)  # pyright: ignore[reportPrivateUsage] - the helper that builds both transcribers
 
     assert not request(SAMPLES)
 
@@ -716,7 +716,7 @@ def test_a_transcript_that_only_repeats_the_hint_is_dropped(
 def test_without_the_vocabulary_hint_requests_get_none(monkeypatch: pytest.MonkeyPatch) -> None:
     heard = _transcribed(monkeypatch, "pause")
     cfg = config.Config(audio=config.AudioConfig(vocabulary_hint=False))
-    request, _ = cli._transcribers(cfg, lambda: "Jarvis.")  # pyright: ignore[reportPrivateUsage]
+    request, _ = cli._transcribers(cfg, lambda: "Jarvis.")  # pyright: ignore[reportPrivateUsage] - the helper that builds both transcribers
 
     request(SAMPLES)
 
@@ -932,7 +932,7 @@ def test_the_speaker_is_built_with_the_kokoro_phoneme_map_setting(
     monkeypatch.setattr(audio_module, "Speaker", speaker)
     cfg = config.Config(audio=config.AudioConfig(barge_in=False, kokoro_phoneme_map=phoneme_map))
 
-    cli._speaker(cfg)  # pyright: ignore[reportPrivateUsage]
+    cli._speaker(cfg)  # pyright: ignore[reportPrivateUsage] - the helper that builds the speaker from config
 
     ((_data, voice, speed, options),) = made
     assert (voice, speed, options) == ("kokoro:bm_george", 1.0, {"phoneme_map": phoneme_map})
@@ -1009,7 +1009,6 @@ def _restart_calls(
 def test_restart_restarts_strata_when_its_settings_changed_after_it_started(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     profile = strata_profile_file()
     profile.parent.mkdir(parents=True, exist_ok=True)
     profile.write_text("{}")
@@ -1023,7 +1022,6 @@ def test_restart_restarts_strata_when_its_settings_changed_after_it_started(
 def test_restart_leaves_a_running_strata_alone_when_nothing_changed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     profile = strata_profile_file()
     profile.parent.mkdir(parents=True, exist_ok=True)
     profile.write_text("{}")
@@ -1092,7 +1090,6 @@ def test_a_strata_start_time_is_read_to_the_microsecond() -> None:
 def test_files_written_just_before_strata_started_in_the_same_second_are_no_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     profile = strata_profile_file()
     profile.parent.mkdir(parents=True, exist_ok=True)
     profile.write_text("{}")
@@ -1138,12 +1135,12 @@ def test_screenshots_are_looked_for_where_omarchy_saves_them_then_in_pictures(
     home = tmp_path
     env = {"OMASNAP_SCREENSHOT_DIR": str(tmp_path / "Shots")}
 
-    assert cli._screenshot_folders(home, env) == (  # pyright: ignore[reportPrivateUsage]
+    assert cli._screenshot_folders(home, env) == (  # pyright: ignore[reportPrivateUsage] - the helper that finds the screenshot folders
         tmp_path / "Shots",
         home / "Pictures" / "Screenshots",
         home / "Pictures",
     )
-    assert cli._screenshot_folders(home, {}) == (  # pyright: ignore[reportPrivateUsage]
+    assert cli._screenshot_folders(home, {}) == (  # pyright: ignore[reportPrivateUsage] - the helper that finds the screenshot folders
         home / "Pictures" / "Screenshots",
         home / "Pictures",
     )

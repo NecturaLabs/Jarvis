@@ -1047,9 +1047,9 @@ def test_timers_that_come_while_the_window_closes_do_nothing() -> None:
         tail.entries.append({"event": "reply", "text": "Paused.", "session": "other"})
         await app.screen.remove_children()  # as when the window is taken down
         # The timers' own calls:
-        app._tick()  # pyright: ignore[reportPrivateUsage]
-        app._poll()  # pyright: ignore[reportPrivateUsage]
-        app._refresh_stats()  # pyright: ignore[reportPrivateUsage]
+        app._tick()  # pyright: ignore[reportPrivateUsage] - the timer callback, run by hand
+        app._poll()  # pyright: ignore[reportPrivateUsage] - the poll callback, run by hand
+        app._refresh_stats()  # pyright: ignore[reportPrivateUsage] - the stats callback, run by hand
 
     _run(test, app)
 

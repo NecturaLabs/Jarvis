@@ -307,7 +307,6 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
 
 def _chat_status(cfg: config.Config) -> str:
-
     voice = _unit_state(JARVIS_UNIT)
     model = _strata(cfg).status() if _unit_state(STRATA_UNIT) == "active" else None
     return f"voice {voice} · model {model or 'server not running'}"
@@ -1028,7 +1027,6 @@ def _pc_audio_summary(audio: config.AudioConfig) -> str:
 
 
 def _restart_if_running() -> None:
-
     if _unit_state(JARVIS_UNIT) == "active":
         # A restart counts against the start limit (5 in 15 min): clear it first, so a few
         # config changes in a row do not leave the voice service stopped.

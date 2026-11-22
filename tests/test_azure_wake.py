@@ -85,8 +85,8 @@ def test_reset_forgets_a_wake_not_yet_reported() -> None:
             assert not wake.heard(QUIET)
         # The fourth frame goes straight to the helper: through heard() its report could be
         # taken by that same call, and then there would be nothing left to forget.
-        os.write(wake._stdin, QUIET.tobytes())  # pyright: ignore[reportPrivateUsage]
-        assert _until(lambda: bool(wake._wakes))  # pyright: ignore[reportPrivateUsage]
+        os.write(wake._stdin, QUIET.tobytes())  # pyright: ignore[reportPrivateUsage] - the pipe to the stub helper's stdin
+        assert _until(lambda: bool(wake._wakes))  # pyright: ignore[reportPrivateUsage] - the wakes the reader thread has queued
         wake.reset()
         assert not wake.heard(QUIET)
         assert wake.after_wake() == []
@@ -107,7 +107,7 @@ def test_the_words_right_after_the_keyword_are_handed_to_the_request() -> None:
         heard = wake.heard(numbered[sent * FRAME : (sent + 1) * FRAME])
         sent += 1
         if not heard:
-            assert _until(lambda: bool(wake._wakes))  # pyright: ignore[reportPrivateUsage]
+            assert _until(lambda: bool(wake._wakes))  # pyright: ignore[reportPrivateUsage] - the wakes the reader thread has queued
             assert wake.heard(numbered[sent * FRAME : (sent + 1) * FRAME])
             sent += 1
         lead = np.concatenate(wake.after_wake())
@@ -167,7 +167,7 @@ def test_a_helper_that_never_gets_ready_is_an_audio_error_with_its_reason() -> N
 def test_a_helper_that_stopped_is_an_audio_error() -> None:
     wake = AzureWake(_fake("print('ready', flush=True)"))
     try:
-        assert _until(lambda: wake._proc.poll() is not None)  # pyright: ignore[reportPrivateUsage]
+        assert _until(lambda: wake._proc.poll() is not None)  # pyright: ignore[reportPrivateUsage] - the helper process, to see it exit
         with pytest.raises(AudioError, match="stopped"):
             wake.heard(QUIET)
     finally:
@@ -596,7 +596,7 @@ def test_the_doctor_tries_the_azure_model_in_its_helper(
         return SimpleNamespace(returncode=1, stderr="the keyword model cannot be used: 0xc\n")
 
     monkeypatch.setattr(cli.subprocess, "run", run)
-    checks = cli._azure_checks(_azure_cfg(tmp_path))  # pyright: ignore[reportPrivateUsage]
+    checks = cli._azure_checks(_azure_cfg(tmp_path))  # pyright: ignore[reportPrivateUsage] - the helper that builds the Azure checks
 
     assert [ok for ok, _, _ in checks] == [True, True, False]
     assert "0xc" in checks[-1][1]
@@ -605,7 +605,7 @@ def test_the_doctor_tries_the_azure_model_in_its_helper(
 
 
 def test_the_doctor_checks_nothing_azure_with_livekit() -> None:
-    assert cli._azure_checks(config.Config()) == []  # pyright: ignore[reportPrivateUsage]
+    assert cli._azure_checks(config.Config()) == []  # pyright: ignore[reportPrivateUsage] - the helper that builds the Azure checks
 
 
 @pytest.mark.local
