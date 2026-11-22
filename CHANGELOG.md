@@ -124,6 +124,17 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - `tools/first_audio.py` times, on a loaded model, how long the first sentence of a reply takes to reach the
   speaker and how long the whole reply takes to write (#12). Fake-clock tests show the first sentence goes to the
   speaker while the model is still writing, and each sentence goes once, in order.
+- A state indicator for the Omarchy bar (#14): `tools/bar_status.py` asks the running Jarvis for its status over
+  the control socket and turns it into the bar's text, tooltip and class for idle, listening, thinking,
+  speaking, paused, model loading and unavailable, and into a state of its own for a Jarvis that is not
+  running, a timeout, a broken connection and an unreadable answer. The module offers only a left click for
+  `jarvis pause` and a right click for `jarvis resume`, polls every 5 seconds and never loads the model. The
+  script's own cost is 0.015 s of CPU a poll: it does not start `jarvis` (about 0.2 s a poll) and runs without
+  Python's `site` import. Each poll also makes Jarvis ask Strata for its model state (no tokens), about 0.003 s more
+  across both, 0.018 s in all or 0.4 % of one core. With Jarvis not running it shows `not running` without the
+  model's state or the click hint, and `jarvis status` still gives the state. The entry to add to
+  `~/.config/omarchy/shell.json` is in
+  [configuration](docs/configuration.md#the-omarchy-bar-module-14); nothing is installed for you.
 - `audio.wake_words` picks which LiveKit wake word models listen, side by side, each
   `<data_dir>/wake/<name>.onnx`; `hey_jarvis` and `yo_jarvis` are on by default. `jarvis wake --words
   hey_jarvis,yo_jarvis` sets the list and `jarvis wake` shows every model in the folder as on or off. A
@@ -169,7 +180,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - `jarvis pause` lets go of the microphone and, once the request in flight has ended, frees the model;
   `jarvis resume` listens again and reloads it. `jarvis hush` stops the speech. `jarvis status` says what
   the running Jarvis is doing (idle, listening, thinking, speaking, paused, model loading, unavailable), and
-  `--json` prints it for the Omarchy bar (#14). These reach `jarvis run` through a socket only your user can
+  `--json` prints it for a status bar (#14). These reach `jarvis run` through a socket only your user can
   open, in `$XDG_RUNTIME_DIR/jarvis/`, and each is recorded in the audit log. A pause lasts until `resume`
   or until the voice service restarts. `jarvis stop` still stops the services; `hush` is the speech
   interrupt #22 asked `stop` to be.
