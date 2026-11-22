@@ -345,6 +345,30 @@ def test_equal_thresholds_end_speech_as_soon_as_it_dips() -> None:
     assert len(heard.samples) == 6 * FRAME  # the first four dipping frames are the silence
 
 
+def test_continuous_speech_is_cut_at_the_length_cap() -> None:
+    cfg = HYSTERESIS.model_copy(update={"max_utterance_s": 2.0})
+    cap_frames = round(cfg.max_utterance_s / voice.FRAME_S)
+    scores = Probabilities([0.9] * (cap_frames + 15))
+    frames = iter([SILENCE] * len(scores.scores))
+
+    heard = voice.capture_utterance(frames, scores, cfg)
+
+    assert heard.reason == "length cap"
+    assert heard.samples is not None
+    assert len(heard.samples) == cap_frames * FRAME
+    assert scores.seen == cap_frames  # the rest of the stream is left for the loop to read
+    assert len(list(frames)) == 15
+
+
+def test_speech_that_ends_just_under_the_length_cap_is_not_cut() -> None:
+    cfg = HYSTERESIS.model_copy(update={"max_utterance_s": 2.0})
+    cap_frames = round(cfg.max_utterance_s / voice.FRAME_S)
+
+    heard = _capture([0.9] * (cap_frames - 5) + [0.0] * 4, cfg)
+
+    assert heard.reason == "end of speech"
+
+
 def test_a_probability_between_the_thresholds_does_not_start_an_utterance() -> None:
     heard = _capture([0.4] * 14, HYSTERESIS)
 
@@ -1314,6 +1338,39 @@ def test_a_follow_up_opens_another_window() -> None:
     )
 
     assert [text for text, _ in agent.calls] == ["a", "b", "c"]
+
+
+def test_a_hushed_reply_opens_no_follow_up_window() -> None:
+    """`jarvis hush` ends the exchange: speech right after it needs the wake word again."""
+    agent = Agent()
+
+    def reply(_text: str, _hooks: Hooks, _origin: Origin) -> str:
+        loop.hush()  # `jarvis hush` from the control thread
+        return "Done."
+
+    agent.reply = reply
+    loop = _follow_loop(agent, Mic(*REQUEST, *FOLLOW_UP_REQUEST), Speaker(), "a", "b")
+
+    _run(loop)
+
+    assert [text for text, _ in agent.calls] == ["a"]
+
+
+def test_a_reply_ended_by_a_pause_opens_no_follow_up_window_even_if_it_is_lifted_at_once() -> None:
+    """The pause is lifted by the time the loop looks for the next request; the reply stays over."""
+    agent = Agent()
+    loop = _loop(
+        agent,
+        Mic(*REQUEST, *FOLLOW_UP_REQUEST),
+        Speaker(),
+        cfg=FOLLOW_UP,
+        paused=lambda: loop.state is State.THINK,  # paused while the agent works, not after
+        transcribe=_texts("a", "b"),
+    )
+
+    _run(loop)
+
+    assert [text for text, _ in agent.calls] == ["a"]
 
 
 def test_silence_through_the_window_goes_back_to_waiting_for_the_wake_word() -> None:
