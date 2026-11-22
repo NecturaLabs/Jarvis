@@ -812,6 +812,47 @@ def test_restart_starts_a_stopped_strata(monkeypatch: pytest.MonkeyPatch) -> Non
     assert ("start", "jarvis-strata.service") in calls
 
 
+def test_start_clears_a_failed_state_before_starting_both_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A unit that hit its start limit stays `failed` until reset (#33).
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(*args: str) -> int:
+        calls.append(args)
+        return 0
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+
+    assert cli.main(["start"]) == 0
+    assert calls == [
+        ("reset-failed", "jarvis-strata.service", "jarvis.service"),
+        ("start", "jarvis-strata.service", "jarvis.service"),
+    ]
+
+
+def test_a_failed_reset_does_not_stop_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `reset-failed` fails for a unit that is not loaded; `start` then says what is wrong.
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(*args: str) -> int:
+        calls.append(args)
+        return 1 if args[0] == "reset-failed" else 0
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+
+    assert cli.main(["start"]) == 0
+    assert calls[-1][0] == "start"
+
+
+def test_restart_clears_a_failed_state_before_starting_anything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _restart_calls(monkeypatch, None)
+
+    assert calls[0] == ("reset-failed", "jarvis-strata.service", "jarvis.service")
+
+
 def test_a_strata_start_time_is_read_to_the_microsecond() -> None:
     assert cli.parse_systemd_time("Sat 2026-11-21 04:40:30.157367 UTC") == pytest.approx(
         1795236030.157367

@@ -852,6 +852,7 @@ def cmd_start(_args: argparse.Namespace) -> int:
     """Start both services."""
     from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
 
+    _systemctl("reset-failed", STRATA_UNIT, JARVIS_UNIT)
     code = _systemctl("start", STRATA_UNIT, JARVIS_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
     return code
@@ -917,6 +918,7 @@ def cmd_restart(_args: argparse.Namespace) -> int:
     """
     from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
 
+    _systemctl("reset-failed", STRATA_UNIT, JARVIS_UNIT)
     started = _started_at(STRATA_UNIT)
     changed = started is not None and _strata_changed_since(started)
     code = _systemctl("restart" if changed else "start", STRATA_UNIT)

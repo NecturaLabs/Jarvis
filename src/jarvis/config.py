@@ -37,6 +37,21 @@ def _no_control_path(path: Path) -> Path:
 SafePath = Annotated[Path, AfterValidator(_no_control_path)]
 SafeText = Annotated[str, AfterValidator(_no_control)]
 
+VRAM_RESERVE_MIN_MIB = 100  # the lowest reserve Strata's engine accepts without complaint
+VRAM_RESERVE_MAX_MIB = 65536
+
+
+def _reserve_or_unset(mib: int) -> int:
+    if mib != 0 and mib < VRAM_RESERVE_MIN_MIB:
+        msg = f"must be 0 (unset) or at least {VRAM_RESERVE_MIN_MIB}"
+        raise ValueError(msg)
+    return mib
+
+
+VramReserve = Annotated[
+    int, Field(ge=0, le=VRAM_RESERVE_MAX_MIB), AfterValidator(_reserve_or_unset)
+]
+
 
 def _check_endpoint(url: str) -> str:
     """Return `url` when it is an `http` or `https` URL on this machine; empty means unset.
@@ -120,10 +135,14 @@ class StrataConfig(_Section):
     port: int = Field(default=8080, ge=1024, le=65535)
     context: int = Field(default=24576, ge=2048, le=262144)
     expert_vram_gib: float = Field(default=1.0, ge=0, le=64)
-    prefill: int = Field(default=512, ge=128, le=8192)
+    # The prompt-reading chunk (`--prefill`): a size in tokens, or "auto" to leave it to Strata.
+    prefill: Annotated[int, Field(ge=128, le=8192)] | Literal["auto"] = 512
     idle_unload_s: int = Field(default=300, ge=30, le=86400)
     reasoning_budget_tokens: int = Field(default=512, gt=0, le=8192)
     memory_max: str = Field(default="40G", pattern=r"^\d+[KMGT]?$")
+    # VRAM in MiB the engine leaves free for other programs (`--vram-reserve-mib`); 0 passes
+    # nothing, so Strata's own default (700) applies.
+    vram_reserve_mib: VramReserve = 0
     # The picture reader (the model's mmproj file, beside it); unset: Jarvis reads no pictures.
     vision_file: SafePath = Path()
     vision_idle_s: int = Field(default=120, ge=10, le=86400)  # the reader stops after this idle

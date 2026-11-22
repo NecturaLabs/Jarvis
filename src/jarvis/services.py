@@ -74,6 +74,58 @@ def exec_program(value: str, what: str = "program") -> str:
     return exec_word(value, what)
 
 
+_SIZE = re.compile(r"(\d+)([KMGT]?)")
+_SIZE_UNITS = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+MEMORY_MAX_PERCENT = 110  # `MemoryMax` is this share of `MemoryHigh`
+
+
+def memory_limit(memory_high: str) -> str:
+    """Return the `MemoryMax` that sits a tenth above `memory_high` (a size such as `40G`).
+
+    The result is in the largest unit that holds it exactly, else in bytes rounded up.
+
+    Raises:
+        ConfigError: `memory_high` is not a number with an optional `K`, `M`, `G` or `T`.
+    """
+    found = _SIZE.fullmatch(memory_high)
+    if found is None:
+        msg = f"memory_max must be a number with an optional K, M, G or T, not {memory_high!r}"
+        raise ConfigError(msg)
+    amount = int(found[1]) * _SIZE_UNITS[found[2]]
+    limit = -(-amount * MEMORY_MAX_PERCENT // 100)
+    for unit in ("T", "G", "M", "K"):
+        if limit and limit % _SIZE_UNITS[unit] == 0:
+            return f"{limit // _SIZE_UNITS[unit]}{unit}"
+    return str(limit)
+
+
+# Sandboxing both units take. Left out on purpose, with why: `RestrictNamespaces` (the Azure helper
+# runs under `unshare --map-current-user --net`), `MemoryDenyWriteExecute` (onnxruntime and
+# Strata's HIP path may JIT), `ProtectHome` and `ProtectSystem` (config, state and models live under
+# home and on /data), `PrivateNetwork` and `IPAddressDeny` (Spotify, Open-Meteo and web reads),
+# `RestrictRealtime` (not shown safe for `pw-record` and `pw-play`).
+_HARDENING = """\
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+UMask=0077
+"""
+# What only the voice service takes: it runs no model engine, so nothing there loads kernel code.
+_HARDENING_VOICE = """\
+SystemCallArchitectures=native
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+"""
+# A game beside the units wins the processor: the weight is half the default (100).
+_CPU_WEIGHT = 50
+# A unit that fails five times in 15 minutes stays `failed` (`jarvis start` resets it) instead of
+# restarting for ever; for Strata every round would read the model again.
+_START_LIMIT = """\
+StartLimitIntervalSec=15min
+StartLimitBurst=5
+"""
+
+
 def _environment(name: str, value: str) -> str:
     """Return an `Environment=` line (specifiers doubled; `$` is literal there)."""
     assignment = f"{name}={_checked(value, name).replace('%', '%%')}"
@@ -154,6 +206,8 @@ def strata_profile(config: Config) -> dict[str, object]:
         "--mtp", "2",
         "--expert-vram", f"{s.expert_vram_gib:g}",
     ]  # fmt: skip
+    if s.vram_reserve_mib:
+        args += ["--vram-reserve-mib", str(s.vram_reserve_mib)]
     vision = _vision(config) if s.pictures else None
     if vision is not None:
         args.append("--vision")
@@ -228,11 +282,12 @@ def strata_unit(config: Config, key_file: Path) -> str:
         ]
     )
     memory = _path(s.memory_max, "memory_max")
+    limit = memory_limit(memory)
     return f"""[Unit]
 Description=Strata model server for Jarvis
 PartOf=graphical-session.target
 After=graphical-session.target
-{condition}
+{_START_LIMIT}{condition}
 [Service]
 Type=exec
 {_environment("STRATA_DATA_DIR", str(s.home))}
@@ -246,9 +301,10 @@ RestartSec=5
 RestartSteps=5
 RestartMaxDelaySec=120
 MemoryHigh={memory}
-MemoryMax={memory}
+MemoryMax={limit}
+CPUWeight={_CPU_WEIGHT}
 TimeoutStopSec=45
-
+{_HARDENING}
 [Install]
 WantedBy=graphical-session.target
 """
@@ -262,7 +318,7 @@ Description=Jarvis voice agent
 PartOf=graphical-session.target
 After=graphical-session.target pipewire.service wireplumber.service {STRATA_UNIT}
 Wants={STRATA_UNIT}
-
+{_START_LIMIT}
 [Service]
 Type=exec
 ExecStart={exe} run
@@ -272,8 +328,9 @@ RestartSec=5
 RestartSteps=5
 RestartMaxDelaySec=120
 MemoryMax=4G
+CPUWeight={_CPU_WEIGHT}
 TimeoutStopSec=15
-
+{_HARDENING}{_HARDENING_VOICE}
 [Install]
 WantedBy=graphical-session.target
 """
