@@ -88,7 +88,7 @@ back, `jarvis start` starts Strata.
 Each command in `jarvis --help` crossed with each transition. A cell says how far it is checked:
 
 - **F**: a fake-environment test (runs in CI, no hardware).
-- **L**: a `local` test in `tests/test_transitions_local.py`, run on this PC with the owner.
+- **L**: a `local` test in `tests/test_transitions_local.py` that checks the real piece a fake stands in for; it may not exercise the transition itself. A note says when it has not been run.
 - **O**: the real transition was seen on this PC. **O\*** means the transition was seen, but with the code
   before the current handling, so the handling itself is not yet seen.
 - **U**: not tested at all; the lists below say what is missing.
@@ -100,7 +100,7 @@ Each command in `jarvis --help` crossed with each transition. A cell says how fa
 
 | Command | Mic lost | Suspend | Lock | Drive missing | Session start, stop | Strata down |
 |---|---|---|---|---|---|---|
-| `run` | F, L, O\* | F, U | F, L | F, L, U | F, L, O | F |
+| `run` | F, L, O\* | F, U | F, L, U | F, L, U | F, L, O | F |
 | `ask` | - | - | - | F | - | F |
 | `chat` | - | - | - | F | - | F |
 | `status` | F | F | - | F | F, L | F |
@@ -114,13 +114,12 @@ Each command in `jarvis --help` crossed with each transition. A cell says how fa
 | `restart` | - | - | - | F | F | F |
 | `doctor` | F | - | F | F | F | F |
 
-46 of the 78 cells apply. Before the tests added with this matrix 34 of them had a fake test; now 44 do.
-The two with none are `confirm` across a suspend and across a lock. Every `U` beside an `F` is a part of the cell the
-fake cannot reach; the lists below name it.
+46 of the 78 cells apply. 44 of them have a fake test.
+The two with none are `confirm` across a suspend and across a lock. Every `U` beside an `F` is a part of that cell the fakes do not reach; the lists below name it.
 
 Tests are in `tests/test_voice.py` (`voice`), `test_control.py` (`control`), `test_cli.py` (`cli`),
 `test_audio.py` (`audio`), `test_model.py` (`model`), `test_agent.py` (`agent`), `test_services.py`
-(`services`) and `test_transitions.py` (`transitions`, the file added with this matrix); the local ones are
+(`services`) and `test_transitions.py` (`transitions`); the local ones are
 all in `test_transitions_local.py`.
 
 ### Microphone lost
@@ -178,11 +177,9 @@ all in `test_transitions_local.py`.
   read, since that needs the owner at a locked screen).
 - `doctor`, F: cli `test_doctor_checks_the_lock_screen_can_be_read_when_jarvis_must_not_listen_there`,
   `test_doctor_leaves_the_lock_screen_alone_while_jarvis_listens_there`.
-- `confirm`, U: the control commands are not held back by the lock (nothing in `control.py` asks about it), so
-  a pending question can still be answered with `jarvis confirm`, and the spoken yes to it is not checked
-  against the lock either. Whether that is wanted is the owner's call; nothing tests either way.
-- `status`, `pause`, `resume`, `hush`, `unload`: not held back by the lock either; the owner's key bindings do
-  not fire at the lock screen, so nothing is lost. Not a test gap.
+- `confirm`, U: the control commands are not held back by the lock (nothing in `control.py` asks about it), so a pending question would still be answerable with `jarvis confirm` (read from the code, not tried), and the spoken yes to it is not checked
+  against the lock either. Whether it should be held back is undecided; nothing tests either way.
+- `status`, `pause`, `resume`, `hush`, `unload`: not held back by the lock either; key bindings are not expected to fire at the lock screen (not checked). Not a test gap.
 - U for the whole column: a lock and then an unlock in one run (a wake word ignored, then one taken).
 
 ### Model drive missing
@@ -199,8 +196,8 @@ all in `test_transitions_local.py`.
   `test_after_a_suspend_a_missing_model_drive_is_logged_and_nothing_is_loaded`; services
   `test_the_strata_unit_for_a_normal_config` (the `ConditionPathExists=` line).
 - `run`, L: `test_strata_answers_and_its_model_file_is_there` (the drive mounted),
-  `test_the_installed_units_follow_the_session_and_wait_for_the_model_file`.
-- `run`, U: the whole path through the voice loop (the apology spoken by the real speaker) and booting without
+  `test_the_installed_units_follow_the_session_and_wait_for_the_model_file` (written, not run).
+- `run`, U: the whole path through the voice loop (the apology through the real audio output) and booting without
   the drive.
 - `ask`, `chat`, F: the same reply as `run`, from agent `test_a_missing_model_file_is_named_in_the_apology`.
 - `status`, F: control `test_a_model_server_down_for_a_missing_model_file_says_so`,
@@ -224,12 +221,12 @@ all in `test_transitions_local.py`.
   `test_a_run_ended_with_the_session_leaves_no_control_socket_for_the_next_one`,
   `test_a_run_that_fails_leaves_no_control_socket_either`,
   `test_a_run_that_cannot_serve_the_control_socket_still_listens`.
-- `run`, L: `test_the_installed_units_follow_the_session_and_wait_for_the_model_file`.
+- `run`, L: `test_the_installed_units_follow_the_session_and_wait_for_the_model_file` (written, not run).
 - `run`, O: 2026-11-21, the units stopped at 15:38 at shutdown and started at 15:42 after login.
 - `status`, F: control `test_status_json_when_jarvis_is_not_running`, `test_status_without_jarvis_or_model_server_fails`,
-  `test_status_json_exits_zero_even_with_nothing_reachable`. L: `test_status_names_a_state_the_bar_knows`.
+  `test_status_json_exits_zero_even_with_nothing_reachable`. L: `test_status_names_a_state_the_bar_knows` (written, not run).
 - `pause`, `resume`, `hush`, `confirm`, F: control `test_control_commands_without_a_running_jarvis_fail`. L:
-  `test_pause_and_resume_reach_the_running_jarvis`, `test_hush_reaches_the_running_jarvis`.
+  `test_pause_and_resume_reach_the_running_jarvis` (written, not run), `test_hush_reaches_the_running_jarvis` (written, not run).
 - `unload`, F: transitions `test_unload_with_the_model_drive_missing_says_it_could_not` (Strata not running
   answers the same).
 - `start`, F: cli `test_start_clears_a_failed_state_before_starting_both_units`, `test_a_failed_reset_does_not_stop_start`.
