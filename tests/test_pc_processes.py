@@ -30,7 +30,7 @@ from jarvis.operations import (
     request_scope,
     validate_args,
 )
-from jarvis.pc import processes
+from jarvis.pc import hyprland, processes
 from jarvis.pc.processes import (
     MAX_SHOWN,
     PROTECTED_PREFIXES,
@@ -1491,7 +1491,7 @@ def test_an_answer_that_is_not_json_means_no_windows(monkeypatch: pytest.MonkeyP
 
 def test_an_oversized_hyprland_answer_is_not_read(monkeypatch: pytest.MonkeyPatch) -> None:
     path = _hypr_dir(monkeypatch)
-    monkeypatch.setattr(processes, "MAX_HYPR_BYTES", 100)
+    monkeypatch.setattr(hyprland, "MAX_HYPR_BYTES", 100)
     clients = [{"pid": 4000 + n, "title": f"window {n}", "class": "c"} for n in range(20)]
     answer = json.dumps(clients).encode()
     assert len(answer) > 100

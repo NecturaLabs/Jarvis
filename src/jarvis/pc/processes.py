@@ -14,20 +14,19 @@ program. Program names and window titles are other programs' words: the listing 
 """
 
 import contextlib
-import json
 import os
 import re
 import select
 import signal
-import socket
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any, Protocol
 
-from jarvis.jsonutil import objs
 from jarvis.operations import Operation, OperationError, Result, current_request
+from jarvis.pc import hyprland
+from jarvis.pc.hyprland import HYPR_TIMEOUT_S
 from jarvis.policy import OpClass, Origin
 from jarvis.services import JARVIS_UNIT, STRATA_UNIT
 
@@ -43,8 +42,6 @@ MAX_TITLE = 80
 MAX_PROGRAM = 60
 MAX_PID = 4_194_304  # PID_MAX_LIMIT on 64-bit Linux
 STOP_WAIT_S = 3.0
-HYPR_TIMEOUT_S = 0.5
-MAX_HYPR_BYTES = 4 * 1024 * 1024
 COMM_MAX = 15  # a command name is cut to this many characters
 PF_KTHREAD = 0x00200000
 KTHREADD = 2
@@ -211,40 +208,10 @@ class PidfdStopper:
         os.close(handle)
 
 
-def _ask_hyprland(path: Path, request: bytes, timeout_s: float) -> bytes:
-    """Return Hyprland's whole answer to one socket request.
-
-    Raises:
-        ValueError: the answer is longer than `MAX_HYPR_BYTES`.
-    """
-    chunks: list[bytes] = []
-    size = 0
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-        conn.settimeout(timeout_s)
-        conn.connect(str(path))
-        conn.sendall(request)
-        while chunk := conn.recv(65536):
-            size += len(chunk)
-            if size > MAX_HYPR_BYTES:
-                msg = "Hyprland's answer is too long to read"
-                raise ValueError(msg)
-            chunks.append(chunk)
-    return b"".join(chunks)
-
-
 def hyprland_windows(timeout_s: float = HYPR_TIMEOUT_S) -> list[Window]:
     """Return Hyprland's windows, read from its socket (`j/clients`); [] when it cannot answer."""
-    runtime = os.environ.get("XDG_RUNTIME_DIR", "")
-    signature = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", "")
-    if not runtime or not signature or "/" in signature or signature in {".", ".."}:
-        return []
-    path = Path(runtime) / "hypr" / signature / ".socket.sock"
-    try:
-        clients: object = json.loads(_ask_hyprland(path, b"j/clients", timeout_s))
-    except OSError, ValueError:
-        return []
     windows: list[Window] = []
-    for client in objs(clients):
+    for client in hyprland.clients(timeout_s):
         pid, title, klass = client.get("pid"), client.get("title"), client.get("class", "")
         if isinstance(pid, int) and isinstance(title, str) and isinstance(klass, str):
             windows.append(Window(pid, title, klass))
