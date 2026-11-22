@@ -35,6 +35,22 @@ traps found along the way. Add a trap the moment it costs time.
 - `tools/idle_check.py --unit jarvis.service --unit jarvis-strata.service` measures the "no CPU or GPU while
   idle" rule on a running install; it only reads `/proc`.
 
+## Owner run for speaking while writing (#12)
+
+The fake-clock tests (`tests/test_first_audio_timing.py`) prove the order and the overlap: the first sentence
+reaches the speaker before the model has finished, each sentence once, in order. How many real seconds that is
+worth depends on the model's speed, so only the owner measures it, with the model loaded (`jarvis status`):
+
+- `uv run tools/first_audio.py` (`--runs 5`, `--prompt "..."` to change the questions) sends typed requests to
+  the configured model server through the real agent and prints, per request and as median, 90th percentile
+  and maximum, `first` (the first sentence handed to the speaker), `done` (the whole reply written, which is
+  when speech would start without streaming) and `saved` (the difference). It plays nothing, loads and starts
+  nothing, writes no audit log and gives the agent no tool; it refuses (exit 2) when the server is down or the
+  model is not loaded.
+- The request-to-first-audio figure is `first` plus the voice's time for one sentence (Kokoro: a median 0.24 s,
+  [models.md](../models.md)) and the player's start; the before figure is `done` plus the same. Record both
+  medians and the 90th percentiles in #12.
+
 ## Owner runs for the service units (#33)
 
 The unit text and its tests are in the repository; these need this PC's hardware, so only the owner runs them
