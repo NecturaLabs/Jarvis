@@ -690,6 +690,10 @@ class AzureWake:
         except subprocess.TimeoutExpired:
             self._proc.kill()
             self._proc.wait()
+        for stream in (self._proc.stdout, self._proc.stderr):
+            if stream is not None:
+                with contextlib.suppress(OSError, ValueError):
+                    stream.close()
 
 
 class FallbackWake:

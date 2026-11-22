@@ -225,7 +225,7 @@ class StrataModel:
                 response = client.post("/load", json={})
         except httpx.HTTPError:
             return False
-        return response.status_code < 300  # ruff: ignore[magic-value-comparison]
+        return response.is_success
 
     def warm(self, attempts: int = WARM_ATTEMPTS) -> bool:
         """Load the model once the server is up (at service start); return whether it loaded.
@@ -246,7 +246,7 @@ class StrataModel:
                 except httpx.HTTPError:
                     pass
                 else:
-                    if response.status_code < 300:  # ruff: ignore[magic-value-comparison]
+                    if response.is_success:
                         return True
                     if response.status_code == SERVICE_UNAVAILABLE:
                         wait = _retry_after(response) or wait
@@ -260,7 +260,7 @@ class StrataModel:
                 response = client.post("/unload", json={})
         except httpx.HTTPError:
             return False
-        return response.status_code < 300  # ruff: ignore[magic-value-comparison]
+        return response.is_success
 
     def chat(  # ruff: ignore[too-many-arguments] - one call's settings, all keyword-only
         self,

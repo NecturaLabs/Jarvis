@@ -8,6 +8,7 @@ import pytest
 
 from jarvis.config import FilesConfig
 from jarvis.operations import Operation, OperationError, Registry, validate_args
+from jarvis.pc import files as files_module
 from jarvis.pc.files import Boundary, FileOps
 from jarvis.policy import OpClass, Origin
 
@@ -152,8 +153,9 @@ def test_the_owner_can_add_to_what_is_never_read(home: Path) -> None:
         _read(_ops(home, deny=["diary*"]), "~/Documents/diary.md")
 
 
-def test_an_ordinary_dotfile_can_be_read(home: Path) -> None:
-    assert "alias ll" in _read(_ops(home), "~/.bashrc")
+def test_an_ordinary_dotfile_opened_by_the_owner_can_be_read(home: Path) -> None:
+    # Hidden files under home are shut by default (shell files can hold exported tokens).
+    assert "alias ll" in _read(_ops(home, hidden_allow=[".bashrc"]), "~/.bashrc")
 
 
 def test_only_the_configured_roots_are_readable(home: Path) -> None:
@@ -221,10 +223,67 @@ def test_a_folder_lists_folders_first_and_hides_dotfiles(home: Path) -> None:
 
 
 def test_hidden_entries_are_listed_on_request_but_never_a_secret(home: Path) -> None:
-    text = _list(_ops(home), "~", hidden=True)
+    # Hidden things under home are closed unless `files.hidden_allow` opens them (the audit's
+    # P1: shell history, app logins and cookies live there), so `.bashrc` shows only once opened.
+    text = _list(_ops(home, hidden_allow=[".bashrc"]), "~", hidden=True)
 
     assert ".bashrc" in text
     assert ".ssh" not in text
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "~/.bash_history",
+        "~/.local/share/opencode/auth.json",
+        "~/.config/sops/age/keys.txt",
+        "~/.config/Slack/Cookies",
+        "~/.agent-browser/sessions/one.json",
+        "~/.bashrc",
+    ],
+)
+def test_hidden_things_under_home_are_closed_by_default(home: Path, path: str) -> None:
+    target = home / path.removeprefix("~/")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("token\n", encoding="utf-8")
+
+    with pytest.raises(OperationError, match=r"hidden|private"):
+        _read(_ops(home), path)
+
+
+def test_the_desktops_own_settings_are_open_by_default(home: Path) -> None:
+    hypr = home / ".config" / "hypr"
+    hypr.mkdir(parents=True)
+    (hypr / "bindings.conf").write_text("bind = SUPER, Return, exec, kitty\n", encoding="utf-8")
+    (home / ".config" / "Slack").mkdir()
+
+    assert "SUPER, Return" in _read(_ops(home), "~/.config/hypr/bindings.conf")
+    listing = _list(_ops(home), "~/.config", hidden=True)
+    assert "hypr" in listing
+    assert "Slack" not in listing
+    with pytest.raises(OperationError, match="hidden"):
+        _read(_ops(home), "~/.config/mimeapps.list")
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["~/Documents/old/.zsh_history", "~/Projects/site/.histfile", "~/Documents/web/Cookies"],
+)
+def test_history_and_cookie_files_are_secrets_anywhere(home: Path, path: str) -> None:
+    target = home / path.removeprefix("~/")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("token\n", encoding="utf-8")
+
+    with pytest.raises(OperationError, match="private"):
+        _read(_ops(home), path)
+
+
+def test_a_hidden_folder_opened_by_the_owner_can_be_read(home: Path) -> None:
+    notes = home / ".notes"
+    notes.mkdir()
+    (notes / "today.md").write_text("call mum\n", encoding="utf-8")
+
+    assert "call mum" in _read(_ops(home, hidden_allow=[".notes"]), "~/.notes/today.md")
 
 
 def test_a_pattern_narrows_the_listing(home: Path) -> None:
@@ -402,3 +461,24 @@ def test_a_link_is_listed_without_reading_what_it_points_to(home: Path) -> None:
 
     assert "- big (link)" in text
     assert "4.9 KB" not in text
+
+
+def test_a_folder_too_big_to_read_whole_is_listed_from_what_was_read(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(files_module, "MAX_SCANNED", 50)
+    for number in range(80):
+        (home / "Projects" / f"f{number:03}.txt").write_text("", encoding="utf-8")
+
+    text = _list(_ops(home, max_chars=50_000), "~/Projects")
+
+    assert text.startswith("Folder ~/Projects (more than 50 items):")
+    assert len(text.splitlines()) == 1 + 50
+
+
+def test_an_allowed_folder_written_with_a_trailing_slash_still_opens(home: Path) -> None:
+    notes = home / ".notes"
+    notes.mkdir()
+    (notes / "today.md").write_text("call mum\n", encoding="utf-8")
+
+    assert "call mum" in _read(_ops(home, hidden_allow=[".notes/"]), "~/.notes/today.md")

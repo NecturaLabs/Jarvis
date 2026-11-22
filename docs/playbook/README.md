@@ -55,3 +55,12 @@ traps found along the way. Add a trap the moment it costs time.
 - Trafilatura takes a page's `<h1>` as its title, not `<title>`.
 - Agents never run `jarvis ask` or `run` against the owner's live setup (`run-silent`), so the model's choice
   of the new tools is checked by the owner by voice, not by an agent.
+- The repository's git uses diff3 conflict markers (`|||||||` base section). A script that resolves
+  conflicts by taking both sides must drop the base section too, or the old text comes back.
+- Line-number edits (`sed -i '826s/…/'`) after `ruff format` hit the wrong line: the formatter moves
+  lines. Edit by matching text.
+- Voxtype is driven only through the commands AGENTS.md names; a new one (even read-only, such as
+  `voxtype info models`) is the owner's decision, not an audit fix.
+- `jarvis run` serves `$XDG_RUNTIME_DIR/jarvis/control.sock`; `jarvis status --json`, `pause`, `resume`
+  and `hush` talk to it. Unit tests make their sockets under pytest's temp folder (`conftest.py` refuses
+  any other Unix socket).

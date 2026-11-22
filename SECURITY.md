@@ -72,9 +72,11 @@ did not confirm. What exists today and what is in scope:
   spoken yes. While text from a file is in the conversation, so does every operation that sends words off the
   PC (a web or Reddit search, a place for the weather or the time), so a file cannot be carried out in a search.
 - **Files.** Jarvis reads only inside `files.read_roots` and writes only inside `files.write_roots`, each
-  path resolved through its links before the check. Keys, tokens, password stores, browser profiles and
-  Jarvis's own state are never read or written. Every write asks first, names the resolved path, and is
-  refused if that path changed before the yes; it never writes a hidden file or makes one executable.
+  path resolved through its links before the check. Keys, tokens, password stores, shell history,
+  cookie stores, browser profiles and Jarvis's own state are never read or written, and hidden files
+  directly under home are read only where `files.hidden_allow` opens them. A write asks first (unless
+  `boundaries.bypass_consent` is on), names the resolved path, and is refused if that path changed
+  before the yes; it never writes a hidden file or makes one executable.
 - **The chat window** (`jarvis chat`) shows outside text, such as Spotify names and PC speech, as plain
   characters only: control characters are removed and long text is cut (`activity.py`).
 - **Policy and confirmation.** Operations are typed with validated arguments and default deny; unknown

@@ -118,9 +118,8 @@ def test_the_words_right_after_the_keyword_are_handed_to_the_request() -> None:
 
 def test_a_helper_that_closed_its_input_is_an_audio_error() -> None:
     script = "import os, sys, time; os.close(0); print('ready', flush=True); time.sleep(30)"
-    wake = AzureWake(_fake(script))
+    wake = AzureWake(_fake(script))  # waits for "ready", which comes after the input closed
     try:
-        time.sleep(0.2)
 
         def feed() -> None:
             for _ in range(5):

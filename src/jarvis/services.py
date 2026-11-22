@@ -234,7 +234,7 @@ PartOf=graphical-session.target
 After=graphical-session.target
 {condition}
 [Service]
-Type=simple
+Type=exec
 {_environment("STRATA_DATA_DIR", str(s.home))}
 {_environment("XDG_DATA_HOME", str(s.components_parent))}
 Environment=PIPEWIRE_REMOTE=/nonexistent
@@ -260,11 +260,11 @@ def jarvis_unit() -> str:
     return f"""[Unit]
 Description=Jarvis voice agent
 PartOf=graphical-session.target
-After=graphical-session.target pipewire.service {STRATA_UNIT}
+After=graphical-session.target pipewire.service wireplumber.service {STRATA_UNIT}
 Wants={STRATA_UNIT}
 
 [Service]
-Type=simple
+Type=exec
 ExecStart={exe} run
 Restart=on-failure
 RestartPreventExitStatus={_SETUP_ERROR}

@@ -7,9 +7,12 @@ state (`SECRET_NAMES`, `SECRET_PATHS`, plus the owner's `files.deny`).
 
 What a file holds, and the names in a folder, were written by someone (a download, a program), so
 they reach the model as `file` data: they never raise a class, side effects need a yes while they
-are in the conversation, and so does sending text off the PC (`policy.decide`).
+are in the conversation, and so does sending text off the PC (`policy.decide`), unless the owner
+turned questions off. Hidden files and folders under home stay shut unless `files.hidden_allow`
+opens them.
 
-Writing always asks first (`confirm`). The question names the resolved path, and the write runs
+Writing is `confirm`: it asks first unless the owner turned questions off
+(`boundaries.bypass_consent`). The question names the resolved path, and the write runs
 only if that path still resolves to itself: a name that turned into a link after the question is
 refused. A write never touches a hidden file or folder (no `~/.bashrc`, `~/.config/…`), never
 replaces a file by accident (`create` refuses an existing file) and never makes a file executable.
@@ -17,6 +20,7 @@ replaces a file by accident (`create` refuses an existing file) and never makes 
 
 import contextlib
 import fnmatch
+import itertools
 import os
 import secrets
 import stat
@@ -36,6 +40,7 @@ if TYPE_CHECKING:
 MAX_PATH = 1000
 MAX_CONTENT = 20000
 MAX_ENTRIES = 200
+MAX_SCANNED = 10_000  # entries read from one folder; a bigger one is listed from these
 MAX_READ_BYTES = 4 * 1024 * 1024
 BINARY_PROBE = 8192
 KIB = 1024
@@ -80,6 +85,12 @@ SECRET_NAMES = (
     "*secret*",
     "*password*",
     "*.token",
+    "*_history",
+    ".*history",
+    ".histfile",
+    "cookies",
+    "cookies.sqlite*",
+    "login data*",
 )
 # Folders under the home folder that hold secrets: keyrings, logins and browser profiles.
 SECRET_PATHS = (
@@ -139,6 +150,7 @@ class Boundary:
     write_roots: tuple[Path, ...]
     deny: tuple[str, ...] = ()
     protected: tuple[Path, ...] = ()
+    hidden_allow: tuple[str, ...] = ()
 
     @classmethod
     def of(cls, config: FilesConfig, home: Path, *, protected: Iterable[Path] = ()) -> Boundary:
@@ -155,6 +167,7 @@ class Boundary:
             tuple(expand(root) for root in config.write_roots),
             tuple(config.deny),
             tuple(Path(os.path.realpath(path)) for path in (*protected, *SYSTEM_FOLDERS)),
+            tuple(config.hidden_allow),
         )
 
     def show(self, path: Path) -> str:
@@ -207,11 +220,32 @@ class Boundary:
                 return True
         return False
 
-    def readable(self, raw: str) -> Path:
-        """Return the resolved path to read or list.
+    def hidden_closed(self, path: Path, *, folder: bool = False) -> bool:
+        """Return whether a path is hidden under home and `files.hidden_allow` keeps it shut.
+
+        A `folder` on the way to an opened one (`~/.config` for `.config/hypr`) may be listed;
+        its entries are judged one by one.
+        """
+        if self._base(path) != self.home:
+            return False
+        below = path.relative_to(self.home).parts
+        if not below or not below[0].startswith("."):
+            return False
+        for allowed in self.hidden_allow:
+            pattern = allowed.strip().rstrip("/")
+            parts = Path(pattern).parts
+            if len(below) >= len(parts):
+                if fnmatch.fnmatch("/".join(below[: len(parts)]), pattern):
+                    return False
+            elif folder and fnmatch.fnmatch("/".join(below), "/".join(parts[: len(below)])):
+                return False
+        return True
+
+    def readable(self, raw: str, *, folder: bool = False) -> Path:
+        """Return the resolved path to read, or to list when `folder`.
 
         Raises:
-            FileRefusalError: it is outside the read roots or private.
+            FileRefusalError: it is outside the read roots, private, or hidden and not opened.
         """
         path = self._resolve(raw)
         if not _inside(path, self.read_roots):
@@ -219,6 +253,12 @@ class Boundary:
             raise FileRefusalError(msg)
         if self.secret(path):
             msg = f"{self.show(path)} is private (keys, tokens or logins), so I don't read it."
+            raise FileRefusalError(msg)
+        if self.hidden_closed(path, folder=folder):
+            msg = (
+                f"{self.show(path)} is hidden, and hidden files under home stay shut unless "
+                "files.hidden_allow opens them, so I don't read it."
+            )
             raise FileRefusalError(msg)
         return path
 
@@ -331,7 +371,7 @@ class FileOps:
         Raises:
             FileRefusalError: the path is not allowed or not a folder.
         """
-        path = self._boundary.readable(str(args["path"]))
+        path = self._boundary.readable(str(args["path"]), folder=True)
         shown = self._boundary.show(path)
         if not path.is_dir():
             msg = f"{shown} is not a folder." if path.exists() else f"There's no folder {shown}."
@@ -340,16 +380,21 @@ class FileOps:
         pattern = str(args.get("pattern", "")).casefold()
         rows: list[tuple[bool, str, str]] = []
         try:
-            entries = list(os.scandir(path))
+            with os.scandir(path) as found:
+                entries = list(itertools.islice(found, MAX_SCANNED + 1))
         except OSError as exc:
             msg = f"I couldn't list {shown}: {exc.strerror}."
             raise FileRefusalError(msg) from exc
-        for entry in entries:
+        more = len(entries) > MAX_SCANNED
+        for entry in entries[:MAX_SCANNED]:
             if (entry.name.startswith(".") and not hidden) or (
                 pattern and not fnmatch.fnmatchcase(entry.name.casefold(), pattern)
             ):
                 continue
-            if self._boundary.secret(Path(os.path.realpath(entry.path))):
+            real = Path(os.path.realpath(entry.path))
+            if self._boundary.secret(real) or self._boundary.hidden_closed(
+                real, folder=entry.is_dir()
+            ):
                 continue
             rows.append(self._row(entry))
         rows.sort(key=lambda row: (not row[0], row[1].casefold()))
@@ -360,7 +405,11 @@ class FileOps:
                 break
             lines.append(line)
             used += len(line) + 1
-        what = f"{len(rows)} item{'' if len(rows) == 1 else 's'}"
+        what = (
+            f"more than {len(rows)} items"
+            if more
+            else f"{len(rows)} item{'' if len(rows) == 1 else 's'}"
+        )
         text = f"Folder {shown} ({what}{', matching ' + pattern if pattern else ''}):"
         text += "\n" + "\n".join(lines) if lines else "\n(nothing to show)"
         if len(lines) < len(rows):
@@ -505,8 +554,8 @@ class FileOps:
             ),
             Operation(
                 "write_file",
-                "Create a text file on the owner's PC, or replace or add to one (mode). The owner "
-                "is asked first.",
+                "Create a text file on the owner's PC, or replace or add to one (mode). Jarvis "
+                "asks the owner first when they want to be asked.",
                 {
                     "type": "object",
                     "properties": {

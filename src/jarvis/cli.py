@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from jarvis import __version__, config, control, models, paths
 from jarvis.agent import Hooks
 from jarvis.app import SetupError, build, chat_pictures, echoes_hint
+from jarvis.audit import AuditLog
 from jarvis.model import StrataModel
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
@@ -36,6 +37,8 @@ WAKE_MODEL = "wake/hey_jarvis.onnx"
 VAD_MODEL = "vad/silero_vad.onnx"
 AZURE_PYTHON = "azure-wake/venv/bin/python"
 AZURE_CHECK_S = 30.0
+SYSTEMCTL_S = 120.0  # a start or stop; Strata takes up to 45 s to stop (TimeoutStopSec)
+SYSTEMCTL_QUERY_S = 10.0  # is-active, show
 WAKE_NAME = re.compile(r"\bjarvis\b", re.IGNORECASE)  # what an Azure model also wakes on
 
 
@@ -223,11 +226,12 @@ def cmd_setup(args: argparse.Namespace) -> int:
         return 2
     print(f"config: {paths.config_file()}\nstrata profile: {profile}")
     print("units: " + ", ".join(str(u) for u in units))
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, timeout=SYSTEMCTL_S)
     if args.enable:
         subprocess.run(
             ["systemctl", "--user", "enable", "--now", services.STRATA_UNIT, services.JARVIS_UNIT],
             check=False,
+            timeout=SYSTEMCTL_S,
         )
     if not updated.spotify.client_id:
         print("next: jarvis setup --spotify-client-id <your app's client ID>")
@@ -489,6 +493,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         paused=lambda: mic.paused,
         until_resumed=mic.wait_resumed,
     )
+    jarvis.audit.record("service_started", bypass_consent=cfg.boundaries.bypass_consent)
     controls = control.ControlServer(
         control.Controls(loop, mic, jarvis.model, jarvis.audit), audit=jarvis.audit
     )
@@ -765,13 +770,27 @@ def cmd_unload(_args: argparse.Namespace) -> int:
 
 
 def _systemctl(*args: str) -> int:
-    return subprocess.run(["systemctl", "--user", *args], check=False).returncode
+    """Run `systemctl --user` with `args`; a call that hangs is given up after SYSTEMCTL_S."""
+    try:
+        return subprocess.run(
+            ["systemctl", "--user", *args], check=False, timeout=SYSTEMCTL_S
+        ).returncode
+    except subprocess.TimeoutExpired:
+        print(f"jarvis: systemctl {' '.join(args)} did not finish in {SYSTEMCTL_S:.0f} s")
+        return 1
 
 
 def _unit_state(unit: str) -> str:
-    done = subprocess.run(
-        ["systemctl", "--user", "is-active", unit], capture_output=True, text=True, check=False
-    )
+    try:
+        done = subprocess.run(
+            ["systemctl", "--user", "is-active", unit],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=SYSTEMCTL_QUERY_S,
+        )
+    except subprocess.TimeoutExpired:
+        return "unknown"
     return done.stdout.strip() or "unknown"
 
 
@@ -814,12 +833,16 @@ def _started_at(unit: str) -> float | None:
     same second, and those files must not count as newer than the server.
     """
     show = ["show", unit, "-p", "ActiveEnterTimestamp", "--timestamp=us+utc", "--value"]
-    done = subprocess.run(
-        ["systemctl", "--user", *show],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        done = subprocess.run(
+            ["systemctl", "--user", *show],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=SYSTEMCTL_QUERY_S,
+        )
+    except subprocess.TimeoutExpired:
+        return None
     if _unit_state(unit) != "active":
         return None
     return parse_systemd_time(done.stdout)
@@ -900,6 +923,7 @@ def cmd_consent(args: argparse.Namespace) -> int:
             update={"boundaries": cfg.boundaries.model_copy(update={"bypass_consent": bypass})}
         )
         config.save(cfg)
+        AuditLog(paths.audit_file()).record("consent_changed", bypass_consent=bypass)
         _restart_if_running()
     print(CONSENT_SAID[cfg.boundaries.bypass_consent])
     return 0

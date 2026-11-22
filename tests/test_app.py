@@ -17,9 +17,10 @@ from jarvis.app import (
     pc_operations,
     speech_hint,
     system_prompt,
+    unknown_overrides,
 )
 from jarvis.audit import AuditLog
-from jarvis.config import AudioConfig, Config, FilesConfig, PersonaConfig
+from jarvis.config import AudioConfig, BoundariesConfig, Config, FilesConfig, PersonaConfig
 from jarvis.operations import Operation, OperationError, Registry, Result
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
@@ -226,3 +227,21 @@ def test_only_the_chat_offers_pictures_and_keeps_them_in_its_own_folder(tmp_path
     assert voice.get("image_search") is None
     assert voice.get("show_image") is None
     assert chat_pictures().folder == paths.state_dir() / "chat-pictures"
+
+
+def test_every_operation_named_in_boundaries_classes_must_exist(tmp_path: Path) -> None:
+    # A typo in an override (`spotify_nxt = "deny"`) would otherwise leave the operation at its
+    # default class without a word (audit finding A4).
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), Config().spotify)
+    config = Config(
+        boundaries=BoundariesConfig(classes={"spotify_nxt": "deny", "write_file": "deny"})
+    )
+
+    assert unknown_overrides(config, spotify.operations()) == ["spotify_nxt"]
+
+
+def test_an_override_for_a_chat_only_operation_is_known(tmp_path: Path) -> None:
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), Config().spotify)
+    config = Config(boundaries=BoundariesConfig(classes={"show_image": "deny"}))
+
+    assert unknown_overrides(config, spotify.operations()) == []

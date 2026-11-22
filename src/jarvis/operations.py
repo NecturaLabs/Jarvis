@@ -92,8 +92,11 @@ def _check_string(name: str, spec: dict[str, Any], value: object) -> str:
     if not isinstance(value, str):
         raise ArgumentError(f"{name} must be a string")
     text = value.strip()
-    if not text and spec.get("minLength", 0) > 0:
+    least = spec.get("minLength", 0)
+    if not text and least > 0:
         raise ArgumentError(f"{name} must not be empty")
+    if len(text) < least:
+        raise ArgumentError(f"{name} must be at least {least} characters")
     if len(text) > spec.get("maxLength", MAX_STRING):
         raise ArgumentError(f"{name} is too long")
     if "enum" in spec and text not in spec["enum"]:

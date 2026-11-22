@@ -228,6 +228,15 @@ def channel_registry(
     )
 
 
+def unknown_overrides(config: Config, spotify: list[Operation]) -> list[str]:
+    """Return the names in `boundaries.classes` that no operation of either channel has."""
+    known: set[str] = set()
+    for channel in ("voice", "chat"):
+        registry = channel_registry(config, spotify, channel_limits(config, channel), channel)
+        known.update(registry.names())
+    return sorted(set(config.boundaries.classes) - known)
+
+
 def chat_pictures() -> PictureCache:
     """Return where the chat keeps the pictures it shows (0600, the newest 50)."""
     return PictureCache(paths.state_dir() / "chat-pictures")
@@ -247,7 +256,9 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
     agent's audit events too, so a window can tell its own from others'.
 
     Raises:
-        SetupError: the Spotify client ID or the Strata API key is missing.
+        SetupError: the Spotify client ID or the Strata API key is missing, or
+            `boundaries.classes` names an operation that does not exist (a typo would otherwise
+            leave it at its default class).
     """
     if not config.spotify.client_id:
         msg = "no Spotify client ID in the config; run `jarvis setup`"
@@ -265,6 +276,12 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
     if session:
         tags["session"] = session
     audit = AuditLog(audit_file(), tags=tags or None)
+    if unknown := unknown_overrides(config, ops.operations()):
+        msg = (
+            f"boundaries.classes names no operation: {', '.join(unknown)}; "
+            "fix the name or remove it"
+        )
+        raise SetupError(msg)
     channel: Channel = "chat" if via == "chat" else "voice"
     limits = channel_limits(config, channel)
     registry = channel_registry(config, ops.operations(), limits, channel)

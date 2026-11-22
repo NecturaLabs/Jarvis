@@ -259,3 +259,21 @@ def test_a_refused_control_connection_is_a_warning() -> None:
 
     assert shown is not None
     assert shown.kind == "warn"
+
+
+@pytest.mark.parametrize(
+    ("entry", "text"),
+    [
+        ({"event": "consent_changed", "bypass_consent": True}, "Questions turned off"),
+        ({"event": "consent_changed", "bypass_consent": False}, "Questions turned on"),
+        ({"event": "service_started", "bypass_consent": True}, "acting without asking"),
+    ],
+)
+def test_consent_changes_and_the_services_start_show_as_notes(
+    entry: dict[str, object], text: str
+) -> None:
+    shown = describe({"ts": "2026-11-22T10:00:00+00:00", **entry})
+
+    assert shown is not None
+    assert shown.kind == "note"
+    assert text in shown.text

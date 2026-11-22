@@ -295,3 +295,18 @@ def test_a_picture_reader_without_the_engine_program_is_a_setup_error(tmp_path: 
 
     with pytest.raises(services.StrataSetupError, match="picture reader"):
         services.strata_profile(cfg)
+
+
+def test_both_units_start_only_once_their_program_has_started(tmp_path: Path) -> None:
+    # `Type=exec`: `systemctl start` fails when the program cannot be started (systemd.service).
+    strata = _lines(services.strata_unit(_config(tmp_path), tmp_path / "strata.env"))
+    jarvis = _lines(services.jarvis_unit())
+
+    assert "Type=exec" in strata
+    assert "Type=exec" in jarvis
+
+
+def test_the_voice_service_starts_after_the_audio_session() -> None:
+    after = next(line for line in _lines(services.jarvis_unit()) if line.startswith("After="))
+
+    assert {"pipewire.service", "wireplumber.service"} <= set(after.removeprefix("After=").split())
