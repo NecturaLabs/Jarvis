@@ -175,12 +175,19 @@ class SpotifyConfig(_Section):
         return self
 
 
+VAD_EXIT_MARGIN = 0.15  # how far below the entry threshold speech goes on, as Silero's own does
+VAD_EXIT_FLOOR = 0.01
+
+
 class AudioConfig(_Section):
     """Microphone, wake word, end-of-speech and voice settings."""
 
     source: str = ""
     wake_threshold: float = Field(default=0.5, gt=0, lt=1)
     vad_threshold: float = Field(default=0.5, gt=0, lt=1)
+    # Once speech has started it goes on while the probability stays above this; 0 means
+    # `vad_threshold` less VAD_EXIT_MARGIN (Silero's own rule), never below VAD_EXIT_FLOOR.
+    vad_neg_threshold: float = Field(default=0.0, ge=0, lt=1)
     no_speech_timeout_s: float = Field(default=4.0, gt=0, le=30)
     end_silence_s: float = Field(default=0.7, gt=0, le=5)
     max_utterance_s: float = Field(default=20.0, gt=1, le=120)
@@ -197,6 +204,8 @@ class AudioConfig(_Section):
     azure_python: str = ""  # the Python with the Speech SDK; empty: <data_dir>/azure-wake/venv
     voice: str = "kokoro:bm_george"
     speech_speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    # Rewrite espeak's phonemes into the symbols Kokoro was trained on; off until heard to help.
+    kokoro_phoneme_map: bool = False
     transcribe_engine: str = ""
     transcribe_model: str = "small.en"  # measured faster and more accurate than base.en here
     transcribe_threads: int = Field(default=8, ge=1, le=256)
@@ -208,6 +217,20 @@ class AudioConfig(_Section):
     pc_audio_grant_s: float = Field(default=600.0, ge=0, le=86400)
     confirm_blocks_on_pc_speech: bool = True
     pc_audio_cooldown_s: float = Field(default=5.0, ge=0, le=600)
+
+    @model_validator(mode="after")
+    def _exit_is_not_above_entry(self) -> Self:
+        if self.vad_neg_threshold > self.vad_threshold:
+            msg = "vad_neg_threshold must not exceed vad_threshold"
+            raise ValueError(msg)
+        return self
+
+    @property
+    def vad_exit_threshold(self) -> float:
+        """The probability above which speech that has started goes on."""
+        if self.vad_neg_threshold:
+            return self.vad_neg_threshold
+        return max(self.vad_threshold - VAD_EXIT_MARGIN, VAD_EXIT_FLOOR)
 
 
 class PersonaConfig(_Section):

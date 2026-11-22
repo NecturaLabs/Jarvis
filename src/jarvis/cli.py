@@ -29,8 +29,9 @@ if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
 
-    from jarvis.audio import FallbackWake, Speaker, WakeWord
+    from jarvis.audio import FallbackWake, Speaker, VoxtypeWatch, WakeWord
     from jarvis.model import StrataModel
+    from jarvis.voice import VoiceLoop
 
 log = logging.getLogger(__name__)
 
@@ -435,9 +436,10 @@ def _speaker(cfg: config.Config) -> Speaker:
             WakeWord(data / WAKE_MODEL, cfg.audio.wake_threshold),
             WAKE_NAME if cfg.audio.wake_engine == "azure" else None,
         )
-    return Speaker(
-        make_synthesizer(data, cfg.audio.voice, cfg.audio.speech_speed), own_wake=own_wake
+    synthesizer = make_synthesizer(
+        data, cfg.audio.voice, cfg.audio.speech_speed, phoneme_map=cfg.audio.kokoro_phoneme_map
     )
+    return Speaker(synthesizer, own_wake=own_wake)
 
 
 def _serve_controls(handler: control.Controls, audit: AuditLog) -> control.ControlServer:
@@ -455,11 +457,10 @@ def cmd_run(_args: argparse.Namespace) -> int:
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
         MIC_STALL_S,
         AppAudio,
-        FallbackWake,
         Microphone,
         PausableMic,
         Vad,
-        dictation_active,
+        VoxtypeWatch,
         screen_locked,
     )
     from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level]
@@ -507,6 +508,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
 
     keys = ConfirmKey(audit=jarvis.audit)  # pressed through the socket, waited on by the loop
 
+    voxtype = VoxtypeWatch()  # started with the loop, so nothing before can leave it running
     loop = VoiceLoop(
         jarvis.agent,
         mic,
@@ -525,7 +527,9 @@ def cmd_run(_args: argparse.Namespace) -> int:
         ),
         transcribe_answer=answer,
         names=(cfg.persona.name,),
-        dictating=dictation_active,
+        dictating=voxtype.dictating,
+        meeting=voxtype.meeting,
+        audit=jarvis.audit,
         paused=lambda: mic.paused,
         until_resumed=mic.wait_resumed,
         reopen=mic.recover,
@@ -535,8 +539,23 @@ def cmd_run(_args: argparse.Namespace) -> int:
     )
     handler = control.Controls(loop, mic, jarvis.model, jarvis.audit, keys=keys)
     jarvis.audit.record("service_started", bypass_consent=cfg.boundaries.bypass_consent)
-    controls = _serve_controls(handler, jarvis.audit)
+    return _run_until_stopped(
+        loop, stop_requested, _serve_controls(handler, jarvis.audit), voxtype, wakes
+    )
+
+
+def _run_until_stopped(
+    loop: VoiceLoop,
+    stop_requested: threading.Event,
+    controls: control.ControlServer,
+    voxtype: VoxtypeWatch,
+    wakes: list[WakeWord | FallbackWake],
+) -> int:
+    """Run `loop` with Voxtype's status followed, then end what the run started."""
+    from jarvis.audio import FallbackWake  # ruff: ignore[import-outside-top-level]
+
     try:
+        voxtype.start()
         loop.run(stop_requested.is_set)
     except Exception:
         if stop_requested.is_set():
@@ -544,6 +563,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         raise
     finally:
         controls.close()
+        voxtype.stop()
         for wake in wakes:  # an Azure helper ends with its input; end it now, not at exit
             if isinstance(wake, FallbackWake):
                 wake.close()
@@ -685,6 +705,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
             (shutil.which(t) is not None, f"tool {t}", f"install {t}")
             for t in ("pw-record", "pw-play", "voxtype")
         ),
+        *_source_checks(cfg),
         *_azure_checks(cfg),
         *_lock_checks(cfg),
         (
@@ -698,6 +719,37 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     for line in release_lines:
         print(line)
     return 0 if all(ok for ok, _, _ in checks) else 1
+
+
+def _source_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
+    """Return the check that a configured `audio.source` is a microphone PipeWire lists.
+
+    A recorder is not pinned to its source, so PipeWire may move it to the default microphone
+    instead of failing; the check is what tells a mistyped name from a working one. With no
+    source set, the default microphone is used and there is nothing to check.
+    """
+    from jarvis.audio import pw_dump, source_found  # ruff: ignore[import-outside-top-level]
+
+    source = cfg.audio.source
+    if not source:
+        return []
+    graph = pw_dump()
+    if not graph:  # a running PipeWire always lists its own nodes
+        return [
+            (
+                False,
+                f"audio.source {source} not checked: PipeWire's graph (pw-dump) could not be read",
+                "check that PipeWire runs: `systemctl --user status pipewire`",
+            )
+        ]
+    found = source_found(graph, source)
+    return [
+        (
+            found,
+            f"audio.source {source}" + ("" if found else " matches no microphone in pw-dump"),
+            "list microphones with `pw-dump | grep node.name`, or clear audio.source",
+        )
+    ]
 
 
 def _lock_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:

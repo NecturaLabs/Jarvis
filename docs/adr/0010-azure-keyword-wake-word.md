@@ -64,6 +64,14 @@ Chosen: a separate helper process, switchable with `audio.wake_engine` (`"liveki
   naming Jarvis is held, so another sentence the Azure model mishears could still interrupt Jarvis.
 - Bad: one more environment to set up by hand, and one more process (about 51 MiB, measured with Microsoft's
   sample keyword model) using about 2.4 % of one core while it listens, against about 1.4 % for LiveKit's.
+- Bad: the keyword engine is documented to hear a keyword after silence (at least 1.5 s before the first, as
+  Microsoft Learn's custom keyword quickstart says; not mid-sentence). The helper therefore writes 1.5 s of
+  silence into the engine's stream after it is ready and after each detection, and reports positions in the
+  input without it, so the request still starts where the keyword ended. A keyword said within about 1.5 s of
+  Jarvis's own speech ending, or of the previous keyword, or in the middle of a sentence, is outside what the
+  engine promises, and may be missed. Whether the SDK's offsets count from the start of the stream or of each
+  recognition is not verified (the tests use a fake SDK); misses with the owner's models are not measured.
+  Added 2026-11-22 from the practices audit (#29).
 - Bad: the model's own threshold decides; `audio.wake_threshold` does not apply to it. Speech Studio stops
   training new custom keyword models on 2027-08-01; existing models keep working.
 - Measured on 2026-11-21 with Microsoft's sample model (`kws.table`, keyword "Computer") and Kokoro speech:

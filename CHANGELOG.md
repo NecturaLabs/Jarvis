@@ -8,6 +8,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- A wake word said while your Voxtype dictation runs is ignored: no request, no chime, one `wake_ignored`
+  event in the audit log; and a running Voxtype meeting keeps follow-ups off like dictation does. Jarvis
+  follows `voxtype status --follow --format json --extended` in the background, so asking never waits for
+  Voxtype (#29). A status that cannot be read no longer counts as dictation: the wake word is taken, so a
+  broken or older Voxtype does not leave Jarvis deaf, and follow-ups stay off until the status is known.
+- The Azure keyword helper writes 1.5 s of silence into the engine's stream before the first sample and after
+  each detection, which the engine is documented to want before a keyword (#29).
 - Both services are safer and kinder to a game beside them (#33). Both set `NoNewPrivileges`, `LockPersonality`,
   `RestrictSUIDSGID` and `CPUWeight=50`; Strata also sets `UMask=0077`, and the voice service
   `SystemCallArchitectures=native`. A service that fails five times in 15 minutes now stays `failed` instead
@@ -89,6 +96,16 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `audio.vad_neg_threshold`: once speech has started it goes on while the probability stays above this
+  (default: `vad_threshold` less 0.15, Silero's own margin), so a breath inside a sentence no longer ends a
+  request early. A request after the wake word, from the mic or PC audio, needs 0.15 s of speech, so a click
+  after "Hey Jarvis" is dropped untranscribed (#29). With the Azure wake word, which is reported up to 0.6 s
+  after the keyword ends, only the keyword's last quarter second is left out of that count, so a short
+  request said before the report still counts.
+- `audio.kokoro_phoneme_map` (off by default): rewrite espeak's phonemes into the symbols Kokoro was trained
+  on before they are spoken, to compare by ear (#29).
+- `jarvis doctor` checks that `audio.source` names a microphone PipeWire lists, and says so when PipeWire
+  cannot be read rather than blaming the name (#29).
 - `jarvis confirm`, the confirm key: bind it to a key, and a `strong` action runs only after you press it.
   Jarvis says what it is about to do, then "Press the confirm key to allow it", and waits
   `audio.confirm_key_s` (30 s). One press allows that one action, once; a spoken yes never does. A press

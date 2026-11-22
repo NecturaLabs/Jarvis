@@ -20,8 +20,9 @@ import tempfile
 import threading
 import time
 import wave
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, Self, cast
 
 import numpy as np
 import onnxruntime as ort
@@ -31,7 +32,7 @@ from jarvis.jsonutil import obj, objs
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterator
+    from collections.abc import Callable, Generator, Iterator, Sequence
     from typing import IO
 
     from numpy.typing import NDArray
@@ -148,6 +149,19 @@ def capture_sources(objects: object, pid: int) -> list[str]:
             if source not in sources:
                 sources.append(source)
     return sources
+
+
+def source_found(objects: object, source: str) -> bool:
+    """Whether `source` (a node name or serial) names a microphone node in `pw-dump` output.
+
+    `pw-record --target` takes either; a microphone is any `Audio/Source` node, a virtual or an
+    internal one included. A graph that could not be read has none.
+    """
+    return any(
+        str(props.get("media.class", "")).startswith("Audio/Source")
+        and source in {str(props.get("node.name")), str(props.get("object.serial"))}
+        for _id, _info, props in _nodes(objects)
+    )
 
 
 def pw_dump() -> object:
@@ -588,6 +602,23 @@ AZURE_LEAD_BACK = RATE // 4  # start a request 0.25 s before the keyword's repor
 AZURE_ERR_LINES = 20
 
 
+def keyword_tail(lead: list[NDArray[np.int16]]) -> int:
+    """Count the frames of a late wake word's `lead` that start before the keyword ended.
+
+    The lead begins `AZURE_LEAD_BACK` before the keyword's reported end and runs to the
+    detection, which comes 0.3 to 0.6 s later: everything after that first quarter second may
+    already be the request.
+    """
+    tail = 0
+    start = 0
+    for pcm in lead:
+        if start >= AZURE_LEAD_BACK:
+            break
+        tail += 1
+        start += pcm.size
+    return tail
+
+
 def azure_wake_command(python: Path, model: Path, *, check: bool = False) -> list[str]:
     """Return the command that runs the Azure keyword helper with no network.
 
@@ -993,35 +1024,161 @@ def installed_models(
     )
 
 
-def dictation_active(
-    run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run, timeout_s: float = 2.0
-) -> bool:
-    """Whether the owner's Voxtype dictation is recording or transcribing.
+@dataclass(frozen=True, slots=True)
+class VoxtypeState:
+    """What Voxtype's status says about the owner's own use of it."""
 
-    Read from `voxtype status --format json`, a command AGENTS.md allows. A daemon
-    that is not running (a non-zero exit) is not dictating; a status that cannot be run or read
-    counts as dictating, so Jarvis never takes the owner's dictation for a request.
+    dictating: bool  # dictation is recording or transcribing
+    meeting: bool  # a `voxtype meeting` is running
+
+
+# One long-lived reader (it costs nothing while Voxtype's state is the same) in place of a call
+# every time the loop asks; `--extended` adds the meeting fields.
+VOXTYPE_FOLLOW = ("voxtype", "status", "--follow", "--format", "json", "--extended")
+VOXTYPE_RETRY_S = 1.0  # the wait before the status reader is started again, doubled each failure
+VOXTYPE_RETRY_MAX_S = 30.0
+VOXTYPE_STOP_S = 2.0  # how long the reader gets to end before it is killed
+
+
+def parse_voxtype_status(line: bytes) -> VoxtypeState | None:
+    """Read one JSON line of `voxtype status`; None when it cannot be read.
+
+    Any state but idle and stopped counts as dictation, one added later included. A meeting is
+    any `meeting_status` but idle, or `meeting_active`; a status without those fields has none.
     """
     try:
-        done = run(
-            ["voxtype", "status", "--format", "json"],
-            capture_output=True,
-            timeout=timeout_s,
-            check=False,
-        )
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        log.warning("could not read Voxtype's status: %s", exc)
-        return True
-    if done.returncode != 0:
-        return False
-    try:
-        state = obj(json.loads(done.stdout)).get("class")
+        fields = obj(json.loads(line))
     except ValueError:
-        state = None
+        return None
+    state = fields.get("class")
     if not isinstance(state, str):
-        log.warning("could not read Voxtype's status: %r", done.stdout[:200])
-        return True
-    return state not in _NOT_DICTATING
+        return None
+    meeting = fields.get("meeting_status")
+    return VoxtypeState(
+        dictating=state not in _NOT_DICTATING,
+        meeting=fields.get("meeting_active") is True
+        or (isinstance(meeting, str) and meeting != "idle"),
+    )
+
+
+def next_retry_wait(wait: float, *, ran_s: float, first: float, longest: float) -> float:
+    """Return how long to wait after a run of the status command that waited `wait` before it.
+
+    A run that lasted `longest` or more was healthy and starts over at `first`; a shorter one
+    (one that prints a line and dies, say) doubles the wait, up to `longest`.
+    """
+    return first if ran_s >= longest else min(wait * 2, longest)
+
+
+class VoxtypeWatch:
+    """Follows `voxtype status` in the background, so asking is a read of what it last said.
+
+    The state comes from `voxtype status`, a command AGENTS.md allows, read-only: Jarvis
+    never starts or stops anything with it. A daemon that is not running is reported by the
+    command itself (`stopped`: not dictating). A status that is not known yet, cannot be read, or
+    cannot be had (the command will not start, or ends: an older Voxtype without these options,
+    or a crash) is `None`. The command is started again after it ends.
+    """
+
+    def __init__(
+        self,
+        command: Sequence[str] = VOXTYPE_FOLLOW,
+        *,
+        retry_s: float = VOXTYPE_RETRY_S,
+        max_retry_s: float = VOXTYPE_RETRY_MAX_S,
+    ) -> None:
+        """Follow the status that `command` prints; the reader starts with `start`."""
+        super().__init__()
+        self._command = list(command)
+        self._retry_s = retry_s
+        self._max_retry_s = max_retry_s
+        self._state: VoxtypeState | None = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._thread: threading.Thread | None = None
+        self._complained = False
+
+    @property
+    def pid(self) -> int | None:
+        """The status command's process ID while it runs."""
+        with self._lock:
+            return self._proc.pid if self._proc is not None else None
+
+    def start(self) -> Self:
+        """Start following the status on a thread of its own, which never blocks the caller."""
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="jarvis-voxtype-status", daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        """Stop following and end the status command this started."""
+        self._stop.set()
+        with self._lock:
+            proc, self._proc = self._proc, None
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(VOXTYPE_STOP_S)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        if self._thread is not None:
+            self._thread.join(VOXTYPE_STOP_S)
+
+    def dictating(self) -> bool | None:
+        """Whether the owner's dictation is recording or transcribing; None when not known."""
+        state = self._state
+        return None if state is None else state.dictating
+
+    def meeting(self) -> bool:
+        """Whether a Voxtype meeting is running; one that cannot be seen counts as none."""
+        state = self._state
+        return state is not None and state.meeting
+
+    def _run(self) -> None:
+        wait = self._retry_s / 2  # so the first failure waits `retry_s`
+        while not self._stop.is_set():
+            started = time.monotonic()
+            self._follow()
+            ran_s = time.monotonic() - started
+            wait = next_retry_wait(
+                wait, ran_s=ran_s, first=self._retry_s, longest=self._max_retry_s
+            )
+            self._stop.wait(wait)
+
+    def _follow(self) -> None:
+        """Run the status command once, keeping the state it prints."""
+        try:
+            proc = subprocess.Popen(
+                self._command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            )
+        except OSError as exc:
+            self._unreadable(f"cannot run {self._command[0]}: {exc.strerror or exc}")
+            return
+        with self._lock:
+            if self._stop.is_set():
+                proc.terminate()
+            self._proc = proc
+        for line in proc.stdout or ():
+            state = parse_voxtype_status(line)
+            if state is None:
+                self._unreadable(f"unreadable status {line[:200]!r}")
+                continue
+            self._complained = False
+            self._state = state
+        proc.wait()
+        with self._lock:
+            self._proc = None
+        if not self._stop.is_set():
+            self._state = None  # nothing follows the status until the command runs again
+
+    def _unreadable(self, why: str) -> None:
+        self._state = None
+        if not self._complained:
+            log.warning("could not read Voxtype's status: %s", why)
+            self._complained = True
 
 
 def transcribe(  # ruff: ignore[too-many-arguments] - Voxtype's options plus a test seam
@@ -1079,14 +1236,23 @@ def voice_files(data_dir: Path, voice: str) -> list[Path]:
 
 
 def make_synthesizer(
-    data_dir: Path, voice: str, speed: float
+    data_dir: Path, voice: str, speed: float, *, phoneme_map: bool = False
 ) -> Callable[[str], tuple[bytes, int]]:
-    """Return text -> (int16 PCM bytes, sample rate) for the configured voice."""
+    """Return text -> (int16 PCM bytes, sample rate) for the configured voice.
+
+    `phoneme_map` is for a Kokoro voice only (`audio.kokoro_phoneme_map`).
+    """
     files = voice_files(data_dir, voice)
     if voice.startswith(KOKORO_PREFIX):
         from jarvis.kokoro import SAMPLE_RATE, Kokoro  # ruff: ignore[import-outside-top-level] - heavy
 
-        kokoro = Kokoro(files[0], files[1], voice.removeprefix(KOKORO_PREFIX), speed=speed)
+        kokoro = Kokoro(
+            files[0],
+            files[1],
+            voice.removeprefix(KOKORO_PREFIX),
+            speed=speed,
+            phoneme_map=phoneme_map,
+        )
         return lambda text: (kokoro.synthesize(text).tobytes(), SAMPLE_RATE)
     from piper import PiperVoice, SynthesisConfig  # ruff: ignore[import-outside-top-level] - heavy
 

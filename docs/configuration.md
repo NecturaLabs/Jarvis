@@ -185,22 +185,24 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
-| `source` | empty | PipeWire source node name | Microphone. Empty means the default source. `--mic`. |
+| `source` | empty | PipeWire source node name | Microphone: a node name or serial. Empty means the default source. `jarvis doctor` checks that it names a microphone (an `Audio/Source` node) that PipeWire lists. A capture that sends no audio for 5 s counts as lost and is reopened. `--mic`. |
 | `wake_threshold` | `0.5` | above 0, below 1 | LiveKit's wake word score needed. Higher means fewer false wakes and more misses. The service log shows each wake's score. |
 | `wake_engine` | `livekit` | `livekit` or `azure` | Which wake word model listens. `azure` uses your Azure custom keyword model; see [Azure wake word](#azure-wake-word). `jarvis wake livekit\|azure`. |
 | `azure_keyword_model` | empty | path to a `.table` file | The Azure custom keyword model. `jarvis wake azure --model FILE`. |
 | `azure_python` | empty | path to a Python | The Python that has the Speech SDK. Empty means `<data_dir>/azure-wake/venv/bin/python`. |
-| `vad_threshold` | `0.5` | above 0, below 1 | Speech probability that counts as speech. |
+| `vad_threshold` | `0.5` | above 0, below 1 | Speech probability that starts speech. |
+| `vad_neg_threshold` | `0.0` | 0 to below 1, and not above `vad_threshold` | Once speech has started it goes on while the probability stays above this, so a breath or a soft syllable inside a sentence is not taken for the end. `0` means `vad_threshold` less 0.15 (never below 0.01), as Silero's own segmenter does, 0.35 at the default. Set it equal to `vad_threshold` for no margin. It applies to the end of every request, answer and follow-up; PC audio's speech count while Jarvis waits for a yes keeps `vad_threshold`, as it only counts frames. |
 | `no_speech_timeout_s` | `4.0` | above 0, up to 30 | Silence after the wake word before Jarvis gives up. |
-| `end_silence_s` | `0.7` | above 0, up to 5 | Trailing silence that ends a request. |
+| `end_silence_s` | `0.7` | above 0, up to 5 | Trailing silence (below the exit threshold) that ends a request. A request after the wake word, by mic or PC audio, needs at least 0.15 s of speech (two 80 ms frames) or it is dropped without a word: a click is not a request. With the Azure wake word, only the keyword's last quarter second, kept with the request, is left out of that count. |
 | `max_utterance_s` | `20.0` | above 1, up to 120 | Longest request. |
 | `confirm_window_s` | `8.0` | above 1, up to 30 | How long Jarvis waits for the answer to a confirmation question. |
 | `confirm_key_s` | `30.0` | 5 to 120 | How long a `strong` action waits for the confirm key (`jarvis confirm`) after Jarvis has asked about it. |
 | `barge_in` | `true` | true or false | Listen for the wake word while Jarvis speaks: saying it stops Jarvis and starts a new request (a question spoken over counts as no). See [ADR 0008](adr/0008-speak-while-writing-and-barge-in.md). |
 | `listen_when_locked` | `true` | true or false | `false`: while the Omarchy lock screen is up, Jarvis takes no request: not after the wake word, not in the follow-up window, not spoken over a reply (the wake word still stops its speech), and none from PC audio. It asks the shell (`omarchy-shell lock isLocked`) once such a request is heard, and a state it cannot read counts as locked; `jarvis doctor` checks it can be read. `true` lets anyone at a locked PC talk to Jarvis. |
-| `follow_up_s` | `6.0` | 0 to 15 | Seconds after a spoken reply in which the next request needs no wake word; 0 turns it off. The window opens once the reply has finished playing, only after a request in your own voice, and never while Voxtype dictation is recording or transcribing (`voxtype status`); with `listen_to_pc` on, speech heard while PC audio also held speech is dropped; speech shorter than 0.3 s (a cough, a click) is ignored and the window listens on; speech in it that cannot be made out is dropped without a word. The wake word inside the window starts a request as usual. Background speech in the room can start a request too: if it does, shorten the window or set 0. |
+| `follow_up_s` | `6.0` | 0 to 15 | Seconds after a spoken reply in which the next request needs no wake word; 0 turns it off. The window opens once the reply has finished playing, only after a request in your own voice, and never while Voxtype dictation is recording or transcribing or a Voxtype meeting runs, or while that cannot be read (`voxtype status`, see [Dictation and meetings](#dictation-and-meetings)); with `listen_to_pc` on, speech heard while PC audio also held speech is dropped; speech shorter than 0.3 s (a cough, a click) is ignored and the window listens on; speech in it that cannot be made out is dropped without a word. The wake word inside the window starts a request as usual. Background speech in the room can start a request too: if it does, shorten the window or set 0. |
 | `voice` | `kokoro:bm_george` | text | `kokoro:<name>` for a Kokoro voice, otherwise a Piper voice name. See [models.md](models.md). |
 | `speech_speed` | `1.0` | 0.5 to 2.0 | Speaking speed, for Kokoro and Piper voices. |
+| `kokoro_phoneme_map` | `false` | true or false | Kokoro voices only. Rewrite espeak's phonemes into the symbols Kokoro was trained on (`eɪ` to `A`, `aɪ` to `I`, `tʃ` to `ʧ`, `r` to `ɹ`, and the rest of the table in `src/jarvis/phonemes.py`) before they are spoken. Off, Kokoro gets espeak's raw output, as the kokoro-onnx package does. It is off until you have heard it help: set it, run `jarvis restart` and compare a few sentences. |
 | `transcribe_engine` | empty | text | Voxtype `--engine`. Empty means Voxtype's own. |
 | `transcribe_model` | `small.en` | text | Voxtype `--model`: a model name or a full path to a model file. Empty means Voxtype's own. The model must already be downloaded; `jarvis doctor` checks Whisper models. |
 | `transcribe_threads` | `8` | 1 to 256 | Whisper threads, written to Jarvis's own Voxtype settings file. |
@@ -214,6 +216,20 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | `pc_audio_cooldown_s` | `5.0` | 0 to 600 | Pause after a PC-audio request during which another is ignored. |
 
 See [the PC-audio ADR](adr/0003-pc-audio-is-not-the-owner.md) for why the last four exist.
+
+### Dictation and meetings
+
+Jarvis follows Voxtype's own status with one long-lived `voxtype status --follow --format json --extended`
+(read-only; it costs nothing while the status is the same) and reads what it last said, so asking never waits
+for Voxtype. While your dictation is recording or transcribing, a wake word is ignored: no request, no
+chime, and one `wake_ignored` event in the audit log. While a Voxtype meeting runs (any `meeting_status` but
+`idle`), or while dictation runs, no follow-up window opens. A status that is not known yet or cannot be read (an
+older Voxtype without those options, a line that is not JSON, a status command that ended) never keeps Jarvis
+from taking the wake word, but it does keep follow-ups off. A Voxtype daemon that is not running counts as no
+dictation: the status command says so itself. Measured with
+`tools/idle_check.py` on 2026-11-22 (Voxtype 1.3.0, daemon idle, 20 s): the follower and its Python parent use 0.0 % of
+one core, against 2 to 3 ms of CPU for each plain `voxtype status` call and about 40 ms of CPU (0.2 to 0.4 s of
+wall time) for each `--extended` one that polling would make.
 
 ### Speakers and other apps' speech
 
@@ -275,6 +291,13 @@ The helper still runs as you, with your files and local sockets.
    `jarvis wake azure --model <file>.table`. `jarvis wake livekit` switches back; `jarvis wake` shows which
    one listens. Each switch restarts the voice service if it is running.
 3. With `audio.wake_engine = "azure"`, `jarvis doctor` checks the model file, the Python and that a namespace with no network can be made.
+
+The keyword engine documents that a keyword is heard after silence ("at least 1.5 s" before the first one,
+read from Microsoft Learn's custom keyword quickstart; not fetched again when this was written), and not in
+the middle of a sentence. So the helper writes 1.5 s of silence into the engine's stream before the first
+sample and again after each keyword, and the samples it reports leave that silence out. A keyword said
+within 1.5 s of Jarvis ending its own speech or of the last wake word, or in the middle of a sentence, is
+outside what the engine promises and may be missed; how often it is, with your models, is not measured yet.
 
 If the Azure model cannot start, Jarvis says so in the log and listens with LiveKit's instead. The model's own
 threshold decides, so `wake_threshold` does not apply to it. An Azure model trained with "Containing single
