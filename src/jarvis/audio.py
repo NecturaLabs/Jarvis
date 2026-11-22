@@ -1073,7 +1073,7 @@ def next_retry_wait(wait: float, *, ran_s: float, first: float, longest: float) 
 class VoxtypeWatch:
     """Follows `voxtype status` in the background, so asking is a read of what it last said.
 
-    The state comes from Voxtype's integration contract (`voxtype status`), read-only: Jarvis
+    The state comes from `voxtype status`, a command AGENTS.md allows, read-only: Jarvis
     never starts or stops anything with it. A daemon that is not running is reported by the
     command itself (`stopped`: not dictating). A status that is not known yet, cannot be read, or
     cannot be had (the command will not start, or ends: an older Voxtype without these options,
@@ -1138,15 +1138,15 @@ class VoxtypeWatch:
         return state is not None and state.meeting
 
     def _run(self) -> None:
-        wait = self._retry_s
+        wait = self._retry_s / 2  # so the first failure waits `retry_s`
         while not self._stop.is_set():
             started = time.monotonic()
             self._follow()
             ran_s = time.monotonic() - started
-            self._stop.wait(wait)
             wait = next_retry_wait(
                 wait, ran_s=ran_s, first=self._retry_s, longest=self._max_retry_s
             )
+            self._stop.wait(wait)
 
     def _follow(self) -> None:
         """Run the status command once, keeping the state it prints."""

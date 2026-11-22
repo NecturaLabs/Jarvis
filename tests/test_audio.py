@@ -1076,6 +1076,30 @@ def test_the_wait_before_the_status_command_is_tried_again_doubles_up_to_a_limit
     assert next_retry_wait(wait, ran_s=ran_s, first=1.0, longest=30.0) == next_wait
 
 
+def test_a_status_command_is_started_again_at_once_after_a_healthy_run_ends(
+    watches: Callable[..., VoxtypeWatch], tmp_path: Path
+) -> None:
+    # Six quick failures raise the wait to its 0.5 s limit; a run that lasted that long was
+    # healthy, so the next one starts after the first wait, not the raised one.
+    runs, ended, started = tmp_path / "runs", tmp_path / "ended", tmp_path / "started"
+    script = (
+        "import pathlib, sys, time\n"
+        f"runs = pathlib.Path({str(runs)!r})\n"
+        "n = len(runs.read_text()) if runs.exists() else 0\n"
+        "runs.write_text('x' * (n + 1))\n"
+        "if n < 6: sys.exit(1)\n"
+        "if n == 6:\n"
+        f"    time.sleep(0.6); pathlib.Path({str(ended)!r}).write_text(repr(time.time())); sys.exit(1)\n"
+        f"pathlib.Path({str(started)!r}).write_text(repr(time.time()))\n"
+        f"print({_status_line('recording')!r}, flush=True); time.sleep(60)\n"
+    )
+
+    watch = watches([sys.executable, "-I", "-c", script], retry_s=0.01, max_retry_s=0.5)
+
+    assert _eventually(lambda: watch.dictating() is True)
+    assert float(started.read_text()) - float(ended.read_text()) < 0.3
+
+
 def test_a_status_command_that_prints_once_and_dies_is_not_restarted_every_second() -> None:
     # Requirement changed (review of #29): printing a line no longer resets the wait.
     wait = 1.0
