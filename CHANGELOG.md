@@ -256,6 +256,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `jarvis pause`, `resume` and every other stop of the microphone, and a restart of the Voxtype status
+  follower, no longer leak the capture's pipe (#32). A stop waits at most half a second for the reader of a
+  capture whose command left a child holding the pipe, and keeps that pipe instead of closing it under the
+  reader; a stop that lands while a start is under way no longer closes the new capture's pipe; and a
+  status line that cannot be handled ends the Voxtype command instead of waiting for it for ever. The
+  tests now fail on any warning, so an unclosed pipe or file shows up in CI.
 - The chat no longer shows a reply twice for a moment: the draft is gone before the whole reply
   appears.
 - Web research is safer and steadier. Text a browser hides (the `hidden` attribute, `aria-hidden`, and

@@ -42,6 +42,7 @@ FRAME = 1280  # 80 ms, the wake model's step
 VAD_CHUNK = 512
 VAD_CONTEXT = 64
 STOP_WAIT_S = 5.0  # how long a capture process gets to exit before it is killed
+READER_JOIN_S = 0.5  # how long the reader gets to see the pipe end once the process is gone
 MIC_STALL_S = 5.0  # a microphone capture that sends nothing this long has lost its source
 REOPEN_FIRST_S = 1.0  # the wait before reopening a microphone whose capture ended on its own
 REOPEN_MAX_S = 30.0  # each failed reopen doubles the wait, up to this
@@ -339,16 +340,20 @@ class Microphone:
         # Each capture has its own end: a capture stopped earlier (`jarvis pause`) that finishes
         # reading after a new one started must not end the new one.
         ended = threading.Event()
-        self._ended = ended
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         except OSError as exc:
             ended.set()
+            self._ended = ended
             msg = f"could not start {cmd[0]}: {exc}"
             raise AudioError(msg) from exc
-        self._proc = proc
-        self._thread = threading.Thread(target=self._read, args=(proc.stdout, ended), daemon=True)
-        self._thread.start()
+        thread = threading.Thread(target=self._read, args=(proc.stdout, ended), daemon=True)
+        # A stop() sees the process with its own reader thread or neither.
+        with self._stop_lock:
+            self._ended = ended
+            self._proc = proc
+            self._thread = thread
+            thread.start()
 
     def _read(self, stream: IO[bytes] | None, ended: threading.Event) -> None:
         need = FRAME * 2
@@ -408,10 +413,12 @@ class Microphone:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        # The reader sees the pipe end now that the process is gone. Closing the pipe while it
-        # still reads would wait for it, so a reader that does not finish keeps the pipe.
+        # The reader sees the pipe end at once when the process is gone. One that does not is held
+        # by a child the capture command left behind, which will not let go soon: do not wait on
+        # it (`PausableMic` stops under its lock). Closing the pipe while it still reads would
+        # wait for it, so that reader keeps the pipe.
         if thread is not None:
-            thread.join(STOP_WAIT_S)
+            thread.join(READER_JOIN_S)
         if proc.stdout is not None and (thread is None or not thread.is_alive()):
             proc.stdout.close()
 
@@ -1077,6 +1084,16 @@ def next_retry_wait(wait: float, *, ran_s: float, first: float, longest: float) 
     return first if ran_s >= longest else min(wait * 2, longest)
 
 
+def _end_process(proc: subprocess.Popen[bytes], wait_s: float) -> None:
+    """Ask `proc` to end, kill it after `wait_s`, and reap it."""
+    proc.terminate()
+    try:
+        proc.wait(wait_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 class VoxtypeWatch:
     """Follows `voxtype status` in the background, so asking is a read of what it last said.
 
@@ -1125,12 +1142,7 @@ class VoxtypeWatch:
         with self._lock:
             proc, self._proc = self._proc, None
         if proc is not None:
-            proc.terminate()
-            try:
-                proc.wait(VOXTYPE_STOP_S)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+            _end_process(proc, VOXTYPE_STOP_S)
         if self._thread is not None:
             self._thread.join(VOXTYPE_STOP_S)
 
@@ -1168,18 +1180,28 @@ class VoxtypeWatch:
             if self._stop.is_set():
                 proc.terminate()
             self._proc = proc
-        with proc:  # closes the pipe and waits for the command to end
-            for line in proc.stdout or ():
-                state = parse_voxtype_status(line)
-                if state is None:
-                    self._unreadable(f"unreadable status {line[:200]!r}")
-                    continue
-                self._complained = False
-                self._state = state
-        with self._lock:
-            self._proc = None
-        if not self._stop.is_set():
-            self._state = None  # nothing follows the status until the command runs again
+        try:
+            with proc:  # closes the pipe and waits for the command to end
+                try:
+                    self._read_status(proc)
+                except BaseException:
+                    # The command still runs, and the wait that closes this block would be for it.
+                    _end_process(proc, VOXTYPE_STOP_S)
+                    raise
+        finally:
+            with self._lock:
+                self._proc = None
+            if not self._stop.is_set():
+                self._state = None  # nothing follows the status until the command runs again
+
+    def _read_status(self, proc: subprocess.Popen[bytes]) -> None:
+        for line in proc.stdout or ():
+            state = parse_voxtype_status(line)
+            if state is None:
+                self._unreadable(f"unreadable status {line[:200]!r}")
+                continue
+            self._complained = False
+            self._state = state
 
     def _unreadable(self, why: str) -> None:
         self._state = None
