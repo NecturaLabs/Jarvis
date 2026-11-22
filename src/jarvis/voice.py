@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from jarvis.config import AudioConfig
+    from jarvis.confirmkey import ConfirmKey
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +90,8 @@ SORRY_INTERNAL = "Sorry, something went wrong on my side."
 PC_SPEECH_BLOCKED = "I heard voices from the PC over that, so I didn't count it."
 WAKING = "One moment, waking up."
 STILL_WAITING = "Still waking up, nearly there."
+PRESS_KEY = "Press the confirm key to allow it."
+KEY_HELD_OFF = "The confirm key was pressed too early, so I'll leave it. Ask me again in a minute."
 
 
 class State(StrEnum):
@@ -262,6 +265,7 @@ class VoiceLoop:
         locked: Callable[[], bool] = lambda: False,
         asleep_s: Callable[[], float] = time_asleep,
         after_sleep: Callable[[], None] = lambda: None,
+        keys: ConfirmKey | None = None,
     ) -> None:
         """Wire the loop to its parts.
 
@@ -277,7 +281,8 @@ class VoiceLoop:
         restarted, the microphone unplugged) and answers False once Jarvis is stopping; without
         it, that end ends the loop. While `locked` is true, a wake word or a PC request is
         ignored (it is asked only then). `asleep_s` is how long the PC has slept since boot: when
-        it grows, the loop listens afresh and calls `after_sleep`.
+        it grows, the loop listens afresh and calls `after_sleep`. `keys` is the confirm key a
+        `strong` action waits for (`jarvis confirm`); without it such an action is refused.
         """
         super().__init__()
         self._agent = agent
@@ -298,6 +303,7 @@ class VoiceLoop:
         self._until_resumed = until_resumed
         self._reopen = reopen
         self._locked = locked
+        self._keys = keys
         self._asleep_s = asleep_s
         self._after_sleep = after_sleep
         self._asleep = asleep_s()  # the sleep seen so far
@@ -487,6 +493,45 @@ class VoiceLoop:
             self._try_say(PC_SPEECH_BLOCKED)
             return False
         return True
+
+    def _confirm_key(self, question: str, action: str) -> bool:
+        """Ask about one exact action and wait for the confirm key; anything else is no."""
+        try:
+            return self._await_key(question, action)
+        except Exception:
+            log.exception("waiting for the confirm key failed; counting it as no")
+            return False
+
+    def _await_key(self, question: str, action: str) -> bool:
+        keys = self._keys
+        if keys is None:
+            return False
+        self._speak(f"{spoken_question(question)} {PRESS_KEY}")
+        if self._barged_at is not None or self._muted:
+            log.info("the confirm key question was spoken over or hushed; counting it as no")
+            return False
+        waiting = keys.arm(action, question)  # only once the question has been heard
+        if waiting is None:
+            self._try_say(KEY_HELD_OFF)
+            return False
+        self.state = State.CONFIRM
+        pressed = False
+        deadline = self._clock() + self._cfg.confirm_key_s
+        self._wake.reset()
+        try:
+            for frame in self._mic.frames():
+                if waiting.pressed.is_set():
+                    pressed = True
+                    break
+                if self._cancelled() or self._muted or self._clock() >= deadline:
+                    break
+                if self._wake.heard(frame):
+                    log.info("the wake word while waiting for the confirm key; counting it as no")
+                    break
+        finally:
+            allowed = keys.disarm(waiting)
+            self._wake.reset()
+        return pressed and allowed
 
     def _serve(self, request: Callable[[], None] | None) -> None:
         """Run one request, then each one the owner starts by speaking over Jarvis or follows on.
@@ -701,6 +746,7 @@ class VoiceLoop:
                 text,
                 Hooks(
                     confirm=self._confirm,
+                    confirm_key=None if self._keys is None else self._confirm_key,
                     waking=lambda: self._cue(WAKING),
                     still_waiting=lambda: self._cue(STILL_WAITING),
                     cancelled=self._cancelled,

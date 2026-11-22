@@ -45,8 +45,7 @@ Jarvis is pre-1.0 software; see [Status](#status).
   while it talks and it stops and listens to your new request. See
   [the ADR](docs/adr/0008-speak-while-writing-and-barge-in.md).
 
-Not built yet: PC operations other than Spotify and keybinding confirmation. The plan marks each as
-planned.
+Not built yet: PC operations other than Spotify and files. The plan marks each as planned.
 
 ## Requirements
 
@@ -94,6 +93,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis status` | Show what Jarvis is doing (idle, listening, thinking, speaking, paused, model loading or unavailable) and the model's state; `--json` prints one JSON object for a status bar. |
 | `jarvis pause` / `resume` | Let go of the microphone and free the model, until `resume` opens the microphone and loads the model again (or the voice service restarts). |
 | `jarvis hush` | Stop Jarvis speaking now. |
+| `jarvis confirm` | Allow the one action Jarvis is waiting on with "Press the confirm key". Bind it to a key ([configuration](docs/configuration.md#the-confirm-key-jarvis-confirm)). |
 | `jarvis unload` | Free the model's memory now, for example before a game. |
 | `jarvis doctor` | Check every part without loading the model. |
 | `jarvis logs` | Follow the live log (Ctrl+C to leave). |
@@ -122,8 +122,8 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 
 Jarvis is pre-1.0 and has no tagged releases yet. It was built and measured on one machine (Omarchy, an RX
 7900 XT and 64 GB of RAM); other hardware is untested. The configuration file has one schema version and no
-migrations, so a later version may ask you to edit it. PC operations other than Spotify and keybinding
-confirmation are not built; [docs/roadmap.md](docs/roadmap.md) lists what is planned and
+migrations, so a later version may ask you to edit it. PC operations other than Spotify and files are
+not built; [docs/roadmap.md](docs/roadmap.md) lists what is planned and
 [docs/plan.md](docs/plan.md) says what is built. Changes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Licence

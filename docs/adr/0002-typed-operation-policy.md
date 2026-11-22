@@ -32,6 +32,16 @@ finished speaking, and the `strong` class is confirmed by keybinding, never by v
 - **Bad:** each new capability needs an operation, a schema and a class; requests outside the set are
   refused until one is added or the owner enables the `strong` shell.
 
+## Status update (2026-11-22)
+
+The keybinding is built: `jarvis confirm`, which the owner binds to a key, reaches the voice service
+through its control socket (`src/jarvis/confirmkey.py`, `src/jarvis/control.py`). It allows the one
+action Jarvis asked about, bound to that action's hash, once, and only after the question was heard. A
+press from a program Jarvis started is refused, and a press with nothing waiting holds the key off for
+30 s. The chat window and `jarvis ask` have no key, so they refuse `strong` actions. The consent bypass
+(`boundaries.bypass_consent`, added later) skips spoken questions only: it never skips the key (#34,
+decision 3).
+
 ## Related
 
 - `docs/plan.md` — Boundaries, Speaking, barge-in, confirmation

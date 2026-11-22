@@ -8,6 +8,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- `boundaries.bypass_consent` no longer runs `strong` actions unasked: they wait for the confirm key.
+  No operation Jarvis ships is `strong` yet; this matters for one you set to `strong` yourself.
 - From a practices audit: a name in `boundaries.classes` that is no operation (a typo, say) stops Jarvis
   with an error instead of being ignored; turning questions on or off with `jarvis consent`, and the mode
   the voice service starts in, are recorded in the audit log and shown in the chat; words heard from the PC
@@ -72,6 +74,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   `strata.context` keeps its value; to change it, edit it and run `jarvis setup`.
 
 ### Added
+
+- `jarvis confirm`, the confirm key: bind it to a key, and a `strong` action runs only after you press it.
+  Jarvis says what it is about to do, then "Press the confirm key to allow it", and waits
+  `audio.confirm_key_s` (30 s). One press allows that one action, once; a spoken yes never does. A press
+  with nothing waiting holds the key off for 30 s, and a press from a program Jarvis started is refused.
+  Only spoken requests can use it: the chat window and `jarvis ask` still refuse `strong` actions.
 
 - `jarvis pause` lets go of the microphone and, once the request in flight has ended, frees the model;
   `jarvis resume` listens again and reloads it. `jarvis hush` stops the speech. `jarvis status` says what

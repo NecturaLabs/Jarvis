@@ -6,6 +6,7 @@ import signal
 import subprocess
 import threading
 import time
+import types
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from jarvis.agent import Hooks
 from jarvis.audit import AuditLog
 from jarvis.chat.app import ChatApp
 from jarvis.cli import main
+from jarvis.confirmkey import ConfirmKey
 from jarvis.secretfile import write_private_json
 
 if TYPE_CHECKING:
@@ -936,3 +938,25 @@ def test_a_systemctl_call_that_hangs_is_given_up(
     assert real_systemctl("stop", "jarvis.service") == 1
     assert "did not finish" in capsys.readouterr().out
     assert timeouts == [cli.SYSTEMCTL_S]
+
+
+def test_the_run_shares_one_confirm_key_between_the_loop_and_the_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    served: list[object] = []
+
+    def serve(handler: object, _audit: object) -> object:
+        served.append(handler)
+        return types.SimpleNamespace(close=lambda: None)
+
+    monkeypatch.setattr(cli, "_serve_controls", serve)
+    run, _ = _cmd_run(monkeypatch, lambda _run, _should_stop: None)
+
+    key = run.loops[0]["keys"]
+    assert isinstance(key, ConfirmKey)
+    (handler,) = served
+    assert callable(handler)
+    waiting = key.arm("hash-a", "stop process 42")
+    assert waiting is not None
+    waiting.armed_at -= 1  # heard a second ago
+    assert handler("confirm") == {"confirmed": "stop process 42"}
