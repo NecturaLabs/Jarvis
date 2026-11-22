@@ -677,7 +677,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         (
             state is not None,
             f"Strata server ({state or 'unreachable'})",
-            "systemctl --user start jarvis-strata",
+            "jarvis start (it clears a start limit first)",
         ),
     ]
     for ok, what, fix in checks:

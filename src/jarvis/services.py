@@ -116,7 +116,8 @@ RestrictSUIDSGID=yes
 _HARDENING_STRATA = """\
 UMask=0077
 """
-# What only the voice service takes: it runs no model engine, which may load code for other CPUs.
+# What only the voice service takes: it runs no model engine, whose GPU runtime is not shown to
+# keep to this CPU's own system calls.
 _HARDENING_VOICE = """\
 SystemCallArchitectures=native
 """

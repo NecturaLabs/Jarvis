@@ -1016,3 +1016,17 @@ def test_a_systemctl_call_that_hangs_is_given_up(
     assert real_systemctl("stop", "jarvis.service") == 1
     assert "did not finish" in capsys.readouterr().out
     assert timeouts == [cli.SYSTEMCTL_S]
+
+
+def test_doctor_points_an_unreachable_strata_at_jarvis_start(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # No Strata key here, so the server counts as unreachable. `jarvis start` also clears a start
+    # limit, which a bare `systemctl --user start` would be refused by.
+    _doctor_config(home / "models")
+
+    cli.main(["doctor"])
+
+    line = next(shown for shown in _doctor_lines(capsys) if "Strata server" in shown)
+    assert line.startswith("FAIL")
+    assert line.endswith("-> jarvis start (it clears a start limit first)")
