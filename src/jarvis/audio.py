@@ -22,7 +22,7 @@ import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, Self
+from typing import TYPE_CHECKING, Protocol, Self, cast
 
 import numpy as np
 import onnxruntime as ort
@@ -986,6 +986,42 @@ def screen_locked(
     Jarvis deaf at a locked screen rather than listening.
     """
     return lock_state(run, timeout_s) is not False
+
+
+def installed_models(
+    engine: str,
+    run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    timeout_s: float = 10.0,
+) -> frozenset[str] | None:
+    """Return the models Voxtype reports installed for `engine`; None when it cannot say.
+
+    Read from `voxtype info models --json --engine <engine>`, which checks each installed model's
+    size and header (#34, decision 1). An older Voxtype without the command says nothing, and
+    `jarvis doctor` then looks for the file itself.
+    """
+    try:
+        done = run(
+            ["voxtype", "info", "models", "--json", "--engine", engine],
+            capture_output=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        log.warning("could not ask Voxtype for its models: %s", exc)
+        return None
+    if done.returncode != 0:
+        return None
+    try:
+        listed = obj(obj(obj(json.loads(done.stdout)).get("engines")).get(engine)).get("models")
+    except ValueError:
+        return None
+    if not isinstance(listed, list):
+        return None
+    return frozenset(
+        str(model["name"])
+        for model in objs(cast("object", listed))
+        if model.get("installed") is True and isinstance(model.get("name"), str)
+    )
 
 
 @dataclass(frozen=True, slots=True)

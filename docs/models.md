@@ -56,6 +56,16 @@ amdgpu DRM client, and amdgpu published no `drm-engine` busy counters for that c
 which has to listen. See
 [configuration.md](configuration.md#keeping-the-model-loaded).
 
+#### Prompt chunk size
+
+`strata.prefill` is 512 tokens. The reason for 512 is not recorded. Strata's own tuner lists 512 for this model
+family among the sizes it avoids (smaller chunks read long prompts 11% to 75% slower in its tests), and tries
+`auto`, `auto:16384`, `auto:32768`, 2048 and 4096. `strata.prefill = "auto"` is accepted and passed through as
+`--prefill auto`. Not measured yet: the owner's run (prompt tokens per second, time to the first word on the
+2,900-token request, VRAM, with a game running) is listed in the [playbook](playbook/README.md#owner-runs-for-the-service-units-33).
+The default changes only if the numbers favour it. `strata.vram_reserve_mib` (unset: Strata's default, 700 MiB)
+is the matching VRAM knob.
+
 Jarvis marks the system prompt and the tools as Strata's shared prefix (`strata_prefix`, one message) on every
 request that sends tools. The Qwen3.6 engine in Strata 0.1.62 does not use that mark yet, so every request
 still reads the whole prompt. An engine that ignores the mark is harmless; the 4.5 s above is the cost today.
@@ -136,8 +146,11 @@ spoken over.
 - `piper-tts` 1.8.0 (OHF-Voice/piper1-gpl). Put a voice at `<data_dir>/voices/<name>.onnx` with
   `<name>.onnx.json` beside it and set `audio.voice = "<name>"`. `audio.speech_speed` sets Piper's length
   scale (the voice's own scale divided by the speed).
-- Licence: `piper-tts` is GPL-3.0-or-later (package metadata). Each Piper voice has its own licence: not
-  checked. Because Jarvis imports `piper-tts` for both voices, Jarvis is published under GPL-3.0-or-later
+- Licence: `piper-tts` is GPL-3.0-or-later (package metadata). Each Piper voice has its own licence: check
+  its model card before using it; Jarvis ships none. Checked 2026-11-22 for `en_GB-alan-medium`: its card
+  names the dataset `MycroftAI/mimic3-voices` `en_UK/apope_low`, whose LICENSE reads "Copyright 2022 Mycroft
+  AI / All Rights Reserved" while the repository's root LICENSE is CC BY-SA 4.0, so that voice's terms are
+  unclear. Because Jarvis imports `piper-tts` for both voices, Jarvis is published under GPL-3.0-or-later
   (`docs/adr/0006-gpl-licence.md`).
 
 ## Wake word and end of speech

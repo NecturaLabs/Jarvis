@@ -16,9 +16,9 @@ which parts exist. Details of what is built are in [configuration.md](configurat
 | Phase | Status | Built, and where it differs from the text below |
 |---|---|---|
 | 0. Project setup | Built | Git, `AGENTS.md`, docs, uv project, CI. |
-| 1. Strata | Mostly built | `jarvis setup` writes the Strata profile and `jarvis-strata.service` (lazy load, idle unload, `MemoryMax`, 127.0.0.1, API key). Defaults differ from the sketch: `expert_vram_gib` 1.0, no `--mmap-experts` flag, `idle_unload_s` 300, `memory_max` 40G, context 24576 (raised from 8192 for research, 2026-11-21). Not recorded in the repository: the 200-request model eval and its gate. Load-refusal below a memory reserve is not built. `jarvis run` loads the model at start (owner decision 2026-11-21: keep it loaded). |
+| 1. Strata | Mostly built | `jarvis setup` writes the Strata profile and `jarvis-strata.service` (lazy load, idle unload, `MemoryHigh`/`MemoryMax`, `CPUWeight`, a start limit, sandboxing options, 127.0.0.1, API key). Defaults differ from the sketch: `expert_vram_gib` 1.0, no `--mmap-experts` flag, `idle_unload_s` 86400 (24 hours, so the model stays loaded; 300 until 2026-11-22), `memory_max` 40G, context 24576 (raised from 8192 for research, 2026-11-21). Not recorded in the repository: the 200-request model eval and its gate. Load-refusal below a memory reserve is not built. `jarvis run` loads the model at start (owner decision 2026-11-21: keep it loaded). |
 | 2. Ears | Mostly built | `pw-record` capture, the LiveKit wake word, Silero VAD and the state machine (IDLE, CAPTURE, TRANSCRIBE, THINK, CONFIRM, SPEAK). Transcription is **path B** (`voxtype transcribe`, with Jarvis's own `-c` settings); path A (the daemon contract) is not built, and neither is volume lowering over MPRIS. The wake test runs (8 h, 100 wakes) are not recorded. |
-| 3. Boundaries, setup and voice | Partly built | Built: config (one schema version, no migrations), the policy engine and its decision table, provenance, spoken confirmation bound to one action, the audit log, the agent loop, Kokoro and Piper voices. Not built: the Textual wizard (`jarvis setup` takes flags instead), the `strong` class's keybinding confirmation (such calls are refused), quiet hours, `jarvis pause` and `jarvis confirm`. |
+| 3. Boundaries, setup and voice | Partly built | Built: config (one schema version, no migrations), the policy engine and its decision table, provenance, spoken confirmation bound to one action, the audit log, the agent loop, Kokoro and Piper voices. Not built: the Textual wizard (`jarvis setup` takes flags instead), quiet hours. The `strong` class waits for the confirm key (`jarvis confirm`), from the voice service only; no shipped operation is `strong` yet. |
 | 4. Spotify | Built | PKCE login, Web API client, and the operations play (track, album, artist, playlist, liked songs), pause, resume, next, previous, set and change volume, shuffle, repeat, queue, like, now playing. Players are found and Spotify is launched through the Web API; MPRIS is not used. No seek, no separate transfer-to-device or my-playlists operation (playing "my playlist" is `play` with `mine`). |
 | 5. PC operations | Partly built | Built: `pc_stats`, `list_dir`, `read_file` within `[files]` read roots and `write_file` (`confirm`) within write roots, secrets never touched, file text as data that puts outbound operations behind a yes. Not built: `open_app`, `workspace`, `set_volume`, `run_omarchy`, `os_skill`, `stop_process` (#9). |
 | 6. Research | Mostly built | `deploy/searxng/` (pinned image, JSON on, limiter off, `127.0.0.1:8888`), `web_search`, `web_read` (trafilatura, size caps, public-address checks at every connection and redirect, only pages a search returned), plus `reddit_search` and `reddit_read` (SearXNG and the Arctic Shift archive), `time_now` and `weather` (Open-Meteo), [ADR 0007](adr/0007-outside-services-for-answers.md). Not built: SearXNG in an installer, a spoken check with the owner. |
@@ -50,8 +50,8 @@ behind the same speech setting, as the Piper-licence risk below asked.
   requests (decided 2026-11-21: a loaded idle model may hold RAM and VRAM; Jarvis must run beside games). The tasks are simple, so a small model is enough.
 - Replies by voice (Piper); no desktop notifications.
 - Model kept loaded (owner decision, 2026-11-21, replacing "idle by default, including after reboot"): `jarvis run`
-  loads it at start, and `strata.idle_unload_s` may be raised to 86400 so it stays loaded. While idle it holds
-  memory but uses no GPU or CPU. Under the default 300 s it is still freed when idle and loaded on the next wake.
+  loads it at start, and `strata.idle_unload_s` defaults to 86400 (24 hours) so it stays loaded. While idle it
+  holds memory but uses no GPU or CPU. A lower value frees it sooner and loads it again on the next wake.
 - Very easy to set up and maintain. Public repo `NecturaLabs/Jarvis`, GPL-3.0-or-later (`docs/adr/0006-gpl-licence.md`).
 - Open source (GPL-3.0-or-later since 2026-11-21); everything committed stays publishable.
 - Agents working on it open nothing on the owner's screen (hidden; else workspace 1) and never stop processes they
@@ -141,7 +141,8 @@ enforced in code before any tool runs.
   cannot be spoken over. See [ADR 0008](adr/0008-speak-while-writing-and-barge-in.md).
 - Confirmation starts only after TTS playback has drained, accepts yes/no for 8 s, and is bound to one immutable
   action (hash of operation + arguments). Anything else, silence, or the wake word over the question, is no. The
-  highest-risk class is confirmed by keybinding (`jarvis confirm`), never by voice.
+  highest-risk class is confirmed by keybinding (`jarvis confirm`), never by voice, and the consent bypass
+  never skips it.
 - Echo cancellation (PipeWire echo-cancel module) is not built; it is the owner's system setting if Jarvis's own
   voice ever reaches the wake word through the room.
 

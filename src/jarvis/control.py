@@ -1,9 +1,15 @@
-"""The control socket: `jarvis status`, `pause`, `resume` and `hush` reach the running voice loop.
+"""The control socket: `jarvis status`, `pause`, `resume`, `hush` and `confirm` reach Jarvis.
 
 `jarvis run` serves a Unix socket in `$XDG_RUNTIME_DIR/jarvis/` (folder 0700, socket 0600) and
 answers only processes of the same user (`SO_PEERCRED`). Each connection carries one JSON line
 (`{"command": "status"}`) and gets one JSON line back. The socket does nothing while nobody
 connects: its thread sleeps in `accept`.
+
+`confirm` is the confirm key (`confirmkey`), which allows a `strong` action. As a best effort it
+is refused from a program Jarvis started (`started_by_jarvis`: its descendants and, under systemd,
+its control group). That is no guarantee: a program can leave both (a `systemd-run --user` unit,
+`hyprctl dispatch exec`), and any program running as the owner can run `jarvis confirm`. An
+operation that starts programs must not let the model start them that way (#19).
 
 The public state, which the Omarchy bar reads (#14), is one of `STATES`.
 """
@@ -19,18 +25,16 @@ import struct
 import threading
 import time
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any, Protocol
+from pathlib import Path
+from typing import Any, Protocol
 
 from jarvis.jsonutil import obj
 from jarvis.paths import runtime_dir
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 log = logging.getLogger(__name__)
 
 STATES = ("idle", "listening", "thinking", "speaking", "paused", "model loading", "unavailable")
-COMMANDS = ("status", "pause", "resume", "hush")
+COMMANDS = ("status", "pause", "resume", "hush", "confirm")
 MAX_LINE = 1024  # bytes of one request
 TIMEOUT_S = 2.0  # how long one connection may take to send its line
 _UCRED = struct.Struct("3i")  # pid, uid, gid
@@ -64,6 +68,15 @@ class _Mic(Protocol):
     def paused(self) -> bool: ...
     def pause(self) -> bool: ...
     def resume(self) -> bool: ...
+
+
+class _Key(Protocol):
+    def press(self) -> dict[str, str | None]: ...
+    def cancel(self) -> None: ...
+
+
+NO_KEY = "this Jarvis has no confirm key"
+FROM_JARVIS = "the confirm key cannot come from a program Jarvis started"
 
 
 class _Audit(Protocol):
@@ -137,12 +150,17 @@ class Controls:
         model: _Model,
         audit: _Audit | None = None,
         *,
+        keys: _Key | None = None,
         background: Callable[[Callable[[], object]], None] = _in_background,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        """Act on `loop`, `mic` and `model`; slow work (unloading, loading) goes to `background`."""
+        """Act on `loop`, `mic` and `model`; slow work (unloading, loading) goes to `background`.
+
+        `keys` is the confirm key `confirm` presses; it audits each press itself.
+        """
         super().__init__()
+        self._keys = keys
         self._loop = loop
         self._mic = mic
         self._model = model
@@ -162,9 +180,15 @@ class Controls:
             case "resume":
                 return self._resume()
             case "hush":
+                if self._keys is not None:
+                    self._keys.cancel()  # first: a press from now on finds nothing waiting
                 self._loop.hush()
                 self._audit.record("control", command="hush")
                 return {}
+            case "confirm":
+                if self._keys is None:
+                    return {"confirmed": None, "reason": NO_KEY}
+                return dict(self._keys.press())
             case _:
                 return self._status()
 
@@ -178,6 +202,8 @@ class Controls:
         }
 
     def _pause(self) -> dict[str, Any]:
+        if self._keys is not None:
+            self._keys.cancel()
         self._loop.hush()
         with self._commands:  # a pause and a resume arriving together are taken in turn
             changed = self._mic.pause()
@@ -233,13 +259,59 @@ class Controls:
         return {"paused": False, "changed": changed}
 
 
-def _peer_uid(conn: socket.socket) -> int | None:
+def _peer(conn: socket.socket) -> tuple[int, int] | None:
+    """Return the connecting process's PID and user ID."""
     try:
         raw = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, _UCRED.size)
     except OSError:
         return None
-    _pid, uid, _gid = _UCRED.unpack(raw)
-    return uid
+    pid, uid, _gid = _UCRED.unpack(raw)
+    return pid, uid
+
+
+_PROC = Path("/proc")
+_MAX_DEPTH = 4096  # more parents than this is a loop in a broken /proc: refuse
+
+
+def _parent(pid: int, proc: Path) -> int:
+    stat_line = (proc / str(pid) / "stat").read_text()
+    # The name sits in parentheses and may hold anything, ") S 1 (" too: the fields after the
+    # last ")" are the state, then the parent's PID.
+    return int(stat_line.rsplit(")", 1)[1].split()[1])
+
+
+def _cgroup(pid: int, proc: Path) -> str:
+    return (proc / str(pid) / "cgroup").read_text().strip()
+
+
+def started_by_jarvis(pid: int, *, me: int | None = None, proc: Path = _PROC) -> bool:
+    """Return True if `pid` is Jarvis (`me`), runs under it, or cannot be checked.
+
+    Under it means a descendant, or, when Jarvis runs as a systemd service, any process in the
+    service's control group: a child that forked again and was handed to another parent stays
+    there. A process that is gone before it can be checked counts as started by Jarvis.
+    """
+    me = os.getpid() if me is None else me
+    try:
+        return _in_own_service(pid, me, proc) or _descends(pid, me, proc)
+    except OSError, ValueError, IndexError:
+        return True
+
+
+def _in_own_service(pid: int, me: int, proc: Path) -> bool:
+    own = _cgroup(me, proc)
+    return own.endswith(".service") and _cgroup(pid, proc) == own
+
+
+def _descends(pid: int, me: int, proc: Path) -> bool:
+    current = pid
+    for _ in range(_MAX_DEPTH):
+        if current == me:
+            return True
+        if current <= 1:
+            return False
+        current = _parent(current, proc)
+    return True  # a loop of parents: refuse
 
 
 def _read_line(conn: socket.socket) -> bytes | None:
@@ -268,14 +340,21 @@ class ControlServer:
     """Serves the control socket on a thread of its own until `close`."""
 
     def __init__(
-        self, handler: Handler, path: Path | None = None, audit: _Audit | None = None
+        self,
+        handler: Handler,
+        path: Path | None = None,
+        audit: _Audit | None = None,
+        *,
+        started_by_jarvis: Callable[[int], bool] = started_by_jarvis,
     ) -> None:
         """Answer each known command with `handler(command)`; `path` defaults to `socket_path`.
 
-        A connection refused for coming from another user is recorded in `audit`.
+        A connection refused for coming from another user, or a `confirm` from a program
+        `started_by_jarvis`, is recorded in `audit`.
         """
         super().__init__()
         self._handler = handler
+        self._started_by_jarvis = started_by_jarvis
         self.path = path or socket_path()
         self._audit = audit or _NoAudit()
         self._sock: socket.socket | None = None
@@ -350,10 +429,10 @@ class ControlServer:
                 log.exception("control connection failed")
 
     def _answer(self, conn: socket.socket) -> None:
-        uid = _peer_uid(conn)
-        if uid != os.getuid():
+        peer = _peer(conn)
+        if peer is None or peer[1] != os.getuid():
             log.warning("refused a control connection from another user")
-            self._audit.record("control_refused", peer_uid=uid)
+            self._audit.record("control_refused", peer_uid=None if peer is None else peer[1])
             return
         conn.settimeout(TIMEOUT_S)
         command = _command(_read_line(conn))
@@ -361,6 +440,12 @@ class ControlServer:
             reply: Mapping[str, Any] = {"ok": False, "error": "send one JSON line with a command"}
         elif command not in COMMANDS:
             reply = {"ok": False, "error": f"unknown command {command!r}"}
+        elif command == "confirm" and self._started_by_jarvis(peer[0]):
+            log.warning("refused the confirm key from a program Jarvis started (PID %d)", peer[0])
+            self._audit.record(
+                "control_refused", command="confirm", reason="started by Jarvis", peer_pid=peer[0]
+            )
+            reply = {"ok": False, "error": FROM_JARVIS}
         else:
             try:
                 reply = {"ok": True, **self._handler(command)}

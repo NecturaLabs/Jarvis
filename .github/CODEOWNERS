@@ -11,6 +11,8 @@
 /src/jarvis/policy.py            @Nectura
 /src/jarvis/operations.py        @Nectura
 /src/jarvis/agent.py             @Nectura
+/src/jarvis/confirmkey.py        @Nectura
+/src/jarvis/control.py           @Nectura
 /src/jarvis/shortcuts.py         @Nectura
 /src/jarvis/audit.py             @Nectura
 /src/jarvis/secretfile.py        @Nectura

@@ -6,6 +6,7 @@ import signal
 import subprocess
 import threading
 import time
+import types
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from jarvis.agent import Hooks
 from jarvis.audit import AuditLog
 from jarvis.chat.app import ChatApp
 from jarvis.cli import main
+from jarvis.confirmkey import ConfirmKey
 from jarvis.secretfile import write_private_json
 
 if TYPE_CHECKING:
@@ -49,7 +51,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-pytestmark = pytest.mark.usefixtures("home")
+pytestmark = pytest.mark.usefixtures("home", "voxtype_lists_no_models")
 
 
 def test_version_prints_package_version(capsys: pytest.CaptureFixture[str]) -> None:
@@ -161,6 +163,17 @@ def _known(role: str, content: bytes) -> models.KnownModel:
         sha256=hashlib.sha256(content).hexdigest(),
         licence="MIT",
     )
+
+
+def _cannot_say(_engine: str) -> frozenset[str] | None:
+    return None
+
+
+@pytest.fixture
+def voxtype_lists_no_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`jarvis doctor` asks Voxtype for its models; here it cannot say, so the doctor falls back
+    to the file check (tests of the Voxtype answer patch it themselves)."""
+    monkeypatch.setattr(audio_module, "installed_models", _cannot_say)
 
 
 def _doctor_config(data: Path) -> None:
@@ -360,9 +373,40 @@ def test_the_default_speech_model_is_small_en() -> None:
     assert config.AudioConfig().transcribe_model == "small.en"
 
 
+def test_doctor_asks_voxtype_whether_the_speech_model_is_installed(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    installed: frozenset[str] = frozenset()
+    asked: list[str] = []
+
+    def models(engine: str) -> frozenset[str]:
+        asked.append(engine)
+        return installed
+
+    monkeypatch.setattr(audio_module, "installed_models", models)
+    _doctor_config(home / "models")
+
+    cli.main(["doctor"])
+
+    assert any(
+        line.startswith("FAIL") and "small.en" in line and "voxtype setup model" in line
+        for line in _doctor_lines(capsys)
+    )
+    installed = frozenset({"small.en"})
+
+    cli.main(["doctor"])
+
+    assert any(
+        line.startswith("ok ") and "speech model small.en (Voxtype reports it installed)" in line
+        for line in _doctor_lines(capsys)
+    )
+    assert asked == ["whisper", "whisper"]
+
+
 def test_doctor_checks_the_whisper_model_is_downloaded(
     home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # A Voxtype that cannot list its models (the fixture above): the doctor looks for the file.
     _doctor_config(home / "models")
 
     cli.main(["doctor"])
@@ -472,6 +516,45 @@ def test_setup_writes_the_config_profile_and_units_under_the_home(
     assert (home / "state" / "jarvis" / "strata.env").is_file()
     assert calls == [["systemctl", "--user", "daemon-reload"]]
     assert "next: jarvis spotify-login" in capsys.readouterr().out
+
+
+def test_setup_with_enable_clears_a_failed_state_before_starting_the_units(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _stub_subprocess(monkeypatch)
+    model = home / "models" / "q4.gguf"
+
+    assert main(["setup", "--model-file", str(model), "--enable"]) == 0
+
+    units = ["jarvis-strata.service", "jarvis.service"]
+    assert calls == [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "reset-failed", *units],
+        ["systemctl", "--user", "enable", "--now", *units],
+    ]
+
+
+def test_a_config_command_clears_a_failed_state_before_restarting_jarvis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The start limit counts restarts too: five config changes in 15 minutes must not leave the
+    # voice service stopped.
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(*args: str) -> int:
+        calls.append(args)
+        return 0
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+
+    def active(_unit: str) -> str:
+        return "active"
+
+    monkeypatch.setattr(cli, "_unit_state", active)
+
+    cli._restart_if_running()  # pyright: ignore[reportPrivateUsage] - the helper three commands share
+
+    assert calls == [("reset-failed", "jarvis.service"), ("restart", "jarvis.service")]
 
 
 def test_setup_refuses_a_value_that_cannot_go_into_a_unit(
@@ -696,8 +779,9 @@ def _cmd_run(
     monkeypatch: pytest.MonkeyPatch,
     body: Callable[[_Run, Callable[[], bool]], None],
     cfg: config.Config | None = None,
+    run: _Run | None = None,
 ) -> tuple[_Run, int]:
-    run = _Run()
+    run = run or _Run()
     for name in ("Microphone", "Speaker", "Vad", "WakeWord", "AppAudio", "VoxtypeWatch"):
         monkeypatch.setattr(audio_module, name, run.maker(name))
 
@@ -811,6 +895,23 @@ def test_the_run_follows_voxtypes_status_off_the_voice_thread_and_stops_it_with_
     kwargs = run.loops[0]
     assert (kwargs["dictating"], kwargs["meeting"]) == (watch.dictating, watch.meeting)
     assert kwargs["audit"] is run.audit
+
+
+def test_a_failure_before_the_loop_runs_leaves_no_status_reader_behind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def serve(*_args: object, **_kwargs: object) -> object:
+        msg = "the control socket is taken"
+        raise OSError(msg)
+
+    monkeypatch.setattr(cli, "_serve_controls", serve)
+    run = _Run()
+
+    with pytest.raises(OSError, match="socket is taken"):
+        _cmd_run(monkeypatch, lambda _run, _should_stop: None, run=run)
+
+    (watch,) = run.kinds["VoxtypeWatch"]
+    assert not watch.started or watch.stopped.is_set()
 
 
 @pytest.mark.parametrize("phoneme_map", [False, True])
@@ -940,6 +1041,47 @@ def test_restart_starts_a_stopped_strata(monkeypatch: pytest.MonkeyPatch) -> Non
     assert ("start", "jarvis-strata.service") in calls
 
 
+def test_start_clears_a_failed_state_before_starting_both_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A unit that hit its start limit stays `failed` until reset (#33).
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(*args: str) -> int:
+        calls.append(args)
+        return 0
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+
+    assert cli.main(["start"]) == 0
+    assert calls == [
+        ("reset-failed", "jarvis-strata.service", "jarvis.service"),
+        ("start", "jarvis-strata.service", "jarvis.service"),
+    ]
+
+
+def test_a_failed_reset_does_not_stop_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `reset-failed` fails for a unit that is not loaded; `start` then says what is wrong.
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(*args: str) -> int:
+        calls.append(args)
+        return 1 if args[0] == "reset-failed" else 0
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+
+    assert cli.main(["start"]) == 0
+    assert calls[-1][0] == "start"
+
+
+def test_restart_clears_a_failed_state_before_starting_anything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _restart_calls(monkeypatch, None)
+
+    assert calls[0] == ("reset-failed", "jarvis-strata.service", "jarvis.service")
+
+
 def test_a_strata_start_time_is_read_to_the_microsecond() -> None:
     assert cli.parse_systemd_time("Sat 2026-11-21 04:40:30.157367 UTC") == pytest.approx(
         1795236030.157367
@@ -1064,3 +1206,62 @@ def test_a_systemctl_call_that_hangs_is_given_up(
     assert real_systemctl("stop", "jarvis.service") == 1
     assert "did not finish" in capsys.readouterr().out
     assert timeouts == [cli.SYSTEMCTL_S]
+
+
+def test_doctor_points_an_unreachable_strata_at_jarvis_start(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # No Strata key here, so the server counts as unreachable. `jarvis start` also clears a start
+    # limit, which a bare `systemctl --user start` would be refused by.
+    _doctor_config(home / "models")
+
+    cli.main(["doctor"])
+
+    line = next(shown for shown in _doctor_lines(capsys) if "Strata server" in shown)
+    assert line.startswith("FAIL")
+    assert line.endswith("-> jarvis start (it clears a start limit first)")
+
+
+def test_the_run_shares_one_confirm_key_between_the_loop_and_the_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    served: list[object] = []
+
+    def serve(handler: object, _audit: object) -> object:
+        served.append(handler)
+        return types.SimpleNamespace(close=lambda: None)
+
+    monkeypatch.setattr(cli, "_serve_controls", serve)
+    run, _ = _cmd_run(monkeypatch, lambda _run, _should_stop: None)
+
+    key = run.loops[0]["keys"]
+    assert isinstance(key, ConfirmKey)
+    (handler,) = served
+    assert callable(handler)
+    waiting = key.arm("hash-a", "stop process 42", 30.0)
+    assert waiting is not None
+    waiting.armed_at -= 1  # heard a second ago
+    assert handler("confirm") == {"confirmed": "stop process 42"}
+
+
+def test_jarvis_ask_with_yes_has_no_confirm_key(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `--yes` answers spoken questions only: a `strong` action is refused, as there is no key here.
+    seen: list[Hooks] = []
+
+    def handle(_text: str, hooks: Hooks) -> str:
+        seen.append(hooks)
+        return "I can't."
+
+    agent = types.SimpleNamespace(handle=handle)
+
+    def build(_cfg: object, **_kwargs: object) -> object:
+        return types.SimpleNamespace(agent=agent)
+
+    monkeypatch.setattr(cli, "build", build)
+
+    assert main(["ask", "--yes", "stop", "it"]) == 0
+
+    assert seen[0].confirm_key is None
+    assert "I can't." in capsys.readouterr().out

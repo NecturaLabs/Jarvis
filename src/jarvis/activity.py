@@ -196,12 +196,32 @@ def _tool_call(entry: dict[str, object]) -> _Line:
     verdict = entry.get("verdict")
     if verdict == "confirm":
         return "ask", action, False, f"{gist} · needs your yes" if gist else "needs your yes"
-    if verdict in {"deny", "strong"}:
+    if verdict == "strong":
+        if "refused" in entry:
+            return (
+                "warn",
+                f"{action} refused: it needs the confirm key, which only spoken requests have",
+                False,
+                "",
+            )
+        return (
+            "ask",
+            action,
+            False,
+            f"{gist} · needs your confirm key" if gist else "needs your confirm key",
+        )
+    if verdict == "deny":
         return "warn", f"{action} refused: {_plain(entry.get('reason', ''))}", False, ""
     return "step", action, False, gist
 
 
 def _confirmation(entry: dict[str, object]) -> _Line:
+    if entry.get("method") == "key":
+        if entry.get("approved") is True:
+            return "result", "you pressed the confirm key", True, ""
+        if entry.get("asked") is False:
+            return "warn", "no: not asked again after an earlier no", True, ""
+        return "warn", "no key press, so nothing was done", True, ""
     if entry.get("approved") is True:
         return "result", "you said yes", True, ""
     if entry.get("asked") is False:
@@ -266,7 +286,18 @@ def _simple(entry: dict[str, object]) -> _Line | None:
             "",
         ),
         "wake_ignored": ("note", "Ignored the wake word: you were dictating", False, ""),
-        "control_refused": ("warn", "refused a control command from another user", False, ""),
+        "control_refused": (
+            "warn",
+            "refused the confirm key from a program Jarvis started"
+            if entry.get("reason") == "started by Jarvis"
+            else "refused a control command from another user",
+            False,
+            "",
+        ),
+        "confirm_key": _KEY_LINES.get(
+            str(entry.get("outcome")),
+            ("warn", f"confirm key: {_plain(entry.get('outcome', ''))}", True, ""),
+        ),
         "consent_changed": (
             "note",
             "Questions turned off: Jarvis acts without asking"
@@ -291,6 +322,16 @@ def _simple(entry: dict[str, object]) -> _Line | None:
     }
     return lines.get(str(entry.get("event")))
 
+
+_KEY_LINES: dict[str, _Line] = {
+    "pressed": ("detail", "the confirm key was pressed", True, ""),
+    "nothing waiting": ("warn", "the confirm key was pressed when nothing was waiting", False, ""),
+    "too soon": ("warn", "the confirm key came too soon to answer the question", True, ""),
+    "held off": ("warn", "held off: a stray confirm key press came less than 30 s ago", True, ""),
+    "busy": ("warn", "another action was already waiting for the confirm key", True, ""),
+    "cancelled": ("detail", "the wait for the confirm key was cancelled", True, ""),
+    "ended": ("detail", "stopped waiting for the confirm key", True, ""),
+}
 
 _CONTROL_LINES = {
     "pause": "Paused: the microphone is let go (jarvis pause)",

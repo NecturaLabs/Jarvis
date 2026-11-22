@@ -42,8 +42,9 @@ HTTPCORE_FILES = {
 # Files that may import subprocess: the only places that start another program.
 SUBPROCESS_FILES = {
     "cli.py": "systemctl, journalctl, the browser, and `jarvis doctor`'s no-network check",
-    "audio.py": "pw-record, pw-play, pw-dump, `voxtype transcribe` and `voxtype status` (Voxtype's "
-    "contract) and the "
+    "audio.py": "pw-record, pw-play, pw-dump, `voxtype transcribe`, `voxtype status` and "
+    "`voxtype info models` (the commands AGENTS.md lists, `status` also with `--follow "
+    "--extended`) and the "
     "Azure keyword helper, only inside `unshare --net` (ADR 0010)",
     "spotify/ops.py": "launches the Spotify client when no device is active",
     "chat/clipboard.py": "`wl-paste` with a fixed argument list, for Ctrl+V in the chat (the "
@@ -206,8 +207,8 @@ def scan_voxtype_config(path: str, source: str) -> list[Finding]:
     tree = ast.parse(source)
     message = (
         "points into ~/.config/voxtype or builds a path with a `voxtype` component; Jarvis never "
-        "edits the owner's Voxtype config and uses only its integration contract "
-        "(AGENTS.md, Product rules)."
+        "edits the owner's Voxtype config and drives it only through the commands AGENTS.md "
+        "allows (Product rules)."
     )
     lines = {line for line, text in _strings(tree) if ".config/voxtype" in text.replace("\\", "/")}
     if path not in VOXTYPE_PATH_FILES:

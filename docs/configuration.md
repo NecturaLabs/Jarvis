@@ -117,22 +117,55 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `port` | `8080` | 1024 to 65535 | Strata's port on `127.0.0.1`. |
 | `context` | `24576` | 2048 to 262144 | Context window in tokens (`--max-context`). Each 1,000 tokens more costs about 0.05 GiB of VRAM ([models.md](models.md)). It holds the prompt and the tool schemas (about 5,000 tokens together), the remembered conversation (`agent.memory_tokens` or `chat.memory_tokens`), one reply and the request's tool results; when a long request outgrows it, its oldest tool results are cleared down to their start. |
 | `expert_vram_gib` | `1.0` | 0 to 64 | VRAM budget for expert weights kept on the GPU, passed as `--expert-vram`; the rest of the experts stay in host memory. |
-| `prefill` | `512` | 128 to 8192 | Prompt-reading chunk size (`--prefill`). |
-| `idle_unload_s` | `300` | 30 to 86400 | Seconds without a request before Strata frees the model. |
+| `prefill` | `512` | 128 to 8192, or `"auto"` | Prompt-reading chunk size (`--prefill`). `"auto"` leaves the size to Strata (the value its own setup writes). Strata's tuner lists 512 among the sizes it avoids for this model, because smaller chunks read long prompts slower, so `"auto"`, 2048 and 4096 are worth measuring on your card before changing the default ([models.md](models.md#prompt-chunk-size)). |
+| `idle_unload_s` | `86400` | 30 to 86400 | Seconds without a request before Strata frees the model. The default, 24 hours, keeps it loaded through the day; a lower value gives the RAM back sooner. |
 | `reasoning_budget_tokens` | `512` | 1 to 8192 | Thinking-token cap in the profile. |
-| `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` and `MemoryMax` of the Strata unit. |
+| `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` of the Strata unit. `MemoryMax` is derived from it, 10% above (44G for 40G; a size that does not divide evenly is rounded up and written in bytes), so there is no second key. Past `MemoryHigh` the kernel throttles the unit and reclaims its memory; past `MemoryMax` it kills the unit. |
+| `vram_reserve_mib` | `0` (unset) | 0, or 100 to 65536 | VRAM in MiB the engine leaves free for other programs, passed as `--vram-reserve-mib`. `0` passes nothing, so Strata's own default (700) applies. Set it only after a game that grows once the model is loaded either fails or does not. A card with at most about 8 GB of VRAM cannot start with a reserve (Strata's tuner never tries one there). |
 | `vision_file` | unset | path | The model's picture reader (`mmproj-F16.gguf`, [models.md](models.md#pictures)). Set, the profile reads pictures: Strata's reader runs on the processor, in about 0.9 GB of RAM and no VRAM, starts with the first picture and stops after `vision_idle_s`. Unset, Jarvis reads no pictures. |
 | `vision_idle_s` | `120` | 10 to 86400 | Seconds without a picture before the picture reader stops. |
 
 Fixed by Jarvis, not configurable: lazy loading on, one parallel slot, the HIP backend on GPU 0, `--mtp 2`.
 
+### What the two units set
+
+Both units are written by `jarvis setup`; their text is `jarvis_unit` and `strata_unit` in `src/jarvis/services.py`.
+
+| Setting | `jarvis.service` | `jarvis-strata.service` |
+|---|---|---|
+| `NoNewPrivileges=yes`, `LockPersonality=yes`, `RestrictSUIDSGID=yes` | yes | yes |
+| `UMask=0077` (what the unit creates is private to you) | no | yes |
+| `SystemCallArchitectures=native` | yes | no |
+| `CPUWeight=50` (half the default, so a game started by Steam in the same `app.slice` wins a CPU contest) | yes | yes |
+| `StartLimitIntervalSec=15min`, `StartLimitBurst=5` (in `[Unit]`) | yes | yes |
+| `MemoryHigh` / `MemoryMax` | none / `4G` | `memory_max` / 10% above it |
+
+- The voice service keeps your session's umask, so a file the file tools write at your request gets the
+  mode it asks for (0644, a folder 0755).
+- `NoNewPrivileges` is inherited by programs the voice service starts, directly or through `uwsm-app` (the
+  way the Omarchy launcher starts Spotify; tested with a stand-in command, 2026-11-22).
+- Not set, each for a reason: `ProtectKernelModules=` and `ProtectKernelLogs=` on the voice service (in a user
+  unit they put it in a private user namespace, which Spotify and every other program it starts would inherit),
+  `RestrictNamespaces=` (the Azure wake word helper runs under `unshare --map-current-user --net`),
+  `MemoryDenyWriteExecute=` (onnxruntime and Strata's HIP path may compile code at run time), `ProtectHome=` and
+  `ProtectSystem=` (config, state and models live under home and on `/data`), `PrivateNetwork=` and `IPAddressDeny=`
+  (Spotify, Open-Meteo and web reads), `RestrictRealtime=` (`pw-record` and `pw-play` are not shown to
+  do without real-time scheduling), `Nice=` and the `idle` scheduling policies (a reply would starve while a game
+  runs; the model is paged in from disk, so `IOSchedulingClass=idle` would slow it too). `IOWeight=` does nothing: the
+  user manager delegates only the `cpu`, `memory` and `pids` controllers.
+- The start limit: a unit that fails five times in 15 minutes stays `failed` and shows in `jarvis status` instead
+  of restarting for ever (each Strata restart reads the model again). `jarvis start` and `jarvis restart` run
+  `systemctl --user reset-failed` first, so they bring a failed unit back.
+- These options were checked with transient units on this PC (`systemd-run --user`), not with the model loaded
+  on the GPU; [the playbook](playbook/README.md#owner-runs-for-the-service-units-33) lists what the owner still runs.
+
 ### Keeping the model loaded
 
-`idle_unload_s` accepts up to 86400 (24 hours), which keeps the model loaded through the day. Measured on the
+`idle_unload_s` defaults to 86400 (24 hours), its largest value, which keeps the model loaded through the day. Measured on the
 reference machine (RX 7900 XT, 64 GB RAM), a loaded idle model holds about 38 GB of RAM and 7.3 GiB of VRAM and
 uses no GPU or CPU while idle. A cold load took about 107 s with a game running; Jarvis says "One moment,
-waking up" while that happens. At the default 300 s the model is freed after five idle minutes and loaded
-again on the next wake word. The default `memory_max` of 40G leaves about 2 GB above the 38 GB measured, so
+waking up" while that happens. At 300 s, say, the model is freed after five idle minutes and loaded again on
+the next wake word. The default `memory_max` of 40G leaves about 2 GB above the 38 GB measured, so
 raise it before holding a larger model. `jarvis unload` frees the model at once.
 
 ## `[spotify]`: your own Spotify developer app
@@ -163,6 +196,7 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | `end_silence_s` | `0.7` | above 0, up to 5 | Trailing silence (below the exit threshold) that ends a request. A request after the wake word, by mic or PC audio, needs at least 0.15 s of speech (two 80 ms frames) or it is dropped without a word: a click is not a request. With the Azure wake word, only the keyword's last quarter second, kept with the request, is left out of that count. |
 | `max_utterance_s` | `20.0` | above 1, up to 120 | Longest request. |
 | `confirm_window_s` | `8.0` | above 1, up to 30 | How long Jarvis waits for the answer to a confirmation question. |
+| `confirm_key_s` | `30.0` | 5 to 120 | How long a `strong` action waits for the confirm key (`jarvis confirm`) after Jarvis has asked about it. |
 | `barge_in` | `true` | true or false | Listen for the wake word while Jarvis speaks: saying it stops Jarvis and starts a new request (a question spoken over counts as no). See [ADR 0008](adr/0008-speak-while-writing-and-barge-in.md). |
 | `listen_when_locked` | `true` | true or false | `false`: while the Omarchy lock screen is up, Jarvis takes no request: not after the wake word, not in the follow-up window, not spoken over a reply (the wake word still stops its speech), and none from PC audio. It asks the shell (`omarchy-shell lock isLocked`) once such a request is heard, and a state it cannot read counts as locked; `jarvis doctor` checks it can be read. `true` lets anyone at a locked PC talk to Jarvis. |
 | `follow_up_s` | `6.0` | 0 to 15 | Seconds after a spoken reply in which the next request needs no wake word; 0 turns it off. The window opens once the reply has finished playing, only after a request in your own voice, and never while Voxtype dictation is recording or transcribing or a Voxtype meeting runs, or while that cannot be read (`voxtype status`, see [Dictation and meetings](#dictation-and-meetings)); with `listen_to_pc` on, speech heard while PC audio also held speech is dropped; speech shorter than 0.3 s (a cough, a click) is ignored and the window listens on; speech in it that cannot be made out is dropped without a word. The wake word inside the window starts a request as usual. Background speech in the room can start a request too: if it does, shorten the window or set 0. |
@@ -350,7 +384,7 @@ hidden files under home stay shut unless you open them.
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
-| `bypass_consent` | `true` | `true`, `false` | `true`: Jarvis never asks for a yes. Every action that would need one runs at once and is audited as run with consent bypassed: `confirm` and `strong` actions, side effects after outside or file text, searches while file text is in the conversation, and requests heard in PC audio. An operation set to `deny` is still refused. `false`: Jarvis asks as described below. `jarvis consent ask` or `jarvis consent bypass` switches it and restarts the voice service. |
+| `bypass_consent` | `true` | `true`, `false` | `true`: Jarvis never asks for a yes. Every action that would need one runs at once and is audited as run with consent bypassed: `confirm` actions, side effects after outside or file text, searches while file text is in the conversation, and requests heard in PC audio. A `strong` action still waits for the confirm key, and an operation set to `deny` is still refused. `false`: Jarvis asks as described below. `jarvis consent ask` or `jarvis consent bypass` switches it and restarts the voice service. |
 
 With consent bypassed, text from a web page, a file, a picture or a call's audio can steer actions with no
 question in between. Turn asking on (`jarvis consent ask`) before letting Jarvis read pages or listen to PC
@@ -359,7 +393,7 @@ audio you do not trust.
 ## `[boundaries.classes]`
 
 A table from operation name to a class: `safe` (runs), `confirm` (needs your spoken yes), `strong`
-(keybinding confirmation, not built yet, so such a call is refused unless `bypass_consent` is on) or `deny`.
+(needs the confirm key, below; never a spoken yes, and not skipped by `bypass_consent`) or `deny`.
 A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` with an error, so a typo
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
 its shipped class, which is `safe` for every operation but `write_file` (`confirm`): `spotify_*`, `time_now`,
@@ -373,3 +407,28 @@ spotify_like = "confirm"
 spotify_queue = "deny"
 reddit_search = "deny"
 ```
+
+## The confirm key (`jarvis confirm`)
+
+A `strong` action runs only after you press a key. Jarvis says what it is about to do, then "Press the
+confirm key to allow it", and waits `audio.confirm_key_s` for `jarvis confirm`. Bind that command to a key
+in `~/.config/hypr/bindings.lua`, for example:
+
+```lua
+o.bind("SUPER + CTRL + Y", "Jarvis confirm", "jarvis confirm")
+```
+
+- One press allows the one action Jarvis asked about, once. Not pressing in time, saying "Hey Jarvis",
+  `jarvis hush` or `jarvis pause` is no; a press after a timeout, `hush` or `pause` finds nothing
+  waiting. A spoken yes
+  never counts. The wait is timed on the boot clock, so a suspend does not leave it open.
+- Press once the question has ended. A press while nothing waits, or one sooner than 0.3 s after the
+  question ended, allows nothing and holds the key off for 30 s, so a program pressing it over and over
+  cannot catch a question. Jarvis says so if it was about to ask.
+- The key works only through the control socket of the voice service. As a best effort, a press from a
+  program Jarvis started is refused and audited. It is no guarantee: any program running as you can run
+  `jarvis confirm`, so the key keeps the model (and what it reads) from acting alone, not malware already
+  on your account. The chat window and `jarvis ask` (even with `--yes`) have no confirm key, so they
+  refuse a `strong` action.
+- Each press, refused or not, is in the audit log (`confirm_key`), and the answer is a `confirmation`
+  event with `"method": "key"`.

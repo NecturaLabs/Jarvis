@@ -37,6 +37,23 @@ def _no_control_path(path: Path) -> Path:
 SafePath = Annotated[Path, AfterValidator(_no_control_path)]
 SafeText = Annotated[str, AfterValidator(_no_control)]
 
+VRAM_RESERVE_MIN_MIB = (
+    100  # our floor, not the engine's: a smaller reserve leaves a game no real room
+)
+VRAM_RESERVE_MAX_MIB = 65536
+
+
+def _reserve_or_unset(mib: int) -> int:
+    if mib != 0 and mib < VRAM_RESERVE_MIN_MIB:
+        msg = f"must be 0 (unset) or at least {VRAM_RESERVE_MIN_MIB}"
+        raise ValueError(msg)
+    return mib
+
+
+VramReserve = Annotated[
+    int, Field(ge=0, le=VRAM_RESERVE_MAX_MIB), AfterValidator(_reserve_or_unset)
+]
+
 
 def _check_endpoint(url: str) -> str:
     """Return `url` when it is an `http` or `https` URL on this machine; empty means unset.
@@ -120,10 +137,14 @@ class StrataConfig(_Section):
     port: int = Field(default=8080, ge=1024, le=65535)
     context: int = Field(default=24576, ge=2048, le=262144)
     expert_vram_gib: float = Field(default=1.0, ge=0, le=64)
-    prefill: int = Field(default=512, ge=128, le=8192)
-    idle_unload_s: int = Field(default=300, ge=30, le=86400)
+    # The prompt-reading chunk (`--prefill`): a size in tokens, or "auto" to leave it to Strata.
+    prefill: Annotated[int, Field(ge=128, le=8192)] | Literal["auto"] = 512
+    idle_unload_s: int = Field(default=86400, ge=30, le=86400)  # stays loaded (#34, decision 2)
     reasoning_budget_tokens: int = Field(default=512, gt=0, le=8192)
     memory_max: str = Field(default="40G", pattern=r"^\d+[KMGT]?$")
+    # VRAM in MiB the engine leaves free for other programs (`--vram-reserve-mib`); 0 passes
+    # nothing, so Strata's own default (700) applies.
+    vram_reserve_mib: VramReserve = 0
     # The picture reader (the model's mmproj file, beside it); unset: Jarvis reads no pictures.
     vision_file: SafePath = Path()
     vision_idle_s: int = Field(default=120, ge=10, le=86400)  # the reader stops after this idle
@@ -171,6 +192,8 @@ class AudioConfig(_Section):
     end_silence_s: float = Field(default=0.7, gt=0, le=5)
     max_utterance_s: float = Field(default=20.0, gt=1, le=120)
     confirm_window_s: float = Field(default=8.0, gt=1, le=30)
+    # How long a `strong` action waits for the confirm key (`jarvis confirm`) once asked about.
+    confirm_key_s: float = Field(default=30.0, ge=5, le=120)
     barge_in: bool = True  # the wake word stops Jarvis mid-sentence and starts a new request
     # Off: a wake word or PC-audio request is ignored while the Omarchy lock screen is up.
     listen_when_locked: bool = True
@@ -313,9 +336,10 @@ class FilesConfig(_Section):
 class BoundariesConfig(_Section):
     """Per-operation class overrides set by the owner, and whether Jarvis asks before acting.
 
-    `bypass_consent` (the owner's choice, on by default) runs every action that would need a yes
-    without asking: `confirm` and `strong` actions, actions after outside or file text, and
-    requests heard in PC audio. An operation set to `deny` stays refused.
+    `bypass_consent` (the owner's choice, on by default) runs every action that would need a
+    spoken yes without asking: `confirm` actions, actions after outside or file text, and requests
+    heard in PC audio. A `strong` action still waits for the confirm key, and an operation set to
+    `deny` stays refused.
     """
 
     classes: dict[str, OpClassName] = Field(default_factory=dict[str, OpClassName])

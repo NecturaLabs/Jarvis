@@ -15,6 +15,22 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   broken or older Voxtype does not leave Jarvis deaf, and follow-ups stay off until the status is known.
 - The Azure keyword helper writes 1.5 s of silence into the engine's stream before the first sample and after
   each detection, which the engine is documented to want before a keyword (#29).
+- Both services are safer and kinder to a game beside them (#33). Both set `NoNewPrivileges`, `LockPersonality`,
+  `RestrictSUIDSGID` and `CPUWeight=50`; Strata also sets `UMask=0077`, and the voice service
+  `SystemCallArchitectures=native`. A service that fails five times in 15 minutes now stays `failed` instead
+  of restarting for ever; `jarvis start`, `jarvis restart`, `jarvis setup --enable` and the commands that
+  restart the voice service after a change (`consent`, `pc-audio`, `wake`) clear that first. Strata's
+  `MemoryHigh` is `strata.memory_max` and its `MemoryMax` is 10% above it (44G for the default 40G).
+  `strata.prefill` also accepts `"auto"`, and the new `strata.vram_reserve_mib` (unset by default) passes
+  `--vram-reserve-mib`. Run `jarvis setup` to rewrite the units. Not measured yet: the effect on time to
+  first word, VRAM and a running game (playbook).
+- `boundaries.bypass_consent` no longer runs `strong` actions unasked: they wait for the confirm key.
+  No operation Jarvis ships is `strong` yet; this matters for one you set to `strong` yourself.
+- `strata.idle_unload_s` defaults to 86400 (24 hours) instead of 300, so a fresh install keeps the model
+  loaded, as the owner decided (#34). Set a lower value to free the RAM sooner. A saved config or a Strata
+  profile already written keeps its value until you change it or run `jarvis setup` again.
+- `jarvis doctor` asks Voxtype which speech models are installed (`voxtype info models`), which also checks
+  each file's size and header, and falls back to looking for the file when Voxtype cannot say.
 - From a practices audit: a name in `boundaries.classes` that is no operation (a typo, say) stops Jarvis
   with an error instead of being ignored; turning questions on or off with `jarvis consent`, and the mode
   the voice service starts in, are recorded in the audit log and shown in the chat; words heard from the PC
@@ -90,6 +106,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   on before they are spoken, to compare by ear (#29).
 - `jarvis doctor` checks that `audio.source` names a microphone PipeWire lists, and says so when PipeWire
   cannot be read rather than blaming the name (#29).
+- `jarvis confirm`, the confirm key: bind it to a key, and a `strong` action runs only after you press it.
+  Jarvis says what it is about to do, then "Press the confirm key to allow it", and waits
+  `audio.confirm_key_s` (30 s). One press allows that one action, once; a spoken yes never does. A press
+  with nothing waiting holds the key off for 30 s, and, as a best effort, a press from a program Jarvis
+  started is refused.
+  Only spoken requests can use it: the chat window and `jarvis ask` still refuse `strong` actions.
+
 - `jarvis pause` lets go of the microphone and, once the request in flight has ended, frees the model;
   `jarvis resume` listens again and reloads it. `jarvis hush` stops the speech. `jarvis status` says what
   the running Jarvis is doing (idle, listening, thinking, speaking, paused, model loading, unavailable), and

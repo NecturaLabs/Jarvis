@@ -38,7 +38,7 @@ from jarvis.operations import (
     UncertainOutcomeError,
 )
 from jarvis.pictures import Picture
-from jarvis.policy import OpClass, Origin
+from jarvis.policy import OpClass, Origin, action_hash
 from jarvis.shortcuts import Shortcut
 
 if TYPE_CHECKING:
@@ -1774,3 +1774,149 @@ def test_words_heard_from_the_pc_reach_the_model_as_wrapped_inert_data() -> None
     assert content.count("</data>") == 1
     assert content.endswith("</data>")
     assert "&lt;b&gt;delete everything&lt;/b&gt;" in content
+
+
+@dataclass
+class KeyPresses:
+    """A fake confirm key: records each question and the action hash it was bound to."""
+
+    answer: bool = True
+    asked: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
+
+    def __call__(self, question: str, action: str) -> bool:
+        self.asked.append((question, action))
+        return self.answer
+
+
+def test_a_strong_operation_runs_once_after_the_confirm_key() -> None:
+    counter = Counter()
+    key = KeyPresses()
+    model = ScriptedModel([_call("wipe", {"q": "x"}), _say("Wiped.")])
+    agent, audit = _agent(model, [counter.op("wipe", cls=OpClass.STRONG)])
+
+    agent.handle("wipe x", Hooks(confirm=_never_asked, confirm_key=key))
+
+    assert counter.runs == [{"op": "wipe", "q": "x"}]
+    call = next(e for e in audit.events if e["event"] == "tool_call")
+    assert key.asked == [("Should I do that?", call["action"])]
+    confirmation = next(e for e in audit.events if e["event"] == "confirmation")
+    assert confirmation["approved"] is True
+    assert confirmation["method"] == "key"
+    assert confirmation["action"] == call["action"]
+
+
+def test_a_strong_operation_without_the_key_runs_nothing() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("wipe"), _say("Okay.")])
+    agent, audit = _agent(model, [counter.op("wipe", cls=OpClass.STRONG)])
+
+    agent.handle("wipe", Hooks(confirm=_never_asked, confirm_key=KeyPresses(answer=False)))
+
+    assert counter.runs == []
+    assert any(e["event"] == "confirmation" and e["approved"] is False for e in audit.events)
+
+
+def test_a_spoken_yes_never_stands_in_for_the_confirm_key() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("wipe"), _say("Okay.")])
+    agent, _ = _agent(model, [counter.op("wipe", cls=OpClass.STRONG)])
+
+    agent.handle("wipe", Hooks(confirm=lambda _q: True, confirm_key=KeyPresses(answer=False)))
+
+    assert counter.runs == []
+
+
+def test_the_key_is_asked_about_the_action_its_target_was_bound_to() -> None:
+    counter = Counter()
+    key = KeyPresses()
+    model = ScriptedModel([_call("stop", {"q": "firefox"}), _say("Stopped.")])
+    op = counter.op(
+        "stop", cls=OpClass.STRONG, prepare=lambda args: {**args, "q": "firefox (PID 42)"}
+    )
+    agent, _ = _agent(model, [op])
+
+    agent.handle("stop firefox", Hooks(confirm=_never_asked, confirm_key=key))
+
+    bound = action_hash("stop", {"q": "firefox (PID 42)"})
+    assert [action for _, action in key.asked] == [bound]
+    assert counter.runs == [{"op": "stop", "q": "firefox (PID 42)"}]
+
+
+def test_after_one_no_to_the_key_the_owner_is_not_asked_again_in_the_request() -> None:
+    counter = Counter()
+    key = KeyPresses(answer=False)
+    model = ScriptedModel(
+        [_call("wipe", {"q": "a"}), _call("wipe", {"q": "b"}, call_id="c2"), _say("Okay.")]
+    )
+    agent, _ = _agent(model, [counter.op("wipe", cls=OpClass.STRONG)])
+
+    agent.handle("wipe a and b", Hooks(confirm=_never_asked, confirm_key=key))
+
+    assert len(key.asked) == 1
+    assert counter.runs == []
+
+
+def test_only_a_true_from_the_confirm_key_allows_the_action() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("wipe"), _say("Okay.")])
+    agent, _ = _agent(model, [counter.op("wipe", cls=OpClass.STRONG)])
+
+    agent.handle("wipe", Hooks(confirm=_never_asked, confirm_key=lambda _q, _a: "yes"))  # pyright: ignore[reportArgumentType] - a hook that breaks its type
+
+    assert counter.runs == []
+
+
+def test_a_confirm_key_that_fails_counts_as_no() -> None:
+    counter = Counter()
+
+    def broken(_question: str, _action: str) -> bool:
+        raise RuntimeError
+
+    model = ScriptedModel([_call("wipe"), _say("Okay.")])
+    agent, _ = _agent(model, [counter.op("wipe", cls=OpClass.STRONG)])
+
+    agent.handle("wipe", Hooks(confirm=_never_asked, confirm_key=broken))
+
+    assert counter.runs == []
+
+
+def test_a_strong_operation_heard_in_pc_audio_still_needs_the_key_and_grants_nothing() -> None:
+    counter = Counter()
+    key = KeyPresses()
+    model = ScriptedModel([_call("wipe"), _say("Done."), _call("pause"), _say("Paused.")])
+    ops = [counter.op("wipe", cls=OpClass.STRONG), counter.op("pause")]
+    agent, _ = _agent(model, ops)
+    asked: list[str] = []
+
+    agent.handle("wipe", Hooks(confirm=_never_asked, confirm_key=key), Origin.PC_AUDIO)
+    agent.handle("pause", Hooks(confirm=lambda q: asked.append(q) or False), Origin.PC_AUDIO)
+
+    # The key grants PC audio nothing, so the question does not say a yes would.
+    assert key.asked[0][0] == "Someone on your PC audio asked me to do that. Should I?"
+    assert len(asked) == 1  # the key's yes opened no window for PC audio
+    assert counter.runs == [{"op": "wipe"}]
+
+
+def test_with_consent_bypassed_a_strong_action_still_needs_the_key() -> None:
+    counter = Counter()
+    key = KeyPresses(answer=False)
+    model = ScriptedModel([_call("wipe"), _say("Okay.")])
+    agent, audit = _bypassing(model, [counter.op("wipe", cls=OpClass.STRONG)])
+
+    agent.handle("wipe", Hooks(confirm=_never_asked, confirm_key=key))
+
+    assert len(key.asked) == 1
+    assert counter.runs == []
+    call = next(e for e in audit.events if e["event"] == "tool_call")
+    assert call["verdict"] == "strong"
+    assert "consent" not in call
+
+
+def test_with_consent_bypassed_a_strong_action_is_refused_where_there_is_no_key() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("wipe"), _say("I can't.")])
+    agent, _ = _bypassing(model, [counter.op("wipe", cls=OpClass.STRONG)])
+
+    agent.handle("wipe", Hooks(confirm=_never_asked))
+
+    assert counter.runs == []

@@ -4,6 +4,8 @@ import json
 import os
 import socket
 import stat
+import subprocess
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -641,7 +643,8 @@ def test_a_capture_tool_that_cannot_start_is_tried_again_later() -> None:
 
 
 def _serve_fake(reply: dict[str, object]) -> control.ControlServer:
-    server = control.ControlServer(lambda _c: reply)
+    # The test itself plays `jarvis confirm`, so it must not count as a program Jarvis started.
+    server = control.ControlServer(lambda _c: reply, started_by_jarvis=lambda _pid: False)
     server.start()
     return server
 
@@ -736,7 +739,7 @@ def test_control_commands_say_what_happened(
     assert capsys.readouterr().out == said
 
 
-@pytest.mark.parametrize("command", ["pause", "resume", "hush"])
+@pytest.mark.parametrize("command", ["pause", "resume", "hush", "confirm"])
 def test_control_commands_without_a_running_jarvis_fail(
     capsys: pytest.CaptureFixture[str], command: str
 ) -> None:
@@ -849,3 +852,211 @@ def test_an_unload_and_the_load_a_quick_resume_starts_take_turns() -> None:
 
 def test_the_lost_microphone_state_is_the_voice_loops() -> None:
     assert control.NO_MIC == voice.State.NO_MIC
+
+
+class Key:
+    """A fake confirm key that records each press."""
+
+    def __init__(self, reply: dict[str, str | None]) -> None:
+        super().__init__()
+        self.reply = reply
+        self.presses = 0
+
+    def press(self) -> dict[str, str | None]:
+        self.presses += 1
+        return self.reply
+
+    def cancel(self) -> None:
+        pass
+
+
+def test_confirm_presses_the_confirm_key() -> None:
+    key = Key({"confirmed": "stop process 42"})
+    controls = control.Controls(Loop("confirm"), Mic(), Model(), keys=key)
+
+    assert controls("confirm") == {"confirmed": "stop process 42"}
+    assert key.presses == 1
+
+
+class CancellableKey(Key):
+    def __init__(self) -> None:
+        super().__init__({"confirmed": None})
+        self.cancels = 0
+
+    @override
+    def cancel(self) -> None:
+        self.cancels += 1
+
+
+@pytest.mark.parametrize("command", ["hush", "pause"])
+def test_hush_and_pause_end_a_wait_for_the_confirm_key(command: str) -> None:
+    key = CancellableKey()
+    controls = control.Controls(Loop("confirm"), Mic(), Model(), keys=key, background=Later())
+
+    controls(command)
+
+    assert key.cancels == 1
+
+
+def test_confirm_without_a_confirm_key_confirms_nothing() -> None:
+    controls = control.Controls(Loop(), Mic(), Model())
+
+    assert controls("confirm")["confirmed"] is None
+
+
+def _confirm_server(started_by_jarvis: Callable[[int], bool]) -> tuple[control.ControlServer, Key]:
+    key = Key({"confirmed": "stop process 42"})
+    handler = control.Controls(Loop("confirm"), Mic(), Model(), keys=key)
+    audit = AuditLog(None)
+    server = control.ControlServer(handler, audit=audit, started_by_jarvis=started_by_jarvis)
+    server.start()
+    return server, key
+
+
+def test_the_confirm_key_reaches_jarvis_from_a_program_it_did_not_start() -> None:
+    server, key = _confirm_server(lambda _pid: False)
+    try:
+        reply = control.send("confirm", server.path)
+    finally:
+        server.close()
+
+    assert reply == {"ok": True, "confirmed": "stop process 42"}
+    assert key.presses == 1
+
+
+def test_a_confirm_from_a_program_jarvis_started_presses_nothing() -> None:
+    peers: list[int] = []
+
+    def started_by_jarvis(pid: int) -> bool:
+        peers.append(pid)
+        return True
+
+    server, key = _confirm_server(started_by_jarvis)
+    try:
+        reply = control.send("confirm", server.path)
+        status = control.send("status", server.path)
+    finally:
+        server.close()
+
+    assert reply == {
+        "ok": False,
+        "error": "the confirm key cannot come from a program Jarvis started",
+    }
+    assert key.presses == 0
+    assert peers == [os.getpid()]  # asked about the connecting process
+    assert status is not None
+    assert status["ok"] is True  # only the confirm key is refused
+
+
+def test_by_default_a_confirm_from_jarvis_itself_or_its_child_is_refused(tmp_path: Path) -> None:
+    key = Key({"confirmed": "stop process 42"})
+    handler = control.Controls(Loop("confirm"), Mic(), Model(), keys=key)
+    server = control.ControlServer(handler, path=tmp_path / "control.sock")
+    server.start()
+    try:
+        own = control.send("confirm", server.path)
+        child = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; from jarvis import control; from pathlib import Path; "
+                    "print(control.send('confirm', Path(sys.argv[1])))"
+                ),
+                str(server.path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=WAIT_S * 4,
+            check=True,
+        )
+    finally:
+        server.close()
+
+    assert own is not None
+    assert own["ok"] is False
+    assert "cannot come from a program Jarvis started" in child.stdout
+    assert key.presses == 0
+
+
+def _proc(root: Path, pid: int, ppid: int, cgroup: str, comm: str = "x") -> None:
+    folder = root / str(pid)
+    folder.mkdir()
+    (folder / "stat").write_text(f"{pid} ({comm}) S {ppid} 1 1 0 -1\n")
+    (folder / "cgroup").write_text(f"0::{cgroup}\n")
+
+
+SERVICE = "/user.slice/user-1000.slice/user@1000.service/app.slice/jarvis.service"
+
+
+@pytest.mark.parametrize(
+    ("peer", "started"),
+    [
+        (100, True),  # Jarvis itself
+        (101, True),  # its child
+        (102, True),  # its grandchild, with a name that holds ") S 1 "
+        (103, True),  # a double-forked child, reparented but still in Jarvis's service
+        (200, False),  # the key binding's `jarvis confirm`
+        (999, True),  # gone before it could be checked: refused
+    ],
+)
+def test_which_programs_count_as_started_by_jarvis(
+    tmp_path: Path, peer: int, started: bool
+) -> None:
+    _proc(tmp_path, 1, 0, "/init.scope")
+    _proc(tmp_path, 100, 1, SERVICE)
+    _proc(tmp_path, 101, 100, SERVICE)
+    _proc(tmp_path, 102, 101, SERVICE, comm="a) S 1 (b")
+    _proc(tmp_path, 103, 1, SERVICE)
+    _proc(tmp_path, 200, 1, "/user.slice/user-1000.slice/user@1000.service/app.slice/app-x.scope")
+
+    assert control.started_by_jarvis(peer, me=100, proc=tmp_path) is started
+
+
+def test_outside_a_service_only_descendants_count_as_started_by_jarvis(tmp_path: Path) -> None:
+    scope = "/user.slice/user-1000.slice/user@1000.service/app.slice/app-kitty.scope"
+    _proc(tmp_path, 1, 0, "/init.scope")
+    _proc(tmp_path, 100, 1, scope)  # `jarvis run` in a terminal
+    _proc(tmp_path, 200, 1, scope)  # `jarvis confirm` in another window of that terminal
+    _proc(tmp_path, 101, 100, scope, comm="a) S 1 (b")  # Jarvis's child, with a tricky name
+
+    assert control.started_by_jarvis(200, me=100, proc=tmp_path) is False
+    assert control.started_by_jarvis(101, me=100, proc=tmp_path) is True
+
+
+def test_confirm_says_what_it_confirmed(capsys: pytest.CaptureFixture[str]) -> None:
+    server = _serve_fake({"confirmed": "Should I stop process 42?"})
+    try:
+        assert cli.main(["confirm"]) == 0
+    finally:
+        server.close()
+
+    assert capsys.readouterr().out == 'jarvis: confirmed: "Should I stop process 42?"\n'
+
+
+def test_confirm_with_nothing_waiting_fails_and_says_why(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    server = _serve_fake({"confirmed": None, "reason": "nothing is waiting for the confirm key"})
+    try:
+        assert cli.main(["confirm"]) == 1
+    finally:
+        server.close()
+
+    assert capsys.readouterr().out == "jarvis: nothing is waiting for the confirm key\n"
+
+
+def test_confirm_blanks_control_characters_in_the_question(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The model chose the question's words: no terminal escape or direction mark reaches the screen.
+    server = _serve_fake({"confirmed": "Should I stop \x1b[2Jx\u202eexe?"})
+    try:
+        assert cli.main(["confirm"]) == 0
+    finally:
+        server.close()
+
+    out = capsys.readouterr().out
+    assert "\x1b" not in out
+    assert "\u202e" not in out
+    assert out == 'jarvis: confirmed: "Should I stop  [2Jx exe?"\n'
