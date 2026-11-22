@@ -204,6 +204,15 @@ class Utterance:
     speech_s: float = 0.0  # how long the VAD rated the audio as speech
 
 
+@dataclass(slots=True)
+class _Window:
+    """What the follow-up window has seen so far."""
+
+    woke_at: float | None = None  # when the wake word was heard in it
+    slept: bool = False  # the PC slept meanwhile
+    read: int = 0  # frames read since it opened
+
+
 @dataclass(frozen=True, slots=True)
 class _PcRequest:
     samples: NDArray[np.int16]
@@ -688,33 +697,39 @@ class VoiceLoop:
     ) -> tuple[float | None, NDArray[np.int16] | None]:
         """Listen through the window; return when the wake word was heard, or the request heard.
 
-        Speech too short for a request is dropped, and the rest of the window listened to.
+        Speech too short for a request is dropped, and the rest of the window listened to. A
+        sleep of the PC ends the window: it counts audio frames, which stand still meanwhile.
         """
-        woke: list[float] = []
-        read = [0]  # frames read since the window opened
-
-        def frames() -> Iterator[NDArray[np.int16]]:
-            for frame in self._mic.frames():
-                if self._should_stop() or self._paused():
-                    return
-                if self._wake.heard(frame):
-                    woke.append(self._clock())
-                    return
-                read[0] += 1
-                yield frame
-
+        window = _Window()
         self._wake.reset()
-        while (left_s := window_s - read[0] * FRAME_S) > 0:
+        while (left_s := window_s - window.read * FRAME_S) > 0:
             cfg = self._cfg.model_copy(update={"no_speech_timeout_s": left_s})
-            heard = capture_utterance(frames(), self._vad, cfg)
-            if woke:
-                return woke[0], None
+            heard = capture_utterance(self._window_frames(window), self._vad, cfg)
+            if window.slept:
+                log.info("the PC slept in the follow-up window; it is over")
+                return None, None
+            if window.woke_at is not None:
+                return window.woke_at, None
             if heard.samples is None:
                 return None, None
             if heard.speech_s >= MIN_FOLLOW_UP_SPEECH_S:
                 return None, heard.samples
             log.info("dropped %.2f s of speech in the follow-up window: too short", heard.speech_s)
         return None, None
+
+    def _window_frames(self, window: _Window) -> Iterator[NDArray[np.int16]]:
+        """The mic's frames until the window is stopped, paused, slept through or woken."""
+        for frame in self._mic.frames():
+            if self._should_stop() or self._paused():
+                return
+            if self._slept():  # the frame count stood still while the PC slept
+                window.slept = True
+                return
+            if self._wake.heard(frame):
+                window.woke_at = self._clock()
+                return
+            window.read += 1
+            yield frame
 
     def _keeps_follow_up(self, pc_speech: int) -> bool:
         """Whether speech heard in the follow-up window may be taken as a request.
@@ -748,11 +763,15 @@ class VoiceLoop:
         started = time.perf_counter()
         frames, lead = _with_lead(self._wake, self._mic.frames())
         dictated = [False]
+        slept = [False]
 
         def until_dictation() -> Iterator[NDArray[np.int16]]:
             for frame in frames:
                 if self._dictating() is True:
                     dictated[0] = True
+                    return
+                if self._slept():
+                    slept[0] = True
                     return
                 yield frame
 
@@ -762,6 +781,10 @@ class VoiceLoop:
             self._note_dictation_ignored(
                 "a request being captured", reason="dictation started mid-request"
             )
+            self.state = State.IDLE
+            return
+        if slept[0]:
+            log.info("the PC slept after the wake word; dropping the request and listening afresh")
             self.state = State.IDLE
             return
         if heard.samples is None or heard.speech_s < MIN_REQUEST_SPEECH_S:

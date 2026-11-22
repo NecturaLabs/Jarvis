@@ -65,6 +65,9 @@ game or the idle unload put it there. The log says `back from sleep after N s: l
 `back from sleep: the model is <state>`. A stall check cannot fire during the sleep itself, since it
 times with the monotonic clock. A spoken yes awaited when the PC sleeps counts as a no, so a yes said after waking
 never answers a question asked before it; the confirm key's wait runs on the boot clock, so a sleep uses it up.
+A sleep also ends the follow-up window and drops a request begun after the wake word: its length is
+counted in audio frames, which stand still while asleep, so what is said after waking is not taken as a
+request without the wake word, and speech kept before the sleep is not answered either.
 
 - Not seen yet: no kept boot of this PC has suspended (`journalctl -k | grep 'PM: suspend'`).
 - With the owner: suspend, wake, say the wake word; look for the log line and check
@@ -164,16 +167,23 @@ all in `test_transitions_local.py`.
   is answered, then the loop listens afresh before the next one),
   `test_a_microphone_lost_right_after_a_suspend_is_reopened_and_listening_is_afresh` (a lost microphone
   right after a suspend, with and without a frame between them).
+- `run`, F: voice `test_a_follow_up_window_open_across_a_suspend_is_over_when_the_pc_wakes`,
+  `test_follow_up_speech_heard_before_a_suspend_is_not_taken_when_the_pc_wakes` (the window ends, and speech
+  kept before the sleep is not taken either),
+  `test_a_request_spoken_after_the_pc_woke_is_not_one_for_a_wake_word_heard_before_the_sleep`,
+  `test_a_request_begun_before_a_suspend_is_dropped_when_the_pc_wakes` (the same for a request after the wake
+  word).
 - `run`, U: that the stall check stays quiet through a real sleep (it times with the monotonic clock, which
-  stands still while asleep), and the follow-up window across a suspend (read from the code, not tried: the
-  window counts audio frames and does not ask about a sleep, so speech heard in what is left of it after
-  waking would be taken without the wake word).
+  stands still while asleep).
 - `status`, F: control `test_the_public_state_is_one_of_the_bars_states` (a model whose load failed is `unavailable`).
 - `pause`, F: control `test_after_a_suspend_a_paused_jarvis_leaves_the_model_alone`.
 - `confirm`, F: voice `test_a_yes_spoken_after_a_suspend_is_not_a_yes_to_the_question_asked_before_it`,
+  `test_a_yes_that_began_before_a_suspend_is_not_a_yes_either`,
   `test_a_confirm_key_wait_open_across_a_suspend_has_run_out_when_the_pc_wakes`. A spoken yes waiting when
   the PC sleeps counts as a no (the first test failed before the fix: a yes after waking approved the old
-  question); the confirm key's wait runs on the boot clock, so it has run out when the PC wakes.
+  question; the second fails if the sleep check is removed, since speech kept before it would count); the
+  confirm key's wait runs on the boot clock, so it has run out when the PC wakes (the third test asserts the
+  press is refused as nothing waiting, not as too soon, and fails if the clock's jump is left out).
 - `unload`, F: control `test_after_a_suspend_the_model_is_loaded_again_only_if_its_load_failed` (an unloaded
   model stays unloaded); transitions `test_after_a_suspend_a_model_still_loading_or_unreachable_is_left_alone`.
 

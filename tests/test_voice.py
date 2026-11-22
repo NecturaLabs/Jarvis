@@ -17,7 +17,7 @@ from jarvis.app import no_action_operation
 from jarvis.audio import FRAME, AudioError, PausableMic
 from jarvis.audit import AuditLog
 from jarvis.config import AudioConfig, Config, ModelConfig
-from jarvis.confirmkey import STRAY_HOLD_S, ConfirmKey
+from jarvis.confirmkey import MIN_PRESS_S, NOTHING_WAITING, STRAY_HOLD_S, ConfirmKey
 from jarvis.model import StrataModel
 from jarvis.operations import Registry
 from jarvis.policy import Origin
@@ -2573,6 +2573,26 @@ def test_a_yes_spoken_after_a_suspend_is_not_a_yes_to_the_question_asked_before_
     assert woke == [True]  # and the loop still listens afresh
 
 
+def test_a_yes_that_began_before_a_suspend_is_not_a_yes_either() -> None:
+    # Speech already kept when the PC wakes is what ending the stream hands back: it must not count.
+    asleep = [0.0]
+    answers: list[bool] = []
+
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        answers.append(hooks.confirm("Should I stop process 42?"))
+        return "done" if answers[-1] else "declined"
+
+    def suspend() -> None:
+        asleep[0] += 600.0
+
+    mic = Mic(*REQUEST, SPEECH, SPEECH, SPEECH, suspend, SPEECH, *[SILENCE] * 5)
+    loop = _loop(Agent(reply), mic, Speaker(), asleep_s=lambda: asleep[0])
+
+    _run(loop)
+
+    assert answers == [False]
+
+
 def test_a_confirm_key_wait_open_across_a_suspend_has_run_out_when_the_pc_wakes() -> None:
     # The key's own clock counts the time asleep, so a press after waking finds the wait over.
     clock, key_clock = Clock(), Clock()
@@ -2580,12 +2600,22 @@ def test_a_confirm_key_wait_open_across_a_suspend_has_run_out_when_the_pc_wakes(
     asleep = [0.0]
     woke: list[bool] = []
     answers: list[bool] = []
+    presses: list[dict[str, str | None]] = []
 
     def suspend() -> None:
         asleep[0] += 600.0
         key_clock.advance(600.0)()
 
-    mic = Mic(*REQUEST, SILENCE, suspend, key.press, SILENCE, SILENCE)
+    mic = Mic(
+        *REQUEST,
+        SILENCE,
+        # Past the too-soon guard and well inside the wait: only the jump of the suspend ends it.
+        key_clock.advance(max(1.0, 2 * MIN_PRESS_S)),
+        suspend,
+        lambda: presses.append(key.press()),
+        SILENCE,
+        SILENCE,
+    )
     loop = VoiceLoop(
         Agent(_asking_for_the_key(answers=answers)),
         mic,
@@ -2603,6 +2633,7 @@ def test_a_confirm_key_wait_open_across_a_suspend_has_run_out_when_the_pc_wakes(
     _run(loop)
 
     assert answers == [False]
+    assert presses == [{"confirmed": None, "reason": NOTHING_WAITING}]  # not "too soon"
     assert woke == [True]
 
 
@@ -2644,6 +2675,102 @@ def test_a_microphone_lost_right_after_a_suspend_is_reopened_and_listening_is_af
     assert reopened == [State.NO_MIC]
     assert woke == [True]  # once, whichever came first
     assert speaker.said == ["Done."]  # a request after both is heard
+    assert loop.state is State.IDLE
+
+
+def test_a_follow_up_window_open_across_a_suspend_is_over_when_the_pc_wakes() -> None:
+    # The window counts audio frames, which stand still while the PC sleeps.
+    asleep = [0.0]
+    woke: list[bool] = []
+
+    def suspend() -> None:
+        asleep[0] += 600.0
+
+    agent = Agent()
+    mic = Mic(*EXACT_REQUEST, *[SILENCE] * 3, suspend, *FOLLOW_UP_REQUEST)
+    loop = _loop(
+        agent,
+        mic,
+        Speaker(),
+        cfg=FOLLOW_UP,
+        transcribe=_texts("a", "b"),
+        asleep_s=lambda: asleep[0],
+        after_sleep=lambda: woke.append(True),
+    )
+
+    _run(loop)
+
+    assert [text for text, _ in agent.calls] == ["a"]  # nothing said after waking is a request
+    assert woke == [True]
+    assert loop.state is State.IDLE
+
+
+def test_follow_up_speech_heard_before_a_suspend_is_not_taken_when_the_pc_wakes() -> None:
+    # Ending the stream returns the speech kept so far; a half-heard request must not be answered.
+    asleep = [0.0]
+
+    def suspend() -> None:
+        asleep[0] += 600.0
+
+    agent = Agent()
+    mic = Mic(*EXACT_REQUEST, SPEECH, SPEECH, SPEECH, SPEECH, suspend, SPEECH)
+    loop = _loop(
+        agent,
+        mic,
+        Speaker(),
+        cfg=FOLLOW_UP,
+        transcribe=_texts("a", "b"),
+        asleep_s=lambda: asleep[0],
+    )
+
+    _run(loop)
+
+    assert [text for text, _ in agent.calls] == ["a"]
+
+
+def _request_open_across_a_suspend(
+    before: list[NDArray[np.int16]], after: list[NDArray[np.int16]]
+) -> tuple[Agent, Speaker, list[bool], VoiceLoop]:
+    """A wake word, `before`, a suspend, `after`, then one whole request."""
+    asleep = [0.0]
+    woke: list[bool] = []
+
+    def suspend() -> None:
+        asleep[0] += 600.0
+
+    agent = Agent()
+    speaker = Speaker()
+    mic = Mic(WAKE, *before, suspend, *after, *REQUEST)
+    loop = _loop(
+        agent, mic, speaker, asleep_s=lambda: asleep[0], after_sleep=lambda: woke.append(True)
+    )
+    return agent, speaker, woke, loop
+
+
+def test_a_request_spoken_after_the_pc_woke_is_not_one_for_a_wake_word_heard_before_the_sleep() -> (
+    None
+):
+    agent, speaker, woke, loop = _request_open_across_a_suspend(
+        [], [SPEECH, SPEECH, SPEECH, *[SILENCE] * 5]
+    )
+
+    _run(loop)
+
+    assert woke == [True]
+    assert [text for text, _ in agent.calls] == ["pause the music"]  # only the request after it
+    assert speaker.chimes == 2
+    assert loop.state is State.IDLE
+
+
+def test_a_request_begun_before_a_suspend_is_dropped_when_the_pc_wakes() -> None:
+    # Ending the stream returns the speech kept so far; a half-heard request must not be answered.
+    agent, speaker, woke, loop = _request_open_across_a_suspend([SPEECH, SPEECH, SPEECH], [SPEECH])
+
+    _run(loop)
+
+    assert woke == [True]
+    assert [text for text, _ in agent.calls] == ["pause the music"]
+    assert speaker.chimes == 2
     assert loop.state is State.IDLE
 
 
