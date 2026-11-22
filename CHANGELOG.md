@@ -52,8 +52,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   each file's size and header, and falls back to looking for the file when Voxtype cannot say.
   `stop_process` is the one shipped `strong` operation, and `boundaries.classes` may set it only to
   `strong` or `deny`; any other class stops Jarvis with an error.
-- The chat remembers a little less: `chat.memory_tokens` defaults to 10,800 (was 11,500), to make room in
-  the model's context for `find_processes`, `stop_process` and `calculate`.
+- The chat remembers a little less: `chat.memory_tokens` defaults to 10,500 (was 11,500), to make room in
+  the model's context for `find_processes`, `stop_process`, `calculate` and `open_app`.
+- Jarvis never opens Spotify, or any program, unasked: with no player it says Spotify is closed and asks
+  whether to open it and where (#36). Before, playing or resuming started the Spotify app.
 - From a practices audit: a name in `boundaries.classes` that is no operation (a typo, say) stops Jarvis
   with an error instead of being ignored; turning questions on or off with `jarvis consent`, and the mode
   the voice service starts in, are recorded in the audit log and shown in the chat; words heard from the PC
@@ -75,7 +77,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   moves while it is open; the letters typed are in bold and the chosen row is lit whole. `/exit` leaves
   (`/quit` still works).
 - Jarvis remembers the conversation. Instead of the last 4 turns, forgotten after 5 minutes, it keeps as
-  much as fits a token budget (`agent.memory_tokens` 6,000 for speech, `chat.memory_tokens` 10,800 for the
+  much as fits a token budget (`agent.memory_tokens` 6,000 for speech, `chat.memory_tokens` 10,500 for the
   chat) and has the model summarize the oldest turns when it outgrows it. Speech forgets after 30 idle
   minutes; the chat never does and resumes its conversation when it opens again (`chat.resume`).
 - Replies are no longer cut. The model is told its length and capped in tokens (`agent.reply_tokens` 400,
@@ -119,6 +121,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `open_app` (#36): ask Jarvis, in any words, to open a program from the new `[apps]` list (Spotify by
+  default) on a workspace from 1 to 10 or in the background. Jarvis asks where when you did not say.
+  Hyprland starts it there without taking focus, and Jarvis says where it opened only once it saw the
+  window there, moving it when it landed elsewhere. A request heard in PC audio opens nothing, and a
+  program already open is not opened again ([Opening a program](docs/configuration.md#opening-a-program)).
 - `calculate`: Jarvis works out sums in code, exactly, however you ask (products, percentages, powers,
   roots, logarithms, factorials), and says the
   answer; the model never does the arithmetic itself. Numbers in replies and answers come in

@@ -22,8 +22,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
 - **Voice:** Kokoro by default (`kokoro:bm_george`); a Piper voice can be set instead. Jarvis replies by voice
   only, with no desktop notifications.
 - **Spotify:** play a track, album, artist, playlist or your liked songs; pause, resume, next, previous; set or
-  change the volume; shuffle; repeat; queue songs; like the current song; say what is playing. It can start the
-  Spotify desktop app when you ask it to play or resume and no player is open.
+  change the volume; shuffle; repeat; queue songs; like the current song; say what is playing. When Spotify is
+  closed, Jarvis says so and asks whether to open it, and where; it never opens a program unasked.
 - **Your PC:** ask how the PC is doing, in any words, for its CPU, graphics card, VRAM, memory,
   temperatures and disks. Jarvis can list and read your files (your home folder by default, hidden ones
   only for the desktop's own settings) and create or change text files in `~/Documents`, asking first unless you turned questions

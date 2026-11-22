@@ -38,7 +38,6 @@ DEFAULT_RETRY_AFTER_S = 1.0
 # Calls pause this long after a 429 that gave no usable wait, or one for a used-up quota.
 UNKNOWN_BLOCK_S = 60.0
 QUOTA_BLOCK_S = 3600.0
-DEVICE_POLL_S = 1.0
 LIBRARY_TTL_S = 6 * 3600.0
 _LIBRARY_RETRY_S = 60.0
 # (part, path, parameters, keys to descend before `items`)
@@ -315,22 +314,6 @@ class SpotifyApi:
             for d in objs(data.get("devices"))
             if d.get("id") and not d.get("is_restricted")
         ]
-
-    def wait_for_device(self, preferred: str, seconds: float) -> Device | None:
-        """Poll for a usable device for up to `seconds`.
-
-        With a `preferred` name, other devices are passed over until the deadline: one of them is
-        then returned as a last resort (a phone must not win over the PC that is still starting).
-        """
-        deadline = self._clock() + seconds
-        while True:
-            found = pick_device(self.devices(), preferred)
-            named = found is not None and found.name.casefold() == preferred.casefold()
-            if found and (named or not preferred):
-                return found
-            if self._clock() >= deadline:
-                return found
-            self._sleep(DEVICE_POLL_S)
 
     def transfer(self, device_id: str, *, play: bool) -> None:
         """Move playback to `device_id`, starting it or not."""

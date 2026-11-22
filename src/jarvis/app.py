@@ -11,6 +11,7 @@ from jarvis.audit import AuditLog
 from jarvis.model import StrataModel
 from jarvis.operations import Operation, Registry, Result
 from jarvis.paths import audit_file, spotify_token_file, strata_key_file  # re-exported for callers
+from jarvis.pc.apps import AppOps
 from jarvis.pc.files import Boundary, FileOps
 from jarvis.pc.processes import ProcessOps
 from jarvis.pc.stats import StatsOps
@@ -192,7 +193,7 @@ def web_operations(config: Config, shown: PictureCache | None = None) -> list[Op
 
 
 def pc_operations(config: Config, limits: Limits, home: Path | None = None) -> list[Operation]:
-    """Return `pc_stats`, the file operations, within the owner's `[files]` folders, and processes.
+    """Return `pc_stats`, the files within `[files]`, processes, and `open_app` over `[apps]`.
 
     Jarvis's own state (its tokens and keys) is never read or written, whatever the roots say.
     """
@@ -201,6 +202,7 @@ def pc_operations(config: Config, limits: Limits, home: Path | None = None) -> l
         *StatsOps(Sampler()).operations(),
         *FileOps(boundary, max_chars=limits.tool_text_chars).operations(),
         *ProcessOps().operations(),
+        *AppOps(config.apps.programs).operations(),
     ]
 
 

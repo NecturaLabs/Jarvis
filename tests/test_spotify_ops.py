@@ -3,12 +3,11 @@
 import json
 import logging
 import random
-import subprocess
+import re
 import threading
 import time
 from dataclasses import dataclass, field
 from itertools import starmap
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, override
 
 import httpx
@@ -24,11 +23,10 @@ from jarvis.operations import (
 )
 from jarvis.policy import Origin
 from jarvis.secretfile import write_private_json
-from jarvis.spotify import ops as ops_module
 from jarvis.spotify.api import API, SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.errors import NoDeviceError, SpotifyAuthError, SpotifyError, SpotifyLoginExpired
-from jarvis.spotify.ops import DEVICE_WAIT_S, REFRESH_RETRY_S, SpotifyOps, best_match, similarity
+from jarvis.spotify.ops import REFRESH_RETRY_S, SpotifyOps, best_match, similarity
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -87,18 +85,11 @@ class FakeSpotify:
         default_factory=dict[tuple[str, str], list[Answer]]
     )
     requests: list[httpx.Request] = field(default_factory=list[httpx.Request])
-    launches: list[int] = field(default_factory=list[int])
-    appears_on_launch: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     clock: Clock = field(default_factory=Clock)
 
     def script(self, method: str, path: str, *answers: Answer) -> None:
         """Answer the next requests to `method path` with `answers` before the normal route."""
         self.scripts.setdefault((method, path), []).extend(answers)
-
-    def launch(self) -> None:
-        """What the injected launcher does: Spotify starts and its player is listed."""
-        self.launches.append(1)
-        self.devices.extend(self.appears_on_launch)
 
     def calls(self, method: str, path: str) -> list[httpx.Request]:
         return [
@@ -198,7 +189,7 @@ def build_ops(
     seeded: bool = True,
     api: SpotifyApi | None = None,
 ) -> SpotifyOps:
-    """Build the operations over `fake`: no network, no real launcher, no real sleeping.
+    """Build the operations over `fake`: no network and no real sleeping.
 
     The song order is seeded unless `seeded` is false (then it is the default entropy source).
     `api` lets a test swap in a client that fails on purpose.
@@ -207,7 +198,6 @@ def build_ops(
     return SpotifyOps(
         api or build_api(fake, tmp_path, settings, SpotifyApi),
         settings,
-        launcher=fake.launch,
         # ruff: ignore[suspicious-non-cryptographic-random-usage] - song order
         rng=random.Random(7) if seeded else None,
         clock=fake.clock,
@@ -682,30 +672,20 @@ def test_a_listed_but_inactive_device_gets_playback_transferred_then_the_command
     assert "device_id" not in first.url.params
     assert second.url.params["device_id"] == "d1"
     assert fake.played[-1] == {"uris": ["spotify:track:lowtide"]}
-    assert fake.launches == []
 
 
-def test_play_launches_spotify_when_no_device_is_listed_then_transfers(tmp_path: Path) -> None:
-    fake = FakeSpotify(search={"track": [LOW_TIDE]}, devices=[], appears_on_launch=[inactive_pc()])
-    fake.script("PUT", "/me/player/play", no_device())
-
-    result = build_ops(fake, tmp_path, SpotifyConfig()).play({"query": "low tide", "kind": "track"})
-
-    assert result.ok
-    assert fake.launches == [1]
-    assert fake.transfers == [{"device_ids": ["d1"], "play": False}]
-    assert fake.calls("PUT", "/me/player/play")[-1].url.params["device_id"] == "d1"
-
-
-def test_play_says_so_when_no_player_ever_comes_up(tmp_path: Path) -> None:
+def test_play_with_no_player_asks_the_owner_instead_of_opening_spotify(tmp_path: Path) -> None:
     fake = FakeSpotify(search={"track": [LOW_TIDE]}, devices=[])
     fake.script("PUT", "/me/player/play", no_device())
 
-    with pytest.raises(NoDeviceError, match="no Spotify player came up"):
+    with pytest.raises(
+        NoDeviceError, match=re.escape("not open on this PC. Ask the owner")
+    ) as caught:
         build_ops(fake, tmp_path, SpotifyConfig()).play({"query": "low tide", "kind": "track"})
 
-    assert fake.launches == [1]
-    assert fake.clock.now >= 1000.0 + DEVICE_WAIT_S
+    assert "open_app" in str(caught.value)
+    assert len(fake.calls("PUT", "/me/player/play")) == 1  # the one try; no player was opened
+    assert not fake.transfers
 
 
 def test_a_configured_device_is_looked_up_first_and_targeted(tmp_path: Path) -> None:
@@ -726,23 +706,20 @@ def test_a_configured_device_that_is_inactive_gets_a_transfer_first(tmp_path: Pa
 
     assert fake.transfers == [{"device_ids": ["d1"], "play": False}]
     assert fake.calls("PUT", "/me/player/play")[0].url.params["device_id"] == "d1"
-    assert fake.launches == []
 
 
-def test_a_configured_device_that_is_missing_is_launched_for_and_waited_for(
-    tmp_path: Path,
-) -> None:
+def test_a_configured_device_that_is_missing_is_asked_about_not_opened(tmp_path: Path) -> None:
     phone = {"id": "p1", "name": "phone", "type": "Smartphone", "is_active": True}
     tablet = {"id": "t1", "name": "tablet", "type": "Tablet", "is_active": False}
-    fake = FakeSpotify(
-        search={"track": [LOW_TIDE]}, devices=[phone, tablet], appears_on_launch=[inactive_pc()]
-    )
+    fake = FakeSpotify(search={"track": [LOW_TIDE]}, devices=[phone, tablet])
 
-    build_ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
+    with pytest.raises(
+        NoDeviceError, match=re.escape("no player called 'pc' right now. Spotify is not open")
+    ):
+        build_ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
 
-    assert fake.launches == [1]
-    assert fake.transfers == [{"device_ids": ["d1"], "play": False}]
-    assert fake.calls("PUT", "/me/player/play")[0].url.params["device_id"] == "d1"
+    assert fake.played == []
+    assert not fake.transfers
 
 
 def test_a_configured_device_that_never_appears_is_reported_not_replaced(tmp_path: Path) -> None:
@@ -766,7 +743,6 @@ def test_a_configured_device_that_is_missing_is_replaced_only_by_the_only_device
     result = build_ops(fake, tmp_path).play({"query": "low tide", "kind": "track"})
 
     assert result.ok
-    assert fake.launches == []
     assert fake.calls("PUT", "/me/player/play")[0].url.params["device_id"] == "p1"
 
 
@@ -800,7 +776,6 @@ def test_pause_next_and_previous_never_launch_or_look_up_devices(
 
     assert result.ok
     assert result.text == "Nothing is playing."
-    assert fake.launches == []
     assert not fake.calls("GET", "/me/player/devices")
     assert not fake.transfers
 
@@ -815,19 +790,17 @@ def test_resume_transfers_to_an_inactive_device_and_starts_it(tmp_path: Path) ->
     assert result.ok
     assert fake.transfers == [{"device_ids": ["d1"], "play": True}]
     assert len(fake.calls("PUT", "/me/player/play")) == 1
-    assert fake.launches == []
 
 
-def test_resume_may_launch_spotify(tmp_path: Path) -> None:
-    fake = FakeSpotify(devices=[], appears_on_launch=[inactive_pc()])
+def test_resume_with_no_player_asks_the_owner_instead_of_opening_spotify(tmp_path: Path) -> None:
+    fake = FakeSpotify(devices=[])
     fake.script("PUT", "/me/player/play", no_device())
     ops = {op.name: op for op in build_ops(fake, tmp_path, SpotifyConfig()).operations()}
 
-    result = ops["spotify_resume"].run({})
+    with pytest.raises(NoDeviceError, match="Ask the owner whether to open it"):
+        ops["spotify_resume"].run({})
 
-    assert result.ok
-    assert fake.launches == [1]
-    assert fake.transfers == [{"device_ids": ["d1"], "play": True}]
+    assert not fake.transfers
 
 
 @pytest.mark.parametrize("name", ["spotify_shuffle", "spotify_repeat", "spotify_set_volume"])
@@ -847,8 +820,6 @@ def test_settings_commands_do_not_launch_spotify(tmp_path: Path, name: str) -> N
     with pytest.raises(NoDeviceError):
         ops[name].run(args)
 
-    assert fake.launches == []
-
 
 def test_a_setting_on_an_inactive_device_transfers_then_retries(tmp_path: Path) -> None:
     fake = FakeSpotify(devices=[inactive_pc()])
@@ -860,7 +831,6 @@ def test_a_setting_on_an_inactive_device_transfers_then_retries(tmp_path: Path) 
     assert result.ok
     assert fake.transfers == [{"device_ids": ["d1"], "play": False}]
     assert fake.calls("PUT", "/me/player/shuffle")[-1].url.params["device_id"] == "d1"
-    assert fake.launches == []
 
 
 # --- Already paused, already playing (4g) ---
@@ -1518,7 +1488,6 @@ def test_queueing_on_an_inactive_player_transfers_then_retries(tmp_path: Path) -
     assert result.ok
     assert fake.transfers == [{"device_ids": ["d1"], "play": False}]
     assert fake.calls("POST", "/me/player/queue")[-1].url.params["device_id"] == "d1"
-    assert fake.launches == []
 
 
 def test_queueing_with_no_player_does_not_launch_spotify(tmp_path: Path) -> None:
@@ -1527,8 +1496,6 @@ def test_queueing_with_no_player_does_not_launch_spotify(tmp_path: Path) -> None
 
     with pytest.raises(NoDeviceError):
         build_ops(fake, tmp_path, SpotifyConfig()).queue({"query": "low tide"})
-
-    assert fake.launches == []
 
 
 # --- Binding what a confirmation is about (6) ---
@@ -1859,42 +1826,6 @@ def test_an_expired_login_is_not_retried_every_minute(tmp_path: Path) -> None:
 
 
 # --- What goes over the wire, and what ships (9) ---
-
-
-def test_the_default_launcher_says_when_spotify_is_not_installed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def nothing_installed(_name: str) -> None:
-        return None
-
-    monkeypatch.setattr(ops_module, "shutil", SimpleNamespace(which=nothing_installed))
-
-    with pytest.raises(SpotifyError, match="not installed"):
-        ops_module.launch_spotify()
-
-
-def test_the_default_launcher_starts_the_omarchy_launcher_detached(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    started: list[tuple[list[str], dict[str, Any]]] = []
-
-    def which(name: str) -> str | None:
-        return f"/bin/{name}" if name == "omarchy-launch-spotify" else None
-
-    def popen(command: list[str], **options: Any) -> None:  # ruff: ignore[any-type]
-        started.append((command, options))
-
-    monkeypatch.setattr(ops_module, "shutil", SimpleNamespace(which=which))
-    monkeypatch.setattr(
-        ops_module, "subprocess", SimpleNamespace(Popen=popen, DEVNULL=subprocess.DEVNULL)
-    )
-
-    ops_module.launch_spotify()
-
-    ((command, options),) = started
-    assert command == ["/bin/omarchy-launch-spotify"]
-    assert options["start_new_session"] is True
-    assert options["stdout"] is subprocess.DEVNULL
 
 
 ALBUM = {"name": "Tide Pools", "uri": "spotify:album:pools", "artists": [GLASS_HARBOR]}

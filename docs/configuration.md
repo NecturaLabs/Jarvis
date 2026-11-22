@@ -73,7 +73,7 @@ the chat keeps it (see below).
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `10800` and `memory_idle_s` `0.0` (never forget), plus:
+`memory_tokens` `10500` and `memory_idle_s` `0.0` (never forget), plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -153,8 +153,8 @@ Both units are written by `jarvis setup`; their text is `jarvis_unit` and `strat
 
 - The voice service keeps your session's umask, so a file the file tools write at your request gets the
   mode it asks for (0644, a folder 0755).
-- `NoNewPrivileges` is inherited by programs the voice service starts, directly or through `uwsm-app` (the
-  way the Omarchy launcher starts Spotify; tested with a stand-in command, 2026-11-22).
+- A program you ask Jarvis to open (`open_app`) is started by Hyprland, not by the voice service, so
+  it does not inherit these settings.
 - Not set, each for a reason: `ProtectKernelModules=` and `ProtectKernelLogs=` on the voice service (in a user
   unit they put it in a private user namespace, which Spotify and every other program it starts would inherit),
   `RestrictNamespaces=` (the Azure wake word helper runs under `unshare --map-current-user --net`),
@@ -429,7 +429,7 @@ A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` wit
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
 its shipped class, which is `safe` for every operation but `write_file` (`confirm`) and `stop_process`
 (`strong`): `spotify_*`, `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`,
-`pc_stats`, `calculate`, `list_dir`, `read_file`, `find_processes`; set one to `deny` to switch it off. `stop_process`
+`pc_stats`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`; set one to `deny` to switch it off. `stop_process`
 may be set only to `strong` or `deny`: a program is stopped by your command and your key alone, so any
 other class stops `jarvis run`, `ask` and `chat` with an error. Whatever the class, side effects are raised to `confirm` while text from outside
 your own speech is in the request, and so are the operations that send words off the PC while a file's text is. Example:
@@ -465,6 +465,33 @@ o.bind("SUPER + CTRL + Y", "Jarvis confirm", "jarvis confirm")
   refuse a `strong` action.
 - Each press, refused or not, is in the audit log (`confirm_key`), and the answer is a `confirmation`
   event with `"method": "key"`.
+
+## Opening a program
+
+Jarvis opens a program only when you ask it to, in any words, and only one listed in `[apps]`. It
+needs to know where: a workspace from 1 to 10, or the background (Hyprland's special workspace
+`jarvis`: running, out of sight until you show it). When you did not say where, it asks; it never
+picks one itself. Nothing else opens a program: with Spotify closed, a request to play says so and
+asks whether to open it.
+
+Hyprland itself starts the program, with a `[workspace N silent]` rule so it does not take focus.
+Jarvis then reads Hyprland's windows until one of the program's shows, up to 15 seconds, moves it if
+it landed on another workspace, looks again a second later (some programs replace their first
+window) and only then says where it opened. A program already open is not opened again; Jarvis says
+where it is. A request heard in PC audio opens nothing. `open_app` is `safe`: your own request needs
+no yes, while outside text in the request raises it to `confirm` as for any action.
+
+```toml
+[apps.programs.spotify]
+command = ["uwsm-app", "--", "spotify"]  # run as written, no shell; the Omarchy way to start it
+window = "\\bspotify\\b"                 # matched, case-blind, with a window's class
+```
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `programs` | Spotify only | names of lowercase letters, digits and `-` (up to 32) | The programs `open_app` may start. An empty table removes `open_app`. |
+| `programs.<name>.command` | | 1 to 32 strings | The program and its arguments. |
+| `programs.<name>.window` | | a regular expression | How the program's window is known: by its class, never its title, so a browser tab named after it is not taken for it. Only windows that were not open before it was started are moved. |
 
 ## Stopping a program
 

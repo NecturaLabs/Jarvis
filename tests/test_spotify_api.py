@@ -634,49 +634,6 @@ def test_pick_device_precedence() -> None:
     assert pick_device([tv, phone], "") is tv
 
 
-def test_wait_for_device_polls_with_the_injected_clock(tmp_path: Path) -> None:
-    wire = Wire()
-    empty = httpx.Response(200, json={"devices": []})
-    found = httpx.Response(
-        200, json={"devices": [{"id": "a", "name": "PC", "type": "Computer", "is_active": False}]}
-    )
-    wire.on("GET", "/me/player/devices", empty, empty, found)
-    api, _, clock = _make(tmp_path, wire)
-
-    device = api.wait_for_device("", 15.0)
-
-    assert device == Device("a", "PC", "Computer", is_active=False)
-    assert clock.slept == [1.0, 1.0]
-
-
-def test_wait_for_device_gives_up_at_the_deadline(tmp_path: Path) -> None:
-    wire = Wire()
-    wire.on("GET", "/me/player/devices", httpx.Response(200, json={"devices": []}))
-    api, _, clock = _make(tmp_path, wire)
-
-    assert api.wait_for_device("", 3.0) is None
-    assert clock.now >= 3.0
-    assert len(wire.seen) <= 5
-
-
-def test_wait_for_a_named_device_ignores_others_until_the_deadline(tmp_path: Path) -> None:
-    wire = Wire()
-    phone = {"id": "p", "name": "Phone", "type": "Smartphone", "is_active": False}
-    pc = {"id": "a", "name": "PC", "type": "Computer", "is_active": False}
-    wire.on(
-        "GET",
-        "/me/player/devices",
-        httpx.Response(200, json={"devices": [phone]}),
-        httpx.Response(200, json={"devices": [phone, pc]}),
-    )
-    api, _, _ = _make(tmp_path, wire)
-
-    device = api.wait_for_device("pc", 15.0)
-
-    assert device is not None
-    assert device.id == "a"
-
-
 def test_the_library_is_cached_for_its_time_to_live(tmp_path: Path) -> None:
     wire = Wire()
     wire.on("GET", "/me/top/artists", httpx.Response(200, json={"items": [{"uri": "a1"}]}))

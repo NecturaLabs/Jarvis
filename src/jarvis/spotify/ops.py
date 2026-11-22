@@ -5,8 +5,6 @@ import logging
 import operator
 import random
 import re
-import shutil
-import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -28,7 +26,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-DEVICE_WAIT_S = 15.0
+CLOSED = (
+    "Spotify is not open on this PC. Ask the owner whether to open it, and on which workspace or "
+    "in the background (open_app); never open it unasked."
+)
 PLAYLIST_TTL_S = 300.0
 REFRESH_RETRY_S = 60.0
 QUEUE_BUDGET_S = 30.0
@@ -233,21 +234,6 @@ class _Hit:
     score: float
 
 
-def launch_spotify() -> None:
-    """Start the Spotify desktop app the Omarchy way, without waiting for it.
-
-    Raises:
-        SpotifyError: neither the Omarchy launcher nor Spotify is installed.
-    """
-    launcher = shutil.which("omarchy-launch-spotify") or shutil.which("spotify")
-    if launcher is None:
-        msg = "Spotify is not installed"
-        raise SpotifyError(msg)
-    subprocess.Popen(
-        [launcher], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
-    )
-
-
 class SpotifyOps:
     """Builds the operations over one API client."""
 
@@ -255,7 +241,6 @@ class SpotifyOps:
         self,
         api: SpotifyApi,
         settings: SpotifyConfig,
-        launcher: Callable[[], None] = launch_spotify,
         rng: random.Random | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -268,7 +253,6 @@ class SpotifyOps:
         self._api = api
         self._settings = settings
         self._preferred = settings.device_name
-        self._launch = launcher
         self._rng = rng or random.SystemRandom()
         self._clock = clock
         self._names: list[str] = []
@@ -348,37 +332,21 @@ class SpotifyOps:
     def _is_preferred(self, device: Device) -> bool:
         return device.name.casefold() == self._preferred.casefold()
 
-    def _launched_device(self) -> Device:
-        """Start Spotify and wait for its player to be listed.
-
-        Raises:
-            NoDeviceError: no player came up, or not the one the owner configured.
-        """
-        self._launch()
-        found = self._api.wait_for_device(self._preferred, DEVICE_WAIT_S)
-        if found is None:
-            msg = "no Spotify player came up; open Spotify and try again"
-            raise NoDeviceError(msg)
-        if self._preferred and not self._is_preferred(found) and len(self._api.devices()) > 1:
-            msg = f"Spotify has no player called {self._preferred!r} right now"
-            raise NoDeviceError(msg)
-        return found
-
-    def _bring_up(self, *, launch: bool, play: bool) -> tuple[Device, bool]:
+    def _bring_up(self, *, play: bool) -> tuple[Device, bool]:
         """Return a player that accepts commands, and whether playback was started on it.
 
         A listed player that is not active gets playback transferred to it (started when `play`).
-        With no player at all, Spotify is launched when `launch` allows it.
+        Spotify is never opened here: with no player, the owner is asked first (`open_app`).
 
         Raises:
             NoDeviceError: no player is available.
         """
         device = self._listed_device()
         if device is None:
-            if not launch:
-                msg = "Spotify is not open on any device"
+            if self._preferred and self._api.devices():
+                msg = f"Spotify has no player called {self._preferred!r} right now. {CLOSED}"
                 raise NoDeviceError(msg)
-            device = self._launched_device()
+            raise NoDeviceError(CLOSED)
         if device.is_active:
             return device, False
         self._api.transfer(device.id, play=play)
@@ -391,13 +359,12 @@ class SpotifyOps:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
-        launch: bool = False,
     ) -> None:
         """Send a player command; with no active player, bring one up and send it again."""
         try:
             self._api.request(method, path, params=params, json=json)
         except NoDeviceError:
-            device, _started = self._bring_up(launch=launch, play=False)
+            device, _started = self._bring_up(play=False)
             self._api.request(
                 method, path, params={**(params or {}), "device_id": device.id}, json=json
             )
@@ -405,11 +372,11 @@ class SpotifyOps:
     def _start(self, body: dict[str, Any]) -> None:
         """Start playback of `body`: at once, or on the configured player when there is one."""
         if self._preferred:
-            device, _started = self._bring_up(launch=True, play=False)
+            device, _started = self._bring_up(play=False)
             params = {"device_id": device.id}
             self._api.request("PUT", "/me/player/play", params=params, json=body)
         else:
-            self._player_call("PUT", "/me/player/play", json=body, launch=True)
+            self._player_call("PUT", "/me/player/play", json=body)
 
     def _library_match(self, query: str) -> _Hit | None:
         """Return the owner's own item most like `query`, and its kind.
@@ -838,7 +805,7 @@ class SpotifyOps:
         )
 
     def resume(self, _args: dict[str, Any]) -> Result:
-        """Resume playback, bringing a player up (even starting Spotify) when none is active.
+        """Resume playback, moving it to a listed player when none is active; never opens Spotify.
 
         Raises:
             SpotifyError: Spotify refused for a reason other than "already playing".
@@ -846,7 +813,7 @@ class SpotifyOps:
         try:
             self._api.request("PUT", "/me/player/play")
         except NoDeviceError:
-            device, started = self._bring_up(launch=True, play=True)
+            device, started = self._bring_up(play=True)
             if not started:
                 self._api.request("PUT", "/me/player/play", params={"device_id": device.id})
         except SpotifyError as exc:

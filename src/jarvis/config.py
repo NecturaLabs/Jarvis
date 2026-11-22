@@ -6,7 +6,14 @@ from pathlib import Path
 from typing import Annotated, Literal, Self, cast
 from urllib.parse import urlsplit
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 
 from jarvis import paths
 from jarvis.files import write_atomic
@@ -118,7 +125,7 @@ class ChatConfig(AgentConfig):
     max_seconds: float = Field(default=600.0, ge=10, le=3600)
     reply_tokens: int = Field(default=2048, ge=64, le=8192)
     tool_text_chars: int = Field(default=8000, ge=500, le=50000)
-    memory_tokens: int = Field(default=10800, ge=0, le=200000)
+    memory_tokens: int = Field(default=10500, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
     resume: bool = True  # open the chat on the conversation it had last time
     verbosity: Literal["replies", "steps", "everything"] = "replies"
@@ -340,6 +347,43 @@ class FilesConfig(_Section):
     hidden_allow: list[SafeText] = Field(default_factory=lambda: list(DESKTOP_SETTINGS))
 
 
+def _check_window(pattern: str) -> str:
+    try:
+        re.compile(pattern)
+    except re.error as exc:
+        msg = f"not a regular expression: {exc}"
+        raise ValueError(msg) from exc
+    return pattern
+
+
+AppName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")]
+WindowPattern = Annotated[SafeText, StringConstraints(min_length=1, max_length=200)]
+
+
+class AppConfig(_Section):
+    """One program `open_app` may start: its command line and how its window is known.
+
+    `command` is the program and its arguments, run as written (no shell). `window` is a regular
+    expression matched, case-blind, against a window's class (never its title, which a browser tab
+    can copy), to see that the program opened and on which workspace.
+    """
+
+    command: list[Annotated[SafeText, StringConstraints(min_length=1, max_length=400)]] = Field(
+        min_length=1, max_length=32
+    )
+    window: Annotated[WindowPattern, AfterValidator(_check_window)]
+
+
+class AppsConfig(_Section):
+    """The programs Jarvis may open when the owner asks, by name; nothing else is ever started."""
+
+    programs: dict[AppName, AppConfig] = Field(
+        default_factory=lambda: {
+            "spotify": AppConfig(command=["uwsm-app", "--", "spotify"], window=r"\bspotify\b")
+        }
+    )
+
+
 class BoundariesConfig(_Section):
     """Per-operation class overrides set by the owner, and whether Jarvis asks before acting.
 
@@ -374,6 +418,7 @@ class Config(_Section):
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
     research: ResearchConfig = Field(default_factory=ResearchConfig)
     files: FilesConfig = Field(default_factory=FilesConfig)
+    apps: AppsConfig = Field(default_factory=AppsConfig)
     boundaries: BoundariesConfig = Field(default_factory=BoundariesConfig)
 
     def strata_url(self) -> str:
@@ -477,17 +522,25 @@ def dumps(config: Config) -> str:
         f"data_dir = {_toml_value(data.pop('data_dir'))}",
     ]
     for section, values in data.items():
-        lines.append(f"\n[{section}]")
-        nested: dict[str, dict[str, object]] = {}
-        for key, value in values.items():
-            if isinstance(value, dict):
-                nested[key] = value
-            else:
-                lines.append(f"{key} = {_toml_value(value)}")
-        for key, table in nested.items():
-            lines.append(f"\n[{section}.{key}]")
-            lines.extend(f"{_toml_value(k)} = {_toml_value(v)}" for k, v in table.items())
+        _table(section, values, lines, quoted=False)
     return "\n".join(lines) + "\n"
+
+
+def _table(name: str, values: dict[str, object], lines: list[str], *, quoted: bool) -> None:
+    """Add the TOML table `name`: its plain keys first, then each nested table under it.
+
+    Keys of a section's own settings are written bare; keys inside a nested table (operation
+    names, program names) are quoted, as the owner may have written anything there.
+    """
+    lines.append(f"\n[{name}]")
+    nested: dict[str, dict[str, object]] = {}
+    for key, value in values.items():
+        if isinstance(value, dict):
+            nested[key] = cast("dict[str, object]", value)
+        else:
+            lines.append(f"{_toml_value(key) if quoted else key} = {_toml_value(value)}")
+    for key, table in nested.items():
+        _table(f"{name}.{_toml_value(key) if quoted else key}", table, lines, quoted=True)
 
 
 def save(config: Config, path: Path | None = None) -> None:
