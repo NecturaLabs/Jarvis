@@ -399,6 +399,7 @@ class Microphone:
         self._ended.set()
         with self._stop_lock:
             proc, self._proc = self._proc, None
+            thread = self._thread
         if proc is None:
             return
         proc.terminate()
@@ -407,6 +408,12 @@ class Microphone:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+        # The reader sees the pipe end now that the process is gone. Closing the pipe while it
+        # still reads would wait for it, so a reader that does not finish keeps the pipe.
+        if thread is not None:
+            thread.join(STOP_WAIT_S)
+        if proc.stdout is not None and (thread is None or not thread.is_alive()):
+            proc.stdout.close()
 
 
 class MicPausedError(AudioError):
@@ -1161,14 +1168,14 @@ class VoxtypeWatch:
             if self._stop.is_set():
                 proc.terminate()
             self._proc = proc
-        for line in proc.stdout or ():
-            state = parse_voxtype_status(line)
-            if state is None:
-                self._unreadable(f"unreadable status {line[:200]!r}")
-                continue
-            self._complained = False
-            self._state = state
-        proc.wait()
+        with proc:  # closes the pipe and waits for the command to end
+            for line in proc.stdout or ():
+                state = parse_voxtype_status(line)
+                if state is None:
+                    self._unreadable(f"unreadable status {line[:200]!r}")
+                    continue
+                self._complained = False
+                self._state = state
         with self._lock:
             self._proc = None
         if not self._stop.is_set():

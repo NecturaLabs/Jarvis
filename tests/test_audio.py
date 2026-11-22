@@ -55,12 +55,24 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 
-def _ended_microphone(frames: int) -> Microphone:
-    """A microphone fed by a process that writes `frames` silent frames, then exits."""
-    mic = Microphone(command=["head", "-c", str(FRAME * 2 * frames), "/dev/zero"])
-    mic.start()
-    mic.wait_ended(timeout=5)
-    return mic
+@pytest.fixture
+def ended_microphone() -> Iterator[Callable[[int], Microphone]]:
+    """Make microphones fed by a process that writes `frames` silent frames, then exits.
+
+    Each is stopped when the test ends, which reaps its process and closes its pipe.
+    """
+    made: list[Microphone] = []
+
+    def make(frames: int) -> Microphone:
+        mic = Microphone(command=["head", "-c", str(FRAME * 2 * frames), "/dev/zero"])
+        made.append(mic)
+        mic.start()
+        mic.wait_ended(timeout=5)
+        return mic
+
+    yield make
+    for mic in made:
+        mic.stop()
 
 
 def _first_outcome(mic: Microphone, timeout: float) -> str:
@@ -80,15 +92,17 @@ def _first_outcome(mic: Microphone, timeout: float) -> str:
     return outcome[0]
 
 
-def test_frames_end_after_drain_instead_of_blocking() -> None:
+def test_frames_end_after_drain_instead_of_blocking(
+    ended_microphone: Callable[[int], Microphone],
+) -> None:
     """Regression: drain() used to discard the end-of-stream marker, so a stop hung forever."""
-    mic = _ended_microphone(frames=2)
+    mic = ended_microphone(2)
     mic.drain()
     assert _first_outcome(mic, timeout=2) == "ended"
 
 
-def test_frames_are_delivered_before_the_end() -> None:
-    mic = _ended_microphone(frames=2)
+def test_frames_are_delivered_before_the_end(ended_microphone: Callable[[int], Microphone]) -> None:
+    mic = ended_microphone(2)
     assert _first_outcome(mic, timeout=2) == "frame"
 
 
@@ -1125,6 +1139,32 @@ def test_stopping_the_watch_ends_the_status_command_it_started(
     assert watch.pid is None
 
 
+def test_stopping_the_watch_closes_the_pipe_it_read(
+    watches: Callable[..., VoxtypeWatch], started_processes: list[subprocess.Popen[bytes]]
+) -> None:
+    watch = watches(_status_helper(_status_line("idle"), "sleep"))
+    assert _eventually(lambda: watch.dictating() is False)
+
+    watch.stop()
+
+    (process,) = started_processes
+    assert process.stdout is not None
+    assert process.stdout.closed
+
+
+def test_a_status_command_that_ends_has_its_pipe_closed(
+    watches: Callable[..., VoxtypeWatch], started_processes: list[subprocess.Popen[bytes]]
+) -> None:
+    watch = watches(_status_helper(_status_line("idle"), "exit0"), retry_s=30.0)
+    assert _eventually(lambda: bool(started_processes) and started_processes[0].returncode == 0)
+
+    watch.stop()  # joins the thread, so what it does after the command ends is done
+
+    (process,) = started_processes
+    assert process.stdout is not None
+    assert process.stdout.closed
+
+
 def _lock_answer(
     stdout: bytes, returncode: int = 0
 ) -> Callable[..., subprocess.CompletedProcess[bytes]]:
@@ -1178,6 +1218,47 @@ def test_a_microphone_started_again_after_a_stop_delivers_frames() -> None:
         assert _first_outcome(mic, timeout=0.3) == "blocked"
     finally:
         mic.stop()
+
+
+@pytest.fixture
+def started_processes(monkeypatch: pytest.MonkeyPatch) -> list[subprocess.Popen[bytes]]:
+    """Every process started while the test runs, so it can check what is left of each."""
+    started: list[subprocess.Popen[bytes]] = []
+    real_init: Callable[..., None] = subprocess.Popen.__init__
+
+    def recording_init(self: subprocess.Popen[bytes], *args: object, **kwargs: object) -> None:
+        real_init(self, *args, **kwargs)
+        started.append(self)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", recording_init)
+    return started
+
+
+def test_stopping_a_microphone_closes_the_pipe_it_read(
+    started_processes: list[subprocess.Popen[bytes]],
+) -> None:
+    mic = Microphone(command=["sh", "-c", "exec sleep 30"])
+    mic.start()
+
+    mic.stop()
+
+    (process,) = started_processes
+    assert process.returncode is not None
+    assert process.stdout is not None
+    assert process.stdout.closed
+
+
+def test_stopping_a_microphone_that_already_ended_closes_its_pipe(
+    started_processes: list[subprocess.Popen[bytes]],
+    ended_microphone: Callable[[int], Microphone],
+) -> None:
+    mic = ended_microphone(2)
+
+    mic.stop()
+
+    (process,) = started_processes
+    assert process.stdout is not None
+    assert process.stdout.closed
 
 
 def test_a_microphone_that_sends_nothing_counts_as_ended_after_its_stall_time() -> None:
