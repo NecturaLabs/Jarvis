@@ -104,6 +104,9 @@ pc_audio_grant_s = 600.0
 confirm_blocks_on_pc_speech = true
 pc_audio_cooldown_s = 5.0
 
+# A wake word's own score needed, by model name, in place of wake_threshold (e.g. jarvis = 0.85).
+[audio.wake_thresholds]
+
 # Who Jarvis is and how it speaks; addendum is added to the system prompt.
 [persona]
 name = "Jarvis"

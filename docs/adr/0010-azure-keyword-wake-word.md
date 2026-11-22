@@ -72,7 +72,7 @@ Chosen: a separate helper process, switchable with `audio.wake_engine` (`"liveki
   engine promises, and may be missed. Whether the SDK's offsets count from the start of the stream or of each
   recognition is not verified (the tests use a fake SDK); misses with the owner's models are not measured.
   Added 2026-11-22 from the practices audit (#29).
-- Bad: the model's own threshold decides; `audio.wake_threshold` does not apply to it. Speech Studio stops
+- Bad: the model's own threshold decides; `audio.wake_threshold` and `audio.wake_thresholds` do not apply to it. Speech Studio stops
   training new custom keyword models on 2027-08-01; existing models keep working.
 - Measured on 2026-11-21 with Microsoft's sample model (`kws.table`, keyword "Computer") and Kokoro speech:
   both "Computer" lines in a 16 s clip were heard 0.3 to 0.6 s after the word ended, and "The weather is

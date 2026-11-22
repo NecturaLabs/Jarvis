@@ -9,16 +9,20 @@ from jarvis import cli, config
 from jarvis.cli import main
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
 
 class _LiveKit:
     """Stands in for LiveKit's model, which needs its files."""
 
-    def __init__(self, paths: list[Path], threshold: float) -> None:
+    def __init__(
+        self, paths: list[Path], threshold: float, thresholds: Mapping[str, float]
+    ) -> None:
         super().__init__()
         self.paths = paths
         self.threshold = threshold
+        self.thresholds = thresholds
 
 
 def _cfg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **audio: object) -> config.Config:
@@ -60,6 +64,61 @@ def test_only_the_wake_words_that_are_on_are_loaded(
     wake_dir = tmp_path / "wake"
     assert wake.paths == [wake_dir / "yo_jarvis.onnx", wake_dir / "hey_jarvis.onnx"]
     assert wake.threshold == pytest.approx(0.6)
+    assert wake.thresholds == {}
+
+
+def test_each_wake_word_s_own_threshold_reaches_the_detector(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg = _cfg(monkeypatch, tmp_path, wake_words=["jarvis"], wake_thresholds={"jarvis": 0.85})
+
+    wake = cli.livekit_wake(cfg)
+
+    assert isinstance(wake, _LiveKit)
+    assert wake.thresholds == {"jarvis": pytest.approx(0.85)}
+
+
+@pytest.mark.parametrize(
+    "thresholds", [{"jarvis": 1.0}, {"jarvis": 0.0}, {"../jarvis": 0.8}, {"Jarvis": 0.8}]
+)
+def test_a_wake_word_threshold_out_of_range_or_for_a_bad_name_is_refused(
+    thresholds: dict[str, float],
+) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        config.AudioConfig(wake_thresholds=thresholds)
+
+
+def test_wake_word_thresholds_round_trip_through_the_config_file(tmp_path: Path) -> None:
+    original = config.Config(
+        audio=config.AudioConfig(
+            wake_words=["hey_jarvis", "jarvis"], wake_thresholds={"jarvis": 0.85}
+        )
+    )
+    path = tmp_path / "config.toml"
+
+    config.save(original, path)
+
+    assert "[audio.wake_thresholds]" in path.read_text(encoding="utf-8")
+    assert config.load(path) == original
+
+
+def test_the_wake_listing_shows_a_wake_word_s_own_threshold(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: pytest.fail("no restart"))
+    cfg = config.load()
+    _models(cfg.data_dir, "hey_jarvis", "jarvis")
+    audio = cfg.audio.model_copy(
+        update={"wake_words": ["hey_jarvis", "jarvis"], "wake_thresholds": {"jarvis": 0.85}}
+    )
+    config.save(cfg.model_copy(update={"audio": audio}))
+
+    assert main(["wake"]) == 0
+
+    out = capsys.readouterr().out
+    assert "LiveKit hey_jarvis, jarvis (threshold 0.5)" in out
+    assert "  on  hey_jarvis\n" in out
+    assert "  on  jarvis (threshold 0.85)\n" in out
 
 
 def test_every_wake_word_that_is_on_is_passed_on_even_without_a_file(

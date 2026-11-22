@@ -75,7 +75,7 @@ def livekit_wake(cfg: config.Config) -> WakeWord:
     """Return LiveKit's detector for the wake words that are on (it skips any unusable file)."""
     from jarvis.audio import WakeWord  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
-    return WakeWord(wake_files(cfg), cfg.audio.wake_threshold)
+    return WakeWord(wake_files(cfg), cfg.audio.wake_threshold, cfg.audio.wake_thresholds)
 
 
 def wake_word(cfg: config.Config) -> WakeWord | FallbackWake:
@@ -1182,8 +1182,10 @@ def _print_wake_models(cfg: config.Config) -> None:
     )
     for name in sorted({*found, *cfg.audio.wake_words}):
         state = "on" if name in cfg.audio.wake_words else "off"
+        own = cfg.audio.wake_thresholds.get(name)
+        threshold = "" if own is None else f" (threshold {own})"
         missing = "" if name in found else f" (no file {folder / name}{WAKE_SUFFIX})"
-        print(f"  {state:3} {name}{missing}")
+        print(f"  {state:3} {name}{threshold}{missing}")
 
 
 def cmd_overview(args: argparse.Namespace) -> int:

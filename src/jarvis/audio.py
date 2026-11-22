@@ -32,7 +32,7 @@ from jarvis.jsonutil import obj, objs
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterator, Sequence
+    from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
     from typing import IO
 
     from numpy.typing import NDArray
@@ -585,8 +585,16 @@ class PausableMic:
 class WakeWord:
     """LiveKit streaming wake word models, one per phrase, heard side by side."""
 
-    def __init__(self, model_paths: Sequence[Path], threshold: float) -> None:
+    def __init__(
+        self,
+        model_paths: Sequence[Path],
+        threshold: float,
+        thresholds: Mapping[str, float] | None = None,
+    ) -> None:
         """Load the model files, leaving out with a warning any that is missing or unusable.
+
+        Each model is held to its own score in `thresholds`, by the name of its file, or else to
+        `threshold`.
 
         One bad file (missing, half copied, not a streaming model) must not leave Jarvis deaf to
         the others; only when none loads is the last error (an `OSError` or `ValueError`) raised,
@@ -611,17 +619,21 @@ class WakeWord:
         if not loaded and error is not None:
             raise error
         self._threshold = threshold
+        self._thresholds = dict(thresholds or {})
 
     def heard(self, frame: NDArray[np.int16]) -> bool:
         """Feed one frame; return True when any of the wake phrases was detected."""
         scores = self._model.predict(frame)
-        name = max(scores, key=scores.__getitem__, default="")
-        score = scores.get(name, 0.0)
-        if score >= self._threshold:
-            log.info("wake word %s score %.2f (threshold %.2f)", name, score, self._threshold)
-            self._model.reset()
-            return True
-        return False
+        over = {name: score for name, score in scores.items() if score >= self._needed(name)}
+        if not over:
+            return False
+        name = max(over, key=over.__getitem__)
+        log.info("wake word %s score %.2f (threshold %.2f)", name, over[name], self._needed(name))
+        self._model.reset()
+        return True
+
+    def _needed(self, name: str) -> float:
+        return self._thresholds.get(name, self._threshold)
 
     def reset(self) -> None:
         """Forget audio heard so far."""

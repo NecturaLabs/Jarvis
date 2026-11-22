@@ -1567,6 +1567,41 @@ def test_the_wake_word_takes_the_best_score_and_none_means_nothing_heard(
     assert wake.heard(frame)
 
 
+def test_a_wake_word_with_its_own_threshold_is_held_to_it_and_the_rest_to_the_shared_one(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    scores = [
+        {"hey_jarvis": 0.1, "jarvis": 0.8},  # over the shared 0.5, under its own 0.85
+        {"hey_jarvis": 0.1, "jarvis": 0.85},
+        {"hey_jarvis": 0.5, "jarvis": 0.1},
+        {"hey_jarvis": 0.6, "jarvis": 0.8},  # the higher score is short; the other one wakes
+    ]
+    _fake_livekit(monkeypatch, _LiveKitModel(scores))
+    paths = [Path("/models/hey_jarvis.onnx"), Path("/models/jarvis.onnx")]
+    wake = WakeWord(paths, 0.5, {"jarvis": 0.85})
+    frame = np.zeros(FRAME, dtype=np.int16)
+
+    with caplog.at_level(logging.INFO):
+        assert not wake.heard(frame)
+        assert wake.heard(frame)
+        assert wake.heard(frame)
+        assert wake.heard(frame)
+
+    assert "wake word jarvis score 0.85 (threshold 0.85)" in caplog.text
+    assert "wake word hey_jarvis score 0.60 (threshold 0.50)" in caplog.text
+
+
+def test_a_wake_word_s_own_threshold_may_be_below_the_shared_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_livekit(monkeypatch, _LiveKitModel([{"yo_jarvis": 0.42}, {"yo_jarvis": 0.45}]))
+    wake = WakeWord([Path("/models/yo_jarvis.onnx")], 0.5, {"yo_jarvis": 0.43})
+    frame = np.zeros(FRAME, dtype=np.int16)
+
+    assert not wake.heard(frame)
+    assert wake.heard(frame)
+
+
 def test_resetting_the_wake_word_resets_the_model(monkeypatch: pytest.MonkeyPatch) -> None:
     wake, model = _wake_word(monkeypatch, [])
 
