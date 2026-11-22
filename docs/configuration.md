@@ -118,7 +118,7 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `context` | `24576` | 2048 to 262144 | Context window in tokens (`--max-context`). Each 1,000 tokens more costs about 0.05 GiB of VRAM ([models.md](models.md)). It holds the prompt and the tool schemas (about 5,000 tokens together), the remembered conversation (`agent.memory_tokens` or `chat.memory_tokens`), one reply and the request's tool results; when a long request outgrows it, its oldest tool results are cleared down to their start. |
 | `expert_vram_gib` | `1.0` | 0 to 64 | VRAM budget for expert weights kept on the GPU, passed as `--expert-vram`; the rest of the experts stay in host memory. |
 | `prefill` | `512` | 128 to 8192 | Prompt-reading chunk size (`--prefill`). |
-| `idle_unload_s` | `300` | 30 to 86400 | Seconds without a request before Strata frees the model. |
+| `idle_unload_s` | `86400` | 30 to 86400 | Seconds without a request before Strata frees the model. The default, 24 hours, keeps it loaded through the day; a lower value gives the RAM back sooner. |
 | `reasoning_budget_tokens` | `512` | 1 to 8192 | Thinking-token cap in the profile. |
 | `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` and `MemoryMax` of the Strata unit. |
 | `vision_file` | unset | path | The model's picture reader (`mmproj-F16.gguf`, [models.md](models.md#pictures)). Set, the profile reads pictures: Strata's reader runs on the processor, in about 0.9 GB of RAM and no VRAM, starts with the first picture and stops after `vision_idle_s`. Unset, Jarvis reads no pictures. |
@@ -128,11 +128,11 @@ Fixed by Jarvis, not configurable: lazy loading on, one parallel slot, the HIP b
 
 ### Keeping the model loaded
 
-`idle_unload_s` accepts up to 86400 (24 hours), which keeps the model loaded through the day. Measured on the
+`idle_unload_s` defaults to 86400 (24 hours), its largest value, which keeps the model loaded through the day. Measured on the
 reference machine (RX 7900 XT, 64 GB RAM), a loaded idle model holds about 38 GB of RAM and 7.3 GiB of VRAM and
 uses no GPU or CPU while idle. A cold load took about 107 s with a game running; Jarvis says "One moment,
-waking up" while that happens. At the default 300 s the model is freed after five idle minutes and loaded
-again on the next wake word. The default `memory_max` of 40G leaves about 2 GB above the 38 GB measured, so
+waking up" while that happens. At 300 s, say, the model is freed after five idle minutes and loaded again on
+the next wake word. The default `memory_max` of 40G leaves about 2 GB above the 38 GB measured, so
 raise it before holding a larger model. `jarvis unload` frees the model at once.
 
 ## `[spotify]`: your own Spotify developer app

@@ -8,6 +8,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- `strata.idle_unload_s` defaults to 86400 (24 hours) instead of 300, so a fresh install keeps the model
+  loaded, as the owner decided (#34). Set a lower value to free the RAM sooner.
+- `jarvis doctor` asks Voxtype which speech models are installed (`voxtype info models`), which also checks
+  each file's size and header, and falls back to looking for the file when Voxtype cannot say.
 - From a practices audit: a name in `boundaries.classes` that is no operation (a typo, say) stops Jarvis
   with an error instead of being ignored; turning questions on or off with `jarvis consent`, and the mode
   the voice service starts in, are recorded in the audit log and shown in the chat; words heard from the PC

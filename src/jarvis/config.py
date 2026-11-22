@@ -121,7 +121,7 @@ class StrataConfig(_Section):
     context: int = Field(default=24576, ge=2048, le=262144)
     expert_vram_gib: float = Field(default=1.0, ge=0, le=64)
     prefill: int = Field(default=512, ge=128, le=8192)
-    idle_unload_s: int = Field(default=300, ge=30, le=86400)
+    idle_unload_s: int = Field(default=86400, ge=30, le=86400)  # stays loaded (#34, decision 2)
     reasoning_budget_tokens: int = Field(default=512, gt=0, le=8192)
     memory_max: str = Field(default="40G", pattern=r"^\d+[KMGT]?$")
     # The picture reader (the model's mmproj file, beside it); unset: Jarvis reads no pictures.

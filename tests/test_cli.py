@@ -49,7 +49,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-pytestmark = pytest.mark.usefixtures("home")
+pytestmark = pytest.mark.usefixtures("home", "voxtype_lists_no_models")
 
 
 def test_version_prints_package_version(capsys: pytest.CaptureFixture[str]) -> None:
@@ -161,6 +161,17 @@ def _known(role: str, content: bytes) -> models.KnownModel:
         sha256=hashlib.sha256(content).hexdigest(),
         licence="MIT",
     )
+
+
+def _cannot_say(_engine: str) -> frozenset[str] | None:
+    return None
+
+
+@pytest.fixture
+def voxtype_lists_no_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`jarvis doctor` asks Voxtype for its models; here it cannot say, so the doctor falls back
+    to the file check (tests of the Voxtype answer patch it themselves)."""
+    monkeypatch.setattr(audio_module, "installed_models", _cannot_say)
 
 
 def _doctor_config(data: Path) -> None:
@@ -282,9 +293,40 @@ def test_the_default_speech_model_is_small_en() -> None:
     assert config.AudioConfig().transcribe_model == "small.en"
 
 
+def test_doctor_asks_voxtype_whether_the_speech_model_is_installed(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    installed: frozenset[str] = frozenset()
+    asked: list[str] = []
+
+    def models(engine: str) -> frozenset[str]:
+        asked.append(engine)
+        return installed
+
+    monkeypatch.setattr(audio_module, "installed_models", models)
+    _doctor_config(home / "models")
+
+    cli.main(["doctor"])
+
+    assert any(
+        line.startswith("FAIL") and "small.en" in line and "voxtype setup model" in line
+        for line in _doctor_lines(capsys)
+    )
+    installed = frozenset({"small.en"})
+
+    cli.main(["doctor"])
+
+    assert any(
+        line.startswith("ok ") and "speech model small.en (Voxtype reports it installed)" in line
+        for line in _doctor_lines(capsys)
+    )
+    assert asked == ["whisper", "whisper"]
+
+
 def test_doctor_checks_the_whisper_model_is_downloaded(
     home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # A Voxtype that cannot list its models (the fixture above): the doctor looks for the file.
     _doctor_config(home / "models")
 
     cli.main(["doctor"])
