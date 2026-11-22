@@ -21,6 +21,7 @@ from jarvis.operations import (
     OperationError,
     Result,
     UncertainOutcomeError,
+    request_scope,
     validate_args,
 )
 from jarvis.pictures import PICTURE_TOKENS
@@ -760,7 +761,14 @@ class Agent:
         the reply says it cannot, and the model is not called). What a picture shows was made by
         anyone, so it counts as outside data: side effects then need a yes. The conversation
         keeps the pictures' names, not the pictures.
+
+        Operations run inside the request's scope (`request_scope`), so one can tell this
+        request from the next and a request heard in PC audio from the owner's.
         """
+        with request_scope(foreign=origin not in TRUSTED_ORIGINS):
+            return self._answer(text, hooks, origin, pictures)
+
+    def _answer(self, text: str, hooks: Hooks, origin: Origin, pictures: Sequence[Picture]) -> str:
         started = self._clock()
         foreign = origin not in TRUSTED_ORIGINS
         self._written = [0, 0.0]

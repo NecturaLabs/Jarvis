@@ -10,7 +10,7 @@ it. It is a plain statement of what the code does, not legal terms; the code win
 | Config | `~/.config/jarvis/config.toml` | Your settings, including your Spotify app's client ID (there is no client secret). |
 | Strata API key | `~/.local/state/jarvis/strata.env`, mode 0600 | A random key that only Jarvis and its Strata service use. |
 | Spotify tokens | `~/.local/state/jarvis/spotify-token.json`, mode 0600 | The access and refresh tokens from `jarvis spotify-login`. |
-| Audit log | `~/.local/state/jarvis/audit.jsonl`, mode 0600 in a 0700 folder | Every request as transcribed, the model's tool calls, each policy decision and each result (with the start of each page or file Jarvis read). With PC audio on, it also holds what other people said in it. At 5 MiB it is kept once as `audit.jsonl.1` and started again. |
+| Audit log | `~/.local/state/jarvis/audit.jsonl`, mode 0600 in a 0700 folder | Every request as transcribed, the model's tool calls, each policy decision and each result (with the start of each page or file Jarvis read, and of the programs and window titles `find_processes` listed). With PC audio on, it also holds what other people said in it. At 5 MiB it is kept once as `audit.jsonl.1` and started again. |
 | Service log | The systemd journal (`jarvis logs`) and `~/.local/state/jarvis/strata.log` | What Jarvis heard, the answers to its questions and any errors. |
 
 Audio is held in memory. Each request is written to a private temporary file for Voxtype to transcribe and

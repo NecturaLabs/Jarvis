@@ -9,7 +9,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 ### Changed
 
 - `boundaries.bypass_consent` no longer runs `strong` actions unasked: they wait for the confirm key.
-  No operation Jarvis ships is `strong` yet; this matters for one you set to `strong` yourself.
+  `stop_process` is the one shipped `strong` operation, and `boundaries.classes` may set it only to
+  `strong` or `deny`; any other class stops Jarvis with an error.
 - From a practices audit: a name in `boundaries.classes` that is no operation (a typo, say) stops Jarvis
   with an error instead of being ignored; turning questions on or off with `jarvis consent`, and the mode
   the voice service starts in, are recorded in the audit log and shown in the chat; words heard from the PC
@@ -31,7 +32,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   moves while it is open; the letters typed are in bold and the chosen row is lit whole. `/exit` leaves
   (`/quit` still works).
 - Jarvis remembers the conversation. Instead of the last 4 turns, forgotten after 5 minutes, it keeps as
-  much as fits a token budget (`agent.memory_tokens` 6,000 for speech, `chat.memory_tokens` 11,500 for the
+  much as fits a token budget (`agent.memory_tokens` 6,000 for speech, `chat.memory_tokens` 11,000 for the
   chat) and has the model summarize the oldest turns when it outgrows it. Speech forgets after 30 idle
   minutes; the chat never does and resumes its conversation when it opens again (`chat.resume`).
 - Replies are no longer cut. The model is told its length and capped in tokens (`agent.reply_tokens` 400,
@@ -75,6 +76,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Stop a program by voice, in any words ("close Discord", "the Orbit game is frozen, kill it"):
+  `find_processes` lists your own programs that match the name you said (at most 8, by program name,
+  executable, a Wine game's `.exe`, or window title), Jarvis asks which one when several match, and
+  `stop_process` stops only a PID it listed in the same request, after the confirm key. The PID is bound
+  to its program and start time, so a PID reused in between is never signalled. A request heard in PC
+  audio stops nothing, and the desktop session, the sound server, Voxtype, Strata and Jarvis itself are
+  never listed or stopped ([Stopping a program](docs/configuration.md#stopping-a-program)).
 - `jarvis confirm`, the confirm key: bind it to a key, and a `strong` action runs only after you press it.
   Jarvis says what it is about to do, then "Press the confirm key to allow it", and waits
   `audio.confirm_key_s` (30 s). One press allows that one action, once; a spoken yes never does. A press

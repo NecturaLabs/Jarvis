@@ -13,8 +13,8 @@ says which parts are built.
   is measured in #17, and which speech-to-text model serves Jarvis best in #28.
 - **Install and maintenance**: one install command and a doctor that names the fix for each problem (#16);
   update, rollback and uninstall (#21); commands for desktop session changes such as lock and suspend (#22).
-- **Operating the PC**: typed PC operations (#9), and an off-by-default shell operation behind strong
-  confirmation (#19).
+- **Operating the PC**: typed PC operations (#9; PC stats, files and stopping a program are built), and an
+  off-by-default shell operation behind strong confirmation (#19).
 - **Research**: built (web search, page reading and Reddit through a local SearXNG); the owner's spoken check
   of a sourced answer and SearXNG in the installer remain (#10, #20).
 - **Voice polish**: speaking the first sentence while the rest is generated (#12) and follow-up requests

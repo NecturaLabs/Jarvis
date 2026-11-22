@@ -7,7 +7,8 @@ press reaching the running voice service from Hyprland, so that check is the own
 
 ## Owner run (not run yet)
 
-No shipped operation is `strong`, so make one `strong` for the test and put it back afterwards.
+This run makes `spotify_pause` `strong` for the test and puts it back afterwards; the run after it uses
+`stop_process`, the one shipped `strong` operation.
 
 1. Bind the key in `~/.config/hypr/bindings.lua` and reload Hyprland:
    `o.bind("SUPER + CTRL + Y", "Jarvis confirm", "jarvis confirm")`.
@@ -20,6 +21,22 @@ No shipped operation is `strong`, so make one `strong` for the test and put it b
 6. Press the key with nothing waiting (`jarvis confirm` says "nothing is waiting for the confirm key"),
    then ask within 30 s: Jarvis says the key was pressed too early and leaves it.
 7. Put `spotify_pause` back (delete the line) and `jarvis restart`.
+
+Record the date and what was heard here.
+
+## Owner run: stopping a program (not run yet)
+
+The fake-`/proc` tests cover the matching, the protected list and every refusal
+(`tests/test_pc_processes.py`); this checks the real desktop. Use programs you can lose.
+
+1. Open one program you can lose (a calculator, an image viewer). Say "Hey Jarvis, close the calculator".
+   Jarvis asks "Should I stop <program> (PID <n>)? Press the confirm key to allow it." Press the key: the
+   window closes and Jarvis says it stopped it.
+2. Open two windows of it as two programs, then ask again in other words ("end the calculator"). Jarvis
+   reads both, with their PIDs, and asks which one; it stops only the one you name, after the key.
+3. Say "Hey Jarvis, kill pipewire": Jarvis says it never stops that, and asks nothing.
+4. Name a program that is not running: Jarvis says it can't find it.
+5. Ask for one and do not press the key: after 30 s it is left running.
 
 Record the date and what was heard here.
 

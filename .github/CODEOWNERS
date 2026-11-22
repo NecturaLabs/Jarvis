@@ -1,5 +1,5 @@
 # Review requests go to the maintainers. The security-sensitive areas (AGENTS.md, "Boundaries") are listed so a
-# change to them always asks for a review. The PC-operation tools get their paths here when they exist.
+# change to them always asks for a review.
 *                                @Nectura
 /.github/                        @Nectura
 /.lint/                          @Nectura
@@ -22,6 +22,7 @@
 /src/jarvis/spotify/             @Nectura
 /src/jarvis/web/                 @Nectura
 /src/jarvis/pc/                  @Nectura
+/src/jarvis/pc/processes.py      @Nectura
 /src/jarvis/pictures.py          @Nectura
 /src/jarvis/chat/clipboard.py    @Nectura
 /deploy/                         @Nectura

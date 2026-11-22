@@ -10,6 +10,8 @@ from jarvis.operations import (
     OperationError,
     Registry,
     Result,
+    current_request,
+    request_scope,
     validate_args,
 )
 from jarvis.policy import Origin
@@ -173,3 +175,25 @@ def test_a_string_shorter_than_its_min_length_is_refused() -> None:
     with pytest.raises(ArgumentError, match="at least 4"):
         validate_args(op, {"code": " abc "})
     assert validate_args(op, {"code": "abcd"}) == {"code": "abcd"}
+
+
+def test_there_is_no_current_request_outside_one() -> None:
+    assert current_request() is None
+
+
+def test_each_request_is_its_own_and_ends_with_its_scope() -> None:
+    with request_scope(foreign=False) as first:
+        assert current_request() is first
+        assert not first.foreign
+    with request_scope(foreign=True) as second:
+        assert current_request() is second
+        assert second.foreign
+    assert first is not second
+    assert first != second
+    assert current_request() is None
+
+
+def test_a_request_scope_ends_even_when_the_request_fails() -> None:
+    with pytest.raises(RuntimeError), request_scope(foreign=False):
+        raise RuntimeError
+    assert current_request() is None
