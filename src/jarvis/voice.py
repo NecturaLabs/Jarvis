@@ -632,7 +632,8 @@ class VoiceLoop:
         """Listen for `follow_up_s` after a spoken reply; return the request heard, if any.
 
         Only after a reply to the owner's own voice has finished playing, and never while the
-        owner dictates: speech in the window then is dictation, not a request. Speech heard while
+        owner dictates: speech in the window then is dictation, not a request. A pause ends the
+        window, and nothing heard in it is taken once Jarvis is paused. Speech heard while
         PC audio also held speech is dropped, as it may be a voice from the PC. Speech too short
         for a request (a cough, a click) is dropped untranscribed and the window listens on for
         the rest of its time. The wake word inside the window starts a request the usual way.
@@ -677,7 +678,7 @@ class VoiceLoop:
 
         def frames() -> Iterator[NDArray[np.int16]]:
             for frame in self._mic.frames():
-                if self._should_stop():
+                if self._should_stop() or self._paused():
                     return
                 if self._wake.heard(frame):
                     woke.append(self._clock())
@@ -705,6 +706,9 @@ class VoiceLoop:
         """
         if self._should_stop():
             return False
+        if self._paused():
+            log.info("dropped a follow-up: Jarvis was paused meanwhile")
+            return False
         if self._using_voxtype():
             log.info("dropped a follow-up: the owner started dictating or a meeting")
             return False
@@ -726,7 +730,23 @@ class VoiceLoop:
         self.state = State.CAPTURE
         started = time.perf_counter()
         frames, lead = _with_lead(self._wake, self._mic.frames())
-        heard = capture_utterance(frames, self._vad, self._cfg, lead_frames=lead)
+        dictated = [False]
+
+        def until_dictation() -> Iterator[NDArray[np.int16]]:
+            for frame in frames:
+                if self._dictating() is True:
+                    dictated[0] = True
+                    return
+                yield frame
+
+        heard = capture_utterance(until_dictation(), self._vad, self._cfg, lead_frames=lead)
+        if dictated[0] or self._dictating() is True:
+            # The owner's own dictation started meanwhile: what was said is going into it.
+            self._note_dictation_ignored(
+                "a request being captured", reason="dictation started mid-request"
+            )
+            self.state = State.IDLE
+            return
         if heard.samples is None or heard.speech_s < MIN_REQUEST_SPEECH_S:
             log.info("wake without a request (%s)", _no_request(heard))
             self.state = State.IDLE
@@ -1024,10 +1044,13 @@ class VoiceLoop:
         """
         if self._dictating() is not True:
             return False
+        self._note_dictation_ignored(what)
+        return True
+
+    def _note_dictation_ignored(self, what: str, reason: str = "dictating") -> None:
         log.info("%s was ignored: the owner is dictating", what)
         if self._audit is not None:
-            self._audit.record("wake_ignored", reason="dictating")
-        return True
+            self._audit.record("wake_ignored", reason=reason)
 
     def _ignored_while_locked(self, what: str) -> bool:
         if not self._locked():
