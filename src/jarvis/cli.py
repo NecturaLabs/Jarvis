@@ -768,7 +768,7 @@ def _wake_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[
     checks: list[tuple[bool, str, str]] = [check]
     if found:
         checks.extend(
-            (False, f"wake word file {path} does not load ({reason})", "see docs/models.md")
+            (False, f"wake word {path.stem} does not load: {reason}", "see docs/models.md")
             for path, reason in wake_load_errors(found).items()
         )
     notes = [

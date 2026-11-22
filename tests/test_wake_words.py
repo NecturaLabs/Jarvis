@@ -5,12 +5,14 @@ from typing import TYPE_CHECKING, ClassVar
 import pydantic
 import pytest
 
-from jarvis import cli, config
+from jarvis import audio, cli, config
 from jarvis.cli import main
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
+
+    import onnxruntime as ort
 
 
 class _LiveKit:
@@ -288,9 +290,11 @@ class _Loader:
     bad: ClassVar[dict[str, Exception]] = {}
     loaded: ClassVar[list[Path]] = []
 
-    def __init__(self, *, sess_options: object) -> None:
+    def __init__(self, *, sess_options: ort.SessionOptions) -> None:
         super().__init__()
-        assert sess_options is not None
+        # The doctor loads with the runtime's quiet options, not one thread per core.
+        assert sess_options.intra_op_num_threads == 1
+        assert sess_options.inter_op_num_threads == 1
 
     def load_model(self, path: Path) -> None:
         if path.name in self.bad:
@@ -314,7 +318,7 @@ def test_the_doctor_fails_a_wake_word_file_that_does_not_load(
     checks, _notes = cli._wake_checks(cfg)  # pyright: ignore[reportPrivateUsage] - the doctor's wake check
 
     assert [c[0] for c in checks] == [True, False]
-    assert "yo_jarvis.onnx" in checks[1][1]
+    assert checks[1][1].startswith("wake word yo_jarvis does not load: ")
     assert "not a streaming model" in checks[1][1]
     assert _Loader.loaded == [cfg.data_dir / "wake" / "hey_jarvis.onnx"]
 
@@ -366,3 +370,40 @@ def test_the_wake_header_shows_each_own_threshold(
     assert "LiveKit hey_jarvis, jarvis, yo_jarvis (threshold 0.5; jarvis 0.85)" in (
         capsys.readouterr().out
     )
+
+
+def _voxtype_cannot_say(_engine: str) -> frozenset[str] | None:
+    return None
+
+
+def test_the_doctor_prints_a_wake_word_file_that_does_not_load_and_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = config.load()
+    config.save(cfg)
+    _models(cfg.data_dir, "hey_jarvis", "yo_jarvis")
+    _fake_loader(monkeypatch, yo_jarvis=ValueError("not a streaming model"))
+    monkeypatch.setattr(audio, "installed_models", _voxtype_cannot_say)
+
+    status = main(["doctor"])
+
+    out = capsys.readouterr().out.splitlines()
+    assert status == 1
+    assert any(
+        line.startswith("FAIL wake word yo_jarvis does not load: not a streaming model")
+        for line in out
+    )
+
+
+def test_the_load_check_names_a_missing_file_and_a_file_that_is_not_a_model(
+    tmp_path: Path,
+) -> None:
+    junk = tmp_path / "junk.onnx"
+    junk.write_bytes(b"not a model")
+    missing = tmp_path / "missing.onnx"
+
+    errors = audio.wake_load_errors([junk, missing])
+
+    assert set(errors) == {junk, missing}
+    assert "not found" in errors[missing]
+    assert "not a valid ONNX model" in errors[junk]
