@@ -80,6 +80,15 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   open, in `$XDG_RUNTIME_DIR/jarvis/`, and each is recorded in the audit log. A pause lasts until `resume`
   or until the voice service restarts. `jarvis stop` still stops the services; `hush` is the speech
   interrupt #22 asked `stop` to be.
+- Jarvis carries on across desktop session changes (#22). A microphone whose capture ends (PipeWire
+  restarting, the microphone unplugged) or goes silent for 5 s is opened again: after 1 s, then twice as
+  long after each try that brings no sound, up to 30 s. `jarvis run` used to end with "the microphone
+  stream ended" and wait for systemd to restart it. Meanwhile `jarvis status` says `unavailable`. After a
+  suspend, Jarvis starts listening afresh and loads the model again unless paused. A model server that is
+  down because its model file is missing (its drive not mounted) is no longer waited for: Jarvis says so at
+  once, and `jarvis status` names the model `missing`. A new `audio.listen_when_locked` (on by default)
+  can make Jarvis ignore the wake word while the Omarchy lock screen is up; `jarvis doctor` then checks the
+  lock state can be read.
 
 - `boundaries.bypass_consent`, on by default (the owner's choice): Jarvis acts without asking for a yes,
   including after outside text and for requests heard in PC audio; an operation set to `deny` is still

@@ -17,9 +17,8 @@ from urllib.parse import urlsplit
 
 from jarvis import __version__, config, control, models, paths
 from jarvis.agent import Hooks
-from jarvis.app import SetupError, build, chat_pictures, echoes_hint
+from jarvis.app import SetupError, build, chat_pictures, echoes_hint, strata_model
 from jarvis.audit import AuditLog
-from jarvis.model import StrataModel
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
 
@@ -29,7 +28,8 @@ if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
 
-    from jarvis.audio import FallbackWake, WakeWord
+    from jarvis.audio import FallbackWake, Speaker, WakeWord
+    from jarvis.model import StrataModel
 
 log = logging.getLogger(__name__)
 
@@ -410,19 +410,52 @@ def _transcribers(cfg: config.Config, hint: Callable[[], str]) -> tuple[_Transcr
     return request, answer
 
 
+def _never() -> bool:
+    return False
+
+
+def _speaker(cfg: config.Config) -> Speaker:
+    """Return the speaker, which hears its own wake word only when barge-in is on."""
+    from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
+        OwnVoiceCheck,
+        Speaker,
+        WakeWord,
+        make_synthesizer,
+    )
+
+    data = cfg.data_dir
+    own_wake = None
+    if cfg.audio.barge_in:
+        own_wake = OwnVoiceCheck(
+            WakeWord(data / WAKE_MODEL, cfg.audio.wake_threshold),
+            WAKE_NAME if cfg.audio.wake_engine == "azure" else None,
+        )
+    return Speaker(
+        make_synthesizer(data, cfg.audio.voice, cfg.audio.speech_speed), own_wake=own_wake
+    )
+
+
+def _serve_controls(handler: control.Controls, audit: AuditLog) -> control.ControlServer:
+    """Start the control socket; a run without one still listens, so a failure is only logged."""
+    controls = control.ControlServer(handler, audit=audit)
+    try:
+        controls.start()
+    except OSError as exc:
+        log.warning("no control socket (status, pause and resume will not reach this run): %s", exc)
+    return controls
+
+
 def cmd_run(_args: argparse.Namespace) -> int:
     """Run the voice loop until stopped."""
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
+        MIC_STALL_S,
         AppAudio,
         FallbackWake,
         Microphone,
-        OwnVoiceCheck,
         PausableMic,
-        Speaker,
         Vad,
-        WakeWord,
         dictation_active,
-        make_synthesizer,
+        screen_locked,
     )
     from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level]
 
@@ -434,16 +467,8 @@ def cmd_run(_args: argparse.Namespace) -> int:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
     data = cfg.data_dir
-    mic = PausableMic(Microphone(cfg.audio.source))
-    speaker = Speaker(
-        make_synthesizer(data, cfg.audio.voice, cfg.audio.speech_speed),
-        own_wake=OwnVoiceCheck(
-            WakeWord(data / WAKE_MODEL, cfg.audio.wake_threshold),
-            WAKE_NAME if cfg.audio.wake_engine == "azure" else None,
-        )
-        if cfg.audio.barge_in
-        else None,
-    )
+    mic = PausableMic(Microphone(cfg.audio.source, stall_s=MIC_STALL_S))
+    speaker = _speaker(cfg)
     pc_audio = AppAudio(cfg.audio.pc_audio_apps) if cfg.audio.listen_to_pc else None
     stop_requested = threading.Event()
     refresh_stop = threading.Event()
@@ -471,6 +496,10 @@ def cmd_run(_args: argparse.Namespace) -> int:
     request, answer = _transcribers(cfg, jarvis.hint)
     mic.start()
     wakes = [wake_word(cfg), *([wake_word(cfg)] if pc_audio is not None else [])]
+
+    def after_sleep() -> None:
+        handler.after_sleep()  # made below, once the loop it controls exists
+
     loop = VoiceLoop(
         jarvis.agent,
         mic,
@@ -492,15 +521,13 @@ def cmd_run(_args: argparse.Namespace) -> int:
         dictating=dictation_active,
         paused=lambda: mic.paused,
         until_resumed=mic.wait_resumed,
+        reopen=mic.recover,
+        locked=_never if cfg.audio.listen_when_locked else screen_locked,
+        after_sleep=after_sleep,
     )
+    handler = control.Controls(loop, mic, jarvis.model, jarvis.audit)
     jarvis.audit.record("service_started", bypass_consent=cfg.boundaries.bypass_consent)
-    controls = control.ControlServer(
-        control.Controls(loop, mic, jarvis.model, jarvis.audit), audit=jarvis.audit
-    )
-    try:
-        controls.start()
-    except OSError as exc:
-        log.warning("no control socket (status, pause and resume will not reach this run): %s", exc)
+    controls = _serve_controls(handler, jarvis.audit)
     try:
         loop.run(stop_requested.is_set)
     except Exception:
@@ -633,12 +660,17 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         *unreadable,
         *_whisper_model(cfg),
         *_model_url(cfg),
-        (cfg.strata.model_file.is_file(), f"model {cfg.strata.model_file}", "set --model-file"),
+        (
+            cfg.strata.model_file.is_file(),
+            f"model {cfg.strata.model_file}",
+            "mount its drive, or set --model-file",
+        ),
         *(
             (shutil.which(t) is not None, f"tool {t}", f"install {t}")
             for t in ("pw-record", "pw-play", "voxtype")
         ),
         *_azure_checks(cfg),
+        *_lock_checks(cfg),
         (
             state is not None,
             f"Strata server ({state or 'unreachable'})",
@@ -650,6 +682,21 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     for line in release_lines:
         print(line)
     return 0 if all(ok for ok, _, _ in checks) else 1
+
+
+def _lock_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
+    """Return the check that the lock screen can be asked about, when Jarvis must not listen there.
+
+    With `audio.listen_when_locked` off, a lock state that cannot be read keeps Jarvis deaf.
+    """
+    from jarvis.audio import lock_state  # ruff: ignore[import-outside-top-level]
+
+    if cfg.audio.listen_when_locked:
+        return []
+    state = lock_state()
+    shown = "unknown" if state is None else ("locked" if state else "unlocked")
+    fix = "run Jarvis in the Omarchy session, or turn audio.listen_when_locked on"
+    return [(state is not None, f"lock screen state ({shown})", fix)]
 
 
 def _azure_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
@@ -705,8 +752,14 @@ def _azure_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
 
 
 def _strata(cfg: config.Config) -> StrataModel:
-    local = cfg.model.model_copy(update={"base_url": cfg.model_base_url()})
-    return StrataModel(local, read_api_key(strata_key_file()) or "")
+    return strata_model(cfg, read_api_key(strata_key_file()) or "")
+
+
+# How a model server that cannot be reached is named to the owner.
+_MODEL_SHOWN = {
+    "unreachable": "server unreachable",
+    "missing": "file missing (is its drive mounted?)",
+}
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -716,8 +769,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     if reply is not None and reply.get("ok"):
         shown = {key: value for key, value in reply.items() if key != "ok"}
     else:
-        model = _strata(_load()).status()
-        shown = {"state": "unavailable", "paused": False, "model": model or "unreachable"}
+        strata = _strata(_load())
+        model = strata.status() or control.unreachable_model(strata)
+        shown = {"state": "unavailable", "paused": False, "model": model}
         if reply is not None:
             shown["error"] = str(reply.get("error", "no answer"))
     shown["running"] = running
@@ -730,9 +784,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     if running:
         print(f"jarvis: {shown.get('state')}, model: {shown.get('model')}")
         return 0
-    model = "server unreachable" if shown["model"] == "unreachable" else shown["model"]
+    model = _MODEL_SHOWN.get(str(shown["model"]), shown["model"])
     print(f"jarvis: not running, model: {model}")
-    return 0 if shown["model"] != "unreachable" else 1
+    return 0 if shown["model"] not in _MODEL_SHOWN else 1
 
 
 def _control(command: str, done: Callable[[dict[str, object]], str]) -> int:

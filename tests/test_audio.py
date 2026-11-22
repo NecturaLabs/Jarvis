@@ -33,6 +33,7 @@ from jarvis.audio import (
     match_app_streams,
     parse_transcript,
     pw_record_command,
+    screen_locked,
     to_16k,
     transcribe,
     voxtype_command,
@@ -777,6 +778,45 @@ def test_a_status_that_cannot_run_counts_as_dictating(failure: Exception) -> Non
     assert dictation_active(run=run) is True
 
 
+def _lock_answer(
+    stdout: bytes, returncode: int = 0
+) -> Callable[..., subprocess.CompletedProcess[bytes]]:
+    """The Omarchy shell's lock query, answering `stdout`."""
+
+    def run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        assert cmd == ["omarchy-shell", "lock", "isLocked"]
+        return subprocess.CompletedProcess(cmd, returncode, stdout, b"")
+
+    return run
+
+
+@pytest.mark.parametrize(("stdout", "locked"), [(b"true\n", True), (b"false\n", False)])
+def test_the_lock_screen_is_read_from_the_omarchy_shell(stdout: bytes, *, locked: bool) -> None:
+    assert screen_locked(run=_lock_answer(stdout)) is locked
+
+
+@pytest.mark.parametrize(
+    ("stdout", "returncode"),
+    [(b"", 1), (b"maybe\n", 0), (b"OMARCHY_PATH is not set\n", 1)],
+    ids=["no shell", "unreadable", "no omarchy"],
+)
+def test_a_lock_state_that_cannot_be_read_counts_as_locked(stdout: bytes, returncode: int) -> None:
+    # Asked only when the owner wants Jarvis deaf at a locked screen: a fault keeps it deaf.
+    assert screen_locked(run=_lock_answer(stdout, returncode)) is True
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [FileNotFoundError("omarchy-shell"), subprocess.TimeoutExpired("omarchy-shell", 2)],
+    ids=["missing", "timed out"],
+)
+def test_a_lock_query_that_cannot_run_counts_as_locked(failure: Exception) -> None:
+    def run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise failure
+
+    assert screen_locked(run=run) is True
+
+
 def test_a_microphone_started_again_after_a_stop_delivers_frames() -> None:
     # What `jarvis pause` and `resume` do: the stopped capture's end must not end the new one.
     one_frame_then_wait = f"head -c {FRAME * 2} /dev/zero; exec sleep 30"
@@ -789,6 +829,26 @@ def test_a_microphone_started_again_after_a_stop_delivers_frames() -> None:
 
         assert _first_outcome(mic, timeout=5) == "frame"
         assert _first_outcome(mic, timeout=0.3) == "blocked"
+    finally:
+        mic.stop()
+
+
+def test_a_microphone_that_sends_nothing_counts_as_ended_after_its_stall_time() -> None:
+    # A capture left unlinked (its source gone, no other to move to) keeps running but sends
+    # no frames; the loop must hear of it to reopen the microphone.
+    mic = Microphone(command=["sh", "-c", "exec sleep 30"], stall_s=0.3)
+    mic.start()
+    try:
+        assert _first_outcome(mic, timeout=5) == "ended"
+    finally:
+        mic.stop()
+
+
+def test_a_microphone_without_a_stall_time_waits_for_frames() -> None:
+    mic = Microphone(command=["sh", "-c", "exec sleep 30"])
+    mic.start()
+    try:
+        assert _first_outcome(mic, timeout=0.5) == "blocked"
     finally:
         mic.stop()
 

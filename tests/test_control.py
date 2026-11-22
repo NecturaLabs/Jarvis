@@ -8,12 +8,12 @@ import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import numpy as np
 import pytest
 
-from jarvis import cli, control
+from jarvis import cli, control, voice
 from jarvis.audio import FRAME, AudioError, MicPausedError, PausableMic
 from jarvis.audit import AuditLog
 
@@ -40,6 +40,8 @@ FRAME_DATA = np.zeros(FRAME, dtype=np.int16)
         ("idle", False, None, "unavailable"),
         ("idle", False, "failed", "unavailable"),
         ("idle", False, "loading", "model loading"),
+        ("no-mic", False, "loaded", "unavailable"),
+        ("no-mic", True, "loaded", "paused"),
     ],
 )
 def test_the_public_state_is_one_of_the_bars_states(
@@ -202,9 +204,13 @@ class Model:
     state: str | None = "loaded"
     unloads: int = 0
     warms: int = 0
+    missing: bool = False
 
     def status(self) -> str | None:
         return self.state
+
+    def file_missing(self) -> bool:
+        return self.missing
 
     def unload(self) -> bool:
         self.unloads += 1
@@ -240,6 +246,52 @@ def test_an_unreachable_model_server_shows_unavailable() -> None:
     controls = control.Controls(Loop(), Mic(), Model(None))
 
     assert controls("status") == {"state": "unavailable", "paused": False, "model": "unreachable"}
+
+
+def test_a_model_server_down_for_a_missing_model_file_says_so() -> None:
+    # `/mnt/models` not mounted: systemd skips Strata, whose model file is not there.
+    controls = control.Controls(Loop(), Mic(), Model(None, missing=True))
+
+    assert controls("status") == {"state": "unavailable", "paused": False, "model": "missing"}
+
+
+def test_a_missing_model_file_does_not_matter_while_the_server_answers() -> None:
+    controls = control.Controls(Loop(), Mic(), Model("loaded", missing=True))
+
+    assert controls("status")["model"] == "loaded"
+
+
+def test_after_a_suspend_the_model_is_checked_and_loaded_again() -> None:
+    model, later = Model(), Later()
+    controls = control.Controls(Loop(), Mic(), model, background=later)
+
+    controls.after_sleep()
+
+    assert model.warms == 0  # in the background, not on the voice loop's thread
+    later.run()
+    assert model.warms == 1
+
+
+def test_after_a_suspend_a_paused_jarvis_leaves_the_model_unloaded() -> None:
+    model, later = Model(), Later()
+    controls = control.Controls(Loop(), Mic(paused=True), model, background=later)
+
+    controls.after_sleep()
+    later.run()
+
+    assert model.warms == 0
+
+
+def test_a_pause_while_waiting_for_the_microphone_frees_the_model_at_once() -> None:
+    def sleep(_seconds: float) -> None:
+        pytest.fail("no request is in flight while the microphone is gone")
+
+    model, later = Model(), Later()
+    controls = control.Controls(Loop("no-mic"), Mic(), model, background=later, sleep=sleep)
+    controls("pause")
+    later.run()
+
+    assert model.unloads == 1
 
 
 def test_pause_hushes_lets_go_of_the_mic_and_then_frees_the_model() -> None:
@@ -338,6 +390,10 @@ class Capture:
         self.stops += 1
         self._ended.set()
 
+    def end(self) -> None:
+        """End on its own, the way `pw-record` does when PipeWire restarts."""
+        self._ended.set()
+
     def drain(self) -> None:
         pass
 
@@ -431,6 +487,123 @@ def test_stop_ends_a_wait_for_resume_and_then_every_reader() -> None:
     assert not mic.resume()
 
 
+class Broken(Capture):
+    """A capture whose tool cannot be started (PipeWire's `pw-record` missing, say)."""
+
+    @override
+    def start(self) -> None:
+        self.starts += 1
+        self.end()  # like `Microphone`: a capture that never started has ended
+        msg = "could not start pw-record"
+        raise AudioError(msg)
+
+
+@dataclass
+class Waits:
+    """Records each wait a recovery asks for, without waiting; `stop_at` answers 'stopped'."""
+
+    seconds: list[float] = field(default_factory=list[float])
+    stop_at: int | None = None
+
+    def __call__(self, _event: threading.Event, seconds: float) -> bool:
+        self.seconds.append(seconds)
+        return self.stop_at is not None and len(self.seconds) >= self.stop_at
+
+
+def test_a_capture_that_ended_on_its_own_is_started_again() -> None:
+    capture = Capture()
+    mic = PausableMic(capture, wait=Waits())
+    mic.start()
+    capture.end()
+    with pytest.raises(AudioError) as error:
+        next(mic.frames())
+    assert not isinstance(error.value, MicPausedError)
+
+    assert mic.recover()
+    assert capture.starts == 2
+    assert next(mic.frames()) is FRAME_DATA
+
+
+def test_each_failed_reopen_waits_longer_up_to_a_cap_and_a_frame_starts_over() -> None:
+    waits = Waits()
+    capture = Capture()
+    mic = PausableMic(capture, wait=waits)
+    mic.start()
+    for _ in range(8):
+        capture.end()
+        assert mic.recover()
+
+    assert waits.seconds == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 30.0]
+    next(mic.frames())  # the microphone works again
+    capture.end()
+    assert mic.recover()
+    assert waits.seconds[-1:] == [1.0]
+
+
+def _until_interrupted(event: threading.Event, _seconds: float) -> bool:
+    """A reopen wait that only a pause or stop ends (twice as long as a test waits)."""
+    return event.wait(2 * WAIT_S)
+
+
+def test_stop_ends_a_reopen_wait_without_starting_a_capture() -> None:
+    capture = Capture()
+    mic = PausableMic(capture, wait=_until_interrupted)
+    mic.start()
+    capture.end()
+    done = threading.Event()
+    answer: list[bool] = []
+
+    def recover() -> None:
+        answer.append(mic.recover())
+        done.set()
+
+    threading.Thread(target=recover, daemon=True).start()
+    assert not done.wait(0.1)  # waiting before the first reopen
+    mic.stop()
+
+    assert done.wait(WAIT_S)
+    assert answer == [False]
+    assert capture.starts == 1
+
+
+def test_a_stopped_microphone_is_not_reopened() -> None:
+    capture = Capture()
+    mic = PausableMic(capture, wait=Waits())
+    mic.start()
+    mic.stop()
+
+    assert not mic.recover()
+    assert capture.starts == 1
+
+
+def test_a_pause_during_a_reopen_wait_leaves_the_microphone_closed_until_resume() -> None:
+    capture = Capture()
+    mic = PausableMic(capture, wait=_until_interrupted)
+    mic.start()
+    capture.end()
+    done = threading.Event()
+    threading.Thread(target=lambda: (mic.recover(), done.set()), daemon=True).start()
+    assert not done.wait(0.1)
+
+    assert mic.pause()
+    assert done.wait(WAIT_S)  # the pause ends the wait
+    assert capture.starts == 1
+    with pytest.raises(MicPausedError):
+        next(mic.frames())
+    assert mic.resume()
+    assert capture.starts == 2
+
+
+def test_a_capture_tool_that_cannot_start_is_tried_again_later() -> None:
+    capture = Broken()
+    mic = PausableMic(capture, wait=Waits())
+
+    assert mic.recover()  # the failure is logged, not raised: the loop listens on and retries
+    assert capture.starts == 1
+    with pytest.raises(AudioError):
+        next(mic.frames())
+
+
 def _serve_fake(reply: dict[str, object]) -> control.ControlServer:
     server = control.ControlServer(lambda _c: reply)
     server.start()
@@ -453,6 +626,22 @@ def test_status_json_when_jarvis_is_not_running(
         "model": "loaded",
         "running": False,
     }
+
+
+def test_status_without_jarvis_names_a_missing_model_file(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def missing(_cfg: object) -> Model:
+        return Model(None, missing=True)
+
+    monkeypatch.setattr(cli, "_strata", missing)
+
+    assert cli.main(["status", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["model"] == "missing"
+    assert cli.main(["status"]) == 1
+    assert capsys.readouterr().out == (
+        "jarvis: not running, model: file missing (is its drive mounted?)\n"
+    )
 
 
 def test_status_without_jarvis_or_model_server_fails(
@@ -620,3 +809,7 @@ def test_an_unload_and_the_load_a_quick_resume_starts_take_turns() -> None:
         worker.join(WAIT_S)
 
     assert order == ["unloaded", "warmed"]
+
+
+def test_the_lost_microphone_state_is_the_voice_loops() -> None:
+    assert control.NO_MIC == voice.State.NO_MIC

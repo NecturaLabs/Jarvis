@@ -45,6 +45,17 @@ _NOT_SPOKEN = re.compile(r"[\U0001F000-\U0001FAFF☀-➿️‍]")
 _QUESTION_MARKS = re.compile(r"[\[\]()`*_]")
 
 
+SLEPT_S = 2.0  # the boot clock running this far ahead of the monotonic one is a suspend
+
+
+def time_asleep() -> float:
+    """Return how long the PC has been suspended since it booted, in seconds.
+
+    The boot clock counts the time asleep and the monotonic clock does not (Linux).
+    """
+    return time.clock_gettime(time.CLOCK_BOOTTIME) - time.monotonic()
+
+
 def speakable(text: str) -> str:
     """Return a reply as plain words: no markdown marks or emoji, lines joined as sentences."""
     text = _MD_LINK.sub(r"\1", text[:MAX_SPOKEN_CHARS])
@@ -90,6 +101,7 @@ class State(StrEnum):
     CONFIRM = "confirm"
     SPEAK = "speak"
     FOLLOW_UP = "follow-up"  # listening for a request without the wake word after a reply
+    NO_MIC = "no-mic"  # the microphone's capture ended on its own; waiting to reopen it
 
 
 # While the loop is in these states, a wake word in PC audio is still noted (it may be the same
@@ -246,6 +258,10 @@ class VoiceLoop:
         dictating: Callable[[], bool] = lambda: False,
         paused: Callable[[], bool] = lambda: False,
         until_resumed: Callable[[], None] = lambda: None,
+        reopen: Callable[[], bool] | None = None,
+        locked: Callable[[], bool] = lambda: False,
+        asleep_s: Callable[[], float] = time_asleep,
+        after_sleep: Callable[[], None] = lambda: None,
     ) -> None:
         """Wire the loop to its parts.
 
@@ -257,6 +273,11 @@ class VoiceLoop:
         follow-up request is taken from the microphone meanwhile. `paused` says whether
         `jarvis pause` let go of the microphone: a request in flight then ends without an
         apology, and PC audio is not listened to; `until_resumed` returns once it is over.
+        `reopen` starts the microphone again after its capture ended on its own (PipeWire
+        restarted, the microphone unplugged) and answers False once Jarvis is stopping; without
+        it, that end ends the loop. While `locked` is true, a wake word or a PC request is
+        ignored (it is asked only then). `asleep_s` is how long the PC has slept since boot: when
+        it grows, the loop listens afresh and calls `after_sleep`.
         """
         super().__init__()
         self._agent = agent
@@ -275,6 +296,11 @@ class VoiceLoop:
         self._dictating = dictating
         self._paused = paused
         self._until_resumed = until_resumed
+        self._reopen = reopen
+        self._locked = locked
+        self._asleep_s = asleep_s
+        self._after_sleep = after_sleep
+        self._asleep = asleep_s()  # the sleep seen so far
         self._muted = False  # `jarvis hush` came during this request: say nothing more
         self._answered = False  # the last request was the owner's and was answered by voice
         self._should_stop: Callable[[], bool] = lambda: False
@@ -818,9 +844,13 @@ class VoiceLoop:
     def run(self, should_stop: Callable[[], bool] = lambda: False) -> None:
         """Listen for the wake word and handle requests until `should_stop` is true.
 
-        A request that fails is apologised for and the loop carries on; a microphone that stops
-        delivering ends the loop with its error. `jarvis pause` lets the microphone go until
-        `resume`: the request in flight ends, and listening starts afresh.
+        A request that fails is apologised for and the loop carries on. A microphone whose
+        capture ends on its own is reopened by `reopen` (the bar shows Jarvis unavailable
+        meanwhile). `jarvis pause` lets the microphone go until `resume`: the request in flight
+        ends, and listening starts afresh.
+
+        Raises:
+            AudioError: the microphone's capture ended and the loop has no `reopen`.
         """
         self._should_stop = should_stop
         log.info("listening for the wake word")
@@ -842,23 +872,61 @@ class VoiceLoop:
                     return
                 log.info("resumed: listening for the wake word")
                 continue
+            except AudioError as exc:
+                if self._reopen is None:
+                    raise
+                if should_stop():
+                    return
+                log.warning("the microphone stopped (%s); opening it again", exc)
+                self.state = State.NO_MIC
+                self._wake.reset()
+                reopened = self._reopen()
+                self.state = State.IDLE
+                if not reopened or should_stop():
+                    return
+                continue
             return
+
+    def _slept(self) -> bool:
+        """Whether the PC slept since the last frame; if so, start listening afresh."""
+        asleep = self._asleep_s()
+        slept, self._asleep = asleep - self._asleep, asleep
+        if slept < SLEPT_S:
+            return False
+        log.info("back from sleep after %.0f s: listening afresh", slept)
+        self._wake.reset()
+        self._mic.drain()  # frames from before the sleep
+        self._after_sleep()
+        return True
+
+    def _ignored_while_locked(self, what: str) -> bool:
+        if not self._locked():
+            return False
+        log.info("%s was ignored: the screen is locked (audio.listen_when_locked is off)", what)
+        return True
 
     def _listen(self, should_stop: Callable[[], bool]) -> None:
         """Hear wake words and requests until stopping; `MicPausedError` once paused."""
         for frame in self._mic.frames():
             if should_stop():
                 return
+            if self._slept():
+                continue
             try:
                 pc_request = self._pc_heard.get_nowait()
             except queue.Empty:
                 pass
             else:
+                if self._ignored_while_locked("a PC-audio request"):
+                    continue
                 self._requests += 1
                 self._serve(functools.partial(self._answer_pc, pc_request))
                 self._mic.drain()
                 continue
             if self._wake.heard(frame):
+                if self._ignored_while_locked("the wake word"):
+                    self._wake.reset()
+                    continue
                 wake_at = self._clock()
                 log.info("wake word")
                 self._serve(functools.partial(self.handle_wake, wake_at))

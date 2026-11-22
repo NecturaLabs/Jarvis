@@ -247,6 +247,16 @@ def chat_memory_file() -> Path:
     return paths.state_dir() / "chat-conversation.json"
 
 
+def strata_model(config: Config, key: str) -> StrataModel:
+    """Return the client for this config's Strata server, knowing its model file when set."""
+    model_file = config.strata.model_file
+    return StrataModel(
+        config.model.model_copy(update={"base_url": config.model_base_url()}),
+        key,
+        model_file=model_file if model_file != Path() else None,
+    )
+
+
 def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvis:
     """Assemble the agent from the config.
 
@@ -267,7 +277,7 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
     if not key:
         msg = f"no Strata API key at {strata_key_file()}; run `jarvis setup`"
         raise SetupError(msg)
-    model = StrataModel(config.model.model_copy(update={"base_url": config.model_base_url()}), key)
+    model = strata_model(config, key)
     tokens = TokenStore(config.spotify.client_id, spotify_token_file())
     ops = SpotifyOps(
         SpotifyApi(tokens, library_ttl_s=config.spotify.library_refresh_s), config.spotify

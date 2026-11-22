@@ -13,11 +13,13 @@ from jarvis.model import (
     WARM_RETRY_S,
     Delta,
     ModelError,
+    ModelMissingError,
     StrataModel,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
+    from pathlib import Path
 
 TOOLS: list[dict[str, Any]] = [{"type": "function", "function": {"name": "x"}}]
 MESSAGES: list[dict[str, Any]] = [{"role": "user", "content": "hi"}]
@@ -541,3 +543,62 @@ def test_a_long_retry_after_does_not_stretch_the_number_of_attempts() -> None:
 
     assert model.warm(attempts=3) is False
     assert waits == [20.0, 20.0, 20.0]
+
+
+def _refused(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("refused", request=request)
+
+
+def test_a_server_down_with_its_model_file_missing_fails_at_once_and_says_why(
+    tmp_path: Path,
+) -> None:
+    # `/mnt/models` not mounted: systemd skipped Strata, so there is nothing to wait for.
+    naps: list[float] = []
+    local = ModelConfig(base_url=Config().model_base_url())
+    model = StrataModel(
+        local,
+        "key",
+        transport=httpx.MockTransport(_refused),
+        sleep=naps.append,
+        model_file=tmp_path / "gone.gguf",
+    )
+
+    with pytest.raises(ModelMissingError, match=r"gone\.gguf"):
+        model.chat(MESSAGES, TOOLS)
+    assert naps == []
+    assert model.file_missing()
+
+
+def test_a_server_down_with_its_model_file_present_is_waited_for(tmp_path: Path) -> None:
+    present = tmp_path / "model.gguf"
+    present.write_bytes(b"")
+    naps: list[float] = []
+    local = ModelConfig(base_url=Config().model_base_url())
+    model = StrataModel(
+        local,
+        "key",
+        transport=httpx.MockTransport(_refused),
+        sleep=naps.append,
+        clock=_ticking(),
+        model_file=present,
+    )
+
+    with pytest.raises(ModelError) as error:
+        model.chat(MESSAGES, TOOLS, timeout_s=3.0)
+    assert not isinstance(error.value, ModelMissingError)
+    assert naps  # it waited for the server to come back
+    assert not model.file_missing()
+
+
+def test_without_a_model_file_none_is_missing() -> None:
+    assert not _model(httpx.MockTransport(_refused)).file_missing()
+
+
+def _ticking() -> Callable[[], float]:
+    now = [0.0]
+
+    def clock() -> float:
+        now[0] += 0.5
+        return now[0]
+
+    return clock

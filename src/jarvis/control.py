@@ -46,6 +46,7 @@ _LOOP_STATES = {
     "speak": "speaking",
 }
 
+NO_MIC = "no-mic"  # voice.State.NO_MIC: the loop waits to reopen a lost microphone
 IDLE_WAIT_S = 120.0  # how long a pause waits for the request in flight before unloading
 IDLE_POLL_S = 0.25
 
@@ -76,6 +77,7 @@ class _NoAudit:
 
 class _Model(Protocol):
     def status(self) -> str | None: ...
+    def file_missing(self) -> bool: ...
     def unload(self) -> bool: ...
     def warm(self) -> bool: ...
 
@@ -98,10 +100,12 @@ def public_state(loop_state: str, *, paused: bool, model: str | None) -> str:
 
     A request in flight shows what the loop does whatever the model's state; at rest, a model
     server that cannot be reached is `unavailable`, and a model on its way into memory is
-    `model loading`.
+    `model loading`. A loop waiting to reopen a lost microphone is `unavailable` too.
     """
     if paused:
         return "paused"
+    if loop_state == NO_MIC:
+        return "unavailable"
     shown = _LOOP_STATES.get(loop_state, "idle")
     if shown != "idle":
         return shown
@@ -110,6 +114,11 @@ def public_state(loop_state: str, *, paused: bool, model: str | None) -> str:
     if model == "loading":
         return "model loading"
     return "idle"
+
+
+def unreachable_model(model: _Model) -> str:
+    """Name an unreachable model server's state: `missing` when the model file is not there."""
+    return "missing" if model.file_missing() else "unreachable"
 
 
 class Controls:
@@ -165,7 +174,7 @@ class Controls:
         return {
             "state": public_state(str(self._loop.state), paused=paused, model=model),
             "paused": paused,
-            "model": model or "unreachable",
+            "model": model or unreachable_model(self._model),
         }
 
     def _pause(self) -> dict[str, Any]:
@@ -181,12 +190,24 @@ class Controls:
 
     def _unload_when_idle(self, pause: int) -> None:
         deadline = self._clock() + IDLE_WAIT_S
-        while str(self._loop.state) != "idle" and self._clock() < deadline:
+        while self._in_flight() and self._clock() < deadline:
             self._sleep(IDLE_POLL_S)
         with self._model_turn:
             if pause == self._pauses and self._mic.paused:
                 log.info("paused: unloading the model")
                 self._model.unload()
+
+    def _in_flight(self) -> bool:
+        return str(self._loop.state) not in {"idle", NO_MIC}
+
+    def after_sleep(self) -> None:
+        """After a suspend: load the model again unless paused (the server may have lost it).
+
+        Called on the voice loop's thread; the load runs in the background.
+        """
+        with self._commands:
+            resume = self._pauses
+        self._background(lambda: self._warm(resume))  # `_warm` skips it while paused
 
     def _warm(self, resume: int) -> None:
         with self._model_turn:

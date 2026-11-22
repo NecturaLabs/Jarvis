@@ -227,6 +227,9 @@ def _loop(
     pc_wake: Wake | None = None,
     dictating: Callable[[], bool] = lambda: False,
     transcribe: Callable[[NDArray[np.int16]], str] | None = None,
+    locked: Callable[[], bool] = lambda: False,
+    asleep_s: Callable[[], float] = lambda: 0.0,
+    after_sleep: Callable[[], None] = lambda: None,
 ) -> VoiceLoop:
     listener = None if pc is None else PcListener(pc, pc_wake or Wake(), Vad())
     return VoiceLoop(
@@ -243,6 +246,9 @@ def _loop(
         clock=clock or Clock(),
         pc_retry_s=0,
         dictating=dictating,
+        locked=locked,
+        asleep_s=asleep_s,
+        after_sleep=after_sleep,
     )
 
 
@@ -1335,6 +1341,10 @@ class Capture:
         self.stops += 1
         self._ended.set()
 
+    def end(self) -> None:
+        """End on its own, the way `pw-record` does when PipeWire restarts."""
+        self._ended.set()
+
     def drain(self) -> None:
         pass
 
@@ -1462,3 +1472,178 @@ def test_a_paused_loop_says_nothing_more() -> None:
     _run(loop)
 
     assert speaker.said == ["One."]
+
+
+def _reopening_loop(
+    agent: Agent, mic: PausableMic, reopened: list[State]
+) -> tuple[VoiceLoop, Callable[[], bool]]:
+    holder: list[VoiceLoop] = []
+
+    def reopen() -> bool:
+        reopened.append(holder[0].state)
+        return mic.recover()
+
+    loop = VoiceLoop(
+        agent,
+        mic,
+        Wake(),
+        Vad(),
+        Speaker(),
+        CFG,
+        lambda _samples: "pause the music",
+        paused=lambda: mic.paused,
+        until_resumed=mic.wait_resumed,
+        reopen=reopen,
+    )
+    holder.append(loop)
+    return loop, reopen
+
+
+def _no_waits(_event: threading.Event, _seconds: float) -> bool:
+    return False
+
+
+def test_a_microphone_that_ends_on_its_own_is_reopened_and_requests_are_heard_again() -> None:
+    # PipeWire restarting ends `pw-record`; on 2026-11-21 that ended `jarvis run` with an error.
+    agent = Agent()
+    reopened: list[State] = []
+
+    def end() -> None:
+        script.end()
+
+    script = Capture(SILENCE, end, SILENCE, *REQUEST)
+    mic = PausableMic(script, wait=_no_waits)
+    loop, _ = _reopening_loop(agent, mic, reopened)
+
+    _run(loop)  # the script's end ends the loop
+
+    assert reopened == [State.NO_MIC]  # the bar shows Jarvis unavailable meanwhile
+    assert script.starts == 1  # the reopen started a new capture
+    assert agent.calls == [("pause the music", Origin.OWNER_SPEECH)]
+    assert loop.state is State.IDLE
+
+
+def test_a_reopen_refused_by_a_stopped_microphone_ends_the_loop() -> None:
+    agent = Agent()
+
+    def end() -> None:
+        script.end()  # the capture made below; a bound method taken now would be unset
+
+    script = Capture(SILENCE, end, SILENCE)
+    mic = PausableMic(script, wait=_no_waits)
+    reopened: list[State] = []
+    loop, _ = _reopening_loop(agent, mic, reopened)
+    mic.stop()  # `jarvis stop`: the reader ends and the reopen answers False
+
+    loop.run(lambda: False)  # returns instead of reopening for ever
+
+    assert reopened == [State.NO_MIC]
+    assert script.starts == 0
+    assert loop.state is State.IDLE
+
+
+def test_a_microphone_ended_by_stopping_jarvis_is_not_reopened() -> None:
+    reopened: list[State] = []
+    stopping = [False]
+
+    def stop() -> None:
+        stopping[0] = True
+        mic.stop()
+
+    script = Capture(SILENCE, stop, SILENCE)
+    mic = PausableMic(script, wait=_no_waits)
+    loop, _ = _reopening_loop(Agent(), mic, reopened)
+
+    loop.run(lambda: stopping[0])
+
+    assert reopened == []
+
+
+def test_without_a_reopen_an_ended_microphone_still_ends_the_loop() -> None:
+    def end() -> None:
+        script.end()  # the capture made below; a bound method taken now would be unset
+
+    script = Capture(SILENCE, end, SILENCE)
+    loop = VoiceLoop(Agent(), script, Wake(), Vad(), Speaker(), CFG, lambda _s: "")
+
+    with pytest.raises(AudioError):
+        loop.run(lambda: False)
+
+
+def test_a_wake_word_is_ignored_while_the_screen_is_locked() -> None:
+    agent = Agent()
+    asked: list[bool] = []
+
+    def locked() -> bool:
+        asked.append(True)
+        return True
+
+    _run(_loop(agent, Mic(*REQUEST), Speaker(), locked=locked))
+
+    assert asked == [True]  # asked once, when the wake word came, not per frame
+    assert agent.calls == []
+
+
+def test_a_wake_word_is_answered_while_unlocked() -> None:
+    agent = Agent()
+
+    _run(_loop(agent, Mic(*REQUEST), Speaker(), locked=lambda: False))
+
+    assert agent.calls == [("pause the music", Origin.OWNER_SPEECH)]
+
+
+def test_a_pc_request_is_ignored_while_the_screen_is_locked() -> None:
+    agent = Agent()
+    asked: list[bool] = []
+
+    def locked() -> bool:
+        asked.append(True)
+        return True
+
+    pc = PcAudio(SILENCE, WAKE, SPEECH, SPEECH, *[SILENCE] * 5)
+    mic = Mic(Idle(lambda: bool(asked)), *[SILENCE] * 3)
+
+    _run(_loop(agent, mic, Speaker(), pc=pc, locked=locked))
+
+    assert agent.calls == []
+
+
+def test_after_a_suspend_the_loop_listens_afresh_and_says_so() -> None:
+    agent = Agent()
+    asleep = [0.0]
+    woke: list[bool] = []
+
+    def suspend() -> None:
+        asleep[0] += 600.0  # ten minutes asleep: the boot clock ran on, the monotonic did not
+
+    drained: list[int] = []
+    mic = Mic(SILENCE, suspend, SILENCE, SILENCE, lambda: drained.append(mic.drained), *REQUEST)
+    loop = _loop(
+        agent, mic, Speaker(), asleep_s=lambda: asleep[0], after_sleep=lambda: woke.append(True)
+    )
+
+    _run(loop)
+
+    assert woke == [True]
+    assert drained == [1]  # frames from before the sleep were dropped
+    assert agent.calls == [("pause the music", Origin.OWNER_SPEECH)]
+
+
+def test_no_suspend_is_seen_when_the_clocks_agree() -> None:
+    woke: list[bool] = []
+    asleep = [0.0]
+
+    def drift() -> None:
+        asleep[0] += 0.5  # clock noise, not a sleep
+
+    _run(
+        _loop(
+            Agent(),
+            Mic(SILENCE, drift, SILENCE, *REQUEST),
+            Speaker(),
+            asleep_s=lambda: asleep[0],
+            after_sleep=lambda: woke.append(True),
+        )
+    )
+
+    assert woke == []
