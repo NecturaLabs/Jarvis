@@ -6,12 +6,13 @@ The results of the last run are in [models.md](../models.md#wake-word-and-end-of
 ## What you need
 
 - **A training machine** with a CUDA GPU or an Apple silicon Mac. A 6 GB card is enough: one phrase trains in
-  about 13 minutes. Detection on the Jarvis PC needs no GPU (three models together: 1.4 % of one core).
+  about 13 minutes. Detection on the Jarvis PC needs no GPU: three models in Jarvis's detector, fed 80 ms frames, measured
+  1.4 % of one core there (2026-11-22).
 - **The trainer**: a Python 3.13 virtual environment with `livekit-wakeword[train]==2.1.3` (the version
   `pyproject.toml` pins for detection), PyTorch with CUDA, and about 20 GB of Hugging Face cache for the noise,
   room and speech sources `setup` downloads. Log in to Hugging Face (`hf auth login`) so the downloads are not
   rate-limited.
-- **A LiveKit Cloud project per phrase or so.** `setup` makes about 2,850 spoken clips per phrase with LiveKit's
+- **One LiveKit Cloud project per phrase.** `setup` makes about 2,850 spoken clips per phrase with LiveKit's
   speech service, and a free project's monthly credit runs out after about one phrase. Keep each project's
   `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` in its own file (mode 0600), outside the
   repository, on the training machine and wherever you keep spares. Only the generated speech uses the
@@ -39,8 +40,8 @@ its PID recorded (`nohup … & echo $! > train.pid`): setup takes 8 to 15 minute
   everyday-sound false alarms are missing. Drop `--ungated` once access is granted.
 - **One run per GPU at a time.** Queue the next phrase behind the running one (wait on its PID) rather than
   starting both.
-- Both gated sets are non-commercial or research-only: keep them, and anything made from them, on the training
-  machine. Never commit them.
+- Both gated sets carry research or non-commercial terms: keep them and their clips out of the repository and
+  off the Jarvis PC; record only the scores.
 
 ## Benchmark before deploying
 
@@ -75,8 +76,8 @@ Compare models at the same false-wake rate on the media, not at the same thresho
 on the same scale.
 
 - **ONNX Runtime takes every core per session** unless told otherwise; `OMP_NUM_THREADS` does not limit it.
-  `wake_bench.py` loads each model with one thread. Running the trainer's `eval --media` runs beside it still
-  use every core, so keep the worker count to about half the cores while those run.
+  `wake_bench.py` loads each model with one thread. The trainer's `eval --media` still uses every core, so
+  while it runs beside the benchmark, keep `--workers` to about half the cores.
 - `wake_bench.py` runs under the trainer's Python 3.13 and Jarvis's 3.14; keep it free of 3.14-only syntax.
 - The owner's own voice is the last check: record a few "wake" attempts and an evening of normal desk audio
   (`docs/plan.md`, the wake test) before changing the defaults.

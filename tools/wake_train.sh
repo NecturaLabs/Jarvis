@@ -12,7 +12,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  sed -n '2,12p' "$0" >&2
+  sed -n '2,11p' "$0" >&2
   exit 2
 fi
 key=$1

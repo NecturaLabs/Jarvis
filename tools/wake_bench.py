@@ -3,7 +3,7 @@
 
 The trainer's own test set (`livekit-wakeword eval`) speaks with the same speech service the models
 were trained on, and holds about an hour of other audio, so a single false wake there already reads
-as one an hour. This adds two checks that do not share those limits:
+as one an hour. This adds two checks that do not share those limits, in four commands:
 
 - `synth` makes each wake phrase and a list of similar-sounding phrases with every local Kokoro
   voice (English and accented) and the Piper voice, at three speeds, through Jarvis's own
