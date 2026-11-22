@@ -81,7 +81,7 @@ def _message(response: httpx.Response) -> dict[str, Any]:
     Raises:
         ModelError: the server refused or the answer holds no message object.
     """
-    if response.status_code >= 400:  # ruff: ignore[magic-value-comparison]
+    if response.is_error:
         msg = f"model server answered {response.status_code}: {response.text[:200]}"
         raise ModelError(msg)
     try:
@@ -346,7 +346,7 @@ class StrataModel:
         Raises:
             ModelError: the server refused, sent something unreadable or ran out of time.
         """
-        if response.status_code >= 400:  # ruff: ignore[magic-value-comparison]
+        if response.is_error:
             response.read()
             return _message(response)
         answer = _Assembly()
