@@ -702,7 +702,16 @@ def _source_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
     source = cfg.audio.source
     if not source:
         return []
-    found = source_found(pw_dump(), source)
+    graph = pw_dump()
+    if not graph:  # a running PipeWire always lists its own nodes
+        return [
+            (
+                False,
+                f"audio.source {source} not checked: PipeWire's graph (pw-dump) could not be read",
+                "check that PipeWire runs: `systemctl --user status pipewire`",
+            )
+        ]
+    found = source_found(graph, source)
     return [
         (
             found,

@@ -24,7 +24,15 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import numpy as np
 
 from jarvis.agent import Hooks
-from jarvis.audio import FRAME, RATE, AudioError, MicPausedError, is_phantom, write_wav
+from jarvis.audio import (
+    FRAME,
+    RATE,
+    AudioError,
+    MicPausedError,
+    is_phantom,
+    keyword_tail,
+    write_wav,
+)
 from jarvis.policy import Origin, is_yes
 from jarvis.sentences import split_sentences
 
@@ -132,7 +140,8 @@ class _Wake(Protocol):
 
 @runtime_checkable
 class _Leads(Protocol):
-    """A wake word heard late (the Azure helper): it keeps the audio since the keyword ended."""
+    """A wake word heard late (the Azure helper): it keeps the audio from just before the keyword
+    ended (`audio.AZURE_LEAD_BACK`) to its detection."""
 
     def after_wake(self) -> list[NDArray[np.int16]]: ...
 
@@ -140,9 +149,9 @@ class _Leads(Protocol):
 def _with_lead(
     wake: object, frames: Iterator[NDArray[np.int16]]
 ) -> tuple[Iterator[NDArray[np.int16]], int]:
-    """Return `frames` after those a late wake word kept since its keyword ended, and how many."""
+    """Return `frames` after those a late wake word kept, and how many of those are its keyword."""
     lead = wake.after_wake() if isinstance(wake, _Leads) else []
-    return itertools.chain(lead, frames), len(lead)
+    return itertools.chain(lead, frames), keyword_tail(lead)
 
 
 class _Vad(Protocol):

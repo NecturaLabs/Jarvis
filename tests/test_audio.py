@@ -983,7 +983,7 @@ def test_a_status_command_that_cannot_start_leaves_the_state_unknown_and_is_trie
     assert watch.dictating() is None
 
 
-def test_a_status_command_that_exits_means_no_daemon_and_is_started_again(
+def test_a_status_command_that_exits_is_started_again(
     watches: Callable[..., VoxtypeWatch], tmp_path: Path
 ) -> None:
     seen = tmp_path / "seen"
@@ -996,13 +996,15 @@ def test_a_status_command_that_exits_means_no_daemon_and_is_started_again(
 
     watch = watches([sys.executable, "-I", "-c", script], retry_s=0.01)
 
-    # The first run exited with an error, which means no daemon; the second reports dictation.
+    # The first run exited with an error; the second reports dictation.
     assert _eventually(lambda: watch.dictating() is True)
 
 
-def test_a_status_command_that_exits_with_an_error_means_no_daemon(
+def test_a_status_command_that_exits_with_an_error_leaves_the_state_unknown(
     watches: Callable[..., VoxtypeWatch], tmp_path: Path
 ) -> None:
+    # Requirement changed (review of #29): with no daemon, the command prints `stopped` and
+    # keeps running, so one that exits is an older Voxtype or a crash, not "no dictation".
     go = tmp_path / "go"
     watch = watches(
         _status_helper(_status_line("recording", "recording"), f"wait:{go}", "exit"), retry_s=60.0
@@ -1010,7 +1012,7 @@ def test_a_status_command_that_exits_with_an_error_means_no_daemon(
 
     assert _eventually(lambda: watch.dictating() is True)
     go.touch()
-    assert _eventually(lambda: watch.dictating() is False)  # the daemon went away: not dictating
+    assert _eventually(lambda: watch.dictating() is None)
     assert watch.meeting() is False
 
 
@@ -1064,13 +1066,22 @@ def test_a_status_command_that_cannot_start_is_not_tried_again_at_once(
 
 
 @pytest.mark.parametrize(
-    ("wait", "printed", "next_wait"),
-    [(1.0, True, 1.0), (8.0, True, 1.0), (1.0, False, 2.0), (2.0, False, 4.0), (20.0, False, 30.0)],
+    ("wait", "ran_s", "next_wait"),
+    [(1.0, 60.0, 1.0), (8.0, 30.0, 1.0), (1.0, 0.0, 2.0), (2.0, 0.5, 4.0), (20.0, 0.0, 30.0)],
 )
 def test_the_wait_before_the_status_command_is_tried_again_doubles_up_to_a_limit(
-    wait: float, next_wait: float, *, printed: bool
+    wait: float, ran_s: float, next_wait: float
 ) -> None:
-    assert next_retry_wait(wait, printed=printed, first=1.0, longest=30.0) == next_wait
+    assert next_retry_wait(wait, ran_s=ran_s, first=1.0, longest=30.0) == next_wait
+
+
+def test_a_status_command_that_prints_once_and_dies_is_not_restarted_every_second() -> None:
+    # Requirement changed (review of #29): printing a line no longer resets the wait.
+    wait = 1.0
+    for _ in range(6):
+        wait = next_retry_wait(wait, ran_s=0.2, first=1.0, longest=30.0)
+
+    assert wait == 30.0
 
 
 def test_stopping_the_watch_ends_the_status_command_it_started(

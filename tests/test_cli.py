@@ -328,6 +328,20 @@ def test_doctor_checks_that_the_configured_source_is_a_microphone_node(
     assert ("audio.source" in shown and "pw-dump" in shown) is (line == "FAIL")
 
 
+def test_doctor_says_when_pipewire_cannot_be_read_rather_than_blaming_the_source(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config.save(config.Config(data_dir=home, audio=config.AudioConfig(source=_MIC_NODE)))
+    monkeypatch.setattr(audio_module, "pw_dump", list)  # what `pw_dump` returns when it fails
+
+    cli.main(["doctor"])
+
+    (shown,) = [row for row in _doctor_lines(capsys) if f"audio.source {_MIC_NODE}" in row]
+    assert shown.startswith("FAIL")
+    assert "PipeWire" in shown
+    assert "matches no microphone" not in shown
+
+
 def test_doctor_leaves_the_default_microphone_alone(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

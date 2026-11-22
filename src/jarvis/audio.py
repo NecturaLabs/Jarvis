@@ -602,6 +602,23 @@ AZURE_LEAD_BACK = RATE // 4  # start a request 0.25 s before the keyword's repor
 AZURE_ERR_LINES = 20
 
 
+def keyword_tail(lead: list[NDArray[np.int16]]) -> int:
+    """Count the frames of a late wake word's `lead` that start before the keyword ended.
+
+    The lead begins `AZURE_LEAD_BACK` before the keyword's reported end and runs to the
+    detection, which comes 0.3 to 0.6 s later: everything after that first quarter second may
+    already be the request.
+    """
+    tail = 0
+    start = 0
+    for pcm in lead:
+        if start >= AZURE_LEAD_BACK:
+            break
+        tail += 1
+        start += pcm.size
+    return tail
+
+
 def azure_wake_command(python: Path, model: Path, *, check: bool = False) -> list[str]:
     """Return the command that runs the Azure keyword helper with no network.
 
@@ -979,7 +996,6 @@ class VoxtypeState:
     meeting: bool  # a `voxtype meeting` is running
 
 
-NO_DAEMON = VoxtypeState(dictating=False, meeting=False)
 # One long-lived reader (it costs nothing while Voxtype's state is the same) in place of a call
 # every time the loop asks; `--extended` adds the meeting fields.
 VOXTYPE_FOLLOW = ("voxtype", "status", "--follow", "--format", "json", "--extended")
@@ -1009,21 +1025,23 @@ def parse_voxtype_status(line: bytes) -> VoxtypeState | None:
     )
 
 
-def next_retry_wait(wait: float, *, printed: bool, first: float, longest: float) -> float:
+def next_retry_wait(wait: float, *, ran_s: float, first: float, longest: float) -> float:
     """Return how long to wait after a run of the status command that waited `wait` before it.
 
-    A run that printed something starts over at `first`; one that did not doubles, up to `longest`.
+    A run that lasted `longest` or more was healthy and starts over at `first`; a shorter one
+    (one that prints a line and dies, say) doubles the wait, up to `longest`.
     """
-    return first if printed else min(wait * 2, longest)
+    return first if ran_s >= longest else min(wait * 2, longest)
 
 
 class VoxtypeWatch:
     """Follows `voxtype status` in the background, so asking is a read of what it last said.
 
     The state comes from Voxtype's integration contract (`voxtype status`), read-only: Jarvis
-    never starts or stops anything with it. A status that is not known yet, cannot be read or
-    cannot be had (the command will not start) is `None`; a daemon that is not running (the
-    command exits with an error) is not dictating. The command is started again after it ends.
+    never starts or stops anything with it. A daemon that is not running is reported by the
+    command itself (`stopped`: not dictating). A status that is not known yet, cannot be read, or
+    cannot be had (the command will not start, or ends: an older Voxtype without these options,
+    or a crash) is `None`. The command is started again after it ends.
     """
 
     def __init__(
@@ -1086,40 +1104,39 @@ class VoxtypeWatch:
     def _run(self) -> None:
         wait = self._retry_s
         while not self._stop.is_set():
-            printed = self._follow()
+            started = time.monotonic()
+            self._follow()
+            ran_s = time.monotonic() - started
             self._stop.wait(wait)
             wait = next_retry_wait(
-                wait, printed=printed, first=self._retry_s, longest=self._max_retry_s
+                wait, ran_s=ran_s, first=self._retry_s, longest=self._max_retry_s
             )
 
-    def _follow(self) -> bool:
-        """Run the status command once, keeping the state it prints; True if it printed any."""
+    def _follow(self) -> None:
+        """Run the status command once, keeping the state it prints."""
         try:
             proc = subprocess.Popen(
                 self._command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
             )
         except OSError as exc:
             self._unreadable(f"cannot run {self._command[0]}: {exc.strerror or exc}")
-            return False
+            return
         with self._lock:
             if self._stop.is_set():
                 proc.terminate()
             self._proc = proc
-        printed = False
         for line in proc.stdout or ():
             state = parse_voxtype_status(line)
             if state is None:
                 self._unreadable(f"unreadable status {line[:200]!r}")
                 continue
-            printed = True
             self._complained = False
             self._state = state
-        code = proc.wait()
+        proc.wait()
         with self._lock:
             self._proc = None
         if not self._stop.is_set():
-            self._state = NO_DAEMON if code else None
-        return printed
+            self._state = None  # nothing follows the status until the command runs again
 
     def _unreadable(self, why: str) -> None:
         self._state = None

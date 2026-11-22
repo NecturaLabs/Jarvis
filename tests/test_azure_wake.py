@@ -15,6 +15,7 @@ import pytest
 
 from jarvis import azure_wake_helper, cli, config
 from jarvis.audio import (
+    AZURE_LEAD_BACK,
     FRAME,
     RATE,
     AudioError,
@@ -22,6 +23,7 @@ from jarvis.audio import (
     FallbackWake,
     OwnVoiceCheck,
     azure_wake_command,
+    keyword_tail,
 )
 from jarvis.cli import main
 
@@ -629,3 +631,15 @@ def test_the_helper_namespace_has_no_network() -> None:
     )
 
     assert done.returncode == 0, done.stderr
+
+
+def test_only_the_lead_frames_that_start_before_the_keywords_end_are_its_tail() -> None:
+    first = AZURE_LEAD_BACK - 2 * FRAME - 1  # a partial first frame, cut where the lead begins
+    lead = [np.zeros(first, np.int16), *[np.zeros(FRAME, np.int16)] * 6]
+
+    assert keyword_tail(lead) == 4  # the fourth starts one sample before the keyword's end
+    lead[0] = np.zeros(first + 1, np.int16)
+    assert keyword_tail(lead) == 3  # now it starts right at the end: it is the request's
+    assert keyword_tail(lead[:2]) == 2
+    assert keyword_tail([]) == 0
+

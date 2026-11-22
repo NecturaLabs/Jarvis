@@ -400,6 +400,17 @@ def test_the_minimum_speech_is_asked_of_the_request_not_the_keywords_tail(
     assert len(agent.calls) == calls
 
 
+def test_a_short_request_heard_before_a_late_wake_word_was_reported_is_kept() -> None:
+    # Azure reports the keyword 0.3-0.6 s after it ended: a short "stop" said at once is all in
+    # the frames the wake word kept, none of it in the live microphone frames after them.
+    agent = Agent()
+    mic = Mic(WAKE, *[SILENCE] * 8)
+
+    _run(_loop(agent, mic, Speaker(), wake=LateWake([SPEECH] * 9)))
+
+    assert len(agent.calls) == 1
+
+
 def test_a_click_after_the_wake_word_in_pc_audio_is_not_a_request() -> None:
     agent = Agent()
     pc = PcAudio(SILENCE, WAKE, SPEECH, *[SILENCE] * 5)
