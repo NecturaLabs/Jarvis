@@ -63,19 +63,10 @@ def wake_files(cfg: config.Config) -> list[Path]:
 
 
 def livekit_wake(cfg: config.Config) -> WakeWord:
-    """Return LiveKit's detector for the wake words that are on and have a model file.
-
-    A word whose file is missing is left out with a warning, so one missing model does not
-    leave Jarvis deaf; with none found, all are passed on so loading fails as it would for one.
-    """
+    """Return LiveKit's detector for the wake words that are on (it skips any unusable file)."""
     from jarvis.audio import WakeWord  # ruff: ignore[import-outside-top-level]
 
-    files = wake_files(cfg)
-    found = [path for path in files if path.is_file()]
-    for path in files:
-        if path not in found:
-            log.warning("no wake word model at %s; not listening for %s", path, path.stem)
-    return WakeWord(found or files, cfg.audio.wake_threshold)
+    return WakeWord(wake_files(cfg), cfg.audio.wake_threshold)
 
 
 def wake_word(cfg: config.Config) -> WakeWord | FallbackWake:
@@ -721,8 +712,8 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     cfg = _load()
     from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level]
 
+    wake_check, wake_notes = _wake_checks(cfg)
     files = [
-        *wake_files(cfg),
         cfg.data_dir / VAD_MODEL,
         *voice_files(cfg.data_dir, cfg.audio.voice),
     ]
@@ -732,6 +723,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         (paths.config_file().exists(), f"config {paths.config_file()}", "run jarvis setup"),
         (bool(cfg.spotify.client_id), "Spotify client ID", "jarvis setup --spotify-client-id <id>"),
         _spotify_login(cfg),
+        wake_check,
         *((f.exists(), f"file {f}", "see docs/models.md") for f in files),
         *unreadable,
         *_whisper_model(cfg),
@@ -756,9 +748,32 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     ]
     for ok, what, fix in checks:
         print(f"{'ok ' if ok else 'FAIL'} {what}" + ("" if ok else f"  -> {fix}"))
-    for line in release_lines:
+    for line in [*wake_notes, *release_lines]:
         print(line)
     return 0 if all(ok for ok, _, _ in checks) else 1
+
+
+def _wake_checks(cfg: config.Config) -> tuple[tuple[bool, str, str], list[str]]:
+    """Return the check that a wake word that is on has its model file, and notes for the rest.
+
+    Jarvis listens with the models it finds, so only having none fails; a phrase that is on but
+    not trained yet is a note.
+    """
+    files = wake_files(cfg)
+    found = [path for path in files if path.is_file()]
+    names = ", ".join(path.stem for path in found)
+    check = (
+        bool(found),
+        f"wake word files ({names})" if found else f"wake word files: none of {files}",
+        "see docs/models.md",
+    )
+    notes = [
+        f"note: wake word {path.stem} is on but has no file {path}; train it (docs/models.md) "
+        "or turn it off with `jarvis wake --words`"
+        for path in files
+        if path not in found
+    ]
+    return check, notes
 
 
 def _source_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
@@ -1177,7 +1192,11 @@ def _wake_summary(audio: config.AudioConfig) -> str:
 def _print_wake_models(cfg: config.Config) -> None:
     """List each LiveKit wake word model: on or off, and any that is on but has no file."""
     folder = cfg.data_dir / WAKE_DIR
-    found = sorted(path.stem for path in folder.glob(f"*{WAKE_SUFFIX}"))
+    found = sorted(
+        path.stem
+        for path in folder.glob(f"*{WAKE_SUFFIX}")
+        if path.is_file() and re.fullmatch(config.WAKE_WORD_PATTERN, path.stem)
+    )
     for name in sorted({*found, *cfg.audio.wake_words}):
         state = "on" if name in cfg.audio.wake_words else "off"
         missing = "" if name in found else f" (no file {folder / name}{WAKE_SUFFIX})"

@@ -186,7 +186,8 @@ VAD_EXIT_MARGIN = 0.15  # how far below the entry threshold speech goes on, as S
 VAD_EXIT_FLOOR = 0.01
 
 # A wake word model's name: its file `<data_dir>/wake/<name>.onnx`, so never a path.
-WakeWordName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9_]{0,39}$")]
+WAKE_WORD_PATTERN = r"^[a-z0-9][a-z0-9_]{0,39}$"
+WakeWordName = Annotated[str, StringConstraints(pattern=WAKE_WORD_PATTERN)]
 
 
 class AudioConfig(_Section):

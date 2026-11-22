@@ -51,7 +51,7 @@ from jarvis.audio import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterator, Mapping
 
     from numpy.typing import NDArray
 
@@ -1301,11 +1301,20 @@ def test_the_vad_forgets_its_state_when_reset(monkeypatch: pytest.MonkeyPatch) -
 class _LiveKitModel:
     """Stands in for `livekit.wakeword.WakeWordModel`: scores come from the test."""
 
-    def __init__(self, scores: list[dict[str, float]]) -> None:
+    def __init__(
+        self, scores: list[dict[str, float]], bad: Mapping[str, Exception] | None = None
+    ) -> None:
         super().__init__()
         self.scores = iter(scores)
         self.frames: list[NDArray[np.int16]] = []
         self.resets = 0
+        self.bad = bad or {}
+        self.loaded: list[Path] = []
+
+    def load_model(self, path: Path) -> None:
+        if path.name in self.bad:
+            raise self.bad[path.name]
+        self.loaded.append(path)
 
     def predict(self, frame: NDArray[np.int16]) -> dict[str, float]:
         self.frames.append(frame)
@@ -1318,18 +1327,48 @@ class _LiveKitModel:
 def _wake_word(
     monkeypatch: pytest.MonkeyPatch, scores: list[dict[str, float]], threshold: float = 0.5
 ) -> tuple[WakeWord, _LiveKitModel]:
-    model = _LiveKitModel(scores)
-    loaded: list[list[Path]] = []
+    model = _fake_livekit(monkeypatch, _LiveKitModel(scores))
+    wake = WakeWord([Path("/nonexistent/hey_jarvis.onnx")], threshold)
+    assert model.loaded == [Path("/nonexistent/hey_jarvis.onnx")]
+    return wake, model
 
-    def make(*, models: list[Path], sess_options: object) -> _LiveKitModel:
+
+def _fake_livekit(monkeypatch: pytest.MonkeyPatch, model: _LiveKitModel) -> _LiveKitModel:
+    def make(*, sess_options: object) -> _LiveKitModel:
         assert sess_options is not None
-        loaded.append(models)
         return model
 
     monkeypatch.setattr("livekit.wakeword.WakeWordModel", make)
-    wake = WakeWord([Path("/nonexistent/hey_jarvis.onnx")], threshold)
-    assert loaded == [[Path("/nonexistent/hey_jarvis.onnx")]]
-    return wake, model
+    return model
+
+
+def test_a_wake_word_model_that_cannot_be_used_is_left_out_and_the_rest_listen(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    bad = {
+        "yo_jarvis.onnx": ValueError("not a valid ONNX model"),
+        "jarvis.onnx": FileNotFoundError("Wake word model not found"),
+    }
+    model = _fake_livekit(monkeypatch, _LiveKitModel([{"hey_jarvis": 0.9}], bad))
+    paths = [Path(f"/models/{name}.onnx") for name in ("yo_jarvis", "hey_jarvis", "jarvis")]
+
+    with caplog.at_level(logging.WARNING):
+        wake = WakeWord(paths, 0.5)
+
+    assert model.loaded == [Path("/models/hey_jarvis.onnx")]
+    assert "/models/yo_jarvis.onnx cannot be used (not a valid ONNX model)" in caplog.text
+    assert "/models/jarvis.onnx cannot be used" in caplog.text
+    assert wake.heard(np.zeros(FRAME, dtype=np.int16))
+
+
+def test_with_no_usable_wake_word_model_the_last_error_is_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bad = {"a.onnx": FileNotFoundError("no a"), "b.onnx": ValueError("bad b")}
+    _fake_livekit(monkeypatch, _LiveKitModel([], bad))
+
+    with pytest.raises(ValueError, match="bad b"):
+        WakeWord([Path("/models/a.onnx"), Path("/models/b.onnx")], 0.5)
 
 
 def test_the_wake_word_fires_at_the_threshold_and_forgets_what_it_heard(

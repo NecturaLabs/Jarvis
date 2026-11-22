@@ -124,8 +124,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - `audio.wake_words` picks which LiveKit wake word models listen, side by side, each
   `<data_dir>/wake/<name>.onnx`; `hey_jarvis` and `yo_jarvis` are on by default. `jarvis wake --words
   hey_jarvis,yo_jarvis` sets the list and `jarvis wake` shows every model in the folder as on or off. A
-  model that is on but has no file is left out with a warning and reported by `jarvis doctor`; the log
-  names the phrase each wake came from. The speaker's own-voice check listens with the same models.
+  model that is missing or cannot be loaded is left out with a warning and the others still listen;
+  `jarvis doctor` fails only when none has a file and notes the missing ones. The log names the phrase
+  each wake came from, and one `wake_threshold` applies to them all. The speaker's own-voice check listens with the same models.
 - `open_app` (#36): ask Jarvis, in any words, to open a program from the new `[apps]` list (Spotify by
   default) on a workspace from 1 to 10 or in the background. Jarvis asks where when you did not say.
   Hyprland starts it there without taking focus, and Jarvis says where it opened only once it saw the

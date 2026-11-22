@@ -1,6 +1,5 @@
 """Choosing which LiveKit wake word models Jarvis listens for (`audio.wake_words`)."""
 
-import logging
 from typing import TYPE_CHECKING
 
 import pydantic
@@ -63,26 +62,14 @@ def test_only_the_wake_words_that_are_on_are_loaded(
     assert wake.threshold == pytest.approx(0.6)
 
 
-def test_a_wake_word_with_no_model_file_is_left_out_with_a_warning(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    _models(tmp_path, "hey_jarvis")
-    cfg = _cfg(monkeypatch, tmp_path)
-
-    with caplog.at_level(logging.WARNING):
-        wake = cli.livekit_wake(cfg)
-
-    assert isinstance(wake, _LiveKit)
-    assert wake.paths == [tmp_path / "wake" / "hey_jarvis.onnx"]
-    assert "not listening for yo_jarvis" in caplog.text
-
-
-def test_with_no_model_file_at_all_every_file_is_passed_on_so_loading_fails_loudly(
+def test_every_wake_word_that_is_on_is_passed_on_even_without_a_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    _models(tmp_path, "hey_jarvis")
+
     wake = cli.livekit_wake(_cfg(monkeypatch, tmp_path))
 
-    assert isinstance(wake, _LiveKit)
+    assert isinstance(wake, _LiveKit)  # WakeWord leaves out what it cannot load
     assert [path.name for path in wake.paths] == ["hey_jarvis.onnx", "yo_jarvis.onnx"]
 
 
@@ -143,3 +130,92 @@ def test_the_wake_command_refuses_a_bad_list_and_keeps_the_setting(
 def test_the_wake_command_refuses_an_empty_name() -> None:
     with pytest.raises(SystemExit):
         main(["wake", "--words", "hey_jarvis,,yo_jarvis"])
+
+
+def test_the_wake_listing_leaves_out_files_wake_words_cannot_name(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: pytest.fail("no restart"))
+    data = config.load().data_dir
+    _models(data, "hey_jarvis", "Odd name")
+    (data / "wake" / "folder.onnx").mkdir()
+
+    assert main(["wake"]) == 0
+
+    out = capsys.readouterr().out
+    assert "Odd name" not in out
+    assert "folder" not in out
+
+
+def test_the_doctor_passes_with_one_wake_word_file_and_notes_the_untrained_one(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = config.load()
+    _models(cfg.data_dir, "hey_jarvis")
+
+    check, notes = cli._wake_checks(cfg)  # pyright: ignore[reportPrivateUsage] - the doctor's wake check
+
+    assert check[0]
+    assert check[1] == "wake word files (hey_jarvis)"
+    assert len(notes) == 1
+    assert notes[0].startswith("note: wake word yo_jarvis is on but has no file ")
+    assert "jarvis wake --words" in notes[0]
+    assert not capsys.readouterr().out
+
+
+def test_the_doctor_fails_when_no_wake_word_that_is_on_has_a_file() -> None:
+    check, _notes = cli._wake_checks(config.load())  # pyright: ignore[reportPrivateUsage] - the doctor's wake check
+
+    assert not check[0]
+    assert "hey_jarvis.onnx" in check[1]
+    assert check[2] == "see docs/models.md"
+
+
+def test_the_speakers_own_voice_check_listens_with_the_same_wake_words(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import jarvis.audio  # ruff: ignore[import-outside-top-level] - patched where cli reads it
+
+    detectors: list[config.Config] = []
+    checks: list[object] = []
+
+    def livekit_wake(cfg: config.Config) -> str:
+        detectors.append(cfg)
+        return "the wake models"
+
+    def own_voice_check(wake: object, _names: object) -> None:
+        checks.append(wake)
+
+    def synthesizer(*_args: object, **_kwargs: object) -> object:
+        return object()
+
+    def speaker(_synthesizer: object, own_wake: object) -> object:
+        return own_wake
+
+    monkeypatch.setattr(cli, "livekit_wake", livekit_wake)
+    monkeypatch.setattr(jarvis.audio, "OwnVoiceCheck", own_voice_check)
+    monkeypatch.setattr(jarvis.audio, "make_synthesizer", synthesizer)
+    monkeypatch.setattr(jarvis.audio, "Speaker", speaker)
+    cfg = _cfg(monkeypatch, tmp_path, wake_words=["yo_jarvis"], barge_in=True)
+
+    cli._speaker(cfg)  # pyright: ignore[reportPrivateUsage] - builds the barge-in check
+
+    assert detectors == [cfg]
+    assert checks == ["the wake models"]
+
+
+def test_azure_that_cannot_start_falls_back_to_the_wake_words_that_are_on(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg = _cfg(
+        monkeypatch,
+        tmp_path,
+        wake_engine="azure",
+        azure_keyword_model=str(tmp_path / "missing.table"),
+        wake_words=["jarvis", "yo_jarvis"],
+    )
+
+    wake = cli.wake_word(cfg)
+
+    assert isinstance(wake, _LiveKit)
+    assert [path.name for path in wake.paths] == ["jarvis.onnx", "yo_jarvis.onnx"]

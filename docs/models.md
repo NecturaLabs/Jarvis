@@ -160,8 +160,8 @@ spoken over.
   (package metadata) and the weights (the wheel's `NOTICE`); the file is pinned to release 2.1.3 in `models.py`.
 - **More wake phrases (optional):** any model `livekit-wakeword train` makes (2.x, standard type), put at
   `<data_dir>/wake/<name>.onnx` and named in `audio.wake_words` (`jarvis wake --words`). The default list
-  also names `yo_jarvis`, which you train yourself: Jarvis ships no trained phrase, and the doctor reports
-  it missing until you do or take it off the list. Training needs a CUDA GPU or an Apple silicon Mac and a
+  also names `yo_jarvis`, which you train yourself: Jarvis ships no trained phrase, and the doctor notes it
+  as missing until you do or take it off the list. Training needs a CUDA GPU or an Apple silicon Mac and a
   LiveKit Cloud project for the generated speech; a model you trained matches no pinned release, so the
   doctor only notes its digest. Detection stays local and needs no account.
 - **Azure wake word (optional, `audio.wake_engine = "azure"`):** your own Azure custom keyword `.table`
