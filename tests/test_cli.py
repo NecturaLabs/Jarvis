@@ -2,7 +2,6 @@
 
 import hashlib
 import signal
-import subprocess
 import threading
 import time
 from collections.abc import Callable
@@ -20,8 +19,6 @@ from jarvis.agent import Hooks
 from jarvis.chat.app import ChatApp
 from jarvis.cli import main
 from jarvis.secretfile import write_private_json
-
-installed_whisper_models = cli._installed_whisper_models  # pyright: ignore[reportPrivateUsage]  # the fixture below replaces it in `cli`
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -43,7 +40,6 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     monkeypatch.setattr(cli, "_unit_state", inactive)
     monkeypatch.setattr(cli, "_systemctl", systemctl)
-    monkeypatch.setattr(cli, "_installed_whisper_models", lambda: None)  # Voxtype is not asked
     return tmp_path
 
 
@@ -268,83 +264,6 @@ def test_doctor_checks_the_whisper_model_is_downloaded(
     assert any(
         line.startswith("ok ") and "ggml-small.en.bin" in line for line in _doctor_lines(capsys)
     )
-
-
-def _voxtype_models(*installed: str) -> dict[str, bool]:
-    return {name: name in installed for name in ("base.en", "small.en", "large-v3-turbo")}
-
-
-@pytest.mark.parametrize(("installed", "ok"), [(("small.en",), True), (("base.en",), False)])
-def test_doctor_takes_voxtypes_word_for_which_models_it_has(
-    home: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    installed: tuple[str, ...],
-    ok: bool,
-) -> None:
-    """Voxtype decides where its models live and whether one is intact; the file is not guessed."""
-    _doctor_config(home / "models")
-    monkeypatch.setattr(cli, "_installed_whisper_models", lambda: _voxtype_models(*installed))
-
-    cli.main(["doctor"])
-
-    line = next(line for line in _doctor_lines(capsys) if "speech model" in line)
-    assert line.startswith("ok " if ok else "FAIL")
-    assert "small.en" in line
-    assert "ggml-" not in line
-    assert ok or "voxtype setup model" in line
-
-
-def test_doctor_checks_the_file_for_a_model_voxtype_does_not_list(
-    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    config.save(
-        config.Config(data_dir=home / "models", audio=config.AudioConfig(transcribe_model="mine"))
-    )
-    monkeypatch.setattr(cli, "_installed_whisper_models", lambda: _voxtype_models("small.en"))
-
-    cli.main(["doctor"])
-
-    assert any(
-        line.startswith("FAIL") and "ggml-mine.bin" in line for line in _doctor_lines(capsys)
-    )
-
-
-def _info_models(
-    stdout: bytes, returncode: int = 0
-) -> Callable[..., subprocess.CompletedProcess[bytes]]:
-    def run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        assert cmd == ["voxtype", "info", "models", "--json", "--engine", "whisper"]
-        return subprocess.CompletedProcess(cmd, returncode, stdout, b"")
-
-    return run
-
-
-def test_the_installed_whisper_models_are_read_from_voxtypes_json() -> None:
-    stdout = (
-        b'{"engines": {"whisper": {"default": "base.en", "models": ['
-        b'{"name": "small.en", "installed": true}, {"name": "tiny", "installed": false}]}}}'
-    )
-
-    assert installed_whisper_models(_info_models(stdout)) == {
-        "small.en": True,
-        "tiny": False,
-    }
-
-
-@pytest.mark.parametrize(
-    "stdout", [b"", b"not json", b"{}", b'{"engines": {"whisper": {"models": []}}}', b"[1]"]
-)
-def test_an_unreadable_voxtype_listing_means_no_answer(stdout: bytes) -> None:
-    assert installed_whisper_models(_info_models(stdout)) is None
-
-
-def test_a_failing_or_missing_voxtype_means_no_answer() -> None:
-    def missing(_cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        raise FileNotFoundError
-
-    assert installed_whisper_models(_info_models(b"{}", returncode=2)) is None
-    assert installed_whisper_models(missing) is None
 
 
 def test_doctor_leaves_other_speech_engines_to_voxtype(

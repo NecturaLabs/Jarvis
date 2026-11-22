@@ -148,8 +148,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   no longer fold into the band; a sentence of more than 510 phonemes is split between words and all of it
   is spoken, instead of cut mid-word; Kokoro refuses a model file it cannot run when it loads, not at the
   first sentence, and accepts the older build's `tokens` input; Voxtype runs quietly and keeps no audio of a
-  failed transcription from Jarvis's runs; `jarvis doctor` asks Voxtype which models it has; and Jarvis
-  waits as long as Strata's `Retry-After` says while it loads the model at start.
+  failed transcription from Jarvis's runs; and Jarvis waits as long as Strata's `Retry-After` says while it loads the model at start.
 - `jarvis chat` could end with a `NoMatches` traceback when it was closed: a timer that redraws the
   window, reads the log or draws the toolbar could fire after the window's parts were taken down.
 - In `jarvis chat`, a request from the log without a time no longer ends in a lone "·", a reply that
