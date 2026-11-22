@@ -1243,7 +1243,7 @@ def test_a_picture_jarvis_shows_appears_with_its_caption(tmp_path: Path) -> None
                 **own,
             }
         )
-        await _until(pilot, lambda: bool(app.query(PictureView)))
+        await _until(pilot, lambda: bool(app.query(".picture-caption")))  # mounted after the view
         view = app.query_one(PictureView)
         assert view.path == path
         assert "Red panda · zoo.example" in _plain(
