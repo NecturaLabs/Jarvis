@@ -49,12 +49,12 @@ class ScriptedModel:
     def chat(
         self,
         messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],  # ruff: ignore[unused-method-argument]
+        tools: list[dict[str, Any]],  # ruff: ignore[unused-method-argument] - the model's own signature
         *,
-        require_tool: bool = False,  # ruff: ignore[unused-method-argument]
-        timeout_s: float | None = None,  # ruff: ignore[unused-method-argument]
-        on_delta: object = None,  # ruff: ignore[unused-method-argument]
-        max_tokens: int | None = None,  # ruff: ignore[unused-method-argument]
+        require_tool: bool = False,  # ruff: ignore[unused-method-argument] - the model's own signature
+        timeout_s: float | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
+        on_delta: object = None,  # ruff: ignore[unused-method-argument] - the model's own signature
+        max_tokens: int | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
     ) -> dict[str, Any]:
         self.calls += 1
         self.seen.append(messages)
@@ -484,13 +484,13 @@ class ForbiddenModel:
 
     def chat(
         self,
-        messages: list[dict[str, Any]],  # ruff: ignore[unused-method-argument]
-        tools: list[dict[str, Any]],  # ruff: ignore[unused-method-argument]
+        messages: list[dict[str, Any]],  # ruff: ignore[unused-method-argument] - the model's own signature
+        tools: list[dict[str, Any]],  # ruff: ignore[unused-method-argument] - the model's own signature
         *,
-        require_tool: bool = False,  # ruff: ignore[unused-method-argument]
-        timeout_s: float | None = None,  # ruff: ignore[unused-method-argument]
-        on_delta: object = None,  # ruff: ignore[unused-method-argument]
-        max_tokens: int | None = None,  # ruff: ignore[unused-method-argument]
+        require_tool: bool = False,  # ruff: ignore[unused-method-argument] - the model's own signature
+        timeout_s: float | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
+        on_delta: object = None,  # ruff: ignore[unused-method-argument] - the model's own signature
+        max_tokens: int | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
     ) -> dict[str, Any]:
         self.used.append("chat")
         pytest.fail("the model was called for a plain command")

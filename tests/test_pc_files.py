@@ -660,7 +660,7 @@ def test_a_folder_that_cannot_be_entered_is_said_as_such_not_as_a_change(
     locked = home / "Documents" / "locked"
     locked.mkdir()
     (locked / "a.md").write_text("x\n", encoding="utf-8")
-    real = files_module._open_inner  # pyright: ignore[reportPrivateUsage]
+    real = files_module._open_inner  # pyright: ignore[reportPrivateUsage] - the walk's opener, wrapped to refuse one folder
 
     def denied(fd: int, name: str, *, make: bool) -> int:
         if name == "locked":
