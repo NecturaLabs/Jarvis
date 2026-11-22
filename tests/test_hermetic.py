@@ -325,10 +325,11 @@ def test_other_is_guarded():
 
 
 def test_swallowing_the_refusal_does_not_hide_it():
-    try:
-        socket.socket().connect(("93.184.216.34", 80))
-    except Exception:
-        pass
+    with socket.socket() as sock:
+        try:
+            sock.connect(("93.184.216.34", 80))
+        except Exception:
+            pass
 """
 
 
