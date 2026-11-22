@@ -8,7 +8,8 @@ caret, the owner's requests, and the option the keyboard is on.
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, override
+from typing import TYPE_CHECKING, ClassVar, Protocol, cast, override
+from urllib.parse import urlsplit
 
 from PIL import Image as PillowImage
 from rich import box
@@ -147,10 +148,31 @@ class ReplyOrderedList(MarkdownOrderedList):
                 bullet.symbol = bullet.symbol.removeprefix(" ")
 
 
+class _Opener(Protocol):
+    def open_url(self, url: str) -> None: ...
+
+
+def link_opens(href: str) -> bool:
+    """Whether a clicked link in a reply may be opened: web addresses only.
+
+    A reply carries words from pages and files, so a `file:`, `javascript:` or app link in it is
+    someone else's, and clicking it does nothing.
+    """
+    parts = urlsplit(href.strip())
+    return parts.scheme in {"http", "https"} and bool(parts.netloc)
+
+
 class ReplyMarkdown(Markdown):
     """A reply's Markdown, set as Claude Code sets it: dashes for lists, numbers at the edge."""
 
     BULLETS: ClassVar[list[str]] = ["- "]
+
+    @override
+    def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
+        """Open a clicked web link in the browser; any other kind of link stays shut."""
+        if link_opens(event.href):
+            app = cast("_Opener", self.app)  # pyright: ignore[reportUnknownMemberType] - App[Unknown]
+            app.open_url(event.href)
 
     @override
     def get_block_class(self, block_name: str) -> type[MarkdownBlock]:

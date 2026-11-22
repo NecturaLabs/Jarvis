@@ -14,6 +14,7 @@ from jarvis.chat.history import InputHistory
 from jarvis.chat.widgets import (
     duration,
     entry_renderable,
+    link_opens,
     meter,
     tokens_short,
     toolbar,
@@ -239,3 +240,19 @@ def test_the_line_under_a_reply_says_how_long_when_and_how_fast() -> None:
     )
     assert worked_line(33.6, done, None, twelve_hour=False) == "Worked for 34s · done 19:37"
     assert worked_line(5, done, 41.0, twelve_hour=True, stopped=True).startswith("Stopped after 5s")
+
+
+@pytest.mark.parametrize(
+    ("href", "opens"),
+    [
+        ("https://example.com/kettles", True),
+        ("http://example.com", True),
+        ("file:///home/me/.ssh/id_ed25519", False),
+        ("javascript:alert(1)", False),
+        ("spotify:track:1", False),
+        ("https:///no-host", False),
+        ("/relative/path", False),
+    ],
+)
+def test_only_web_links_in_a_reply_open(href: str, *, opens: bool) -> None:
+    assert link_opens(href) is opens

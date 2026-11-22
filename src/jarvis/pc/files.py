@@ -20,6 +20,7 @@ replaces a file by accident (`create` refuses an existing file) and never makes 
 
 import contextlib
 import fnmatch
+import itertools
 import os
 import secrets
 import stat
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
 MAX_PATH = 1000
 MAX_CONTENT = 20000
 MAX_ENTRIES = 200
+MAX_SCANNED = 10_000  # entries read from one folder; a bigger one is listed from these
 MAX_READ_BYTES = 4 * 1024 * 1024
 BINARY_PROBE = 8192
 KIB = 1024
@@ -377,11 +379,13 @@ class FileOps:
         pattern = str(args.get("pattern", "")).casefold()
         rows: list[tuple[bool, str, str]] = []
         try:
-            entries = list(os.scandir(path))
+            with os.scandir(path) as found:
+                entries = list(itertools.islice(found, MAX_SCANNED + 1))
         except OSError as exc:
             msg = f"I couldn't list {shown}: {exc.strerror}."
             raise FileRefusalError(msg) from exc
-        for entry in entries:
+        more = len(entries) > MAX_SCANNED
+        for entry in entries[:MAX_SCANNED]:
             if (entry.name.startswith(".") and not hidden) or (
                 pattern and not fnmatch.fnmatchcase(entry.name.casefold(), pattern)
             ):
@@ -400,7 +404,11 @@ class FileOps:
                 break
             lines.append(line)
             used += len(line) + 1
-        what = f"{len(rows)} item{'' if len(rows) == 1 else 's'}"
+        what = (
+            f"more than {len(rows)} items"
+            if more
+            else f"{len(rows)} item{'' if len(rows) == 1 else 's'}"
+        )
         text = f"Folder {shown} ({what}{', matching ' + pattern if pattern else ''}):"
         text += "\n" + "\n".join(lines) if lines else "\n(nothing to show)"
         if len(lines) < len(rows):

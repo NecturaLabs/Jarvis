@@ -165,3 +165,11 @@ def test_registry_lists_each_operation_shortcut_with_its_name() -> None:
 
 def test_an_operation_has_no_prepare_step_unless_given_one() -> None:
     assert PLAY.prepare is None
+
+
+def test_a_string_shorter_than_its_min_length_is_refused() -> None:
+    op = _op({"code": {"type": "string", "minLength": 4}}, ["code"])
+
+    with pytest.raises(ArgumentError, match="at least 4"):
+        validate_args(op, {"code": " abc "})
+    assert validate_args(op, {"code": "abcd"}) == {"code": "abcd"}

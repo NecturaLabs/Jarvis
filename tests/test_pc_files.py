@@ -8,6 +8,7 @@ import pytest
 
 from jarvis.config import FilesConfig
 from jarvis.operations import Operation, OperationError, Registry, validate_args
+from jarvis.pc import files as files_module
 from jarvis.pc.files import Boundary, FileOps
 from jarvis.policy import OpClass, Origin
 
@@ -460,3 +461,16 @@ def test_a_link_is_listed_without_reading_what_it_points_to(home: Path) -> None:
 
     assert "- big (link)" in text
     assert "4.9 KB" not in text
+
+
+def test_a_folder_too_big_to_read_whole_is_listed_from_what_was_read(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(files_module, "MAX_SCANNED", 50)
+    for number in range(80):
+        (home / "Projects" / f"f{number:03}.txt").write_text("", encoding="utf-8")
+
+    text = _list(_ops(home, max_chars=50_000), "~/Projects")
+
+    assert text.startswith("Folder ~/Projects (more than 50 items):")
+    assert len(text.splitlines()) == 1 + 50

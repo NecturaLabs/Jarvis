@@ -13,17 +13,20 @@ what Jarvis sends off the PC needs a yes while it is remembered.
 import json
 import logging
 import math
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from jarvis.files import write_atomic
 from jarvis.jsonutil import obj, objs
+from jarvis.secretfile import read_private
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 log = logging.getLogger(__name__)
+_ORIGIN_NAME = re.compile(r"[a-z_]{1,32}")  # what Origin values look like
 
 CHARS_PER_TOKEN = 3.0  # Qwen's tokenizer averages about 3.5 to 4 characters of English a token
 MESSAGE_OVERHEAD = 8  # the chat template's role markers around each message
@@ -218,13 +221,26 @@ class Conversation:
         return bool(turns or summary)
 
 
+def _origin(value: object) -> str:
+    """Return a saved turn's outside mark, or `outside` for one that is not a plain origin name."""
+    text = str(value)
+    return text if not text or _ORIGIN_NAME.fullmatch(text) else "outside"
+
+
 def _read(path: Path) -> tuple[list[Turn], str, tuple[bool, bool], float] | None:
     """Return the turns, summary, its outside and private marks and save time, or None if foreign.
 
-    What `Path.read_text`, `json.loads`, `obj` and `float` raise for an unreadable, non-JSON or
-    malformed file passes through.
+    The file must be the owner's own, readable by nobody else and not a link (`read_private`).
+    What it, `json.loads`, `obj` and `float` raise for such a file, or an unreadable, non-JSON or
+    malformed one, passes through.
+
+    Raises:
+        FileNotFoundError: there is no saved conversation.
     """
-    data = obj(json.loads(path.read_text(encoding="utf-8")))
+    text = read_private(path)
+    if text is None:
+        raise FileNotFoundError(path)
+    data = obj(json.loads(text))
     if data.get("version") != FILE_VERSION:
         return None
     turns = [
@@ -232,7 +248,7 @@ def _read(path: Path) -> tuple[list[Turn], str, tuple[bool, bool], float] | None
             str(t.get("request", "")),
             str(t.get("reply", "")),
             str(t.get("actions", "")),
-            str(t.get("outside", "")),
+            _origin(t.get("outside", "")),
             float(t.get("at", 0.0)),
             private=t.get("private") is True,
         )

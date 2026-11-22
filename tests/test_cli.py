@@ -1,7 +1,9 @@
 """The `jarvis` command, run against a throw-away home: never the owner's config or services."""
 
 import hashlib
+import json
 import signal
+import subprocess
 import threading
 import time
 from collections.abc import Callable
@@ -23,6 +25,9 @@ from jarvis.secretfile import write_private_json
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+real_systemctl = cli._systemctl  # pyright: ignore[reportPrivateUsage] - the `home` fixture replaces it in `cli`
 
 
 @pytest.fixture
@@ -550,6 +555,7 @@ class _Run:
     refresh: list[threading.Event] = field(default_factory=list[threading.Event])
     warmed: threading.Event = field(default_factory=threading.Event)
     loops: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
+    audit: AuditLog = field(default_factory=lambda: AuditLog(None))
 
     def part(self, *args: object, **kwargs: object) -> _Part:
         made = _Part(*args, **kwargs)
@@ -587,9 +593,7 @@ def _cmd_run(
     monkeypatch.setattr(cli, "_load", lambda: cfg or config.Config())
     model = SimpleNamespace(warm=run.warmed.set, is_loaded=lambda: True, load=lambda: True)
     ops = SimpleNamespace(start_refresh=run.refresh.append)
-    jarvis = SimpleNamespace(
-        agent=object(), model=model, ops=ops, hint=lambda: "", audit=AuditLog(None)
-    )
+    jarvis = SimpleNamespace(agent=object(), model=model, ops=ops, hint=lambda: "", audit=run.audit)
 
     def build(_cfg: config.Config) -> SimpleNamespace:
         return jarvis
@@ -799,3 +803,44 @@ def test_consent_toggle_saves_the_setting(
     assert main(["consent", "bypass"]) == 0
     assert config.load().boundaries.bypass_consent is True
     assert len(restarts) == 2
+
+
+def test_a_consent_change_is_audited(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: None)
+
+    main(["consent", "ask"])
+    main(["consent"])  # only shows the setting
+    main(["consent", "bypass"])
+
+    events = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
+    assert [(e["event"], e["bypass_consent"]) for e in events] == [
+        ("consent_changed", False),
+        ("consent_changed", True),
+    ]
+
+
+def test_the_voice_service_records_its_consent_mode_when_it_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run, code = _cmd_run(monkeypatch, lambda _run, _should_stop: None)
+
+    assert code == 0
+    assert [(e["event"], e["bypass_consent"]) for e in run.audit.events][:1] == [
+        ("service_started", True)
+    ]
+
+
+def test_a_systemctl_call_that_hangs_is_given_up(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    timeouts: list[object] = []
+
+    def hangs(cmd: list[str], **kwargs: object) -> object:
+        timeouts.append(kwargs.get("timeout"))
+        raise subprocess.TimeoutExpired(cmd, 1.0)
+
+    monkeypatch.setattr(cli.subprocess, "run", hangs)
+
+    assert real_systemctl("stop", "jarvis.service") == 1
+    assert "did not finish" in capsys.readouterr().out
+    assert timeouts == [cli.SYSTEMCTL_S]

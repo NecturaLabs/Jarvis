@@ -335,7 +335,9 @@ audio you do not trust.
 ## `[boundaries.classes]`
 
 A table from operation name to a class: `safe` (runs), `confirm` (needs your spoken yes), `strong`
-(keybinding confirmation, not built yet, so such a call is refused) or `deny`. An operation not listed keeps
+(keybinding confirmation, not built yet, so such a call is refused unless `bypass_consent` is on) or `deny`.
+A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` with an error, so a typo
+cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
 its shipped class, which is `safe` for every operation but `write_file` (`confirm`): `spotify_*`, `time_now`,
 `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`, `pc_stats`, `list_dir`, `read_file`; set
 one to `deny` to switch it off. Whatever the class, side effects are raised to `confirm` while text from outside

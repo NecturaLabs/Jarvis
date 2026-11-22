@@ -63,8 +63,8 @@ python-preference = "only-system"
 testpaths = ["tests"]
 # The checks in tools/ are scripts, not a package; their tests import them by name.
 pythonpath = ["tools"]
-addopts = ["--strict-markers", "--strict-config", "-ra"]
-xfail_strict = true
+addopts = ["-ra"]
+strict = true  # strict config, markers, xfail and parametrization ids
 timeout = 30
 markers = [
     "local: needs this PC's hardware or services (Strata, Voxtype, audio, Spotify); never runs in CI",

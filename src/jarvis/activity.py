@@ -266,6 +266,21 @@ def _simple(entry: dict[str, object]) -> _Line | None:
             "",
         ),
         "control_refused": ("warn", "refused a control command from another user", False, ""),
+        "consent_changed": (
+            "note",
+            "Questions turned off: Jarvis acts without asking"
+            if entry.get("bypass_consent") is True
+            else "Questions turned on: Jarvis asks before acting",
+            False,
+            "",
+        ),
+        "service_started": (
+            "note",
+            "The voice service started"
+            + (", acting without asking" if entry.get("bypass_consent") is True else ""),
+            False,
+            "",
+        ),
         "pc_audio_permission": (
             "result",
             f"PC audio may ask again for {_seconds(entry)}",
