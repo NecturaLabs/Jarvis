@@ -515,12 +515,29 @@ class VoiceLoop:
             return False
         return self._hear_answer()
 
+    def _capture_answer(self, cfg: AudioConfig) -> Utterance | None:
+        """Listen for the answer to a question; None when the PC slept meanwhile (a no)."""
+        slept = [False]
+
+        def awake() -> Iterator[NDArray[np.int16]]:
+            for frame in self._mic.frames():
+                if self._slept():
+                    slept[0] = True
+                    return
+                yield frame
+
+        heard = capture_utterance(awake(), self._vad, cfg)
+        if slept[0]:
+            log.info("the PC slept while the answer was awaited; counting it as no")
+            return None
+        return heard
+
     def _hear_answer(self) -> bool:
         pc_speech = self._pc_speech
         self.state = State.CONFIRM
         cfg = self._cfg.model_copy(update={"no_speech_timeout_s": self._cfg.confirm_window_s})
-        heard = capture_utterance(self._mic.frames(), self._vad, cfg)
-        if heard.samples is None:
+        heard = self._capture_answer(cfg)
+        if heard is None or heard.samples is None:
             return False
         if heard.speech_s < MIN_ANSWER_SPEECH_S:
             # Whisper turns a short noise into "Okay." or "Yes."; a spoken yes is longer.

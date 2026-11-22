@@ -63,7 +63,8 @@ frames from before it, resets the wake word, and asks the model server for its s
 failed is loaded again (not while paused); an unloaded one stays unloaded, since `jarvis unload` before a
 game or the idle unload put it there. The log says `back from sleep after N s: listening afresh`, then
 `back from sleep: the model is <state>`. A stall check cannot fire during the sleep itself, since it
-times with the monotonic clock.
+times with the monotonic clock. A spoken yes awaited when the PC sleeps counts as a no, so a yes said after waking
+never answers a question asked before it; the confirm key's wait runs on the boot clock, so a sleep uses it up.
 
 - Not seen yet: no kept boot of this PC has suspended (`journalctl -k | grep 'PM: suspend'`).
 - With the owner: suspend, wake, say the wake word; look for the log line and check
@@ -100,22 +101,22 @@ Each command in `jarvis --help` crossed with each transition. A cell says how fa
 
 | Command | Mic lost | Suspend | Lock | Drive missing | Session start, stop | Strata down |
 |---|---|---|---|---|---|---|
-| `run` | F, L, O\* | F, U | F, L, U | F, L, U | F, L, O | F |
+| `run` | F, L, O\* | F, U | F, L | F, L, U | F, L, O | F |
 | `ask` | - | - | - | F | - | F |
 | `chat` | - | - | - | F | - | F |
 | `status` | F | F | - | F | F, L | F |
 | `pause` | F | F | - | F | F, L | F |
 | `resume` | F | - | - | F | F, L | F |
 | `hush` | F | - | - | - | F, L | - |
-| `confirm` | F, U | U | U | - | F | - |
+| `confirm` | F | F | U | - | F | - |
 | `unload` | - | F | - | F | F | F |
 | `start` | - | - | - | F, U | F | - |
 | `stop` | F | - | - | - | F | - |
 | `restart` | - | - | - | F | F | F |
 | `doctor` | F | - | F | F | F | F |
 
-46 of the 78 cells apply. 44 of them have a fake test.
-The two with none are `confirm` across a suspend and across a lock. Every `U` beside an `F` is a part of that cell the fakes do not reach; the lists below name it.
+46 of the 78 cells apply. 45 of them have a fake test.
+The one with none is `confirm` across a lock. Every `U` beside an `F` is a part of that cell the fakes do not reach; the lists below name it.
 
 Tests are in `tests/test_voice.py` (`voice`), `test_control.py` (`control`), `test_cli.py` (`cli`),
 `test_audio.py` (`audio`), `test_model.py` (`model`), `test_agent.py` (`agent`), `test_services.py`
@@ -144,8 +145,11 @@ all in `test_transitions_local.py`.
   `test_every_command_still_answers_while_the_microphone_is_gone`.
 - `hush`, F: transitions `test_every_command_still_answers_while_the_microphone_is_gone`,
   `test_a_hush_while_the_microphone_is_gone_reaches_the_loop`.
-- `confirm`, F: transitions `test_every_command_still_answers_while_the_microphone_is_gone`. U: a
-  microphone lost while Jarvis waits for the confirm key or a spoken yes.
+- `confirm`, F: transitions `test_every_command_still_answers_while_the_microphone_is_gone`; voice
+  `test_a_microphone_lost_while_waiting_for_a_spoken_yes_is_a_no_and_is_reopened`,
+  `test_a_microphone_lost_while_waiting_for_the_confirm_key_is_a_no_and_the_next_wait_works`. A microphone
+  lost while Jarvis waits for a spoken yes or the confirm key counts as a no, the wait is disarmed, and the
+  next question is asked afresh once the microphone is open again.
 - `stop`, F: control `test_stop_ends_a_reopen_wait_without_starting_a_capture`.
 - `doctor`, F: cli `test_doctor_checks_that_the_configured_source_is_a_microphone_node`,
   `test_doctor_says_when_pipewire_cannot_be_read_rather_than_blaming_the_source`.
@@ -156,11 +160,20 @@ all in `test_transitions_local.py`.
   `test_no_suspend_is_seen_when_the_clocks_agree`; cli `test_after_a_suspend_the_run_loads_a_failed_model_again`;
   transitions `test_the_time_asleep_is_how_far_the_boot_clock_has_run_ahead_of_the_monotonic_clock`,
   `test_awake_the_time_asleep_does_not_move_between_two_reads`.
+- `run`, F: voice `test_a_suspend_while_a_request_is_in_flight_is_noticed_once_it_is_answered` (the request
+  is answered, then the loop listens afresh before the next one),
+  `test_a_microphone_lost_right_after_a_suspend_is_reopened_and_listening_is_afresh` (a lost microphone
+  right after a suspend, with and without a frame between them).
 - `run`, U: that the stall check stays quiet through a real sleep (it times with the monotonic clock, which
-  stands still while asleep), and a suspend while a request is in flight.
+  stands still while asleep), and the follow-up window across a suspend (read from the code, not tried: the
+  window counts audio frames and does not ask about a sleep, so speech heard in what is left of it after
+  waking would be taken without the wake word).
 - `status`, F: control `test_the_public_state_is_one_of_the_bars_states` (a model whose load failed is `unavailable`).
 - `pause`, F: control `test_after_a_suspend_a_paused_jarvis_leaves_the_model_alone`.
-- `confirm`, U: a confirmation question that is open across a suspend.
+- `confirm`, F: voice `test_a_yes_spoken_after_a_suspend_is_not_a_yes_to_the_question_asked_before_it`,
+  `test_a_confirm_key_wait_open_across_a_suspend_has_run_out_when_the_pc_wakes`. A spoken yes waiting when
+  the PC sleeps counts as a no (the first test failed before the fix: a yes after waking approved the old
+  question); the confirm key's wait runs on the boot clock, so it has run out when the PC wakes.
 - `unload`, F: control `test_after_a_suspend_the_model_is_loaded_again_only_if_its_load_failed` (an unloaded
   model stays unloaded); transitions `test_after_a_suspend_a_model_still_loading_or_unreachable_is_left_alone`.
 
@@ -168,7 +181,9 @@ all in `test_transitions_local.py`.
 
 - `run`, F: voice `test_a_wake_word_is_ignored_while_the_screen_is_locked`, `test_a_wake_word_is_answered_while_unlocked`,
   `test_a_pc_request_is_ignored_while_the_screen_is_locked`, `test_no_follow_up_is_taken_once_the_screen_locked`,
-  `test_a_request_spoken_over_jarvis_at_the_lock_screen_is_ignored`; cli
+  `test_a_request_spoken_over_jarvis_at_the_lock_screen_is_ignored`,
+  `test_a_wake_word_ignored_at_the_lock_screen_is_taken_after_the_unlock` (a lock and then an unlock in one
+  run); cli
   `test_with_listening_at_the_lock_screen_off_the_run_asks_the_shell`,
   `test_the_lock_screen_is_not_asked_about_while_listening_there_is_on`; audio
   `test_the_lock_screen_is_read_from_the_omarchy_shell`, `test_a_lock_state_that_cannot_be_read_counts_as_locked`,
@@ -180,7 +195,6 @@ all in `test_transitions_local.py`.
 - `confirm`, U: the control commands are not held back by the lock (nothing in `control.py` asks about it), so a pending question would still be answerable with `jarvis confirm` (read from the code, not tried), and the spoken yes to it is not checked
   against the lock either. Whether it should be held back is undecided; nothing tests either way.
 - `status`, `pause`, `resume`, `hush`, `unload`: not held back by the lock either; key bindings are not expected to fire at the lock screen (not checked). Not a test gap.
-- U for the whole column: a lock and then an unlock in one run (a wake word ignored, then one taken).
 
 ### Model drive missing
 
@@ -197,8 +211,9 @@ all in `test_transitions_local.py`.
   `test_the_strata_unit_for_a_normal_config` (the `ConditionPathExists=` line).
 - `run`, L: `test_strata_answers_and_its_model_file_is_there` (the drive mounted),
   `test_the_installed_units_follow_the_session_and_wait_for_the_model_file` (written, not run).
-- `run`, U: the whole path through the voice loop (the apology through the real audio output) and booting without
-  the drive.
+- `run`, F: voice `test_a_spoken_request_with_the_model_drive_missing_is_apologised_for_at_once_by_voice` (the
+  real agent behind the voice loop, with a fake speaker).
+- `run`, U: the apology through the real audio output, and booting without the drive.
 - `ask`, `chat`, F: the same reply as `run`, from agent `test_a_missing_model_file_is_named_in_the_apology`.
 - `status`, F: control `test_a_model_server_down_for_a_missing_model_file_says_so`,
   `test_status_without_jarvis_names_a_missing_model_file`.
