@@ -5,7 +5,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from jarvis import paths, skills
+from jarvis import calc, paths, skills
 from jarvis.agent import Agent, Limits
 from jarvis.audit import AuditLog
 from jarvis.model import StrataModel
@@ -222,6 +222,7 @@ def channel_registry(
             *spotify,
             *web_operations(web, chat_pictures() if channel == "chat" else None),
             *pc_operations(config, limits),
+            *calc.operations(),
             *([skills.skill_operation(shipped)] if shipped else []),
             no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
         ]

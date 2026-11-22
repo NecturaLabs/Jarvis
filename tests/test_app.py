@@ -204,6 +204,18 @@ def test_both_channels_offer_the_pc_and_file_operations(tmp_path: Path, channel:
         assert registry.get(name) is not None
 
 
+@pytest.mark.parametrize("channel", ["voice", "chat"])
+def test_both_channels_offer_the_calculator(tmp_path: Path, channel: Channel) -> None:
+    config = Config()
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+
+    registry = channel_registry(
+        config, spotify.operations(), channel_limits(config, channel), channel
+    )
+
+    assert registry.get("calculate") is not None
+
+
 def test_jarvis_own_state_is_never_readable_through_the_file_operations(tmp_path: Path) -> None:
     state = paths.state_dir()
     state.mkdir(parents=True, exist_ok=True)

@@ -73,7 +73,7 @@ the chat keeps it (see below).
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `11500` and `memory_idle_s` `0.0` (never forget), plus:
+`memory_tokens` `11000` and `memory_idle_s` `0.0` (never forget), plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -397,7 +397,7 @@ A table from operation name to a class: `safe` (runs), `confirm` (needs your spo
 A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` with an error, so a typo
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
 its shipped class, which is `safe` for every operation but `write_file` (`confirm`): `spotify_*`, `time_now`,
-`weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`, `pc_stats`, `list_dir`, `read_file`; set
+`weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`, `pc_stats`, `calculate`, `list_dir`, `read_file`; set
 one to `deny` to switch it off. Whatever the class, side effects are raised to `confirm` while text from outside
 your own speech is in the request, and so are the operations that send words off the PC while a file's text is. Example:
 
