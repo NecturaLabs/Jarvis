@@ -1649,7 +1649,19 @@ def test_no_suspend_is_seen_when_the_clocks_agree() -> None:
     assert woke == []
 
 
-def test_no_follow_up_is_listened_for_once_the_screen_locked() -> None:
+def test_the_lock_screen_is_asked_about_only_once_a_follow_up_is_heard() -> None:
+    asked: list[bool] = []
+
+    def locked() -> bool:
+        asked.append(True)
+        return False
+
+    _run(_loop(Agent(), Mic(*REQUEST), Speaker(), locked=locked))  # no follow-up window here
+
+    assert asked == [True]  # the wake word's question only
+
+
+def test_no_follow_up_is_taken_once_the_screen_locked() -> None:
     agent = Agent()
 
     def locked() -> bool:

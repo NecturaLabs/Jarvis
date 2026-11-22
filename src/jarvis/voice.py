@@ -520,9 +520,10 @@ class VoiceLoop:
             if self._ignored_while_locked("a request spoken over Jarvis"):
                 return None
             return functools.partial(self.handle_wake, barged_at)
-        if self._ignored_while_locked("a follow-up request"):
-            return None
-        return self._follow_up()
+        follow_up = self._follow_up()
+        if follow_up is not None and self._ignored_while_locked("a follow-up request"):
+            return None  # asked once one was heard, so a lock during the window counts too
+        return follow_up
 
     def _follow_up(self) -> Callable[[], None] | None:
         """Listen for `follow_up_s` after a spoken reply; return the request heard, if any.

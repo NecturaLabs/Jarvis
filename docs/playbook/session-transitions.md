@@ -24,7 +24,7 @@ The Omarchy shell draws the lock screen itself (`WlSessionLock`) and does not te
 stops at a lock: by default it keeps listening, and anyone at the locked PC can talk to it.
 
 With `audio.listen_when_locked = false`, Jarvis asks the shell (`omarchy-shell lock isLocked`, a few
-milliseconds) before it takes a request: after the wake word, before a follow-up window, for a request
+milliseconds) before it takes a request: after the wake word, once a follow-up is heard, for a request
 spoken over a reply, and for a PC-audio request. While locked it takes none; the wake word still stops its
 speech. The log says `the wake word was ignored: the screen is locked`. An answer that cannot be read
 counts as locked.
