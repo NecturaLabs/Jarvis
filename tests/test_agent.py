@@ -3,7 +3,6 @@
 import hashlib
 import json
 import threading
-import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -1597,10 +1596,10 @@ def test_a_request_that_waits_for_a_cold_model_gets_the_load_time_too() -> None:
 
 
 def test_a_long_run_of_spaces_is_checked_quickly() -> None:
-    started = time.perf_counter()
-
-    assert not claims_action("Muted" + " " * 50_000 + "?")
-    assert time.perf_counter() - started < 1.0
+    # No clock here. A million spaces take about 15 ms while every pattern is linear and minutes
+    # when one backtracks quadratically (a dash pattern tried on raw spaces: 0.2 s for 20,000,
+    # so about 9 minutes for this), far past the 30 s test timeout in pyproject.toml.
+    assert not claims_action("Muted" + " " * 1_000_000 + "?")
 
 
 def test_a_plain_command_is_not_kept_waiting_for_a_summary() -> None:
