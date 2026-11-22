@@ -63,6 +63,9 @@ class Operation:
     `shortcuts` are the phrasings that mean this operation without the model's help.
     `outbound` marks an operation that sends words the model wrote (a search, a place) to a
     service off this PC; while file text is in the conversation it needs a yes.
+    `preview` returns the start of the text a confirmed call would write, which a window shows
+    under the question (speech says only how much). `hashed` names the arguments the audit log
+    keeps only as a SHA-256 and a length, never as text.
     """
 
     name: str
@@ -75,6 +78,8 @@ class Operation:
     spoken_summary: Callable[[dict[str, Any]], str] = field(default=lambda _args: "do that")
     prepare: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     shortcuts: tuple[Shortcut, ...] = ()
+    preview: Callable[[dict[str, Any]], str] | None = None
+    hashed: frozenset[str] = frozenset()
 
     def tool_schema(self) -> dict[str, Any]:
         """Return the OpenAI tool definition."""
@@ -157,10 +162,18 @@ def validate_args(op: Operation, args: object) -> dict[str, Any]:
 class Registry:
     """The operations offered to the model; anything else is refused."""
 
-    def __init__(self, ops: Iterable[Operation]) -> None:
-        """Index the operations by name."""
+    def __init__(
+        self, ops: Iterable[Operation], *, resets: Iterable[Callable[[], None]] = ()
+    ) -> None:
+        """Index the operations by name; `resets` clear what they remember of a conversation."""
         super().__init__()
         self._ops = {op.name: op for op in ops}
+        self._resets = tuple(resets)
+
+    def reset(self) -> None:
+        """Make the operations forget what they keep from the conversation (search results)."""
+        for reset in self._resets:
+            reset()
 
     def get(self, name: str) -> Operation | None:
         """Return the operation or None."""

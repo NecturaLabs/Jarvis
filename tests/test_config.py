@@ -318,3 +318,10 @@ def test_consent_is_bypassed_unless_the_owner_turns_asking_on() -> None:
         ).boundaries.bypass_consent
         is False
     )
+
+
+def test_at_most_30_actions_run_in_10_minutes_unless_the_owner_says_otherwise() -> None:
+    boundaries = config.Config().boundaries
+    assert (boundaries.max_actions, boundaries.actions_window_s) == (30, 600.0)
+    with pytest.raises(ValueError, match="max_actions"):
+        config.BoundariesConfig(max_actions=0)

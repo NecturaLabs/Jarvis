@@ -10,7 +10,8 @@ it. It is a plain statement of what the code does, not legal terms; the code win
 | Config | `~/.config/jarvis/config.toml` | Your settings, including your Spotify app's client ID (there is no client secret). |
 | Strata API key | `~/.local/state/jarvis/strata.env`, mode 0600 | A random key that only Jarvis and its Strata service use. |
 | Spotify tokens | `~/.local/state/jarvis/spotify-token.json`, mode 0600 | The access and refresh tokens from `jarvis spotify-login`. |
-| Audit log | `~/.local/state/jarvis/audit.jsonl`, mode 0600 in a 0700 folder | Every request as transcribed, the model's tool calls, each policy decision and each result (with the start of each page or file Jarvis read). With PC audio on, it also holds what other people said in it. At 5 MiB it is kept once as `audit.jsonl.1` and started again. |
+| Audit log | `~/.local/state/jarvis/audit.jsonl`, mode 0600 in a 0700 folder | Every request as transcribed or typed (a paste in the chat included), the model's tool calls, each policy decision and each result (with the start of each page or file Jarvis read). What `write_file` puts in a file is not in it: only its length and SHA-256. With PC audio on, it also holds what other people said in it. At 5 MiB it moves to `audit.jsonl.1` and a new one starts; the five older logs are kept (`.1` the newest, `.5` the oldest) and the one before them is deleted, so at most about 30 MiB. |
+| Action count | `~/.local/state/jarvis/actions.json`, mode 0600 | The times of the side-effecting actions of the last 10 minutes (`boundaries.actions_window_s`), shared by the voice service and the chat to cap how many run. No names or words. |
 | Service log | The systemd journal (`jarvis logs`) and `~/.local/state/jarvis/strata.log` | What Jarvis heard, the answers to its questions and any errors. |
 
 Audio is held in memory. Each request is written to a private temporary file for Voxtype to transcribe and

@@ -1,12 +1,15 @@
 """Append-only JSONL audit log of requests, tool calls, decisions and outcomes.
 
 The log holds what was said (the owner's requests and, with PC audio on, other people's), so the
-file is private (mode 0600 in a 0700 folder) and bounded: when it passes `max_bytes` it is kept
-once as `<name>.1` and started again. Recording never fails the caller: an event that cannot be
-written goes to the service log instead.
+file is private (mode 0600 in a 0700 folder) and bounded: when it passes `max_bytes` it is moved to
+`<name>.1` (the older ones to `.2` and on, up to `generations`, the oldest dropped) and started
+again. What a write puts in a file is not in it: the agent records such arguments as a SHA-256 and
+a length (`Operation.hashed`). Recording never fails the caller: an event that cannot be written
+goes to the service log instead.
 """
 
 import contextlib
+import itertools
 import json
 import logging
 import os
@@ -22,6 +25,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 MAX_BYTES = 5 * 1024 * 1024
+GENERATIONS = 5  # older logs kept beside the current one
 _PRIVATE = 0o600
 
 
@@ -42,14 +46,17 @@ class AuditLog:
         max_bytes: int = MAX_BYTES,
         *,
         tags: Mapping[str, str] | None = None,
+        generations: int = GENERATIONS,
     ) -> None:
         """Log to `path`; with None, keep the events in `events` instead (tests).
 
-        `tags` go on every event (`{"via": "chat"}`), over any field of the same name.
+        `tags` go on every event (`{"via": "chat"}`), over any field of the same name. A full log
+        is kept as `generations` older files (at least one).
         """
         super().__init__()
         self._path = path
         self._max_bytes = max_bytes
+        self._generations = max(1, generations)
         self._tags = dict(tags or {})
         self._lock = threading.Lock()
         self.events: list[dict[str, object]] = []
@@ -84,10 +91,18 @@ class AuditLog:
             if status.st_size and status.st_size + len(data) > self._max_bytes:
                 os.close(fd)
                 fd = -1
-                path.replace(path.with_name(path.name + ".1"))
+                self._rotate(path)
                 fd = os.open(path, flags | os.O_EXCL, _PRIVATE)
             os.write(fd, data)
         finally:
             if fd >= 0:
                 with contextlib.suppress(OSError):
                     os.close(fd)
+
+    def _rotate(self, path: Path) -> None:
+        """Move each older log one place on (`.1` to `.2`...), the oldest dropped, then the log."""
+        older = [path.with_name(f"{path.name}.{n}") for n in range(1, self._generations + 1)]
+        for target, source in itertools.pairwise(reversed(older)):
+            with contextlib.suppress(FileNotFoundError):
+                source.replace(target)
+        path.replace(older[0])

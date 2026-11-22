@@ -292,11 +292,15 @@ class BoundariesConfig(_Section):
 
     `bypass_consent` (the owner's choice, on by default) runs every action that would need a yes
     without asking: `confirm` and `strong` actions, actions after outside or file text, and
-    requests heard in PC audio. An operation set to `deny` stays refused.
+    requests heard in PC audio. An operation set to `deny` stays refused. Whatever the consent mode,
+    at most `max_actions` side-effecting actions run in any `actions_window_s` seconds, counted
+    across the voice service, the chat and `jarvis ask` together.
     """
 
     classes: dict[str, OpClassName] = Field(default_factory=dict[str, OpClassName])
     bypass_consent: bool = True
+    max_actions: int = Field(default=30, ge=1, le=10000)
+    actions_window_s: float = Field(default=600.0, ge=1, le=86400)
 
 
 class Config(_Section):

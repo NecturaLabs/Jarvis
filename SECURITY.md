@@ -71,19 +71,26 @@ did not confirm. What exists today and what is in scope:
   data and marked with their origin; while such text is in a request, every side-effecting operation needs a
   spoken yes. While text from a file is in the conversation, so does every operation that sends words off the
   PC (a web or Reddit search, a place for the weather or the time), so a file cannot be carried out in a search.
+  While Jarvis asks first, a chat paste over 200 characters counts as outside data too. Forgetting the
+  conversation also forgets the addresses its searches returned, so a page from before can no longer be read.
 - **Files.** Jarvis reads only inside `files.read_roots` and writes only inside `files.write_roots`, each
-  path resolved through its links before the check. Keys, tokens, password stores, shell history,
+  path resolved through its links before the check and then opened one folder at a time without following
+  a link, so a folder swapped for a link after the check is refused. A file under home with a second hard
+  link is not read or added to. Keys, tokens, password stores, shell history,
   cookie stores, browser profiles and Jarvis's own state are never read or written, and hidden files
   directly under home are read only where `files.hidden_allow` opens them. A write asks first (unless
-  `boundaries.bypass_consent` is on), names the resolved path, and is refused if that path changed
-  before the yes; it never writes a hidden file or makes one executable.
+  `boundaries.bypass_consent` is on), names the resolved path, the folders it would make and a replaced
+  file's size, and is refused if any of that changed before the yes; it never writes a hidden file or makes
+  one executable.
 - **The chat window** (`jarvis chat`) shows outside text, such as Spotify names and PC speech, as plain
   characters only: control characters are removed and long text is cut (`activity.py`).
 - **Policy and confirmation.** Operations are typed with validated arguments and default deny; unknown
   operations are refused. A confirmation is bound to the hash of one exact action and starts only after
   Jarvis has finished speaking. Anything but a clear yes is a no, and after one no in a request the owner is
-  not asked again. Every request, decision and result is written to `audit.jsonl` (mode 0600, kept to 5 MiB
-  plus one rotated copy). The `strong` class (keybinding confirmation) is not built: such a call is refused.
+  not asked again. At most `boundaries.max_actions` (30) side-effecting actions run in any 10 minutes, voice
+  and chat together, even with consent bypassed. Every request, decision and result is written to
+  `audit.jsonl` (mode 0600, 5 MiB plus five rotated copies); what a write puts in a file is kept there only
+  as its length and SHA-256. The `strong` class (keybinding confirmation) is not built: such a call is refused.
 - **Spotify.** Login is OAuth Authorization Code with PKCE (S256), a validated `state` and a callback bound to
   `127.0.0.1`. There is no client secret. Tokens are kept in a mode 0600 file under `~/.local/state/jarvis/`
   and a token file that is a symbolic link, belongs to another user or is readable by others is refused.

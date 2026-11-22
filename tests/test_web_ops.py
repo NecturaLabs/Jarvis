@@ -11,6 +11,7 @@ import httpx
 import pytest
 from PIL import Image
 
+from jarvis import app as app_module
 from jarvis.agent import Agent, Hooks
 from jarvis.app import no_action_operation, web_operations
 from jarvis.audit import AuditLog
@@ -715,3 +716,73 @@ def test_a_made_up_picture_id_or_an_address_fetches_nothing(tmp_path: Path) -> N
     with pytest.raises(ArgumentError):
         _run(ops, "show_image", image_id="https://img.example/panda.png")
     assert len(net.seen) == searched
+
+
+# --- forgetting also forgets what searches found (issue #30, A8) -----------------------------
+
+
+def _wired(monkeypatch: pytest.MonkeyPatch, net: Net) -> Registry:
+    """Return a channel's registry as `build` makes it, its web clients answered by `net`."""
+    client = httpx.Client(transport=httpx.MockTransport(net.handle))
+
+    def search(url: str) -> Searxng:
+        return Searxng(url, client)
+
+    def pages(**_kw: object) -> PageReader:
+        return PageReader(client)
+
+    def reddit(**_kw: object) -> ArcticShift:
+        return ArcticShift(client)
+
+    monkeypatch.setattr(app_module, "Searxng", search)
+    monkeypatch.setattr(app_module, "PageReader", pages)
+    monkeypatch.setattr(app_module, "ArcticShift", reddit)
+    config = Config()
+    return app_module.channel_registry(
+        config, [], app_module.channel_limits(config, "chat"), "chat"
+    )
+
+
+def _web_run(registry: Registry, name: str, **args: object) -> Result:
+    op = registry.get(name)
+    assert op is not None
+    return op.run(validate_args(op, args))
+
+
+def test_forgetting_the_conversation_makes_an_earlier_search_result_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _wired(monkeypatch, Net())
+    agent = Agent(Model([]), registry, "system", AuditLog(None), {})
+    _web_run(registry, "web_search", query="kettle")
+    assert (
+        "citric acid" in _web_run(registry, "web_read", url="https://kettles.example/descale").text
+    )
+    _web_run(registry, "web_read", url=SEARCH["results"][1]["url"])
+    assert _web_run(registry, "reddit_read", post_id="abc123").ok
+
+    agent.forget()
+
+    with pytest.raises(OperationError, match="search first"):
+        _web_run(registry, "web_read", url="https://kettles.example/descale")
+    with pytest.raises(OperationError):
+        _web_run(registry, "reddit_read", post_id="abc123")
+
+
+def test_a_conversation_forgotten_for_idleness_forgets_the_search_results_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _wired(monkeypatch, Net())
+    now = [1000.0]
+    model = Model(
+        [{"role": "assistant", "content": "Hi."}, {"role": "assistant", "content": "Hi."}]
+    )
+    agent = Agent(model, registry, "system", AuditLog(None), {}, clock=lambda: now[0])
+    agent.handle("hello", Hooks(confirm=lambda _q: False))
+    _web_run(registry, "web_search", query="kettle")
+
+    now[0] += 7200  # past the speech's 30 idle minutes
+    agent.handle("hello again", Hooks(confirm=lambda _q: False))
+
+    with pytest.raises(OperationError, match="search first"):
+        _web_run(registry, "web_read", url="https://kettles.example/descale")

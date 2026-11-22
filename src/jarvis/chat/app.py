@@ -34,7 +34,7 @@ from textual.css.query import NoMatches
 from textual.widgets import OptionList, Static
 
 from jarvis.activity import Shown, describe, full_text, working_label
-from jarvis.agent import PICTURES_OFF, Hooks
+from jarvis.agent import MAX_TRUSTED_PASTE, PICTURES_OFF, Hooks
 from jarvis.chat import commands
 from jarvis.chat.clipboard import ClipboardError
 from jarvis.chat.commands import VERBOSITY
@@ -122,7 +122,14 @@ class Tail(Protocol):
 class Session(Protocol):
     """What the window needs of its agent."""
 
-    def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
+    def handle(
+        self,
+        text: str,
+        hooks: Hooks,
+        *,
+        pictures: Sequence[Picture] = (),
+        pasted: Sequence[str] = (),
+    ) -> str:
         """Answer one request, with any pictures the owner attached, and return the reply."""
         ...
 
@@ -362,6 +369,7 @@ class ChatApp(App[None]):
         self._history = self._services.history
         self._stick = True  # follow new entries down until the owner scrolls up
         self._attached: dict[int, Picture] = {}  # by the number in their `[Image #N]` tag
+        self._pastes: list[str] = []  # text pasted into the input since it was last empty
         self._picture_number = 0
 
     @override
@@ -692,6 +700,8 @@ class ChatApp(App[None]):
         if event.text_area.id != "input":
             return
         value = event.text_area.text
+        if not value:
+            self._pastes = []
         if self._attached:
             self._show_pictures()
         if value == "?":
@@ -841,6 +851,7 @@ class ChatApp(App[None]):
         choice = self._menu_choice()
         text = event.text.strip()
         pictures = self._sent_pictures(text)
+        pasted = self._sent_pastes(text)
         if choice is not None and choice.strip() != text:
             self.action_complete()
             if not choice.endswith(" "):
@@ -859,7 +870,22 @@ class ChatApp(App[None]):
         if text.startswith("/"):
             self._command(text)
             return
-        self._request(text, pictures)
+        self._request(text, pictures, pasted)
+
+    def _sent_pastes(self, text: str) -> list[str]:
+        """Return what was pasted into `text`, and forget it.
+
+        A long paste changed in the box after it went in makes the whole request count as pasted.
+        """
+        pasted: list[str] = []
+        for paste in self._pastes:
+            piece = paste.strip()
+            if piece and piece in text:
+                pasted.append(piece)
+            elif len(piece) > MAX_TRUSTED_PASTE and len(text) > MAX_TRUSTED_PASTE:
+                pasted.append(text)
+        self._pastes = []
+        return list(dict.fromkeys(pasted))
 
     # Pictures
 
@@ -946,6 +972,7 @@ class ChatApp(App[None]):
         path = pasted_path(text, self._services.home) if self._services.pictures else None
         if path is None:
             self._input().insert_text(text)
+            self._pastes.append(text)
             return
         self._load_picture(lambda: read_file(path))
 
@@ -1214,7 +1241,9 @@ class ChatApp(App[None]):
                 self._work = None
         self._from_worker(self._idle)
 
-    def _request(self, text: str, pictures: Sequence[Picture] = ()) -> None:
+    def _request(
+        self, text: str, pictures: Sequence[Picture] = (), pasted: Sequence[str] = ()
+    ) -> None:
         if self._session is None:
             self._note(f"Typed requests are off: {self._unavailable}", "warn")
             return
@@ -1228,9 +1257,17 @@ class ChatApp(App[None]):
         shared = "" if not count else "a picture" if count == 1 else f"{count} pictures"
         self._mount(Request(text, _joined("typed", now, shared)))
         self._exchanges.append(("you", text))
-        self.run_worker(lambda: self._handle(text, work, pictures), thread=True, group="request")
+        self.run_worker(
+            lambda: self._handle(text, work, pictures, pasted), thread=True, group="request"
+        )
 
-    def _handle(self, text: str, work: _Work, pictures: Sequence[Picture] = ()) -> None:
+    def _handle(
+        self,
+        text: str,
+        work: _Work,
+        pictures: Sequence[Picture] = (),
+        pasted: Sequence[str] = (),
+    ) -> None:
         session = self._session
         hooks = Hooks(
             confirm=self._confirm,
@@ -1239,12 +1276,13 @@ class ChatApp(App[None]):
             cancelled=lambda: self._closing or work.stop.is_set(),
             draft=lambda text: self._from_worker(self._show_draft, work, text),
             hush=lambda: self._from_worker(self._drop_draft, work),
+            preview=True,
         )
         reply = ""
         rate: float | None = None
         try:
             if session is not None:
-                reply = session.handle(text, hooks, pictures=pictures)
+                reply = session.handle(text, hooks, pictures=pictures, pasted=pasted)
                 rate = session.last_rate()
         except Exception as exc:  # ruff: ignore[blind-except] - shown in the window, never raised
             self._from_worker(self._note, f"Something went wrong: {type(exc).__name__}", "error")
@@ -1311,7 +1349,11 @@ class ChatApp(App[None]):
 
     def _open_question(self, question: _Question) -> None:
         question.shown_at = self._clock()
-        self.query_one("#question-text", Static).update(Text(question.text, style="bold"))
+        head, _, preview = question.text.partition("\n")
+        words = Text(head, style="bold")
+        if preview:
+            words.append(f"\n{preview}", style="bright_black")
+        self.query_one("#question-text", Static).update(words)
         choices = self.query_one("#choices", ChoiceList)
         choices.show([("1. Yes",), ("2. No",)], ("",), ["yes", "no"])
         self.query_one("#question").display = True

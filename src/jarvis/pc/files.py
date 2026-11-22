@@ -1,7 +1,10 @@
 """The owner's files: listed and read inside the read roots, written inside the write roots.
 
 Every path is resolved through its links before it is checked, so a link inside a root cannot
-lead out of it, and a link to a secret is refused as the secret. Some things are never read or
+lead out of it, and a link to a secret is refused as the secret. The checked path is then opened
+one name at a time from `/`, following no link, so a folder swapped for a link after the check is
+refused rather than followed. A file under home with a second name on disk (a hard link) is never
+read or added to, since that name may be a secret's. Some things are never read or
 written whatever the roots say: keys, tokens, password stores, browser profiles and Jarvis's own
 state (`SECRET_NAMES`, `SECRET_PATHS`, plus the owner's `files.deny`).
 
@@ -12,13 +15,16 @@ turned questions off. Hidden files and folders under home stay shut unless `file
 opens them.
 
 Writing is `confirm`: it asks first unless the owner turned questions off
-(`boundaries.bypass_consent`). The question names the resolved path, and the write runs
-only if that path still resolves to itself: a name that turned into a link after the question is
-refused. A write never touches a hidden file or folder (no `~/.bashrc`, `~/.config/…`), never
-replaces a file by accident (`create` refuses an existing file) and never makes a file executable.
+(`boundaries.bypass_consent`). The question names the resolved path, the folders the write would
+make and, for `replace`, the old file's size; the write runs only if that path still resolves to
+itself, needs no folder the question did not name and, for `replace`, finds the size it named. A
+name that turned into a link after the question is refused. A write never touches a hidden file
+or folder (no `~/.bashrc`, `~/.config/…`), never replaces a file by accident (`create` refuses an
+existing file) and never makes a file executable.
 """
 
 import contextlib
+import errno
 import fnmatch
 import itertools
 import os
@@ -47,6 +53,10 @@ KIB = 1024
 HEADROOM = 120  # the header and the closing line of a result
 FILE_MODE = 0o644
 FOLDER_MODE = 0o755
+PREVIEW_LINES = 3  # of what a write puts in, shown under the question in the chat
+PREVIEW_WIDTH = 160
+_FOLDER_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_SWAPPED = frozenset({errno.ELOOP, errno.ENOTDIR})  # a name on the way became a link or a file
 
 # Names never read, listed or written, wherever they are (shell-style, matched case-blind).
 SECRET_NAMES = (
@@ -139,6 +149,52 @@ def _size(count: int) -> str:
 
 def _inside(path: Path, roots: Iterable[Path]) -> bool:
     return any(path == root or path.is_relative_to(root) for root in roots)
+
+
+def _listed(names: list[str]) -> str:
+    """Return names as they are said in a list: "a", "a and b", "a, b and c"."""
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _printable(line: str) -> str:
+    """Return a line with every control character shown as a replacement mark."""
+    text = "".join(ch if ch.isprintable() else "\ufffd" for ch in line.replace("\t", " "))
+    return text if len(text) <= PREVIEW_WIDTH else text[: PREVIEW_WIDTH - 1] + "\u2026"
+
+
+def _open_folder(folder: Path, *, create: int = 0) -> int:
+    """Open a resolved folder one name at a time from `/`, following no link on the way.
+
+    The last `create` names may be missing; they are made (mode `FOLDER_MODE`) as they are met.
+    What `os.open` and `os.mkdir` raise passes through: `FileNotFoundError` for a missing folder
+    that may not be made, `ELOOP` for a link on the way and `ENOTDIR` for a name that is no folder.
+    """
+    names = folder.parts[1:]
+    fd = os.open("/", _FOLDER_FLAGS)
+    for index, name in enumerate(names):
+        try:
+            inner = _open_inner(fd, name, make=index >= len(names) - create)
+        finally:
+            os.close(fd)
+        fd = inner
+    return fd
+
+
+def _open_inner(fd: int, name: str, *, make: bool) -> int:
+    """Open the folder `name` inside the open folder `fd` without following a link.
+
+    With `make`, a missing one is made first.
+
+    Raises:
+        FileNotFoundError: it is missing and `make` is off.
+    """
+    try:
+        return os.open(name, _FOLDER_FLAGS, dir_fd=fd)
+    except FileNotFoundError:
+        if not make:
+            raise
+    os.mkdir(name, FOLDER_MODE, dir_fd=fd)
+    return os.open(name, _FOLDER_FLAGS, dir_fd=fd)
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,14 +339,33 @@ class Boundary:
         return path
 
 
-def _open_regular(path: Path, shown: str) -> tuple[int, os.stat_result]:
-    """Open a file for reading without following a last link or blocking on a pipe.
+def _open_regular(path: Path, shown: str, *, single: bool) -> tuple[int, os.stat_result]:
+    """Open a file for reading without following any link or blocking on a pipe.
+
+    With `single`, a file with more than one name on disk (a hard link) is refused.
 
     Raises:
-        FileRefusalError: it is missing, a folder or not a regular file.
+        FileRefusalError: it is missing, a folder, not a regular file, reached through a link,
+            or hard-linked when `single`.
     """
+    if not path.name:
+        msg = f"{shown} is a folder; list it instead."
+        raise FileRefusalError(msg)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        folder = _open_folder(path.parent)
+    except FileNotFoundError as exc:
+        msg = f"There's no file at {shown}."
+        raise FileRefusalError(msg) from exc
+    except OSError as exc:
+        msg = (
+            f"The way to {shown} changed (a folder became a link), so I didn't read it."
+            if exc.errno in _SWAPPED
+            else f"I couldn't open {shown}: {exc.strerror}."
+        )
+        raise FileRefusalError(msg) from exc
+    try:
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+        fd = os.open(path.name, flags, dir_fd=folder)
     except FileNotFoundError as exc:
         msg = f"There's no file at {shown}."
         raise FileRefusalError(msg) from exc
@@ -300,6 +375,8 @@ def _open_regular(path: Path, shown: str) -> tuple[int, os.stat_result]:
     except OSError as exc:
         msg = f"I couldn't open {shown}: {exc.strerror}."
         raise FileRefusalError(msg) from exc
+    finally:
+        os.close(folder)
     info = os.fstat(fd)
     if stat.S_ISDIR(info.st_mode):
         os.close(fd)
@@ -308,6 +385,10 @@ def _open_regular(path: Path, shown: str) -> tuple[int, os.stat_result]:
     if not stat.S_ISREG(info.st_mode):
         os.close(fd)
         msg = f"{shown} is not a regular file, so I don't read it."
+        raise FileRefusalError(msg)
+    if single and info.st_nlink > 1:
+        os.close(fd)
+        msg = f"{shown} has another name on disk (a hard link), so I don't read it."
         raise FileRefusalError(msg)
     return fd, info
 
@@ -338,7 +419,7 @@ class FileOps:
         """
         path = self._boundary.readable(str(args["path"]))
         shown = self._boundary.show(path)
-        fd, info = _open_regular(path, shown)
+        fd, info = _open_regular(path, shown, single=path.is_relative_to(self._boundary.home))
         with os.fdopen(fd, "rb") as handle:
             data = handle.read(MAX_READ_BYTES)
         if b"\x00" in data[:BINARY_PROBE]:
@@ -378,25 +459,19 @@ class FileOps:
             raise FileRefusalError(msg)
         hidden = args.get("hidden") is True
         pattern = str(args.get("pattern", "")).casefold()
-        rows: list[tuple[bool, str, str]] = []
         try:
-            with os.scandir(path) as found:
-                entries = list(itertools.islice(found, MAX_SCANNED + 1))
+            folder = _open_folder(path)
         except OSError as exc:
-            msg = f"I couldn't list {shown}: {exc.strerror}."
+            msg = (
+                f"The way to {shown} changed (a folder became a link), so I didn't list it."
+                if exc.errno in _SWAPPED or isinstance(exc, FileNotFoundError)
+                else f"I couldn't list {shown}: {exc.strerror}."
+            )
             raise FileRefusalError(msg) from exc
-        more = len(entries) > MAX_SCANNED
-        for entry in entries[:MAX_SCANNED]:
-            if (entry.name.startswith(".") and not hidden) or (
-                pattern and not fnmatch.fnmatchcase(entry.name.casefold(), pattern)
-            ):
-                continue
-            real = Path(os.path.realpath(entry.path))
-            if self._boundary.secret(real) or self._boundary.hidden_closed(
-                real, folder=entry.is_dir()
-            ):
-                continue
-            rows.append(self._row(entry))
+        try:  # an entry reads its details through the folder's descriptor, so it stays open
+            rows, more = self._rows(folder, path, shown, hidden=hidden, pattern=pattern)
+        finally:
+            os.close(folder)
         rows.sort(key=lambda row: (not row[0], row[1].casefold()))
         lines: list[str] = []
         used = 0
@@ -415,6 +490,34 @@ class FileOps:
         if len(lines) < len(rows):
             text += f"\n… and {len(rows) - len(lines)} more."
         return Result(text, Origin.FILE)
+
+    def _rows(
+        self, folder: int, path: Path, shown: str, *, hidden: bool, pattern: str
+    ) -> tuple[list[tuple[bool, str, str]], bool]:
+        """Return the rows of an open folder that may be shown, and whether it holds more.
+
+        Raises:
+            FileRefusalError: the folder could not be read.
+        """
+        try:
+            with os.scandir(folder) as found:
+                entries = list(itertools.islice(found, MAX_SCANNED + 1))
+        except OSError as exc:
+            msg = f"I couldn't list {shown}: {exc.strerror}."
+            raise FileRefusalError(msg) from exc
+        rows: list[tuple[bool, str, str]] = []
+        for entry in entries[:MAX_SCANNED]:
+            if (entry.name.startswith(".") and not hidden) or (
+                pattern and not fnmatch.fnmatchcase(entry.name.casefold(), pattern)
+            ):
+                continue
+            real = Path(os.path.realpath(path / entry.name))
+            if self._boundary.secret(real) or self._boundary.hidden_closed(
+                real, folder=entry.is_dir()
+            ):
+                continue
+            rows.append(self._row(entry))
+        return rows, len(entries) > MAX_SCANNED
 
     @staticmethod
     def _row(entry: os.DirEntry[str]) -> tuple[bool, str, str]:
@@ -436,6 +539,10 @@ class FileOps:
     def bind_write(self, args: dict[str, Any]) -> dict[str, Any]:
         """Resolve the path before the question, so the yes is for that exact file.
 
+        The bound arguments also say how many folders the write would make (`new_folders`) and,
+        for `replace`, the old file's size (`old_size`, None when there is none), so the question
+        names them and the write refuses when they no longer hold.
+
         Raises:
             FileRefusalError: the path may not be written, or `create` meets an existing file.
         """
@@ -448,10 +555,16 @@ class FileOps:
         if mode == "create" and path.exists():
             msg = f"{shown} already exists; say whether to replace it or add to it."
             raise FileRefusalError(msg)
-        return {**args, "path": str(path), "mode": mode}
+        new_folders = 0
+        while not path.parents[new_folders].exists():
+            new_folders += 1
+        bound = {**args, "path": str(path), "mode": mode, "new_folders": new_folders}
+        if mode == "replace":
+            bound["old_size"] = path.stat().st_size if path.exists() else None
+        return bound
 
     def write_summary(self, args: dict[str, Any]) -> str:
-        """Return the confirmation question's words: how, which file, how much."""
+        """Return the confirmation question's words: how, which file, how much, what is made."""
         path = Path(str(args.get("path", "")))
         folder = self._boundary.show(path.parent).removeprefix("~/") if path.is_absolute() else ""
         where = f"{path.name} in {'your home folder' if folder == '~' else folder}"
@@ -459,46 +572,78 @@ class FileOps:
         verb = {"replace": "replace", "append": "add to"}.get(str(args.get("mode")), "create")
         what = "the file " if verb == "create" else ""
         plural = "" if count == 1 else "s"
-        return f"{verb} {what}{where if folder else path} ({count} character{plural})"
+        target = where if folder else str(path)
+        old = args.get("old_size")
+        if verb == "replace" and isinstance(old, int):
+            text = f"replace {target} ({_size(old)} now) with {count} character{plural}"
+        else:
+            text = f"{verb} {what}{target} ({count} character{plural})"
+        new = int(args.get("new_folders") or 0) if path.is_absolute() else 0
+        if new:
+            made = [self._boundary.show(p).removeprefix("~/") for p in path.parents[:new]]
+            noun = "folder" if new == 1 else "folders"
+            text += f", making the new {noun} {_listed(made[::-1])}"
+        return text
+
+    @staticmethod
+    def write_preview(args: dict[str, Any]) -> str:
+        """Return the first lines of what a write puts in, for a window to show under the question.
+
+        Control characters are shown as marks, so the text cannot steer the terminal.
+        """
+        lines = str(args.get("content", "")).splitlines()
+        shown = [_printable(line) for line in lines[:PREVIEW_LINES]]
+        rest = len(lines) - PREVIEW_LINES
+        if rest > 0:
+            shown.append(f"(and {rest} more line{'' if rest == 1 else 's'})")
+        return "\n".join(shown)
 
     def write_file(self, args: dict[str, Any]) -> Result:
-        """Write the confirmed file, if its path still resolves to what was asked about.
+        """Write the confirmed file, if what was asked about still holds.
 
         Raises:
-            FileRefusalError: the path changed since the question, or the write failed.
+            FileRefusalError: the path, its folders or the old file changed since the question,
+                the file is hard-linked under home (for `append`), or the write failed.
         """
         path = Path(str(args["path"]))
         again = self._boundary.writable(str(path))
         shown = self._boundary.show(path)
+        changed = f"{shown} changed after you were asked, so I didn't write it."
         if again != path:
-            msg = f"{shown} changed after you were asked, so I didn't write it."
-            raise FileRefusalError(msg)
+            raise FileRefusalError(changed)
         content = str(args["content"])
         if not content.endswith("\n"):
             content += "\n"
         mode = str(args.get("mode", "create"))
         try:
-            self._make_parents(path.parent)
-            _write(path, content.encode("utf-8"), mode)
+            folder = _open_folder(path.parent, create=int(args.get("new_folders") or 0))
+        except OSError as exc:
+            if exc.errno in _SWAPPED or isinstance(exc, FileNotFoundError):
+                raise FileRefusalError(changed) from exc
+            msg = f"I couldn't write {shown}: {exc.strerror or exc}."
+            raise FileRefusalError(msg) from exc
+        target = _Target(
+            folder,
+            path.name,
+            shown,
+            single=path.is_relative_to(self._boundary.home),
+            old_size=args.get("old_size"),
+        )
+        try:
+            _write(target, content.encode("utf-8"), mode)
         except FileExistsError as exc:
             msg = f"{shown} already exists; say whether to replace it or add to it."
             raise FileRefusalError(msg) from exc
+        except FileRefusalError:
+            raise
         except OSError as exc:
             msg = f"I couldn't write {shown}: {exc.strerror or exc}."
             raise FileRefusalError(msg) from exc
+        finally:
+            os.close(folder)
         done = {"replace": "Replaced", "append": "Added to"}.get(mode, "Created")
         sentence = f"{done} {shown} ({len(content)} characters)."
         return Result(sentence, spoken=sentence)
-
-    @staticmethod
-    def _make_parents(folder: Path) -> None:
-        """Create the missing folders up to `folder` (all below an existing, resolved one)."""
-        missing: list[Path] = []
-        while not folder.exists():
-            missing.append(folder)
-            folder = folder.parent
-        for part in reversed(missing):
-            part.mkdir(mode=FOLDER_MODE)
 
     # --- the operations -----------------------------------------------------------------------
 
@@ -574,35 +719,75 @@ class FileOps:
                 default_class=OpClass.CONFIRM,
                 spoken_summary=self.write_summary,
                 prepare=self.bind_write,
+                preview=self.write_preview,
+                hashed=frozenset({"content"}),
             ),
         ]
 
 
-def _write(path: Path, data: bytes, mode: str) -> None:
+@dataclass(frozen=True, slots=True)
+class _Target:
+    """The file a confirmed write goes to: its folder's descriptor and what was asked about."""
+
+    folder: int
+    name: str
+    shown: str
+    single: bool  # refuse a file with a second name on disk (under home)
+    old_size: int | None  # for `replace`: the size the question named, None for no file
+
+
+def _write(target: _Target, data: bytes, mode: str) -> None:
     """Write `data` into the folder's own descriptor, never through a link at the last name.
 
     `create` makes a new file only; `append` adds to the end; `replace` writes a fresh file
     beside it and renames it over, so a reader sees the old content or the new.
+
+    Raises:
+        FileRefusalError: the old file is not the one the question named, or (for `append`) it
+            is not a regular file or is hard-linked when `target.single`.
     """
-    folder = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    folder, name = target.folder, target.name
+    if mode == "replace":
+        _check_replaced(target)
+        temp = f".{name}.{secrets.token_hex(6)}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+        fd = os.open(temp, flags, FILE_MODE, dir_fd=folder)
+        try:
+            _fill(fd, data)
+            os.replace(temp, name, src_dir_fd=folder, dst_dir_fd=folder)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temp, dir_fd=folder)
+            raise
+        return
+    extra = os.O_EXCL if mode == "create" else os.O_APPEND
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC | extra
+    fd = os.open(name, flags, FILE_MODE, dir_fd=folder)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or (target.single and info.st_nlink > 1):
+        os.close(fd)
+        msg = f"{target.shown} has another name on disk (a hard link), so I don't write it."
+        if not stat.S_ISREG(info.st_mode):
+            msg = f"{target.shown} is not a regular file, so I don't write it."
+        raise FileRefusalError(msg)
+    _fill(fd, data)
+
+
+def _check_replaced(target: _Target) -> None:
+    """Refuse a `replace` when the old file is not the size the question named.
+
+    Raises:
+        FileRefusalError: there is a file where the question named none, none where it named
+            one, a different size, or something other than a regular file.
+    """
     try:
-        if mode == "replace":
-            temp = f".{path.name}.{secrets.token_hex(6)}.tmp"
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
-            fd = os.open(temp, flags, FILE_MODE, dir_fd=folder)
-            try:
-                _fill(fd, data)
-                os.replace(temp, path.name, src_dir_fd=folder, dst_dir_fd=folder)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    os.unlink(temp, dir_fd=folder)
-                raise
-            return
-        extra = os.O_EXCL if mode == "create" else os.O_APPEND
-        flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | extra
-        _fill(os.open(path.name, flags, FILE_MODE, dir_fd=folder), data)
-    finally:
-        os.close(folder)
+        info = os.stat(target.name, dir_fd=target.folder, follow_symlinks=False)
+    except FileNotFoundError:
+        info = None
+    found = None if info is None else info.st_size
+    if (info is not None and not stat.S_ISREG(info.st_mode)) or found != target.old_size:
+        msg = f"{target.shown} changed after you were asked, so I didn't write it."
+        raise FileRefusalError(msg)
 
 
 def _fill(fd: int, data: bytes) -> None:

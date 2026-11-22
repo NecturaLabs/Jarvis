@@ -14,6 +14,7 @@ from jarvis.paths import audit_file, spotify_token_file, strata_key_file  # re-e
 from jarvis.pc.files import Boundary, FileOps
 from jarvis.pc.stats import StatsOps
 from jarvis.pictures import PictureCache
+from jarvis.ratelimit import ActionRate
 from jarvis.secretfile import read_api_key
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
@@ -165,8 +166,8 @@ class Jarvis:
     hint: Callable[[], str]
 
 
-def web_operations(config: Config, shown: PictureCache | None = None) -> list[Operation]:
-    """Return the time, weather, web and Reddit operations, with clients made on first use.
+def web_ops(config: Config, shown: PictureCache | None = None) -> WebOps:
+    """Return the time, weather, web and Reddit operations' owner, with clients made on first use.
 
     With `shown`, where the chat keeps the pictures it shows, the picture operations come too.
     """
@@ -179,7 +180,12 @@ def web_operations(config: Config, shown: PictureCache | None = None) -> list[Op
             pages=PageReader(factory=public_client),
         ),
         shown=shown,
-    ).operations()
+    )
+
+
+def web_operations(config: Config, shown: PictureCache | None = None) -> list[Operation]:
+    """Return the time, weather, web and Reddit operations (`web_ops`)."""
+    return web_ops(config, shown).operations()
 
 
 def pc_operations(config: Config, limits: Limits, home: Path | None = None) -> list[Operation]:
@@ -210,6 +216,7 @@ def channel_registry(
     """Return every operation a channel's agent is offered, sized to its limits.
 
     A read page fills the chat's room for one result; spoken requests keep the configured length.
+    Resetting the registry forgets what the web operations' searches returned.
     """
     room = limits.tool_text_chars - PAGE_HEADROOM
     pages = room if channel == "chat" else min(config.research.page_chars, room)
@@ -217,14 +224,16 @@ def channel_registry(
         update={"research": config.research.model_copy(update={"page_chars": pages})}
     )
     shipped = skills.shipped()
+    online = web_ops(web, chat_pictures() if channel == "chat" else None)
     return Registry(
         [
             *spotify,
-            *web_operations(web, chat_pictures() if channel == "chat" else None),
+            *online.operations(),
             *pc_operations(config, limits),
             *([skills.skill_operation(shipped)] if shipped else []),
             no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
-        ]
+        ],
+        resets=(online.reset,),
     )
 
 
@@ -245,6 +254,15 @@ def chat_pictures() -> PictureCache:
 def chat_memory_file() -> Path:
     """Return where the chat keeps its conversation between sessions."""
     return paths.state_dir() / "chat-conversation.json"
+
+
+def action_rate(config: Config) -> ActionRate:
+    """Return the cap on side-effecting actions, counted in one file every Jarvis process shares."""
+    return ActionRate(
+        paths.actions_file(),
+        limit=config.boundaries.max_actions,
+        window_s=config.boundaries.actions_window_s,
+    )
 
 
 def strata_model(config: Config, key: str) -> StrataModel:
@@ -310,6 +328,7 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
         memory_file=remembered,
         pictures=config.strata.pictures,
         bypass_consent=config.boundaries.bypass_consent,
+        actions=action_rate(config),
     )
     return Jarvis(
         agent, model, audit, ops, lambda: speech_hint(config, registry, ops.artist_names())

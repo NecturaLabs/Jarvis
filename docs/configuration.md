@@ -11,7 +11,7 @@ Every setting lives in one TOML file, validated when Jarvis reads it. This page 
 | Strata profile (generated) | `~/.config/jarvis/strata-profile.json` | `jarvis setup` |
 | Jarvis's own Voxtype settings (generated) | `~/.config/jarvis/voxtype.toml` | `jarvis run`, at each start |
 | User units | `~/.config/systemd/user/jarvis.service` and `jarvis-strata.service` | `jarvis setup` |
-| Strata API key, Spotify tokens, audit log, Strata log | `~/.local/state/jarvis/` (`$XDG_STATE_HOME/jarvis/`): `strata.env`, `spotify-token.json`, `audit.jsonl`, `strata.log` | Jarvis; the key and token files are mode 0600 |
+| Strata API key, Spotify tokens, audit log, action count, Strata log | `~/.local/state/jarvis/` (`$XDG_STATE_HOME/jarvis/`): `strata.env`, `spotify-token.json`, `audit.jsonl` (and five older `audit.jsonl.1` to `.5`), `actions.json`, `strata.log` | Jarvis; the key, token, log and count files are mode 0600 |
 | Wake, VAD and voice model files | `data_dir`, default `~/.local/share/jarvis/` | you; see [models.md](models.md) |
 
 [`config.example.toml`](../config.example.toml) in the repository lists every key at its default, with no
@@ -97,6 +97,15 @@ attaches that file, and `/image` alone attaches the newest screenshot in `OMASNA
 and shrunk to 1,568 pixels on its longest side before it goes to the model. What a picture shows counts as
 outside text: in that request, an action the model chooses needs your yes. The conversation keeps the
 picture's name, not the picture.
+
+Pasted text counts as outside text too when it is longer than 200 characters and Jarvis asks first
+(`boundaries.bypass_consent = false`): the model reads it marked as data, and in that request, and while
+the conversation remembers it, an action the model chooses needs your yes. A shorter paste and what you
+type stay your own words. With consent bypassed a paste is your own words whatever its length. A long
+paste you edit in the box still counts, as the whole request.
+
+When a question is about writing a file, the chat shows the first three lines of the new text under it;
+by voice Jarvis says only how many characters.
 
 Ask the chat to show you something ("show me a red panda") and it searches for pictures and draws the best
 one in the window, through kitty's graphics protocol (Sixel in a Sixel terminal, coloured half cells
@@ -314,8 +323,16 @@ and its own state: `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.netrc`, `.env
 `*.key`, `id_rsa*` and the like, any name with `secret`, `password` or `credential` in it, shell
 history files and cookie stores, `~/.config/gh`, keyrings and browser profiles (the full lists are `SECRET_NAMES` and `SECRET_PATHS`
 in `src/jarvis/pc/files.py`). Paths are resolved through links first, so a link cannot lead out of a
-root or to a secret. Writing never touches a hidden file or folder (no `~/.bashrc`, no `~/.config`),
+root or to a secret. The checked path is then opened one folder at a time without following a link, so a
+folder swapped for a link in between is refused, not followed. A file under home with a second name on
+disk (a hard link) is never read or added to, since that name could be a secret's; outside home hard
+links are read as usual. Writing never touches a hidden file or folder (no `~/.bashrc`, no `~/.config`),
 never overwrites unless asked to replace, and never makes a file executable.
+
+The question before a write names the file, how much text, the folders it would make ("making the new
+folder Documents/work") and, for a replace, the old file's size ("replace todo.md in Documents (2.1 KB
+now) with 400 characters"). The write is refused if any of that no longer holds when it runs: a folder
+it would have to make that the question did not name, or an old file of another size.
 
 A file's text is data, like a web page: while it is in the conversation, side effects need your yes,
 and so do the operations that send words off the PC (`web_search`, `reddit_search`, and `weather` or
@@ -328,6 +345,8 @@ hidden files under home stay shut unless you open them.
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
 | `bypass_consent` | `true` | `true`, `false` | `true`: Jarvis never asks for a yes. Every action that would need one runs at once and is audited as run with consent bypassed: `confirm` and `strong` actions, side effects after outside or file text, searches while file text is in the conversation, and requests heard in PC audio. An operation set to `deny` is still refused. `false`: Jarvis asks as described below. `jarvis consent ask` or `jarvis consent bypass` switches it and restarts the voice service. |
+| `max_actions` | `30` | 1 to 10000 | The most side-effecting actions (playback changes, a file write) that run in any `actions_window_s`, counted across the voice service, the chat and `jarvis ask` together, in both consent modes. One past it is refused, audited as `action_limit` and Jarvis says why. Every action the policy lets through counts, one you then declined included; reads, searches and answers do not. |
+| `actions_window_s` | `600.0` | 1 to 86400 | The window `max_actions` is counted over, in seconds. |
 
 With consent bypassed, text from a web page, a file, a picture or a call's audio can steer actions with no
 question in between. Turn asking on (`jarvis consent ask`) before letting Jarvis read pages or listen to PC

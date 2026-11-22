@@ -42,6 +42,7 @@ class Origin(StrEnum):
     WEB = "web"
     FILE = "file"
     PICTURE = "picture"  # a picture the owner shared: what it shows was made by anyone
+    PASTE = "paste"  # a long paste into the chat: anyone may have written it
 
 
 TRUSTED_ORIGINS = frozenset({Origin.SYSTEM, Origin.OWNER_SPEECH, Origin.TOOL_STATUS})

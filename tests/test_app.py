@@ -9,6 +9,7 @@ from jarvis.app import (
     MAX_HINT_CHARS,
     PAGE_HEADROOM,
     Channel,
+    action_rate,
     channel_limits,
     channel_registry,
     chat_pictures,
@@ -245,3 +246,13 @@ def test_an_override_for_a_chat_only_operation_is_known(tmp_path: Path) -> None:
     config = Config(boundaries=BoundariesConfig(classes={"show_image": "deny"}))
 
     assert unknown_overrides(config, spotify.operations()) == []
+
+
+def test_the_cap_on_actions_comes_from_the_config_and_is_shared_through_the_state_folder() -> None:
+    config = Config(boundaries=BoundariesConfig(max_actions=5, actions_window_s=90.0))
+
+    rate = action_rate(config)
+
+    assert (rate.limit, rate.window_s) == (5, 90.0)
+    assert [rate.take() for _ in range(6)] == [True] * 5 + [False]
+    assert (paths.state_dir() / "actions.json").exists()

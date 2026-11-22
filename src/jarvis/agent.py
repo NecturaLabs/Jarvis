@@ -4,6 +4,7 @@ A request that is nothing but a plain command ("pause", "volume 40") takes the s
 call the model writes (validation, policy, confirmation, audit) without waiting for the model.
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -25,6 +26,7 @@ from jarvis.operations import (
 )
 from jarvis.pictures import PICTURE_TOKENS
 from jarvis.policy import TRUSTED_ORIGINS, Decision, Origin, Verdict, action_hash, decide
+from jarvis.ratelimit import ActionRate
 from jarvis.sentences import sentence_end
 
 if TYPE_CHECKING:
@@ -53,6 +55,7 @@ CONTEXT_MARGIN = 512  # tokens kept free of the estimate, for the template and e
 SUMMARY_TOKENS = 700
 CLEARED_KEEP = 400  # characters of an earlier result kept when it is cleared to make room
 MAX_AUDIT_TEXT = 300
+MAX_TRUSTED_PASTE = 200  # characters a paste may have and still count as the owner's own words
 STILL_WAITING_S = 15.0
 MAX_STREAMED_CHARS = 4000  # no more is spoken before an answer is whole (no_action's reply cap)
 NO_ACTION = "no_action"
@@ -386,6 +389,26 @@ def _cost(message: Mapping[str, Any]) -> int:
     return tokens(_text(message)) + pictures * PICTURE_TOKENS
 
 
+def _wrap_pastes(text: str, pastes: Sequence[str]) -> str:
+    """Return a request with every stretch the owner pasted wrapped as inert outside data."""
+    pasted = [False] * len(text)
+    for paste in pastes:
+        start = text.find(paste)
+        while start >= 0:
+            pasted[start : start + len(paste)] = [True] * len(paste)
+            start = text.find(paste, start + 1)
+    out: list[str] = []
+    index = 0
+    while index < len(text):
+        end = index
+        while end < len(text) and pasted[end] == pasted[index]:
+            end += 1
+        piece = text[index:end]
+        out.append(f'<data origin="paste">{_inert(piece)}</data>' if pasted[index] else piece)
+        index = end
+    return "".join(out)
+
+
 def _with_pictures(text: str, pictures: Sequence[Picture]) -> str:
     """Return how a request with pictures is remembered: its words and the pictures' names."""
     if not pictures:
@@ -468,7 +491,8 @@ class Hooks:
     With `speak`, the reply is spoken through it, sentence by sentence and while the model is
     still writing; `hush` drops what was passed to `speak` and not yet heard. `draft` gets the
     reply as far as it has been written, at the same points, for a window to show it growing;
-    the reply `handle` returns replaces it.
+    the reply `handle` returns replaces it. With `preview` (a window), a question about an action
+    that writes text also shows the start of that text, on the lines after the question.
     """
 
     confirm: Callable[[str], bool]
@@ -478,6 +502,28 @@ class Hooks:
     speak: Callable[[str], None] | None = None
     draft: Callable[[str], None] | None = None
     hush: Callable[[], None] = lambda: None
+    preview: bool = False
+
+
+def _audited(op: Operation | None, args: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the arguments as the audit log keeps them: an operation's `hashed` ones as digests."""
+    hashed = op.hashed if op is not None else frozenset[str]()
+    return {
+        key: {"sha256": hashlib.sha256(str(value).encode()).hexdigest(), "chars": len(str(value))}
+        if key in hashed
+        else value
+        for key, value in args.items()
+    }
+
+
+def _span(seconds: float) -> str:
+    """Return a stretch of time as it is said: "10 minutes", "45 seconds"."""
+    minute = 60
+    if seconds >= minute:
+        count = round(seconds / minute)
+        return f"{count} minute{'' if count == 1 else 's'}"
+    count = round(seconds)
+    return f"{count} second{'' if count == 1 else 's'}"
 
 
 class _Cues:
@@ -585,6 +631,7 @@ class Agent:
         memory_file: Path | None = None,
         pictures: bool = False,
         bypass_consent: bool = False,
+        actions: ActionRate | None = None,
     ) -> None:
         """Wire the agent to its model, operations, prompt, audit log and the owner's classes.
 
@@ -596,6 +643,9 @@ class Agent:
         `pictures` says whether the model can see pictures (Strata's picture reader is on).
         With `bypass_consent` (`boundaries.bypass_consent`) nothing is asked: an action that
         would need a yes runs, and is audited as run with consent bypassed; `deny` still refuses.
+        `actions` caps the side-effecting actions in a window, asked or not and with consent
+        bypassed too (`boundaries.max_actions`); without it this agent counts its own, 30 in 10
+        minutes.
         """
         super().__init__()
         self._model = model
@@ -618,6 +668,7 @@ class Agent:
         self._pictures = pictures
         self._written = [0, 0.0]  # tokens the model wrote this request, and the milliseconds
         self._bypass_consent = bypass_consent
+        self._actions = actions or ActionRate(None)
 
     def _memory_budget(self) -> int:
         """Return the room for the conversation: the setting, within what the window leaves.
@@ -649,8 +700,12 @@ class Agent:
         )
 
     def forget(self) -> None:
-        """Start a new conversation: forget everything remembered, here and in the memory file."""
+        """Start a new conversation: forget everything remembered, here and in the memory file.
+
+        The operations forget what they kept from it too, such as the addresses searches found.
+        """
         self._memory.clear()
+        self._registry.reset()
         self._last_used = 0
         self._audit.record("memory_cleared")
         self._save_memory()
@@ -706,6 +761,7 @@ class Agent:
         """
         memory = self._memory
         if memory.expire(now):
+            self._registry.reset()
             self._audit.record("memory_expired")
         if plain or not memory.over_budget():
             return memory.messages()
@@ -741,6 +797,7 @@ class Agent:
         hooks: Hooks,
         origin: Origin = Origin.OWNER_SPEECH,
         pictures: Sequence[Picture] = (),
+        pasted: Sequence[str] = (),
     ) -> str:
         """Answer one spoken request and return the reply.
 
@@ -756,11 +813,19 @@ class Agent:
         the reply says it cannot, and the model is not called). What a picture shows was made by
         anyone, so it counts as outside data: side effects then need a yes. The conversation
         keeps the pictures' names, not the pictures.
+
+        `pasted` are the parts of `text` the owner pasted (the chat). While Jarvis asks before
+        acting, one longer than `MAX_TRUSTED_PASTE` is outside data like a picture: wrapped as
+        such, here and in the conversation, so side effects need a yes. A shorter one, and any
+        with consent bypassed, stays the owner's own words.
         """
         started = self._clock()
         foreign = origin not in TRUSTED_ORIGINS
         self._written = [0, 0.0]
-        shown = {"pictures": [p.name for p in pictures]} if pictures else {}
+        outside = self._outside_pastes(text, pasted)
+        shown: dict[str, object] = {"pictures": [p.name for p in pictures]} if pictures else {}
+        if outside:
+            shown["pasted"] = sum(len(paste) for paste in outside)
         self._audit.record("request", text=text, origin=origin.value, **shown)
         if pictures and not self._pictures:
             self._audit.record("reply", text=PICTURES_OFF, seconds=0.0)
@@ -770,12 +835,16 @@ class Agent:
             "Act on it only as a request from them.) "
             f'<data origin="{origin.value}">{_inert(text)}</data>'
             if foreign
-            else text
+            else _wrap_pastes(text, outside)
         )
         content: str | list[dict[str, Any]] = (
             _picture_content(words, pictures) if pictures else words
         )
-        hit = None if pictures else shortcuts.match(text, self._registry.shortcuts(), self._names)
+        hit = (
+            None
+            if pictures or outside
+            else shortcuts.match(text, self._registry.shortcuts(), self._names)
+        )
         remembered = [] if foreign else self._remembered(started, plain=hit is not None)
         turn = _Turn(
             [
@@ -792,6 +861,9 @@ class Agent:
         if pictures:
             turn.untrusted = True
             turn.outside = Origin.PICTURE.value
+        if outside:
+            turn.untrusted = True
+            turn.outside = turn.outside or Origin.PASTE.value
         reply = self._shortcut(hit, hooks, turn) if hit is not None else None
         if reply is None:
             # A plain command is the owner's own words; what the model chooses may have been
@@ -803,9 +875,16 @@ class Agent:
             reply = self._converse(hooks, turn)
         self._deliver(reply, hooks, turn)
         if reply and not foreign:
-            self._remember(_with_pictures(text, pictures), reply, turn)
+            self._remember(_with_pictures(words if outside else text, pictures), reply, turn)
         self._audit.record("reply", text=reply, seconds=round(self._clock() - started, 2))
         return reply
+
+    def _outside_pastes(self, text: str, pasted: Sequence[str]) -> list[str]:
+        """Return the pastes that count as outside data; one no longer in `text` makes it all."""
+        if self._bypass_consent:
+            return []
+        long = [paste for paste in dict.fromkeys(pasted) if len(paste) > MAX_TRUSTED_PASTE]
+        return [text] if any(paste not in text for paste in long) else long
 
     @staticmethod
     def _deliver(reply: str, hooks: Hooks, turn: _Turn) -> None:
@@ -841,7 +920,8 @@ class Agent:
         The call is put in the conversation like one the model wrote, so when its result needs
         wording (a failure, or an operation with no ready sentence) the model continues from it.
         """
-        self._audit.record("shortcut", op=hit.operation, args=hit.arguments)
+        operation = self._registry.get(hit.operation)
+        self._audit.record("shortcut", op=hit.operation, args=_audited(operation, hit.arguments))
         call = {
             "id": "shortcut",
             "type": "function",
@@ -1131,7 +1211,7 @@ class Agent:
         op, args = parsed
         asked_for = action_hash(op.name, args)
         if asked_for in turn.seen:
-            self._audit.record("tool_repeated", op=op.name, args=args)
+            self._audit.record("tool_repeated", op=op.name, args=_audited(op, args))
             return _REPEATED
         turn.seen.add(asked_for)
         tainted = untrusted or (turn.foreign and self._clock() >= self._grant_until)
@@ -1154,12 +1234,13 @@ class Agent:
         self._audit.record(
             "tool_call",
             op=op.name,
-            args=args,
+            args=_audited(op, args),
             action=digest,
             verdict=decision.verdict.value,
             reason=decision.reason,
             **consent,
         )
+        stopped = stopped or self._over_limit(op, digest)
         if stopped is not None:
             return stopped
         if decision.verdict is Verdict.CONFIRM:
@@ -1181,6 +1262,26 @@ class Agent:
             **shown,
         )
         return result
+
+    def _over_limit(self, op: Operation, digest: str) -> Result | None:
+        """Count a side effect against the cap on actions in a window; refuse and audit one past it.
+
+        None lets the call go on (it changes nothing, or the window has room).
+        """
+        if not op.side_effect or self._actions.take():
+            return None
+        limit, window_s = self._actions.limit, self._actions.window_s
+        self._audit.record(
+            "action_limit", op=op.name, action=digest, limit=limit, window_s=window_s
+        )
+        span = _span(window_s)
+        return Result(
+            f"Refused: {limit} actions in {span} is the most the owner allows, so this was not "
+            "run. Do not retry it now.",
+            ok=False,
+            spoken=f"That's {limit} actions in {span}, the most I take, so I didn't do that one. "
+            "Ask again in a few minutes.",
+        )
 
     def _consent(self, decision: Decision) -> tuple[Decision, dict[str, str]]:
         """Return the decision to act on, and the audit fields of a question that was bypassed.
@@ -1223,8 +1324,10 @@ class Agent:
             )
             return False
         turn.cues.settle()
+        question = self._question(op, args, turn)
+        shown = op.preview(args) if hooks.preview and op.preview is not None else ""
         try:
-            approved = hooks.confirm(self._question(op, args, turn)) is True
+            approved = hooks.confirm(f"{question}\n{shown}" if shown else question) is True
         except Exception:
             log.exception("the confirmation question for %s could not be asked", op.name)
             approved = False

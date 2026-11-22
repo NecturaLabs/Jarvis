@@ -75,15 +75,26 @@ class FakeSession:
     memory: Conversation = field(default_factory=lambda: Conversation(budget=1000))
     asked: list[str] = field(default_factory=list[str])
     pictures: list[list[str]] = field(default_factory=list[list[str]])
+    pasted: list[list[str]] = field(default_factory=list[list[str]])
+    hooks: list[Hooks] = field(default_factory=list[Hooks])
     forgotten: int = 0
     compacted: list[bool] = field(default_factory=list[bool])
     use: ContextUse = field(
         default_factory=lambda: ContextUse(9100, 24576, 5100, 2400, 12000, 1, summarized=False)
     )
 
-    def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
+    def handle(
+        self,
+        text: str,
+        hooks: Hooks,
+        *,
+        pictures: Sequence[Picture] = (),
+        pasted: Sequence[str] = (),
+    ) -> str:
         self.asked.append(text)
         self.pictures.append([p.name for p in pictures])
+        self.pasted.append(list(pasted))
+        self.hooks.append(hooks)
         return self.answer(text, hooks)
 
     rate: float | None = 50.4
@@ -1417,5 +1428,106 @@ def test_slash_exit_leaves() -> None:
         await _type(pilot, "/exit")
         await pilot.pause(0.1)
         assert not app.is_running
+
+    _run(test, app)
+
+
+# What was pasted, and what a question shows (issue #30, A6 and P5)
+
+LONG_PASTE = "Copied from a page: " + "the kettle needs descaling every month or so. " * 6
+
+
+def test_a_paste_still_in_the_request_goes_with_it() -> None:
+    session = FakeSession()
+    app = _app(session=session)
+
+    async def test(pilot: Pilot[None]) -> None:
+        _input(app).post_message(events.Paste(LONG_PASTE))
+        await _until(pilot, lambda: _input(app).text == LONG_PASTE)
+        _input(app).insert_text(" sum it up")
+        await pilot.press("enter")
+        await _until(pilot, lambda: session.pasted != [])
+        assert session.asked == [f"{LONG_PASTE} sum it up"]
+        assert session.pasted == [[LONG_PASTE.strip()]]
+        await _type(pilot, "pause")
+        await _until(pilot, lambda: len(session.pasted) == 2)
+        assert session.pasted[1] == []
+
+    _run(test, app)
+
+
+def test_ctrl_v_text_counts_as_pasted_too() -> None:
+    session = FakeSession()
+    app = _app(session=session, services=Services(paste=_clipboard(Clip(text=LONG_PASTE))))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.press("ctrl+v")
+        await _until(pilot, lambda: _input(app).text == LONG_PASTE)
+        await pilot.press("enter")
+        await _until(pilot, lambda: session.pasted != [])
+        assert session.pasted == [[LONG_PASTE.strip()]]
+
+    _run(test, app)
+
+
+def test_a_long_paste_edited_in_the_box_still_counts_as_pasted() -> None:
+    session = FakeSession()
+    app = _app(session=session)
+
+    async def test(pilot: Pilot[None]) -> None:
+        _input(app).post_message(events.Paste(LONG_PASTE))
+        await _until(pilot, lambda: _input(app).text == LONG_PASTE)
+        edited = LONG_PASTE.replace("kettle", "teapot", 1)
+        _input(app).set_text(edited)
+        await pilot.pause(0.02)
+        await pilot.press("enter")
+        await _until(pilot, lambda: session.pasted != [])
+        assert session.pasted == [[edited.strip()]]
+
+    _run(test, app)
+
+
+def test_a_cleared_box_forgets_what_was_pasted() -> None:
+    session = FakeSession()
+    app = _app(session=session)
+
+    async def test(pilot: Pilot[None]) -> None:
+        _input(app).post_message(events.Paste(LONG_PASTE))
+        await _until(pilot, lambda: _input(app).text == LONG_PASTE)
+        _input(app).set_text("")
+        await pilot.pause(0.02)
+        typed = "play something calm for the evening, " * 8
+        assert len(typed) > 200
+        await _type(pilot, typed)
+        await _until(pilot, lambda: session.pasted != [])
+        assert session.pasted == [[]]
+
+    _run(test, app)
+
+
+def test_the_window_asks_for_previews_and_shows_them_under_the_question() -> None:
+    answers: list[bool] = []
+    done = threading.Event()
+
+    def answer(_text: str, hooks: Hooks) -> str:
+        answers.append(hooks.confirm("Should I replace todo.md in Documents?\n# Plan\nbuy a boat"))
+        done.set()
+        return ""
+
+    session = FakeSession(answer)
+    app = _app(session=session)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "write my plan")
+        await _until(pilot, lambda: bool(app.query_one("#question").display))
+        shown = _plain(app.query_one("#question-text", Static).content)
+        assert shown.splitlines()[:3] == [
+            "Should I replace todo.md in Documents?",
+            "# Plan",
+            "buy a boat",
+        ]
+        assert session.hooks[0].preview is True
+        await pilot.press("2")
+        await _until(pilot, done.is_set)
 
     _run(test, app)

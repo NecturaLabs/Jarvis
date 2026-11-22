@@ -88,7 +88,7 @@ def test_a_value_json_cannot_hold_is_recorded_as_text(tmp_path: Path) -> None:
 
 def test_a_full_log_is_rotated_once_and_keeps_writing(tmp_path: Path) -> None:
     path = tmp_path / "audit.jsonl"
-    log = AuditLog(path, max_bytes=400)
+    log = AuditLog(path, max_bytes=400, generations=1)
 
     for number in range(20):
         log.record("request", text=f"request number {number}")
@@ -118,3 +118,21 @@ def test_tags_go_on_every_event_and_cannot_be_overwritten(tmp_path: Path) -> Non
 
     entries = [json.loads(line) for line in path.read_text().splitlines()]
     assert [entry["via"] for entry in entries] == ["chat", "chat"]
+
+
+def test_a_full_log_keeps_five_older_generations(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, max_bytes=200)
+
+    for number in range(60):
+        log.record("request", text=f"request number {number:02}")
+
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert names == ["audit.jsonl", *(f"audit.jsonl.{n}" for n in range(1, 6))]
+    numbers = [
+        int(str(entry["text"]).rsplit(" ", 1)[1])
+        for generation in (5, 4, 3, 2, 1)
+        for entry in _lines(path.with_name(f"audit.jsonl.{generation}"))
+    ] + [int(str(entry["text"]).rsplit(" ", 1)[1]) for entry in _lines(path)]
+    assert numbers == list(range(numbers[0], 60))  # oldest first, nothing lost between them
+    assert all(stat.S_IMODE(p.stat().st_mode) == 0o600 for p in tmp_path.iterdir())

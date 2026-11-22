@@ -59,3 +59,8 @@ def spotify_token_file() -> Path:
 def audit_file() -> Path:
     """Return the audit log path."""
     return state_dir() / "audit.jsonl"
+
+
+def actions_file() -> Path:
+    """Return the file that counts recent side-effecting actions across Jarvis's processes."""
+    return state_dir() / "actions.json"

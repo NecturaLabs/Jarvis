@@ -8,9 +8,10 @@ codes, checked identifiers and the place the model asked about, so they do not m
 action need a yes. Every operation that sends words the model wrote (a place, a query) is
 `outbound`: while text from the owner's files is in the conversation it needs a yes.
 
-A page or a Reddit thread can be opened only when a search in this session returned it: the model
-cannot be talked into sending conversation text to an address a page made up. The same holds for a
-picture the chat shows (`show_image`): it must come from an image search or a read page.
+A page or a Reddit thread can be opened only when a search in this conversation returned it: the
+model cannot be talked into sending conversation text to an address a page made up. The same holds
+for a picture the chat shows (`show_image`): it must come from an image search or a read page.
+When the conversation is forgotten (`reset`), so is what its searches returned.
 """
 
 import re
@@ -198,6 +199,12 @@ class WebOps:
         self._shown = shown
         self._images: dict[str, ImageHit] = {}
         self._image_number = 0
+
+    def reset(self) -> None:
+        """Forget every address, post and picture earlier searches returned."""
+        self._urls.clear()
+        self._posts.clear()
+        self._images.clear()
 
     # --- time -------------------------------------------------------------------------------
 
