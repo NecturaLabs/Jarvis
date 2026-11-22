@@ -151,6 +151,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Web research is safer and steadier. Text a browser hides (the `hidden` attribute, `aria-hidden`, and
+  inline `display:none`, `visibility:hidden`, `opacity:0` or `font-size:0`) no longer reaches the model, a page
+  with more than 20,000 elements is read from its start so it cannot hold up a request, the weather and
+  Reddit archive answers must arrive within 15 seconds, the SearXNG container is limited to 200 processes, and
+  the documented command now creates its `.env` file readable only by you. After Spotify says "too many
+  requests", Jarvis sends nothing to Spotify until the wait it asked for is over.
 - `jarvis chat` could end with a `NoMatches` traceback when it was closed: a timer that redraws the
   window, reads the log or draws the toolbar could fire after the window's parts were taken down.
 - In `jarvis chat`, a request from the log without a time no longer ends in a lone "·", a reply that

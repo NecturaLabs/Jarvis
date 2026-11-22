@@ -361,6 +361,65 @@ def test_an_exhausted_quota_is_reported_and_not_retried(tmp_path: Path) -> None:
     assert clock.slept == []
 
 
+def test_after_a_long_rate_limit_nothing_is_sent_until_the_wait_is_over(tmp_path: Path) -> None:
+    wire = Wire()
+    wire.on("GET", "/x", _error(429, **{"Retry-After": "37"}), httpx.Response(204))
+    wire.on("GET", "/y", httpx.Response(204))
+    api, _, clock = _make(tmp_path, wire)
+    with pytest.raises(SpotifyError, match="37 seconds"):
+        api.request("GET", "/x")
+
+    clock.now += 10
+    with pytest.raises(SpotifyError, match="try again in 27 seconds"):
+        api.request("GET", "/y")
+    assert len(wire.seen) == 1
+
+    clock.now += 27
+    assert api.request("GET", "/x") is None
+    assert len(wire.seen) == 2
+
+
+def test_a_rate_limit_with_an_unknown_wait_still_pauses_calls(tmp_path: Path) -> None:
+    wire = Wire()
+    wire.on("GET", "/x", _error(429, **{"Retry-After": "nan"}))
+    api, _, _ = _make(tmp_path, wire)
+    with pytest.raises(SpotifyError, match="how long to wait is unknown"):
+        api.request("GET", "/x")
+
+    with pytest.raises(SpotifyError, match="request limit"):
+        api.request("GET", "/x")
+
+    assert len(wire.seen) == 1
+
+
+def test_an_exhausted_quota_pauses_calls_for_a_long_while(tmp_path: Path) -> None:
+    wire = Wire()
+    wire.on("GET", "/x", _error(429, "Too many requests", "QUOTA_EXCEEDED"), httpx.Response(204))
+    api, _, clock = _make(tmp_path, wire)
+    with pytest.raises(SpotifyError, match="quota is used up"):
+        api.request("GET", "/x")
+
+    clock.now += 600
+    with pytest.raises(SpotifyError, match="quota is used up"):
+        api.request("GET", "/x")
+    assert len(wire.seen) == 1
+
+    clock.now += 3600
+    assert api.request("GET", "/x") is None
+
+
+def test_a_rate_limited_library_asks_spotify_once(tmp_path: Path) -> None:
+    wire = Wire()
+    wire.on("GET", "/me/top/artists", _error(429, **{"Retry-After": "37"}))
+    for path in ("/me/top/tracks", "/me/player/recently-played", "/me/following"):
+        wire.on("GET", path, httpx.Response(200, json={"items": []}))
+    api, _, _ = _make(tmp_path, wire)
+
+    api.library()
+
+    assert len(wire.seen) == 1
+
+
 def test_no_active_device_is_decided_from_the_reason(tmp_path: Path) -> None:
     wire = Wire()
     wire.on("PUT", "/x", _error(404, "Player command failed", "NO_ACTIVE_DEVICE"))
