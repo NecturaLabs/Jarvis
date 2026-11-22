@@ -49,8 +49,8 @@ These hold on the maintainer's machine; elsewhere, use your own folders and keep
   need the real mic or speakers are `local` and are run with the owner.
 - Open nothing on the owner's screen: run windows and terminals hidden; only if that is impossible, on
   workspace 1. Stop only processes you started, by their recorded PID.
-- Downloaded tools, voices and model files go on the development drive, never under `~/.local/share`;
-  Strata's model is the owner's exception on `/mnt/models`.
+- Downloaded tools, voices and model files go where the maintainer's own environment rules say, never
+  under `~/.local/share`; Strata's model stays where `strata.model_file` points.
 
 ## Workflow
 

@@ -346,7 +346,7 @@ _VOICE_HARDENED = ("SystemCallArchitectures=native",)
 _NOT_SET = (
     "RestrictNamespaces",  # the Azure helper runs under `unshare --map-current-user --net`
     "MemoryDenyWriteExecute",  # onnxruntime and Strata's HIP path may JIT
-    "ProtectHome",  # config, state and models live under home and on /data
+    "ProtectHome",  # config, state and models live under home and on other drives
     "ProtectSystem",
     "PrivateNetwork",  # Spotify, Open-Meteo and web reads
     "IPAddressDeny",

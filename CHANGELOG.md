@@ -100,8 +100,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
-- `calculate`: Jarvis works out sums in code, exactly, however you ask ("how much is 48 times 31", "what
-  percentage is 30 out of 120", "15 percent of 80", powers, roots, logarithms, factorials), and says the
+- `calculate`: Jarvis works out sums in code, exactly, however you ask (products, percentages, powers,
+  roots, logarithms, factorials), and says the
   answer; the model never does the arithmetic itself. Numbers in replies and answers come in
   groups of three (1,488); the new `format.thousands_separator` sets the separator, or none.
 - `audio.vad_neg_threshold`: once speech has started it goes on while the probability stays above this
@@ -114,7 +114,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   on before they are spoken, to compare by ear (#29).
 - `jarvis doctor` checks that `audio.source` names a microphone PipeWire lists, and says so when PipeWire
   cannot be read rather than blaming the name (#29).
-- Stop a program by voice, in any words ("close Discord", "the Orbit game is frozen, kill it"):
+- Stop a program by voice, asked in any words:
   `find_processes` lists your own programs that match the name you said (at most 8, by program name,
   executable, a Wine game's `.exe`, or window title), Jarvis asks which one when several match, and
   `stop_process` stops only a PID it listed in the same request, after the confirm key. The PID is bound

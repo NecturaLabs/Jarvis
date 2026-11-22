@@ -558,7 +558,7 @@ def test_model_failure_becomes_spoken_apology() -> None:
 
 
 def test_a_missing_model_file_is_named_in_the_apology() -> None:
-    # `/mnt/models` not mounted: waiting will not help, so the owner hears why.
+    # The model's drive not mounted: waiting will not help, so the owner hears why.
     error = ModelMissingError("model server down and its model file is missing: /x.gguf")
     agent, audit = _agent(ScriptedModel([], error=error), [])
 

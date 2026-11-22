@@ -24,23 +24,23 @@ Jarvis is pre-1.0 software; see [Status](#status).
 - **Spotify:** play a track, album, artist, playlist or your liked songs; pause, resume, next, previous; set or
   change the volume; shuffle; repeat; queue songs; like the current song; say what is playing. It can start the
   Spotify desktop app when you ask it to play or resume and no player is open.
-- **Your PC:** "how's my PC doing" reports CPU, graphics card, VRAM, memory, temperatures and disks. Jarvis
-  can list and read your files (your home folder by default, hidden ones only for the desktop's own
-  settings) and create or change text files in `~/Documents`, asking first unless you turned questions
+- **Your PC:** ask how the PC is doing, in any words, for its CPU, graphics card, VRAM, memory,
+  temperatures and disks. Jarvis can list and read your files (your home folder by default, hidden ones
+  only for the desktop's own settings) and create or change text files in `~/Documents`, asking first unless you turned questions
   off. Keys, tokens, shell history and browser profiles are never read ([`[files]`](docs/configuration.md)).
-  Say "close Discord" or "the Orbit game is frozen, kill it": Jarvis lists the programs of yours that
+  Ask it in any words to close, end or kill a program: Jarvis lists the programs of yours that
   match, asks which one when there are several, and stops only that one once you press the confirm key. It
   never stops the desktop, the sound server, dictation or itself, and nothing heard from PC audio can stop a
   program ([Stopping a program](docs/configuration.md#stopping-a-program)).
-- **Sums:** "how much is 48 times 31", "what percentage is 30 out of 120", "15 percent of 80", square roots,
-  powers and the like are worked out exactly by a calculator in code, never guessed by the model.
+- **Sums:** arithmetic, however you ask it (products, percentages, square roots, powers and the like), is
+  worked out exactly by a calculator in code, never guessed by the model.
 - **Boundaries:** every action is a typed operation checked by a policy engine in code before it runs, and
   every request, decision and result goes to an audit log. See [SECURITY.md](SECURITY.md).
-- **Time and weather:** "what time is it", "what's the weather tomorrow" or "what's the weather in Lisbon".
+- **Time and weather:** the time, or the weather now, later or in a named place, asked in any words.
   The time comes from this PC; the weather from Open-Meteo, free and without an account. Set your home in
   [`[weather]`](docs/configuration.md).
 - **Research:** questions it can't answer on its own go to a web search through a local SearXNG; it reads
-  the best pages and says where the answer came from. "What does Reddit think of …" finds Reddit threads and
+  the best pages and says where the answer came from. Asked what Reddit thinks, it finds Reddit threads and
   reads their top comments from the Arctic Shift archive. Start the search container once as
   [`[research]`](docs/configuration.md) says. What these send, and to whom, is in
   [docs/privacy.md](docs/privacy.md).

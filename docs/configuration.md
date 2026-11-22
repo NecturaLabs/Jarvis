@@ -98,7 +98,7 @@ and shrunk to 1,568 pixels on its longest side before it goes to the model. What
 outside text: in that request, an action the model chooses needs your yes. The conversation keeps the
 picture's name, not the picture.
 
-Ask the chat to show you something ("show me a red panda") and it searches for pictures and draws the best
+Ask the chat to show you something, in any words, and it searches for pictures and draws the best
 one in the window, through kitty's graphics protocol (Sixel in a Sixel terminal, coloured half cells
 elsewhere). It fetches only a picture that search offered, from a public address, and does not see it itself.
 
@@ -148,7 +148,7 @@ Both units are written by `jarvis setup`; their text is `jarvis_unit` and `strat
   unit they put it in a private user namespace, which Spotify and every other program it starts would inherit),
   `RestrictNamespaces=` (the Azure wake word helper runs under `unshare --map-current-user --net`),
   `MemoryDenyWriteExecute=` (onnxruntime and Strata's HIP path may compile code at run time), `ProtectHome=` and
-  `ProtectSystem=` (config, state and models live under home and on `/data`), `PrivateNetwork=` and `IPAddressDeny=`
+  `ProtectSystem=` (config, state and models live under home and on other disks), `PrivateNetwork=` and `IPAddressDeny=`
   (Spotify, Open-Meteo and web reads), `RestrictRealtime=` (`pw-record` and `pw-play` are not shown to
   do without real-time scheduling), `Nice=` and the `idle` scheduling policies (a reply would starve while a game
   runs; the model is paged in from disk, so `IOSchedulingClass=idle` would slow it too). `IOWeight=` does nothing: the
@@ -330,7 +330,7 @@ place's time zone.
 ## `[weather]`: your home, for weather that names no place
 
 Weather comes from Open-Meteo, which needs no account or key ([ADR 0007](adr/0007-outside-services-for-answers.md)).
-"What's the weather" uses your home; "what's the weather in Lisbon tomorrow" looks Lisbon up.
+A weather question that names no place uses your home; one that names a place looks that place up.
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -443,12 +443,12 @@ o.bind("SUPER + CTRL + Y", "Jarvis confirm", "jarvis confirm")
 
 ## Stopping a program
 
-Ask in any words ("close Discord", "end the Orbit game", "Blender is frozen, kill it"). Jarvis first
+Ask in any words to close, end or kill a program. Jarvis first
 looks for the programs of yours that match the name you said (`find_processes`, `safe`): by the program's
-name, its executable, the name it was started as (a Wine or Proton game's `Orbit.exe`), or its window's
+name, its executable, the name it was started as (a Wine or Proton game's `.exe`), or its window's
 class or title. It lists at most 8, folds a program's own child processes into it, and, when more than one
 matches, reads them out and asks which; when none matches it says so and never tries a wider name. It then
-stops the one you chose (`stop_process`, `strong`): "Should I stop Orbit (PID 4242)?", and only your
+stops the one you chose (`stop_process`, `strong`): "Should I stop <program> (PID <number>)?", and only your
 confirm key allows it. That allows that exact process: if it ended and its PID went to another program
 before the press, nothing is stopped. It is asked to close (SIGTERM); a forced stop (SIGKILL) only when you
 ask for one. Jarvis says whether it ended within 3 seconds.

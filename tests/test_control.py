@@ -251,7 +251,7 @@ def test_an_unreachable_model_server_shows_unavailable() -> None:
 
 
 def test_a_model_server_down_for_a_missing_model_file_says_so() -> None:
-    # `/mnt/models` not mounted: systemd skips Strata, whose model file is not there.
+    # The model's drive not mounted: systemd skips Strata, whose model file is not there.
     controls = control.Controls(Loop(), Mic(), Model(None, missing=True))
 
     assert controls("status") == {"state": "unavailable", "paused": False, "model": "missing"}

@@ -1,8 +1,8 @@
 """The calculator: works out an arithmetic expression exactly, so a sum is never guessed.
 
-The model turns what the owner said ("48 times 31", "what percentage is 30 out of 120") into an
-expression; this works it out. Only arithmetic is read: numbers, + - * / // % **, brackets, a
-few named functions and constants. The text is parsed into Python's syntax tree and walked here,
+The model turns a sum the owner asked for, in whatever words, into an expression; this works it
+out. Only arithmetic is read: numbers, + - * / // % **, brackets, a few named functions and
+constants. The text is parsed into Python's syntax tree and walked here,
 never run: a name, attribute, call or value outside that list is refused before anything is
 worked out. Sums are kept as exact fractions (0.1 + 0.2 is 0.3); a square root, logarithm or
 other function that has no exact value gives a float. Every step is bounded, so no expression can

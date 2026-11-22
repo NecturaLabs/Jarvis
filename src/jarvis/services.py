@@ -102,7 +102,7 @@ def memory_limit(memory_high: str) -> str:
 # Sandboxing both units take. Left out on purpose, with why: `RestrictNamespaces` (the Azure helper
 # runs under `unshare --map-current-user --net`), `MemoryDenyWriteExecute` (onnxruntime and
 # Strata's HIP path may JIT), `ProtectHome` and `ProtectSystem` (config, state and models live under
-# home and on /data), `PrivateNetwork` and `IPAddressDeny` (Spotify, Open-Meteo and web reads),
+# home and on other disks), `PrivateNetwork` and `IPAddressDeny` (Spotify, Open-Meteo, web reads),
 # `RestrictRealtime` (not shown safe for `pw-record` and `pw-play`), and on the voice service
 # `ProtectKernelModules` and `ProtectKernelLogs` (in a user unit they put the service in a private
 # user namespace, which every program it starts inherits, Spotify included) and `UMask=0077` (a file

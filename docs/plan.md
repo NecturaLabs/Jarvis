@@ -57,7 +57,7 @@ behind the same speech setting, as the Piper-licence risk below asked.
 - Agents working on it open nothing on the owner's screen (hidden; else workspace 1) and never stop processes they
   did not start.
 
-## Verified facts (this PC, 2026-11-20)
+## Verified facts (the reference machine, 2026-11-20)
 
 - Omarchy 4.5.0-3, Hyprland, RX 7900 XT 20 GB, Ryzen 7 9800X3D, 64.9 GB RAM,
   system Python 3.14 (Jarvis uses it through uv; every key dependency ships 3.14 wheels), uv via mise.
@@ -74,16 +74,13 @@ behind the same speech setting, as the Piper-licence risk below asked.
 - Strata 0.2.16: OpenAI + Anthropic APIs on localhost; gfx1100 supported; `lazy_load`, `idle_unload_s`,
   `reasoning_budget_tokens` (0 = unlimited, so set a positive cap); foreground `strata serve --profile … --ready-file`
   for supervisors; mapped low-RAM mode (`--mmap-experts`, or `--resident-budget-gib N`) serves experts through the
-  OS file cache, which the kernel can reclaim. `models import --plan` previews only. CLI reinstalled since;
-  model data kept. (Since reinstalled: `strata --version` reports 0.2.16, engine build 0.1.62.)
+  OS file cache, which the kernel can reclaim. `models import --plan` previews only. `strata --version` reports 0.2.16, engine build 0.1.62.
 - Strata's engine runs two model families only (`qwen4exp`: Qwen3.8-Flash-Next; `qwen35moe`: Qwen3.6-35B-A3B);
   no small dense model. Qwen3.6-35B-A3B (Apache-2.0, 35B total / 3B active, 256 experts, top-8) comes as Unsloth
   UD-Q4_K_XL 22.9 GB, UD-Q6_K_XL 32.6 GB, Q8_0 37.8 GB. Its hybrid mode keeps some experts in VRAM and the rest in
   RAM: Strata measured 58-60 tok/s decode on an RTX 3060 12 GB with 37 of 256 experts per layer in VRAM (docs
   QWEN36.md). `--expert-cache auto` sizes the cache to the free VRAM; a fixed `--expert-cache N` (N x the largest
   expert blob) and `--vram-reserve-mib` cap it (docs DETAILS.md). Sources read 2026-11-21; not yet measured here.
-- Old model still on disk, unused: Qwen3.8-Flash-Next IQ2_XS in the model folder, 76.5 GB
-  (~39 GB RAM + VRAM to run, beyond the VRAM limit above). Kept until phase 1 passes; deleted only on the owner's word.
 - LiveKit WakeWord 2.1.3 (Apache-2.0 code and weights per NOTICE), Python >= 3.11, deps numpy + onnxruntime,
   pretrained `hey_jarvis.onnx`; local detection, no account.
 - Piper: `piper-tts` (OHF-Voice/piper1-gpl, GPL-3.0). Latency on this PC unmeasured.

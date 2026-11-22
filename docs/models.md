@@ -134,7 +134,7 @@ spoken over.
   closed TTS models; two of its datasets are CC BY: Koniwa `tnc` (CC BY 3.0) and SIWIS (CC BY 4.0). The ONNX
   export and `voices-v1.0.bin` come from [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx), MIT. Jarvis
   ships none of these files; you download them.
-- Time to first audio, measured on 2026-11-21 on this PC (Ryzen 7 9800X3D, desktop load about 2.5): one
+- Time to first audio, measured on 2026-11-21 on the reference machine (Ryzen 7 9800X3D, desktop load about 2.5): one
   first sentence of a typical reply (one to nine words) took a median 0.24 s to synthesize and trim, 0.28 s at
   the 90th percentile and 0.30 s at most, over 23 sentences, with `bm_george` and with `bm_fable` alike. The first
   sentence after loading the voice took 0.40 s with the files in the page cache and 0.96 s from cold. Opening
