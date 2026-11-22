@@ -11,15 +11,22 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - From a practices audit (#30): at most 30 actions that change something (playback, a file write) run in
   any 10 minutes, the voice service and the chat counted together and even with questions bypassed; one
   more is refused, recorded as `action_limit`, and Jarvis says why (`boundaries.max_actions`,
-  `boundaries.actions_window_s`). Before a write Jarvis names the folders it would make and, for a
-  replace, the old file's size; the chat also shows the first three lines of the new text. A write is
-  refused if a folder it was not asked about would be needed, or the old file changed size. Files are
+  `boundaries.actions_window_s`). Only actions that run count: with the window full Jarvis refuses before
+  asking, and an action you decline takes no place. A damaged count file starts the count again instead of
+  failing every request, a failed write leaves the old count, and a lock held for 2 seconds falls back to
+  the process's own count. Before a write Jarvis names the folders it would make and, for a
+  replace, the old file's size; the chat also shows the first three lines of the new text. A name with a
+  newline or another control character is shown with a mark, on the question's own line. A write is
+  refused if a folder it was not asked about would be needed, or the old file is not the one asked about
+  (its size, inode, modification or change time differ). A replace keeps the old file's read and write
+  permissions instead of 0644. Files are
   opened one folder at a time without following a link, so a folder swapped for a link after the check is
   refused, and a file under home with a second hard link is not read or added to. The audit log keeps
   five older generations instead of one and holds only the length and SHA-256 of what a write puts in a
-  file. While Jarvis asks first, a chat paste over 200 characters counts as outside data. Starting a new
-  conversation (or one forgotten after the idle time) also forgets the pages and threads earlier searches
-  returned.
+  file. While Jarvis asks first, chat pastes over 200 characters in all count as outside data, a request
+  brought back with ↑ keeping what was pasted into it. Starting a new conversation (or one forgotten
+  after the idle time, checked before every request, PC audio included) also forgets the pages and
+  threads earlier searches returned.
 - From a practices audit: a name in `boundaries.classes` that is no operation (a typo, say) stops Jarvis
   with an error instead of being ignored; turning questions on or off with `jarvis consent`, and the mode
   the voice service starts in, are recorded in the audit log and shown in the chat; words heard from the PC

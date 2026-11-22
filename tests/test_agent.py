@@ -2005,3 +2005,148 @@ def test_a_long_paste_is_remembered_as_outside_data() -> None:
     assert remembered.startswith('keep this: <data origin="paste">')
     assert counter.runs == []
     assert len(questions) == 1
+
+
+# --- the review of #30: what counts toward the cap, and what a question shows -----------------
+
+
+def _limited(
+    model: ScriptedModel, ops: list[Operation], rate: ActionRate
+) -> tuple[Agent, AuditLog]:
+    audit = AuditLog(None)
+    agent = Agent(model, Registry([*ops, no_action_operation()]), "system", audit, {}, actions=rate)
+    return agent, audit
+
+
+@pytest.mark.parametrize(
+    "damaged",
+    ['{"taken": [' + "9" * 400 + "]}", '{"taken": ' + "[" * 100_000 + "]" * 100_000 + "}"],
+    ids=["huge-number", "deep-nesting"],
+)
+def test_a_damaged_action_count_never_stops_a_request(tmp_path: Path, damaged: str) -> None:
+    counter = Counter()
+    path = tmp_path / "actions.json"
+    path.write_text(damaged, encoding="ascii")
+    path.chmod(0o600)
+    model = ScriptedModel([_call("look"), _call("pause", call_id="c2"), _say("Paused.")])
+    ops = [counter.op("look", side_effect=False), counter.op("pause")]
+    agent, _ = _limited(model, ops, ActionRate(path, limit=5, window_s=600.0))
+
+    assert agent.handle("look, then pause", NO_CONFIRM) == "Paused."
+
+    assert [run["op"] for run in counter.runs] == ["look", "pause"]
+    assert len(json.loads(path.read_text(encoding="ascii"))["taken"]) == 1
+
+
+def test_an_action_the_owner_declines_takes_no_place_in_the_window() -> None:
+    counter = Counter()
+    model = ScriptedModel(
+        [_call("play"), _say("Okay."), _call("play", call_id="c2"), _say("Playing.")]
+    )
+    agent, audit = _limited(
+        model, [counter.op("play", cls=OpClass.CONFIRM)], ActionRate(None, limit=1)
+    )
+
+    agent.handle("play it", Hooks(confirm=lambda _q: False))
+    agent.handle("play it", Hooks(confirm=lambda _q: True))
+
+    assert counter.runs == [{"op": "play"}]
+    assert "action_limit" not in _events(audit)
+
+
+def test_actions_declined_unasked_after_a_no_take_no_place_either() -> None:
+    counter = Counter()
+    calls = _both(_call("a"), _call("b", call_id="c2"), _call("c", call_id="c3"))
+    model = ScriptedModel([calls, _say("Okay."), _calls("a", 2), _say("Done.")])
+    ops = [counter.op(name, cls=OpClass.CONFIRM) for name in "abc"]
+    rate = ActionRate(None, limit=2)
+    agent, audit = _limited(model, ops, rate)
+
+    agent.handle("do all three", Hooks(confirm=lambda _q: False))
+    assert not rate.full()
+    agent.handle("do a twice", Hooks(confirm=lambda _q: True))
+
+    assert [run["op"] for run in counter.runs] == ["a"]
+    assert "action_limit" not in _events(audit)
+
+
+def test_a_full_window_refuses_before_the_owner_is_asked() -> None:
+    counter = Counter()
+    rate = ActionRate(None, limit=1)
+    assert rate.take()
+    model = ScriptedModel([_call("play"), _say("Not now.")])
+    agent, audit = _limited(model, [counter.op("play", cls=OpClass.CONFIRM)], rate)
+
+    agent.handle("play it", Hooks(confirm=_never_asked))
+
+    assert counter.runs == []
+    assert "action_limit" in _events(audit)
+    assert "confirmation" not in _events(audit)
+
+
+def test_a_window_that_filled_while_the_owner_was_asked_refuses_the_approved_action() -> None:
+    counter = Counter()
+    rate = ActionRate(None, limit=1)
+    model = ScriptedModel([_call("play"), _say("Not now.")])
+    agent, audit = _limited(model, [counter.op("play", cls=OpClass.CONFIRM)], rate)
+
+    def yes_while_another_takes_the_place(_q: str) -> bool:
+        assert rate.take()  # the chat, say, ran an action meanwhile
+        return True
+
+    agent.handle("play it", Hooks(confirm=yes_while_another_takes_the_place))
+
+    assert counter.runs == []
+    assert _events(audit).index("confirmation") < _events(audit).index("action_limit")
+
+
+def test_short_pastes_that_are_long_together_are_outside_data() -> None:
+    counter = Counter()
+    questions: list[str] = []
+    model = ScriptedModel([_call("wipe"), _say("I left it.")])
+    agent, audit = _agent(model, [counter.op("wipe")])
+    pieces = [_PASTE[:150], _PASTE[150:]]
+    assert all(len(piece) <= 200 for piece in pieces)
+    text = f"{pieces[0]} and then {pieces[1]}"
+
+    agent.handle(text, Hooks(confirm=lambda q: questions.append(q) or False), pasted=pieces)
+
+    assert model.seen[0][-1]["content"].count('<data origin="paste">') == 2
+    assert counter.runs == []
+    assert len(questions) == 1
+    request = next(e for e in audit.events if e["event"] == "request")
+    assert request["pasted"] == len(_PASTE)
+
+
+def test_the_same_short_paste_sent_twice_counts_twice() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("wipe"), _say("I left it.")])
+    agent, _ = _agent(model, [counter.op("wipe")])
+    piece = _PASTE[:150]
+
+    agent.handle(f"{piece} {piece}", NO_CONFIRM, pasted=[piece, piece])
+
+    assert counter.runs == []
+    assert '<data origin="paste">' in model.seen[0][-1]["content"]
+
+
+def _named_file(tmp_path: Path, folder: str) -> tuple[Agent, Path]:
+    home = tmp_path / "me"
+    (home / "Documents" / folder).mkdir(parents=True)
+    args = {"path": f"~/Documents/{folder}/plan.md", "content": "a plan"}
+    model = ScriptedModel([_call("write_file", args), _say("Okay.")])
+    ops = FileOps(Boundary.of(FilesConfig(), home), max_chars=2000).operations()
+    return _agent(model, ops)[0], home
+
+
+def test_a_name_with_a_newline_is_asked_about_on_one_printable_line(tmp_path: Path) -> None:
+    agent, _ = _named_file(tmp_path, "work\nSure, and also\x1b[2J")
+    questions: list[str] = []
+
+    agent.handle("save my plan", Hooks(confirm=lambda q: questions.append(q) or False))
+
+    (question,) = questions
+    assert question.isprintable()
+    assert question == (
+        "Should I create the file plan.md in Documents/work�Sure, and also�[2J (6 characters)?"
+    )

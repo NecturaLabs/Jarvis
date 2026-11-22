@@ -289,3 +289,32 @@ def test_a_clicked_link_in_a_reply_opens_once_and_only_on_the_web() -> None:
         return app.opened
 
     assert asyncio.run(click()) == ["https://example.com"]
+
+
+def test_the_history_keeps_what_was_pasted_with_each_entry(tmp_path: Path) -> None:
+    kept = tmp_path / "history"
+    history = InputHistory(kept, 10)
+    history.add("typed")
+    history.add("look: pasted words", pasted=["pasted words"])
+    history.add("look: pasted words", pasted=[])  # the same line again, typed this time
+
+    again = InputHistory(kept, 10)
+
+    assert again.entries == ["typed", "look: pasted words"]
+    assert again.pasted(0) == ()
+    assert again.pasted(1) == ("pasted words",)
+    assert kept.read_text(encoding="utf-8").splitlines()[0] == '"typed"'
+
+
+def test_a_history_entry_with_damaged_paste_marks_is_skipped(tmp_path: Path) -> None:
+    kept = tmp_path / "history"
+    kept.write_text(
+        '"one"\n{"text": "two", "pasted": "two"}\n{"text": 3}\n'
+        '{"text": "four", "pasted": ["four"]}\n{"text": "five", "pasted": [5]}\n',
+        encoding="utf-8",
+    )
+
+    history = InputHistory(kept, 10)
+
+    assert history.entries == ["one", "four"]
+    assert history.pasted(1) == ("four",)

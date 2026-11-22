@@ -383,6 +383,15 @@ def _text(message: Mapping[str, Any]) -> str:
     return "\n".join(str(part.get("text", "")) for part in objs(content))
 
 
+def _printable(text: str) -> str:
+    """Return a question's words on one line: a control character in a name becomes a mark.
+
+    The chat shows what follows the first newline as the preview, and a terminal acts on
+    escapes, so a file or folder named with either cannot change what the owner is asked.
+    """
+    return "".join(ch if ch.isprintable() else "\ufffd" for ch in text.replace("\t", " "))
+
+
 def _cost(message: Mapping[str, Any]) -> int:
     """Return the tokens a message takes in the model's context, its pictures included."""
     pictures = sum(1 for part in objs(message.get("content")) if part.get("type") == "image_url")
@@ -753,16 +762,23 @@ class Agent:
         summary = _text(message).strip()
         return summary or None
 
-    def _remembered(self, now: float, *, plain: bool) -> list[dict[str, Any]]:
+    def _expire(self, now: float) -> None:
+        """Forget the conversation after the idle time, with what operations kept from it.
+
+        Every request comes here first, one from PC audio too: it reads no history, but must not
+        reach search results an expired conversation left behind.
+        """
+        if self._memory.expire(now):
+            self._registry.reset()
+            self._audit.record("memory_expired")
+
+    def _remembered(self, *, plain: bool) -> list[dict[str, Any]]:
         """Return the remembered conversation for a new request, made to fit its budget first.
 
         A `plain` command is not kept waiting for a summary: that waits for the next request
         that needs the model.
         """
         memory = self._memory
-        if memory.expire(now):
-            self._registry.reset()
-            self._audit.record("memory_expired")
         if plain or not memory.over_budget():
             return memory.messages()
         if not self.compact():
@@ -814,10 +830,10 @@ class Agent:
         anyone, so it counts as outside data: side effects then need a yes. The conversation
         keeps the pictures' names, not the pictures.
 
-        `pasted` are the parts of `text` the owner pasted (the chat). While Jarvis asks before
-        acting, one longer than `MAX_TRUSTED_PASTE` is outside data like a picture: wrapped as
-        such, here and in the conversation, so side effects need a yes. A shorter one, and any
-        with consent bypassed, stays the owner's own words.
+        `pasted` are the parts of `text` the owner pasted (the chat), once for each paste. While
+        Jarvis asks before acting, pastes longer than `MAX_TRUSTED_PASTE` together are outside
+        data like a picture: wrapped as such, here and in the conversation, so side effects need
+        a yes. Shorter ones, and any with consent bypassed, stay the owner's own words.
         """
         started = self._clock()
         foreign = origin not in TRUSTED_ORIGINS
@@ -825,7 +841,8 @@ class Agent:
         outside = self._outside_pastes(text, pasted)
         shown: dict[str, object] = {"pictures": [p.name for p in pictures]} if pictures else {}
         if outside:
-            shown["pasted"] = sum(len(paste) for paste in outside)
+            whole = outside == [text]
+            shown["pasted"] = len(text) if whole else sum(len(paste) for paste in pasted)
         self._audit.record("request", text=text, origin=origin.value, **shown)
         if pictures and not self._pictures:
             self._audit.record("reply", text=PICTURES_OFF, seconds=0.0)
@@ -845,7 +862,8 @@ class Agent:
             if pictures or outside
             else shortcuts.match(text, self._registry.shortcuts(), self._names)
         )
-        remembered = [] if foreign else self._remembered(started, plain=hit is not None)
+        self._expire(started)
+        remembered = [] if foreign else self._remembered(plain=hit is not None)
         turn = _Turn(
             [
                 {"role": "system", "content": self._system},
@@ -880,11 +898,15 @@ class Agent:
         return reply
 
     def _outside_pastes(self, text: str, pasted: Sequence[str]) -> list[str]:
-        """Return the pastes that count as outside data; one no longer in `text` makes it all."""
-        if self._bypass_consent:
+        """Return the pastes that count as outside data; one no longer in `text` makes it all.
+
+        They count once all of them together, each paste as often as it was pasted, are longer
+        than `MAX_TRUSTED_PASTE`: short pieces do not add up to trusted text.
+        """
+        if self._bypass_consent or sum(len(paste) for paste in pasted) <= MAX_TRUSTED_PASTE:
             return []
-        long = [paste for paste in dict.fromkeys(pasted) if len(paste) > MAX_TRUSTED_PASTE]
-        return [text] if any(paste not in text for paste in long) else long
+        distinct = list(dict.fromkeys(pasted))
+        return [text] if any(paste not in text for paste in distinct) else distinct
 
     @staticmethod
     def _deliver(reply: str, hooks: Hooks, turn: _Turn) -> None:
@@ -1249,7 +1271,7 @@ class Agent:
             if turn.foreign:
                 self._grant_until = self._clock() + self._grant_s
                 self._audit.record("pc_audio_permission", seconds=self._grant_s)
-        result = self._attempt(op.run, op, args, digest)
+        result = self._run_counted(op, args, digest)
         if isinstance(result, _Failed):
             return result.result
         shown = {"picture": result.picture, "caption": result.caption} if result.picture else {}
@@ -1264,12 +1286,27 @@ class Agent:
         return result
 
     def _over_limit(self, op: Operation, digest: str) -> Result | None:
-        """Count a side effect against the cap on actions in a window; refuse and audit one past it.
+        """Refuse a side effect early, before any question, when the window is already full.
 
-        None lets the call go on (it changes nothing, or the window has room).
+        It counts nothing: a place is taken only once the action may run (`_run_counted`).
         """
-        if not op.side_effect or self._actions.take():
+        if not op.side_effect or not self._actions.full():
             return None
+        return self._limited(op, digest)
+
+    def _run_counted(self, op: Operation, args: dict[str, Any], digest: str) -> Result | _Failed:
+        """Take a side effect's place in the window right before it runs, then run it.
+
+        Called once the action is allowed (asked and approved, or needing no yes), so a declined
+        action takes no place. The window can fill while the owner is asked (another Jarvis
+        process acts meanwhile); then the approved action is refused instead.
+        """
+        if op.side_effect and not self._actions.take():
+            return _Failed(self._limited(op, digest))
+        return self._attempt(op.run, op, args, digest)
+
+    def _limited(self, op: Operation, digest: str) -> Result:
+        """Audit a side effect refused by the cap on actions in a window, and say why."""
         limit, window_s = self._actions.limit, self._actions.window_s
         self._audit.record(
             "action_limit", op=op.name, action=digest, limit=limit, window_s=window_s
@@ -1296,7 +1333,7 @@ class Agent:
         return bypassed, {"consent": "bypassed", "would_need": decision.verdict.value}
 
     def _question(self, op: Operation, args: dict[str, Any], turn: _Turn) -> str:
-        summary = op.spoken_summary(args)
+        summary = _printable(op.spoken_summary(args))
         if not turn.foreign:
             return f"Should I {summary}?"
         question = f"Someone on your PC audio asked me to {summary}. Should I?"

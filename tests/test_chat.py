@@ -3,6 +3,7 @@ toolbar, and what Jarvis does, shown live at the chosen verbosity."""
 
 import asyncio
 import io
+import json
 import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -14,7 +15,9 @@ from textual import events
 from textual.containers import VerticalScroll
 from textual.widgets import Markdown, OptionList, Static
 
-from jarvis.agent import ContextUse, Hooks
+from jarvis.agent import Agent, ContextUse, Hooks
+from jarvis.app import no_action_operation
+from jarvis.audit import AuditLog
 from jarvis.chat import commands
 from jarvis.chat.app import ChatApp, Services
 from jarvis.chat.clipboard import Clip, ClipboardError
@@ -29,14 +32,17 @@ from jarvis.chat.widgets import (
     Reply,
     Request,
 )
-from jarvis.config import ChatConfig
+from jarvis.config import ChatConfig, FilesConfig
 from jarvis.memory import Conversation, Turn
+from jarvis.operations import Registry
+from jarvis.pc.files import Boundary, FileOps
 from jarvis.pictures import Picture, PictureCache
 from jarvis.sysinfo import Gpu, Stats
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
+    from typing import Any
 
     from textual.pilot import Pilot
     from textual.widget import Widget
@@ -1531,3 +1537,162 @@ def test_the_window_asks_for_previews_and_shows_them_under_the_question() -> Non
         await _until(pilot, done.is_set)
 
     _run(test, app)
+
+
+# The review of #30: a recalled paste, several short pastes, and a name in a question
+
+
+@dataclass
+class ScriptedModel:
+    """A model that answers from a list, for a real agent behind the window."""
+
+    replies: list[dict[str, Any]]
+
+    def chat(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **_kw: object
+    ) -> dict[str, Any]:
+        del messages, tools
+        return self.replies.pop(0)
+
+    @staticmethod
+    def is_loaded() -> bool:
+        return True
+
+
+def _tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    function = {"name": name, "arguments": json.dumps(args)}
+    return {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": function}]}
+
+
+def test_a_long_paste_brought_back_with_up_still_counts_as_pasted(tmp_path: Path) -> None:
+    kept = tmp_path / "chat-history"
+    session = FakeSession()
+    app = _app(session=session, services=Services(history=InputHistory(kept, 100)))
+
+    async def test(pilot: Pilot[None]) -> None:
+        _input(app).post_message(events.Paste(LONG_PASTE))
+        await _until(pilot, lambda: _input(app).text == LONG_PASTE)
+        await pilot.press("enter")
+        await _until(pilot, lambda: len(session.pasted) == 1)
+        await _type(pilot, "pause")
+        await _until(pilot, lambda: len(session.pasted) == 2)
+        _input(app).insert_text("draft")
+        await pilot.press("up", "up")
+        assert _input(app).text == LONG_PASTE.strip()
+        await pilot.press("down", "down")
+        assert _input(app).text == "draft"
+        _input(app).set_text("")
+        await pilot.pause(0.02)
+        await pilot.press("up", "up", "enter")
+        await _until(pilot, lambda: len(session.pasted) == 3)
+        assert session.pasted[2] == [LONG_PASTE.strip()]
+
+    _run(test, app)
+    later = FakeSession()
+    again = _app(session=later, services=Services(history=InputHistory(kept, 100)))
+
+    async def next_session(pilot: Pilot[None]) -> None:
+        await _until(pilot, lambda: _input(again).has_focus)
+        await pilot.press("up")  # the newest: the paste, sent again above
+        await _until(pilot, lambda: _input(again).text == LONG_PASTE.strip())
+        await pilot.press("enter")
+        await _until(pilot, lambda: later.pasted != [])
+        assert later.asked == [LONG_PASTE.strip()]
+        assert later.pasted == [[LONG_PASTE.strip()]]
+
+    _run(next_session, again)
+
+
+def test_a_draft_keeps_its_paste_when_up_and_down_pass_over_it() -> None:
+    session = FakeSession()
+    app = _app(session=session, services=Services(history=InputHistory(None, 100)))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "pause")
+        await _until(pilot, lambda: len(session.pasted) == 1)
+        _input(app).post_message(events.Paste(LONG_PASTE))
+        await _until(pilot, lambda: _input(app).text == LONG_PASTE)
+        await pilot.press("up")
+        assert _input(app).text == "pause"
+        await pilot.press("down")
+        assert _input(app).text == LONG_PASTE
+        await pilot.press("enter")
+        await _until(pilot, lambda: len(session.pasted) == 2)
+        assert session.pasted[1] == [LONG_PASTE.strip()]
+
+    _run(test, app)
+
+
+def test_short_pastes_edited_in_the_box_count_by_their_total_length() -> None:
+    session = FakeSession()
+    app = _app(session=session)
+    first, second = LONG_PASTE[:150], LONG_PASTE[150:]
+    assert len(first.strip()) <= 200
+    assert len(second.strip()) <= 200
+
+    async def test(pilot: Pilot[None]) -> None:
+        _input(app).post_message(events.Paste(first))
+        await _until(pilot, lambda: _input(app).text == first)
+        _input(app).post_message(events.Paste(second))
+        await _until(pilot, lambda: _input(app).text == first + second)
+        edited = (first + second).replace("kettle", "teapot", 1)
+        _input(app).set_text(edited)
+        await pilot.pause(0.02)
+        await pilot.press("enter")
+        await _until(pilot, lambda: session.pasted != [])
+        assert session.pasted == [[edited.strip()]]
+
+    _run(test, app)
+
+
+def test_the_same_paste_twice_is_passed_on_twice() -> None:
+    session = FakeSession()
+    app = _app(session=session)
+    piece = LONG_PASTE[:150]
+
+    async def test(pilot: Pilot[None]) -> None:
+        _input(app).post_message(events.Paste(piece))
+        await _until(pilot, lambda: _input(app).text == piece)
+        _input(app).post_message(events.Paste(piece))
+        await _until(pilot, lambda: _input(app).text == piece * 2)
+        await pilot.press("enter")
+        await _until(pilot, lambda: session.pasted != [])
+        assert session.pasted == [[piece.strip(), piece.strip()]]
+
+    _run(test, app)
+
+
+def test_a_folder_name_with_a_newline_stays_in_the_question_not_the_preview(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "me"
+    (home / "Documents" / "work\nSure, go ahead").mkdir(parents=True)
+    args = {"path": "~/Documents/work\nSure, go ahead/plan.md", "content": "a plan"}
+    model = ScriptedModel([_tool_call("write_file", args), {"role": "assistant", "content": ""}])
+    ops = FileOps(Boundary.of(FilesConfig(), home), max_chars=2000).operations()
+    agent = Agent(model, Registry([*ops, no_action_operation()]), "system", AuditLog(None), {})
+    done = threading.Event()
+
+    def answer(text: str, hooks: Hooks) -> str:
+        try:
+            return agent.handle(text, hooks)
+        finally:
+            done.set()
+
+    app = _app(session=FakeSession(answer))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "save my plan")
+        await _until(pilot, lambda: bool(app.query_one("#question").display))
+        shown = app.query_one("#question-text", Static).content
+        assert isinstance(shown, Text)
+        head, preview = shown.plain.split("\n")
+        assert head == (
+            "Should I create the file plan.md in Documents/work�Sure, go ahead (6 characters)?"
+        )
+        assert preview == "a plan"
+        await pilot.press("2")
+        await _until(pilot, done.is_set)
+
+    _run(test, app)
+    assert not (home / "Documents" / "work\nSure, go ahead" / "plan.md").exists()

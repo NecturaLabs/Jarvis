@@ -1,7 +1,9 @@
 """Reading and writing the owner's files: only inside the allowed folders, never a secret."""
 
+import errno
 import os
 import stat
+import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -651,16 +653,116 @@ def test_the_preview_shows_the_first_three_lines_of_what_is_written(home: Path) 
     assert preview.splitlines() == ["first", "second�[31m red", "third", "(and 2 more lines)"]
 
 
-def test_a_folder_that_cannot_be_entered_is_said_as_such_not_as_a_change(home: Path) -> None:
+def test_a_folder_that_cannot_be_entered_is_said_as_such_not_as_a_change(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The refusal is what the folder walk raises; faked, so it holds for any user, root too.
     locked = home / "Documents" / "locked"
     locked.mkdir()
     (locked / "a.md").write_text("x\n", encoding="utf-8")
-    locked.chmod(0o000)
-    try:
-        if os.access(locked, os.X_OK):
-            pytest.skip("runs as a user that permissions do not stop (root)")
-        with pytest.raises(OperationError, match="couldn't open") as refused:
-            _read(_ops(home), "~/Documents/locked/a.md")
-        assert "changed" not in str(refused.value)
-    finally:
-        locked.chmod(0o755)
+    real = files_module._open_inner  # pyright: ignore[reportPrivateUsage]
+
+    def denied(fd: int, name: str, *, make: bool) -> int:
+        if name == "locked":
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), name)
+        return real(fd, name, make=make)
+
+    monkeypatch.setattr(files_module, "_open_inner", denied)
+
+    with pytest.raises(OperationError, match="couldn't open") as refused:
+        _read(_ops(home), "~/Documents/locked/a.md")
+    assert "changed" not in str(refused.value)
+    assert "Permission denied" in str(refused.value)
+
+
+# --- the review of #30: a replace keeps the mode and refuses a same-size swap -----------------
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [(0o600, 0o600), (0o640, 0o640), (0o664, 0o664), (0o755, 0o644)],
+    ids=["private", "group-read", "group-write", "executable-not-carried"],
+)
+def test_a_replace_keeps_the_old_files_permissions(home: Path, before: int, after: int) -> None:
+    todo = home / "Documents" / "todo.md"
+    todo.chmod(before)
+
+    _write(_ops(home), "~/Documents/todo.md", "only this", mode="replace")
+
+    assert todo.read_text(encoding="utf-8") == "only this\n"
+    assert stat.S_IMODE(todo.stat().st_mode) == after
+
+
+def test_the_replacement_is_private_until_it_has_the_old_mode(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (home / "Documents" / "todo.md").chmod(0o640)
+    before: list[int] = []
+    real = os.fchmod
+
+    def noted(fd: int, mode: int) -> None:
+        before.append(stat.S_IMODE(os.fstat(fd).st_mode))
+        real(fd, mode)
+
+    monkeypatch.setattr(files_module.os, "fchmod", noted)
+
+    _write(_ops(home), "~/Documents/todo.md", "only this", mode="replace")
+
+    assert before == [0o600]
+
+
+def _bound_replace(home: Path) -> tuple[Operation, dict[str, object]]:
+    op = _op(_ops(home), "write_file")
+    args = validate_args(op, {"path": "~/Documents/todo.md", "content": "x", "mode": "replace"})
+    assert op.prepare is not None
+    return op, op.prepare(args)
+
+
+def test_a_file_swapped_for_another_of_the_same_size_and_time_is_not_replaced(home: Path) -> None:
+    todo = home / "Documents" / "todo.md"
+    op, bound = _bound_replace(home)
+    old = todo.stat()
+    other = home / "Documents" / "other.md"
+    other.write_text("- beer\n- wine\n", encoding="utf-8")
+    os.utime(other, ns=(old.st_atime_ns, old.st_mtime_ns))
+    other.replace(todo)
+    assert (todo.stat().st_size, todo.stat().st_mtime_ns) == (old.st_size, old.st_mtime_ns)
+
+    with pytest.raises(OperationError, match="changed"):
+        op.run(bound)
+
+    assert todo.read_text(encoding="utf-8") == "- beer\n- wine\n"
+
+
+def test_a_file_rewritten_to_the_same_size_since_the_question_is_not_replaced(home: Path) -> None:
+    todo = home / "Documents" / "todo.md"
+    op, bound = _bound_replace(home)
+    old = todo.stat()
+    todo.write_text("- beer\n- wine\n", encoding="utf-8")
+    os.utime(todo, ns=(old.st_atime_ns, old.st_mtime_ns + 1_000_000))
+    assert (todo.stat().st_size, todo.stat().st_ino) == (old.st_size, old.st_ino)
+
+    with pytest.raises(OperationError, match="changed"):
+        op.run(bound)
+
+    assert todo.read_text(encoding="utf-8") == "- beer\n- wine\n"
+
+
+def test_a_rewrite_with_its_time_set_back_is_not_replaced_either(home: Path) -> None:
+    todo = home / "Documents" / "todo.md"
+    op, bound = _bound_replace(home)
+    old = todo.stat()
+    for _ in range(200):  # until the change time moves on, which a coarse clock may delay
+        todo.write_text("- beer\n- wine\n", encoding="utf-8")
+        os.utime(todo, ns=(old.st_atime_ns, old.st_mtime_ns))  # the change time cannot be set back
+        if todo.stat().st_ctime_ns != old.st_ctime_ns:
+            break
+        time.sleep(0.005)
+    now = todo.stat()
+    assert now.st_ctime_ns != old.st_ctime_ns
+    assert (now.st_size, now.st_ino, now.st_mtime_ns) == (old.st_size, old.st_ino, old.st_mtime_ns)
+
+    with pytest.raises(OperationError, match="changed"):
+        op.run(bound)
+
+    assert todo.read_text(encoding="utf-8") == "- beer\n- wine\n"

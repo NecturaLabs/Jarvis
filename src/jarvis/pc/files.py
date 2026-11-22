@@ -33,7 +33,7 @@ import stat
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.operations import Operation, OperationError, Result
 from jarvis.policy import OpClass, Origin
@@ -53,6 +53,7 @@ KIB = 1024
 HEADROOM = 120  # the header and the closing line of a result
 FILE_MODE = 0o644
 FOLDER_MODE = 0o755
+_CARRIED_MODE = 0o666  # what a replace keeps of the old file's mode: never execute or special bits
 PREVIEW_LINES = 3  # of what a write puts in, shown under the question in the chat
 PREVIEW_WIDTH = 160
 _FOLDER_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -540,8 +541,9 @@ class FileOps:
         """Resolve the path before the question, so the yes is for that exact file.
 
         The bound arguments also say how many folders the write would make (`new_folders`) and,
-        for `replace`, the old file's size (`old_size`, None when there is none), so the question
-        names them and the write refuses when they no longer hold.
+        for `replace`, the old file's size (`old_size`, None when there is none) and which file it
+        is (`old_file`: its inode and its change and modification times in nanoseconds), so the
+        question names them and the write refuses when they no longer hold.
 
         Raises:
             FileRefusalError: the path may not be written, or `create` meets an existing file.
@@ -560,7 +562,12 @@ class FileOps:
             new_folders += 1
         bound = {**args, "path": str(path), "mode": mode, "new_folders": new_folders}
         if mode == "replace":
-            bound["old_size"] = path.stat().st_size if path.exists() else None
+            try:
+                old = path.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                bound["old_size"] = bound["old_file"] = None
+            else:
+                bound["old_size"], bound["old_file"] = old.st_size, _identity(old)
         return bound
 
     def write_summary(self, args: dict[str, Any]) -> str:
@@ -627,7 +634,7 @@ class FileOps:
             path.name,
             shown,
             single=path.is_relative_to(self._boundary.home),
-            old_size=args.get("old_size"),
+            old=_named(args.get("old_size"), args.get("old_file")),
         )
         try:
             _write(target, content.encode("utf-8"), mode)
@@ -733,14 +740,35 @@ class _Target:
     name: str
     shown: str
     single: bool  # refuse a file with a second name on disk (under home)
-    old_size: int | None  # for `replace`: the size the question named, None for no file
+    old: tuple[int, ...] | None  # for `replace`: the file the question named (`_state`), or none
+
+
+def _identity(info: os.stat_result) -> list[int]:
+    """Return what tells one file apart from another of the same size, or from itself rewritten.
+
+    A file swapped in by a rename has another inode; one rewritten in place has a new change
+    time, which, unlike the modification time, no one can set back.
+    """
+    return [info.st_ino, info.st_mtime_ns, info.st_ctime_ns]
+
+
+def _state(info: os.stat_result) -> tuple[int, ...]:
+    return (info.st_size, *_identity(info))
+
+
+def _named(size: object, identity: object) -> tuple[int, ...] | None:
+    """Return the bound old file as `_state` gives it, None when the question named none."""
+    if not isinstance(size, int) or not isinstance(identity, list):
+        return None
+    return (size, *(int(part) for part in cast("list[int]", identity)))
 
 
 def _write(target: _Target, data: bytes, mode: str) -> None:
     """Write `data` into the folder's own descriptor, never through a link at the last name.
 
     `create` makes a new file only; `append` adds to the end; `replace` writes a fresh file
-    beside it and renames it over, so a reader sees the old content or the new.
+    beside it, with the old file's read and write permissions, and renames it over, so a reader
+    sees the old content or the new.
 
     Raises:
         FileRefusalError: the old file is not the one the question named, or (for `append`) it
@@ -748,12 +776,13 @@ def _write(target: _Target, data: bytes, mode: str) -> None:
     """
     folder, name = target.folder, target.name
     if mode == "replace":
-        _check_replaced(target)
+        old = _check_replaced(target)
+        carried = None if old is None else stat.S_IMODE(old.st_mode) & _CARRIED_MODE
         temp = f".{name}.{secrets.token_hex(6)}.tmp"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
-        fd = os.open(temp, flags, FILE_MODE, dir_fd=folder)
+        fd = os.open(temp, flags, FILE_MODE if carried is None else 0o600, dir_fd=folder)
         try:
-            _fill(fd, data)
+            _fill(fd, data, mode=carried)
             os.replace(temp, name, src_dir_fd=folder, dst_dir_fd=folder)
         except BaseException:
             with contextlib.suppress(OSError):
@@ -773,25 +802,30 @@ def _write(target: _Target, data: bytes, mode: str) -> None:
     _fill(fd, data)
 
 
-def _check_replaced(target: _Target) -> None:
-    """Refuse a `replace` when the old file is not the size the question named.
+def _check_replaced(target: _Target) -> os.stat_result | None:
+    """Return the old file of a `replace`, refused unless it is the one the question named.
 
     Raises:
         FileRefusalError: there is a file where the question named none, none where it named
-            one, a different size, or something other than a regular file.
+            one, another file or this one changed (size, inode, times), or something other than
+            a regular file.
     """
     try:
         info = os.stat(target.name, dir_fd=target.folder, follow_symlinks=False)
     except FileNotFoundError:
         info = None
-    found = None if info is None else info.st_size
-    if (info is not None and not stat.S_ISREG(info.st_mode)) or found != target.old_size:
+    found = None if info is None else _state(info)
+    if (info is not None and not stat.S_ISREG(info.st_mode)) or found != target.old:
         msg = f"{target.shown} changed after you were asked, so I didn't write it."
         raise FileRefusalError(msg)
+    return info
 
 
-def _fill(fd: int, data: bytes) -> None:
+def _fill(fd: int, data: bytes, *, mode: int | None = None) -> None:
+    """Write `data` to the open file and close it, first setting its `mode` when one is given."""
     with os.fdopen(fd, "wb") as handle:
+        if mode is not None:
+            os.fchmod(handle.fileno(), mode)
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())

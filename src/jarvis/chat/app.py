@@ -361,6 +361,7 @@ class ChatApp(App[None]):
         self._question: _Question | None = None
         self._recall = 0  # how far back ↑ has gone; 0 is the line being written
         self._draft = ""
+        self._draft_pastes: list[str] = []  # what was pasted into the draft, while ↑ is away
         self._ticker: Timer | None = None
         self._status = ""
         self._stats: Stats | None = None
@@ -782,16 +783,25 @@ class ChatApp(App[None]):
         prompt = self._input()
         if self._recall == 0:
             self._draft = prompt.text
+            self._draft_pastes = self._pastes
         self._recall += 1
-        prompt.set_text(entries[-self._recall])
+        self._recalled(entries[-self._recall], -self._recall)
         prompt.move_cursor((0, len(prompt.document.lines[0])))
 
     def _newer(self) -> None:
         if self._recall == 0:
             return
         self._recall -= 1
-        entries = self._entries()
-        self._input().set_text(entries[-self._recall] if self._recall else self._draft)
+        if self._recall:
+            self._recalled(self._entries()[-self._recall], -self._recall)
+            return
+        self._pastes = self._draft_pastes
+        self._input().set_text(self._draft)
+
+    def _recalled(self, text: str, index: int) -> None:
+        """Put an earlier request back in the input, with what was pasted into it then."""
+        self._pastes = list(self._history.pasted(index)) if self._history is not None else []
+        self._input().set_text(text)
 
     def action_escape(self) -> None:
         """Esc: answer a question no, else close a panel or menu, else stop the request."""
@@ -866,26 +876,25 @@ class ChatApp(App[None]):
         if not text:
             return
         if self._history is not None:
-            self._history.add(text)
+            self._history.add(text, pasted)
         if text.startswith("/"):
             self._command(text)
             return
         self._request(text, pictures, pasted)
 
     def _sent_pastes(self, text: str) -> list[str]:
-        """Return what was pasted into `text`, and forget it.
+        """Return what was pasted into `text`, once per paste, and forget it.
 
-        A long paste changed in the box after it went in makes the whole request count as pasted.
+        When the pastes together are long and one of them was changed in the box after it went
+        in, the whole request counts as pasted.
         """
-        pasted: list[str] = []
-        for paste in self._pastes:
-            piece = paste.strip()
-            if piece and piece in text:
-                pasted.append(piece)
-            elif len(piece) > MAX_TRUSTED_PASTE and len(text) > MAX_TRUSTED_PASTE:
-                pasted.append(text)
+        pieces = [piece for paste in self._pastes if (piece := paste.strip())]
         self._pastes = []
-        return list(dict.fromkeys(pasted))
+        kept = [piece for piece in pieces if piece in text]
+        total = sum(len(piece) for piece in pieces)
+        if len(kept) < len(pieces) and total > MAX_TRUSTED_PASTE and len(text) > MAX_TRUSTED_PASTE:
+            return [text]
+        return kept
 
     # Pictures
 

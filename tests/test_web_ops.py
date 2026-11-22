@@ -721,7 +721,9 @@ def test_a_made_up_picture_id_or_an_address_fetches_nothing(tmp_path: Path) -> N
 # --- forgetting also forgets what searches found (issue #30, A8) -----------------------------
 
 
-def _wired(monkeypatch: pytest.MonkeyPatch, net: Net) -> Registry:
+def _wired(
+    monkeypatch: pytest.MonkeyPatch, net: Net, channel: app_module.Channel = "chat"
+) -> Registry:
     """Return a channel's registry as `build` makes it, its web clients answered by `net`."""
     client = httpx.Client(transport=httpx.MockTransport(net.handle))
 
@@ -739,7 +741,7 @@ def _wired(monkeypatch: pytest.MonkeyPatch, net: Net) -> Registry:
     monkeypatch.setattr(app_module, "ArcticShift", reddit)
     config = Config()
     return app_module.channel_registry(
-        config, [], app_module.channel_limits(config, "chat"), "chat"
+        config, [], app_module.channel_limits(config, channel), channel
     )
 
 
@@ -786,3 +788,63 @@ def test_a_conversation_forgotten_for_idleness_forgets_the_search_results_too(
 
     with pytest.raises(OperationError, match="search first"):
         _web_run(registry, "web_read", url="https://kettles.example/descale")
+
+
+def test_the_voice_registry_forgets_search_results_with_the_conversation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _wired(monkeypatch, Net(), "voice")
+    agent = Agent(Model([]), registry, "system", AuditLog(None), {})
+    _web_run(registry, "web_search", query="kettle")
+    assert _web_run(registry, "web_read", url="https://kettles.example/descale").ok
+
+    agent.forget()
+
+    with pytest.raises(OperationError, match="search first"):
+        _web_run(registry, "web_read", url="https://kettles.example/descale")
+
+
+def test_the_voice_registry_forgets_search_results_after_the_idle_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _wired(monkeypatch, Net(), "voice")
+    now = [1000.0]
+    model = Model(
+        [{"role": "assistant", "content": "Hi."}, {"role": "assistant", "content": "Hi."}]
+    )
+    agent = Agent(model, registry, "system", AuditLog(None), {}, clock=lambda: now[0])
+    agent.handle("hello", Hooks(confirm=lambda _q: False))
+    _web_run(registry, "web_search", query="kettle")
+
+    now[0] += 7200
+    agent.handle("hello again", Hooks(confirm=lambda _q: False))
+
+    with pytest.raises(OperationError, match="search first"):
+        _web_run(registry, "web_read", url="https://kettles.example/descale")
+
+
+def test_a_pc_audio_request_cannot_read_what_an_expired_conversation_searched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    net = Net()
+    registry = _wired(monkeypatch, net, "voice")
+    now = [1000.0]
+    model = Model(
+        [
+            {"role": "assistant", "content": "Hi."},
+            _call("web_read", {"url": "https://kettles.example/descale"}, "c1"),
+            {"role": "assistant", "content": "I couldn't."},
+        ]
+    )
+    audit = AuditLog(None)
+    agent = Agent(model, registry, "system", audit, {}, clock=lambda: now[0])
+    agent.handle("hello", Hooks(confirm=lambda _q: False))
+    _web_run(registry, "web_search", query="kettle")
+    pages = sum(1 for request in net.seen if request.url.host == "kettles.example")
+
+    now[0] += 7200  # past the speech's 30 idle minutes
+    agent.handle("read the kettle page", Hooks(confirm=lambda _q: True), Origin.PC_AUDIO)
+
+    assert sum(1 for request in net.seen if request.url.host == "kettles.example") == pages
+    assert "search first" in str(model.seen[-1][-1]["content"])
+    assert "memory_expired" in [e["event"] for e in audit.events]

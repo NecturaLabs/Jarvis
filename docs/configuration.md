@@ -80,7 +80,7 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 | `resume` | `true` | `true`, `false` | Open the chat on the conversation it had last time, kept 0600 in `~/.local/state/jarvis/chat-conversation.json`. `false` starts each session fresh and deletes the file. |
 | `verbosity` | `replies` | `replies`, `steps`, `everything` | How much of Jarvis's work the chat shows: requests and replies only, plus each step and its result, or plus every model call and detail. Ctrl+O and `/verbosity` change it and save it here. |
 | `toolbar` | `true` | `true`, `false` | The line under the input with the PC's CPU, GPU, VRAM and RAM use, temperatures, and how full the model's context is. In a narrow window it leaves out the temperatures first, so it stays on one line. |
-| `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
+| `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, with what was pasted into each, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
 
 `/config` in the chat changes `verbosity`, `toolbar`, `resume`, `reply_tokens` and `max_steps` and writes
 them here; the last three apply the next time the chat opens.
@@ -98,11 +98,13 @@ and shrunk to 1,568 pixels on its longest side before it goes to the model. What
 outside text: in that request, an action the model chooses needs your yes. The conversation keeps the
 picture's name, not the picture.
 
-Pasted text counts as outside text too when it is longer than 200 characters and Jarvis asks first
-(`boundaries.bypass_consent = false`): the model reads it marked as data, and in that request, and while
-the conversation remembers it, an action the model chooses needs your yes. A shorter paste and what you
-type stay your own words. With consent bypassed a paste is your own words whatever its length. A long
-paste you edit in the box still counts, as the whole request.
+Pasted text counts as outside text too when what you pasted into a request is longer than 200
+characters in all and Jarvis asks first (`boundaries.bypass_consent = false`): the model reads it marked
+as data, and in that request, and while the conversation remembers it, an action the model chooses needs
+your yes. Several short pastes count together, and the same text pasted twice counts twice. Shorter
+pastes and what you type stay your own words. With consent bypassed a paste is your own words whatever
+its length. If you edit a paste in the box and the pastes together are long, the whole request counts.
+A request brought back with ↑ keeps what was pasted into it, so a long paste sent again still counts.
 
 When a question is about writing a file, the chat shows the first three lines of the new text under it;
 by voice Jarvis says only how many characters.
@@ -331,8 +333,12 @@ never overwrites unless asked to replace, and never makes a file executable.
 
 The question before a write names the file, how much text, the folders it would make ("making the new
 folder Documents/work") and, for a replace, the old file's size ("replace todo.md in Documents (2.1 KB
-now) with 400 characters"). The write is refused if any of that no longer holds when it runs: a folder
-it would have to make that the question did not name, or an old file of another size.
+now) with 400 characters"). Each name is shown on one line: a newline or another control character in it
+becomes a � mark. The write is refused if any of that no longer holds when it runs: a folder it would
+have to make that the question did not name, or an old file that is not the one you were asked about (a
+different size, inode, modification or change time, so a file swapped for another of the same size is
+caught). A replace keeps the old file's read and write permissions, so a private file stays private; it
+never carries an execute bit over.
 
 A file's text is data, like a web page: while it is in the conversation, side effects need your yes,
 and so do the operations that send words off the PC (`web_search`, `reddit_search`, and `weather` or
@@ -345,7 +351,7 @@ hidden files under home stay shut unless you open them.
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
 | `bypass_consent` | `true` | `true`, `false` | `true`: Jarvis never asks for a yes. Every action that would need one runs at once and is audited as run with consent bypassed: `confirm` and `strong` actions, side effects after outside or file text, searches while file text is in the conversation, and requests heard in PC audio. An operation set to `deny` is still refused. `false`: Jarvis asks as described below. `jarvis consent ask` or `jarvis consent bypass` switches it and restarts the voice service. |
-| `max_actions` | `30` | 1 to 10000 | The most side-effecting actions (playback changes, a file write) that run in any `actions_window_s`, counted across the voice service, the chat and `jarvis ask` together, in both consent modes. One past it is refused, audited as `action_limit` and Jarvis says why. Every action the policy lets through counts, one you then declined included; reads, searches and answers do not. |
+| `max_actions` | `30` | 1 to 10000 | The most side-effecting actions (playback changes, a file write) that run in any `actions_window_s`, counted across the voice service, the chat and `jarvis ask` together, in both consent modes. One past it is refused, audited as `action_limit` and Jarvis says why: with the window already full, before you are asked. Only actions that run count, taking their place once you said yes (or no yes was needed); one you decline, or one declined unasked after a no, takes none. Reads, searches and answers do not count. When the shared count file stays locked for 2 seconds, that process counts only its own actions for that one, and logs it. |
 | `actions_window_s` | `600.0` | 1 to 86400 | The window `max_actions` is counted over, in seconds. |
 
 With consent bypassed, text from a web page, a file, a picture or a call's audio can steer actions with no
