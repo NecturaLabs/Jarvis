@@ -12,6 +12,7 @@ from jarvis.jsonutil import obj, objs
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
+    from pathlib import Path
 
     from jarvis.config import ModelConfig
 
@@ -26,6 +27,10 @@ DEFAULT_MAX_TOKENS = 400
 
 class ModelError(Exception):
     """The model server could not answer."""
+
+
+class ModelMissingError(ModelError):
+    """The model server is down and its model file is not there (its drive not mounted, say)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +196,11 @@ class StrataModel:
     transport: httpx.BaseTransport | None = None  # tests answer in place of the server
     sleep: Callable[[float], None] = time.sleep  # tests wait without waiting
     clock: Callable[[], float] = time.monotonic  # tests move time with their sleep
+    model_file: Path | None = None  # what the server loads (`strata.model_file`), when known
+
+    def file_missing(self) -> bool:
+        """Return whether the server's model file is known and not there."""
+        return self.model_file is not None and not self.model_file.is_file()
 
     def _client(self, timeout: float) -> httpx.Client:
         return httpx.Client(
@@ -281,6 +291,7 @@ class StrataModel:
 
         Raises:
             ModelError: the server refused, failed, stayed unreachable or ran out of time.
+            ModelMissingError: the server is down and its model file is not there.
         """
         body: dict[str, Any] = {
             "model": self.config.model,
@@ -312,6 +323,9 @@ class StrataModel:
                     with client.stream("POST", "/chat/completions", json=body) as response:
                         return self._streamed(response, deadline, on_delta, passed_on)
             except httpx.TransportError as exc:
+                if self.file_missing():  # systemd skips Strata then: nothing to wait for
+                    msg = f"model server down and its model file is missing: {self.model_file}"
+                    raise ModelMissingError(msg) from exc
                 retry = attempt == 1 and not passed_on and not isinstance(exc, httpx.ReadTimeout)
                 if not retry:
                     msg = f"model server unreachable: {exc}"

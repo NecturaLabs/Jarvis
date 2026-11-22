@@ -41,6 +41,9 @@ FRAME = 1280  # 80 ms, the wake model's step
 VAD_CHUNK = 512
 VAD_CONTEXT = 64
 STOP_WAIT_S = 5.0  # how long a capture process gets to exit before it is killed
+MIC_STALL_S = 5.0  # a microphone capture that sends nothing this long has lost its source
+REOPEN_FIRST_S = 1.0  # the wait before reopening a microphone whose capture ended on its own
+REOPEN_MAX_S = 30.0  # each failed reopen doubles the wait, up to this
 # Session-manager (WirePlumber) properties that keep a stream on its target and end it otherwise.
 PINNED_PROPERTIES = ("node.dont-reconnect", "node.dont-fallback", "node.dont-move")
 
@@ -287,14 +290,19 @@ class AppAudio:
 class Microphone:
     """Streams 16 kHz mono int16 frames of 80 ms from a PipeWire source."""
 
-    def __init__(self, source: str = "", command: list[str] | None = None) -> None:
+    def __init__(
+        self, source: str = "", command: list[str] | None = None, *, stall_s: float | None = None
+    ) -> None:
         """Capture from `source` (a node name or serial), or PipeWire's default when empty.
 
-        `command` replaces `pw-record` (tests feed raw PCM from a file this way).
+        `command` replaces `pw-record` (tests feed raw PCM from a file this way). With `stall_s`,
+        a capture that sends no frame for that long counts as ended: `pw-record` keeps running,
+        silent, when its source goes away and there is none to move to.
         """
         super().__init__()
         self._source = source
         self._command = command
+        self._stall_s = stall_s
         self._proc: subprocess.Popen[bytes] | None = None
         self._frames: queue.Queue[NDArray[np.int16]] = queue.Queue(maxsize=400)
         self._ended = threading.Event()
@@ -341,15 +349,23 @@ class Microphone:
         """Yield frames until the capture ends.
 
         Raises:
-            AudioError: the capture process stopped.
+            AudioError: the capture process stopped, or sent nothing for `stall_s`.
         """
+        # The monotonic clock stands still while the PC sleeps, so a suspend is no stall.
+        last = time.monotonic()
         while True:
             try:
-                yield self._frames.get(timeout=0.2)
+                frame = self._frames.get(timeout=0.2)
             except queue.Empty:
                 if self._ended.is_set():
                     msg = "the microphone stream ended"
                     raise AudioError(msg) from None
+                if self._stall_s is not None and time.monotonic() - last > self._stall_s:
+                    msg = f"no audio from the microphone for {self._stall_s:g} s"
+                    raise AudioError(msg) from None
+                continue
+            yield frame
+            last = time.monotonic()  # the time the reader spent elsewhere is no stall
 
     def wait_ended(self, timeout: float) -> None:
         """Wait until the capture process's output has been read to its end."""
@@ -392,16 +408,26 @@ class _Capture(Protocol):
     def frames(self) -> Iterator[NDArray[np.int16]]: ...
 
 
+def _wait(event: threading.Event, seconds: float) -> bool:
+    return event.wait(seconds)
+
+
 class PausableMic:
     """A `Microphone` that `jarvis pause` can let go of (its capture ends) and `resume` reopen.
 
     A frames reader open at a pause raises `MicPausedError` at its next frame, and one opened while
     paused raises it at once, so a request that was listening or about to ends; the loop then
-    waits in `wait_resumed`, using no CPU.
+    waits in `wait_resumed`, using no CPU. A capture that ends on its own (PipeWire restarted,
+    the microphone unplugged) is started again by `recover`.
     """
 
-    def __init__(self, mic: _Capture) -> None:
-        """Wrap `mic` (a `Microphone`), which this object starts and stops from now on."""
+    def __init__(
+        self, mic: _Capture, *, wait: Callable[[threading.Event, float], bool] = _wait
+    ) -> None:
+        """Wrap `mic` (a `Microphone`), which this object starts and stops from now on.
+
+        `wait` waits on an event for some seconds and says whether it was set (a test seam).
+        """
         super().__init__()
         self._mic = mic
         self._lock = threading.Lock()
@@ -409,6 +435,9 @@ class PausableMic:
         self._running.set()
         self._pauses = 0  # pauses so far; a reader opened before one ends
         self._stopped = False
+        self._interrupt = threading.Event()  # a pause or stop ends a reopen wait
+        self._wait = wait
+        self._failures = 0  # reopens since the last frame
 
     @property
     def pid(self) -> int | None:
@@ -431,6 +460,7 @@ class PausableMic:
                 return False
             self._pauses += 1
             self._running.clear()
+            self._interrupt.set()
             self._mic.stop()
         return True
 
@@ -453,11 +483,43 @@ class PausableMic:
         with self._lock:
             self._stopped = True
             self._running.set()
+            self._interrupt.set()
             self._mic.stop()
 
     def drain(self) -> None:
         """Drop frames captured so far."""
         self._mic.drain()
+
+    def recover(self) -> bool:
+        """Start a new capture after the last one ended on its own; False once stopped.
+
+        Waits first: a second, doubled after each reopen that brought no frame, up to 30 s. A
+        pause during the wait ends it and leaves the microphone closed for `resume`. A capture
+        tool that cannot be started is logged, and its reader ends at once for the next try.
+        """
+        delay = min(REOPEN_MAX_S, REOPEN_FIRST_S * 2.0**self._failures)
+        self._failures += 1
+        with self._lock:
+            if self._stopped:
+                return False
+            if self.paused:  # `resume` starts the next capture
+                return True
+            pauses = self._pauses
+            self._interrupt.clear()
+            self._mic.stop()  # the ended capture's process is reaped
+        if self._wait(self._interrupt, delay) and self._stopped:
+            return False
+        with self._lock:
+            if self._stopped:
+                return False
+            if self._pauses != pauses:  # paused meanwhile; a resume has started its own capture
+                return True
+            self._mic.drain()
+            try:
+                self._mic.start()
+            except AudioError as exc:
+                log.warning("the microphone could not be reopened: %s", exc)
+        return True
 
     def wait_resumed(self) -> None:
         """Return once the microphone is open again, or stopped; waits using no CPU."""
@@ -479,6 +541,7 @@ class PausableMic:
         for frame in self._frames_until_ended():
             if self._pauses != pauses:
                 raise MicPausedError
+            self._failures = 0
             yield frame
 
     def _frames_until_ended(self) -> Iterator[NDArray[np.int16]]:
@@ -859,6 +922,39 @@ def voxtype_command(
 # docs/INTEGRATIONS.md lists idle, recording, streaming, transcribing and stopped); any other
 # state, one added later included, counts as dictation.
 _NOT_DICTATING = frozenset({"idle", "stopped"})
+
+
+LOCK_QUERY = ("omarchy-shell", "lock", "isLocked")  # the Omarchy shell owns the lock screen
+
+
+def lock_state(
+    run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run, timeout_s: float = 2.0
+) -> bool | None:
+    """Whether the Omarchy lock screen is up, asked of the running Omarchy shell; None if unknown.
+
+    (The shell does not tell logind, so `LockedHint` stays false while locked.)
+    """
+    try:
+        done = run(list(LOCK_QUERY), capture_output=True, timeout=timeout_s, check=False)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        log.warning("could not ask whether the screen is locked: %s", exc)
+        return None
+    answer = done.stdout.decode(errors="replace").strip()
+    if done.returncode == 0 and answer in {"true", "false"}:
+        return answer == "true"
+    log.warning("could not read whether the screen is locked: %r", answer)
+    return None
+
+
+def screen_locked(
+    run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run, timeout_s: float = 2.0
+) -> bool:
+    """Whether to treat the screen as locked: an answer that cannot be had counts as locked.
+
+    Asked only when `audio.listen_when_locked` is off, at each wake word, so a fault keeps
+    Jarvis deaf at a locked screen rather than listening.
+    """
+    return lock_state(run, timeout_s) is not False
 
 
 def dictation_active(

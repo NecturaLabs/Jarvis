@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from jarvis import __version__, cli, config, models, paths
+from jarvis import __version__, app, cli, config, models, paths
 from jarvis import audio as audio_module
 from jarvis import voice as voice_module
 from jarvis.agent import Hooks
@@ -143,11 +143,11 @@ def test_the_model_client_follows_the_strata_port(monkeypatch: pytest.MonkeyPatc
     config.save(config.Config(strata=config.StrataConfig(port=9100)))
     seen: list[str] = []
 
-    def fake_model(model: config.ModelConfig, _key: str) -> SimpleNamespace:
+    def fake_model(model: config.ModelConfig, _key: str, **_known: object) -> SimpleNamespace:
         seen.append(model.base_url)
         return SimpleNamespace(status=lambda: "unloaded")
 
-    monkeypatch.setattr(cli, "StrataModel", fake_model)
+    monkeypatch.setattr(app, "StrataModel", fake_model)  # the client `jarvis status` builds
 
     assert main(["status"]) == 0
     assert seen == ["http://127.0.0.1:9100/v1"]
@@ -243,6 +243,39 @@ def test_doctor_still_fails_a_missing_file_and_points_at_the_models_doc(
     )
     assert not any("docs/playbook" in line for line in out)
     assert not any("not a known release" in line for line in out)
+
+
+@pytest.mark.parametrize(
+    ("state", "line"),
+    [(None, "FAIL lock screen state (unknown)"), (False, "ok  lock screen state (unlocked)")],
+)
+def test_doctor_checks_the_lock_screen_can_be_read_when_jarvis_must_not_listen_there(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    state: bool | None,
+    line: str,
+) -> None:
+    config.save(config.Config(data_dir=home, audio=config.AudioConfig(listen_when_locked=False)))
+    monkeypatch.setattr(audio_module, "lock_state", lambda: state)
+
+    cli.main(["doctor"])
+
+    assert any(shown.startswith(line) for shown in _doctor_lines(capsys))
+
+
+def test_doctor_leaves_the_lock_screen_alone_while_jarvis_listens_there(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def asked() -> bool | None:
+        pytest.fail("the lock screen was asked about")
+
+    _doctor_config(home)
+    monkeypatch.setattr(audio_module, "lock_state", asked)
+
+    cli.main(["doctor"])
+
+    assert not any("lock screen" in shown for shown in _doctor_lines(capsys))
 
 
 def test_the_default_speech_model_is_small_en() -> None:
@@ -531,8 +564,9 @@ def test_without_the_vocabulary_hint_requests_get_none(monkeypatch: pytest.Monke
 class _Part:
     """A stand-in for a device or listener: records that it was started and stopped."""
 
-    def __init__(self, *_args: object, **_kwargs: object) -> None:
+    def __init__(self, *_args: object, **kwargs: object) -> None:
         super().__init__()
+        self.kwargs = kwargs
         self.started = False
         self.stopped = threading.Event()
 
@@ -591,7 +625,13 @@ def _cmd_run(
 
     monkeypatch.setattr(cli.signal, "signal", signal_handler)
     monkeypatch.setattr(cli, "_load", lambda: cfg or config.Config())
-    model = SimpleNamespace(warm=run.warmed.set, is_loaded=lambda: True, load=lambda: True)
+    model = SimpleNamespace(
+        warm=run.warmed.set,
+        is_loaded=lambda: True,
+        load=lambda: True,
+        status=lambda: "failed",  # what a suspend can leave behind
+        file_missing=lambda: False,
+    )
     ops = SimpleNamespace(start_refresh=run.refresh.append)
     jarvis = SimpleNamespace(agent=object(), model=model, ops=ops, hint=lambda: "", audit=run.audit)
 
@@ -656,6 +696,58 @@ def test_a_loop_failure_without_a_stop_is_raised(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(audio_module.AudioError):
         _cmd_run(monkeypatch, body)
+
+
+def test_the_run_reopens_a_lost_microphone_and_notices_one_gone_silent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run, _ = _cmd_run(monkeypatch, lambda _run, _should_stop: None)
+
+    (mic,) = run.kinds["Microphone"]
+    assert mic.kwargs["stall_s"] == audio_module.MIC_STALL_S
+    assert callable(run.loops[0]["reopen"])
+
+
+def test_the_lock_screen_is_not_asked_about_while_listening_there_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def asked() -> bool:
+        pytest.fail("the lock screen was asked about")
+
+    monkeypatch.setattr(audio_module, "screen_locked", asked)
+    run, _ = _cmd_run(monkeypatch, lambda _run, _should_stop: None)
+
+    locked = run.loops[0]["locked"]
+    assert callable(locked)
+    assert locked() is False
+
+
+def test_with_listening_at_the_lock_screen_off_the_run_asks_the_shell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(audio_module, "screen_locked", lambda: True)
+    cfg = config.Config(audio=config.AudioConfig(listen_when_locked=False))
+    run, _ = _cmd_run(monkeypatch, lambda _run, _should_stop: None, cfg)
+
+    locked = run.loops[0]["locked"]
+    assert callable(locked)
+    assert locked() is True
+
+
+def test_after_a_suspend_the_run_loads_a_failed_model_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def body(run: _Run, _should_stop: Callable[[], bool]) -> None:
+        assert run.warmed.wait(5)  # the load at start
+        run.warmed.clear()
+        after_sleep = run.loops[0]["after_sleep"]
+        assert callable(after_sleep)
+        after_sleep()
+        assert run.warmed.wait(5)
+
+    _, code = _cmd_run(monkeypatch, body)
+
+    assert code == 0
 
 
 def test_pc_audio_is_not_followed_unless_it_is_switched_on(

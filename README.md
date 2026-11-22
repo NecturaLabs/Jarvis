@@ -77,6 +77,11 @@ microphone. The config file and every key are in [docs/configuration.md](docs/co
 [`config.example.toml`](config.example.toml) shows them all at their defaults. Your own config stays in
 `~/.config/jarvis/`, outside the repository.
 
+The units start with your desktop session and stop with it. Jarvis keeps listening at the lock screen
+(`audio.listen_when_locked` turns that off), opens the microphone again after PipeWire restarts or the
+microphone is unplugged and plugged back, and listens afresh after a suspend. What each change does is in
+[docs/playbook/session-transitions.md](docs/playbook/session-transitions.md).
+
 ## Everyday commands
 
 These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what is running and follows the log.

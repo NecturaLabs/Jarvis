@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from jarvis import shortcuts
 from jarvis.jsonutil import obj, objs
 from jarvis.memory import Conversation, Turn, tokens
+from jarvis.model import ModelMissingError
 from jarvis.operations import (
     ArgumentError,
     OperationError,
@@ -59,6 +60,7 @@ _UNKNOWN = "unknown operation"
 _OMITTED = "(That reply quoted outside data, so it is left out here.)"
 
 MODEL_DOWN = "My model isn't answering right now."
+MODEL_MISSING = "My model's file is missing, so I can't answer. Is its drive mounted?"
 PICTURES_OFF = (
     "I can't see pictures here: the picture reader is off. Set strata.vision_file in the config, "
     "then run jarvis setup and jarvis restart."
@@ -894,7 +896,7 @@ class Agent:
         except Exception as exc:  # ruff: ignore[blind-except] - any model failure becomes a spoken apology
             self._audit.record("model_error", error=str(exc)[:MAX_AUDIT_TEXT])
             log.warning("the model did not answer: %s", exc)
-            return MODEL_DOWN
+            return MODEL_MISSING if isinstance(exc, ModelMissingError) else MODEL_DOWN
         finally:
             turn.cues.settle()
         self._note_usage(message)

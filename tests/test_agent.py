@@ -15,6 +15,7 @@ from jarvis.agent import (
     MAX_STEPS,
     MAX_TOOL_TEXT,
     MODEL_DOWN,
+    MODEL_MISSING,
     NO_ACTION_REMINDER,
     PICTURES_OFF,
     TOO_LONG,
@@ -28,7 +29,7 @@ from jarvis.agent import (
 from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
 from jarvis.jsonutil import objs
-from jarvis.model import Delta
+from jarvis.model import Delta, ModelMissingError
 from jarvis.operations import (
     Operation,
     OperationError,
@@ -553,6 +554,15 @@ def test_model_failure_becomes_spoken_apology() -> None:
     agent, audit = _agent(ScriptedModel([], error=RuntimeError("down")), [])
 
     assert agent.handle("hi", NO_CONFIRM) == MODEL_DOWN
+    assert "model_error" in _events(audit)
+
+
+def test_a_missing_model_file_is_named_in_the_apology() -> None:
+    # `/mnt/models` not mounted: waiting will not help, so the owner hears why.
+    error = ModelMissingError("model server down and its model file is missing: /x.gguf")
+    agent, audit = _agent(ScriptedModel([], error=error), [])
+
+    assert agent.handle("hi", NO_CONFIRM) == MODEL_MISSING
     assert "model_error" in _events(audit)
 
 

@@ -30,6 +30,8 @@ traps found along the way. Add a trap the moment it costs time.
 - Dependabot proposes package and action updates weekly, a week after each release (`cooldown`). The Python
   interpreter (`.python-version`, `requires-python`) has no Dependabot ecosystem: bump it by hand, with the CI
   run on the new version.
+- [session-transitions.md](session-transitions.md): what Jarvis does at a lock, suspend, lost microphone
+  or missing model drive, what was seen, and how to check each.
 - `tools/idle_check.py --unit jarvis.service --unit jarvis-strata.service` measures the "no CPU or GPU while
   idle" rule on a running install; it only reads `/proc`.
 
