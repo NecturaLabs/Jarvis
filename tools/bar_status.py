@@ -97,12 +97,16 @@ class _Face:
         self.says = says
         self.active = active
 
-    def shown(self, name: str, model: str | None = None) -> Shown:
-        """Return what the bar shows for this face under the class `name`."""
+    def shown(self, name: str, model: str | None = None, *, hint: bool = True) -> Shown:
+        """Return what the bar shows for this face under the class `name`.
+
+        `hint` adds the click actions; with nothing running to pause they would only mislead.
+        """
         lines = [f"Jarvis: {self.says}"]
         if model is not None:
             lines.append(f"Model: {model}")
-        lines.append(HINT)
+        if hint:
+            lines.append(HINT)
         css = name.replace(" ", "-")
         return Shown(self.glyph, "\n".join(lines), (css, ACTIVE) if self.active else (css,))
 
@@ -155,7 +159,7 @@ def render(raw: str) -> Shown:
     if not isinstance(state, str) or state not in FACES:
         return _MALFORMED.shown("malformed")
     if reading.get("running") is False:
-        return _NOT_RUNNING.shown("not-running")
+        return _NOT_RUNNING.shown("not-running", hint=False)
     return FACES[state].shown(state, _model(reading))
 
 
@@ -185,8 +189,9 @@ def control_status(path: str | None = None, timeout: float = TIMEOUT_S) -> str:
     `NOT_RUNNING`. A reply over `MAX_READING_CHARS` is cut there, which `render` shows as malformed.
 
     Raises:
-        TimeoutError: Jarvis took more than `timeout` seconds in all to accept or answer. (Any
-            other `OSError` after the connection was made is not caught either.)
+        TimeoutError: `connect` or `sendall` took more than `timeout` seconds (each has its own
+            timeout, not the time left), or the answer was not complete `timeout` seconds after
+            the call began. Any other `OSError` after the connection was made is not caught.
     """
     deadline = time.monotonic() + timeout
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:

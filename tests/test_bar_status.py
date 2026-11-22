@@ -16,15 +16,17 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import bar_status
 import pytest
 from bar_status import FACES, HINT, NOT_RUNNING, REQUEST, control_status, render, show, socket_path
 
-from jarvis import control
+from jarvis import app, cli, control
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -93,6 +95,9 @@ def test_a_jarvis_that_is_not_running_is_told_apart_from_an_unavailable_one() ->
     assert stopped.classes == ("not-running",)
     assert "not running" in stopped.tooltip
     assert "Model:" not in stopped.tooltip  # the model server is not asked while Jarvis is down
+    assert "Left click" not in stopped.tooltip  # nothing running to pause or resume
+    assert HINT not in stopped.tooltip
+    assert HINT in broken.tooltip
     assert broken.classes == ("unavailable",)
     assert "cannot work" in broken.tooltip
     assert stopped.text != broken.text
@@ -329,6 +334,16 @@ def test_the_scripts_socket_path_is_the_control_sockets(
     assert Path(socket_path()) == control.socket_path()
 
 
+@pytest.mark.parametrize("uid", [0, 1000, 4242])
+def test_without_a_runtime_folder_the_socket_is_under_run_user_for_the_uid(
+    monkeypatch: pytest.MonkeyPatch, uid: int
+) -> None:
+    monkeypatch.delenv("XDG_RUNTIME_DIR")
+    monkeypatch.setattr(os, "getuid", lambda: uid)
+    assert socket_path() == f"/run/user/{uid}/jarvis/control.sock"
+    assert Path(socket_path()) == control.socket_path()
+
+
 def test_the_scripts_request_is_the_one_control_send_writes() -> None:
     received: list[bytes] = []
 
@@ -348,6 +363,21 @@ def test_the_not_running_reading_is_a_public_state_that_is_not_running() -> None
     reading_ = json.loads(NOT_RUNNING)
     assert reading_["state"] in control.STATES
     assert reading_["running"] is False
+
+
+def test_the_not_running_reading_is_what_jarvis_status_json_prints_without_a_jarvis(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Drift in `cmd_status`'s not-running JSON would otherwise show the bar the wrong state."""
+
+    def unreachable_model(_model: object, _key: str, **_known: object) -> SimpleNamespace:
+        return SimpleNamespace(status=lambda: None, file_missing=lambda: False)
+
+    monkeypatch.setattr(app, "StrataModel", unreachable_model)
+    assert cli.main(["status", "--json"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed.pop("model") == "unreachable"  # the one field the script leaves out
+    assert printed == json.loads(NOT_RUNNING)
 
 
 def test_control_status_returns_what_control_send_would_have_parsed() -> None:
@@ -426,6 +456,28 @@ def test_a_jarvis_that_dribbles_its_answer_past_the_time_times_out() -> None:
                 control_status(str(path), timeout=0.5)
         finally:
             release.set()
+
+
+def test_a_byte_sent_just_before_the_deadline_does_not_extend_it() -> None:
+    """Each read gets only the time left; a full timeout each would hold the poll twice as long."""
+    timeout = 0.5
+    release = threading.Event()
+
+    def behave(conn: socket.socket) -> None:
+        read_line(conn)
+        release.wait(timeout - 0.1)  # just before the deadline
+        conn.sendall(b" ")
+        release.wait(5)  # then nothing more
+
+    with raw_server(behave) as path:
+        began = time.monotonic()
+        try:
+            with pytest.raises(TimeoutError):
+                control_status(str(path), timeout=timeout)
+            took = time.monotonic() - began
+        finally:
+            release.set()
+    assert took < timeout + 0.2  # without `settimeout(left)` this is about 2 * timeout - 0.1
 
 
 def test_a_connection_that_resets_shows_failed() -> None:

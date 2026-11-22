@@ -125,10 +125,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   the control socket and turns it into the bar's text, tooltip and class for idle, listening, thinking,
   speaking, paused, model loading and unavailable, and into a state of its own for a Jarvis that is not
   running, a timeout, a broken connection and an unreadable answer. The module offers only a left click for
-  `jarvis pause` and a right click for `jarvis resume`, polls every 5 seconds and never loads the model. A
-  poll takes 0.015 s of CPU (about 0.3 % of one core): the script does not start `jarvis` (0.27 s a poll) and
-  runs without Python's `site` import. With Jarvis not running it shows `not running` without the model's
-  state, which `jarvis status` still gives. The entry to add to `~/.config/omarchy/shell.json` is in
+  `jarvis pause` and a right click for `jarvis resume`, polls every 5 seconds and never loads the model. The
+  script's own cost is 0.015 s of CPU a poll: it does not start `jarvis` (about 0.2 s a poll) and runs without
+  Python's `site` import. Each poll also makes Jarvis ask Strata for its model state (no tokens), about 0.003 s more
+  across both, 0.018 s in all or 0.4 % of one core. With Jarvis not running it shows `not running` without the
+  model's state or the click hint, and `jarvis status` still gives the state. The entry to add to
+  `~/.config/omarchy/shell.json` is in
   [configuration](docs/configuration.md#the-omarchy-bar-module-14); nothing is installed for you.
 - `audio.wake_words` picks which LiveKit wake word models listen, side by side, each
   `<data_dir>/wake/<name>.onnx`; `hey_jarvis` and `yo_jarvis` are on by default. `jarvis wake --words

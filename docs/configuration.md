@@ -534,7 +534,10 @@ Omarchy's bar is part of `omarchy-shell` (Quickshell), not Waybar. It takes a cu
 "command"`: it runs the `exec` command through `bash -lc` every `interval` seconds, shows the `text` of the
 Waybar-style JSON line the command prints, shows its `tooltip` on hover, highlights the module when its `class`
 includes `active`, and runs `onClick`, `onRightClick` and `onMiddleClick` through bash. `tools/bar_status.py`
-is that command for Jarvis. Nothing here edits your Omarchy files: add the two things below yourself.
+is that command for Jarvis. Nothing here edits your Omarchy files: you add the two things below. It is a command
+module and not a Quickshell plugin because its click actions are static and a command module needs no plugin install;
+the cost is that it cannot turn the clicks off while Jarvis is unavailable (the not-running tooltip leaves the click
+hint out, but a click still runs `jarvis pause` or `jarvis resume`, which then says Jarvis is not running).
 
 1. Link the script where Omarchy's bar documentation keeps its scripts (any path works; use your clone's):
 
@@ -544,7 +547,10 @@ is that command for Jarvis. Nothing here edits your Omarchy files: add the two t
    ```
 
 2. Add this entry to a section of `bar.layout` in `~/.config/omarchy/shell.json`, for example at the end of
-   `right`. The shell reloads the file when you save it:
+   `right`. The shell reloads the file when you save it. If that file does not exist yet, copy Omarchy's default
+   first, `cp /usr/share/omarchy/config/omarchy/shell.json ~/.config/omarchy/shell.json`: once your file is
+   there it replaces the default layout, with no deep merge, so a file holding only this entry would leave the
+   bar with this one module.
 
    ```json
    {
@@ -562,8 +568,8 @@ Remove the entry (and the link) to take the module away. The only actions it off
 a left click runs `jarvis pause` and a right click `jarvis resume`; the tooltip says so.
 
 What the bar shows comes from one reading of Jarvis's control socket, the same `status` request `jarvis status`
-sends, which never loads the model or generates a token. The script talks to the socket itself and does not start
-`jarvis` (see the cost below). With Jarvis not running it does not ask the model server how it is, because that
+sends, which never loads the model or generates a token. The script does not start `jarvis` (see the cost below).
+With Jarvis not running it does not ask the model server how it is, because that
 would mean reading Jarvis's config in the script: the bar says `not running` and leaves the model state out. Run
 `jarvis status` for it.
 
@@ -583,18 +589,23 @@ The tooltip is built from fixed texts; of the reading only the model's state (`l
 treats tooltip text as a place where markup in outside data could be read.
 
 The bar has no way to be told of a change, so the module polls: every 5 seconds the bar starts the script, which
-sends one request and exits. Starting `jarvis status --json` for each poll took 0.27 s of CPU (Python's start-up
-and the imports of `jarvis.cli`), about 5 % of one core. The script now asks the socket itself, runs under
-`python3 -I -S` (no `site` import, set by its shebang) and imports only `json`, `re`, `socket`, `os`, `sys` and
-`time`. A poll takes 0.015 s of CPU, with Jarvis running or not: about 0.3 % of one core averaged over the
-interval, and nothing between polls. Measured on this PC (2026-11-22, Python 3.14): `RUSAGE_CHILDREN` user plus
-system time over 20 runs, three batches each, before 0.20 to 0.29 s a run and after 0.013 to 0.017 s; a bare
+sends one request and exits. Starting `jarvis status --json` for each poll costs about 0.2 s of CPU (measured
+0.20 to 0.22 s: Python's start-up and the imports of `jarvis.cli`), about 4 % of one core. The script asks the
+socket directly, runs under `python3 -I -S` (no `site` import, set by its shebang) and imports only
+`collections.abc`, `json`, `os`, `re`, `socket`, `sys` and `time`. The script's own cost is 0.015 s of CPU a poll,
+with Jarvis running or not, and nothing between polls. Measured on this PC (2026-11-22, Python 3.14): `RUSAGE_CHILDREN` user plus
+system time over 20 runs, three batches each, before 0.20 to 0.22 s a run and after 0.013 to 0.017 s; a bare
 `python3 -I -S -c pass` is 0.005 s of that, and the shell the bar starts the command through (`bash -lc`) adds
 about 0.006 s the script cannot change. Importing `jarvis` would bring the 0.2 s back, so the script repeats the
 socket's path and request from `src/jarvis/control.py`; `tests/test_bar_status.py` fails if either drifts, and
 runs the script against a real control server.
 
-The default of 5 seconds costs little enough to keep. A longer `interval` costs proportionally less and shows a
-short state (`speaking`, `thinking`) less often, and a shorter one costs proportionally more (1 second would be
-about 1.5 % of a core); 3 to 10 seconds is the range the tests allow. A poll never overlaps the last, so a stuck
-Jarvis cannot pile up processes.
+Each poll also costs the running Jarvis and Strata something: Jarvis answers `status` by asking Strata for its
+model state (`GET /models`, through a new HTTP client each time; no tokens are generated). Measured the same day by
+calling that same request in a separate process, 3 batches of 500, against the running Strata server (model
+unloaded; Jarvis itself was not running, so this is the request and not the whole service): 2.4 to 2.5 ms of CPU on
+Jarvis's side and 0.1 to 0.2 ms in Strata's process, against 0.01 s of Strata's CPU in 5 idle seconds. A poll in all
+is about 0.018 s of CPU, 0.4 % of one core at the 5 second default, so the default stays. A longer `interval` costs
+proportionally less and shows a short state (`speaking`, `thinking`) less often, and a shorter one costs
+proportionally more (1 second would be about 1.8 % of a core); 3 to 10 seconds is the range the tests allow. The
+script gives up after 8 seconds, so a stuck Jarvis cannot hold a poll for long.
