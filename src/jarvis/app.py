@@ -85,6 +85,7 @@ def system_prompt(config: Config, channel: Channel = "voice") -> str:
         "name": config.persona.name,
         "tone": config.persona.tone,
         "words": str(words),
+        "numbers": _number_rule(config.format.thousands_separator),
     }
     text = core + "\n" + style
     for key, value in fill.items():
@@ -194,6 +195,18 @@ def pc_operations(config: Config, limits: Limits, home: Path | None = None) -> l
     ]
 
 
+def _number_rule(separator: str) -> str:
+    """Say how to write a number of four or more digits, as `[format]` sets it."""
+    if not separator:
+        return "Write numbers without separators between digit groups: 1488, 25000."
+    sample = f"{1488:,}".replace(",", separator), f"{25000:,}".replace(",", separator)
+    mark = {" ": "a space", "'": "an apostrophe"}.get(separator, f"{separator!r}")
+    return (
+        f"Write numbers of four or more digits with {mark} between groups of three:"
+        f" {sample[0]}, {sample[1]}."
+    )
+
+
 class SetupError(Exception):
     """Something setup provides is missing."""
 
@@ -222,7 +235,7 @@ def channel_registry(
             *spotify,
             *web_operations(web, chat_pictures() if channel == "chat" else None),
             *pc_operations(config, limits),
-            *calc.operations(config.calc),
+            *calc.operations(config.format),
             *([skills.skill_operation(shipped)] if shipped else []),
             no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
         ]

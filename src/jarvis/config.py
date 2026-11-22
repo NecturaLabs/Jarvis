@@ -247,8 +247,8 @@ class ClockConfig(_Section):
     twelve_hour: bool = True
 
 
-class CalcConfig(_Section):
-    """How the calculator writes its answers."""
+class FormatConfig(_Section):
+    """How Jarvis writes numbers, in every reply and tool answer."""
 
     # Between groups of three digits in a whole part: 1,488. "" writes none.
     thousands_separator: Literal[",", " ", "'", ""] = ","
@@ -366,7 +366,7 @@ class Config(_Section):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
     clock: ClockConfig = Field(default_factory=ClockConfig)
-    calc: CalcConfig = Field(default_factory=CalcConfig)
+    format: FormatConfig = Field(default_factory=FormatConfig)
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
     research: ResearchConfig = Field(default_factory=ResearchConfig)
     files: FilesConfig = Field(default_factory=FilesConfig)

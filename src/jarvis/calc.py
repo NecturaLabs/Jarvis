@@ -16,7 +16,7 @@ from decimal import Decimal, localcontext
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
-from jarvis.config import CalcConfig
+from jarvis.config import FormatConfig
 from jarvis.operations import Operation, Result
 
 if TYPE_CHECKING:
@@ -406,9 +406,9 @@ def evaluate(expression: str) -> str:
         raise CalcError(msg) from exc
 
 
-def operations(config: CalcConfig | None = None) -> list[Operation]:
+def operations(config: FormatConfig | None = None) -> list[Operation]:
     """Return `calculate`, writing answers as `config` says (groups of three by default)."""
-    separator = (config or CalcConfig()).thousands_separator
+    separator = (config or FormatConfig()).thousands_separator
 
     def calculate(args: dict[str, Any]) -> Result:
         expression = str(args["expression"]).strip()

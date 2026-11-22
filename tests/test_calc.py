@@ -4,7 +4,7 @@ import pytest
 
 from jarvis import calc
 from jarvis.calc import CalcError, evaluate, operations
-from jarvis.config import CalcConfig
+from jarvis.config import FormatConfig
 from jarvis.operations import ArgumentError, validate_args
 from jarvis.policy import OpClass
 
@@ -174,13 +174,13 @@ def test_the_operation_answers_with_the_sum_and_its_value_in_groups_of_three() -
 def test_the_thousands_separator_is_the_one_configured(
     separator: str, expression: str, shown: str
 ) -> None:
-    (op,) = operations(CalcConfig.model_validate({"thousands_separator": separator}))
+    (op,) = operations(FormatConfig.model_validate({"thousands_separator": separator}))
 
     assert op.run({"expression": expression}).text == f"{expression} = {shown}"
 
 
 def test_the_separator_is_a_comma_unless_set() -> None:
-    assert CalcConfig().thousands_separator == ","
+    assert FormatConfig().thousands_separator == ","
 
 
 def test_the_operation_reports_an_impossible_sum_as_a_failure() -> None:
