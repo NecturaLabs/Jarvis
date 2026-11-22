@@ -230,6 +230,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The chat no longer shows a reply twice for a moment: the draft is gone before the whole reply
+  appears.
 - Web research is safer and steadier. Text a browser hides (the `hidden` attribute, `aria-hidden`, and
   inline `display:none`, `visibility:hidden`, `opacity:0` or `font-size:0`) no longer reaches the model, a page
   with more than 20,000 elements is read from its start so it cannot hold up a request, the weather and
