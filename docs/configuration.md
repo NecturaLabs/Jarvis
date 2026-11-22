@@ -561,27 +561,40 @@ is that command for Jarvis. Nothing here edits your Omarchy files: add the two t
 Remove the entry (and the link) to take the module away. The only actions it offers are the two fixed ones:
 a left click runs `jarvis pause` and a right click `jarvis resume`; the tooltip says so.
 
-What the bar shows comes from one `jarvis status --json` reading, which never loads the model or generates
-a token: it asks the running Jarvis over its control socket and, when Jarvis is not running, asks the model
-server how it is.
+What the bar shows comes from one reading of Jarvis's control socket, the same `status` request `jarvis status`
+sends, which never loads the model or generates a token. The script talks to the socket itself and does not start
+`jarvis` (see the cost below). With Jarvis not running it does not ask the model server how it is, because that
+would mean reading Jarvis's config in the script: the bar says `not running` and leaves the model state out. Run
+`jarvis status` for it.
 
 | Shown (class) | When |
 |---|---|
 | `idle` | waiting for the wake word |
 | `listening`, `thinking`, `speaking`, `model-loading` (highlighted) | the request in flight, or the model on its way into memory |
 | `paused` | after `jarvis pause`, until `jarvis resume` |
-| `unavailable` | Jarvis is running but cannot work: the microphone was lost or the model server is down |
-| `not-running` | `jarvis status` says `running: false` |
-| `timeout` | `jarvis status` did not answer in 8 seconds (it is stopped) |
-| `failed` | `jarvis` is not on the bar's `PATH`, or `jarvis status` exited with an error |
+| `unavailable` | Jarvis is running but cannot work (the microphone was lost or the model server is down), or refused or failed the request |
+| `not-running` | nothing serves the control socket |
+| `timeout` | Jarvis did not answer in 8 seconds (the script gives up) |
+| `failed` | the connection broke while the answer was being read |
 | `malformed` | its answer is not a status reading (not JSON, an unknown or missing state, over 4 KB) |
 
 The tooltip is built from fixed texts; of the reading only the model's state (`loaded`, `unloaded`, `loading`,
 `failed`, `unreachable`, `missing`) is shown, and only when it is a plain lowercase word, because Omarchy's guidance
 treats tooltip text as a place where markup in outside data could be read.
 
-The bar has no way to be told of a change, so the module polls: every 5 seconds the bar starts the script,
-which starts `jarvis status --json` and exits. On this PC (2026-11-22, Python 3.14, Jarvis not running) a poll
-took 0.21 s of CPU (10 runs: 2.1 s), so about 4 % of one core averaged over the interval, and nothing between
-polls. A longer `interval` costs less and shows a short state (`speaking`, `thinking`) less often; a poll
-never overlaps the last, so a stuck `jarvis` cannot pile up processes.
+The bar has no way to be told of a change, so the module polls: every 5 seconds the bar starts the script, which
+sends one request and exits. Starting `jarvis status --json` for each poll took 0.27 s of CPU (Python's start-up
+and the imports of `jarvis.cli`), about 5 % of one core. The script now asks the socket itself, runs under
+`python3 -I -S` (no `site` import, set by its shebang) and imports only `json`, `re`, `socket`, `os`, `sys` and
+`time`. A poll takes 0.015 s of CPU, with Jarvis running or not: about 0.3 % of one core averaged over the
+interval, and nothing between polls. Measured on this PC (2026-11-22, Python 3.14): `RUSAGE_CHILDREN` user plus
+system time over 20 runs, three batches each, before 0.20 to 0.29 s a run and after 0.013 to 0.017 s; a bare
+`python3 -I -S -c pass` is 0.005 s of that, and the shell the bar starts the command through (`bash -lc`) adds
+about 0.006 s the script cannot change. Importing `jarvis` would bring the 0.2 s back, so the script repeats the
+socket's path and request from `src/jarvis/control.py`; `tests/test_bar_status.py` fails if either drifts, and
+runs the script against a real control server.
+
+The default of 5 seconds costs little enough to keep. A longer `interval` costs proportionally less and shows a
+short state (`speaking`, `thinking`) less often, and a shorter one costs proportionally more (1 second would be
+about 1.5 % of a core); 3 to 10 seconds is the range the tests allow. A poll never overlaps the last, so a stuck
+Jarvis cannot pile up processes.

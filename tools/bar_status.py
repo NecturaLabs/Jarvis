@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
-r"""Turn `jarvis status --json` into what an Omarchy bar command module shows (issue #14).
+#!/usr/bin/env -S python3 -I -S
+r"""Show what Jarvis is doing as an Omarchy bar command module (issue #14).
 
 The bar runs this script on an interval (`docs/configuration.md`, "Omarchy bar") and shows what it
 prints: one JSON line with `text` (a Nerd Font glyph), `tooltip` and `class`. The bar highlights a
@@ -7,66 +7,76 @@ module whose class includes `active`; the other class names say which state it i
 
     tools/bar_status.py
 
-It starts nothing but `jarvis status --json`, which reads the control socket (or, with Jarvis not
-running, asks the model server how it is) and never loads the model or generates tokens. It
-always prints one line and exits 0, so the bar shows a state for every outcome:
+It sends the one `status` request of Jarvis's control socket (`src/jarvis/control.py`) and never
+loads the model or generates tokens. It always prints one line and exits 0, so the bar shows a state
+for every outcome:
 
 - one of `jarvis.control.STATES` (idle, listening, thinking, speaking, paused, model loading,
-  unavailable), with `not running` told apart from `unavailable` by the reading's `running`;
-- `timeout`: `jarvis status` did not answer in time;
-- `failed`: the command is missing or exited with an error;
+  unavailable), with `not running` (nobody serves the socket) told apart from `unavailable`;
+- `timeout`: Jarvis did not answer in time;
+- `failed`: the connection broke while it was being read;
 - `malformed`: it answered with something that is not a status reading.
 
 Nothing the reading says is shown except through the fixed texts below (the model's state only
 when it is one of the words the model server uses), because the bar's tooltip is not plain text.
-Standard library only, so it starts in milliseconds beside the 0.2 s `jarvis` takes.
+
+A poll must cost almost nothing, since the bar starts it every few seconds beside a game. So this
+does not start `jarvis` (Python's start-up and `jarvis.cli`'s imports cost 0.2 s of CPU) and imports
+as little as it can: the shebang runs Python without its `site` import, and the script imports no
+`typing`, `dataclasses`, `subprocess` or `shutil` (each costs milliseconds), so a poll takes about
+15 ms of CPU. It repeats the socket's path and request from `control.py` (the one place they
+are defined); `tests/test_bar_status.py` fails if they drift apart. With Jarvis not running it
+does not ask the model server, which would mean reading Jarvis's config: the bar says `not
+running` without a model state.
 """
 
 import json
+import os
 import re
-import shutil
-import subprocess
+import socket
 import sys
+import time
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Final, cast
 
-COMMAND: Final = ("jarvis", "status", "--json")
-TIMEOUT_S: Final = 8.0  # a Jarvis that is running but stuck answers in 10 s (control.send)
-MAX_READING_CHARS: Final = 4096
+TIMEOUT_S = 8.0  # a Jarvis that is running but stuck answers in 10 s (control.send)
+MAX_READING_CHARS = 4096
 
-ACTIVE: Final = "active"  # the one class the bar styles: its module is highlighted
-HINT: Final = "Left click: pause. Right click: resume."
+# `control.socket_path()` and the request `control.send("status")` writes; the tests compare them.
+REQUEST = b'{"command": "status"}\n'
+NOT_RUNNING = '{"state": "unavailable", "paused": false, "running": false}'
+
+ACTIVE = "active"  # the one class the bar styles: its module is highlighted
+HINT = "Left click: pause. Right click: resume."
 
 # Glyphs from the Nerd Font Omarchy ships (Material Design set).
-_ROBOT: Final = "\U000f06a9"
-_ROBOT_OUTLINE: Final = "\U000f167a"
-_ROBOT_OFF: Final = "\U000f1642"
-_ROBOT_CONFUSED: Final = "\U000f169d"
-_THINKING: Final = "\U000f051f"
-_SPEAKING: Final = "\U000f057e"
-_PAUSED: Final = "\U000f03e4"
-_LOADING: Final = "\U000f0996"
-_ALERT: Final = "\U000f0026"
+_ROBOT = "\U000f06a9"
+_ROBOT_OUTLINE = "\U000f167a"
+_ROBOT_OFF = "\U000f1642"
+_ROBOT_CONFUSED = "\U000f169d"
+_THINKING = "\U000f051f"
+_SPEAKING = "\U000f057e"
+_PAUSED = "\U000f03e4"
+_LOADING = "\U000f0996"
+_ALERT = "\U000f0026"
 
-# A model server's states, as `jarvis status` reports them; anything else is not shown.
-_MODEL_STATES: Final = re.compile(r"[a-z][a-z -]{0,19}")
+# A model server's states, as the running Jarvis reports them; anything else is not shown.
+_MODEL_STATES = re.compile(r"[a-z][a-z -]{0,19}")
 
 type Source = Callable[[], str]
-"""One reading of `jarvis status --json`, or `TimeoutError`, `OSError` or `StatusError`."""
+"""One reading of Jarvis's status, or `TimeoutError` or `OSError`."""
 
 
-class StatusError(Exception):
-    """`jarvis status` ran and exited with an error."""
-
-
-@dataclass(frozen=True, slots=True)
 class Shown:
     """What the bar shows for one reading."""
 
-    text: str
-    tooltip: str
-    classes: tuple[str, ...]
+    __slots__ = ("classes", "text", "tooltip")
+
+    def __init__(self, text: str, tooltip: str, classes: tuple[str, ...]) -> None:
+        """Hold the glyph, the tooltip and the CSS classes."""
+        super().__init__()
+        self.text = text
+        self.tooltip = tooltip
+        self.classes = classes
 
     def as_json(self) -> str:
         """Return the one line the bar reads."""
@@ -76,15 +86,29 @@ class Shown:
         )
 
 
-@dataclass(frozen=True, slots=True)
 class _Face:
-    glyph: str
-    says: str
-    active: bool = False
+    """How one state looks: its glyph, what the tooltip says and whether the module is lit."""
+
+    __slots__ = ("active", "glyph", "says")
+
+    def __init__(self, glyph: str, says: str, *, active: bool = False) -> None:
+        super().__init__()
+        self.glyph = glyph
+        self.says = says
+        self.active = active
+
+    def shown(self, name: str, model: str | None = None) -> Shown:
+        """Return what the bar shows for this face under the class `name`."""
+        lines = [f"Jarvis: {self.says}"]
+        if model is not None:
+            lines.append(f"Model: {model}")
+        lines.append(HINT)
+        css = name.replace(" ", "-")
+        return Shown(self.glyph, "\n".join(lines), (css, ACTIVE) if self.active else (css,))
 
 
 # One face for each of `jarvis.control.STATES`; tests/test_bar_status.py keeps the two in step.
-FACES: Final = {
+FACES = {
     "idle": _Face(_ROBOT_OUTLINE, "waiting for the wake word"),
     "listening": _Face(_ROBOT, "listening", active=True),
     "thinking": _Face(_THINKING, "thinking", active=True),
@@ -93,19 +117,10 @@ FACES: Final = {
     "model loading": _Face(_LOADING, "loading the model", active=True),
     "unavailable": _Face(_ALERT, "running but cannot work (microphone lost or model server down)"),
 }
-_NOT_RUNNING: Final = _Face(_ROBOT_OFF, "not running (start it with `jarvis start`)")
-_TIMEOUT: Final = _Face(_ROBOT_CONFUSED, "did not answer the status check in time")
-_FAILED: Final = _Face(_ALERT, "the status check failed (is `jarvis` installed and on the PATH?)")
-_MALFORMED: Final = _Face(_ROBOT_CONFUSED, "answered the status check with something unreadable")
-
-
-def _shown(face: _Face, name: str, model: str | None = None) -> Shown:
-    lines = [f"Jarvis: {face.says}"]
-    if model is not None:
-        lines.append(f"Model: {model}")
-    lines.append(HINT)
-    classes = (name.replace(" ", "-"), ACTIVE) if face.active else (name.replace(" ", "-"),)
-    return Shown(face.glyph, "\n".join(lines), classes)
+_NOT_RUNNING = _Face(_ROBOT_OFF, "not running (start it with `jarvis start`)")
+_TIMEOUT = _Face(_ROBOT_CONFUSED, "did not answer the status check in time")
+_FAILED = _Face(_ALERT, "the status check failed (the connection broke)")
+_MALFORMED = _Face(_ROBOT_CONFUSED, "answered the status check with something unreadable")
 
 
 def _model(reading: dict[str, object]) -> str | None:
@@ -115,24 +130,33 @@ def _model(reading: dict[str, object]) -> str | None:
     return None
 
 
+def _parse(raw: str) -> dict[str, object] | None:
+    """Return the reading's fields, or None when `raw` is not a JSON object."""
+    if len(raw) > MAX_READING_CHARS:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    items: dict[object, object] = value  # pyright: ignore[reportUnknownVariableType] - JSON's own
+    return {str(key): item for key, item in items.items()}
+
+
 def render(raw: str) -> Shown:
     """Return what the bar shows for one reading, `malformed` when it is not a status."""
-    unreadable = _shown(_MALFORMED, "malformed")
-    if len(raw) > MAX_READING_CHARS:
-        return unreadable
-    try:
-        value: object = json.loads(raw)
-    except ValueError:
-        return unreadable
-    if not isinstance(value, dict):
-        return unreadable
-    reading = {str(key): item for key, item in cast("dict[object, object]", value).items()}
+    reading = _parse(raw)
+    if reading is None:
+        return _MALFORMED.shown("malformed")
+    if reading.get("ok") is False:  # running, but it refused or failed the request
+        return FACES["unavailable"].shown("unavailable")
     state = reading.get("state")
     if not isinstance(state, str) or state not in FACES:
-        return unreadable
+        return _MALFORMED.shown("malformed")
     if reading.get("running") is False:
-        return _shown(_NOT_RUNNING, "not-running", _model(reading))
-    return _shown(FACES[state], state, _model(reading))
+        return _NOT_RUNNING.shown("not-running")
+    return FACES[state].shown(state, _model(reading))
 
 
 def show(source: Source) -> Shown:
@@ -140,48 +164,57 @@ def show(source: Source) -> Shown:
     try:
         raw = source()
     except TimeoutError:
-        return _shown(_TIMEOUT, "timeout")
-    except OSError, StatusError:
-        return _shown(_FAILED, "failed")
+        return _TIMEOUT.shown("timeout")
+    except OSError:
+        return _FAILED.shown("failed")
     return render(raw)
 
 
-def jarvis_status(
-    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-    timeout: float = TIMEOUT_S,
-) -> str:
-    """Run `jarvis status --json` and return its output.
+def socket_path() -> str:
+    """Return the control socket's path, as `jarvis.control.socket_path` does."""
+    base = os.environ.get("XDG_RUNTIME_DIR", "")
+    if not base.startswith("/"):
+        base = f"/run/user/{os.getuid()}"
+    return f"{base}/jarvis/control.sock"
+
+
+def control_status(path: str | None = None, timeout: float = TIMEOUT_S) -> str:
+    """Ask the running Jarvis for its status over the control socket and return its reply line.
+
+    With nobody serving the socket (no file, nothing listening, not ours to open) the reading is
+    `NOT_RUNNING`. A reply over `MAX_READING_CHARS` is cut there, which `render` shows as malformed.
 
     Raises:
-        TimeoutError: it did not finish in `timeout` seconds (it is killed).
-        FileNotFoundError: `jarvis` is not on the PATH (another `OSError` if it cannot be started).
-        StatusError: it exited with an error.
+        TimeoutError: Jarvis took more than `timeout` seconds in all to accept or answer. (Any
+            other `OSError` after the connection was made is not caught either.)
     """
-    program = shutil.which(COMMAND[0])
-    if program is None:
-        msg = f"{COMMAND[0]} is not on the PATH"
-        raise FileNotFoundError(msg)
-    try:
-        done = run(
-            [program, *COMMAND[1:]],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired as exc:
-        msg = f"{' '.join(COMMAND)} took more than {timeout} s"
-        raise TimeoutError(msg) from exc
-    if done.returncode != 0:
-        msg = f"{' '.join(COMMAND)} exited with {done.returncode}"
-        raise StatusError(msg)
-    return done.stdout
+    deadline = time.monotonic() + timeout
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+        conn.settimeout(timeout)
+        try:
+            conn.connect(path or socket_path())
+        except TimeoutError:
+            raise
+        except OSError:
+            return NOT_RUNNING
+        conn.sendall(REQUEST)
+        data = b""
+        while b"\n" not in data and len(data) <= MAX_READING_CHARS:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                msg = f"Jarvis took more than {timeout} s"
+                raise TimeoutError(msg)
+            conn.settimeout(left)
+            chunk = conn.recv(MAX_READING_CHARS + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+    return data.split(b"\n", 1)[0].decode("utf-8", "replace")
 
 
 def main() -> int:
     """Print the bar's line for the current status; always exit 0 so the bar shows a state."""
-    sys.stdout.write(show(jarvis_status).as_json() + "\n")
+    sys.stdout.write(show(control_status).as_json() + "\n")
     return 0
 
 

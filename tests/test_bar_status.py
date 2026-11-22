@@ -1,25 +1,33 @@
-"""tools/bar_status.py: what the Omarchy bar shows for each `jarvis status --json` reading (#14).
+"""tools/bar_status.py: what the Omarchy bar shows for each reading of Jarvis's status (#14).
 
-The source is a fake that stages each state and each way the reading can go wrong; one test
-runs the script itself against a stand-in `jarvis` on the PATH.
+`render` and `show` get a fake source that stages each state and each way a reading can go wrong;
+`control_status` talks to a real `jarvis.control.ControlServer` and to raw sockets that misbehave;
+the script itself runs by path, as the bar runs it. The script repeats the socket's path and request
+instead of importing `jarvis` (that would cost 0.2 s of CPU a poll), so the tests here compare both
+with `jarvis.control`'s own.
 """
 
+import contextlib
 import json
 import os
 import re
+import socket
+import struct
 import subprocess
 import sys
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import bar_status
 import pytest
-from bar_status import FACES, HINT, StatusError, jarvis_status, render, show
+from bar_status import FACES, HINT, NOT_RUNNING, REQUEST, control_status, render, show, socket_path
 
 from jarvis import control
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Generator
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tools" / "bar_status.py"
@@ -27,7 +35,7 @@ DOC = ROOT / "docs" / "configuration.md"
 
 
 def reading(state: str, **fields: object) -> str:
-    """Return a `jarvis status --json` line the way `cmd_status` prints it."""
+    """Return a status reading the way the control socket sends it."""
     return json.dumps({"state": state, "paused": state == "paused", "model": "loaded", **fields})
 
 
@@ -80,11 +88,11 @@ def test_the_states_look_different_from_one_another() -> None:
 
 
 def test_a_jarvis_that_is_not_running_is_told_apart_from_an_unavailable_one() -> None:
-    stopped = show(fake(reading("unavailable", running=False, model="unloaded")))
+    stopped = show(fake(NOT_RUNNING))
     broken = show(fake(reading("unavailable", running=True, model="unreachable")))
     assert stopped.classes == ("not-running",)
     assert "not running" in stopped.tooltip
-    assert "Model: unloaded" in stopped.tooltip
+    assert "Model:" not in stopped.tooltip  # the model server is not asked while Jarvis is down
     assert broken.classes == ("unavailable",)
     assert "cannot work" in broken.tooltip
     assert stopped.text != broken.text
@@ -92,6 +100,14 @@ def test_a_jarvis_that_is_not_running_is_told_apart_from_an_unavailable_one() ->
 
 def test_a_reading_without_running_counts_as_running() -> None:
     assert show(fake(reading("idle"))).classes == ("idle",)
+
+
+@pytest.mark.parametrize("reply", ['{"ok": false, "error": "boom <b>"}', '{"ok": false}'])
+def test_a_jarvis_that_refuses_or_fails_the_request_shows_unavailable(reply: str) -> None:
+    shown = show(fake(reply))
+    assert shown.classes == ("unavailable",)
+    assert "cannot work" in shown.tooltip
+    assert "boom" not in shown.tooltip
 
 
 @pytest.mark.parametrize(
@@ -126,16 +142,15 @@ def test_a_source_that_times_out_shows_timeout() -> None:
 
 
 @pytest.mark.parametrize(
-    "error",
-    [FileNotFoundError("jarvis"), PermissionError("jarvis"), OSError("boom"), StatusError("2")],
+    "error", [ConnectionResetError("reset"), BrokenPipeError("pipe"), OSError("boom")]
 )
-def test_a_missing_or_failing_command_shows_failed(error: Exception) -> None:
+def test_a_connection_that_breaks_shows_failed(error: Exception) -> None:
     shown = show(failing(error))
     assert shown.classes == ("failed",)
     assert "failed" in shown.tooltip
 
 
-@pytest.mark.parametrize("error", [TimeoutError, FileNotFoundError, StatusError])
+@pytest.mark.parametrize("error", [TimeoutError, ConnectionResetError, OSError])
 def test_the_error_text_never_reaches_the_bar(error: type[Exception]) -> None:
     assert "SECRET-DETAIL" not in show(failing(error("SECRET-DETAIL"))).tooltip
 
@@ -175,118 +190,335 @@ def test_the_output_is_one_json_line_with_text_tooltip_and_class() -> None:
 def test_main_prints_one_line_and_exits_zero_whatever_happens(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    for source in (fake(reading("idle")), failing(TimeoutError()), fake("garbage")):
-        monkeypatch.setattr(bar_status, "jarvis_status", source)
+    sources = (fake(reading("idle")), failing(TimeoutError()), failing(OSError()), fake("junk"))
+    for source in sources:
+        monkeypatch.setattr(bar_status, "control_status", source)
         assert bar_status.main() == 0
     lines = capsys.readouterr().out.splitlines()
-    assert [json.loads(line)["class"][0] for line in lines] == ["idle", "timeout", "malformed"]
+    classes = [json.loads(line)["class"][0] for line in lines]
+    assert classes == ["idle", "timeout", "failed", "malformed"]
 
 
-def found(_name: str) -> str:
-    """Stand in for `shutil.which` when `jarvis` is installed."""
-    return "/opt/bin/jarvis"
+@contextlib.contextmanager
+def raw_server(behave: Callable[[socket.socket], None]) -> Generator[Path]:
+    """Serve the control socket's path, giving each connection to `behave`, until the block ends."""
+    path = control.socket_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(path))
+    server.listen(4)
+
+    def accept() -> None:
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return  # closed
+            with conn:
+                behave(conn)
+
+    thread = threading.Thread(target=accept, daemon=True)
+    thread.start()
+    try:
+        yield path
+    finally:
+        with contextlib.suppress(OSError):
+            server.shutdown(socket.SHUT_RDWR)  # wakes the accept that close alone would not
+        server.close()
+        thread.join(5)
 
 
-def missing(_name: str) -> None:
-    """Stand in for `shutil.which` when `jarvis` is not installed."""
+def read_line(conn: socket.socket) -> bytes:
+    """Return what the client sent up to its newline."""
+    data = b""
+    while b"\n" not in data:
+        chunk = conn.recv(1024)
+        if not chunk:
+            break
+        data += chunk
+    return data
 
 
-class FakeRun:
-    """A stand-in for `subprocess.run` that finishes with `code` and `out` and keeps its calls."""
+def answering(reply: bytes) -> contextlib.AbstractContextManager[Path]:
+    """Serve `reply` to each request."""
 
-    def __init__(self, code: int, out: str = "") -> None:
-        super().__init__()
-        self.code = code
-        self.out = out
-        self.calls: list[tuple[list[str], dict[str, Any]]] = []
+    def behave(conn: socket.socket) -> None:
+        read_line(conn)
+        conn.sendall(reply)
 
-    def __call__(self, command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:  # ruff: ignore[any-type]
-        self.calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, self.code, stdout=self.out, stderr="")
+    return raw_server(behave)
 
 
-def test_jarvis_status_runs_only_the_status_command_with_a_timeout(
+@dataclass
+class _Loop:
+    state: str
+
+    def hush(self) -> None:
+        pass
+
+
+@dataclass
+class _Mic:
+    paused: bool
+
+    def pause(self) -> bool:
+        changed, self.paused = not self.paused, True
+        return changed
+
+    def resume(self) -> bool:
+        changed, self.paused = self.paused, False
+        return changed
+
+
+@dataclass
+class _Model:
+    state: str | None
+    unloads: int = 0
+    warms: int = 0
+    missing: bool = False
+
+    def status(self) -> str | None:
+        return self.state
+
+    def file_missing(self) -> bool:
+        return self.missing
+
+    def unload(self) -> bool:
+        self.unloads += 1
+        return True
+
+    def warm(self) -> bool:
+        self.warms += 1
+        return True
+
+
+LOOP_STATES = ("idle", "capture", "follow-up", "confirm", "transcribe", "think", "speak", "no-mic")
+
+
+@pytest.mark.parametrize("loop", LOOP_STATES)
+@pytest.mark.parametrize("model", ["loaded", "loading", "failed", None])
+@pytest.mark.parametrize("paused", [False, True])
+def test_the_bar_shows_the_state_the_real_control_server_reports(
+    loop: str, model: str | None, *, paused: bool
+) -> None:
+    controls = control.Controls(_Loop(loop), _Mic(paused=paused), _Model(model))
+    server = control.ControlServer(controls)
+    server.start()
+    try:
+        shown = show(lambda: control_status(str(server.path)))
+    finally:
+        server.close()
+    expected = control.public_state(loop, paused=paused, model=model)
+    assert shown.classes[0] == expected.replace(" ", "-")
+    assert shown.text == FACES[expected].glyph
+    if model is not None:
+        assert f"Model: {model}" in shown.tooltip
+
+
+# What the script repeats from jarvis/control.py, so the script need not import `jarvis`.
+
+
+@pytest.mark.parametrize("runtime", [None, "", "relative/dir", "/run/user/4242", "/srv/run/"])
+def test_the_scripts_socket_path_is_the_control_sockets(
+    monkeypatch: pytest.MonkeyPatch, runtime: str | None
+) -> None:
+    if runtime is None:
+        monkeypatch.delenv("XDG_RUNTIME_DIR")
+    else:
+        monkeypatch.setenv("XDG_RUNTIME_DIR", runtime)
+    assert Path(socket_path()) == control.socket_path()
+
+
+def test_the_scripts_request_is_the_one_control_send_writes() -> None:
+    received: list[bytes] = []
+
+    def behave(conn: socket.socket) -> None:
+        received.append(read_line(conn))
+        conn.sendall(b'{"ok": true, "state": "idle"}\n')
+
+    with raw_server(behave) as path:
+        assert control.send("status", path) == {"ok": True, "state": "idle"}
+        assert control_status(str(path)) == '{"ok": true, "state": "idle"}'
+    assert received == [REQUEST, REQUEST]
+    assert json.loads(REQUEST) == {"command": "status"}
+    assert "status" in control.COMMANDS
+
+
+def test_the_not_running_reading_is_a_public_state_that_is_not_running() -> None:
+    reading_ = json.loads(NOT_RUNNING)
+    assert reading_["state"] in control.STATES
+    assert reading_["running"] is False
+
+
+def test_control_status_returns_what_control_send_would_have_parsed() -> None:
+    server = control.ControlServer(lambda _command: {"state": "idle", "paused": False})
+    server.start()
+    try:
+        assert json.loads(control_status(str(server.path))) == control.send("status", server.path)
+    finally:
+        server.close()
+
+
+def test_control_status_reads_the_default_path_when_none_is_given() -> None:
+    server = control.ControlServer(lambda _command: {"state": "speaking"})
+    server.start()
+    try:
+        assert show(control_status).classes == ("speaking", "active")
+    finally:
+        server.close()
+
+
+def test_nobody_serving_the_socket_is_not_running() -> None:
+    assert control_status() == NOT_RUNNING  # no folder, no file
+    path = control.socket_path()
+    path.parent.mkdir(mode=0o700, parents=True)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as dead:
+        dead.bind(str(path))  # bound, never listening: what a killed run leaves behind
+        assert control_status() == NOT_RUNNING
+        assert show(control_status).classes == ("not-running",)
+
+
+def test_a_socket_that_cannot_be_opened_is_not_running() -> None:
+    path = control.socket_path()
+    path.parent.mkdir(mode=0o700, parents=True)
+    path.write_text("a file, not a socket", encoding="utf-8")
+    assert control_status() == NOT_RUNNING
+
+
+def test_a_jarvis_that_never_answers_times_out() -> None:
+    release = threading.Event()
+
+    def behave(conn: socket.socket) -> None:
+        read_line(conn)
+        release.wait(5)
+
+    with raw_server(behave) as path:
+        try:
+            with pytest.raises(TimeoutError):
+                control_status(str(path), timeout=0.3)
+            assert show(lambda: control_status(str(path), timeout=0.3)).classes == ("timeout",)
+        finally:
+            release.set()
+
+
+def test_a_jarvis_that_answers_in_pieces_within_the_time_is_read() -> None:
+    def behave(conn: socket.socket) -> None:
+        read_line(conn)
+        for piece in (b'{"ok": true, ', b'"state": "think', b'ing"}\n'):
+            conn.sendall(piece)
+
+    with raw_server(behave) as path:
+        assert show(lambda: control_status(str(path))).classes == ("thinking", "active")
+
+
+def test_a_jarvis_that_dribbles_its_answer_past_the_time_times_out() -> None:
+    release = threading.Event()
+
+    def behave(conn: socket.socket) -> None:
+        read_line(conn)
+        while not release.is_set():
+            conn.sendall(b" ")
+            release.wait(0.05)
+
+    with raw_server(behave) as path:
+        try:
+            with pytest.raises(TimeoutError):
+                control_status(str(path), timeout=0.5)
+        finally:
+            release.set()
+
+
+def test_a_connection_that_resets_shows_failed() -> None:
+    def behave(conn: socket.socket) -> None:
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        # closed with the request unread: the client's read fails with a reset
+
+    with raw_server(behave) as path:
+        assert show(lambda: control_status(str(path))).classes == ("failed",)
+
+
+@pytest.mark.parametrize(
+    ("reply", "css"),
+    [
+        (b"", "malformed"),
+        (b"\n", "malformed"),
+        (b"not json\n", "malformed"),
+        (b'{"ok": true, "state": "dancing"}\n', "malformed"),
+        (b"\xff\xfe\n", "malformed"),
+        (b'{"ok": true, "state": "idle"}', "idle"),  # closes without the newline
+        (b"x" * (bar_status.MAX_READING_CHARS * 3), "malformed"),
+        (b'{"ok": true, "state": "idle", "pad": "' + b"x" * 5000 + b'"}\n', "malformed"),
+        (b'{"ok": false, "error": "pause failed; see the log"}\n', "unavailable"),
+    ],
+)
+def test_what_the_socket_says_is_shown_or_malformed(reply: bytes, css: str) -> None:
+    with answering(reply) as path:
+        assert show(lambda: control_status(str(path))).classes[0] == css
+
+
+def test_an_endless_reply_is_cut_short() -> None:
+    def behave(conn: socket.socket) -> None:
+        read_line(conn)
+        with contextlib.suppress(OSError):  # the client stops reading
+            for _ in range(1000):
+                conn.sendall(b"x" * 1024)
+
+    with raw_server(behave) as path:
+        raw = control_status(str(path))
+    assert bar_status.MAX_READING_CHARS < len(raw) <= bar_status.MAX_READING_CHARS + 1
+    assert show(lambda: raw).classes == ("malformed",)
+
+
+def stdlib_modules_of(script_output: str) -> set[str]:
+    """Return the modules a `-X importtime` run imported (the last column of its lines)."""
+    return {line.rsplit("|", 1)[1].strip() for line in script_output.splitlines() if "|" in line}
+
+
+def run_script(*, flags: tuple[str, ...] = ()) -> subprocess.CompletedProcess[str]:
+    """Run the script by its path, as the bar does (`bash -lc <path>`: the shebang picks Python)."""
+    command = [sys.executable, *flags, str(SCRIPT)] if flags else [str(SCRIPT)]
+    return subprocess.run(command, capture_output=True, text=True, timeout=20, check=False)
+
+
+def test_the_script_runs_end_to_end_against_a_real_control_server() -> None:
+    server = control.ControlServer(lambda _command: {"state": "speaking", "model": "loaded"})
+    server.start()
+    try:
+        done = run_script()
+    finally:
+        server.close()
+    assert done.returncode == 0
+    assert not done.stderr
+    line = json.loads(done.stdout)
+    assert line["class"] == ["speaking", "active"]
+    assert line["text"] == FACES["speaking"].glyph
+    assert "Model: loaded" in line["tooltip"]
+
+
+def test_the_script_shows_not_running_when_nobody_serves_the_socket() -> None:
+    done = run_script()
+    assert done.returncode == 0
+    assert json.loads(done.stdout)["class"] == ["not-running"]
+
+
+def test_the_script_exits_zero_with_a_state_when_the_runtime_folder_is_odd(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(bar_status.shutil, "which", found)
-    run = FakeRun(0, reading("idle"))
-    assert jarvis_status(run, timeout=3.0) == reading("idle")
-    ((command, kwargs),) = run.calls
-    assert command == ["/opt/bin/jarvis", "status", "--json"]
-    assert kwargs["timeout"] == 3
-    assert kwargs["stdin"] == subprocess.DEVNULL
-    assert "shell" not in kwargs
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "relative")
+    done = run_script()
+    assert done.returncode == 0
+    assert json.loads(done.stdout)["class"] == ["not-running"]
 
 
-def test_jarvis_status_raises_when_the_command_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bar_status.shutil, "which", missing)
-    with pytest.raises(FileNotFoundError):
-        jarvis_status(FakeRun(0))
-
-
-def test_jarvis_status_raises_when_the_command_exits_with_an_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(bar_status.shutil, "which", found)
-    with pytest.raises(StatusError):
-        jarvis_status(FakeRun(2, "jarvis: bad config"))
-
-
-def test_jarvis_status_turns_a_subprocess_timeout_into_timeout_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(bar_status.shutil, "which", found)
-
-    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:  # ruff: ignore[any-type]
-        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
-
-    with pytest.raises(TimeoutError):
-        jarvis_status(run, timeout=1.0)
-
-
-def stand_in(folder: Path, body: str) -> dict[str, str]:
-    """Write an executable `jarvis` running `body` and return an environment that finds only it."""
-    program = folder / "jarvis"
-    program.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+def test_the_script_never_starts_jarvis(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    marker = tmp_path / "ran"
+    program = tmp_path / "jarvis"
+    program.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
     program.chmod(0o755)
-    return {**os.environ, "PATH": f"{folder}{os.pathsep}{os.environ['PATH']}"}
-
-
-def run_script(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    """Run the script by path, as the bar does."""
-    return subprocess.run(
-        [sys.executable, str(SCRIPT)],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=20,
-        check=False,
-    )
-
-
-def test_the_script_runs_end_to_end_against_a_stand_in_jarvis(tmp_path: Path) -> None:
-    env = stand_in(tmp_path, f"echo '{reading('speaking', running=True)}'")
-    done = run_script(env)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    done = run_script()
     assert done.returncode == 0
-    assert json.loads(done.stdout)["class"] == ["speaking", "active"]
-
-
-def test_the_script_shows_a_failed_state_when_jarvis_exits_with_an_error(tmp_path: Path) -> None:
-    done = run_script(stand_in(tmp_path, "echo 'jarvis: bad config' >&2; exit 2"))
-    assert done.returncode == 0
-    assert json.loads(done.stdout)["class"] == ["failed"]
-
-
-def test_a_stuck_jarvis_is_stopped_at_the_timeout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pidfile = tmp_path / "pid"
-    monkeypatch.setenv("PATH", stand_in(tmp_path, f"echo $$ > {pidfile}; exec sleep 30")["PATH"])
-    with pytest.raises(TimeoutError):
-        jarvis_status(timeout=0.5)
-    pid = int(pidfile.read_text(encoding="utf-8"))
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)  # signal 0 only checks that the process is gone
+    assert not marker.exists()
 
 
 def test_the_script_is_executable_and_stdlib_only() -> None:
@@ -295,6 +527,18 @@ def test_the_script_is_executable_and_stdlib_only() -> None:
         re.findall(r"^(?:from|import) (\w+)", SCRIPT.read_text(encoding="utf-8"), re.MULTILINE)
     )
     assert imports <= set(sys.stdlib_module_names)
+
+
+def test_a_poll_imports_no_site_and_none_of_the_heavy_modules() -> None:
+    """Each import is milliseconds of CPU a poll; `jarvis` alone is 0.2 s (measured in the docs)."""
+    first = SCRIPT.read_text(encoding="utf-8").splitlines()[0]
+    assert first == "#!/usr/bin/env -S python3 -I -S"  # no site import, no user site, no cwd
+    done = run_script(flags=("-I", "-S", "-X", "importtime"))
+    assert done.returncode == 0
+    imported = stdlib_modules_of(done.stderr)
+    assert "json" in imported  # the check reads the right output
+    heavy = {"jarvis", "site", "typing", "dataclasses", "subprocess", "shutil", "inspect", "httpx"}
+    assert not heavy & imported
 
 
 def documented_entry() -> dict[str, Any]:
