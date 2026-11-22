@@ -25,9 +25,9 @@ Jarvis is pre-1.0 software; see [Status](#status).
   change the volume; shuffle; repeat; queue songs; like the current song; say what is playing. It can start the
   Spotify desktop app when you ask it to play or resume and no player is open.
 - **Your PC:** "how's my PC doing" reports CPU, graphics card, VRAM, memory, temperatures and disks. Jarvis
-  can list and read your files (your home folder by default) and create or change text files in
-  `~/Documents`, always asking first. Keys, tokens and browser profiles are never read
-  ([`[files]`](docs/configuration.md)).
+  can list and read your files (your home folder by default, hidden ones only for the desktop's own
+  settings) and create or change text files in `~/Documents`, asking first unless you turned questions
+  off. Keys, tokens, shell history and browser profiles are never read ([`[files]`](docs/configuration.md)).
 - **Boundaries:** every action is a typed operation checked by a policy engine in code before it runs, and
   every request, decision and result goes to an audit log. See [SECURITY.md](SECURITY.md).
 - **Time and weather:** "what time is it", "what's the weather tomorrow" or "what's the weather in Lisbon".

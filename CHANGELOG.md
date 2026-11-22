@@ -8,6 +8,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- Hidden files and folders under your home are no longer read unless `files.hidden_allow` opens them;
+  by default it opens the desktop's own settings (`~/.config/hypr`, `omarchy`, `waybar`, `kitty` and the
+  like). Shell history and cookie stores are never read anywhere. With questions bypassed, this keeps
+  logins and tokens kept in hidden folders from reaching the model, and from leaving in a search.
 - Under each chat reply: "✻ Worked for 4m 41s · done 7:37 PM · 50 TPS" (how long it took, when it was done,
   and how fast the model wrote, from Strata's own timings), a blank line below the reply and in the column of
   its dot. Replies are set as Claude Code sets them: headings bold (the first level also italic and

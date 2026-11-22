@@ -125,11 +125,14 @@ reddit_comments = 6
 
 # The folders Jarvis may read and write; ~ is your home. Keys, tokens, browser profiles and
 # Jarvis's own state are never read or written; deny adds more (patterns such as "diary*").
-# Writing a file always asks you first and never touches a hidden file or folder.
+# Hidden files and folders under home are read only where hidden_allow opens them (by default
+# the desktop's own settings). Writing a file asks you first (unless bypass_consent is on) and
+# never touches a hidden file or folder.
 [files]
 read_roots = ["~"]
 write_roots = ["~/Documents"]
 deny = []
+hidden_allow = [".config/hypr", ".config/omarchy", ".config/waybar", ".config/walker", ".config/mako", ".config/swayosd", ".config/kitty", ".config/alacritty", ".config/ghostty", ".config/foot", ".config/btop", ".config/fastfetch", ".config/nvim", ".config/jarvis"]
 
 [boundaries]
 # true: act without asking (deny still refuses); false: ask for a yes first. `jarvis consent ask|bypass`.

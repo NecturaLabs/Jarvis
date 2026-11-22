@@ -304,13 +304,14 @@ Arctic Shift archive, a free copy of public Reddit that can lag behind it by a l
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
 | `read_roots` | `["~"]` | `~`, paths under `~/`, absolute paths | Folders whose files Jarvis may list and read (`list_dir`, `read_file`). |
-| `write_roots` | `["~/Documents"]` | the same | Folders Jarvis may create files in, or replace or add to them (`write_file`, always asked first). |
+| `write_roots` | `["~/Documents"]` | the same | Folders Jarvis may create files in, or replace or add to them (`write_file`, asked first unless `bypass_consent` is on). |
 | `deny` | `[]` | shell-style patterns | More names (`diary*`) or paths under home (`.config/app`) never read or written. |
+| `hidden_allow` | the desktop's settings: `.config/hypr`, `omarchy`, `waybar`, `walker`, `mako`, `swayosd`, `kitty`, `alacritty`, `ghostty`, `foot`, `btop`, `fastfetch`, `nvim`, `jarvis` | paths under home, shell-style | The hidden files and folders under home Jarvis may read. Everything else hidden there (shell history, app logins, cookies, caches) stays shut; `[]` shuts them all. |
 
 Whatever the roots say, Jarvis never reads or writes keys, tokens, password stores, browser profiles
 and its own state: `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.netrc`, `.env` files, `*.pem`,
-`*.key`, `id_rsa*` and the like, any name with `secret`, `password` or `credential` in it,
-`~/.config/gh`, keyrings and browser profiles (the full lists are `SECRET_NAMES` and `SECRET_PATHS`
+`*.key`, `id_rsa*` and the like, any name with `secret`, `password` or `credential` in it, shell
+history files and cookie stores, `~/.config/gh`, keyrings and browser profiles (the full lists are `SECRET_NAMES` and `SECRET_PATHS`
 in `src/jarvis/pc/files.py`). Paths are resolved through links first, so a link cannot lead out of a
 root or to a secret. Writing never touches a hidden file or folder (no `~/.bashrc`, no `~/.config`),
 never overwrites unless asked to replace, and never makes a file executable.
@@ -318,6 +319,8 @@ never overwrites unless asked to replace, and never makes a file executable.
 A file's text is data, like a web page: while it is in the conversation, side effects need your yes,
 and so do the operations that send words off the PC (`web_search`, `reddit_search`, and `weather` or
 `time_now` for a named place), so a file's contents cannot leave in a search without you seeing it.
+With `boundaries.bypass_consent` on (the default) none of these questions is asked, which is why the
+hidden files under home stay shut unless you open them.
 
 ## `[boundaries]`: whether Jarvis asks first
 

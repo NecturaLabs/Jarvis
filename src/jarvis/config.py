@@ -250,18 +250,40 @@ def _check_root(root: str) -> str:
 RootPath = Annotated[str, AfterValidator(_check_root)]
 
 
+# Hidden folders under home that Jarvis may read by default: the desktop's own settings.
+DESKTOP_SETTINGS = (
+    ".config/hypr",
+    ".config/omarchy",
+    ".config/waybar",
+    ".config/walker",
+    ".config/mako",
+    ".config/swayosd",
+    ".config/kitty",
+    ".config/alacritty",
+    ".config/ghostty",
+    ".config/foot",
+    ".config/btop",
+    ".config/fastfetch",
+    ".config/nvim",
+    ".config/jarvis",
+)
+
+
 class FilesConfig(_Section):
     """The folders Jarvis may read and write (`~` is the owner's home).
 
     Secrets (keys, tokens, browser profiles, Jarvis's own state) are never read or written,
     whatever the roots; `deny` adds names or paths under home to that list (shell-style
-    patterns such as `diary*` or `.config/app`). Writing always asks first and never touches a
-    hidden file or folder.
+    patterns such as `diary*` or `.config/app`). Hidden files and folders under home (shell
+    history, app logins and caches live there) are not read unless `hidden_allow` names them;
+    by default it opens the desktop's own settings. Writing asks first, unless
+    `boundaries.bypass_consent` is on, and never touches a hidden file or folder.
     """
 
     read_roots: list[RootPath] = Field(default_factory=lambda: ["~"])
     write_roots: list[RootPath] = Field(default_factory=lambda: ["~/Documents"])
     deny: list[SafeText] = Field(default_factory=list[str])
+    hidden_allow: list[SafeText] = Field(default_factory=lambda: list(DESKTOP_SETTINGS))
 
 
 class BoundariesConfig(_Section):
