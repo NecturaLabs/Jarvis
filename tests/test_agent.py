@@ -4,7 +4,8 @@ import hashlib
 import json
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from datetime import datetime, tzinfo
+from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
 
@@ -47,6 +48,7 @@ from jarvis.shortcuts import Shortcut
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
+    from typing import Self
 
 
 def _call(name: str, args: dict[str, Any] | None = None, call_id: str = "c1") -> dict[str, Any]:
@@ -1827,8 +1829,21 @@ def test_the_spoken_question_for_a_replace_says_only_how_much(tmp_path: Path) ->
     ]
 
 
-def test_what_a_write_puts_in_a_file_is_kept_out_of_the_audit_log(tmp_path: Path) -> None:
-    secret_text = "my diary: the safe code is 4417"
+class _ClockReadingTheSecret(datetime):
+    """A clock whose microseconds read 441700, as a real one sometimes does by chance."""
+
+    @override
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> Self:
+        return cls(2026, 1, 1, 10, 30, 0, 441700, tzinfo=tz)
+
+
+def test_what_a_write_puts_in_a_file_is_kept_out_of_the_audit_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A log line's timestamp, hash and paths are digits too, so the secret is words, not a number.
+    monkeypatch.setattr("jarvis.audit.datetime", _ClockReadingTheSecret)
+    secret_text = "my diary: the safe code is 4417, kept under the plum-harbor-lantern"
     args = {"path": "~/Documents/diary.md", "content": secret_text}
     model = ScriptedModel([_call("write_file", args), _say("Saved.")])
     agent, audit, home = _file_agent(tmp_path, model)
@@ -1836,7 +1851,7 @@ def test_what_a_write_puts_in_a_file_is_kept_out_of_the_audit_log(tmp_path: Path
     agent.handle("save my diary", Hooks(confirm=lambda _q: True))
 
     assert (home / "Documents" / "diary.md").read_text(encoding="utf-8") == secret_text + "\n"
-    assert "4417" not in json.dumps(audit.events, default=str)
+    assert "plum-harbor-lantern" not in json.dumps(audit.events, default=str)
     call = next(e for e in audit.events if e["event"] == "tool_call")
     logged = cast("dict[str, object]", call["args"])
     assert logged["content"] == {
