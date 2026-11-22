@@ -219,7 +219,9 @@ def raw_server(behave: Callable[[socket.socket], None]) -> Generator[Path]:
                 conn, _ = server.accept()
             except OSError:
                 return  # closed
-            with conn:
+            # The client hanging up ends the connection: a client that timed out closes while
+            # `behave` may still be writing, and that is the case under test, not a server fault.
+            with conn, contextlib.suppress(BrokenPipeError, ConnectionResetError):
                 behave(conn)
 
     thread = threading.Thread(target=accept, daemon=True)
