@@ -1089,7 +1089,8 @@ def test_a_status_command_is_started_again_at_once_after_a_healthy_run_ends(
         "runs.write_text('x' * (n + 1))\n"
         "if n < 6: sys.exit(1)\n"
         "if n == 6:\n"
-        f"    time.sleep(0.6); pathlib.Path({str(ended)!r}).write_text(repr(time.time())); sys.exit(1)\n"
+        "    time.sleep(0.6)\n"
+        f"    pathlib.Path({str(ended)!r}).write_text(repr(time.time())); sys.exit(1)\n"
         f"pathlib.Path({str(started)!r}).write_text(repr(time.time()))\n"
         f"print({_status_line('recording')!r}, flush=True); time.sleep(60)\n"
     )
