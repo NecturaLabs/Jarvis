@@ -9,7 +9,23 @@ from jarvis.activity import AuditTail, describe, working_label
 from jarvis.audit import AuditLog
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
     from pathlib import Path
+
+
+@pytest.fixture
+def audit_tail() -> Iterator[Callable[[Path], AuditTail]]:
+    """Make tails that are closed when the test ends, so none leaves its file open."""
+    made: list[AuditTail] = []
+
+    def make(path: Path) -> AuditTail:
+        tail = AuditTail(path)
+        made.append(tail)
+        return tail
+
+    yield make
+    for tail in made:
+        tail.close()
 
 
 def _write(path: Path, *entries: dict[str, object]) -> None:
@@ -17,10 +33,12 @@ def _write(path: Path, *entries: dict[str, object]) -> None:
         file.writelines(json.dumps(entry) + "\n" for entry in entries)
 
 
-def test_the_tail_starts_at_the_end_and_reads_only_new_events(tmp_path: Path) -> None:
+def test_the_tail_starts_at_the_end_and_reads_only_new_events(
+    tmp_path: Path, audit_tail: Callable[[Path], AuditTail]
+) -> None:
     path = tmp_path / "audit.jsonl"
     _write(path, {"event": "old"})
-    tail = AuditTail(path)
+    tail = audit_tail(path)
 
     assert tail.read() == []
     _write(path, {"event": "new"})
@@ -28,19 +46,23 @@ def test_the_tail_starts_at_the_end_and_reads_only_new_events(tmp_path: Path) ->
     assert tail.read() == []
 
 
-def test_the_tail_waits_for_a_file_that_does_not_exist_yet(tmp_path: Path) -> None:
+def test_the_tail_waits_for_a_file_that_does_not_exist_yet(
+    tmp_path: Path, audit_tail: Callable[[Path], AuditTail]
+) -> None:
     path = tmp_path / "audit.jsonl"
-    tail = AuditTail(path)
+    tail = audit_tail(path)
 
     assert tail.read() == []
     _write(path, {"event": "first"})
     assert tail.read() == [{"event": "first"}]
 
 
-def test_a_half_written_line_waits_for_its_end(tmp_path: Path) -> None:
+def test_a_half_written_line_waits_for_its_end(
+    tmp_path: Path, audit_tail: Callable[[Path], AuditTail]
+) -> None:
     path = tmp_path / "audit.jsonl"
     path.write_text("")
-    tail = AuditTail(path)
+    tail = audit_tail(path)
     with path.open("a") as file:
         file.write('{"event": "re')
 
@@ -50,21 +72,25 @@ def test_a_half_written_line_waits_for_its_end(tmp_path: Path) -> None:
     assert tail.read() == [{"event": "reply"}]
 
 
-def test_lines_that_are_not_event_objects_are_skipped(tmp_path: Path) -> None:
+def test_lines_that_are_not_event_objects_are_skipped(
+    tmp_path: Path, audit_tail: Callable[[Path], AuditTail]
+) -> None:
     path = tmp_path / "audit.jsonl"
     path.write_text("")
-    tail = AuditTail(path)
+    tail = audit_tail(path)
     with path.open("ab") as file:
         file.write(b'not json\n[1, 2]\n\xff\xfe\n{"event": "kept"}\n')
 
     assert tail.read() == [{"event": "kept"}]
 
 
-def test_nothing_is_lost_when_the_log_is_rotated_between_reads(tmp_path: Path) -> None:
+def test_nothing_is_lost_when_the_log_is_rotated_between_reads(
+    tmp_path: Path, audit_tail: Callable[[Path], AuditTail]
+) -> None:
     path = tmp_path / "audit.jsonl"
     log = AuditLog(path, max_bytes=300)
     log.record("start")
-    tail = AuditTail(path)
+    tail = audit_tail(path)
     rotated = path.with_name(path.name + ".1")
     written: list[int] = []
     while not rotated.exists():
@@ -79,10 +105,12 @@ def test_nothing_is_lost_when_the_log_is_rotated_between_reads(tmp_path: Path) -
     assert seen == written
 
 
-def test_a_truncated_log_is_read_again_from_its_start(tmp_path: Path) -> None:
+def test_a_truncated_log_is_read_again_from_its_start(
+    tmp_path: Path, audit_tail: Callable[[Path], AuditTail]
+) -> None:
     path = tmp_path / "audit.jsonl"
     _write(path, {"event": "a"}, {"event": "b"})
-    tail = AuditTail(path)
+    tail = audit_tail(path)
     path.write_text("")
     _write(path, {"event": "c"})
 

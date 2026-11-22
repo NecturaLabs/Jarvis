@@ -9,6 +9,8 @@ import os
 import socket
 import stat
 import threading
+import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -29,7 +31,6 @@ from jarvis.spotify.errors import NoDeviceError, SpotifyError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
 DAY = 86400.0
 START = 1_800_000_000.0
@@ -537,6 +538,28 @@ def test_a_state_with_non_ascii_characters_is_refused_not_a_crash(tmp_path: Path
     assert [form["code"] for form in accounts.forms] == ["c"]
 
 
+def _eventually(check: Callable[[], bool]) -> bool:
+    """Poll until `check` holds, for at most five seconds."""
+    end = time.monotonic() + 5.0
+    while time.monotonic() < end:
+        if check():
+            return True
+        threading.Event().wait(0.005)
+    return False
+
+
+def _blocked_on(inode: int) -> bool:
+    """Whether a process waits for a lock on the file with this inode, as the kernel lists it.
+
+    `/proc/locks` shows a waiter as `N: -> FLOCK ADVISORY WRITE <pid> <major>:<minor>:<inode> ...`.
+    """
+    for line in Path("/proc/locks").read_text(encoding="ascii").splitlines():
+        fields = line.split()
+        if "->" in fields and fields[-3].rpartition(":")[2] == str(inode):
+            return True
+    return False
+
+
 def test_a_login_waits_for_the_token_file_lock_before_it_writes(tmp_path: Path) -> None:
     # A running service refreshing the old grant holds this lock; the fresh login must not be
     # overwritten by it, so the login writes only once the lock is free.
@@ -565,7 +588,7 @@ def test_a_login_waits_for_the_token_file_lock_before_it_writes(tmp_path: Path) 
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         worker.start()
         assert posted.wait(5)
-        worker.join(0.3)
+        assert _eventually(lambda: _blocked_on(os.fstat(lock_fd).st_ino))
         assert worker.is_alive()
         assert _saved(path)["access_token"] == "old-access"
     finally:

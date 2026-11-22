@@ -56,12 +56,24 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 
-def _ended_microphone(frames: int) -> Microphone:
-    """A microphone fed by a process that writes `frames` silent frames, then exits."""
-    mic = Microphone(command=["head", "-c", str(FRAME * 2 * frames), "/dev/zero"])
-    mic.start()
-    mic.wait_ended(timeout=5)
-    return mic
+@pytest.fixture
+def ended_microphone() -> Iterator[Callable[[int], Microphone]]:
+    """Make microphones fed by a process that writes `frames` silent frames, then exits.
+
+    Each is stopped when the test ends, which reaps its process and closes its pipe.
+    """
+    made: list[Microphone] = []
+
+    def make(frames: int) -> Microphone:
+        mic = Microphone(command=["head", "-c", str(FRAME * 2 * frames), "/dev/zero"])
+        made.append(mic)
+        mic.start()
+        mic.wait_ended(timeout=5)
+        return mic
+
+    yield make
+    for mic in made:
+        mic.stop()
 
 
 def _first_outcome(mic: Microphone, timeout: float) -> str:
@@ -81,15 +93,17 @@ def _first_outcome(mic: Microphone, timeout: float) -> str:
     return outcome[0]
 
 
-def test_frames_end_after_drain_instead_of_blocking() -> None:
+def test_frames_end_after_drain_instead_of_blocking(
+    ended_microphone: Callable[[int], Microphone],
+) -> None:
     """Regression: drain() used to discard the end-of-stream marker, so a stop hung forever."""
-    mic = _ended_microphone(frames=2)
+    mic = ended_microphone(2)
     mic.drain()
     assert _first_outcome(mic, timeout=2) == "ended"
 
 
-def test_frames_are_delivered_before_the_end() -> None:
-    mic = _ended_microphone(frames=2)
+def test_frames_are_delivered_before_the_end(ended_microphone: Callable[[int], Microphone]) -> None:
+    mic = ended_microphone(2)
     assert _first_outcome(mic, timeout=2) == "frame"
 
 
@@ -916,6 +930,35 @@ def test_what_the_follower_prints_is_what_dictating_and_meeting_answer(
     assert meeting.dictating() is False
 
 
+def test_a_status_that_cannot_be_parsed_does_not_leave_the_command_running(
+    monkeypatch: pytest.MonkeyPatch,
+    started_processes: list[subprocess.Popen[bytes]],
+) -> None:
+    def broken(_line: bytes) -> VoxtypeState | None:
+        msg = "parse failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(audio_module, "parse_voxtype_status", broken)
+    monkeypatch.setattr(audio_module, "VOXTYPE_STOP_S", 0.5)
+    failures: list[BaseException | None] = []
+
+    def record(args: threading.ExceptHookArgs) -> None:
+        failures.append(args.exc_value)
+
+    monkeypatch.setattr(threading, "excepthook", record)
+    watch = VoxtypeWatch(_status_helper(_status_line("recording"), "sleep"))
+    watch.start()
+    try:
+        # The follower's thread ends with the error once the command is gone; before, it waited
+        # for a command nobody ended.
+        assert _eventually(lambda: len(failures) == 1)
+        (process,) = started_processes
+        assert process.returncode is not None
+        assert watch.pid is None
+    finally:
+        watch.stop()
+
+
 def test_a_change_the_follower_prints_replaces_the_state(
     watches: Callable[..., VoxtypeWatch], tmp_path: Path
 ) -> None:
@@ -1126,6 +1169,32 @@ def test_stopping_the_watch_ends_the_status_command_it_started(
     assert watch.pid is None
 
 
+def test_stopping_the_watch_closes_the_pipe_it_read(
+    watches: Callable[..., VoxtypeWatch], started_processes: list[subprocess.Popen[bytes]]
+) -> None:
+    watch = watches(_status_helper(_status_line("idle"), "sleep"))
+    assert _eventually(lambda: watch.dictating() is False)
+
+    watch.stop()
+
+    (process,) = started_processes
+    assert process.stdout is not None
+    assert process.stdout.closed
+
+
+def test_a_status_command_that_ends_has_its_pipe_closed(
+    watches: Callable[..., VoxtypeWatch], started_processes: list[subprocess.Popen[bytes]]
+) -> None:
+    watch = watches(_status_helper(_status_line("idle"), "exit0"), retry_s=30.0)
+    assert _eventually(lambda: bool(started_processes) and started_processes[0].returncode == 0)
+
+    watch.stop()  # joins the thread, so what it does after the command ends is done
+
+    (process,) = started_processes
+    assert process.stdout is not None
+    assert process.stdout.closed
+
+
 def _lock_answer(
     stdout: bytes, returncode: int = 0
 ) -> Callable[..., subprocess.CompletedProcess[bytes]]:
@@ -1177,6 +1246,107 @@ def test_a_microphone_started_again_after_a_stop_delivers_frames() -> None:
 
         assert _first_outcome(mic, timeout=5) == "frame"
         assert _first_outcome(mic, timeout=0.3) == "blocked"
+    finally:
+        mic.stop()
+
+
+@pytest.fixture
+def started_processes(monkeypatch: pytest.MonkeyPatch) -> list[subprocess.Popen[bytes]]:
+    """Every process started while the test runs, so it can check what is left of each."""
+    started: list[subprocess.Popen[bytes]] = []
+    real_init: Callable[..., None] = subprocess.Popen.__init__
+
+    def recording_init(self: subprocess.Popen[bytes], *args: object, **kwargs: object) -> None:
+        real_init(self, *args, **kwargs)
+        started.append(self)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", recording_init)
+    return started
+
+
+def test_stopping_a_microphone_closes_the_pipe_it_read(
+    started_processes: list[subprocess.Popen[bytes]],
+) -> None:
+    mic = Microphone(command=["sh", "-c", "exec sleep 30"])
+    mic.start()
+
+    mic.stop()
+
+    (process,) = started_processes
+    assert process.returncode is not None
+    assert process.stdout is not None
+    assert process.stdout.closed
+
+
+def test_stopping_a_microphone_that_already_ended_closes_its_pipe(
+    started_processes: list[subprocess.Popen[bytes]],
+    ended_microphone: Callable[[int], Microphone],
+) -> None:
+    mic = ended_microphone(2)
+
+    mic.stop()
+
+    (process,) = started_processes
+    assert process.stdout is not None
+    assert process.stdout.closed
+
+
+def test_stopping_a_microphone_whose_pipe_a_child_keeps_returns_soon_and_keeps_the_pipe(
+    started_processes: list[subprocess.Popen[bytes]], tmp_path: Path
+) -> None:
+    # A capture command that leaves a grandchild holding the pipe's write end: the reader never
+    # sees the end, so stop() must give up waiting for it and must not close the pipe under it.
+    # `setsid` puts the command and its grandchild in a group of their own, which the test ends.
+    child_started = tmp_path / "child-started"
+    mic = Microphone(command=["setsid", "sh", "-c", f"sleep 30 & touch {child_started}; wait"])
+    mic.start()
+    group = mic.pid
+    assert group is not None
+    try:
+        assert _eventually(child_started.exists)
+        started = time.perf_counter()
+        mic.stop()
+        took = time.perf_counter() - started
+
+        (process,) = started_processes
+        assert took < audio_module.STOP_WAIT_S / 2
+        assert process.stdout is not None
+        assert not process.stdout.closed
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(group, signal.SIGKILL)
+        mic.wait_ended(timeout=5)  # the reader sees the end now that the group is gone
+        for process in started_processes:
+            if process.stdout is not None:
+                process.stdout.close()
+
+
+def test_a_stop_between_the_two_halves_of_a_start_does_not_touch_the_new_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    started_processes: list[subprocess.Popen[bytes]],
+) -> None:
+    # `jarvis pause` can stop the microphone while a start is under way. A stop that sees the new
+    # process with the old (finished) reader thread would close the new pipe under the new reader.
+    one_frame_then_wait = f"head -c {FRAME * 2} /dev/zero; exec sleep 30"
+    mic = Microphone(command=["sh", "-c", one_frame_then_wait])
+    mic.start()
+    mic.stop()
+    real_thread = threading.Thread
+
+    class StopsWhileStarting(real_thread):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+            target = kwargs.get("target")
+            if getattr(target, "__name__", "") == "_read":
+                mic.stop()
+
+    monkeypatch.setattr(audio_module.threading, "Thread", StopsWhileStarting)
+    mic.start()
+    monkeypatch.setattr(audio_module.threading, "Thread", real_thread)
+    try:
+        assert started_processes[-1].stdout is not None
+        assert not started_processes[-1].stdout.closed
+        assert _first_outcome(mic, timeout=5) == "frame"
     finally:
         mic.stop()
 

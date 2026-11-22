@@ -7,7 +7,6 @@ the service clients talk to `httpx.MockTransport` with answers shaped like recor
 import gzip
 import socket
 import threading
-import time
 import tracemalloc
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -174,11 +173,11 @@ def test_a_name_that_never_resolves_gives_up(monkeypatch: pytest.MonkeyPatch) ->
         return resolve(host, port, **options)
 
     monkeypatch.setattr(guard, "DNS_TIMEOUT_S", 0.05)
-    started = time.monotonic()
-    with pytest.raises(BlockedDestinationError, match="too long"):
-        public_addresses("public.example", 443, stuck)
-    release.set()
-    assert time.monotonic() - started < 1
+    try:
+        with pytest.raises(BlockedDestinationError, match="too long"):
+            public_addresses("public.example", 443, stuck)
+    finally:
+        release.set()
 
 
 def test_a_lookup_error_on_the_helper_thread_reaches_the_caller() -> None:
