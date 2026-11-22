@@ -4,6 +4,7 @@ Redirects are followed here, one hop at a time, so each new address is checked b
 reached (the connection itself is checked again in `jarvis.web.guard`).
 """
 
+import copy
 import time
 import warnings
 import zlib
@@ -173,6 +174,11 @@ def _extract(html: str, url: str) -> tuple[str, str, str]:
     tree = trafilatura.load_html(html)
     if tree is not None:
         _without_hidden_and_excess(cast("_Element", tree))
+    # The title too comes from what is shown (trafilatura takes it from an `<h1>`); a copy,
+    # since either reader may trim the tree it is given.
+    meta = trafilatura.extract_metadata(
+        copy.deepcopy(tree) if tree is not None else html, default_url=url
+    )
     text = trafilatura.extract(
         tree if tree is not None else html,
         url=url,
@@ -185,7 +191,6 @@ def _extract(html: str, url: str) -> tuple[str, str, str]:
         # like an earlier one) would come back empty.
         deduplicate=False,
     )
-    meta = trafilatura.extract_metadata(html, default_url=url)
     title = meta.title or ""
     image = _picture_address(str(meta.image or ""), url)
     return " ".join(title.split())[:MAX_TITLE], text or "", image
