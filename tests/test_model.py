@@ -1,6 +1,7 @@
 """The Strata client: what it sends, and that a broken answer never reaches the agent."""
 
 import json
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast, override
 
 import httpx
@@ -176,9 +177,11 @@ def _read_timeout(request: httpx.Request) -> float:
 @pytest.mark.parametrize(("asked", "sent"), [(None, 120.0), (3.5, 3.5), (999.0, 120.0)])
 def test_a_call_waits_no_longer_than_the_turn_has_left(asked: float | None, sent: float) -> None:
     seen: list[httpx.Request] = []
-    _model(_answering({"content": "hi"}, seen)).chat(MESSAGES, TOOLS, timeout_s=asked)
+    model = replace(_model(_answering({"content": "hi"}, seen)), clock=lambda: 0.0)
 
-    assert _read_timeout(seen[0]) == pytest.approx(sent)
+    model.chat(MESSAGES, TOOLS, timeout_s=asked)
+
+    assert _read_timeout(seen[0]) == sent
 
 
 def test_warming_waits_for_the_server_and_retries_a_busy_answer() -> None:
