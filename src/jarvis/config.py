@@ -37,7 +37,9 @@ def _no_control_path(path: Path) -> Path:
 SafePath = Annotated[Path, AfterValidator(_no_control_path)]
 SafeText = Annotated[str, AfterValidator(_no_control)]
 
-VRAM_RESERVE_MIN_MIB = 100  # the lowest reserve Strata's engine accepts without complaint
+VRAM_RESERVE_MIN_MIB = (
+    100  # our floor, not the engine's: a smaller reserve leaves a game no real room
+)
 VRAM_RESERVE_MAX_MIB = 65536
 
 

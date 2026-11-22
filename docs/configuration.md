@@ -133,18 +133,20 @@ Both units are written by `jarvis setup`; their text is `jarvis_unit` and `strat
 
 | Setting | `jarvis.service` | `jarvis-strata.service` |
 |---|---|---|
-| `NoNewPrivileges=yes`, `LockPersonality=yes`, `RestrictSUIDSGID=yes`, `UMask=0077` | yes | yes |
-| `SystemCallArchitectures=native`, `ProtectKernelModules=yes`, `ProtectKernelLogs=yes` | yes | no |
+| `NoNewPrivileges=yes`, `LockPersonality=yes`, `RestrictSUIDSGID=yes` | yes | yes |
+| `UMask=0077` (what the unit creates is private to you) | no | yes |
+| `SystemCallArchitectures=native` | yes | no |
 | `CPUWeight=50` (half the default, so a game started by Steam in the same `app.slice` wins a CPU contest) | yes | yes |
 | `StartLimitIntervalSec=15min`, `StartLimitBurst=5` (in `[Unit]`) | yes | yes |
 | `MemoryHigh` / `MemoryMax` | none / `4G` | `memory_max` / 10% above it |
 
-- `UMask=0077` makes every file and folder the units create private to you, including what the file tools write
-  at your request (they ask for 0644 and 0755, so a new file is 0600 and a new folder 0700).
-- `NoNewPrivileges` and `UMask` are inherited by programs the voice service starts directly. A program
-  started through `uwsm-app` (the way the Omarchy launcher starts Spotify) is also a child of the unit and
-  inherits them (tested with a stand-in command, 2026-11-22).
-- Not set, each for a reason: `RestrictNamespaces=` (the Azure wake word helper runs under `unshare --map-current-user --net`),
+- The voice service keeps your session's umask, so a file the file tools write at your request gets the
+  mode it asks for (0644, a folder 0755).
+- `NoNewPrivileges` is inherited by programs the voice service starts, directly or through `uwsm-app` (the
+  way the Omarchy launcher starts Spotify; tested with a stand-in command, 2026-11-22).
+- Not set, each for a reason: `ProtectKernelModules=` and `ProtectKernelLogs=` on the voice service (in a user
+  unit they put it in a private user namespace, which Spotify and every other program it starts would inherit),
+  `RestrictNamespaces=` (the Azure wake word helper runs under `unshare --map-current-user --net`),
   `MemoryDenyWriteExecute=` (onnxruntime and Strata's HIP path may compile code at run time), `ProtectHome=` and
   `ProtectSystem=` (config, state and models live under home and on `/data`), `PrivateNetwork=` and `IPAddressDeny=`
   (Spotify, Open-Meteo and web reads), `RestrictRealtime=` (`pw-record` and `pw-play` are not shown to

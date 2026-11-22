@@ -206,12 +206,12 @@ def test_the_vram_reserve_is_unset_by_default() -> None:
 
 
 @pytest.mark.parametrize("value", [0, 100, 700, 65536])
-def test_vram_reserve_accepts_zero_for_unset_or_the_engines_range(value: int) -> None:
+def test_vram_reserve_accepts_zero_for_unset_or_a_value_in_its_range(value: int) -> None:
     assert config.StrataConfig(vram_reserve_mib=value).vram_reserve_mib == value
 
 
 @pytest.mark.parametrize("value", [-1, 1, 99, 65537])
-def test_vram_reserve_refuses_a_value_the_engine_would_not_take(value: int) -> None:
+def test_vram_reserve_refuses_a_value_outside_its_range(value: int) -> None:
     with pytest.raises(ValueError, match="vram_reserve_mib"):
         config.StrataConfig(vram_reserve_mib=value)
 

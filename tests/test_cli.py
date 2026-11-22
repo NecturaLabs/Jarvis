@@ -396,6 +396,45 @@ def test_setup_writes_the_config_profile_and_units_under_the_home(
     assert "next: jarvis spotify-login" in capsys.readouterr().out
 
 
+def test_setup_with_enable_clears_a_failed_state_before_starting_the_units(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _stub_subprocess(monkeypatch)
+    model = home / "models" / "q4.gguf"
+
+    assert main(["setup", "--model-file", str(model), "--enable"]) == 0
+
+    units = ["jarvis-strata.service", "jarvis.service"]
+    assert calls == [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "reset-failed", *units],
+        ["systemctl", "--user", "enable", "--now", *units],
+    ]
+
+
+def test_a_config_command_clears_a_failed_state_before_restarting_jarvis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The start limit counts restarts too: five config changes in 15 minutes must not leave the
+    # voice service stopped.
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(*args: str) -> int:
+        calls.append(args)
+        return 0
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+
+    def active(_unit: str) -> str:
+        return "active"
+
+    monkeypatch.setattr(cli, "_unit_state", active)
+
+    cli._restart_if_running()  # pyright: ignore[reportPrivateUsage] - the helper three commands share
+
+    assert calls == [("reset-failed", "jarvis.service"), ("restart", "jarvis.service")]
+
+
 def test_setup_refuses_a_value_that_cannot_go_into_a_unit(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

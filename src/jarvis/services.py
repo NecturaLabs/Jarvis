@@ -103,18 +103,22 @@ def memory_limit(memory_high: str) -> str:
 # runs under `unshare --map-current-user --net`), `MemoryDenyWriteExecute` (onnxruntime and
 # Strata's HIP path may JIT), `ProtectHome` and `ProtectSystem` (config, state and models live under
 # home and on /data), `PrivateNetwork` and `IPAddressDeny` (Spotify, Open-Meteo and web reads),
-# `RestrictRealtime` (not shown safe for `pw-record` and `pw-play`).
+# `RestrictRealtime` (not shown safe for `pw-record` and `pw-play`), and on the voice service
+# `ProtectKernelModules` and `ProtectKernelLogs` (in a user unit they put the service in a private
+# user namespace, which every program it starts inherits, Spotify included) and `UMask=0077` (a file
+# the file tools write for the owner keeps the mode it asks for).
 _HARDENING = """\
 NoNewPrivileges=yes
 LockPersonality=yes
 RestrictSUIDSGID=yes
+"""
+# Strata writes nothing for the owner: whatever it creates is private.
+_HARDENING_STRATA = """\
 UMask=0077
 """
-# What only the voice service takes: it runs no model engine, so nothing there loads kernel code.
+# What only the voice service takes: it runs no model engine, which may load code for other CPUs.
 _HARDENING_VOICE = """\
 SystemCallArchitectures=native
-ProtectKernelModules=yes
-ProtectKernelLogs=yes
 """
 # A game beside the units wins the processor: the weight is half the default (100).
 _CPU_WEIGHT = 50
@@ -304,7 +308,7 @@ MemoryHigh={memory}
 MemoryMax={limit}
 CPUWeight={_CPU_WEIGHT}
 TimeoutStopSec=45
-{_HARDENING}
+{_HARDENING}{_HARDENING_STRATA}
 [Install]
 WantedBy=graphical-session.target
 """

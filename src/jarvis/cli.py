@@ -228,10 +228,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print("units: " + ", ".join(str(u) for u in units))
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, timeout=SYSTEMCTL_S)
     if args.enable:
+        units = [services.STRATA_UNIT, services.JARVIS_UNIT]
+        # A unit stopped by its start limit refuses to start until its failed state is cleared.
         subprocess.run(
-            ["systemctl", "--user", "enable", "--now", services.STRATA_UNIT, services.JARVIS_UNIT],
-            check=False,
-            timeout=SYSTEMCTL_S,
+            ["systemctl", "--user", "reset-failed", *units], check=False, timeout=SYSTEMCTL_S
+        )
+        subprocess.run(
+            ["systemctl", "--user", "enable", "--now", *units], check=False, timeout=SYSTEMCTL_S
         )
     if not updated.spotify.client_id:
         print("next: jarvis setup --spotify-client-id <your app's client ID>")
@@ -961,6 +964,9 @@ def _restart_if_running() -> None:
     from jarvis.services import JARVIS_UNIT  # ruff: ignore[import-outside-top-level]
 
     if _unit_state(JARVIS_UNIT) == "active":
+        # A restart counts against the start limit (5 in 15 min): clear it first, so a few
+        # config changes in a row do not leave the voice service stopped.
+        _systemctl("reset-failed", JARVIS_UNIT)
         _systemctl("restart", JARVIS_UNIT)
 
 

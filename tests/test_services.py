@@ -340,13 +340,8 @@ _BOTH_HARDENED = (
     "NoNewPrivileges=yes",
     "LockPersonality=yes",
     "RestrictSUIDSGID=yes",
-    "UMask=0077",
 )
-_VOICE_HARDENED = (
-    "SystemCallArchitectures=native",
-    "ProtectKernelModules=yes",
-    "ProtectKernelLogs=yes",
-)
+_VOICE_HARDENED = ("SystemCallArchitectures=native",)
 # Left out on purpose (issue #33): each would break something a unit runs.
 _NOT_SET = (
     "RestrictNamespaces",  # the Azure helper runs under `unshare --map-current-user --net`
@@ -356,6 +351,10 @@ _NOT_SET = (
     "PrivateNetwork",  # Spotify, Open-Meteo and web reads
     "IPAddressDeny",
     "RestrictRealtime",  # until pw-record and pw-play are shown not to need it
+    # In a user unit these two make a private user namespace that Spotify, launched by the voice
+    # service, would inherit.
+    "ProtectKernelModules",
+    "ProtectKernelLogs",
     "Nice",  # CPUWeight is the only priority change
     "CPUSchedulingPolicy",
     "IOSchedulingClass",
@@ -382,6 +381,14 @@ def test_only_the_voice_service_takes_the_kernel_and_architecture_options(
 def test_options_that_would_break_a_unit_are_not_set(tmp_path: Path, name: str) -> None:
     for text in _units(tmp_path).values():
         assert not any(line.startswith(f"{name}=") for line in _lines(text))
+
+
+def test_only_strata_makes_what_it_creates_private(tmp_path: Path) -> None:
+    # A file the file tools write for the owner keeps the mode it asks for (0644).
+    units = _units(tmp_path)
+
+    assert "UMask=0077" in _section(units["strata"], "Service")
+    assert not any(line.startswith("UMask=") for line in _lines(units["jarvis"]))
 
 
 def test_both_units_give_way_to_a_game_for_the_processor(tmp_path: Path) -> None:
