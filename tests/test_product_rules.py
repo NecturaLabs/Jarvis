@@ -207,8 +207,8 @@ def scan_voxtype_config(path: str, source: str) -> list[Finding]:
     tree = ast.parse(source)
     message = (
         "points into ~/.config/voxtype or builds a path with a `voxtype` component; Jarvis never "
-        "edits the owner's Voxtype config and uses only its integration contract "
-        "(AGENTS.md, Product rules)."
+        "edits the owner's Voxtype config and drives it only through the commands AGENTS.md "
+        "allows (Product rules)."
     )
     lines = {line for line, text in _strings(tree) if ".config/voxtype" in text.replace("\\", "/")}
     if path not in VOXTYPE_PATH_FILES:

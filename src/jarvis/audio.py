@@ -998,7 +998,7 @@ def dictation_active(
 ) -> bool:
     """Whether the owner's Voxtype dictation is recording or transcribing.
 
-    Read from `voxtype status --format json`, part of Voxtype's integration contract. A daemon
+    Read from `voxtype status --format json`, a command AGENTS.md allows. A daemon
     that is not running (a non-zero exit) is not dictating; a status that cannot be run or read
     counts as dictating, so Jarvis never takes the owner's dictation for a request.
     """
