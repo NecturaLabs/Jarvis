@@ -45,6 +45,7 @@ MAX_PID = 4_194_304  # PID_MAX_LIMIT on 64-bit Linux
 STOP_WAIT_S = 3.0
 HYPR_TIMEOUT_S = 0.5
 MAX_HYPR_BYTES = 4 * 1024 * 1024
+COMM_MAX = 15  # a command name is cut to this many characters
 PF_KTHREAD = 0x00200000
 KTHREADD = 2
 STAT_PPID, STAT_FLAGS, STAT_START = 1, 6, 19  # fields 4, 9 and 22, counted after the comm
@@ -74,6 +75,29 @@ PROTECTED_PROGRAMS = {
     "voxtype-osd-quickshell": "part of Omarchy's dictation",
     "strata": "the model server Jarvis thinks with",
     "jarvis": "Jarvis itself",
+    "xdg-desktop-portal": "the desktop portal: file pickers, screen sharing and screenshots",
+    "xdg-desktop-portal-hyprland": "the desktop portal's Hyprland side: screen sharing",
+    "xdg-desktop-portal-gtk": "the desktop portal's GTK side: file pickers and settings",
+    "xdg-document-portal": "gives sandboxed apps the files they were handed",
+    "xdg-permission-store": "keeps the permissions the desktop portal granted",
+    "gnome-keyring-daemon": "the keyring that holds saved passwords and logins",
+    "polkit-gnome-authentication-agent-1": "asks for the password when a program needs rights",
+    "hyprpolkitagent": "asks for the password when a program needs rights",
+    "dconf-service": "stores the desktop's and GTK programs' settings",
+    "at-spi-bus-launcher": "the accessibility bus: screen readers and assistive tools",
+    "at-spi2-registryd": "the accessibility registry: screen readers and assistive tools",
+    "mako": "shows the desktop's notifications",
+    "swayosd-server": "shows the volume and brightness pop-ups",
+    "hyprsunset": "the night light",
+    "walker": "the app launcher",
+    "elephant": "the app launcher's data service",
+    "fcitx5": "the input method: typing in other scripts and languages",
+}
+
+# Programs never listed or stopped, by the start of their casefolded name, with why.
+PROTECTED_PREFIXES = {
+    "gvfs": "GNOME's virtual file systems: mounts, the trash and network shares",
+    "omarchy-": "one of Omarchy's own desktop helpers: its watchers and launchers",
 }
 
 # Systemd units whose processes are never listed or stopped, by the last part of their cgroup.
@@ -90,7 +114,11 @@ PROTECTED_RULES = {
     "jarvis": "Jarvis itself, or a program Jarvis runs inside (its terminal or shell)",
     "session": "it started the desktop session",
     "login_shell": "the login shell of a session",
+    "session_scope": "it belongs to the login session itself: stopping it can end the desktop",
+    "foreign_parent": "another user started it (or its parent cannot be seen): a session's leader",
 }
+
+_SESSION_SCOPE = re.compile(r"session-\d+\.scope")
 
 _FILLER = frozenset({"the", "process", "processes", "app", "application", "program", "game"})
 
@@ -126,10 +154,15 @@ class _Found:
 
 @dataclass(slots=True)
 class _Shown:
-    """The PIDs `find_processes` listed in one request, with each one's program and start."""
+    """The PIDs `find_processes` listed in one request.
+
+    Each with its program, start time and, for a match by a window title alone, that title.
+    """
 
     request: Request | None = None
-    targets: dict[int, tuple[str, int]] = field(default_factory=dict[int, tuple[str, int]])
+    targets: dict[int, tuple[str, int, str]] = field(
+        default_factory=dict[int, tuple[str, int, str]]
+    )
 
 
 class Stopper(Protocol):
@@ -179,16 +212,23 @@ class PidfdStopper:
 
 
 def _ask_hyprland(path: Path, request: bytes, timeout_s: float) -> bytes:
-    """Return Hyprland's whole answer to one socket request, up to a size cap."""
+    """Return Hyprland's whole answer to one socket request.
+
+    Raises:
+        ValueError: the answer is longer than `MAX_HYPR_BYTES`.
+    """
     chunks: list[bytes] = []
     size = 0
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
         conn.settimeout(timeout_s)
         conn.connect(str(path))
         conn.sendall(request)
-        while size <= MAX_HYPR_BYTES and (chunk := conn.recv(65536)):
-            chunks.append(chunk)
+        while chunk := conn.recv(65536):
             size += len(chunk)
+            if size > MAX_HYPR_BYTES:
+                msg = "Hyprland's answer is too long to read"
+                raise ValueError(msg)
+            chunks.append(chunk)
     return b"".join(chunks)
 
 
@@ -332,6 +372,10 @@ class ProcessOps:
         names = [proc.comm, self._exe(proc.pid)]
         if argv:
             names.append(_basename(argv[0].removeprefix("-")))
+        if len(argv) > 1 and not argv[1].startswith("-"):
+            script = _basename(argv[1])
+            if script[:COMM_MAX] == proc.comm:  # a script, which the kernel names after its file
+                names.append(script)
         return [name for name in names if name]
 
     def _program(self, proc: _Proc) -> str:
@@ -368,32 +412,57 @@ class ProcessOps:
                     guarded.setdefault(pid, PROTECTED_RULES["session"])
         return guarded
 
-    def _protection(self, proc: _Proc, guarded: dict[int, str]) -> str | None:
+    def _protection(
+        self, proc: _Proc, table: dict[int, _Proc], guarded: dict[int, str]
+    ) -> str | None:
         """Return why a process may never be stopped, or None when it may."""
-        return self._protected_kind(proc, guarded) or self._protected_name(proc)
+        return (
+            self._protected_kind(proc, table)
+            or self._protected_place(proc, guarded)
+            or self._protected_name(proc)
+        )
 
-    def _protected_kind(self, proc: _Proc, guarded: dict[int, str]) -> str | None:
-        """Return why a process is protected for what it is, whatever its name."""
+    def _owned(self, proc: _Proc) -> bool:
+        return bool(proc.uids) and all(uid == self._uid for uid in proc.uids)
+
+    def _protected_kind(self, proc: _Proc, table: dict[int, _Proc]) -> str | None:
+        """Return why a process is protected for what it is and who started it."""
         if proc.pid == 1:
             return PROTECTED_RULES["init"]
         if proc.kernel:
             return PROTECTED_RULES["kernel"]
-        if not proc.uids or any(uid != self._uid for uid in proc.uids):
+        if not self._owned(proc):
             return PROTECTED_RULES["other_user"]
+        parent = table.get(proc.ppid)
+        if proc.ppid > 0 and (parent is None or not self._owned(parent)):
+            return PROTECTED_RULES["foreign_parent"]
+        return None
+
+    def _protected_place(self, proc: _Proc, guarded: dict[int, str]) -> str | None:
+        """Return why a process is protected for where it sits in the session."""
         if proc.pid in guarded:
             return guarded[proc.pid]
         argv = self._argv(proc.pid)
-        return PROTECTED_RULES["login_shell"] if argv and argv[0].startswith("-") else None
+        if argv and argv[0].startswith("-"):
+            return PROTECTED_RULES["login_shell"]
+        unit = self._text(proc.pid, "cgroup").strip().rpartition("/")[2]
+        if _SESSION_SCOPE.fullmatch(unit):
+            return PROTECTED_RULES["session_scope"]
+        return PROTECTED_UNITS.get(unit)
 
     def _protected_name(self, proc: _Proc) -> str | None:
-        """Return why a process is protected for its unit or its program's name."""
-        unit = self._text(proc.pid, "cgroup").strip().rpartition("/")[2]
-        if unit in PROTECTED_UNITS:
-            return PROTECTED_UNITS[unit]
-        for name in self._names(proc):
-            reason = PROTECTED_PROGRAMS.get(name.casefold())
+        """Return why a process is protected for its program's name, full or cut."""
+        for name in (name.casefold() for name in self._names(proc)):
+            reason = PROTECTED_PROGRAMS.get(name) or next(
+                (why for start, why in PROTECTED_PREFIXES.items() if name.startswith(start)), None
+            )
             if reason is not None:
                 return reason
+        comm = proc.comm.casefold()
+        if len(comm) == COMM_MAX:  # cut: a longer protected name may start with it
+            for name, reason in PROTECTED_PROGRAMS.items():
+                if name.startswith(comm):
+                    return reason
         return None
 
     # --- find_processes -------------------------------------------------------------------
@@ -424,7 +493,7 @@ class ProcessOps:
             by_title = window is not None and _matches(spoken, window.title)
             if not by_name and not by_title:
                 continue
-            reason = self._protection(proc, guarded)
+            reason = self._protection(proc, table, guarded)
             if reason is not None:
                 protected.append(f"{_printable(proc.comm, MAX_PROGRAM)} ({reason})")
                 continue
@@ -469,6 +538,8 @@ class ProcessOps:
         if item.children:
             many = "es" if item.children != 1 else ""
             parts.append(f"with {item.children} child process{many}")
+        if not item.by_name:
+            parts.append("matched only by a window title: stopping it closes all its windows")
         return "- " + ", ".join(parts)
 
     def find(self, args: dict[str, Any]) -> Result:
@@ -485,7 +556,12 @@ class ProcessOps:
             if self._shown.request is not request:
                 self._shown = _Shown(request)
             for item in shown:
-                self._shown.targets[item.proc.pid] = (item.program, item.proc.start)
+                title = "" if item.by_name or item.window is None else item.window.title
+                self._shown.targets[item.proc.pid] = (
+                    item.program,
+                    item.proc.start,
+                    _printable(title, MAX_TITLE),
+                )
         lines: list[str] = []
         if not found and protected:
             lines.append(
@@ -511,9 +587,7 @@ class ProcessOps:
                 )
         if protected:
             lines.append("Also matching, but never stopped: " + "; ".join(protected) + ".")
-        missing = not found and not protected
-        spoken_reply = f"I can't find a program called {name} running." if missing else ""
-        return Result("\n".join(lines), Origin.PROCESS, spoken=spoken_reply)
+        return Result("\n".join(lines), Origin.PROCESS)
 
     # --- stop_process ---------------------------------------------------------------------
 
@@ -526,9 +600,17 @@ class ProcessOps:
         if request.foreign:
             msg = "a request heard in PC audio cannot stop a process; only the owner can"
             raise OperationError(msg)
+        outside = request.outside - {Origin.PROCESS.value}
+        if outside:
+            msg = (
+                "a process is stopped only on the owner's own words, and this request also holds "
+                f"outside text ({', '.join(sorted(outside))}); nothing was stopped. Ask the owner "
+                "to say which program to stop in a request of its own."
+            )
+            raise OperationError(msg)
         return request
 
-    def _listed(self, request: Request, pid: int) -> tuple[str, int]:
+    def _listed(self, request: Request, pid: int) -> tuple[str, int, str]:
         with self._lock:
             target = self._shown.targets.get(pid) if self._shown.request is request else None
         if target is None:
@@ -550,7 +632,7 @@ class ProcessOps:
         if proc is None or proc.start != start or self._program(proc) != program:
             msg = f"PID {pid} is no longer the {program} that was listed; nothing was stopped"
             raise OperationError(msg)
-        reason = self._protection(proc, self._guarded(table))
+        reason = self._protection(proc, table, self._guarded(table))
         if reason is not None:
             msg = f"PID {pid} is never stopped: {reason}"
             raise OperationError(msg)
@@ -563,9 +645,15 @@ class ProcessOps:
         longer the one listed or is protected.
         """
         pid = int(args["pid"])
-        program, start = self._listed(self._owner_request(), pid)
+        program, start, window = self._listed(self._owner_request(), pid)
         self._check(pid, program, start)
-        return {"pid": pid, "force": bool(args["force"]), "program": program, "started": start}
+        return {
+            "pid": pid,
+            "force": bool(args["force"]),
+            "program": program,
+            "started": start,
+            "window": window,
+        }
 
     def stop(self, args: dict[str, Any]) -> Result:
         """Stop the bound process, if it is still that process, and say whether it ended.
@@ -597,7 +685,7 @@ class ProcessOps:
         finally:
             self._stopper.close(handle)
         if ended:
-            return Result(f"{program} (PID {pid}) has ended.", spoken=f"Stopped {program}.")
+            return Result(f"{program} (PID {pid}) has ended.")
         return Result(
             f"Asked {program} (PID {pid}) to stop, but it is still running after "
             f"{STOP_WAIT_S:g} seconds; it may be asking to save. Only if the owner asks, stop it "
@@ -633,7 +721,8 @@ class ProcessOps:
             Operation(
                 "stop_process",
                 "Stop one program the owner named, by a PID find_processes listed in this "
-                "request; never any other. force=true only if the owner asks to force it.",
+                "request; never any other. Refused when the request also read outside text (a "
+                "page, a file, a picture). force=true only if the owner asks to force it.",
                 {
                     "type": "object",
                     "properties": {
@@ -654,4 +743,8 @@ class ProcessOps:
 
 def _stop_summary(args: dict[str, Any]) -> str:
     verb = "force-stop" if args.get("force") else "stop"
-    return f"{verb} {args.get('program', 'a program')} (PID {args.get('pid')})"
+    target = f"{verb} {args.get('program', 'a program')} (PID {args.get('pid')})"
+    window = args.get("window")
+    if window:
+        return f'{target}, all its windows, including the one titled "{window}"'
+    return target

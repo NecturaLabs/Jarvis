@@ -44,10 +44,16 @@ class Request:
 
     Each request is its own object, equal only to itself, so an operation can keep what it showed
     the owner in one request and refuse to act on it in another. `foreign` says the request was
-    heard in PC audio, not from the owner.
+    heard in PC audio, not from the owner. `outside` holds the origins of the outside text that
+    came into the request so far (`"memory"` for outside text it remembers).
     """
 
     foreign: bool
+    outside: set[str] = field(default_factory=set[str])
+
+    def saw(self, origin: str) -> None:
+        """Note that text of `origin` came into the request."""
+        self.outside.add(origin)
 
 
 _CURRENT: ContextVar[Request | None] = ContextVar("jarvis_request", default=None)

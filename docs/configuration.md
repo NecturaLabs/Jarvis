@@ -393,10 +393,18 @@ ask for one. Jarvis says whether it ended within 3 seconds.
 In code, whatever the model says:
 
 - `stop_process` takes only a PID that `find_processes` listed in the same request, never a name or pattern.
-- A request heard in PC audio stops nothing, even with the key pressed and questions bypassed.
+- A request heard in PC audio stops nothing, even with the key pressed and questions bypassed. Nor does
+  a request that also read outside text (a web page, a file, a picture, Spotify names, or such text
+  remembered from earlier): ask again in a request of its own.
+- A program matched only by one window's title (a browser tab's, say) is marked so, and the question
+  names that title and says all its windows close.
 - Only your own processes are listed. Never listed or stopped: PID 1, kernel threads, other users'
-  processes and set-user-ID programs, Jarvis and the terminal or shell it runs in, the processes that
-  started the desktop session, login shells, the `jarvis` and `jarvis-strata` services, and `systemd`,
-  D-Bus, PipeWire, WirePlumber, Hyprland, Xwayland, `uwsm`, the bar (`waybar`, Omarchy's `quickshell`),
-  `hyprlock`, `hypridle`, Voxtype and Strata. The list, with the reason for each, is in
-  `src/jarvis/pc/processes.py`.
+  processes and set-user-ID programs, processes another user started (or whose parent cannot be seen) and
+  those in the login session's own scope (`session-N.scope`), Jarvis and the terminal or shell it runs in,
+  the processes that started the desktop session, login shells, the `jarvis` and `jarvis-strata`
+  services, and `systemd`, D-Bus, PipeWire, WirePlumber, Hyprland, Xwayland, `uwsm`, the bar (`waybar`,
+  Omarchy's `quickshell`), `hyprlock`, `hypridle`, the desktop portals, the keyring, the polkit agent,
+  `dconf-service`, the accessibility bus, `gvfs*`, `mako`, `swayosd-server`, `hyprsunset`, `walker`,
+  `elephant`, `fcitx5`, Omarchy's own `omarchy-*` helpers, Voxtype and Strata. A name is checked in full
+  (a program's executable, or a script's file name), not only its first 15 characters. The list, with the
+  reason for each, is in `src/jarvis/pc/processes.py`.
