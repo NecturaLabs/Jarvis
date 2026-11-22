@@ -4,6 +4,7 @@ import pytest
 
 from jarvis import calc
 from jarvis.calc import CalcError, evaluate, operations
+from jarvis.config import CalcConfig
 from jarvis.operations import ArgumentError, validate_args
 from jarvis.policy import OpClass
 
@@ -26,7 +27,11 @@ from jarvis.policy import OpClass
         ("17 % 5", "2"),
         ("(3 + 4) * 2", "14"),
         ("3 + 4 * 2", "11"),
-        ("1,234 + 1", "1235"),  # thousands separators as people say them
+        ("max(5,100)", "100"),  # a comma between arguments is never a thousands separator
+        ("log(1000,10)", "3"),
+        ("log(10 ** 400, 10)", "400"),
+        ("7 % -3", "-2"),  # % before a signed number is the remainder
+        ("10 ** 5000 / 10 ** 4999", "10"),
         ("1e3 + 1", "1001"),
         ("sqrt(144)", "12"),
         ("sqrt(2)", "1.414213562"),
@@ -109,6 +114,27 @@ def test_a_sum_too_big_to_work_out_is_refused_at_once(expression: str) -> None:
         evaluate(expression)
 
 
+@pytest.mark.parametrize("expression", ["1,234 + 1", "1,000"])
+def test_a_number_written_with_thousands_commas_is_refused(expression: str) -> None:
+    # Requirement changed (review): a comma always separates arguments, so the model writes 1234.
+    with pytest.raises(CalcError):
+        evaluate(expression)
+
+
+@pytest.mark.parametrize(
+    ("expression", "value"),
+    [("3 * 10 ** 5000", "3e+5000"), ("10 ** 400 / 3", "3.333333333e+399")],
+)
+def test_an_answer_past_python_s_own_limits_is_still_given(expression: str, value: str) -> None:
+    assert evaluate(expression) == value
+
+
+@pytest.mark.parametrize("expression", ["1e400", "sqrt(2 * 10 ** 700)"])
+def test_a_float_too_big_says_so(expression: str) -> None:
+    with pytest.raises(CalcError, match="too big"):
+        evaluate(expression)
+
+
 def test_a_very_large_or_small_answer_is_given_in_powers_of_ten() -> None:
     assert evaluate("10 ** 30") == "1e+30"
     assert evaluate("2 ** 100") == "1.2676506e+30"
@@ -124,13 +150,37 @@ def test_the_operation_is_a_safe_pure_read() -> None:
     assert op.outbound is False
 
 
-def test_the_operation_answers_with_the_sum_and_its_value() -> None:
+def test_the_operation_answers_with_the_sum_and_its_value_in_groups_of_three() -> None:
     (op,) = operations()
 
     result = op.run({"expression": "48 * 31"})
 
     assert result.ok
-    assert result.text == "48 * 31 = 1488"
+    assert result.text == "48 * 31 = 1,488"
+
+
+@pytest.mark.parametrize(
+    ("separator", "expression", "shown"),
+    [
+        (",", "1234567.25 * 2", "2,469,134.5"),
+        (",", "-1000000", "-1,000,000"),
+        (",", "999", "999"),
+        (",", "10 ** 30", "1e+30"),
+        (" ", "1234567", "1 234 567"),
+        ("'", "1234567", "1'234'567"),
+        ("", "1234567", "1234567"),
+    ],
+)
+def test_the_thousands_separator_is_the_one_configured(
+    separator: str, expression: str, shown: str
+) -> None:
+    (op,) = operations(CalcConfig.model_validate({"thousands_separator": separator}))
+
+    assert op.run({"expression": expression}).text == f"{expression} = {shown}"
+
+
+def test_the_separator_is_a_comma_unless_set() -> None:
+    assert CalcConfig().thousands_separator == ","
 
 
 def test_the_operation_reports_an_impossible_sum_as_a_failure() -> None:

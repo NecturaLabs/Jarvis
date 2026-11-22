@@ -222,7 +222,7 @@ def channel_registry(
             *spotify,
             *web_operations(web, chat_pictures() if channel == "chat" else None),
             *pc_operations(config, limits),
-            *calc.operations(),
+            *calc.operations(config.calc),
             *([skills.skill_operation(shipped)] if shipped else []),
             no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
         ]

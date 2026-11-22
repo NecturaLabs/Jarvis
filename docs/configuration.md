@@ -312,6 +312,12 @@ be spoken over.
 | `tone` | calm, warm, to the point, with a light touch of dry wit | How it speaks. |
 | `addendum` | empty | Your own extra instructions, added to the system prompt. |
 
+## `[calc]`
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `thousands_separator` | `","` | `","`, `" "`, `"'"`, `""` | What the calculator puts between groups of three digits of an answer's whole part: 48 times 31 is 1,488. `""` writes none. An answer of more than 20 digits is given in powers of ten without groups. |
+
 ## `[clock]`
 
 | Key | Default | Allowed | What it does |

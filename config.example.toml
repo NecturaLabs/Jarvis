@@ -113,6 +113,10 @@ addendum = ""
 [clock]
 twelve_hour = true
 
+# How the calculator writes answers: "," (1,488), " ", "'" or "" for none.
+[calc]
+thousands_separator = ","
+
 # Your home, for weather that names no place: a place name such as "Lisbon", or
 # coordinates = [38.72, -9.14] for an exact point (then no lookup is sent).
 [weather]

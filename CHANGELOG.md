@@ -99,7 +99,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - `calculate`: Jarvis works out sums in code, exactly, however you ask ("how much is 48 times 31", "what
   percentage is 30 out of 120", "15 percent of 80", powers, roots, logarithms, factorials), and says the
   answer; the model never does the arithmetic itself. To make room for it, the chat's `chat.memory_tokens`
-  default is 11,000 instead of 11,500.
+  default is 11,000 instead of 11,500 (the tool took 80 tokens of its room). Answers come in groups of three
+  (1,488); `calc.thousands_separator` sets the separator, or none.
 - `audio.vad_neg_threshold`: once speech has started it goes on while the probability stays above this
   (default: `vad_threshold` less 0.15, Silero's own margin), so a breath inside a sentence no longer ends a
   request early. A request after the wake word, from the mic or PC audio, needs 0.15 s of speech, so a click

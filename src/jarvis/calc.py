@@ -12,10 +12,11 @@ hang Jarvis or fill its memory.
 import ast
 import math
 import re
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
+from jarvis.config import CalcConfig
 from jarvis.operations import Operation, Result
 
 if TYPE_CHECKING:
@@ -95,14 +96,21 @@ def _log(x: Number, base: Number | None = None) -> Number:
         exact = _exact_log(x, base)
         if exact is not None:
             return exact
+    if isinstance(x, Fraction) and (base is None or isinstance(base, Fraction)):
+        return _real(_ln(x) / (1.0 if base is None else _ln(base)))
     if base is None:
         return _float_call(math.log, x)
     return _float_call(math.log, x, base)
 
 
+def _ln(x: Fraction) -> float:
+    """The natural logarithm of a positive fraction of any size (math.log takes big integers)."""
+    return math.log(x.numerator) - math.log(x.denominator)
+
+
 def _exact_log(x: Fraction, base: Fraction) -> Fraction | None:
     """Return the logarithm when it is a whole number (log10 of 1000 is exactly 3)."""
-    guess = round(math.log(float(x), float(base)))
+    guess = round(_ln(x) / _ln(base))
     if abs(guess) <= MAX_EXPONENT and base**guess == x:
         return Fraction(guess)
     return None
@@ -253,6 +261,9 @@ def _constant(value: object) -> Number:
         raise CalcError(msg)
     if isinstance(value, int):
         return _checked(Fraction(value))
+    if math.isinf(value):
+        msg = "the number is too big to work out"
+        raise CalcError(msg)
     return _checked(Fraction(repr(value)))  # 0.1 is one tenth, as written
 
 
@@ -297,8 +308,7 @@ def _postfix_factorials(text: str) -> str:
 
 
 _NUMBER = r"\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
-_PERCENT = re.compile(rf"({_NUMBER})\s*%(?!\s*[\d(.])")  # 15% is a fifteenth part; 17 % 5 is mod
-_THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+_PERCENT = re.compile(rf"({_NUMBER})\s*%(?!\s*[-+\d(.])")  # 15% is a fifteenth part; 17 % 5 is mod
 _SPOKEN = {  # signs as people type or paste them
     "\u00d7": "*",  # multiplication sign
     "\u00b7": "*",  # middle dot
@@ -314,7 +324,6 @@ def _normalised(expression: str) -> str:
     for said, written in _SPOKEN.items():
         text = text.replace(said, written)
     text = re.sub(r"\bmod\b", "%", text)
-    text = _THOUSANDS.sub("", text)
     text = _PERCENT.sub(r"(\1/100)", text)
     return _postfix_factorials(text)
 
@@ -351,10 +360,13 @@ def _parse(expression: str) -> ast.expr:
 
 def _shown(value: Number) -> str:
     """Return the answer as people write it: whole, or to ten significant digits."""
-    if isinstance(value, Fraction) and value.denominator == 1:
-        if len(str(abs(value.numerator))) <= EXACT_DIGITS:
+    if isinstance(value, Fraction):
+        if value.denominator == 1 and abs(value.numerator) < 10**EXACT_DIGITS:
             return str(value.numerator)
-        text = format(Decimal(value.numerator), f".{SIGNIFICANT}g")
+        with localcontext() as exact:  # Decimal, not str or float: no size limit of either
+            exact.prec = SIGNIFICANT + 5
+            quotient = Decimal(value.numerator) / Decimal(value.denominator)
+        text = format(quotient, f".{SIGNIFICANT}g")
     else:
         number = float(value)
         if number.is_integer() and abs(number) < 10**EXACT_DIGITS:
@@ -366,6 +378,15 @@ def _shown(value: Number) -> str:
     return f"{mantissa}e{power}" if power else mantissa
 
 
+def _grouped(text: str, separator: str) -> str:
+    """Put `separator` between groups of three digits in the whole part of `text`."""
+    if not separator or "e" in text:
+        return text
+    sign, digits = ("-", text[1:]) if text.startswith("-") else ("", text)
+    whole, point, fraction = digits.partition(".")
+    return f"{sign}{int(whole):,}".replace(",", separator) + point + fraction
+
+
 def evaluate(expression: str) -> str:
     """Work out `expression` and return the answer as text.
 
@@ -375,27 +396,34 @@ def evaluate(expression: str) -> str:
     """
     try:
         return _shown(_value(_parse(expression)))
+    except CalcError:
+        raise
     except RecursionError as exc:
         msg = "the expression is too long"
         raise CalcError(msg) from exc
+    except (OverflowError, ValueError) as exc:  # a float past its range, or a Python size limit
+        msg = "the answer is too big to work out"
+        raise CalcError(msg) from exc
 
 
-def _calculate(args: dict[str, Any]) -> Result:
-    expression = str(args["expression"]).strip()
-    try:
-        value = evaluate(expression)
-    except CalcError as exc:
-        return Result(f"cannot work out {expression!r}: {exc}", ok=False)
-    return Result(f"{expression} = {value}")
+def operations(config: CalcConfig | None = None) -> list[Operation]:
+    """Return `calculate`, writing answers as `config` says (groups of three by default)."""
+    separator = (config or CalcConfig()).thousands_separator
 
+    def calculate(args: dict[str, Any]) -> Result:
+        expression = str(args["expression"]).strip()
+        try:
+            value = evaluate(expression)
+        except CalcError as exc:
+            return Result(f"cannot work out {expression!r}: {exc}", ok=False)
+        return Result(f"{expression} = {_grouped(value, separator)}")
 
-def operations() -> list[Operation]:
-    """Return `calculate`."""
     return [
         Operation(
             "calculate",
             "Work out arithmetic exactly, instead of your own sums. Write the owner's words as an"
-            " expression: 48 * 31; 30 / 120 * 100 for a percentage; 15% * 80. Has // % ** ! sqrt"
+            " expression, numbers without commas: 48 * 31; 30 / 120 * 100 for a percentage;"
+            " 15% * 80; 100 * (1 - 20%) for 20 percent off. Has // % ** ! sqrt"
             " round(x, places) log(x, base) ln sin cos tan min max pi e.",
             {
                 "type": "object",
@@ -405,7 +433,7 @@ def operations() -> list[Operation]:
                 "required": ["expression"],
                 "additionalProperties": False,
             },
-            _calculate,
+            calculate,
             side_effect=False,
             spoken_summary=lambda args: f"work out {args.get('expression', 'that')}",
         )
