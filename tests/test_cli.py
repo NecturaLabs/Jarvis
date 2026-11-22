@@ -956,7 +956,30 @@ def test_the_run_shares_one_confirm_key_between_the_loop_and_the_socket(
     assert isinstance(key, ConfirmKey)
     (handler,) = served
     assert callable(handler)
-    waiting = key.arm("hash-a", "stop process 42")
+    waiting = key.arm("hash-a", "stop process 42", 30.0)
     assert waiting is not None
     waiting.armed_at -= 1  # heard a second ago
     assert handler("confirm") == {"confirmed": "stop process 42"}
+
+
+def test_jarvis_ask_with_yes_has_no_confirm_key(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `--yes` answers spoken questions only: a `strong` action is refused, as there is no key here.
+    seen: list[Hooks] = []
+
+    def handle(_text: str, hooks: Hooks) -> str:
+        seen.append(hooks)
+        return "I can't."
+
+    agent = types.SimpleNamespace(handle=handle)
+
+    def build(_cfg: object, **_kwargs: object) -> object:
+        return types.SimpleNamespace(agent=agent)
+
+    monkeypatch.setattr(cli, "build", build)
+
+    assert main(["ask", "--yes", "stop", "it"]) == 0
+
+    assert seen[0].confirm_key is None
+    assert "I can't." in capsys.readouterr().out

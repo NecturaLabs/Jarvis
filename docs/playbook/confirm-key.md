@@ -22,3 +22,10 @@ No shipped operation is `strong`, so make one `strong` for the test and put it b
 7. Put `spotify_pause` back (delete the line) and `jarvis restart`.
 
 Record the date and what was heard here.
+
+## Traps
+
+- A press while Jarvis is still saying "Press the confirm key" comes too soon: it holds the key off for
+  30 s. Wait for the question to end.
+- The socket refuses a press it cannot trace (a `/proc` it cannot read, for example under `hidepid=2`)
+  as "started by Jarvis": it fails closed.

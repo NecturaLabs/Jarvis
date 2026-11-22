@@ -1198,12 +1198,15 @@ class Agent:
         )
         return bypassed, {"consent": "bypassed", "would_need": decision.verdict.value}
 
-    def _question(self, op: Operation, args: dict[str, Any], turn: _Turn) -> str:
+    def _question(
+        self, op: Operation, args: dict[str, Any], turn: _Turn, *, grants: bool = True
+    ) -> str:
+        """Word the question; `grants` says a yes to PC audio lets it ask for more (not the key)."""
         summary = op.spoken_summary(args)
         if not turn.foreign:
             return f"Should I {summary}?"
         question = f"Someone on your PC audio asked me to {summary}. Should I?"
-        if self._grant_s <= 0:
+        if self._grant_s <= 0 or not grants:
             return question
         minute = 60
         if self._grant_s >= minute:
@@ -1276,7 +1279,7 @@ class Agent:
             return False
         turn.cues.settle()
         try:
-            approved = key(self._question(op, args, turn), digest) is True
+            approved = key(self._question(op, args, turn, grants=False), digest) is True
         except Exception:
             log.exception("the confirm key for %s could not be asked for", op.name)
             approved = False

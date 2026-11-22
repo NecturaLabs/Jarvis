@@ -1891,7 +1891,8 @@ def test_a_strong_operation_heard_in_pc_audio_still_needs_the_key_and_grants_not
     agent.handle("wipe", Hooks(confirm=_never_asked, confirm_key=key), Origin.PC_AUDIO)
     agent.handle("pause", Hooks(confirm=lambda q: asked.append(q) or False), Origin.PC_AUDIO)
 
-    assert key.asked[0][0].startswith("Someone on your PC audio asked me to do that.")
+    # The key grants PC audio nothing, so the question does not say a yes would.
+    assert key.asked[0][0] == "Someone on your PC audio asked me to do that. Should I?"
     assert len(asked) == 1  # the key's yes opened no window for PC audio
     assert counter.runs == [{"op": "wipe"}]
 

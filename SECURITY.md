@@ -83,7 +83,12 @@ did not confirm. What exists today and what is in scope:
   operations are refused. A confirmation is bound to the hash of one exact action and starts only after
   Jarvis has finished speaking. Anything but a clear yes is a no, and after one no in a request the owner is
   not asked again. Every request, decision and result is written to `audit.jsonl` (mode 0600, kept to 5 MiB
-  plus one rotated copy). The `strong` class (keybinding confirmation) is not built: such a call is refused.
+  plus one rotated copy). A `strong` action waits for the confirm key (`jarvis confirm`, bound to a key): one
+  press allows the one action asked about, once, within `audio.confirm_key_s`, and only through the voice
+  service's control socket (mode 0600, same user only). A spoken yes or the consent bypass never stands in
+  for it. A press from a program Jarvis started is refused as a best effort only: any program running as
+  the owner can run `jarvis confirm`, so the key guards against the model, not against code already
+  running on the owner's account.
 - **Spotify.** Login is OAuth Authorization Code with PKCE (S256), a validated `state` and a callback bound to
   `127.0.0.1`. There is no client secret. Tokens are kept in a mode 0600 file under `~/.local/state/jarvis/`
   and a token file that is a symbolic link, belongs to another user or is readable by others is refused.
@@ -95,5 +100,5 @@ did not confirm. What exists today and what is in scope:
   audio) to that folder, mode 0600, for debugging; leave it unset otherwise.
 
 Planned, not built yet (reports about them are out of scope until they exist): the web tools and the local
-SearXNG container, PC operations other than Spotify, and keybinding confirmation.
+SearXNG container, PC operations other than Spotify and files.
 [AGENTS.md](AGENTS.md) ("Boundaries") lists the security-sensitive code.

@@ -5,9 +5,11 @@ answers only processes of the same user (`SO_PEERCRED`). Each connection carries
 (`{"command": "status"}`) and gets one JSON line back. The socket does nothing while nobody
 connects: its thread sleeps in `accept`.
 
-`confirm` is the confirm key (`confirmkey`), which allows a `strong` action. It is refused from
-any program Jarvis started, whatever operation started it (`started_by_jarvis`), so nothing the
-model sets running can press the key for it.
+`confirm` is the confirm key (`confirmkey`), which allows a `strong` action. As a best effort it
+is refused from a program Jarvis started (`started_by_jarvis`: its descendants and, under systemd,
+its control group). That is no guarantee: a program can leave both (a `systemd-run --user` unit,
+`hyprctl dispatch exec`), and any program running as the owner can run `jarvis confirm`. An
+operation that starts programs must not let the model start them that way (#19).
 
 The public state, which the Omarchy bar reads (#14), is one of `STATES`.
 """
@@ -70,6 +72,7 @@ class _Mic(Protocol):
 
 class _Key(Protocol):
     def press(self) -> dict[str, str | None]: ...
+    def cancel(self) -> None: ...
 
 
 NO_KEY = "this Jarvis has no confirm key"
@@ -178,6 +181,8 @@ class Controls:
                 return self._resume()
             case "hush":
                 self._loop.hush()
+                if self._keys is not None:
+                    self._keys.cancel()  # a press after the hush finds nothing waiting
                 self._audit.record("control", command="hush")
                 return {}
             case "confirm":
@@ -198,6 +203,8 @@ class Controls:
 
     def _pause(self) -> dict[str, Any]:
         self._loop.hush()
+        if self._keys is not None:
+            self._keys.cancel()
         with self._commands:  # a pause and a resume arriving together are taken in turn
             changed = self._mic.pause()
             self._pauses += changed

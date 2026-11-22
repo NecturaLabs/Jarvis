@@ -210,7 +210,7 @@ def _tool_call(entry: dict[str, object]) -> _Line:
             False,
             f"{gist} · needs your confirm key" if gist else "needs your confirm key",
         )
-    if verdict in {"deny", "strong"}:
+    if verdict == "deny":
         return "warn", f"{action} refused: {_plain(entry.get('reason', ''))}", False, ""
     return "step", action, False, gist
 
@@ -326,9 +326,10 @@ _KEY_LINES: dict[str, _Line] = {
     "pressed": ("detail", "the confirm key was pressed", True, ""),
     "nothing waiting": ("warn", "the confirm key was pressed when nothing was waiting", False, ""),
     "too soon": ("warn", "the confirm key came too soon to answer the question", True, ""),
-    "spoiled": ("warn", "the confirm key came again after a press that was too soon", True, ""),
     "held off": ("warn", "held off: a stray confirm key press came less than 30 s ago", True, ""),
     "busy": ("warn", "another action was already waiting for the confirm key", True, ""),
+    "cancelled": ("detail", "the wait for the confirm key was cancelled", True, ""),
+    "ended": ("detail", "stopped waiting for the confirm key", True, ""),
 }
 
 _CONTROL_LINES = {

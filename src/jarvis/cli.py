@@ -834,7 +834,10 @@ def cmd_confirm(_args: argparse.Namespace) -> int:
     if not isinstance(confirmed, str):
         print(f"jarvis: {reply.get('reason', 'nothing was confirmed')}")
         return 1
-    print(f'jarvis: confirmed: "{confirmed}"')
+    shown = "".join(
+        ch if ch.isprintable() else " " for ch in confirmed
+    )  # the model chose its words
+    print(f'jarvis: confirmed: "{shown}"')
     return 0
 
 

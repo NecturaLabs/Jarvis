@@ -78,7 +78,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - `jarvis confirm`, the confirm key: bind it to a key, and a `strong` action runs only after you press it.
   Jarvis says what it is about to do, then "Press the confirm key to allow it", and waits
   `audio.confirm_key_s` (30 s). One press allows that one action, once; a spoken yes never does. A press
-  with nothing waiting holds the key off for 30 s, and a press from a program Jarvis started is refused.
+  with nothing waiting holds the key off for 30 s, and, as a best effort, a press from a program Jarvis
+  started is refused.
   Only spoken requests can use it: the chat window and `jarvis ask` still refuse `strong` actions.
 
 - `jarvis pause` lets go of the microphone and, once the request in flight has ended, frees the model;

@@ -866,6 +866,9 @@ class Key:
         self.presses += 1
         return self.reply
 
+    def cancel(self) -> None:
+        pass
+
 
 def test_confirm_presses_the_confirm_key() -> None:
     key = Key({"confirmed": "stop process 42"})
@@ -873,6 +876,26 @@ def test_confirm_presses_the_confirm_key() -> None:
 
     assert controls("confirm") == {"confirmed": "stop process 42"}
     assert key.presses == 1
+
+
+class CancellableKey(Key):
+    def __init__(self) -> None:
+        super().__init__({"confirmed": None})
+        self.cancels = 0
+
+    @override
+    def cancel(self) -> None:
+        self.cancels += 1
+
+
+@pytest.mark.parametrize("command", ["hush", "pause"])
+def test_hush_and_pause_end_a_wait_for_the_confirm_key(command: str) -> None:
+    key = CancellableKey()
+    controls = control.Controls(Loop("confirm"), Mic(), Model(), keys=key, background=Later())
+
+    controls(command)
+
+    assert key.cancels == 1
 
 
 def test_confirm_without_a_confirm_key_confirms_nothing() -> None:

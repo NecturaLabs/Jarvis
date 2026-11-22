@@ -362,13 +362,16 @@ in `~/.config/hypr/bindings.lua`, for example:
 o.bind("SUPER + CTRL + Y", "Jarvis confirm", "jarvis confirm")
 ```
 
-- One press allows the one action Jarvis asked about, once. Not pressing, saying "Hey Jarvis", `jarvis
-  hush` or `jarvis pause` is no. A spoken yes never counts.
-- A press while nothing waits, or one sooner than 0.3 s after the question ended, allows nothing and
-  holds the key off for 30 s, so a program pressing it over and over cannot catch a question. Jarvis
-  says so if it was about to ask.
-- The key works only through the control socket of the voice service, and never from a program Jarvis
-  started: such a press is refused and audited. The chat window and `jarvis ask` have no confirm key,
-  so they refuse a `strong` action.
+- One press allows the one action Jarvis asked about, once. Not pressing in time, saying "Hey Jarvis",
+  `jarvis hush` or `jarvis pause` is no; a press after any of them finds nothing waiting. A spoken yes
+  never counts. The wait is timed on the boot clock, so a suspend does not leave it open.
+- Press once the question has ended. A press while nothing waits, or one sooner than 0.3 s after the
+  question ended, allows nothing and holds the key off for 30 s, so a program pressing it over and over
+  cannot catch a question. Jarvis says so if it was about to ask.
+- The key works only through the control socket of the voice service. As a best effort, a press from a
+  program Jarvis started is refused and audited. It is no guarantee: any program running as you can run
+  `jarvis confirm`, so the key keeps the model (and what it reads) from acting alone, not malware already
+  on your account. The chat window and `jarvis ask` (even with `--yes`) have no confirm key, so they
+  refuse a `strong` action.
 - Each press, refused or not, is in the audit log (`confirm_key`), and the answer is a `confirmation`
   event with `"method": "key"`.
