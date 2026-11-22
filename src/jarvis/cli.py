@@ -35,7 +35,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-WAKE_MODEL = "wake/hey_jarvis.onnx"
+WAKE_DIR = "wake"
+WAKE_SUFFIX = ".onnx"
 VAD_MODEL = "vad/silero_vad.onnx"
 AZURE_PYTHON = "azure-wake/venv/bin/python"
 AZURE_CHECK_S = 30.0
@@ -55,6 +56,19 @@ def _azure_files(cfg: config.Config) -> tuple[Path, Path]:
     return model, python
 
 
+def wake_files(cfg: config.Config) -> list[Path]:
+    """Return the model file of each wake word `audio.wake_words` turns on."""
+    folder = cfg.data_dir / WAKE_DIR
+    return [folder / f"{name}{WAKE_SUFFIX}" for name in cfg.audio.wake_words]
+
+
+def livekit_wake(cfg: config.Config) -> WakeWord:
+    """Return LiveKit's detector for the wake words that are on (it skips any unusable file)."""
+    from jarvis.audio import WakeWord  # ruff: ignore[import-outside-top-level]
+
+    return WakeWord(wake_files(cfg), cfg.audio.wake_threshold)
+
+
 def wake_word(cfg: config.Config) -> WakeWord | FallbackWake:
     """Return the wake word detector `audio.wake_engine` names.
 
@@ -65,12 +79,11 @@ def wake_word(cfg: config.Config) -> WakeWord | FallbackWake:
         AudioError,
         AzureWake,
         FallbackWake,
-        WakeWord,
         azure_wake_command,
     )
 
     def livekit() -> WakeWord:
-        return WakeWord(cfg.data_dir / WAKE_MODEL, cfg.audio.wake_threshold)
+        return livekit_wake(cfg)
 
     if cfg.audio.wake_engine == "azure":
         model, python = _azure_files(cfg)
@@ -96,6 +109,19 @@ def _app_names(value: str) -> list[str]:
     names = [name.strip() for name in value.split(",")]
     if not all(names):
         msg = "name at least one app and no empty names (to hear all PC audio use --all-output)"
+        raise argparse.ArgumentTypeError(msg)
+    return names
+
+
+def _wake_names(value: str) -> list[str]:
+    """Return the model names of a comma-separated `--words` value.
+
+    Raises:
+        argparse.ArgumentTypeError: a name is empty.
+    """
+    names = [name.strip().removesuffix(WAKE_SUFFIX) for name in value.split(",")]
+    if not all(names):
+        msg = "name at least one wake word model and no empty names"
         raise argparse.ArgumentTypeError(msg)
     return names
 
@@ -154,6 +180,15 @@ def build_parser() -> argparse.ArgumentParser:
         "engine", nargs="?", choices=["livekit", "azure"], help="omit to show the setting"
     )
     wake.add_argument("--model", metavar="FILE", help="the Azure custom keyword .table file")
+    wake.add_argument(
+        "--words",
+        type=_wake_names,
+        metavar="NAME,...",
+        help=(
+            "LiveKit wake word models to listen for, by file name without .onnx, "
+            "e.g. hey_jarvis,yo_jarvis"
+        ),
+    )
     consent = sub.add_parser(
         "consent", help="whether Jarvis asks before acting (bypass: never asks; ask: asks first)"
     )
@@ -425,7 +460,6 @@ def _speaker(cfg: config.Config) -> Speaker:
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
         OwnVoiceCheck,
         Speaker,
-        WakeWord,
         make_synthesizer,
     )
 
@@ -433,7 +467,7 @@ def _speaker(cfg: config.Config) -> Speaker:
     own_wake = None
     if cfg.audio.barge_in:
         own_wake = OwnVoiceCheck(
-            WakeWord(data / WAKE_MODEL, cfg.audio.wake_threshold),
+            livekit_wake(cfg),
             WAKE_NAME if cfg.audio.wake_engine == "azure" else None,
         )
     synthesizer = make_synthesizer(
@@ -574,7 +608,7 @@ def _model_files(cfg: config.Config) -> list[tuple[str, Path]]:
     """Return the (role, file) pairs the doctor can check against a known release."""
     from jarvis.audio import KOKORO_PREFIX, voice_files  # ruff: ignore[import-outside-top-level]
 
-    found = [("wake", cfg.data_dir / WAKE_MODEL), ("vad", cfg.data_dir / VAD_MODEL)]
+    found = [*(("wake", path) for path in wake_files(cfg)), ("vad", cfg.data_dir / VAD_MODEL)]
     if cfg.audio.voice.startswith(KOKORO_PREFIX):
         model, voices = voice_files(cfg.data_dir, cfg.audio.voice)
         found += [("kokoro-model", model), ("kokoro-voices", voices)]
@@ -681,8 +715,8 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     cfg = _load()
     from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level]
 
+    wake_check, wake_notes = _wake_checks(cfg)
     files = [
-        cfg.data_dir / WAKE_MODEL,
         cfg.data_dir / VAD_MODEL,
         *voice_files(cfg.data_dir, cfg.audio.voice),
     ]
@@ -692,6 +726,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         (paths.config_file().exists(), f"config {paths.config_file()}", "run jarvis setup"),
         (bool(cfg.spotify.client_id), "Spotify client ID", "jarvis setup --spotify-client-id <id>"),
         _spotify_login(cfg),
+        wake_check,
         *((f.exists(), f"file {f}", "see docs/models.md") for f in files),
         *unreadable,
         *_whisper_model(cfg),
@@ -716,9 +751,33 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     ]
     for ok, what, fix in checks:
         print(f"{'ok ' if ok else 'FAIL'} {what}" + ("" if ok else f"  -> {fix}"))
-    for line in release_lines:
+    for line in [*wake_notes, *release_lines]:
         print(line)
     return 0 if all(ok for ok, _, _ in checks) else 1
+
+
+def _wake_checks(cfg: config.Config) -> tuple[tuple[bool, str, str], list[str]]:
+    """Return the check that a wake word that is on has its model file, and notes for the rest.
+
+    Jarvis listens with the models it finds, so only having none fails; a phrase that is on but
+    not trained yet is a note.
+    """
+    files = wake_files(cfg)
+    folder = cfg.data_dir / WAKE_DIR
+    found = [path for path in files if path.is_file()]
+    names = ", ".join(path.stem for path in found)
+    check = (
+        bool(found),
+        f"wake word files ({names})" if found else f"wake word files: none found in {folder}",
+        "see docs/models.md",
+    )
+    notes = [
+        f"note: wake word {path.stem} is on but has no file {path}; train it (docs/models.md) "
+        "or drop it with `jarvis wake --words`"
+        for path in files
+        if path not in found
+    ]
+    return check, notes
 
 
 def _source_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
@@ -1104,12 +1163,21 @@ def cmd_wake(args: argparse.Namespace) -> int:
         update["wake_engine"] = args.engine
     if args.model is not None:
         update["azure_keyword_model"] = str(Path(args.model).expanduser().resolve())
+    if args.words is not None:
+        update["wake_words"] = args.words
     if not update:
         print(f"wake word: {_wake_summary(cfg.audio)}")
+        _print_wake_models(cfg)
         return 0
     new = cfg.model_copy(update={"audio": cfg.audio.model_copy(update=update)})
-    config.save(config.Config.model_validate(new.model_dump()))
+    try:
+        new = config.Config.model_validate(new.model_dump())
+    except ValueError as exc:
+        print(f"jarvis: wake value refused: {exc}", file=sys.stderr)
+        return 2
+    config.save(new)
     print(f"wake word: {_wake_summary(new.audio)}")
+    _print_wake_models(new)
     if new.audio.wake_engine == "azure" and not Path(new.audio.azure_keyword_model).is_file():
         print(
             "no Azure keyword model file found: Jarvis listens with LiveKit's until "
@@ -1122,7 +1190,21 @@ def cmd_wake(args: argparse.Namespace) -> int:
 def _wake_summary(audio: config.AudioConfig) -> str:
     if audio.wake_engine == "azure":
         return f"Azure keyword model {audio.azure_keyword_model or '(not set)'}"
-    return f"LiveKit hey_jarvis (threshold {audio.wake_threshold})"
+    return f"LiveKit {', '.join(audio.wake_words)} (threshold {audio.wake_threshold})"
+
+
+def _print_wake_models(cfg: config.Config) -> None:
+    """List each LiveKit wake word model: on or off, and any that is on but has no file."""
+    folder = cfg.data_dir / WAKE_DIR
+    found = sorted(
+        path.stem
+        for path in folder.glob(f"*{WAKE_SUFFIX}")
+        if path.is_file() and re.fullmatch(config.WAKE_WORD_PATTERN, path.stem)
+    )
+    for name in sorted({*found, *cfg.audio.wake_words}):
+        state = "on" if name in cfg.audio.wake_words else "off"
+        missing = "" if name in found else f" (no file {folder / name}{WAKE_SUFFIX})"
+        print(f"  {state:3} {name}{missing}")
 
 
 def cmd_overview(args: argparse.Namespace) -> int:

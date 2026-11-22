@@ -569,22 +569,42 @@ class PausableMic:
 
 
 class WakeWord:
-    """LiveKit's `hey_jarvis` streaming model."""
+    """LiveKit streaming wake word models, one per phrase, heard side by side."""
 
-    def __init__(self, model_path: Path, threshold: float) -> None:
-        """Load the model file."""
+    def __init__(self, model_paths: Sequence[Path], threshold: float) -> None:
+        """Load the model files, leaving out with a warning any that is missing or unusable.
+
+        One bad file (missing, half copied, not a streaming model) must not leave Jarvis deaf to
+        the others; only when none loads is the last error (an `OSError` or `ValueError`) raised,
+        as it would be for a single model.
+        """
         super().__init__()
         from livekit.wakeword import WakeWordModel  # ruff: ignore[import-outside-top-level] - heavy import, only when listening
 
-        self._model = WakeWordModel(models=[model_path], sess_options=quiet_session_options())
+        self._model = WakeWordModel(sess_options=quiet_session_options())
+        error: OSError | ValueError | None = None
+        loaded = 0
+        for path in model_paths:
+            try:
+                self._model.load_model(path)
+            except (OSError, ValueError) as exc:
+                log.warning(
+                    "wake word model %s cannot be used (%s); not listening for it", path, exc
+                )
+                error = exc
+            else:
+                loaded += 1
+        if not loaded and error is not None:
+            raise error
         self._threshold = threshold
 
     def heard(self, frame: NDArray[np.int16]) -> bool:
-        """Feed one frame; return True when the wake phrase was detected."""
+        """Feed one frame; return True when any of the wake phrases was detected."""
         scores = self._model.predict(frame)
-        score = max(scores.values(), default=0.0)
+        name = max(scores, key=scores.__getitem__, default="")
+        score = scores.get(name, 0.0)
         if score >= self._threshold:
-            log.info("wake word score %.2f (threshold %.2f)", score, self._threshold)
+            log.info("wake word %s score %.2f (threshold %.2f)", name, score, self._threshold)
             self._model.reset()
             return True
         return False

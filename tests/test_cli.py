@@ -251,7 +251,7 @@ def test_doctor_still_fails_a_missing_file_and_points_at_the_models_doc(
 
     out = _doctor_lines(capsys)
     assert any(
-        line.startswith("FAIL") and "hey_jarvis.onnx" in line and "see docs/models.md" in line
+        line.startswith("FAIL wake word files: none found in ") and "see docs/models.md" in line
         for line in out
     )
     assert not any("docs/playbook" in line for line in out)
