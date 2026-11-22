@@ -16,6 +16,7 @@ here; `tools/check_docs.py` fails when one is not.
 | When each project practice was last audited | [playbook/practices-audit.md](playbook/practices-audit.md) |
 | What Jarvis does at a lock, suspend, lost microphone or missing model drive | [playbook/session-transitions.md](playbook/session-transitions.md) |
 | The confirm key's checks with the owner, stopping a program among them | [playbook/confirm-key.md](playbook/confirm-key.md) |
+| Training a wake word, benchmarking it and deploying it | [playbook/wake-training.md](playbook/wake-training.md) |
 | What to work on next | [GitHub Issues](https://github.com/NecturaLabs/Jarvis/issues), the only backlog |
 
 ## How far to trust each kind
