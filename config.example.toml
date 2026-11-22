@@ -33,7 +33,7 @@ max_tool_calls = 40
 max_seconds = 600.0
 reply_tokens = 2048
 tool_text_chars = 8000
-memory_tokens = 11500
+memory_tokens = 10800
 memory_idle_s = 0.0
 resume = true
 verbosity = "replies"
@@ -51,10 +51,11 @@ model_id = "qwen3.6-35b-a3b-ud-q4_k_xl"
 port = 8080
 context = 24576
 expert_vram_gib = 1.0
-prefill = 512
-idle_unload_s = 300
+prefill = 512  # a size in tokens (128 to 8192), or "auto" to leave it to Strata
+idle_unload_s = 86400
 reasoning_budget_tokens = 512
-memory_max = "40G"
+memory_max = "40G"  # MemoryHigh of the Strata unit; MemoryMax is 10% above it
+# vram_reserve_mib = 700  # VRAM left free for other programs (100 to 65536); unset: Strata's own default
 # vision_file = "/path/to/mmproj-F16.gguf"  # the model's picture reader; unset: no pictures
 vision_idle_s = 120
 
@@ -75,10 +76,12 @@ library_refresh_s = 21600.0
 source = ""
 wake_threshold = 0.5
 vad_threshold = 0.5
+vad_neg_threshold = 0.0
 no_speech_timeout_s = 4.0
 end_silence_s = 0.7
 max_utterance_s = 20.0
 confirm_window_s = 8.0
+confirm_key_s = 30.0
 barge_in = true
 listen_when_locked = true
 follow_up_s = 6.0
@@ -87,6 +90,7 @@ azure_keyword_model = ""
 azure_python = ""
 voice = "kokoro:bm_george"
 speech_speed = 1.0
+kokoro_phoneme_map = false
 transcribe_engine = ""
 transcribe_model = "small.en"
 transcribe_threads = 8
@@ -108,6 +112,10 @@ addendum = ""
 # twelve_hour = false says "15:42" instead of "3:42 PM".
 [clock]
 twelve_hour = true
+
+# How Jarvis writes numbers everywhere: "," (1,488), " ", "'" or "" for none.
+[format]
+thousands_separator = ","
 
 # Your home, for weather that names no place: a place name such as "Lisbon", or
 # coordinates = [38.72, -9.14] for an exact point (then no lookup is sent).

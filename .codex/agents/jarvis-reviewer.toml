@@ -9,7 +9,7 @@ and the `docs/adr/` records the diff touches first.
 Check, with file:line evidence for every finding:
 
 1. **Product rules** — no global instructions, skills, plugins or MCP loaded at runtime; no subagent or
-   delegation capability; voice replies only; Voxtype used only through its contract and its config untouched;
+   delegation capability; voice replies only; Voxtype driven only through the commands AGENTS.md lists and its config untouched;
    Strata health checks never generate.
 2. **Policy** — every new action is a typed operation with validated arguments and a class; unknown operations
    are refused; provenance is carried and cannot raise a class; confirmation is bound to the exact operation and

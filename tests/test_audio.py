@@ -1,11 +1,14 @@
 """Microphone stream handling and transcript parsing, without real audio devices."""
 
 import contextlib
+import json
 import os
 import queue
 import signal
 import subprocess
+import sys
 import threading
+import time
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,21 +22,27 @@ from jarvis.audio import (
     FRAME,
     VAD_CHUNK,
     VAD_CONTEXT,
+    VOXTYPE_FOLLOW,
     AppAudio,
     AudioError,
     Microphone,
     Speaker,
     Vad,
+    VoxtypeState,
+    VoxtypeWatch,
     WakeWord,
     app_record_command,
     app_stream_serials,
     capture_sources,
-    dictation_active,
+    installed_models,
     is_phantom,
     match_app_streams,
+    next_retry_wait,
     parse_transcript,
+    parse_voxtype_status,
     pw_record_command,
     screen_locked,
+    source_found,
     to_16k,
     transcribe,
     voxtype_command,
@@ -354,6 +363,53 @@ def test_capture_sources_names_what_feeds_one_process() -> None:
     graph = _graph(recorder_pid=1234, source_serial=42)
     assert capture_sources(graph, 1234) == ["42"]
     assert capture_sources(graph, 999) == []
+
+
+def _microphones() -> list[dict[str, object]]:
+    """What `pw-dump` lists for two microphones, a monitor of an output and a playback stream."""
+
+    def node(item_id: int, media_class: str, name: str) -> dict[str, object]:
+        props = {"media.class": media_class, "node.name": name, "object.serial": 100 + item_id}
+        return {"id": item_id, "type": "PipeWire:Interface:Node", "info": {"props": props}}
+
+    return [
+        node(10, "Audio/Source", "alsa_input.usb-Example_Mic-00.analog-stereo"),
+        node(11, "Audio/Source/Virtual", "effect_input.denoise"),
+        node(12, "Audio/Sink", "alsa_output.pci-0000_00_1f.3.analog-stereo"),
+        node(13, "Stream/Output/Audio", "Discord"),
+        {"id": 14, "type": "PipeWire:Interface:Link", "info": None},
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "alsa_input.usb-Example_Mic-00.analog-stereo",  # a node name
+        "110",  # an object serial
+        "effect_input.denoise",  # a virtual microphone
+    ],
+)
+def test_a_source_that_is_a_microphone_node_is_found(source: str) -> None:
+    assert source_found(_microphones(), source) is True
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "alsa_input.usb-Typo_Mic-00.analog-stereo",  # no such node
+        "alsa_output.pci-0000_00_1f.3.analog-stereo",  # a speaker, not a microphone
+        "Discord",  # a playback stream
+        "112",  # the serial of a speaker
+        "alsa_input.usb-Example",  # only part of a name
+    ],
+)
+def test_a_source_that_matches_no_microphone_node_is_not_found(source: str) -> None:
+    assert source_found(_microphones(), source) is False
+
+
+def test_nothing_is_found_in_a_graph_that_could_not_be_read() -> None:
+    assert source_found([], "alsa_input.usb-Example_Mic-00.analog-stereo") is False
+    assert source_found({"unexpected": "shape"}, "110") is False
 
 
 def _tone(byte: int) -> list[str]:
@@ -725,16 +781,36 @@ def test_a_piper_voice_speaks_at_the_configured_speed(
     assert getattr(setting, "length_scale", None) == pytest.approx(0.6)
 
 
-def _status(
-    stdout: bytes, returncode: int = 0
-) -> Callable[..., subprocess.CompletedProcess[bytes]]:
-    """A `voxtype status` that prints `stdout`, recording the command it was given."""
+@pytest.mark.parametrize("phoneme_map", [False, True])
+def test_a_kokoro_voice_is_given_the_phoneme_map_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, phoneme_map: bool
+) -> None:
+    from jarvis import kokoro  # ruff: ignore[import-outside-top-level] - only this test needs it
 
-    def run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        assert cmd == ["voxtype", "status", "--format", "json"]
-        return subprocess.CompletedProcess(cmd, returncode, stdout, b"")
+    made: list[dict[str, object]] = []
 
-    return run
+    class Kokoro:
+        def __init__(self, *_args: object, **options: object) -> None:
+            super().__init__()
+            made.append(options)
+
+        @staticmethod
+        def synthesize(_text: str) -> NDArray[np.int16]:
+            return np.zeros(0, dtype=np.int16)
+
+    monkeypatch.setattr(kokoro, "Kokoro", Kokoro)
+
+    audio_module.make_synthesizer(tmp_path, "kokoro:bm_george", 1.0, phoneme_map=phoneme_map)
+
+    assert made == [{"speed": 1.0, "phoneme_map": phoneme_map}]
+
+
+def _status_line(state: str, meeting: str | None = "idle") -> str:
+    """One line of `voxtype status --follow --format json --extended`."""
+    fields: dict[str, object] = {"text": "x", "alt": state, "class": state, "tooltip": "t"}
+    if meeting is not None:
+        fields.update(meeting_active=meeting != "idle", meeting_status=meeting)
+    return json.dumps(fields)
 
 
 @pytest.mark.parametrize(
@@ -749,33 +825,304 @@ def _status(
     ],
 )
 def test_dictation_is_read_from_voxtypes_status(state: str, dictating: bool) -> None:
-    out = f'{{"text": "x", "alt": "{state}", "class": "{state}", "tooltip": "t"}}'.encode()
-    assert dictation_active(run=_status(out)) is dictating
+    parsed = parse_voxtype_status(_status_line(state).encode())
 
-
-def test_no_daemon_means_no_dictation() -> None:
-    assert dictation_active(run=_status(b"", returncode=1)) is False
-
-
-@pytest.mark.parametrize("stdout", [b"", b"not json", b"[]", b'{"alt": 3}', b"{}"])
-def test_a_status_that_cannot_be_read_counts_as_dictating(stdout: bytes) -> None:
-    assert dictation_active(run=_status(stdout)) is True
+    assert parsed is not None
+    assert parsed.dictating is dictating
+    assert parsed.meeting is False
 
 
 @pytest.mark.parametrize(
-    "failure",
-    [
-        FileNotFoundError("voxtype"),
-        PermissionError("voxtype"),
-        subprocess.TimeoutExpired("voxtype", 2),
-    ],
-    ids=["missing", "not allowed", "timed out"],
+    ("meeting", "running"),
+    [("idle", False), ("recording", True), ("a-status-added-later", True), (None, False)],
 )
-def test_a_status_that_cannot_run_counts_as_dictating(failure: Exception) -> None:
-    def run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        raise failure
+def test_a_meeting_is_any_status_but_idle(meeting: str | None, running: bool) -> None:
+    parsed = parse_voxtype_status(_status_line("idle", meeting).encode())
 
-    assert dictation_active(run=run) is True
+    assert parsed == VoxtypeState(dictating=False, meeting=running)
+
+
+def test_a_meeting_is_seen_from_its_active_flag_alone() -> None:
+    parsed = parse_voxtype_status(b'{"class": "idle", "meeting_active": true}')
+
+    assert parsed == VoxtypeState(dictating=False, meeting=True)
+
+
+def test_a_meeting_is_seen_from_its_status_alone() -> None:
+    parsed = parse_voxtype_status(b'{"class": "idle", "meeting_status": "recording"}')
+
+    assert parsed == VoxtypeState(dictating=False, meeting=True)
+
+
+@pytest.mark.parametrize("stdout", [b"", b"not json", b"[]", b'{"alt": 3}', b"{}"])
+def test_a_status_that_cannot_be_read_is_unknown(stdout: bytes) -> None:
+    assert parse_voxtype_status(stdout) is None
+
+
+def test_the_status_is_followed_with_one_long_lived_command() -> None:
+    assert VOXTYPE_FOLLOW == ("voxtype", "status", "--follow", "--format", "json", "--extended")
+
+
+def _status_helper(*steps: str) -> list[str]:
+    """A stand-in for `voxtype status --follow`: each step is a line to print or `wait:<file>`."""
+    body = ["import os, sys, time"]
+    for step in steps:
+        if step.startswith("wait:"):
+            body.append(f"while not os.path.exists({step[5:]!r}): time.sleep(0.005)")
+        elif step.startswith("exit"):
+            body.append(f"sys.exit({step[4:] or 1})")
+        elif step == "sleep":
+            body.append("time.sleep(60)")
+        else:
+            body.append(f"print({step!r}, flush=True)")
+    return [sys.executable, "-I", "-c", "\n".join(body)]
+
+
+@pytest.fixture
+def watches() -> Iterator[Callable[..., VoxtypeWatch]]:
+    """Make watches that are started now and stopped when the test ends."""
+    made: list[VoxtypeWatch] = []
+
+    def make(command: list[str], **options: float) -> VoxtypeWatch:
+        watch = VoxtypeWatch(command, **options)
+        made.append(watch)
+        watch.start()
+        return watch
+
+    yield make
+    for watch in made:
+        watch.stop()
+
+
+def _eventually(check: Callable[[], bool]) -> bool:
+    end = time.monotonic() + 5.0
+    while time.monotonic() < end:
+        if check():
+            return True
+        threading.Event().wait(0.005)
+    return False
+
+
+def test_what_the_follower_prints_is_what_dictating_and_meeting_answer(
+    watches: Callable[..., VoxtypeWatch],
+) -> None:
+    dictation = watches(_status_helper(_status_line("recording"), "sleep"))
+    meeting = watches(_status_helper(_status_line("idle", "recording"), "sleep"))
+
+    assert _eventually(lambda: dictation.dictating() is True)
+    assert dictation.meeting() is False
+    assert _eventually(meeting.meeting)
+    assert meeting.dictating() is False
+
+
+def test_a_change_the_follower_prints_replaces_the_state(
+    watches: Callable[..., VoxtypeWatch], tmp_path: Path
+) -> None:
+    go = tmp_path / "go"
+    watch = watches(
+        _status_helper(_status_line("recording"), f"wait:{go}", _status_line("idle"), "sleep")
+    )
+
+    assert _eventually(lambda: watch.dictating() is True)
+    go.touch()
+    assert _eventually(lambda: watch.dictating() is False)
+
+
+def test_a_slow_status_never_blocks_the_voice_thread(
+    watches: Callable[..., VoxtypeWatch], tmp_path: Path
+) -> None:
+    # The old check ran `voxtype status` on the voice thread and waited for it; a daemon that is
+    # slow to answer held the loop (and the microphone's frames) for that long.
+    go = tmp_path / "go"
+    started = time.perf_counter()
+    watch = watches(_status_helper(f"wait:{go}", _status_line("recording"), "sleep"))
+
+    asked = [watch.dictating(), watch.meeting(), watch.dictating()]
+
+    assert time.perf_counter() - started < 1.0
+    assert asked == [None, False, None]  # not known yet: it is said, not waited for
+    go.touch()
+    assert _eventually(lambda: watch.dictating() is True)
+
+
+def test_a_line_that_cannot_be_read_makes_the_state_unknown_until_the_next_one(
+    watches: Callable[..., VoxtypeWatch], tmp_path: Path
+) -> None:
+    broke, mended = tmp_path / "broke", tmp_path / "mended"
+    watch = watches(
+        _status_helper(
+            _status_line("idle"),
+            f"wait:{broke}",
+            "garbage",
+            f"wait:{mended}",
+            _status_line("idle"),
+            "sleep",
+        )
+    )
+
+    assert _eventually(lambda: watch.dictating() is False)
+    broke.touch()
+    assert _eventually(lambda: watch.dictating() is None)
+    mended.touch()
+    assert _eventually(lambda: watch.dictating() is False)
+
+
+def test_a_status_command_that_cannot_start_leaves_the_state_unknown_and_is_tried_again(
+    watches: Callable[..., VoxtypeWatch], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tried: list[list[str]] = []
+
+    def refuse(command: list[str], **_options: object) -> object:
+        tried.append(command)
+        raise FileNotFoundError(command[0])
+
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+
+    watch = watches(["voxtype"], retry_s=0.01)
+
+    assert _eventually(lambda: len(tried) >= 3)
+    assert watch.dictating() is None
+
+
+def test_a_status_command_that_exits_is_started_again(
+    watches: Callable[..., VoxtypeWatch], tmp_path: Path
+) -> None:
+    seen = tmp_path / "seen"
+    script = (
+        "import os, sys, time\n"
+        f"if os.path.exists({str(seen)!r}):\n"
+        f"    print({_status_line('recording')!r}, flush=True); time.sleep(60)\n"
+        f"open({str(seen)!r}, 'w').close(); sys.exit(1)\n"
+    )
+
+    watch = watches([sys.executable, "-I", "-c", script], retry_s=0.01)
+
+    # The first run exited with an error; the second reports dictation.
+    assert _eventually(lambda: watch.dictating() is True)
+
+
+def test_a_status_command_that_exits_with_an_error_leaves_the_state_unknown(
+    watches: Callable[..., VoxtypeWatch], tmp_path: Path
+) -> None:
+    # Requirement changed (review of #29): with no daemon, the command prints `stopped` and
+    # keeps running, so one that exits is an older Voxtype or a crash, not "no dictation".
+    go = tmp_path / "go"
+    watch = watches(
+        _status_helper(_status_line("recording", "recording"), f"wait:{go}", "exit"), retry_s=60.0
+    )
+
+    assert _eventually(lambda: watch.dictating() is True)
+    go.touch()
+    assert _eventually(lambda: watch.dictating() is None)
+    assert watch.meeting() is False
+
+
+def test_a_status_command_that_ends_quietly_leaves_the_state_unknown(
+    watches: Callable[..., VoxtypeWatch], tmp_path: Path
+) -> None:
+    go = tmp_path / "go"
+    watch = watches(_status_helper(_status_line("recording"), f"wait:{go}", "exit0"), retry_s=60.0)
+
+    assert _eventually(lambda: watch.dictating() is True)
+    go.touch()
+    assert _eventually(lambda: watch.dictating() is None)
+
+
+def test_a_status_line_that_cannot_be_read_is_said_in_the_log_once(
+    watches: Callable[..., VoxtypeWatch],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    one, two = tmp_path / "one", tmp_path / "two"
+    watch = watches(
+        _status_helper(
+            "garbage", f"wait:{one}", "more garbage", f"wait:{two}", _status_line("idle"), "sleep"
+        )
+    )
+
+    assert _eventually(lambda: watch.dictating() is None and bool(caplog.records))
+    one.touch()
+    two.touch()
+    assert _eventually(lambda: watch.dictating() is False)  # both lines were read by then
+    warned = [r for r in caplog.records if "could not read Voxtype's status" in r.getMessage()]
+    assert len(warned) == 1
+
+
+def test_a_status_command_that_cannot_start_is_not_tried_again_at_once(
+    watches: Callable[..., VoxtypeWatch], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tried: list[list[str]] = []
+
+    def refuse(command: list[str], **_options: object) -> object:
+        tried.append(command)
+        raise FileNotFoundError(command[0])
+
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+
+    watches(["voxtype"], retry_s=60.0)
+
+    assert _eventually(lambda: len(tried) == 1)
+    threading.Event().wait(0.2)  # a retry with no wait would have tried hundreds of times
+    assert len(tried) == 1
+
+
+@pytest.mark.parametrize(
+    ("wait", "ran_s", "next_wait"),
+    [(1.0, 60.0, 1.0), (8.0, 30.0, 1.0), (1.0, 0.0, 2.0), (2.0, 0.5, 4.0), (20.0, 0.0, 30.0)],
+)
+def test_the_wait_before_the_status_command_is_tried_again_doubles_up_to_a_limit(
+    wait: float, ran_s: float, next_wait: float
+) -> None:
+    assert next_retry_wait(wait, ran_s=ran_s, first=1.0, longest=30.0) == next_wait
+
+
+def test_a_status_command_is_started_again_at_once_after_a_healthy_run_ends(
+    watches: Callable[..., VoxtypeWatch], tmp_path: Path
+) -> None:
+    # Six quick failures raise the wait to its 0.5 s limit; a run that lasted that long was
+    # healthy, so the next one starts after the first wait, not the raised one.
+    runs, ended, started = tmp_path / "runs", tmp_path / "ended", tmp_path / "started"
+    script = (
+        "import pathlib, sys, time\n"
+        f"runs = pathlib.Path({str(runs)!r})\n"
+        "n = len(runs.read_text()) if runs.exists() else 0\n"
+        "runs.write_text('x' * (n + 1))\n"
+        "if n < 6: sys.exit(1)\n"
+        "if n == 6:\n"
+        "    time.sleep(0.6)\n"
+        f"    pathlib.Path({str(ended)!r}).write_text(repr(time.time())); sys.exit(1)\n"
+        f"pathlib.Path({str(started)!r}).write_text(repr(time.time()))\n"
+        f"print({_status_line('recording')!r}, flush=True); time.sleep(60)\n"
+    )
+
+    watch = watches([sys.executable, "-I", "-c", script], retry_s=0.01, max_retry_s=0.5)
+
+    assert _eventually(lambda: watch.dictating() is True)
+    assert float(started.read_text()) - float(ended.read_text()) < 0.3
+
+
+def test_a_status_command_that_prints_once_and_dies_is_not_restarted_every_second() -> None:
+    # Requirement changed (review of #29): printing a line no longer resets the wait.
+    wait = 1.0
+    for _ in range(6):
+        wait = next_retry_wait(wait, ran_s=0.2, first=1.0, longest=30.0)
+
+    assert wait == pytest.approx(30.0)
+
+
+def test_stopping_the_watch_ends_the_status_command_it_started(
+    watches: Callable[..., VoxtypeWatch],
+) -> None:
+    watch = watches(_status_helper(_status_line("idle"), "sleep"))
+    assert _eventually(lambda: watch.dictating() is False)
+    pid = watch.pid
+    assert pid is not None
+
+    watch.stop()
+
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+    assert watch.pid is None
 
 
 def _lock_answer(
@@ -1016,3 +1363,55 @@ def test_resetting_the_wake_word_resets_the_model(monkeypatch: pytest.MonkeyPatc
     wake.reset()
 
     assert model.resets == 1
+
+
+def _models(
+    stdout: bytes, returncode: int = 0
+) -> Callable[..., subprocess.CompletedProcess[bytes]]:
+    """A `voxtype info models` that prints `stdout`, checking the command it was given."""
+
+    def run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        assert cmd == ["voxtype", "info", "models", "--json", "--engine", "whisper"]
+        return subprocess.CompletedProcess(cmd, returncode, stdout, b"")
+
+    return run
+
+
+WHISPER_MODELS = json.dumps(
+    {
+        "engines": {
+            "whisper": {
+                "default": "base.en",
+                "models": [
+                    {"name": "base.en", "installed": True, "downloadable": True},
+                    {"name": "small.en", "installed": False, "downloadable": True},
+                    {"name": "tiny", "downloadable": True},
+                ],
+            }
+        }
+    }
+).encode()
+
+
+def test_voxtype_says_which_models_are_installed() -> None:
+    assert installed_models("whisper", run=_models(WHISPER_MODELS)) == {"base.en"}
+
+
+@pytest.mark.parametrize(
+    ("stdout", "returncode"),
+    [
+        (WHISPER_MODELS, 2),  # an older Voxtype without `info models`
+        (b"not json", 0),
+        (b"{}", 0),
+        (b'{"engines": {"whisper": {"models": 3}}}', 0),
+    ],
+)
+def test_a_model_list_that_cannot_be_read_says_nothing(stdout: bytes, returncode: int) -> None:
+    assert installed_models("whisper", run=_models(stdout, returncode)) is None
+
+
+def test_a_voxtype_that_cannot_run_says_nothing() -> None:
+    def missing(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise FileNotFoundError(cmd[0])
+
+    assert installed_models("whisper", run=missing) is None

@@ -190,6 +190,42 @@ def test_memory_max_refuses_everything_else(value: str) -> None:
         config.StrataConfig(memory_max=value)
 
 
+@pytest.mark.parametrize("value", [128, 512, 8192, "auto"])
+def test_prefill_accepts_a_chunk_size_or_auto(value: int | str) -> None:
+    assert config.StrataConfig.model_validate({"prefill": value}).prefill == value
+
+
+@pytest.mark.parametrize("value", [127, 8193, "fast", "auto:4096", "", "AUTO"])
+def test_prefill_refuses_everything_else(value: int | str) -> None:
+    with pytest.raises(ValueError, match="prefill"):
+        config.StrataConfig.model_validate({"prefill": value})
+
+
+def test_the_vram_reserve_is_unset_by_default() -> None:
+    assert config.StrataConfig().vram_reserve_mib == 0
+
+
+@pytest.mark.parametrize("value", [0, 100, 700, 65536])
+def test_vram_reserve_accepts_zero_for_unset_or_a_value_in_its_range(value: int) -> None:
+    assert config.StrataConfig(vram_reserve_mib=value).vram_reserve_mib == value
+
+
+@pytest.mark.parametrize("value", [-1, 1, 99, 65537])
+def test_vram_reserve_refuses_a_value_outside_its_range(value: int) -> None:
+    with pytest.raises(ValueError, match="vram_reserve_mib"):
+        config.StrataConfig(vram_reserve_mib=value)
+
+
+def test_the_new_strata_keys_round_trip(tmp_path: Path) -> None:
+    original = config.Config(strata=config.StrataConfig(prefill="auto", vram_reserve_mib=1536))
+    path = tmp_path / "config.toml"
+
+    config.save(original, path)
+
+    assert config.load(path) == original
+    assert 'prefill = "auto"' in path.read_text(encoding="utf-8")
+
+
 _PATH_FIELDS: list[tuple[str, Callable[[str], Any]]] = [
     ("data_dir", lambda v: config.Config(data_dir=Path(v))),
     ("home", lambda v: config.StrataConfig(home=Path(v))),
@@ -288,6 +324,25 @@ def test_search_runs_only_on_this_machine() -> None:
     with pytest.raises(ValueError, match="on this machine"):
         config.ResearchConfig(searxng_url="https://searx.example.org")
     assert config.ResearchConfig().searxng_url == "http://127.0.0.1:8888"
+
+
+def test_speech_ends_below_the_threshold_that_started_it() -> None:
+    assert config.AudioConfig().vad_exit_threshold == pytest.approx(0.35)
+    assert config.AudioConfig(vad_threshold=0.8).vad_exit_threshold == pytest.approx(0.65)
+    assert config.AudioConfig(vad_threshold=0.1).vad_exit_threshold == pytest.approx(0.01)
+    assert config.AudioConfig(vad_neg_threshold=0.2).vad_exit_threshold == pytest.approx(0.2)
+
+
+def test_the_exit_threshold_may_not_be_above_the_entry_threshold() -> None:
+    with pytest.raises(ValueError, match="vad_neg_threshold"):
+        config.AudioConfig(vad_threshold=0.4, vad_neg_threshold=0.5)
+    equal = config.AudioConfig(vad_threshold=0.4, vad_neg_threshold=0.4)
+    assert equal.vad_exit_threshold == pytest.approx(0.4)
+
+
+def test_the_kokoro_phoneme_map_is_off_by_default() -> None:
+    assert config.AudioConfig().kokoro_phoneme_map is False
+    assert config.AudioConfig(kokoro_phoneme_map=True).kokoro_phoneme_map is True
 
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "config.example.toml"

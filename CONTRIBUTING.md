@@ -39,7 +39,7 @@ be declined:
 - a tool or code path that runs without the policy engine deciding first, or that lets a prompt stand in for
   a check in code ([ADR 0002](docs/adr/0002-typed-operation-policy.md));
 - desktop notifications: Jarvis replies by voice;
-- driving Voxtype in any way other than its integration contract, or editing a user's `~/.config/voxtype/`;
+- driving Voxtype with any command AGENTS.md does not list, or editing a user's `~/.config/voxtype/`;
 - code, models or voices under a licence that is not compatible with GPL-3.0-or-later.
 
 Support for other operating systems or desktops is not a goal at present; discuss it first. The plan and its

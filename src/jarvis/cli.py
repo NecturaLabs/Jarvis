@@ -19,6 +19,7 @@ from jarvis import __version__, config, control, models, paths
 from jarvis.agent import Hooks
 from jarvis.app import SetupError, build, chat_pictures, echoes_hint, strata_model
 from jarvis.audit import AuditLog
+from jarvis.confirmkey import ConfirmKey
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
 
@@ -28,8 +29,9 @@ if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
 
-    from jarvis.audio import FallbackWake, Speaker, WakeWord
+    from jarvis.audio import FallbackWake, Speaker, VoxtypeWatch, WakeWord
     from jarvis.model import StrataModel
+    from jarvis.voice import VoiceLoop
 
 log = logging.getLogger(__name__)
 
@@ -145,6 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("pause", help="let go of the microphone and free the model until resume")
     sub.add_parser("resume", help="listen again after pause")
     sub.add_parser("hush", help="stop Jarvis speaking now")
+    sub.add_parser("confirm", help="allow the action Jarvis is asking about (bind this to a key)")
     sub.add_parser("unload", help="free the model's memory now")
     wake = sub.add_parser("wake", help="show or switch the wake word model (livekit or azure)")
     wake.add_argument(
@@ -228,10 +231,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print("units: " + ", ".join(str(u) for u in units))
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, timeout=SYSTEMCTL_S)
     if args.enable:
+        units = [services.STRATA_UNIT, services.JARVIS_UNIT]
+        # A unit stopped by its start limit refuses to start until its failed state is cleared.
         subprocess.run(
-            ["systemctl", "--user", "enable", "--now", services.STRATA_UNIT, services.JARVIS_UNIT],
-            check=False,
-            timeout=SYSTEMCTL_S,
+            ["systemctl", "--user", "reset-failed", *units], check=False, timeout=SYSTEMCTL_S
+        )
+        subprocess.run(
+            ["systemctl", "--user", "enable", "--now", *units], check=False, timeout=SYSTEMCTL_S
         )
     if not updated.spotify.client_id:
         print("next: jarvis setup --spotify-client-id <your app's client ID>")
@@ -430,9 +436,10 @@ def _speaker(cfg: config.Config) -> Speaker:
             WakeWord(data / WAKE_MODEL, cfg.audio.wake_threshold),
             WAKE_NAME if cfg.audio.wake_engine == "azure" else None,
         )
-    return Speaker(
-        make_synthesizer(data, cfg.audio.voice, cfg.audio.speech_speed), own_wake=own_wake
+    synthesizer = make_synthesizer(
+        data, cfg.audio.voice, cfg.audio.speech_speed, phoneme_map=cfg.audio.kokoro_phoneme_map
     )
+    return Speaker(synthesizer, own_wake=own_wake)
 
 
 def _serve_controls(handler: control.Controls, audit: AuditLog) -> control.ControlServer:
@@ -450,11 +457,10 @@ def cmd_run(_args: argparse.Namespace) -> int:
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
         MIC_STALL_S,
         AppAudio,
-        FallbackWake,
         Microphone,
         PausableMic,
         Vad,
-        dictation_active,
+        VoxtypeWatch,
         screen_locked,
     )
     from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level]
@@ -500,6 +506,9 @@ def cmd_run(_args: argparse.Namespace) -> int:
     def after_sleep() -> None:
         handler.after_sleep()  # made below, once the loop it controls exists
 
+    keys = ConfirmKey(audit=jarvis.audit)  # pressed through the socket, waited on by the loop
+
+    voxtype = VoxtypeWatch()  # started with the loop, so nothing before can leave it running
     loop = VoiceLoop(
         jarvis.agent,
         mic,
@@ -518,17 +527,35 @@ def cmd_run(_args: argparse.Namespace) -> int:
         ),
         transcribe_answer=answer,
         names=(cfg.persona.name,),
-        dictating=dictation_active,
+        dictating=voxtype.dictating,
+        meeting=voxtype.meeting,
+        audit=jarvis.audit,
         paused=lambda: mic.paused,
         until_resumed=mic.wait_resumed,
         reopen=mic.recover,
         locked=_never if cfg.audio.listen_when_locked else screen_locked,
         after_sleep=after_sleep,
+        keys=keys,
     )
-    handler = control.Controls(loop, mic, jarvis.model, jarvis.audit)
+    handler = control.Controls(loop, mic, jarvis.model, jarvis.audit, keys=keys)
     jarvis.audit.record("service_started", bypass_consent=cfg.boundaries.bypass_consent)
-    controls = _serve_controls(handler, jarvis.audit)
+    return _run_until_stopped(
+        loop, stop_requested, _serve_controls(handler, jarvis.audit), voxtype, wakes
+    )
+
+
+def _run_until_stopped(
+    loop: VoiceLoop,
+    stop_requested: threading.Event,
+    controls: control.ControlServer,
+    voxtype: VoxtypeWatch,
+    wakes: list[WakeWord | FallbackWake],
+) -> int:
+    """Run `loop` with Voxtype's status followed, then end what the run started."""
+    from jarvis.audio import FallbackWake  # ruff: ignore[import-outside-top-level]
+
     try:
+        voxtype.start()
         loop.run(stop_requested.is_set)
     except Exception:
         if stop_requested.is_set():
@@ -536,6 +563,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         raise
     finally:
         controls.close()
+        voxtype.stop()
         for wake in wakes:  # an Azure helper ends with its input; end it now, not at exit
             if isinstance(wake, FallbackWake):
                 wake.close()
@@ -583,16 +611,24 @@ def _whisper_model(cfg: config.Config) -> list[tuple[bool, str, str]]:
 
     Other engines keep their models in their own forms, so Voxtype itself reports on those.
     """
+    from jarvis import audio as audio_module  # ruff: ignore[import-outside-top-level]
+
     audio = cfg.audio
     name = audio.transcribe_model
     if audio.transcribe_engine not in {"", "whisper"} or not name:
         return []
+    fix = "download it with `voxtype setup model`"
+    installed = None if name.startswith("/") else audio_module.installed_models("whisper")
+    if installed is not None:
+        found = name in installed
+        said = "installed" if found else "not installed"
+        return [(found, f"speech model {name} (Voxtype reports it {said})", fix)]
     model = (
         Path(name)
         if name.startswith("/")
         else paths.xdg_data_home() / "voxtype" / "models" / f"ggml-{name}.bin"
     )
-    return [(model.is_file(), f"speech model {model}", "download it with `voxtype setup model`")]
+    return [(model.is_file(), f"speech model {model}", fix)]
 
 
 def _model_url(cfg: config.Config) -> list[tuple[bool, str, str]]:
@@ -669,12 +705,13 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
             (shutil.which(t) is not None, f"tool {t}", f"install {t}")
             for t in ("pw-record", "pw-play", "voxtype")
         ),
+        *_source_checks(cfg),
         *_azure_checks(cfg),
         *_lock_checks(cfg),
         (
             state is not None,
             f"Strata server ({state or 'unreachable'})",
-            "systemctl --user start jarvis-strata",
+            "jarvis start (it clears a start limit first)",
         ),
     ]
     for ok, what, fix in checks:
@@ -682,6 +719,37 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     for line in release_lines:
         print(line)
     return 0 if all(ok for ok, _, _ in checks) else 1
+
+
+def _source_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
+    """Return the check that a configured `audio.source` is a microphone PipeWire lists.
+
+    A recorder is not pinned to its source, so PipeWire may move it to the default microphone
+    instead of failing; the check is what tells a mistyped name from a working one. With no
+    source set, the default microphone is used and there is nothing to check.
+    """
+    from jarvis.audio import pw_dump, source_found  # ruff: ignore[import-outside-top-level]
+
+    source = cfg.audio.source
+    if not source:
+        return []
+    graph = pw_dump()
+    if not graph:  # a running PipeWire always lists its own nodes
+        return [
+            (
+                False,
+                f"audio.source {source} not checked: PipeWire's graph (pw-dump) could not be read",
+                "check that PipeWire runs: `systemctl --user status pipewire`",
+            )
+        ]
+    found = source_found(graph, source)
+    return [
+        (
+            found,
+            f"audio.source {source}" + ("" if found else " matches no microphone in pw-dump"),
+            "list microphones with `pw-dump | grep node.name`, or clear audio.source",
+        )
+    ]
 
 
 def _lock_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
@@ -816,6 +884,26 @@ def cmd_hush(_args: argparse.Namespace) -> int:
     return _control("hush", lambda _r: "hushed")
 
 
+def cmd_confirm(_args: argparse.Namespace) -> int:
+    """Press the confirm key: allow the one action Jarvis is waiting on, if any."""
+    reply = control.send("confirm")
+    if reply is None:
+        print("jarvis: not running (start it with `jarvis start`)")
+        return 1
+    if not reply.get("ok"):
+        print(f"jarvis: {reply.get('error', 'the command failed')}")
+        return 1
+    confirmed = reply.get("confirmed")
+    if not isinstance(confirmed, str):
+        print(f"jarvis: {reply.get('reason', 'nothing was confirmed')}")
+        return 1
+    shown = "".join(
+        ch if ch.isprintable() else " " for ch in confirmed
+    )  # the model chose its words
+    print(f'jarvis: confirmed: "{shown}"')
+    return 0
+
+
 def cmd_unload(_args: argparse.Namespace) -> int:
     """Free the model now."""
     ok = _strata(_load()).unload()
@@ -852,6 +940,7 @@ def cmd_start(_args: argparse.Namespace) -> int:
     """Start both services."""
     from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
 
+    _systemctl("reset-failed", STRATA_UNIT, JARVIS_UNIT)
     code = _systemctl("start", STRATA_UNIT, JARVIS_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
     return code
@@ -917,6 +1006,7 @@ def cmd_restart(_args: argparse.Namespace) -> int:
     """
     from jarvis.services import JARVIS_UNIT, STRATA_UNIT  # ruff: ignore[import-outside-top-level]
 
+    _systemctl("reset-failed", STRATA_UNIT, JARVIS_UNIT)
     started = _started_at(STRATA_UNIT)
     changed = started is not None and _strata_changed_since(started)
     code = _systemctl("restart" if changed else "start", STRATA_UNIT)
@@ -959,6 +1049,9 @@ def _restart_if_running() -> None:
     from jarvis.services import JARVIS_UNIT  # ruff: ignore[import-outside-top-level]
 
     if _unit_state(JARVIS_UNIT) == "active":
+        # A restart counts against the start limit (5 in 15 min): clear it first, so a few
+        # config changes in a row do not leave the voice service stopped.
+        _systemctl("reset-failed", JARVIS_UNIT)
         _systemctl("restart", JARVIS_UNIT)
 
 
@@ -1071,6 +1164,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "pause": cmd_pause,
     "resume": cmd_resume,
     "hush": cmd_hush,
+    "confirm": cmd_confirm,
     "unload": cmd_unload,
     "pc-audio": cmd_pc_audio,
     "consent": cmd_consent,

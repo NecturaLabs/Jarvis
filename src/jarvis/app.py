@@ -5,15 +5,17 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from jarvis import paths, skills
+from jarvis import calc, paths, skills
 from jarvis.agent import Agent, Limits
 from jarvis.audit import AuditLog
 from jarvis.model import StrataModel
 from jarvis.operations import Operation, Registry, Result
 from jarvis.paths import audit_file, spotify_token_file, strata_key_file  # re-exported for callers
 from jarvis.pc.files import Boundary, FileOps
+from jarvis.pc.processes import ProcessOps
 from jarvis.pc.stats import StatsOps
 from jarvis.pictures import PictureCache
+from jarvis.policy import effective_class
 from jarvis.ratelimit import ActionRate
 from jarvis.secretfile import read_api_key
 from jarvis.spotify.api import SpotifyApi
@@ -86,6 +88,7 @@ def system_prompt(config: Config, channel: Channel = "voice") -> str:
         "name": config.persona.name,
         "tone": config.persona.tone,
         "words": str(words),
+        "numbers": _number_rule(config.format.thousands_separator),
     }
     text = core + "\n" + style
     for key, value in fill.items():
@@ -189,7 +192,7 @@ def web_operations(config: Config, shown: PictureCache | None = None) -> list[Op
 
 
 def pc_operations(config: Config, limits: Limits, home: Path | None = None) -> list[Operation]:
-    """Return `pc_stats` and the file operations, within the owner's `[files]` folders.
+    """Return `pc_stats`, the file operations, within the owner's `[files]` folders, and processes.
 
     Jarvis's own state (its tokens and keys) is never read or written, whatever the roots say.
     """
@@ -197,7 +200,20 @@ def pc_operations(config: Config, limits: Limits, home: Path | None = None) -> l
     return [
         *StatsOps(Sampler()).operations(),
         *FileOps(boundary, max_chars=limits.tool_text_chars).operations(),
+        *ProcessOps().operations(),
     ]
+
+
+def _number_rule(separator: str) -> str:
+    """Say how to write a number of four or more digits, as `[format]` sets it."""
+    if not separator:
+        return "Write numbers without separators between digit groups: 1488, 25000."
+    sample = f"{1488:,}".replace(",", separator), f"{25000:,}".replace(",", separator)
+    mark = {" ": "a space", "'": "an apostrophe"}.get(separator, f"{separator!r}")
+    return (
+        f"Write numbers of four or more digits with {mark} between groups of three:"
+        f" {sample[0]}, {sample[1]}."
+    )
 
 
 class SetupError(Exception):
@@ -230,6 +246,7 @@ def channel_registry(
             *spotify,
             *online.operations(),
             *pc_operations(config, limits),
+            *calc.operations(config.format),
             *([skills.skill_operation(shipped)] if shipped else []),
             no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
         ],
@@ -244,6 +261,19 @@ def unknown_overrides(config: Config, spotify: list[Operation]) -> list[str]:
         registry = channel_registry(config, spotify, channel_limits(config, channel), channel)
         known.update(registry.names())
     return sorted(set(config.boundaries.classes) - known)
+
+
+def overrides_below_floor(config: Config, spotify: list[Operation]) -> list[str]:
+    """Return the names `boundaries.classes` sets below the lowest class their operation allows."""
+    classes = config.boundaries.classes
+    low: set[str] = set()
+    for channel in ("voice", "chat"):
+        registry = channel_registry(config, spotify, channel_limits(config, channel), channel)
+        for name, override in classes.items():
+            op = registry.get(name)
+            if op is not None and effective_class(op, {name: override}).value != override:
+                low.add(name)
+    return sorted(low)
 
 
 def chat_pictures() -> PictureCache:
@@ -286,7 +316,7 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
     Raises:
         SetupError: the Spotify client ID or the Strata API key is missing, or
             `boundaries.classes` names an operation that does not exist (a typo would otherwise
-            leave it at its default class).
+            leave it at its default class) or sets one below its lowest class.
     """
     if not config.spotify.client_id:
         msg = "no Spotify client ID in the config; run `jarvis setup`"
@@ -308,6 +338,12 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
         msg = (
             f"boundaries.classes names no operation: {', '.join(unknown)}; "
             "fix the name or remove it"
+        )
+        raise SetupError(msg)
+    if low := overrides_below_floor(config, ops.operations()):
+        msg = (
+            f"boundaries.classes sets {', '.join(low)} below what it allows; "
+            'stop_process takes only "strong" or "deny"'
         )
         raise SetupError(msg)
     channel: Channel = "chat" if via == "chat" else "voice"

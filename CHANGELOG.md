@@ -27,6 +27,33 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   brought back with ↑ keeping what was pasted into it. Starting a new conversation (or one forgotten
   after the idle time, checked before every request, PC audio included) also forgets the pages and
   threads earlier searches returned.
+- A wake word said while your Voxtype dictation runs is ignored: no request, no chime, one `wake_ignored`
+  event in the audit log; and a running Voxtype meeting keeps follow-ups off like dictation does. Jarvis
+  follows `voxtype status --follow --format json --extended` in the background, so asking never waits for
+  Voxtype (#29). A status that cannot be read no longer counts as dictation: the wake word is taken, so a
+  broken or older Voxtype does not leave Jarvis deaf, and follow-ups stay off until the status is known.
+- The Azure keyword helper writes 1.5 s of silence into the engine's stream before the first sample and after
+  each detection, which the engine is documented to want before a keyword (#29).
+- Both services are safer and kinder to a game beside them (#33). Both set `NoNewPrivileges`, `LockPersonality`,
+  `RestrictSUIDSGID` and `CPUWeight=50`; Strata also sets `UMask=0077`, and the voice service
+  `SystemCallArchitectures=native`. A service that fails five times in 15 minutes now stays `failed` instead
+  of restarting for ever; `jarvis start`, `jarvis restart`, `jarvis setup --enable` and the commands that
+  restart the voice service after a change (`consent`, `pc-audio`, `wake`) clear that first. Strata's
+  `MemoryHigh` is `strata.memory_max` and its `MemoryMax` is 10% above it (44G for the default 40G).
+  `strata.prefill` also accepts `"auto"`, and the new `strata.vram_reserve_mib` (unset by default) passes
+  `--vram-reserve-mib`. Run `jarvis setup` to rewrite the units. Not measured yet: the effect on time to
+  first word, VRAM and a running game (playbook).
+- `boundaries.bypass_consent` no longer runs `strong` actions unasked: they wait for the confirm key.
+  No operation Jarvis ships is `strong` yet; this matters for one you set to `strong` yourself.
+- `strata.idle_unload_s` defaults to 86400 (24 hours) instead of 300, so a fresh install keeps the model
+  loaded, as the owner decided (#34). Set a lower value to free the RAM sooner. A saved config or a Strata
+  profile already written keeps its value until you change it or run `jarvis setup` again.
+- `jarvis doctor` asks Voxtype which speech models are installed (`voxtype info models`), which also checks
+  each file's size and header, and falls back to looking for the file when Voxtype cannot say.
+  `stop_process` is the one shipped `strong` operation, and `boundaries.classes` may set it only to
+  `strong` or `deny`; any other class stops Jarvis with an error.
+- The chat remembers a little less: `chat.memory_tokens` defaults to 10,800 (was 11,500), to make room in
+  the model's context for `find_processes`, `stop_process` and `calculate`.
 - From a practices audit: a name in `boundaries.classes` that is no operation (a typo, say) stops Jarvis
   with an error instead of being ignored; turning questions on or off with `jarvis consent`, and the mode
   the voice service starts in, are recorded in the audit log and shown in the chat; words heard from the PC
@@ -48,7 +75,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   moves while it is open; the letters typed are in bold and the chosen row is lit whole. `/exit` leaves
   (`/quit` still works).
 - Jarvis remembers the conversation. Instead of the last 4 turns, forgotten after 5 minutes, it keeps as
-  much as fits a token budget (`agent.memory_tokens` 6,000 for speech, `chat.memory_tokens` 11,500 for the
+  much as fits a token budget (`agent.memory_tokens` 6,000 for speech, `chat.memory_tokens` 10,800 for the
   chat) and has the model summarize the oldest turns when it outgrows it. Speech forgets after 30 idle
   minutes; the chat never does and resumes its conversation when it opens again (`chat.resume`).
 - Replies are no longer cut. The model is told its length and capped in tokens (`agent.reply_tokens` 400,
@@ -91,6 +118,36 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   `strata.context` keeps its value; to change it, edit it and run `jarvis setup`.
 
 ### Added
+
+- `calculate`: Jarvis works out sums in code, exactly, however you ask (products, percentages, powers,
+  roots, logarithms, factorials), and says the
+  answer; the model never does the arithmetic itself. Numbers in replies and answers come in
+  groups of three (1,488); the new `format.thousands_separator` sets the separator, or none.
+- `audio.vad_neg_threshold`: once speech has started it goes on while the probability stays above this
+  (default: `vad_threshold` less 0.15, Silero's own margin), so a breath inside a sentence no longer ends a
+  request early. A request after the wake word, from the mic or PC audio, needs 0.15 s of speech, so a click
+  after "Hey Jarvis" is dropped untranscribed (#29). With the Azure wake word, which is reported up to 0.6 s
+  after the keyword ends, only the keyword's last quarter second is left out of that count, so a short
+  request said before the report still counts.
+- `audio.kokoro_phoneme_map` (off by default): rewrite espeak's phonemes into the symbols Kokoro was trained
+  on before they are spoken, to compare by ear (#29).
+- `jarvis doctor` checks that `audio.source` names a microphone PipeWire lists, and says so when PipeWire
+  cannot be read rather than blaming the name (#29).
+- Stop a program by voice, asked in any words:
+  `find_processes` lists your own programs that match the name you said (at most 8, by program name,
+  executable, a Wine game's `.exe`, or window title), Jarvis asks which one when several match, and
+  `stop_process` stops only a PID it listed in the same request, after the confirm key. The PID is bound
+  to its program and start time, so a PID reused in between is never signalled. A request heard in PC
+  audio, or one that also read a web page, a file or a picture, stops nothing; a match by one window's
+  title alone says that all the program's windows close. The desktop session, its helpers, the sound
+  server, Voxtype, Strata and Jarvis itself are never listed or stopped
+  ([Stopping a program](docs/configuration.md#stopping-a-program)).
+- `jarvis confirm`, the confirm key: bind it to a key, and a `strong` action runs only after you press it.
+  Jarvis says what it is about to do, then "Press the confirm key to allow it", and waits
+  `audio.confirm_key_s` (30 s). One press allows that one action, once; a spoken yes never does. A press
+  with nothing waiting holds the key off for 30 s, and, as a best effort, a press from a program Jarvis
+  started is refused.
+  Only spoken requests can use it: the chat window and `jarvis ask` still refuse `strong` actions.
 
 - `jarvis pause` lets go of the microphone and, once the request in flight has ended, frees the model;
   `jarvis resume` listens again and reloads it. `jarvis hush` stops the speech. `jarvis status` says what
@@ -192,6 +249,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The chat no longer shows a reply twice for a moment: the draft is gone before the whole reply
+  appears.
 - Web research is safer and steadier. Text a browser hides (the `hidden` attribute, `aria-hidden`, and
   inline `display:none`, `visibility:hidden`, `opacity:0` or `font-size:0`) no longer reaches the model, a page
   with more than 20,000 elements is read from its start so it cannot hold up a request, the weather and

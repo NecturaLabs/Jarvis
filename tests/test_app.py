@@ -9,20 +9,33 @@ from jarvis.app import (
     MAX_HINT_CHARS,
     PAGE_HEADROOM,
     Channel,
+    SetupError,
     action_rate,
+    build,
     channel_limits,
     channel_registry,
     chat_pictures,
     echoes_hint,
     no_action_operation,
+    overrides_below_floor,
     pc_operations,
     speech_hint,
+    strata_key_file,
     system_prompt,
     unknown_overrides,
 )
 from jarvis.audit import AuditLog
-from jarvis.config import AudioConfig, BoundariesConfig, Config, FilesConfig, PersonaConfig
+from jarvis.config import (
+    AudioConfig,
+    BoundariesConfig,
+    Config,
+    FilesConfig,
+    OpClassName,
+    PersonaConfig,
+    SpotifyConfig,
+)
 from jarvis.operations import Operation, OperationError, Registry, Result
+from jarvis.secretfile import ensure_api_key
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
@@ -201,8 +214,27 @@ def test_both_channels_offer_the_pc_and_file_operations(tmp_path: Path, channel:
 
     registry = channel_registry(config, spotify.operations(), limits, channel)
 
-    for name in ("pc_stats", "list_dir", "read_file", "write_file"):
+    for name in (
+        "pc_stats",
+        "list_dir",
+        "read_file",
+        "write_file",
+        "find_processes",
+        "stop_process",
+    ):
         assert registry.get(name) is not None
+
+
+@pytest.mark.parametrize("channel", ["voice", "chat"])
+def test_both_channels_offer_the_calculator(tmp_path: Path, channel: Channel) -> None:
+    config = Config()
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+
+    registry = channel_registry(
+        config, spotify.operations(), channel_limits(config, channel), channel
+    )
+
+    assert registry.get("calculate") is not None
 
 
 def test_jarvis_own_state_is_never_readable_through_the_file_operations(tmp_path: Path) -> None:
@@ -241,6 +273,39 @@ def test_every_operation_named_in_boundaries_classes_must_exist(tmp_path: Path) 
     assert unknown_overrides(config, spotify.operations()) == ["spotify_nxt"]
 
 
+@pytest.mark.parametrize(
+    ("override", "refused"), [("safe", True), ("confirm", True), ("strong", False), ("deny", False)]
+)
+def test_stop_process_may_only_be_set_to_strong_or_deny(
+    tmp_path: Path, override: OpClassName, *, refused: bool
+) -> None:
+    # A program is stopped only by the owner's own command and the confirm key.
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), Config().spotify)
+    config = Config(boundaries=BoundariesConfig(classes={"stop_process": override}))
+
+    expected = ["stop_process"] if refused else []
+    assert overrides_below_floor(config, spotify.operations()) == expected
+
+
+def test_build_refuses_an_override_that_takes_stop_process_below_strong() -> None:
+    ensure_api_key(strata_key_file())
+    config = Config(
+        spotify=SpotifyConfig(client_id="id"),
+        boundaries=BoundariesConfig(classes={"stop_process": "confirm"}),
+    )
+
+    with pytest.raises(SetupError, match="stop_process"):
+        build(config)
+
+
+def test_the_system_prompt_says_never_to_stop_a_program_the_owner_did_not_name() -> None:
+    prompt = system_prompt(Config())
+
+    assert "find_processes" in prompt
+    assert "never stop, close or end any program" in prompt.casefold()
+    assert "ask which" in prompt.casefold()
+
+
 def test_an_override_for_a_chat_only_operation_is_known(tmp_path: Path) -> None:
     spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), Config().spotify)
     config = Config(boundaries=BoundariesConfig(classes={"show_image": "deny"}))
@@ -256,3 +321,10 @@ def test_the_cap_on_actions_comes_from_the_config_and_is_shared_through_the_stat
     assert (rate.limit, rate.window_s) == (5, 90.0)
     assert [rate.take() for _ in range(6)] == [True] * 5 + [False]
     assert (paths.state_dir() / "actions.json").exists()
+
+
+@pytest.mark.parametrize(("separator", "said"), [(",", "1,488"), (" ", "1 488"), ("", "1488")])
+def test_the_prompt_tells_the_model_how_to_write_numbers(separator: str, said: str) -> None:
+    config = Config.model_validate({"format": {"thousands_separator": separator}})
+
+    assert said in system_prompt(config, "chat")

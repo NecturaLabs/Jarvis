@@ -21,6 +21,7 @@ class _Op:
     default_class: OpClass
     side_effect: bool = True
     outbound: bool = False
+    lowest_class: OpClass = OpClass.SAFE
 
 
 @pytest.mark.parametrize(
@@ -57,6 +58,22 @@ def test_owner_override_wins_over_default() -> None:
     op = _Op("x", OpClass.SAFE)
     assert decide(op, "x", {"x": "deny"}, untrusted_in_context=False).verdict is Verdict.DENY
     assert decide(op, "x", {"x": "confirm"}, untrusted_in_context=False).verdict is Verdict.CONFIRM
+
+
+@pytest.mark.parametrize(
+    ("override", "expected"),
+    [
+        ("safe", Verdict.STRONG),
+        ("confirm", Verdict.STRONG),
+        ("strong", Verdict.STRONG),
+        ("deny", Verdict.DENY),
+    ],
+)
+def test_an_override_never_takes_an_operation_below_its_lowest_class(
+    override: str, expected: Verdict
+) -> None:
+    op = _Op("stop", OpClass.STRONG, lowest_class=OpClass.STRONG)
+    assert decide(op, "stop", {"stop": override}, untrusted_in_context=False).verdict is expected
 
 
 def test_invalid_override_falls_back_to_default() -> None:
@@ -116,6 +133,7 @@ def test_action_hash_binds_operation_and_exact_arguments() -> None:
         (Origin.FILE, False),
         (Origin.PICTURE, False),
         (Origin.PASTE, False),
+        (Origin.PROCESS, False),
     ],
 )
 def test_which_origins_are_trusted(origin: Origin, trusted: bool) -> None:
@@ -124,7 +142,7 @@ def test_which_origins_are_trusted(origin: Origin, trusted: bool) -> None:
 
 def test_every_origin_has_a_stated_trust() -> None:
     # A new origin must be added to the table above, where it starts as untrusted.
-    assert len(Origin) == 10
+    assert len(Origin) == 11
 
 
 @pytest.mark.parametrize(

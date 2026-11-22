@@ -16,6 +16,7 @@ working line on the first, and the words, the caret and the footer two cells in.
 """
 
 import contextlib
+import inspect
 import threading
 import time
 from dataclasses import dataclass, field
@@ -634,12 +635,15 @@ class ChatApp(App[None]):
     def _from_worker(self, update: Callable[..., object], *args: object) -> None:
         """Run `update` on the window's thread, from a worker; nothing once the window is gone.
 
-        A worker can finish while the window closes: its widgets may be gone by then.
+        A worker can finish while the window closes: its widgets may be gone by then. An `update`
+        that returns an awaitable is awaited before the worker goes on.
         """
 
-        def run() -> None:
+        async def run() -> None:
             with contextlib.suppress(NoMatches):
-                update(*args)
+                result = update(*args)
+                if inspect.isawaitable(result):
+                    await result
 
         with contextlib.suppress(RuntimeError):  # the window has closed
             self.call_from_thread(run)
@@ -1317,10 +1321,12 @@ class ChatApp(App[None]):
         for draft in self.query(".reply.draft"):
             draft.remove()
 
-    def _settle(
+    async def _settle(
         self, work: _Work, reply: str, seconds: float, *, stopped: bool, rate: float | None = None
     ) -> None:
-        self._drop_draft(work)
+        # The draft is gone before the whole reply is mounted, so the two never show together.
+        work.draft = ""
+        await self.query(".reply.draft").remove()
         done = datetime.now().astimezone()
         line = worked_line(
             seconds, done, rate, twelve_hour=self._services.twelve_hour, stopped=stopped

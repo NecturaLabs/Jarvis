@@ -552,7 +552,7 @@ def _refused(request: httpx.Request) -> httpx.Response:
 def test_a_server_down_with_its_model_file_missing_fails_at_once_and_says_why(
     tmp_path: Path,
 ) -> None:
-    # `/mnt/models` not mounted: systemd skipped Strata, so there is nothing to wait for.
+    # The model's drive not mounted: systemd skipped Strata, so there is nothing to wait for.
     naps: list[float] = []
     local = ModelConfig(base_url=Config().model_base_url())
     model = StrataModel(

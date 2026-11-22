@@ -22,6 +22,7 @@ from jarvis.operations import (
     OperationError,
     Result,
     UncertainOutcomeError,
+    request_scope,
     validate_args,
 )
 from jarvis.pictures import PICTURE_TOKENS
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
     from jarvis.audit import AuditLog
     from jarvis.config import AgentConfig
     from jarvis.model import ChatModel, Delta
-    from jarvis.operations import Operation, Registry
+    from jarvis.operations import Operation, Registry, Request
     from jarvis.pictures import Picture
 
 log = logging.getLogger(__name__)
@@ -496,7 +497,10 @@ class Hooks:
 
     `waking` is called when the model has to load first and `still_waiting` once more if that
     takes long; both run beside the model call and have finished before anything else is said.
-    `cancelled` turning true (Jarvis is stopping, or the owner spoke over it) ends the request.
+    `confirm` asks for a spoken yes. `confirm_key`, where the channel has one, asks the question
+    and waits for the confirm key bound to the action's hash (`confirmkey`); without it a
+    `strong` action is refused. `cancelled` turning true (Jarvis is stopping, or the owner
+    spoke over it) ends the request.
     With `speak`, the reply is spoken through it, sentence by sentence and while the model is
     still writing; `hush` drops what was passed to `speak` and not yet heard. `draft` gets the
     reply as far as it has been written, at the same points, for a window to show it growing;
@@ -505,6 +509,7 @@ class Hooks:
     """
 
     confirm: Callable[[str], bool]
+    confirm_key: Callable[[str, str], bool] | None = None
     waking: Callable[[], None] = lambda: None
     still_waiting: Callable[[], None] = lambda: None
     cancelled: Callable[[], bool] = lambda: False
@@ -582,6 +587,7 @@ class _Turn:
     limit_s: float = MAX_SECONDS
     first: int = 0  # where this request's own messages begin, after the remembered ones
     foreign: bool = False
+    request: Request | None = None
     untrusted: bool = False
     outside: str = ""  # where the first outside text this request read came from
     private: bool = False  # text from the owner's files is in the conversation
@@ -609,12 +615,12 @@ _REFUSALS = {
         ok=False,
         spoken="That one is switched off in your settings.",
     ),
-    Verdict.STRONG: Result(
-        "Refused: this needs keyboard confirmation, not available yet.",
-        ok=False,
-        spoken="That one needs keyboard confirmation, which I can't do yet.",
-    ),
 }
+_NO_KEY = Result(
+    "Refused: this needs the confirm key, which works only for spoken requests.",
+    ok=False,
+    spoken="That one needs your confirm key, which only works when you ask me out loud.",
+)
 _DECLINED = Result(
     "The owner did not confirm, so nothing was done.", ok=False, spoken="Okay, I'll leave it."
 )
@@ -834,7 +840,22 @@ class Agent:
         Jarvis asks before acting, pastes longer than `MAX_TRUSTED_PASTE` together are outside
         data like a picture: wrapped as such, here and in the conversation, so side effects need
         a yes. Shorter ones, and any with consent bypassed, stay the owner's own words.
+
+        Operations run inside the request's scope (`request_scope`), so one can tell this
+        request from the next and a request heard in PC audio from the owner's.
         """
+        with request_scope(foreign=origin not in TRUSTED_ORIGINS) as request:
+            return self._answer(text, hooks, (origin, request), (pictures, pasted))
+
+    def _answer(
+        self,
+        text: str,
+        hooks: Hooks,
+        source: tuple[Origin, Request],
+        shared: tuple[Sequence[Picture], Sequence[str]],
+    ) -> str:
+        origin, request = source
+        pictures, pasted = shared
         started = self._clock()
         foreign = origin not in TRUSTED_ORIGINS
         self._written = [0, 0.0]
@@ -864,6 +885,8 @@ class Agent:
         )
         self._expire(started)
         remembered = [] if foreign else self._remembered(plain=hit is not None)
+        if remembered and self._memory.holds_outside_text_but(Origin.PROCESS.value):
+            request.saw("memory")
         turn = _Turn(
             [
                 {"role": "system", "content": self._system},
@@ -875,13 +898,16 @@ class Agent:
             limit_s=self._limits.max_seconds,
             first=1 + len(remembered),
             foreign=foreign,
+            request=request,
         )
         if pictures:
             turn.untrusted = True
             turn.outside = Origin.PICTURE.value
+            request.saw(Origin.PICTURE.value)
         if outside:
             turn.untrusted = True
             turn.outside = turn.outside or Origin.PASTE.value
+            request.saw(Origin.PASTE.value)
         reply = self._shortcut(hit, hooks, turn) if hit is not None else None
         if reply is None:
             # A plain command is the owner's own words; what the model chooses may have been
@@ -1148,7 +1174,11 @@ class Agent:
             body = result.text[: self._limits.tool_text_chars]
             if result.origin not in TRUSTED_ORIGINS:
                 turn.untrusted = True
-                turn.outside = turn.outside or result.origin.value
+                # A process listing is remembered as such only when nothing else outside came in.
+                if turn.outside in {"", Origin.PROCESS.value}:
+                    turn.outside = result.origin.value
+                if turn.request is not None:
+                    turn.request.saw(result.origin.value)
                 turn.private = turn.private or result.origin is Origin.FILE
                 body = f'<data origin="{result.origin.value}">{_inert(body)}</data>'
             turn.messages.append(
@@ -1246,6 +1276,8 @@ class Agent:
         )
         decision, consent = self._consent(decision)
         stopped = _REFUSALS.get(decision.verdict)
+        if decision.verdict is Verdict.STRONG and hooks.confirm_key is None:
+            stopped = _NO_KEY
         if stopped is None and op.prepare is not None:
             bound = self._attempt(op.prepare, op, args, asked_for)
             if isinstance(bound, _Failed):
@@ -1261,16 +1293,13 @@ class Agent:
             verdict=decision.verdict.value,
             reason=decision.reason,
             **consent,
+            **({"refused": "no confirm key here"} if stopped is _NO_KEY else {}),
         )
         stopped = stopped or self._over_limit(op, digest)
         if stopped is not None:
             return stopped
-        if decision.verdict is Verdict.CONFIRM:
-            if not self._confirm(op, args, digest, hooks, turn):
-                return _DECLINED
-            if turn.foreign:
-                self._grant_until = self._clock() + self._grant_s
-                self._audit.record("pc_audio_permission", seconds=self._grant_s)
+        if not self._allowed(decision.verdict, op, args, digest, (hooks, turn)):
+            return _DECLINED
         result = self._run_counted(op, args, digest)
         if isinstance(result, _Failed):
             return result.result
@@ -1323,21 +1352,25 @@ class Agent:
     def _consent(self, decision: Decision) -> tuple[Decision, dict[str, str]]:
         """Return the decision to act on, and the audit fields of a question that was bypassed.
 
-        With consent bypassed, a verdict that would ask (`confirm`, `strong`) runs; `deny` holds.
+        With consent bypassed, a verdict that would ask for a spoken yes (`confirm`) runs. A
+        `strong` one still waits for the confirm key, and `deny` holds (#34, decision 3).
         """
-        if not self._bypass_consent or decision.verdict not in {Verdict.CONFIRM, Verdict.STRONG}:
+        if not self._bypass_consent or decision.verdict is not Verdict.CONFIRM:
             return decision, {}
         bypassed = Decision(
             Verdict.RUN, f"{decision.reason}; not asked: consent is bypassed", decision.op_class
         )
         return bypassed, {"consent": "bypassed", "would_need": decision.verdict.value}
 
-    def _question(self, op: Operation, args: dict[str, Any], turn: _Turn) -> str:
+    def _question(
+        self, op: Operation, args: dict[str, Any], turn: _Turn, *, grants: bool = True
+    ) -> str:
+        """Word the question; `grants` says a yes to PC audio lets it ask for more (not the key)."""
         summary = _printable(op.spoken_summary(args))
         if not turn.foreign:
             return f"Should I {summary}?"
         question = f"Someone on your PC audio asked me to {summary}. Should I?"
-        if self._grant_s <= 0:
+        if self._grant_s <= 0 or not grants:
             return question
         minute = 60
         if self._grant_s >= minute:
@@ -1369,6 +1402,56 @@ class Agent:
             log.exception("the confirmation question for %s could not be asked", op.name)
             approved = False
         self._audit.record("confirmation", op=op.name, action=digest, approved=approved)
+        turn.declined = not approved
+        return approved
+
+    def _allowed(
+        self,
+        verdict: Verdict,
+        op: Operation,
+        args: dict[str, Any],
+        digest: str,
+        reach: tuple[Hooks, _Turn],
+    ) -> bool:
+        """Ask the owner when the verdict needs it; True if the action may run.
+
+        A yes to a request heard in PC audio lets PC audio ask for more for `grant_s`.
+        """
+        hooks, turn = reach
+        if verdict is Verdict.STRONG:
+            return self._confirm_key(op, args, digest, hooks, turn)
+        if verdict is not Verdict.CONFIRM:
+            return True
+        if not self._confirm(op, args, digest, hooks, turn):
+            return False
+        if turn.foreign:
+            self._grant_until = self._clock() + self._grant_s
+            self._audit.record("pc_audio_permission", seconds=self._grant_s)
+        return True
+
+    def _confirm_key(
+        self, op: Operation, args: dict[str, Any], digest: str, hooks: Hooks, turn: _Turn
+    ) -> bool:
+        """Wait for the confirm key for one exact action; anything but a press in time is no.
+
+        Like a spoken no, a no here means nothing else in the request is asked about. A press
+        allows only this action: unlike a yes to PC audio, it opens no window for more.
+        """
+        key = hooks.confirm_key
+        if key is None or turn.declined:
+            self._audit.record(
+                "confirmation", op=op.name, action=digest, approved=False, asked=False, method="key"
+            )
+            return False
+        turn.cues.settle()
+        try:
+            approved = key(self._question(op, args, turn, grants=False), digest) is True
+        except Exception:
+            log.exception("the confirm key for %s could not be asked for", op.name)
+            approved = False
+        self._audit.record(
+            "confirmation", op=op.name, action=digest, approved=approved, method="key"
+        )
         turn.declined = not approved
         return approved
 

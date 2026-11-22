@@ -48,7 +48,8 @@ def test_the_strata_unit_for_a_normal_config(tmp_path: Path) -> None:
     assert f"Environment=XDG_DATA_HOME={tmp_path}/components" in lines
     assert f"EnvironmentFile={key}" in lines
     assert "Environment=PIPEWIRE_REMOTE=/nonexistent" in lines
-    assert "MemoryMax=40G" in lines
+    assert "MemoryHigh=40G" in lines
+    assert "MemoryMax=44G" in lines
     assert any(line.startswith("ExecStart=") and " serve --profile " in line for line in lines)
     assert text.endswith("WantedBy=graphical-session.target\n")
 
@@ -318,3 +319,152 @@ def test_both_units_start_and_stop_with_the_desktop_session(tmp_path: Path) -> N
         lines = _lines(text)
         assert "PartOf=graphical-session.target" in lines
         assert "WantedBy=graphical-session.target" in lines
+
+
+def _section(text: str, name: str) -> list[str]:
+    """Return the lines of one `[name]` section of a unit."""
+    lines = _lines(text)
+    start = lines.index(f"[{name}]") + 1
+    end = next((i for i in range(start, len(lines)) if lines[i].startswith("[")), len(lines))
+    return lines[start:end]
+
+
+def _units(tmp_path: Path) -> dict[str, str]:
+    return {
+        "strata": services.strata_unit(_config(tmp_path), tmp_path / "key"),
+        "jarvis": services.jarvis_unit(),
+    }
+
+
+_BOTH_HARDENED = (
+    "NoNewPrivileges=yes",
+    "LockPersonality=yes",
+    "RestrictSUIDSGID=yes",
+)
+_VOICE_HARDENED = ("SystemCallArchitectures=native",)
+# Left out on purpose (issue #33): each would break something a unit runs.
+_NOT_SET = (
+    "RestrictNamespaces",  # the Azure helper runs under `unshare --map-current-user --net`
+    "MemoryDenyWriteExecute",  # onnxruntime and Strata's HIP path may JIT
+    "ProtectHome",  # config, state and models live under home and on other drives
+    "ProtectSystem",
+    "PrivateNetwork",  # Spotify, Open-Meteo and web reads
+    "IPAddressDeny",
+    "RestrictRealtime",  # until pw-record and pw-play are shown not to need it
+    # In a user unit these two make a private user namespace that Spotify, launched by the voice
+    # service, would inherit.
+    "ProtectKernelModules",
+    "ProtectKernelLogs",
+    "Nice",  # CPUWeight is the only priority change
+    "CPUSchedulingPolicy",
+    "IOSchedulingClass",
+)
+
+
+@pytest.mark.parametrize("option", _BOTH_HARDENED)
+def test_both_units_are_hardened(tmp_path: Path, option: str) -> None:
+    for text in _units(tmp_path).values():
+        assert option in _section(text, "Service")
+
+
+@pytest.mark.parametrize("option", _VOICE_HARDENED)
+def test_only_the_voice_service_takes_the_kernel_and_architecture_options(
+    tmp_path: Path, option: str
+) -> None:
+    units = _units(tmp_path)
+
+    assert option in _section(units["jarvis"], "Service")
+    assert option not in _lines(units["strata"])
+
+
+@pytest.mark.parametrize("name", _NOT_SET)
+def test_options_that_would_break_a_unit_are_not_set(tmp_path: Path, name: str) -> None:
+    for text in _units(tmp_path).values():
+        assert not any(line.startswith(f"{name}=") for line in _lines(text))
+
+
+def test_only_strata_makes_what_it_creates_private(tmp_path: Path) -> None:
+    # A file the file tools write for the owner keeps the mode it asks for (0644).
+    units = _units(tmp_path)
+
+    assert "UMask=0077" in _section(units["strata"], "Service")
+    assert not any(line.startswith("UMask=") for line in _lines(units["jarvis"]))
+
+
+def test_both_units_give_way_to_a_game_for_the_processor(tmp_path: Path) -> None:
+    for text in _units(tmp_path).values():
+        assert "CPUWeight=50" in _section(text, "Service")
+
+
+def test_both_units_stop_restarting_after_a_persistent_failure(tmp_path: Path) -> None:
+    # Five starts in 15 minutes: a unit that keeps failing stays `failed` (and shows in
+    # `jarvis status`) instead of re-reading the model for ever. They belong to [Unit].
+    for text in _units(tmp_path).values():
+        unit = _section(text, "Unit")
+        assert "StartLimitIntervalSec=15min" in unit
+        assert "StartLimitBurst=5" in unit
+        assert not any(line.startswith("StartLimit") for line in _section(text, "Service"))
+
+
+@pytest.mark.parametrize(
+    ("memory_max", "high", "limit"),
+    [
+        ("40G", "40G", "44G"),
+        ("100K", "100K", "110K"),  # exact in the same unit
+        ("10", "10", "11"),
+        ("512M", "512M", "590558004"),  # not exact in any unit: rounded up, in bytes
+    ],
+)
+def test_the_strata_memory_limit_sits_a_tenth_above_the_high_mark(
+    tmp_path: Path, memory_max: str, high: str, limit: str
+) -> None:
+    text = services.strata_unit(_config(tmp_path, memory_max=memory_max), tmp_path / "key")
+
+    lines = _lines(text)
+    assert f"MemoryHigh={high}" in lines
+    assert f"MemoryMax={limit}" in lines
+
+
+def test_a_memory_size_that_is_no_size_never_reaches_the_unit(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    cfg = cfg.model_copy(update={"strata": cfg.strata.model_copy(update={"memory_max": "40GB"})})
+
+    with pytest.raises(ConfigError, match="memory_max"):
+        services.strata_unit(cfg, tmp_path / "key")
+
+
+def test_the_voice_services_own_memory_limit_is_unchanged() -> None:
+    lines = _lines(services.jarvis_unit())
+
+    assert "MemoryMax=4G" in lines
+    assert not any(line.startswith("MemoryHigh=") for line in lines)
+
+
+def _args(profile: dict[str, object]) -> list[str]:
+    args = profile["args"]
+    assert isinstance(args, list)
+    return [str(a) for a in args]  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+
+
+def test_the_prompt_chunk_defaults_to_512(tmp_path: Path) -> None:
+    args = _args(services.strata_profile(_config(tmp_path)))
+
+    assert args[args.index("--prefill") + 1] == "512"
+
+
+def test_the_prompt_chunk_may_be_left_to_strata(tmp_path: Path) -> None:
+    args = _args(services.strata_profile(_config(tmp_path, prefill="auto")))
+
+    assert args[args.index("--prefill") + 1] == "auto"
+
+
+def test_no_vram_reserve_is_passed_unless_one_is_set(tmp_path: Path) -> None:
+    args = _args(services.strata_profile(_config(tmp_path)))
+
+    assert "--vram-reserve-mib" not in args
+
+
+def test_a_vram_reserve_is_passed_to_strata(tmp_path: Path) -> None:
+    args = _args(services.strata_profile(_config(tmp_path, vram_reserve_mib=1536)))
+
+    assert args[args.index("--vram-reserve-mib") + 1] == "1536"

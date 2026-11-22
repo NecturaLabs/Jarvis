@@ -73,7 +73,7 @@ the chat keeps it (see below).
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `11500` and `memory_idle_s` `0.0` (never forget), plus:
+`memory_tokens` `10800` and `memory_idle_s` `0.0` (never forget), plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -109,7 +109,7 @@ A request brought back with ↑ keeps what was pasted into it, so a long paste s
 When a question is about writing a file, the chat shows the first three lines of the new text under it;
 by voice Jarvis says only how many characters.
 
-Ask the chat to show you something ("show me a red panda") and it searches for pictures and draws the best
+Ask the chat to show you something, in any words, and it searches for pictures and draws the best
 one in the window, through kitty's graphics protocol (Sixel in a Sixel terminal, coloured half cells
 elsewhere). It fetches only a picture that search offered, from a public address, and does not see it itself.
 
@@ -128,22 +128,55 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `port` | `8080` | 1024 to 65535 | Strata's port on `127.0.0.1`. |
 | `context` | `24576` | 2048 to 262144 | Context window in tokens (`--max-context`). Each 1,000 tokens more costs about 0.05 GiB of VRAM ([models.md](models.md)). It holds the prompt and the tool schemas (about 5,000 tokens together), the remembered conversation (`agent.memory_tokens` or `chat.memory_tokens`), one reply and the request's tool results; when a long request outgrows it, its oldest tool results are cleared down to their start. |
 | `expert_vram_gib` | `1.0` | 0 to 64 | VRAM budget for expert weights kept on the GPU, passed as `--expert-vram`; the rest of the experts stay in host memory. |
-| `prefill` | `512` | 128 to 8192 | Prompt-reading chunk size (`--prefill`). |
-| `idle_unload_s` | `300` | 30 to 86400 | Seconds without a request before Strata frees the model. |
+| `prefill` | `512` | 128 to 8192, or `"auto"` | Prompt-reading chunk size (`--prefill`). `"auto"` leaves the size to Strata (the value its own setup writes). Strata's tuner lists 512 among the sizes it avoids for this model, because smaller chunks read long prompts slower, so `"auto"`, 2048 and 4096 are worth measuring on your card before changing the default ([models.md](models.md#prompt-chunk-size)). |
+| `idle_unload_s` | `86400` | 30 to 86400 | Seconds without a request before Strata frees the model. The default, 24 hours, keeps it loaded through the day; a lower value gives the RAM back sooner. |
 | `reasoning_budget_tokens` | `512` | 1 to 8192 | Thinking-token cap in the profile. |
-| `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` and `MemoryMax` of the Strata unit. |
+| `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` of the Strata unit. `MemoryMax` is derived from it, 10% above (44G for 40G; a size that does not divide evenly is rounded up and written in bytes), so there is no second key. Past `MemoryHigh` the kernel throttles the unit and reclaims its memory; past `MemoryMax` it kills the unit. |
+| `vram_reserve_mib` | `0` (unset) | 0, or 100 to 65536 | VRAM in MiB the engine leaves free for other programs, passed as `--vram-reserve-mib`. `0` passes nothing, so Strata's own default (700) applies. Set it only after a game that grows once the model is loaded either fails or does not. A card with at most about 8 GB of VRAM cannot start with a reserve (Strata's tuner never tries one there). |
 | `vision_file` | unset | path | The model's picture reader (`mmproj-F16.gguf`, [models.md](models.md#pictures)). Set, the profile reads pictures: Strata's reader runs on the processor, in about 0.9 GB of RAM and no VRAM, starts with the first picture and stops after `vision_idle_s`. Unset, Jarvis reads no pictures. |
 | `vision_idle_s` | `120` | 10 to 86400 | Seconds without a picture before the picture reader stops. |
 
 Fixed by Jarvis, not configurable: lazy loading on, one parallel slot, the HIP backend on GPU 0, `--mtp 2`.
 
+### What the two units set
+
+Both units are written by `jarvis setup`; their text is `jarvis_unit` and `strata_unit` in `src/jarvis/services.py`.
+
+| Setting | `jarvis.service` | `jarvis-strata.service` |
+|---|---|---|
+| `NoNewPrivileges=yes`, `LockPersonality=yes`, `RestrictSUIDSGID=yes` | yes | yes |
+| `UMask=0077` (what the unit creates is private to you) | no | yes |
+| `SystemCallArchitectures=native` | yes | no |
+| `CPUWeight=50` (half the default, so a game started by Steam in the same `app.slice` wins a CPU contest) | yes | yes |
+| `StartLimitIntervalSec=15min`, `StartLimitBurst=5` (in `[Unit]`) | yes | yes |
+| `MemoryHigh` / `MemoryMax` | none / `4G` | `memory_max` / 10% above it |
+
+- The voice service keeps your session's umask, so a file the file tools write at your request gets the
+  mode it asks for (0644, a folder 0755).
+- `NoNewPrivileges` is inherited by programs the voice service starts, directly or through `uwsm-app` (the
+  way the Omarchy launcher starts Spotify; tested with a stand-in command, 2026-11-22).
+- Not set, each for a reason: `ProtectKernelModules=` and `ProtectKernelLogs=` on the voice service (in a user
+  unit they put it in a private user namespace, which Spotify and every other program it starts would inherit),
+  `RestrictNamespaces=` (the Azure wake word helper runs under `unshare --map-current-user --net`),
+  `MemoryDenyWriteExecute=` (onnxruntime and Strata's HIP path may compile code at run time), `ProtectHome=` and
+  `ProtectSystem=` (config, state and models live under home and on other disks), `PrivateNetwork=` and `IPAddressDeny=`
+  (Spotify, Open-Meteo and web reads), `RestrictRealtime=` (`pw-record` and `pw-play` are not shown to
+  do without real-time scheduling), `Nice=` and the `idle` scheduling policies (a reply would starve while a game
+  runs; the model is paged in from disk, so `IOSchedulingClass=idle` would slow it too). `IOWeight=` does nothing: the
+  user manager delegates only the `cpu`, `memory` and `pids` controllers.
+- The start limit: a unit that fails five times in 15 minutes stays `failed` and shows in `jarvis status` instead
+  of restarting for ever (each Strata restart reads the model again). `jarvis start` and `jarvis restart` run
+  `systemctl --user reset-failed` first, so they bring a failed unit back.
+- These options were checked with transient units on this PC (`systemd-run --user`), not with the model loaded
+  on the GPU; [the playbook](playbook/README.md#owner-runs-for-the-service-units-33) lists what the owner still runs.
+
 ### Keeping the model loaded
 
-`idle_unload_s` accepts up to 86400 (24 hours), which keeps the model loaded through the day. Measured on the
+`idle_unload_s` defaults to 86400 (24 hours), its largest value, which keeps the model loaded through the day. Measured on the
 reference machine (RX 7900 XT, 64 GB RAM), a loaded idle model holds about 38 GB of RAM and 7.3 GiB of VRAM and
 uses no GPU or CPU while idle. A cold load took about 107 s with a game running; Jarvis says "One moment,
-waking up" while that happens. At the default 300 s the model is freed after five idle minutes and loaded
-again on the next wake word. The default `memory_max` of 40G leaves about 2 GB above the 38 GB measured, so
+waking up" while that happens. At 300 s, say, the model is freed after five idle minutes and loaded again on
+the next wake word. The default `memory_max` of 40G leaves about 2 GB above the 38 GB measured, so
 raise it before holding a larger model. `jarvis unload` frees the model at once.
 
 ## `[spotify]`: your own Spotify developer app
@@ -163,21 +196,24 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
-| `source` | empty | PipeWire source node name | Microphone. Empty means the default source. `--mic`. |
+| `source` | empty | PipeWire source node name | Microphone: a node name or serial. Empty means the default source. `jarvis doctor` checks that it names a microphone (an `Audio/Source` node) that PipeWire lists. A capture that sends no audio for 5 s counts as lost and is reopened. `--mic`. |
 | `wake_threshold` | `0.5` | above 0, below 1 | LiveKit's wake word score needed. Higher means fewer false wakes and more misses. The service log shows each wake's score. |
 | `wake_engine` | `livekit` | `livekit` or `azure` | Which wake word model listens. `azure` uses your Azure custom keyword model; see [Azure wake word](#azure-wake-word). `jarvis wake livekit\|azure`. |
 | `azure_keyword_model` | empty | path to a `.table` file | The Azure custom keyword model. `jarvis wake azure --model FILE`. |
 | `azure_python` | empty | path to a Python | The Python that has the Speech SDK. Empty means `<data_dir>/azure-wake/venv/bin/python`. |
-| `vad_threshold` | `0.5` | above 0, below 1 | Speech probability that counts as speech. |
+| `vad_threshold` | `0.5` | above 0, below 1 | Speech probability that starts speech. |
+| `vad_neg_threshold` | `0.0` | 0 to below 1, and not above `vad_threshold` | Once speech has started it goes on while the probability stays above this, so a breath or a soft syllable inside a sentence is not taken for the end. `0` means `vad_threshold` less 0.15 (never below 0.01), as Silero's own segmenter does, 0.35 at the default. Set it equal to `vad_threshold` for no margin. It applies to the end of every request, answer and follow-up; PC audio's speech count while Jarvis waits for a yes keeps `vad_threshold`, as it only counts frames. |
 | `no_speech_timeout_s` | `4.0` | above 0, up to 30 | Silence after the wake word before Jarvis gives up. |
-| `end_silence_s` | `0.7` | above 0, up to 5 | Trailing silence that ends a request. |
+| `end_silence_s` | `0.7` | above 0, up to 5 | Trailing silence (below the exit threshold) that ends a request. A request after the wake word, by mic or PC audio, needs at least 0.15 s of speech (two 80 ms frames) or it is dropped without a word: a click is not a request. With the Azure wake word, only the keyword's last quarter second, kept with the request, is left out of that count. |
 | `max_utterance_s` | `20.0` | above 1, up to 120 | Longest request. |
 | `confirm_window_s` | `8.0` | above 1, up to 30 | How long Jarvis waits for the answer to a confirmation question. |
+| `confirm_key_s` | `30.0` | 5 to 120 | How long a `strong` action waits for the confirm key (`jarvis confirm`) after Jarvis has asked about it. |
 | `barge_in` | `true` | true or false | Listen for the wake word while Jarvis speaks: saying it stops Jarvis and starts a new request (a question spoken over counts as no). See [ADR 0008](adr/0008-speak-while-writing-and-barge-in.md). |
 | `listen_when_locked` | `true` | true or false | `false`: while the Omarchy lock screen is up, Jarvis takes no request: not after the wake word, not in the follow-up window, not spoken over a reply (the wake word still stops its speech), and none from PC audio. It asks the shell (`omarchy-shell lock isLocked`) once such a request is heard, and a state it cannot read counts as locked; `jarvis doctor` checks it can be read. `true` lets anyone at a locked PC talk to Jarvis. |
-| `follow_up_s` | `6.0` | 0 to 15 | Seconds after a spoken reply in which the next request needs no wake word; 0 turns it off. The window opens once the reply has finished playing, only after a request in your own voice, and never while Voxtype dictation is recording or transcribing (`voxtype status`); with `listen_to_pc` on, speech heard while PC audio also held speech is dropped; speech shorter than 0.3 s (a cough, a click) is ignored and the window listens on; speech in it that cannot be made out is dropped without a word. The wake word inside the window starts a request as usual. Background speech in the room can start a request too: if it does, shorten the window or set 0. |
+| `follow_up_s` | `6.0` | 0 to 15 | Seconds after a spoken reply in which the next request needs no wake word; 0 turns it off. The window opens once the reply has finished playing, only after a request in your own voice, and never while Voxtype dictation is recording or transcribing or a Voxtype meeting runs, or while that cannot be read (`voxtype status`, see [Dictation and meetings](#dictation-and-meetings)); with `listen_to_pc` on, speech heard while PC audio also held speech is dropped; speech shorter than 0.3 s (a cough, a click) is ignored and the window listens on; speech in it that cannot be made out is dropped without a word. The wake word inside the window starts a request as usual. Background speech in the room can start a request too: if it does, shorten the window or set 0. |
 | `voice` | `kokoro:bm_george` | text | `kokoro:<name>` for a Kokoro voice, otherwise a Piper voice name. See [models.md](models.md). |
 | `speech_speed` | `1.0` | 0.5 to 2.0 | Speaking speed, for Kokoro and Piper voices. |
+| `kokoro_phoneme_map` | `false` | true or false | Kokoro voices only. Rewrite espeak's phonemes into the symbols Kokoro was trained on (`eɪ` to `A`, `aɪ` to `I`, `tʃ` to `ʧ`, `r` to `ɹ`, and the rest of the table in `src/jarvis/phonemes.py`) before they are spoken. Off, Kokoro gets espeak's raw output, as the kokoro-onnx package does. It is off until you have heard it help: set it, run `jarvis restart` and compare a few sentences. |
 | `transcribe_engine` | empty | text | Voxtype `--engine`. Empty means Voxtype's own. |
 | `transcribe_model` | `small.en` | text | Voxtype `--model`: a model name or a full path to a model file. Empty means Voxtype's own. The model must already be downloaded; `jarvis doctor` checks Whisper models. |
 | `transcribe_threads` | `8` | 1 to 256 | Whisper threads, written to Jarvis's own Voxtype settings file. |
@@ -191,6 +227,20 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | `pc_audio_cooldown_s` | `5.0` | 0 to 600 | Pause after a PC-audio request during which another is ignored. |
 
 See [the PC-audio ADR](adr/0003-pc-audio-is-not-the-owner.md) for why the last four exist.
+
+### Dictation and meetings
+
+Jarvis follows Voxtype's own status with one long-lived `voxtype status --follow --format json --extended`
+(read-only; it costs nothing while the status is the same) and reads what it last said, so asking never waits
+for Voxtype. While your dictation is recording or transcribing, a wake word is ignored: no request, no
+chime, and one `wake_ignored` event in the audit log. While a Voxtype meeting runs (any `meeting_status` but
+`idle`), or while dictation runs, no follow-up window opens. A status that is not known yet or cannot be read (an
+older Voxtype without those options, a line that is not JSON, a status command that ended) never keeps Jarvis
+from taking the wake word, but it does keep follow-ups off. A Voxtype daemon that is not running counts as no
+dictation: the status command says so itself. Measured with
+`tools/idle_check.py` on 2026-11-22 (Voxtype 1.3.0, daemon idle, 20 s): the follower and its Python parent use 0.0 % of
+one core, against 2 to 3 ms of CPU for each plain `voxtype status` call and about 40 ms of CPU (0.2 to 0.4 s of
+wall time) for each `--extended` one that polling would make.
 
 ### Speakers and other apps' speech
 
@@ -253,6 +303,13 @@ The helper still runs as you, with your files and local sockets.
    one listens. Each switch restarts the voice service if it is running.
 3. With `audio.wake_engine = "azure"`, `jarvis doctor` checks the model file, the Python and that a namespace with no network can be made.
 
+The keyword engine documents that a keyword is heard after silence ("at least 1.5 s" before the first one,
+read from Microsoft Learn's custom keyword quickstart; not fetched again when this was written), and not in
+the middle of a sentence. So the helper writes 1.5 s of silence into the engine's stream before the first
+sample and again after each keyword, and the samples it reports leave that silence out. A keyword said
+within 1.5 s of Jarvis ending its own speech or of the last wake word, or in the middle of a sentence, is
+outside what the engine promises and may be missed; how often it is, with your models, is not measured yet.
+
 If the Azure model cannot start, Jarvis says so in the log and listens with LiveKit's instead. The model's own
 threshold decides, so `wake_threshold` does not apply to it. An Azure model trained with "Containing single
 keyword" also wakes on "Jarvis" alone; while one listens, a sentence in which Jarvis says its own name cannot
@@ -266,6 +323,12 @@ be spoken over.
 | `tone` | calm, warm, to the point, with a light touch of dry wit | How it speaks. |
 | `addendum` | empty | Your own extra instructions, added to the system prompt. |
 
+## `[format]`
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `thousands_separator` | `","` | `","`, `" "`, `"'"`, `""` | What Jarvis puts between groups of three digits of a number's whole part, in every reply (the system prompt says so) and in the calculator's answers: 48 times 31 is 1,488. `""` writes none. A calculator answer of more than 20 digits is given in powers of ten without groups. |
+
 ## `[clock]`
 
 | Key | Default | Allowed | What it does |
@@ -278,7 +341,7 @@ place's time zone.
 ## `[weather]`: your home, for weather that names no place
 
 Weather comes from Open-Meteo, which needs no account or key ([ADR 0007](adr/0007-outside-services-for-answers.md)).
-"What's the weather" uses your home; "what's the weather in Lisbon tomorrow" looks Lisbon up.
+A weather question that names no place uses your home; one that names a place looks that place up.
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -350,7 +413,7 @@ hidden files under home stay shut unless you open them.
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
-| `bypass_consent` | `true` | `true`, `false` | `true`: Jarvis never asks for a yes. Every action that would need one runs at once and is audited as run with consent bypassed: `confirm` and `strong` actions, side effects after outside or file text, searches while file text is in the conversation, and requests heard in PC audio. An operation set to `deny` is still refused. `false`: Jarvis asks as described below. `jarvis consent ask` or `jarvis consent bypass` switches it and restarts the voice service. |
+| `bypass_consent` | `true` | `true`, `false` | `true`: Jarvis never asks for a yes. Every action that would need one runs at once and is audited as run with consent bypassed: `confirm` actions, side effects after outside or file text, searches while file text is in the conversation, and requests heard in PC audio. A `strong` action still waits for the confirm key, and an operation set to `deny` is still refused. `false`: Jarvis asks as described below. `jarvis consent ask` or `jarvis consent bypass` switches it and restarts the voice service. |
 | `max_actions` | `30` | 1 to 10000 | The most side-effecting actions (playback changes, a file write) that run in any `actions_window_s`, counted across the voice service, the chat and `jarvis ask` together, in both consent modes. One past it is refused, audited as `action_limit` and Jarvis says why: with the window already full, before you are asked. Only actions that run count, taking their place once you said yes (or no yes was needed); one you decline, or one declined unasked after a no, takes none. Reads, searches and answers do not count. When the shared count file stays locked for 2 seconds, that process counts only its own actions for that one, and logs it. |
 | `actions_window_s` | `600.0` | 1 to 86400 | The window `max_actions` is counted over, in seconds. |
 
@@ -361,12 +424,14 @@ audio you do not trust.
 ## `[boundaries.classes]`
 
 A table from operation name to a class: `safe` (runs), `confirm` (needs your spoken yes), `strong`
-(keybinding confirmation, not built yet, so such a call is refused unless `bypass_consent` is on) or `deny`.
+(needs the confirm key, below; never a spoken yes, and not skipped by `bypass_consent`) or `deny`.
 A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` with an error, so a typo
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
-its shipped class, which is `safe` for every operation but `write_file` (`confirm`): `spotify_*`, `time_now`,
-`weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`, `pc_stats`, `list_dir`, `read_file`; set
-one to `deny` to switch it off. Whatever the class, side effects are raised to `confirm` while text from outside
+its shipped class, which is `safe` for every operation but `write_file` (`confirm`) and `stop_process`
+(`strong`): `spotify_*`, `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`,
+`pc_stats`, `calculate`, `list_dir`, `read_file`, `find_processes`; set one to `deny` to switch it off. `stop_process`
+may be set only to `strong` or `deny`: a program is stopped by your command and your key alone, so any
+other class stops `jarvis run`, `ask` and `chat` with an error. Whatever the class, side effects are raised to `confirm` while text from outside
 your own speech is in the request, and so are the operations that send words off the PC while a file's text is. Example:
 
 ```toml
@@ -375,3 +440,59 @@ spotify_like = "confirm"
 spotify_queue = "deny"
 reddit_search = "deny"
 ```
+
+## The confirm key (`jarvis confirm`)
+
+A `strong` action runs only after you press a key. Jarvis says what it is about to do, then "Press the
+confirm key to allow it", and waits `audio.confirm_key_s` for `jarvis confirm`. Bind that command to a key
+in `~/.config/hypr/bindings.lua`, for example:
+
+```lua
+o.bind("SUPER + CTRL + Y", "Jarvis confirm", "jarvis confirm")
+```
+
+- One press allows the one action Jarvis asked about, once. Not pressing in time, saying "Hey Jarvis",
+  `jarvis hush` or `jarvis pause` is no; a press after a timeout, `hush` or `pause` finds nothing
+  waiting. A spoken yes
+  never counts. The wait is timed on the boot clock, so a suspend does not leave it open.
+- Press once the question has ended. A press while nothing waits, or one sooner than 0.3 s after the
+  question ended, allows nothing and holds the key off for 30 s, so a program pressing it over and over
+  cannot catch a question. Jarvis says so if it was about to ask.
+- The key works only through the control socket of the voice service. As a best effort, a press from a
+  program Jarvis started is refused and audited. It is no guarantee: any program running as you can run
+  `jarvis confirm`, so the key keeps the model (and what it reads) from acting alone, not malware already
+  on your account. The chat window and `jarvis ask` (even with `--yes`) have no confirm key, so they
+  refuse a `strong` action.
+- Each press, refused or not, is in the audit log (`confirm_key`), and the answer is a `confirmation`
+  event with `"method": "key"`.
+
+## Stopping a program
+
+Ask in any words to close, end or kill a program. Jarvis first
+looks for the programs of yours that match the name you said (`find_processes`, `safe`): by the program's
+name, its executable, the name it was started as (a Wine or Proton game's `.exe`), or its window's
+class or title. It lists at most 8, folds a program's own child processes into it, and, when more than one
+matches, reads them out and asks which; when none matches it says so and never tries a wider name. It then
+stops the one you chose (`stop_process`, `strong`): "Should I stop <program> (PID <number>)?", and only your
+confirm key allows it. That allows that exact process: if it ended and its PID went to another program
+before the press, nothing is stopped. It is asked to close (SIGTERM); a forced stop (SIGKILL) only when you
+ask for one. Jarvis says whether it ended within 3 seconds.
+
+In code, whatever the model says:
+
+- `stop_process` takes only a PID that `find_processes` listed in the same request, never a name or pattern.
+- A request heard in PC audio stops nothing, even with the key pressed and questions bypassed. Nor does
+  a request that also read outside text (a web page, a file, a picture, a long paste, Spotify names, or
+  such text remembered from earlier): ask again in a request of its own.
+- A program matched only by one window's title (a browser tab's, say) is marked so, and the question
+  names that title and says all its windows close.
+- Only your own processes are listed. Never listed or stopped: PID 1, kernel threads, other users'
+  processes and set-user-ID programs, processes another user started (or whose parent cannot be seen) and
+  those in the login session's own scope (`session-N.scope`), Jarvis and the terminal or shell it runs in,
+  the processes that started the desktop session, login shells, the `jarvis` and `jarvis-strata`
+  services, and `systemd`, D-Bus, PipeWire, WirePlumber, Hyprland, Xwayland, `uwsm`, the bar (`waybar`,
+  Omarchy's `quickshell`), `hyprlock`, `hypridle`, the desktop portals, the keyring, the polkit agent,
+  `dconf-service`, the accessibility bus, `gvfs*`, `mako`, `swayosd-server`, `hyprsunset`, `walker`,
+  `elephant`, `fcitx5`, Omarchy's own `omarchy-*` helpers, Voxtype and Strata. A name is checked in full
+  (a program's executable, or a script's file name), not only its first 15 characters. The list, with the
+  reason for each, is in `src/jarvis/pc/processes.py`.

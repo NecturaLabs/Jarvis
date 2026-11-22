@@ -69,7 +69,7 @@ times with the monotonic clock.
 
 ## Model drive missing
 
-`/mnt/models` is mounted `nofail`, so the desktop starts without it. `jarvis-strata.service` has
+When the model's drive is mounted `nofail`, the desktop starts without it. `jarvis-strata.service` has
 `ConditionPathExists=` on the model file, so systemd skips Strata. Nothing is left to wait for.
 
 Jarvis then answers a request at once with "My model's file is missing, so I can't answer. Is its drive

@@ -37,6 +37,23 @@ def _no_control_path(path: Path) -> Path:
 SafePath = Annotated[Path, AfterValidator(_no_control_path)]
 SafeText = Annotated[str, AfterValidator(_no_control)]
 
+VRAM_RESERVE_MIN_MIB = (
+    100  # our floor, not the engine's: a smaller reserve leaves a game no real room
+)
+VRAM_RESERVE_MAX_MIB = 65536
+
+
+def _reserve_or_unset(mib: int) -> int:
+    if mib != 0 and mib < VRAM_RESERVE_MIN_MIB:
+        msg = f"must be 0 (unset) or at least {VRAM_RESERVE_MIN_MIB}"
+        raise ValueError(msg)
+    return mib
+
+
+VramReserve = Annotated[
+    int, Field(ge=0, le=VRAM_RESERVE_MAX_MIB), AfterValidator(_reserve_or_unset)
+]
+
 
 def _check_endpoint(url: str) -> str:
     """Return `url` when it is an `http` or `https` URL on this machine; empty means unset.
@@ -101,7 +118,7 @@ class ChatConfig(AgentConfig):
     max_seconds: float = Field(default=600.0, ge=10, le=3600)
     reply_tokens: int = Field(default=2048, ge=64, le=8192)
     tool_text_chars: int = Field(default=8000, ge=500, le=50000)
-    memory_tokens: int = Field(default=11500, ge=0, le=200000)
+    memory_tokens: int = Field(default=10800, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
     resume: bool = True  # open the chat on the conversation it had last time
     verbosity: Literal["replies", "steps", "everything"] = "replies"
@@ -120,10 +137,14 @@ class StrataConfig(_Section):
     port: int = Field(default=8080, ge=1024, le=65535)
     context: int = Field(default=24576, ge=2048, le=262144)
     expert_vram_gib: float = Field(default=1.0, ge=0, le=64)
-    prefill: int = Field(default=512, ge=128, le=8192)
-    idle_unload_s: int = Field(default=300, ge=30, le=86400)
+    # The prompt-reading chunk (`--prefill`): a size in tokens, or "auto" to leave it to Strata.
+    prefill: Annotated[int, Field(ge=128, le=8192)] | Literal["auto"] = 512
+    idle_unload_s: int = Field(default=86400, ge=30, le=86400)  # stays loaded (#34, decision 2)
     reasoning_budget_tokens: int = Field(default=512, gt=0, le=8192)
     memory_max: str = Field(default="40G", pattern=r"^\d+[KMGT]?$")
+    # VRAM in MiB the engine leaves free for other programs (`--vram-reserve-mib`); 0 passes
+    # nothing, so Strata's own default (700) applies.
+    vram_reserve_mib: VramReserve = 0
     # The picture reader (the model's mmproj file, beside it); unset: Jarvis reads no pictures.
     vision_file: SafePath = Path()
     vision_idle_s: int = Field(default=120, ge=10, le=86400)  # the reader stops after this idle
@@ -154,16 +175,25 @@ class SpotifyConfig(_Section):
         return self
 
 
+VAD_EXIT_MARGIN = 0.15  # how far below the entry threshold speech goes on, as Silero's own does
+VAD_EXIT_FLOOR = 0.01
+
+
 class AudioConfig(_Section):
     """Microphone, wake word, end-of-speech and voice settings."""
 
     source: str = ""
     wake_threshold: float = Field(default=0.5, gt=0, lt=1)
     vad_threshold: float = Field(default=0.5, gt=0, lt=1)
+    # Once speech has started it goes on while the probability stays above this; 0 means
+    # `vad_threshold` less VAD_EXIT_MARGIN (Silero's own rule), never below VAD_EXIT_FLOOR.
+    vad_neg_threshold: float = Field(default=0.0, ge=0, lt=1)
     no_speech_timeout_s: float = Field(default=4.0, gt=0, le=30)
     end_silence_s: float = Field(default=0.7, gt=0, le=5)
     max_utterance_s: float = Field(default=20.0, gt=1, le=120)
     confirm_window_s: float = Field(default=8.0, gt=1, le=30)
+    # How long a `strong` action waits for the confirm key (`jarvis confirm`) once asked about.
+    confirm_key_s: float = Field(default=30.0, ge=5, le=120)
     barge_in: bool = True  # the wake word stops Jarvis mid-sentence and starts a new request
     # Off: a wake word or PC-audio request is ignored while the Omarchy lock screen is up.
     listen_when_locked: bool = True
@@ -174,6 +204,8 @@ class AudioConfig(_Section):
     azure_python: str = ""  # the Python with the Speech SDK; empty: <data_dir>/azure-wake/venv
     voice: str = "kokoro:bm_george"
     speech_speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    # Rewrite espeak's phonemes into the symbols Kokoro was trained on; off until heard to help.
+    kokoro_phoneme_map: bool = False
     transcribe_engine: str = ""
     transcribe_model: str = "small.en"  # measured faster and more accurate than base.en here
     transcribe_threads: int = Field(default=8, ge=1, le=256)
@@ -185,6 +217,20 @@ class AudioConfig(_Section):
     pc_audio_grant_s: float = Field(default=600.0, ge=0, le=86400)
     confirm_blocks_on_pc_speech: bool = True
     pc_audio_cooldown_s: float = Field(default=5.0, ge=0, le=600)
+
+    @model_validator(mode="after")
+    def _exit_is_not_above_entry(self) -> Self:
+        if self.vad_neg_threshold > self.vad_threshold:
+            msg = "vad_neg_threshold must not exceed vad_threshold"
+            raise ValueError(msg)
+        return self
+
+    @property
+    def vad_exit_threshold(self) -> float:
+        """The probability above which speech that has started goes on."""
+        if self.vad_neg_threshold:
+            return self.vad_neg_threshold
+        return max(self.vad_threshold - VAD_EXIT_MARGIN, VAD_EXIT_FLOOR)
 
 
 class PersonaConfig(_Section):
@@ -199,6 +245,13 @@ class ClockConfig(_Section):
     """How Jarvis says the time."""
 
     twelve_hour: bool = True
+
+
+class FormatConfig(_Section):
+    """How Jarvis writes numbers, in every reply and tool answer."""
+
+    # Between groups of three digits in a whole part: 1,488. "" writes none.
+    thousands_separator: Literal[",", " ", "'", ""] = ","
 
 
 POINT = 2  # a latitude and a longitude
@@ -290,11 +343,12 @@ class FilesConfig(_Section):
 class BoundariesConfig(_Section):
     """Per-operation class overrides set by the owner, and whether Jarvis asks before acting.
 
-    `bypass_consent` (the owner's choice, on by default) runs every action that would need a yes
-    without asking: `confirm` and `strong` actions, actions after outside or file text, and
-    requests heard in PC audio. An operation set to `deny` stays refused. Whatever the consent mode,
-    at most `max_actions` side-effecting actions run in any `actions_window_s` seconds, counted
-    across the voice service, the chat and `jarvis ask` together.
+    `bypass_consent` (the owner's choice, on by default) runs every action that would need a
+    spoken yes without asking: `confirm` actions, actions after outside or file text, and requests
+    heard in PC audio. A `strong` action still waits for the confirm key, and an operation set to
+    `deny` stays refused. Whatever the consent mode, at most `max_actions` side-effecting actions
+    run in any `actions_window_s` seconds, counted across the voice service, the chat and
+    `jarvis ask` together.
     """
 
     classes: dict[str, OpClassName] = Field(default_factory=dict[str, OpClassName])
@@ -316,6 +370,7 @@ class Config(_Section):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
     clock: ClockConfig = Field(default_factory=ClockConfig)
+    format: FormatConfig = Field(default_factory=FormatConfig)
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
     research: ResearchConfig = Field(default_factory=ResearchConfig)
     files: FilesConfig = Field(default_factory=FilesConfig)

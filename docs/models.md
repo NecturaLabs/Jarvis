@@ -56,6 +56,16 @@ amdgpu DRM client, and amdgpu published no `drm-engine` busy counters for that c
 which has to listen. See
 [configuration.md](configuration.md#keeping-the-model-loaded).
 
+#### Prompt chunk size
+
+`strata.prefill` is 512 tokens. The reason for 512 is not recorded. Strata's own tuner lists 512 for this model
+family among the sizes it avoids (smaller chunks read long prompts 11% to 75% slower in its tests), and tries
+`auto`, `auto:16384`, `auto:32768`, 2048 and 4096. `strata.prefill = "auto"` is accepted and passed through as
+`--prefill auto`. Not measured yet: the owner's run (prompt tokens per second, time to the first word on the
+2,900-token request, VRAM, with a game running) is listed in the [playbook](playbook/README.md#owner-runs-for-the-service-units-33).
+The default changes only if the numbers favour it. `strata.vram_reserve_mib` (unset: Strata's default, 700 MiB)
+is the matching VRAM knob.
+
 Jarvis marks the system prompt and the tools as Strata's shared prefix (`strata_prefix`, one message) on every
 request that sends tools. The Qwen3.6 engine in Strata 0.1.62 does not use that mark yet, so every request
 still reads the whole prompt. An engine that ignores the mark is harmless; the 4.5 s above is the cost today.
@@ -113,14 +123,18 @@ spoken over.
 - Files, under `<data_dir>/voices/kokoro/`: `kokoro-v1.0.onnx` and `voices-v1.0.bin` from the kokoro-onnx
   `model-files-v1.1` release. `jarvis doctor` checks their sha256 against the pinned release.
 - Phonemes come from espeak-ng, whose library and data ship inside the `piper-tts` wheel, so the Piper package
-  is installed and imported even when you use Kokoro.
+  is installed and imported even when you use Kokoro. Raw espeak symbols are what the kokoro-onnx package feeds
+  too. Kokoro was trained on the symbols of misaki, which rewrites espeak's (for example `eɪ` to `A`, `aɪ` to
+  `I`, `tʃ` to `ʧ`, `r` to `ɹ`); `audio.kokoro_phoneme_map` applies that table (misaki 0.9.4, `EspeakFallback`,
+  Apache-2.0), off by default until it is heard to help. Over about 2,200 words of these docs the table loses
+  no symbol to the model's vocabulary; whether it sounds better is not yet heard.
 - Licence: Apache-2.0 for the Kokoro-82M v1.0 weights and voices, rechecked against the
   [model card](https://huggingface.co/hexgrad/Kokoro-82M) on 2026-11-21. The card says it was trained only on
   public-domain audio, audio under permissive licences (Apache, MIT and the like) and synthetic audio from
   closed TTS models; two of its datasets are CC BY: Koniwa `tnc` (CC BY 3.0) and SIWIS (CC BY 4.0). The ONNX
   export and `voices-v1.0.bin` come from [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx), MIT. Jarvis
   ships none of these files; you download them.
-- Time to first audio, measured on 2026-11-21 on this PC (Ryzen 7 9800X3D, desktop load about 2.5): one
+- Time to first audio, measured on 2026-11-21 on the reference machine (Ryzen 7 9800X3D, desktop load about 2.5): one
   first sentence of a typical reply (one to nine words) took a median 0.24 s to synthesize and trim, 0.28 s at
   the 90th percentile and 0.30 s at most, over 23 sentences, with `bm_george` and with `bm_fable` alike. The first
   sentence after loading the voice took 0.40 s with the files in the page cache and 0.96 s from cold. Opening
@@ -132,8 +146,11 @@ spoken over.
 - `piper-tts` 1.8.0 (OHF-Voice/piper1-gpl). Put a voice at `<data_dir>/voices/<name>.onnx` with
   `<name>.onnx.json` beside it and set `audio.voice = "<name>"`. `audio.speech_speed` sets Piper's length
   scale (the voice's own scale divided by the speed).
-- Licence: `piper-tts` is GPL-3.0-or-later (package metadata). Each Piper voice has its own licence: not
-  checked. Because Jarvis imports `piper-tts` for both voices, Jarvis is published under GPL-3.0-or-later
+- Licence: `piper-tts` is GPL-3.0-or-later (package metadata). Each Piper voice has its own licence: check
+  its model card before using it; Jarvis ships none. Checked 2026-11-22 for `en_GB-alan-medium`: its card
+  names the dataset `MycroftAI/mimic3-voices` `en_UK/apope_low`, whose LICENSE reads "Copyright 2022 Mycroft
+  AI / All Rights Reserved" while the repository's root LICENSE is CC BY-SA 4.0, so that voice's terms are
+  unclear. Because Jarvis imports `piper-tts` for both voices, Jarvis is published under GPL-3.0-or-later
   (`docs/adr/0006-gpl-licence.md`).
 
 ## Wake word and end of speech
@@ -150,8 +167,16 @@ spoken over.
   heard 0.3 to 0.6 s after the word ended. The `.table` model is your own, trained under Microsoft's terms for the Speech service, and is never
   shipped with Jarvis. Setup: [configuration.md](configuration.md#azure-wake-word).
 - **End of speech:** Silero VAD 6.2.3 at `<data_dir>/vad/silero_vad.onnx`, MIT as pinned in `models.py`; not
-  rechecked upstream. Threshold and timings: `audio.vad_threshold`, `no_speech_timeout_s`, `end_silence_s`,
-  `max_utterance_s`.
+  rechecked upstream. Threshold and timings: `audio.vad_threshold`, `vad_neg_threshold` (speech goes on
+  above it once started; default `vad_threshold` less 0.15, as Silero's own segmenter does),
+  `no_speech_timeout_s`, `end_silence_s`, `max_utterance_s`. The defaults for the margin and for the 0.15 s of
+  speech a request after the wake word needs were reasoned from the code, not tuned on a voice (2026-11-22):
+  the margin is Silero's own (`threshold - 0.15`), and with 0.7 s of silence needed to end a request it only
+  keeps a breath or a soft syllable from counting as silence; 0.15 s is two 80 ms frames, the minimum a
+  confirmation answer already has (a click is one frame), and less than the 0.3 s asked of a follow-up because
+  saying the wake word already shows intent, so a short command such as "stop" still gets through. Silero's own
+  250 ms minimum is for cutting speech out of noise with no wake word. Tuning them on your voice is still to do;
+  see [configuration.md](configuration.md).
 - Jarvis has no downloader yet: place the four files above (wake, VAD and the two Kokoro files) under
   `data_dir` yourself. `jarvis doctor` names any that are missing.
 

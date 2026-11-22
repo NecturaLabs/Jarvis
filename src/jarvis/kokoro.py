@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 import onnxruntime as ort
 
+from jarvis.phonemes import trained_phonemes
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -82,9 +84,19 @@ class Kokoro:
     """One Kokoro model and voice pack; `synthesize` returns int16 PCM at 24 kHz."""
 
     def __init__(
-        self, model_path: Path, voices_path: Path, voice: str, *, speed: float = 1.0
+        self,
+        model_path: Path,
+        voices_path: Path,
+        voice: str,
+        *,
+        speed: float = 1.0,
+        phoneme_map: bool = False,
     ) -> None:
         """Load the model and pick a voice (e.g. `bm_george`).
+
+        With `phoneme_map`, espeak's phonemes are rewritten into the symbols the model was trained
+        on (`trained_phonemes`) before they are looked up; off, they are looked up as espeak gives
+        them.
 
         Raises:
             ValueError: the file is not a Kokoro model, or the voice pack has no voice of that
@@ -111,14 +123,19 @@ class Kokoro:
                 msg = f"unknown Kokoro voice {voice!r}; available: {', '.join(sorted(pack.files))}"
                 raise ValueError(msg)
             self._style = np.asarray(pack[voice], dtype=np.float32)
-        self._espeak_voice = "en-gb-x-rp" if voice.startswith("b") else "en-us"
+        self._british = voice.startswith("b")
+        self._espeak_voice = "en-gb-x-rp" if self._british else "en-us"
         self._speed = speed
+        self._phoneme_map = phoneme_map
 
     def tokens(self, text: str) -> list[list[int]]:
         """Return the token ids of each sentence, split to fit the model's window."""
         out: list[list[int]] = []
         for sentence in _espeak_phonemes(text, self._espeak_voice):
-            known = "".join(ch for ch in sentence if ch in self._vocab)
+            spoken = (
+                trained_phonemes(sentence, british=self._british) if self._phoneme_map else sentence
+            )
+            known = "".join(ch for ch in spoken if ch in self._vocab)
             out.extend([self._vocab[ch] for ch in chunk] for chunk in _chunks(known))
         return [ids for ids in out if ids]
 

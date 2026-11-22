@@ -107,6 +107,14 @@ def _line(entry: dict[str, object]) -> str:
         ({"event": "tool_call", "op": "x", "verdict": "deny", "reason": "off"}, "warn", "off"),
         ({"event": "confirmation", "approved": True}, "result", "yes"),
         ({"event": "confirmation", "approved": False}, "warn", "no"),
+        ({"event": "tool_call", "op": "x", "verdict": "strong"}, "ask", "confirm key"),
+        ({"event": "tool_call", "op": "x", "verdict": "strong", "refused": "no"}, "warn", "key"),
+        ({"event": "confirmation", "approved": True, "method": "key"}, "result", "pressed"),
+        ({"event": "confirmation", "approved": False, "method": "key"}, "warn", "no key press"),
+        ({"event": "confirm_key", "outcome": "pressed"}, "detail", "pressed"),
+        ({"event": "confirm_key", "outcome": "nothing waiting"}, "warn", "nothing was waiting"),
+        ({"event": "confirm_key", "outcome": "too soon"}, "warn", "too soon"),
+        ({"event": "confirm_key", "outcome": "held off"}, "warn", "held off"),
         ({"event": "tool_failed", "op": "spotify_play", "error": "no device"}, "warn", "device"),
         ({"event": "tool_uncertain", "op": "spotify_queue"}, "warn", "not sure"),
         ({"event": "model_error", "error": "refused"}, "error", "refused"),
@@ -254,11 +262,37 @@ def test_a_control_command_shows_as_a_note(command: str, text: str) -> None:
     assert (shown.kind, shown.text) == ("note", text)
 
 
+def test_a_confirm_key_press_from_a_program_jarvis_started_is_a_warning() -> None:
+    shown = describe(
+        {
+            "ts": "2026-11-22T10:00:00+00:00",
+            "event": "control_refused",
+            "command": "confirm",
+            "reason": "started by Jarvis",
+        }
+    )
+
+    assert shown is not None
+    assert (shown.kind, shown.text) == (
+        "warn",
+        "refused the confirm key from a program Jarvis started",
+    )
+
+
 def test_a_refused_control_connection_is_a_warning() -> None:
     shown = describe({"ts": "2026-11-21T10:00:00+00:00", "event": "control_refused"})
 
     assert shown is not None
     assert shown.kind == "warn"
+
+
+def test_a_wake_word_ignored_during_dictation_shows_as_a_note() -> None:
+    shown = describe(
+        {"ts": "2026-11-22T10:00:00+00:00", "event": "wake_ignored", "reason": "dictating"}
+    )
+
+    assert shown is not None
+    assert (shown.kind, shown.text) == ("note", "Ignored the wake word: you were dictating")
 
 
 @pytest.mark.parametrize(

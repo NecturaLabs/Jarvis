@@ -52,6 +52,7 @@ step "tests" uv run pytest -q -m "not local"
 step "licence information (REUSE)" uv run reuse lint
 step "dependency licences and sources" uv run python tools/check_licences.py
 step "docs" uv run python tools/check_docs.py
+step "no private details" uv run python tools/check_private.py
 
 if getent hosts pypi.org >/dev/null 2>&1; then
   step "known vulnerabilities" audit

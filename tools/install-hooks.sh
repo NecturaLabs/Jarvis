@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Usage: tools/install-hooks.sh [--uninstall]
 #
-# Opt-in git hooks: copies tools/hooks/pre-commit (checks and tests) and tools/hooks/commit-msg
-# (Conventional Commits) into this repository's own hooks folder (`git rev-parse --git-path hooks`),
+# Opt-in git hooks: copies tools/hooks/pre-commit (checks and tests), tools/hooks/commit-msg
+# (Conventional Commits) and tools/hooks/pre-push (no private details) into this repository's own hooks folder (`git rev-parse --git-path hooks`),
 # shared by its worktrees. It copies rather than pointing core.hooksPath at tools/hooks: with a path
 # into the tracked tree, any hook a branch adds there (post-checkout, post-merge) would run the moment
 # that branch is checked out, before anyone has read it. A copy changes only when this script is run
@@ -12,7 +12,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 marker="# jarvis-hook: installed by tools/install-hooks.sh"
-hooks=(pre-commit commit-msg)
+hooks=(pre-commit commit-msg pre-push)
 legacy=tools/hooks # what an earlier version of this script set core.hooksPath to
 if [[ ${1:-} == --uninstall && $(git config --local --get core.hooksPath || true) == "${legacy}" ]]; then
   git config --local --unset core.hooksPath
