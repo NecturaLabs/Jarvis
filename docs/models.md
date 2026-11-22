@@ -156,14 +156,32 @@ spoken over.
 ## Wake word and end of speech
 
 - **Wake word:** the LiveKit `hey_jarvis` model, run by `livekit-wakeword` 2.1.3 on CPU, at
-  `<data_dir>/wake/hey_jarvis.onnx`. Threshold: `audio.wake_threshold`. Licence: Apache-2.0 for the code
-  (package metadata) and the weights (the wheel's `NOTICE`); the file is pinned to release 2.1.3 in `models.py`.
+  `<data_dir>/wake/hey_jarvis.onnx`. Threshold: `audio.wake_threshold`, or its own in
+  `audio.wake_thresholds`. Licence: Apache-2.0 for the code (package metadata) and the weights (the wheel's
+  `NOTICE`); the file is pinned to release 2.1.3 in `models.py`.
 - **More wake phrases (optional):** any model `livekit-wakeword train` makes (2.x, standard type), put at
   `<data_dir>/wake/<name>.onnx` and named in `audio.wake_words` (`jarvis wake --words`). The default list
   also names `yo_jarvis`, which you train yourself: Jarvis ships no trained phrase, and the doctor notes it
   as missing until you do or take it off the list. Training needs a CUDA GPU or an Apple silicon Mac and a
   LiveKit Cloud project for the generated speech; a model you trained matches no pinned release, so the
   doctor only shows its digest. Detection stays local and needs no account.
+  Measured 2026-11-22 for models trained with `livekit-wakeword` 2.1.3 (`setup --wakeword "<phrase>" --plan
+  build --eval`, `train --type standard`, `eval --json`), on the trainer's held-out test set without its two
+  gated sets (ESC-50 and GTZAN, so music and other everyday sounds are not counted): 500 spoken phrases,
+  796 other clips (about 1 hour) and 500 similar-sounding phrases. Threshold is the lowest score that gives
+  at most 0.5 false wakes an hour, and Recall is measured there; Similar is the share of similar-sounding
+  phrases that woke it at that threshold.
+
+  | Model | Threshold | Recall | Similar | Recall at threshold 0.5 |
+  |---|---|---|---|---|
+  | `hey_jarvis` (pinned release) | 0.47 | 92.8 % | 22 % | 92.4 %, no false wakes |
+  | `hey_jarvis` (retrained) | 0.46 | 93.6 % | 19 % | 92.6 %, no false wakes |
+  | `yo_jarvis` | 0.43 | 95.8 % | 17 % | 94.8 %, no false wakes |
+  | `jarvis` (bare word) | 0.85 | 86.2 % | 1 % | 96.0 %, 4.9 false wakes an hour |
+
+  The pinned `hey_jarvis` hears 2.4 % of bare "jarvis" and 4.2 % of "yo jarvis" phrases, so each phrase
+  needs its own model. Give `jarvis` its own threshold (`audio.wake_thresholds`); the shared 0.5 suits the
+  two-word phrases.
 - **Azure wake word (optional, `audio.wake_engine = "azure"`):** your own Azure custom keyword `.table`
   model, heard by `src/jarvis/azure_wake_helper.py` (MIT) with Microsoft's Speech SDK
   (`azure-cognitiveservices-speech` 1.53.1, Microsoft Software License Terms: closed source, not

@@ -188,6 +188,7 @@ VAD_EXIT_FLOOR = 0.01
 # A wake word model's name: its file `<data_dir>/wake/<name>.onnx`, so never a path.
 WAKE_WORD_PATTERN = r"^[a-z0-9][a-z0-9_]{0,39}$"
 WakeWordName = Annotated[str, StringConstraints(pattern=WAKE_WORD_PATTERN)]
+WakeThreshold = Annotated[float, Field(gt=0, lt=1)]
 
 
 class AudioConfig(_Section):
@@ -198,7 +199,11 @@ class AudioConfig(_Section):
     wake_words: list[WakeWordName] = Field(
         default_factory=lambda: ["hey_jarvis", "yo_jarvis"], min_length=1, max_length=8
     )
-    wake_threshold: float = Field(default=0.5, gt=0, lt=1)
+    wake_threshold: WakeThreshold = 0.5
+    # A wake word's own score needed, by model name, in place of `wake_threshold`.
+    wake_thresholds: dict[WakeWordName, WakeThreshold] = Field(
+        default_factory=dict[str, float], max_length=32
+    )
     vad_threshold: float = Field(default=0.5, gt=0, lt=1)
     # Once speech has started it goes on while the probability stays above this; 0 means
     # `vad_threshold` less VAD_EXIT_MARGIN (Silero's own rule), never below VAD_EXIT_FLOOR.

@@ -121,6 +121,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Each wake word can have its own threshold (`[audio.wake_thresholds]`, such as `jarvis = 0.85`); the
+  others keep `audio.wake_threshold`. A bare one-word wake needs a higher score than "hey jarvis" to keep
+  false wakes down: on the trainer's test set, `jarvis` falsely woke 4.9 times an hour at
+  the shared 0.5. `jarvis wake` shows a
+  model's own threshold beside its name. `docs/models.md` records recall and false wakes for the trained
+  `hey_jarvis`, `yo_jarvis` and `jarvis` models (#15, #37).
+
 - `tools/first_audio.py` times, on a loaded model, how long the first sentence of a reply takes to reach the
   speaker and how long the whole reply takes to write (#12). Fake-clock tests show the first sentence goes to the
   speaker while the model is still writing, and each sentence goes once, in order.
@@ -140,7 +147,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   hey_jarvis,yo_jarvis` sets the list and `jarvis wake` shows every model in the folder as on or off. A
   model that is missing or cannot be loaded is left out with a warning and the others still listen.
   `jarvis doctor` fails only when no model has a file, and lists each missing one. The log names the
-  phrase each wake came from, and one `wake_threshold` applies to them all. The check that stops Jarvis
+  phrase each wake came from, and they share `wake_threshold` unless
+  `wake_thresholds` names one. The check that stops Jarvis
   hearing itself during barge-in uses the same models.
 - `open_app` (#36): ask Jarvis, in any words, to open a program from the new `[apps]` list (Spotify by
   default) on a workspace from 1 to 10 or in the background. Jarvis asks where when you did not say.
