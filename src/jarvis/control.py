@@ -180,9 +180,9 @@ class Controls:
             case "resume":
                 return self._resume()
             case "hush":
-                self._loop.hush()
                 if self._keys is not None:
-                    self._keys.cancel()  # a press after the hush finds nothing waiting
+                    self._keys.cancel()  # first: a press from now on finds nothing waiting
+                self._loop.hush()
                 self._audit.record("control", command="hush")
                 return {}
             case "confirm":
@@ -202,9 +202,9 @@ class Controls:
         }
 
     def _pause(self) -> dict[str, Any]:
-        self._loop.hush()
         if self._keys is not None:
             self._keys.cancel()
+        self._loop.hush()
         with self._commands:  # a pause and a resume arriving together are taken in turn
             changed = self._mic.pause()
             self._pauses += changed

@@ -1044,3 +1044,19 @@ def test_confirm_with_nothing_waiting_fails_and_says_why(
         server.close()
 
     assert capsys.readouterr().out == "jarvis: nothing is waiting for the confirm key\n"
+
+
+def test_confirm_blanks_control_characters_in_the_question(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The model chose the question's words: no terminal escape or direction mark reaches the screen.
+    server = _serve_fake({"confirmed": "Should I stop \x1b[2Jx\u202eexe?"})
+    try:
+        assert cli.main(["confirm"]) == 0
+    finally:
+        server.close()
+
+    out = capsys.readouterr().out
+    assert "\x1b" not in out
+    assert "\u202e" not in out
+    assert out == 'jarvis: confirmed: "Should I stop  [2Jx exe?"\n'

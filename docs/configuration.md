@@ -363,7 +363,8 @@ o.bind("SUPER + CTRL + Y", "Jarvis confirm", "jarvis confirm")
 ```
 
 - One press allows the one action Jarvis asked about, once. Not pressing in time, saying "Hey Jarvis",
-  `jarvis hush` or `jarvis pause` is no; a press after any of them finds nothing waiting. A spoken yes
+  `jarvis hush` or `jarvis pause` is no; a press after a timeout, `hush` or `pause` finds nothing
+  waiting. A spoken yes
   never counts. The wait is timed on the boot clock, so a suspend does not leave it open.
 - Press once the question has ended. A press while nothing waits, or one sooner than 0.3 s after the
   question ended, allows nothing and holds the key off for 30 s, so a program pressing it over and over

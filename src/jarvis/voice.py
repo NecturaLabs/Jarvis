@@ -539,7 +539,7 @@ class VoiceLoop:
             if self._silent():
                 return "hushed, paused or spoken over"
             if not keys.open(waiting):
-                return "timed out"
+                return "no longer waiting (timed out, pressed too soon or cancelled)"
             if self._wake.heard(frame):
                 log.info("the wake word while waiting for the confirm key; counting it as no")
                 return "the wake word"
