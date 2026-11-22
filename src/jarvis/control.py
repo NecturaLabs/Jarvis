@@ -201,13 +201,21 @@ class Controls:
         return str(self._loop.state) not in {"idle", NO_MIC}
 
     def after_sleep(self) -> None:
-        """After a suspend: load the model again unless paused (the server may have lost it).
+        """After a suspend: check the model server, and load the model again if its load failed.
 
-        Called on the voice loop's thread; the load runs in the background.
+        A model that is unloaded stays so (`jarvis unload` before a game, or the idle unload),
+        and so does a paused one. Called on the voice loop's thread; the check runs in the
+        background.
         """
         with self._commands:
             resume = self._pauses
-        self._background(lambda: self._warm(resume))  # `_warm` skips it while paused
+        self._background(lambda: self._recheck(resume))
+
+    def _recheck(self, resume: int) -> None:
+        state = self._model.status()
+        log.info("back from sleep: the model is %s", state or unreachable_model(self._model))
+        if state == "failed":
+            self._warm(resume)  # skipped while paused
 
     def _warm(self, resume: int) -> None:
         with self._model_turn:

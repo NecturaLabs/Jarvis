@@ -14,8 +14,8 @@ Read the outcome of each step in the voice log: `jarvis logs`, or
 Both units are `PartOf=` and `WantedBy=graphical-session.target`: they start when you log in and stop
 when the session ends. Stopping Strata frees the model's RAM and VRAM.
 
-- Seen on 2026-11-21: the units stopped at 15:38 when the PC was shut down and started again at 15:42,
-  after the next login.
+- Seen on 2026-11-21: the units stopped at 15:38 when the PC was shut down; it booted at 15:40, and the
+  units started at 15:42, once the session started after login.
 
 ## Lock screen
 
@@ -23,9 +23,11 @@ The Omarchy shell draws the lock screen itself (`WlSessionLock`) and does not te
 `loginctl show-session` keeps `LockedHint=no` while locked. Jarvis is a user service and nothing in it
 stops at a lock: by default it keeps listening, and anyone at the locked PC can talk to it.
 
-With `audio.listen_when_locked = false`, each wake word or PC-audio request asks the shell
-(`omarchy-shell lock isLocked`, a few milliseconds) and is ignored while locked. The log says
-`the wake word was ignored: the screen is locked`. An answer that cannot be read counts as locked.
+With `audio.listen_when_locked = false`, Jarvis asks the shell (`omarchy-shell lock isLocked`, a few
+milliseconds) before it takes a request: after the wake word, before a follow-up window, for a request
+spoken over a reply, and for a PC-audio request. While locked it takes none; the wake word still stops its
+speech. The log says `the wake word was ignored: the screen is locked`. An answer that cannot be read
+counts as locked.
 
 - Check: `uv run pytest -m local tests/test_transitions_local.py -k unlocked` at an unlocked screen
   (asks the shell; locks nothing). Seen passing on 2026-11-22.
@@ -43,7 +45,8 @@ when its microphone is unplugged (WirePlumber may move it to another source). Ja
 Now the loop opens the microphone again: a capture that ended, or that sent nothing for 5 s
 (`MIC_STALL_S`), is restarted after 1 s, then twice as long after each try that brings no frame, up to 30 s.
 The log says `the microphone stopped (...); opening it again`. Meanwhile `jarvis status` says
-`unavailable`; a pause still wins and shows `paused`.
+`unavailable`; a pause still wins and shows `paused`. A request the lost microphone cuts short ends without
+an apology. The stall time counts only while the loop waits for a frame, not while it answers.
 
 - With the owner: `systemctl --user restart pipewire` while Jarvis runs, then say the wake word. Unplug
   the microphone, wait 10 s, plug it back, say the wake word. Not run yet.
@@ -54,8 +57,10 @@ The log says `the microphone stopped (...); opening it again`. Meanwhile `jarvis
 
 Linux's monotonic clock stands still while the PC sleeps and its boot clock does not. When the gap
 between them grows by 2 s or more between two frames, the loop takes it as a suspend: it drops the
-frames from before it, resets the wake word, and loads the model again unless Jarvis is paused (the
-server may have dropped it). The log says `back from sleep after N s: listening afresh`. A stall check
+frames from before it, resets the wake word, and asks the model server for its state: a model whose load
+failed is loaded again (not while paused); an unloaded one stays unloaded, since `jarvis unload` before a
+game or the idle unload put it there. The log says `back from sleep after N s: listening afresh`, then
+`back from sleep: the model is <state>`. A stall check
 cannot fire during the sleep itself, since it times with the monotonic clock.
 
 - Not seen yet: no kept boot of this PC has suspended (`journalctl -k | grep 'PM: suspend'`).

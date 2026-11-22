@@ -488,34 +488,41 @@ class VoiceLoop:
             return False
         return True
 
-    def _serve(self, request: Callable[[], None]) -> None:
+    def _serve(self, request: Callable[[], None] | None) -> None:
         """Run one request, then each one the owner starts by speaking over Jarvis or follows on.
 
-        A failure is logged and apologised for, and the loop carries on.
+        A failure is logged and apologised for, and the loop carries on; one that came from a
+        lost microphone or speaker is not apologised for.
         """
-        while True:
+        while request is not None:
             self._answered = False
             self._muted = False
             try:
                 request()
             except MicPausedError:
                 log.info("the request ended: Jarvis was paused")
+            except AudioError as exc:  # the microphone or speaker is gone: an apology helps nobody
+                log.warning("the request ended: %s", exc)
             except Exception:
                 log.exception("the request failed")
                 if not self._cancelled():
                     self._try_say(SORRY_INTERNAL)
             finally:
                 self.state = State.IDLE
-            barged_at, self._barged_at = self._barged_at, None
-            if self._should_stop() or self._paused():
-                return
-            if barged_at is not None:
-                request = functools.partial(self.handle_wake, barged_at)
-                continue
-            follow_up = self._follow_up()
-            if follow_up is None:
-                return
-            request = follow_up
+            request = self._next_request()
+
+    def _next_request(self) -> Callable[[], None] | None:
+        """Return the request that follows the last one: spoken over it, or in the follow-up."""
+        barged_at, self._barged_at = self._barged_at, None
+        if self._should_stop() or self._paused():
+            return None
+        if barged_at is not None:
+            if self._ignored_while_locked("a request spoken over Jarvis"):
+                return None
+            return functools.partial(self.handle_wake, barged_at)
+        if self._ignored_while_locked("a follow-up request"):
+            return None
+        return self._follow_up()
 
     def _follow_up(self) -> Callable[[], None] | None:
         """Listen for `follow_up_s` after a spoken reply; return the request heard, if any.

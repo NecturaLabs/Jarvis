@@ -310,3 +310,11 @@ def test_the_voice_service_starts_after_the_audio_session() -> None:
     after = next(line for line in _lines(services.jarvis_unit()) if line.startswith("After="))
 
     assert {"pipewire.service", "wireplumber.service"} <= set(after.removeprefix("After=").split())
+
+
+def test_both_units_start_and_stop_with_the_desktop_session(tmp_path: Path) -> None:
+    # #22: the session's start starts Jarvis and Strata; its end stops both, freeing the model.
+    for text in (services.strata_unit(_config(tmp_path), tmp_path / "key"), services.jarvis_unit()):
+        lines = _lines(text)
+        assert "PartOf=graphical-session.target" in lines
+        assert "WantedBy=graphical-session.target" in lines

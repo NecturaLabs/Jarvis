@@ -261,19 +261,23 @@ def test_a_missing_model_file_does_not_matter_while_the_server_answers() -> None
     assert controls("status")["model"] == "loaded"
 
 
-def test_after_a_suspend_the_model_is_checked_and_loaded_again() -> None:
-    model, later = Model(), Later()
+@pytest.mark.parametrize(("state", "warms"), [("failed", 1), ("loaded", 0), ("unloaded", 0)])
+def test_after_a_suspend_the_model_is_loaded_again_only_if_its_load_failed(
+    state: str, warms: int
+) -> None:
+    # An unloaded model stays unloaded: `jarvis unload` before a game, or the idle unload.
+    model, later = Model(state), Later()
     controls = control.Controls(Loop(), Mic(), model, background=later)
 
     controls.after_sleep()
 
     assert model.warms == 0  # in the background, not on the voice loop's thread
     later.run()
-    assert model.warms == 1
+    assert model.warms == warms
 
 
-def test_after_a_suspend_a_paused_jarvis_leaves_the_model_unloaded() -> None:
-    model, later = Model(), Later()
+def test_after_a_suspend_a_paused_jarvis_leaves_the_model_alone() -> None:
+    model, later = Model("failed"), Later()
     controls = control.Controls(Loop(), Mic(paused=True), model, background=later)
 
     controls.after_sleep()
@@ -590,6 +594,38 @@ def test_a_pause_during_a_reopen_wait_leaves_the_microphone_closed_until_resume(
     assert capture.starts == 1
     with pytest.raises(MicPausedError):
         next(mic.frames())
+    assert mic.resume()
+    assert capture.starts == 2
+
+
+def test_a_pause_and_resume_during_a_reopen_wait_leave_one_capture() -> None:
+    # The resume started a capture already; a second start would leave the first holding the
+    # microphone after the next pause.
+    capture = Capture()
+
+    def pause_and_resume(_event: threading.Event, _seconds: float) -> bool:
+        mic.pause()
+        mic.resume()
+        return True
+
+    mic = PausableMic(capture, wait=pause_and_resume)
+    mic.start()
+    capture.end()
+
+    assert mic.recover()
+    assert capture.starts == 2  # the first start, then the resume's; none from the reopen
+    assert next(mic.frames()) is FRAME_DATA
+
+
+def test_a_pause_before_a_reopen_leaves_the_microphone_closed_until_resume() -> None:
+    capture = Capture()
+    mic = PausableMic(capture, wait=Waits())
+    mic.start()
+    capture.end()
+    mic.pause()  # before the loop asked for a reopen
+
+    assert mic.recover()
+    assert capture.starts == 1
     assert mic.resume()
     assert capture.starts == 2
 

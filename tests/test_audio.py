@@ -844,6 +844,22 @@ def test_a_microphone_that_sends_nothing_counts_as_ended_after_its_stall_time() 
         mic.stop()
 
 
+def test_time_spent_on_a_request_is_not_counted_as_a_stall() -> None:
+    # The loop reads no frame while it answers; a short gap right after that is no stall.
+    frame = f"head -c {FRAME * 2} /dev/zero"
+    mic = Microphone(
+        command=["sh", "-c", f"{frame}; sleep 1.5; {frame}; exec sleep 30"], stall_s=0.8
+    )
+    mic.start()
+    try:
+        frames = mic.frames()
+        next(frames)
+        threading.Event().wait(1.0)  # answering a request
+        next(frames)  # 0.5 s more: no stall
+    finally:
+        mic.stop()
+
+
 def test_a_microphone_without_a_stall_time_waits_for_frames() -> None:
     mic = Microphone(command=["sh", "-c", "exec sleep 30"])
     mic.start()

@@ -1647,3 +1647,56 @@ def test_no_suspend_is_seen_when_the_clocks_agree() -> None:
     )
 
     assert woke == []
+
+
+def test_no_follow_up_is_listened_for_once_the_screen_locked() -> None:
+    agent = Agent()
+
+    def locked() -> bool:
+        return bool(agent.calls)  # the screen locked while Jarvis answered
+
+    mic = Mic(*REQUEST, *FOLLOW_UP_REQUEST)
+    loop = _loop(agent, mic, Speaker(), cfg=FOLLOW_UP, transcribe=_texts("a", "b"), locked=locked)
+
+    _run(loop)
+
+    assert [text for text, _ in agent.calls] == ["a"]
+
+
+def test_a_request_spoken_over_jarvis_at_the_lock_screen_is_ignored() -> None:
+    reply, _ = _replies("Here is a long answer.", "Skipped.")
+    agent = Agent(reply)
+    speaker = Playing()
+    mic = Mic(*REQUEST, until(lambda: speaker.busy), SILENCE, WAKE, *REQUEST[1:])
+
+    _run(_loop(agent, mic, speaker, locked=lambda: bool(agent.calls)))
+
+    assert speaker.hushed == 1  # the wake word still stops the speech
+    assert len(agent.calls) == 1  # but starts no request
+
+
+def test_a_microphone_lost_mid_request_ends_it_without_an_apology() -> None:
+    # Saying sorry to a microphone that is gone helps nobody; the loop reopens it next.
+    agent = Agent()
+    speaker = Speaker()
+
+    def end() -> None:
+        script.end()
+
+    script = Capture(WAKE, SPEECH, end, SILENCE, *REQUEST)
+    mic = PausableMic(script, wait=_no_waits)
+    loop = VoiceLoop(
+        agent,
+        mic,
+        Wake(),
+        Vad(),
+        speaker,
+        CFG,
+        lambda _samples: "pause the music",
+        reopen=mic.recover,
+    )
+
+    _run(loop)
+
+    assert speaker.said == ["Done."]  # the second request's answer, and no apology
+    assert agent.calls == [("pause the music", Origin.OWNER_SPEECH)]

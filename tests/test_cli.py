@@ -625,7 +625,13 @@ def _cmd_run(
 
     monkeypatch.setattr(cli.signal, "signal", signal_handler)
     monkeypatch.setattr(cli, "_load", lambda: cfg or config.Config())
-    model = SimpleNamespace(warm=run.warmed.set, is_loaded=lambda: True, load=lambda: True)
+    model = SimpleNamespace(
+        warm=run.warmed.set,
+        is_loaded=lambda: True,
+        load=lambda: True,
+        status=lambda: "failed",  # what a suspend can leave behind
+        file_missing=lambda: False,
+    )
     ops = SimpleNamespace(start_refresh=run.refresh.append)
     jarvis = SimpleNamespace(agent=object(), model=model, ops=ops, hint=lambda: "", audit=run.audit)
 
@@ -728,7 +734,9 @@ def test_with_listening_at_the_lock_screen_off_the_run_asks_the_shell(
     assert locked() is True
 
 
-def test_after_a_suspend_the_run_loads_the_model_again(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_after_a_suspend_the_run_loads_a_failed_model_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def body(run: _Run, _should_stop: Callable[[], bool]) -> None:
         assert run.warmed.wait(5)  # the load at start
         run.warmed.clear()

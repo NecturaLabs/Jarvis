@@ -364,8 +364,8 @@ class Microphone:
                     msg = f"no audio from the microphone for {self._stall_s:g} s"
                     raise AudioError(msg) from None
                 continue
-            last = time.monotonic()
             yield frame
+            last = time.monotonic()  # the time the reader spent elsewhere is no stall
 
     def wait_ended(self, timeout: float) -> None:
         """Wait until the capture process's output has been read to its end."""
@@ -502,6 +502,9 @@ class PausableMic:
         with self._lock:
             if self._stopped:
                 return False
+            if self.paused:  # `resume` starts the next capture
+                return True
+            pauses = self._pauses
             self._interrupt.clear()
             self._mic.stop()  # the ended capture's process is reaped
         if self._wait(self._interrupt, delay) and self._stopped:
@@ -509,7 +512,7 @@ class PausableMic:
         with self._lock:
             if self._stopped:
                 return False
-            if self.paused:
+            if self._pauses != pauses:  # paused meanwhile; a resume has started its own capture
                 return True
             self._mic.drain()
             try:
