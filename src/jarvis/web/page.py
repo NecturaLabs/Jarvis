@@ -169,7 +169,7 @@ def _extract(html: str, url: str) -> tuple[str, str, str]:
         # urllib3, which trafilatura imports for its own downloads (unused here), warns that
         # optional SOCKS proxy support is not installed.
         warnings.filterwarnings("ignore", message="SOCKS support in urllib3")
-        import trafilatura  # ruff: ignore[import-outside-top-level] - loaded only when a page is read
+        import trafilatura
 
     tree = trafilatura.load_html(html)
     if tree is not None:

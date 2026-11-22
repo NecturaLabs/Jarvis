@@ -158,7 +158,7 @@ def main() -> int:
         sys.stderr.write("usage: azure_wake_helper.py <keyword model .table> [--check]\n")
         return 2
     # The one import of the Speech SDK in the tree (ADR 0010); only the helper's own Python has it.
-    import azure.cognitiveservices.speech as sdk  # ruff: ignore[import-outside-top-level, banned-api]
+    import azure.cognitiveservices.speech as sdk  # ruff: ignore[banned-api] - ADR 0010: on-device keyword spotting, in a namespace with no network
 
     if args[1:]:
         return check(sdk, args[0], sys.stdout, sys.stderr)

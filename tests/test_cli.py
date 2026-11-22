@@ -24,6 +24,7 @@ from jarvis.chat.app import ChatApp
 from jarvis.cli import main
 from jarvis.confirmkey import ConfirmKey
 from jarvis.secretfile import write_private_json
+from jarvis.services import strata_profile_file
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -1008,7 +1009,6 @@ def _restart_calls(
 def test_restart_restarts_strata_when_its_settings_changed_after_it_started(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jarvis.services import strata_profile_file  # ruff: ignore[import-outside-top-level]
 
     profile = strata_profile_file()
     profile.parent.mkdir(parents=True, exist_ok=True)
@@ -1023,7 +1023,6 @@ def test_restart_restarts_strata_when_its_settings_changed_after_it_started(
 def test_restart_leaves_a_running_strata_alone_when_nothing_changed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jarvis.services import strata_profile_file  # ruff: ignore[import-outside-top-level]
 
     profile = strata_profile_file()
     profile.parent.mkdir(parents=True, exist_ok=True)
@@ -1093,7 +1092,6 @@ def test_a_strata_start_time_is_read_to_the_microsecond() -> None:
 def test_files_written_just_before_strata_started_in_the_same_second_are_no_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jarvis.services import strata_profile_file  # ruff: ignore[import-outside-top-level]
 
     profile = strata_profile_file()
     profile.parent.mkdir(parents=True, exist_ok=True)

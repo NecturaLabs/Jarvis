@@ -70,7 +70,7 @@ def wake_word(cfg: config.Config) -> WakeWord | FallbackWake:
     An Azure model that cannot start (no model file, no helper Python) falls back to LiveKit's,
     so a switch never leaves Jarvis deaf; `jarvis doctor` says why.
     """
-    from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
         AudioError,
         AzureWake,
         FallbackWake,
@@ -341,7 +341,7 @@ def _screenshot_folders(home: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
 
 def cmd_chat(_args: argparse.Namespace) -> int:
     """Open the chat window: typed requests, and everything Jarvis does, live."""
-    from jarvis.chat.app import ChatApp, Services  # ruff: ignore[import-outside-top-level]
+    from jarvis.chat.app import ChatApp, Services
 
     cfg = _load()
     session_id = secrets.token_hex(8)
@@ -386,7 +386,7 @@ def _transcribers(cfg: config.Config, hint: Callable[[], str]) -> tuple[_Transcr
     Both run Voxtype with Jarvis's own speed settings, written here; the owner's Voxtype config
     is never touched.
     """
-    from jarvis.audio import transcribe, voxtype_settings  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import transcribe, voxtype_settings  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     audio = cfg.audio
     engine, model = audio.transcribe_engine, audio.transcribe_model
@@ -416,7 +416,7 @@ def _never() -> bool:
 
 def _speaker(cfg: config.Config) -> Speaker:
     """Return the speaker, which hears its own wake word only when barge-in is on."""
-    from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
         OwnVoiceCheck,
         Speaker,
         WakeWord,
@@ -448,7 +448,7 @@ def _serve_controls(handler: control.Controls, audit: AuditLog) -> control.Contr
 
 def cmd_run(_args: argparse.Namespace) -> int:
     """Run the voice loop until stopped."""
-    from jarvis.audio import (  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
         MIC_STALL_S,
         AppAudio,
         Microphone,
@@ -457,7 +457,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         VoxtypeWatch,
         screen_locked,
     )
-    from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level]
+    from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, which loads numpy and ONNX Runtime
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     cfg = _load()
@@ -546,7 +546,7 @@ def _run_until_stopped(
     wakes: list[WakeWord | FallbackWake],
 ) -> int:
     """Run `loop` with Voxtype's status followed, then end what the run started."""
-    from jarvis.audio import FallbackWake  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import FallbackWake  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     try:
         voxtype.start()
@@ -566,7 +566,7 @@ def _run_until_stopped(
 
 def _model_files(cfg: config.Config) -> list[tuple[str, Path]]:
     """Return the (role, file) pairs the doctor can check against a known release."""
-    from jarvis.audio import KOKORO_PREFIX, voice_files  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import KOKORO_PREFIX, voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     found = [("wake", cfg.data_dir / WAKE_MODEL), ("vad", cfg.data_dir / VAD_MODEL)]
     if cfg.audio.voice.startswith(KOKORO_PREFIX):
@@ -605,7 +605,7 @@ def _whisper_model(cfg: config.Config) -> list[tuple[bool, str, str]]:
 
     Other engines keep their models in their own forms, so Voxtype itself reports on those.
     """
-    from jarvis import audio as audio_module  # ruff: ignore[import-outside-top-level]
+    from jarvis import audio as audio_module  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     audio = cfg.audio
     name = audio.transcribe_model
@@ -671,7 +671,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     matches no known release is only a note.
     """
     cfg = _load()
-    from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     files = [
         cfg.data_dir / WAKE_MODEL,
@@ -720,7 +720,7 @@ def _source_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
     instead of failing; the check is what tells a mistyped name from a working one. With no
     source set, the default microphone is used and there is nothing to check.
     """
-    from jarvis.audio import pw_dump, source_found  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import pw_dump, source_found  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     source = cfg.audio.source
     if not source:
@@ -749,7 +749,7 @@ def _lock_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
 
     With `audio.listen_when_locked` off, a lock state that cannot be read keeps Jarvis deaf.
     """
-    from jarvis.audio import lock_state  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import lock_state  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     if cfg.audio.listen_when_locked:
         return []
@@ -764,7 +764,7 @@ def _azure_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
 
     The last one runs the helper itself, with no network, to try the model as Jarvis would.
     """
-    from jarvis.audio import azure_env, azure_wake_command  # ruff: ignore[import-outside-top-level]
+    from jarvis.audio import azure_env, azure_wake_command  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     if cfg.audio.wake_engine != "azure":
         return []

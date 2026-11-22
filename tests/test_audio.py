@@ -769,7 +769,7 @@ class _FakePiperVoice:
 def test_a_piper_voice_speaks_at_the_configured_speed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import piper  # ruff: ignore[import-outside-top-level] - only this test needs it
+    import piper
 
     _FakePiperVoice.loaded.clear()
     monkeypatch.setattr(piper, "PiperVoice", _FakePiperVoice)
@@ -785,7 +785,7 @@ def test_a_piper_voice_speaks_at_the_configured_speed(
 def test_a_kokoro_voice_is_given_the_phoneme_map_setting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, phoneme_map: bool
 ) -> None:
-    from jarvis import kokoro  # ruff: ignore[import-outside-top-level] - only this test needs it
+    from jarvis import kokoro
 
     made: list[dict[str, object]] = []
 

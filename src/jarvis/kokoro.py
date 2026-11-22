@@ -31,8 +31,8 @@ _espeak_lock = threading.Lock()
 
 
 def _espeak_phonemes(text: str, voice: str) -> list[str]:
-    from piper import espeakbridge  # ruff: ignore[import-outside-top-level] - the compiled bridge Piper ships
-    from piper.phonemize_espeak import ESPEAK_DATA_DIR  # ruff: ignore[import-outside-top-level]
+    from piper import espeakbridge
+    from piper.phonemize_espeak import ESPEAK_DATA_DIR
 
     sentences: list[str] = []
     current = ""
