@@ -19,6 +19,7 @@ from jarvis import __version__, config, control, models, paths
 from jarvis.agent import Hooks
 from jarvis.app import SetupError, build, chat_pictures, echoes_hint, strata_model
 from jarvis.audit import AuditLog
+from jarvis.confirmkey import ConfirmKey
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
 
@@ -145,6 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("pause", help="let go of the microphone and free the model until resume")
     sub.add_parser("resume", help="listen again after pause")
     sub.add_parser("hush", help="stop Jarvis speaking now")
+    sub.add_parser("confirm", help="allow the action Jarvis is asking about (bind this to a key)")
     sub.add_parser("unload", help="free the model's memory now")
     wake = sub.add_parser("wake", help="show or switch the wake word model (livekit or azure)")
     wake.add_argument(
@@ -503,6 +505,8 @@ def cmd_run(_args: argparse.Namespace) -> int:
     def after_sleep() -> None:
         handler.after_sleep()  # made below, once the loop it controls exists
 
+    keys = ConfirmKey(audit=jarvis.audit)  # pressed through the socket, waited on by the loop
+
     loop = VoiceLoop(
         jarvis.agent,
         mic,
@@ -527,8 +531,9 @@ def cmd_run(_args: argparse.Namespace) -> int:
         reopen=mic.recover,
         locked=_never if cfg.audio.listen_when_locked else screen_locked,
         after_sleep=after_sleep,
+        keys=keys,
     )
-    handler = control.Controls(loop, mic, jarvis.model, jarvis.audit)
+    handler = control.Controls(loop, mic, jarvis.model, jarvis.audit, keys=keys)
     jarvis.audit.record("service_started", bypass_consent=cfg.boundaries.bypass_consent)
     controls = _serve_controls(handler, jarvis.audit)
     try:
@@ -819,6 +824,26 @@ def cmd_hush(_args: argparse.Namespace) -> int:
     return _control("hush", lambda _r: "hushed")
 
 
+def cmd_confirm(_args: argparse.Namespace) -> int:
+    """Press the confirm key: allow the one action Jarvis is waiting on, if any."""
+    reply = control.send("confirm")
+    if reply is None:
+        print("jarvis: not running (start it with `jarvis start`)")
+        return 1
+    if not reply.get("ok"):
+        print(f"jarvis: {reply.get('error', 'the command failed')}")
+        return 1
+    confirmed = reply.get("confirmed")
+    if not isinstance(confirmed, str):
+        print(f"jarvis: {reply.get('reason', 'nothing was confirmed')}")
+        return 1
+    shown = "".join(
+        ch if ch.isprintable() else " " for ch in confirmed
+    )  # the model chose its words
+    print(f'jarvis: confirmed: "{shown}"')
+    return 0
+
+
 def cmd_unload(_args: argparse.Namespace) -> int:
     """Free the model now."""
     ok = _strata(_load()).unload()
@@ -1079,6 +1104,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "pause": cmd_pause,
     "resume": cmd_resume,
     "hush": cmd_hush,
+    "confirm": cmd_confirm,
     "unload": cmd_unload,
     "pc-audio": cmd_pc_audio,
     "consent": cmd_consent,

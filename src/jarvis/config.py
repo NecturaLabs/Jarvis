@@ -185,6 +185,8 @@ class AudioConfig(_Section):
     end_silence_s: float = Field(default=0.7, gt=0, le=5)
     max_utterance_s: float = Field(default=20.0, gt=1, le=120)
     confirm_window_s: float = Field(default=8.0, gt=1, le=30)
+    # How long a `strong` action waits for the confirm key (`jarvis confirm`) once asked about.
+    confirm_key_s: float = Field(default=30.0, ge=5, le=120)
     barge_in: bool = True  # the wake word stops Jarvis mid-sentence and starts a new request
     # Off: a wake word or PC-audio request is ignored while the Omarchy lock screen is up.
     listen_when_locked: bool = True
@@ -311,9 +313,10 @@ class FilesConfig(_Section):
 class BoundariesConfig(_Section):
     """Per-operation class overrides set by the owner, and whether Jarvis asks before acting.
 
-    `bypass_consent` (the owner's choice, on by default) runs every action that would need a yes
-    without asking: `confirm` and `strong` actions, actions after outside or file text, and
-    requests heard in PC audio. An operation set to `deny` stays refused.
+    `bypass_consent` (the owner's choice, on by default) runs every action that would need a
+    spoken yes without asking: `confirm` actions, actions after outside or file text, and requests
+    heard in PC audio. A `strong` action still waits for the confirm key, and an operation set to
+    `deny` stays refused.
     """
 
     classes: dict[str, OpClassName] = Field(default_factory=dict[str, OpClassName])

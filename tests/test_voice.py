@@ -11,6 +11,7 @@ import pytest
 from jarvis import voice
 from jarvis.audio import FRAME, AudioError, PausableMic
 from jarvis.config import AudioConfig
+from jarvis.confirmkey import STRAY_HOLD_S, ConfirmKey
 from jarvis.policy import Origin
 from jarvis.voice import PcListener, State, VoiceLoop
 
@@ -1712,3 +1713,258 @@ def test_a_microphone_lost_mid_request_ends_it_without_an_apology() -> None:
 
     assert speaker.said == ["Done."]  # the second request's answer, and no apology
     assert agent.calls == [("pause the music", Origin.OWNER_SPEECH)]
+
+
+def _asking_for_the_key(
+    question: str = "Should I stop process 42?", answers: list[bool] | None = None
+) -> Reply:
+    """An agent that waits for the confirm key about one action and says whether it came."""
+
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        if hooks.confirm_key is None:
+            return "no key here"
+        approved = hooks.confirm_key(question, "hash-a")
+        if answers is not None:
+            answers.append(approved)
+        return "approved" if approved else "declined"
+
+    return reply
+
+
+def _key_loop(  # ruff: ignore[too-many-positional-arguments] - the parts of a loop, each a test seam
+    agent: Agent,
+    mic: Mic,
+    speaker: Speaker,
+    key: ConfirmKey,
+    clock: Clock,
+    wake: Wake | None = None,
+) -> VoiceLoop:
+    return VoiceLoop(
+        agent,
+        mic,
+        wake or Wake(),
+        Vad(),
+        speaker,
+        CFG,
+        lambda _samples: "stop process 42",
+        names=("Jarvis",),
+        clock=clock,
+        keys=key,
+    )
+
+
+def test_the_confirm_key_allows_the_action_jarvis_asked_about() -> None:
+    clock, key_clock = Clock(), Clock()
+    key = ConfirmKey(clock=key_clock)
+    agent = Agent(_asking_for_the_key())
+    speaker = Speaker()
+    states: list[State] = []
+    loop = _key_loop(
+        agent,
+        Mic(
+            *REQUEST,
+            SILENCE,
+            lambda: states.append(loop.state),
+            key_clock.advance(1),
+            key.press,
+            SILENCE,
+        ),
+        speaker,
+        key,
+        clock,
+    )
+
+    _run(loop)
+
+    assert speaker.said == [f"Should I stop process 42? {voice.PRESS_KEY}", "approved"]
+    assert states == [State.CONFIRM]
+
+
+def test_no_press_before_the_wait_ends_is_a_no() -> None:
+    clock, key_clock = Clock(), Clock()
+    key = ConfirmKey(clock=key_clock)
+    agent = Agent(_asking_for_the_key())
+    speaker = Speaker()
+    loop = _key_loop(
+        agent,
+        Mic(
+            *REQUEST,
+            SILENCE,
+            key_clock.advance(CFG.confirm_key_s),
+            key.press,  # late: in the same moment as the wait ran out, before the next frame
+            SILENCE,
+        ),
+        speaker,
+        key,
+        clock,
+    )
+
+    _run(loop)
+
+    assert speaker.said[-1] == "declined"
+
+
+def test_the_wait_for_the_key_ends_when_its_time_is_up() -> None:
+    clock, key_clock = Clock(), Clock()
+    key = ConfirmKey(clock=key_clock)
+    answers: list[bool] = []
+    agent = Agent(_asking_for_the_key(answers=answers))
+    mic = Mic(
+        *REQUEST,
+        SILENCE,
+        key_clock.advance(CFG.confirm_key_s),
+        Idle(lambda: bool(answers)),  # the loop gives its answer without waiting for more
+    )
+
+    _run(_key_loop(agent, mic, Speaker(), key, clock))
+
+    assert answers == [False]
+
+
+def test_the_wake_word_while_waiting_for_the_key_is_a_no() -> None:
+    clock, key_clock = Clock(), Clock()
+    key = ConfirmKey(clock=key_clock)
+    agent = Agent(_asking_for_the_key())
+    speaker = Speaker()
+    loop = _key_loop(
+        agent,
+        Mic(*REQUEST, SILENCE, WAKE, key_clock.advance(1), key.press, SILENCE),
+        speaker,
+        key,
+        clock,
+    )
+
+    _run(loop)
+
+    assert speaker.said[-1] == "declined"
+
+
+def test_hush_while_waiting_for_the_key_is_a_no() -> None:
+    clock, key_clock = Clock(), Clock()
+    key = ConfirmKey(clock=key_clock)
+    answers: list[bool] = []
+    agent = Agent(_asking_for_the_key(answers=answers))
+    speaker = Speaker()
+
+    def hush() -> None:
+        loop.hush()
+
+    loop = _key_loop(
+        agent,
+        Mic(*REQUEST, SILENCE, hush, SILENCE, key_clock.advance(1), key.press, SILENCE),
+        speaker,
+        key,
+        clock,
+    )
+
+    _run(loop)
+
+    assert answers == [False]
+
+
+class PressedWithTheWakeWord(Wake):
+    """A wake word heard in the same frame as a press of the confirm key."""
+
+    def __init__(self, key: ConfirmKey) -> None:
+        super().__init__()
+        self.key = key
+        self.wakes = 0
+
+    @override
+    def heard(self, frame: NDArray[np.int16]) -> bool:
+        woke = super().heard(frame)
+        self.wakes += woke
+        # The first wake word starts the request; the second comes while the key is awaited.
+        if woke and self.wakes == 2 and self.key.press()["confirmed"] is None:
+            pytest.fail("the press came when nothing waited")
+        return woke
+
+
+def test_a_press_the_key_took_before_the_wake_word_still_counts() -> None:
+    # `jarvis confirm` already said "confirmed": the first of the two to reach Jarvis decides.
+    clock, key_clock = Clock(), Clock()
+    key = ConfirmKey(clock=key_clock)
+    answers: list[bool] = []
+    agent = Agent(_asking_for_the_key(answers=answers))
+    mic = Mic(*REQUEST, SILENCE, key_clock.advance(1), WAKE, SILENCE)
+    loop = _key_loop(agent, mic, Speaker(), key, clock, PressedWithTheWakeWord(key))
+
+    _run(loop)
+
+    assert answers == [True]
+
+
+def test_speaking_over_the_confirm_key_question_is_a_no_and_arms_nothing() -> None:
+    clock, key_clock = Clock(), Clock()
+    key = ConfirmKey(clock=key_clock)
+    answers: list[bool] = []
+    agent = Agent(_asking_for_the_key(answers=answers))
+    speaker = Playing()
+    mic = Mic(*REQUEST, until(lambda: speaker.busy), WAKE, *REQUEST[1:])
+
+    _run(_key_loop(agent, mic, speaker, key, clock))
+
+    assert answers[0] is False
+    key_clock.advance(STRAY_HOLD_S)()
+    assert key.press()["confirmed"] is None  # nothing was left waiting
+
+
+def test_a_pause_while_waiting_for_the_key_is_a_no() -> None:
+    clock, key_clock = Clock(), Clock()
+    key = ConfirmKey(clock=key_clock)
+    answers: list[bool] = []
+    paused = threading.Event()
+    mic = Mic(*REQUEST, SILENCE, paused.set, SILENCE, key_clock.advance(1), key.press, SILENCE)
+    loop = VoiceLoop(
+        Agent(_asking_for_the_key(answers=answers)),
+        mic,
+        Wake(),
+        Vad(),
+        Speaker(),
+        CFG,
+        lambda _samples: "stop process 42",
+        clock=clock,
+        paused=paused.is_set,
+        keys=key,
+    )
+
+    _run(loop)
+
+    assert answers == [False]
+
+
+class PressingWhileSpeaking(Speaker):
+    """A speaker during whose question the confirm key is pressed."""
+
+    def __init__(self, key: ConfirmKey) -> None:
+        super().__init__()
+        self.key = key
+
+    @override
+    def queue(self, text: str) -> None:
+        super().queue(text)
+        if text.endswith(voice.PRESS_KEY):
+            self.key.press()
+
+
+def test_a_press_before_the_question_was_heard_holds_the_key_off() -> None:
+    clock, key_clock = Clock(), Clock()
+    key = ConfirmKey(clock=key_clock)
+    agent = Agent(_asking_for_the_key())
+    speaker = PressingWhileSpeaking(key)
+    loop = _key_loop(
+        agent, Mic(*REQUEST, SILENCE, key_clock.advance(1), key.press, SILENCE), speaker, key, clock
+    )
+
+    _run(loop)
+
+    assert speaker.said[1:] == [voice.KEY_HELD_OFF, "declined"]
+
+
+def test_without_a_confirm_key_the_agent_is_told_there_is_none() -> None:
+    agent = Agent(_asking_for_the_key())
+    speaker = Speaker()
+
+    _run(_loop(agent, Mic(*REQUEST), speaker))
+
+    assert speaker.said == ["no key here"]

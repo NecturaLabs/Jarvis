@@ -80,6 +80,7 @@ no_speech_timeout_s = 4.0
 end_silence_s = 0.7
 max_utterance_s = 20.0
 confirm_window_s = 8.0
+confirm_key_s = 30.0
 barge_in = true
 listen_when_locked = true
 follow_up_s = 6.0

@@ -195,6 +195,7 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | `end_silence_s` | `0.7` | above 0, up to 5 | Trailing silence that ends a request. |
 | `max_utterance_s` | `20.0` | above 1, up to 120 | Longest request. |
 | `confirm_window_s` | `8.0` | above 1, up to 30 | How long Jarvis waits for the answer to a confirmation question. |
+| `confirm_key_s` | `30.0` | 5 to 120 | How long a `strong` action waits for the confirm key (`jarvis confirm`) after Jarvis has asked about it. |
 | `barge_in` | `true` | true or false | Listen for the wake word while Jarvis speaks: saying it stops Jarvis and starts a new request (a question spoken over counts as no). See [ADR 0008](adr/0008-speak-while-writing-and-barge-in.md). |
 | `listen_when_locked` | `true` | true or false | `false`: while the Omarchy lock screen is up, Jarvis takes no request: not after the wake word, not in the follow-up window, not spoken over a reply (the wake word still stops its speech), and none from PC audio. It asks the shell (`omarchy-shell lock isLocked`) once such a request is heard, and a state it cannot read counts as locked; `jarvis doctor` checks it can be read. `true` lets anyone at a locked PC talk to Jarvis. |
 | `follow_up_s` | `6.0` | 0 to 15 | Seconds after a spoken reply in which the next request needs no wake word; 0 turns it off. The window opens once the reply has finished playing, only after a request in your own voice, and never while Voxtype dictation is recording or transcribing (`voxtype status`); with `listen_to_pc` on, speech heard while PC audio also held speech is dropped; speech shorter than 0.3 s (a cough, a click) is ignored and the window listens on; speech in it that cannot be made out is dropped without a word. The wake word inside the window starts a request as usual. Background speech in the room can start a request too: if it does, shorten the window or set 0. |
@@ -360,7 +361,7 @@ hidden files under home stay shut unless you open them.
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
-| `bypass_consent` | `true` | `true`, `false` | `true`: Jarvis never asks for a yes. Every action that would need one runs at once and is audited as run with consent bypassed: `confirm` and `strong` actions, side effects after outside or file text, searches while file text is in the conversation, and requests heard in PC audio. An operation set to `deny` is still refused. `false`: Jarvis asks as described below. `jarvis consent ask` or `jarvis consent bypass` switches it and restarts the voice service. |
+| `bypass_consent` | `true` | `true`, `false` | `true`: Jarvis never asks for a yes. Every action that would need one runs at once and is audited as run with consent bypassed: `confirm` actions, side effects after outside or file text, searches while file text is in the conversation, and requests heard in PC audio. A `strong` action still waits for the confirm key, and an operation set to `deny` is still refused. `false`: Jarvis asks as described below. `jarvis consent ask` or `jarvis consent bypass` switches it and restarts the voice service. |
 
 With consent bypassed, text from a web page, a file, a picture or a call's audio can steer actions with no
 question in between. Turn asking on (`jarvis consent ask`) before letting Jarvis read pages or listen to PC
@@ -369,7 +370,7 @@ audio you do not trust.
 ## `[boundaries.classes]`
 
 A table from operation name to a class: `safe` (runs), `confirm` (needs your spoken yes), `strong`
-(keybinding confirmation, not built yet, so such a call is refused unless `bypass_consent` is on) or `deny`.
+(needs the confirm key, below; never a spoken yes, and not skipped by `bypass_consent`) or `deny`.
 A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` with an error, so a typo
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
 its shipped class, which is `safe` for every operation but `write_file` (`confirm`): `spotify_*`, `time_now`,
@@ -383,3 +384,28 @@ spotify_like = "confirm"
 spotify_queue = "deny"
 reddit_search = "deny"
 ```
+
+## The confirm key (`jarvis confirm`)
+
+A `strong` action runs only after you press a key. Jarvis says what it is about to do, then "Press the
+confirm key to allow it", and waits `audio.confirm_key_s` for `jarvis confirm`. Bind that command to a key
+in `~/.config/hypr/bindings.lua`, for example:
+
+```lua
+o.bind("SUPER + CTRL + Y", "Jarvis confirm", "jarvis confirm")
+```
+
+- One press allows the one action Jarvis asked about, once. Not pressing in time, saying "Hey Jarvis",
+  `jarvis hush` or `jarvis pause` is no; a press after a timeout, `hush` or `pause` finds nothing
+  waiting. A spoken yes
+  never counts. The wait is timed on the boot clock, so a suspend does not leave it open.
+- Press once the question has ended. A press while nothing waits, or one sooner than 0.3 s after the
+  question ended, allows nothing and holds the key off for 30 s, so a program pressing it over and over
+  cannot catch a question. Jarvis says so if it was about to ask.
+- The key works only through the control socket of the voice service. As a best effort, a press from a
+  program Jarvis started is refused and audited. It is no guarantee: any program running as you can run
+  `jarvis confirm`, so the key keeps the model (and what it reads) from acting alone, not malware already
+  on your account. The chat window and `jarvis ask` (even with `--yes`) have no confirm key, so they
+  refuse a `strong` action.
+- Each press, refused or not, is in the audit log (`confirm_key`), and the answer is a `confirmation`
+  event with `"method": "key"`.
