@@ -582,6 +582,23 @@ class PausableMic:
             raise
 
 
+def wake_load_errors(paths: Sequence[Path]) -> dict[Path, str]:
+    """Return, for each of `paths` that LiveKit cannot load as the runtime does, the reason.
+
+    Loading reads the file into an ONNX Runtime session; it plays and records nothing.
+    """
+    from livekit.wakeword import WakeWordModel
+
+    model = WakeWordModel(sess_options=quiet_session_options())
+    errors: dict[Path, str] = {}
+    for path in paths:
+        try:
+            model.load_model(path)
+        except (OSError, ValueError) as exc:
+            errors[path] = str(exc)
+    return errors
+
+
 class WakeWord:
     """LiveKit streaming wake word models, one per phrase, heard side by side."""
 
@@ -627,8 +644,11 @@ class WakeWord:
         over = {name: score for name, score in scores.items() if score >= self._needed(name)}
         if not over:
             return False
-        name = max(over, key=over.__getitem__)
-        log.info("wake word %s score %.2f (threshold %.2f)", name, over[name], self._needed(name))
+        heard = ", ".join(
+            f"{name} score {over[name]:.2f} (threshold {self._needed(name):.2f})"
+            for name in sorted(over, key=over.__getitem__, reverse=True)
+        )
+        log.info("wake word %s", heard)
         self._model.reset()
         return True
 

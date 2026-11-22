@@ -1591,6 +1591,22 @@ def test_a_wake_word_with_its_own_threshold_is_held_to_it_and_the_rest_to_the_sh
     assert "wake word hey_jarvis score 0.60 (threshold 0.50)" in caplog.text
 
 
+def test_every_wake_word_over_its_threshold_is_logged_in_one_line(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _fake_livekit(monkeypatch, _LiveKitModel([{"hey_jarvis": 0.6, "jarvis": 0.91, "yo": 0.1}]))
+    paths = [Path("/models/hey_jarvis.onnx"), Path("/models/jarvis.onnx")]
+    wake = WakeWord(paths, 0.5, {"jarvis": 0.85})
+
+    with caplog.at_level(logging.INFO):
+        assert wake.heard(np.zeros(FRAME, dtype=np.int16))
+
+    lines = [r.getMessage() for r in caplog.records if "wake word" in r.getMessage()]
+    assert lines == [
+        "wake word jarvis score 0.91 (threshold 0.85), hey_jarvis score 0.60 (threshold 0.50)"
+    ]
+
+
 def test_a_wake_word_s_own_threshold_may_be_below_the_shared_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
