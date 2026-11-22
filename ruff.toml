@@ -18,8 +18,8 @@ known-first-party = ["jarvis"]
 [lint.extend-per-file-ignores]
 # One entry per deliberate exception, with the reason on the line above:
 # "tools/legacy.py" = ["C901"]
-# The checks in tools/ are command-line scripts run by path, not a package, and they report on stdout.
-"tools/*.py" = ["INP001", "T201"]
+# The checks in tools/ are command-line scripts run by path, not a package.
+"tools/*.py" = ["INP001"]
 # The OAuth callback test makes a real request to the in-process loopback server with the standard
 # library's client (the tests keep httpx out of it); tests/conftest.py allows only loopback ports a test bound.
 "tests/test_spotify_auth.py" = ["TID251"]

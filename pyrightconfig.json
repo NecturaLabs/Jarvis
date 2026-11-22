@@ -4,6 +4,5 @@
   "venvPath": ".",
   "venv": ".venv",
   "include": ["src", "tests", "tools"],
-  "extraPaths": ["src", "tools"],
-  "exclude": ["**/node_modules", "**/.*", "**/target", "**/vendor"]
+  "extraPaths": ["src", "tools"]
 }
