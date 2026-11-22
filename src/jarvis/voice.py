@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import numpy as np
 
 from jarvis.agent import Hooks
-from jarvis.audio import FRAME, RATE, AudioError, is_phantom, write_wav
+from jarvis.audio import FRAME, RATE, AudioError, MicPausedError, is_phantom, write_wav
 from jarvis.policy import Origin, is_yes
 from jarvis.sentences import split_sentences
 
@@ -244,6 +244,8 @@ class VoiceLoop:
         clock: Callable[[], float] = time.monotonic,
         pc_retry_s: float = 1.0,
         dictating: Callable[[], bool] = lambda: False,
+        paused: Callable[[], bool] = lambda: False,
+        until_resumed: Callable[[], None] = lambda: None,
     ) -> None:
         """Wire the loop to its parts.
 
@@ -252,7 +254,9 @@ class VoiceLoop:
         hint cannot turn noise into words). `names` are the assistant's names, allowed beside
         a yes. `clock` times wake words for telling one request heard twice from two.
         `dictating` says whether the owner's own dictation is recording or transcribing; no
-        follow-up request is taken from the microphone meanwhile.
+        follow-up request is taken from the microphone meanwhile. `paused` says whether
+        `jarvis pause` let go of the microphone: a request in flight then ends without an
+        apology, and PC audio is not listened to; `until_resumed` returns once it is over.
         """
         super().__init__()
         self._agent = agent
@@ -269,6 +273,9 @@ class VoiceLoop:
         self._clock = clock
         self._pc_retry_s = pc_retry_s
         self._dictating = dictating
+        self._paused = paused
+        self._until_resumed = until_resumed
+        self._muted = False  # `jarvis hush` came during this request: say nothing more
         self._answered = False  # the last request was the owner's and was answered by voice
         self._should_stop: Callable[[], bool] = lambda: False
         self._pc_heard: queue.Queue[_PcRequest] = queue.Queue(maxsize=1)
@@ -356,26 +363,30 @@ class VoiceLoop:
                 if self._pc is not None:
                     self._pc.audio.drain()
 
+    def _silent(self) -> bool:
+        """Whether this request may say nothing more: spoken over, hushed or paused."""
+        return self._barged_at is not None or self._muted or self._paused()
+
     def _speak(self, words: str) -> None:
-        if self._barged_at is not None:  # the owner spoke over Jarvis: say nothing more
+        if self._silent():
             return
         self._begin_speaking()
         self._speaker.queue(words)
-        if self._barged_at is not None:  # spoken over while it was being queued
+        if self._silent():  # spoken over or hushed while it was being queued
             self._speaker.hush()
         self._end_speaking()
 
     def _utter(self, text: str) -> None:
         """Queue part of a reply while the agent works on (the agent's `speak` hook)."""
         words = speakable(text)
-        if not words or self._barged_at is not None:
+        if not words or self._silent():
             return
         if self._first_words is None:
             self._first_words = time.perf_counter()
         self._begin_speaking()
         for sentence in split_sentences(words):
             self._speaker.queue(sentence)
-        if self._barged_at is not None:  # spoken over while these were being queued
+        if self._silent():  # spoken over or hushed while these were being queued
             self._speaker.hush()
 
     def _hush(self) -> None:
@@ -385,7 +396,16 @@ class VoiceLoop:
             self.state = State.THINK
 
     def _cancelled(self) -> bool:
-        return self._should_stop() or self._barged_at is not None
+        return self._should_stop() or self._paused() or self._barged_at is not None
+
+    def hush(self) -> None:
+        """Stop speaking now (`jarvis hush`, from another thread).
+
+        The request in flight carries on but says nothing more; the next one speaks again. The
+        loop's state is left to the loop's own thread.
+        """
+        self._muted = True
+        self._speaker.hush()
 
     def _say(self, text: str) -> None:
         self._speak(speakable(text))
@@ -449,8 +469,11 @@ class VoiceLoop:
         """
         while True:
             self._answered = False
+            self._muted = False
             try:
                 request()
+            except MicPausedError:
+                log.info("the request ended: Jarvis was paused")
             except Exception:
                 log.exception("the request failed")
                 if not self._cancelled():
@@ -458,7 +481,7 @@ class VoiceLoop:
             finally:
                 self.state = State.IDLE
             barged_at, self._barged_at = self._barged_at, None
-            if self._should_stop():
+            if self._should_stop() or self._paused():
                 return
             if barged_at is not None:
                 request = functools.partial(self.handle_wake, barged_at)
@@ -655,7 +678,7 @@ class VoiceLoop:
             agent_s = time.perf_counter() - started
         finally:
             self._end_speaking()
-        self._answered = from_owner and not self._cancelled()
+        self._answered = from_owner and not self._cancelled() and not self._muted
         first = self._first_words
         log.info(
             "timing: capture %.2f s, transcription %.2f s, first words after %s, agent %.2f s, "
@@ -699,6 +722,9 @@ class VoiceLoop:
         for frame in frames:
             if should_stop():
                 return True
+            if self._paused():
+                busy = True
+                continue
             state = self.state
             if self._pc_busy(pc, frame, state):
                 busy = True
@@ -762,6 +788,9 @@ class VoiceLoop:
         if self._requests != requests:
             log.info("dropped a PC audio request: the loop took another one meanwhile")
             return
+        if self._paused():
+            log.info("dropped a PC audio request: Jarvis was paused meanwhile")
+            return
         with contextlib.suppress(queue.Full):
             self._pc_heard.put_nowait(_PcRequest(heard.samples, wake_at))
 
@@ -777,7 +806,7 @@ class VoiceLoop:
         for frame in frames:
             if pc.wake.heard(frame):
                 self._pc_wake_at = self._clock()
-            if self._requests != requests or self.state is State.CONFIRM:
+            if self._requests != requests or self.state is State.CONFIRM or self._paused():
                 return
             yield frame
 
@@ -790,13 +819,33 @@ class VoiceLoop:
         """Listen for the wake word and handle requests until `should_stop` is true.
 
         A request that fails is apologised for and the loop carries on; a microphone that stops
-        delivering ends the loop with its error.
+        delivering ends the loop with its error. `jarvis pause` lets the microphone go until
+        `resume`: the request in flight ends, and listening starts afresh.
         """
         self._should_stop = should_stop
         log.info("listening for the wake word")
         if self._pc is not None:
             log.info("also listening to PC audio")
             threading.Thread(target=self._watch_pc, args=(should_stop,), daemon=True).start()
+        while True:
+            try:
+                self._listen(should_stop)
+            except MicPausedError:
+                log.info("paused: the microphone is let go")
+                self.state = State.IDLE
+                self._wake.reset()
+                self._until_resumed()
+                # A PC request heard before the pause, or queued as it came, is dropped.
+                with contextlib.suppress(queue.Empty):
+                    self._pc_heard.get_nowait()
+                if should_stop():
+                    return
+                log.info("resumed: listening for the wake word")
+                continue
+            return
+
+    def _listen(self, should_stop: Callable[[], bool]) -> None:
+        """Hear wake words and requests until stopping; `MicPausedError` once paused."""
         for frame in self._mic.frames():
             if should_stop():
                 return

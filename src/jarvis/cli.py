@@ -1,6 +1,7 @@
 """Command-line entry point for `jarvis`."""
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from jarvis import __version__, config, models, paths
+from jarvis import __version__, config, control, models, paths
 from jarvis.agent import Hooks
 from jarvis.app import SetupError, build, chat_pictures, echoes_hint
 from jarvis.model import StrataModel
@@ -134,7 +135,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("restart", help="restart the voice service (after a config change)")
     sub.add_parser("logs", help="follow Jarvis's live log (Ctrl+C to leave)")
     sub.add_parser("doctor", help="check every part without loading the model")
-    sub.add_parser("status", help="show whether the model is loaded")
+    status = sub.add_parser(
+        "status", help="show what Jarvis is doing and whether the model is loaded"
+    )
+    status.add_argument("--json", action="store_true", help="print one JSON object (for the bar)")
+    sub.add_parser("pause", help="let go of the microphone and free the model until resume")
+    sub.add_parser("resume", help="listen again after pause")
+    sub.add_parser("hush", help="stop Jarvis speaking now")
     sub.add_parser("unload", help="free the model's memory now")
     wake = sub.add_parser("wake", help="show or switch the wake word model (livekit or azure)")
     wake.add_argument(
@@ -406,6 +413,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         FallbackWake,
         Microphone,
         OwnVoiceCheck,
+        PausableMic,
         Speaker,
         Vad,
         WakeWord,
@@ -422,7 +430,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
     data = cfg.data_dir
-    mic = Microphone(cfg.audio.source)
+    mic = PausableMic(Microphone(cfg.audio.source))
     speaker = Speaker(
         make_synthesizer(data, cfg.audio.voice, cfg.audio.speech_speed),
         own_wake=OwnVoiceCheck(
@@ -478,7 +486,16 @@ def cmd_run(_args: argparse.Namespace) -> int:
         transcribe_answer=answer,
         names=(cfg.persona.name,),
         dictating=dictation_active,
+        paused=lambda: mic.paused,
+        until_resumed=mic.wait_resumed,
     )
+    controls = control.ControlServer(
+        control.Controls(loop, mic, jarvis.model, jarvis.audit), audit=jarvis.audit
+    )
+    try:
+        controls.start()
+    except OSError as exc:
+        log.warning("no control socket (status, pause and resume will not reach this run): %s", exc)
     try:
         loop.run(stop_requested.is_set)
     except Exception:
@@ -486,6 +503,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
             return 0
         raise
     finally:
+        controls.close()
         for wake in wakes:  # an Azure helper ends with its input; end it now, not at exit
             if isinstance(wake, FallbackWake):
                 wake.close()
@@ -686,11 +704,57 @@ def _strata(cfg: config.Config) -> StrataModel:
     return StrataModel(local, read_api_key(strata_key_file()) or "")
 
 
-def cmd_status(_args: argparse.Namespace) -> int:
-    """Print the model state."""
-    state = _strata(_load()).status()
-    print(f"model: {state or 'server unreachable'}")
-    return 0 if state else 1
+def cmd_status(args: argparse.Namespace) -> int:
+    """Print what the running Jarvis is doing, or the model state when it is not running."""
+    reply = control.send("status")
+    running = reply is not None
+    if reply is not None and reply.get("ok"):
+        shown = {key: value for key, value in reply.items() if key != "ok"}
+    else:
+        model = _strata(_load()).status()
+        shown = {"state": "unavailable", "paused": False, "model": model or "unreachable"}
+        if reply is not None:
+            shown["error"] = str(reply.get("error", "no answer"))
+    shown["running"] = running
+    if args.json:  # a status bar reads the state from the JSON, whatever it is
+        print(json.dumps(shown))
+        return 0
+    if "error" in shown:
+        print(f"jarvis: running but not answering ({shown['error']}), model: {shown['model']}")
+        return 1
+    if running:
+        print(f"jarvis: {shown.get('state')}, model: {shown.get('model')}")
+        return 0
+    model = "server unreachable" if shown["model"] == "unreachable" else shown["model"]
+    print(f"jarvis: not running, model: {model}")
+    return 0 if shown["model"] != "unreachable" else 1
+
+
+def _control(command: str, done: Callable[[dict[str, object]], str]) -> int:
+    reply = control.send(command)
+    if reply is None:
+        print("jarvis: not running (start it with `jarvis start`)")
+        return 1
+    if not reply.get("ok"):
+        print(f"jarvis: {reply.get('error', 'the command failed')}")
+        return 1
+    print(f"jarvis: {done(reply)}")
+    return 0
+
+
+def cmd_pause(_args: argparse.Namespace) -> int:
+    """Let go of the microphone and free the model until `resume`."""
+    return _control("pause", lambda r: "paused" if r.get("changed") else "already paused")
+
+
+def cmd_resume(_args: argparse.Namespace) -> int:
+    """Listen again after `pause`."""
+    return _control("resume", lambda r: "listening again" if r.get("changed") else "was not paused")
+
+
+def cmd_hush(_args: argparse.Namespace) -> int:
+    """Stop Jarvis speaking now."""
+    return _control("hush", lambda _r: "hushed")
 
 
 def cmd_unload(_args: argparse.Namespace) -> int:
@@ -926,6 +990,9 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "run": cmd_run,
     "doctor": cmd_doctor,
     "status": cmd_status,
+    "pause": cmd_pause,
+    "resume": cmd_resume,
+    "hush": cmd_hush,
     "unload": cmd_unload,
     "pc-audio": cmd_pc_audio,
     "consent": cmd_consent,

@@ -713,3 +713,19 @@ def test_a_status_that_cannot_run_counts_as_dictating(failure: Exception) -> Non
         raise failure
 
     assert dictation_active(run=run) is True
+
+
+def test_a_microphone_started_again_after_a_stop_delivers_frames() -> None:
+    # What `jarvis pause` and `resume` do: the stopped capture's end must not end the new one.
+    one_frame_then_wait = f"head -c {FRAME * 2} /dev/zero; exec sleep 30"
+    mic = Microphone(command=["sh", "-c", one_frame_then_wait])
+    mic.start()
+    try:
+        next(mic.frames())
+        mic.stop()
+        mic.start()
+
+        assert _first_outcome(mic, timeout=5) == "frame"
+        assert _first_outcome(mic, timeout=0.3) == "blocked"
+    finally:
+        mic.stop()

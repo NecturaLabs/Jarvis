@@ -312,25 +312,28 @@ class Microphone:
             AudioError: the capture tool could not be started.
         """
         cmd = self._command or pw_record_command(self._source)
-        self._ended.clear()
+        # Each capture has its own end: a capture stopped earlier (`jarvis pause`) that finishes
+        # reading after a new one started must not end the new one.
+        ended = threading.Event()
+        self._ended = ended
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         except OSError as exc:
-            self._ended.set()
+            ended.set()
             msg = f"could not start {cmd[0]}: {exc}"
             raise AudioError(msg) from exc
         self._proc = proc
-        self._thread = threading.Thread(target=self._read, args=(proc.stdout,), daemon=True)
+        self._thread = threading.Thread(target=self._read, args=(proc.stdout, ended), daemon=True)
         self._thread.start()
 
-    def _read(self, stream: IO[bytes] | None) -> None:
+    def _read(self, stream: IO[bytes] | None, ended: threading.Event) -> None:
         need = FRAME * 2
-        while stream is not None:
+        while stream is not None and not ended.is_set():
             data = stream.read(need)
             if len(data) < need:
                 break
             push_frame(self._frames, np.frombuffer(data, dtype=np.int16).copy())
-        self._ended.set()
+        ended.set()
 
     def frames(self) -> Iterator[NDArray[np.int16]]:
         """Yield frames until the capture ends.
@@ -372,6 +375,118 @@ class Microphone:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+
+
+class MicPausedError(AudioError):
+    """The microphone was let go by `jarvis pause`; frames come again after `resume`."""
+
+
+class _Capture(Protocol):
+    @property
+    def pid(self) -> int | None: ...
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
+    def drain(self) -> None: ...
+    def frames(self) -> Iterator[NDArray[np.int16]]: ...
+
+
+class PausableMic:
+    """A `Microphone` that `jarvis pause` can let go of (its capture ends) and `resume` reopen.
+
+    A frames reader open at a pause raises `MicPausedError` at its next frame, and one opened while
+    paused raises it at once, so a request that was listening or about to ends; the loop then
+    waits in `wait_resumed`, using no CPU.
+    """
+
+    def __init__(self, mic: _Capture) -> None:
+        """Wrap `mic` (a `Microphone`), which this object starts and stops from now on."""
+        super().__init__()
+        self._mic = mic
+        self._lock = threading.Lock()
+        self._running = threading.Event()  # clear while paused
+        self._running.set()
+        self._pauses = 0  # pauses so far; a reader opened before one ends
+        self._stopped = False
+
+    @property
+    def pid(self) -> int | None:
+        """The capture process's ID while it runs."""
+        return self._mic.pid
+
+    @property
+    def paused(self) -> bool:
+        """Whether the microphone is let go."""
+        return not self._running.is_set()
+
+    def start(self) -> None:
+        """Start capturing."""
+        self._mic.start()
+
+    def pause(self) -> bool:
+        """Let go of the microphone; return False when already paused or stopped."""
+        with self._lock:
+            if self._stopped or self.paused:
+                return False
+            self._pauses += 1
+            self._running.clear()
+            self._mic.stop()
+        return True
+
+    def resume(self) -> bool:
+        """Open the microphone again; return False when not paused or stopped.
+
+        A capture tool that cannot be started raises `Microphone.start`'s `AudioError`, and the
+        microphone stays paused.
+        """
+        with self._lock:
+            if self._stopped or not self.paused:
+                return False
+            self._mic.drain()
+            self._mic.start()
+            self._running.set()
+        return True
+
+    def stop(self) -> None:
+        """Stop for good: every reader, a waiting one too, ends with `AudioError`."""
+        with self._lock:
+            self._stopped = True
+            self._running.set()
+            self._mic.stop()
+
+    def drain(self) -> None:
+        """Drop frames captured so far."""
+        self._mic.drain()
+
+    def wait_resumed(self) -> None:
+        """Return once the microphone is open again, or stopped; waits using no CPU."""
+        self._running.wait()
+
+    def frames(self) -> Iterator[NDArray[np.int16]]:
+        """Yield frames until the capture ends.
+
+        Raises:
+            MicPausedError: the microphone is paused, or a pause came while this reader was open.
+            AudioError: the capture ended, or the microphone was stopped.
+        """
+        if self._stopped:
+            msg = "the microphone was stopped"
+            raise AudioError(msg)
+        if self.paused:  # a request or watcher that would start now ends instead
+            raise MicPausedError
+        pauses = self._pauses
+        for frame in self._frames_until_ended():
+            if self._pauses != pauses:
+                raise MicPausedError
+            yield frame
+
+    def _frames_until_ended(self) -> Iterator[NDArray[np.int16]]:
+        pauses = self._pauses
+        try:
+            yield from self._mic.frames()
+        except AudioError:
+            if self._pauses != pauses and not self._stopped:
+                raise MicPausedError from None
+            raise
 
 
 class WakeWord:
