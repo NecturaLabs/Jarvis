@@ -487,8 +487,11 @@ def cmd_run(_args: argparse.Namespace) -> int:
         names=(cfg.persona.name,),
         dictating=dictation_active,
         paused=lambda: mic.paused,
+        until_resumed=mic.wait_resumed,
     )
-    controls = control.ControlServer(control.Controls(loop, mic, jarvis.model))
+    controls = control.ControlServer(
+        control.Controls(loop, mic, jarvis.model, jarvis.audit), audit=jarvis.audit
+    )
     try:
         controls.start()
     except OSError as exc:
@@ -704,22 +707,27 @@ def _strata(cfg: config.Config) -> StrataModel:
 def cmd_status(args: argparse.Namespace) -> int:
     """Print what the running Jarvis is doing, or the model state when it is not running."""
     reply = control.send("status")
+    running = reply is not None
     if reply is not None and reply.get("ok"):
-        running = True
         shown = {key: value for key, value in reply.items() if key != "ok"}
     else:
-        running = False
         model = _strata(_load()).status()
         shown = {"state": "unavailable", "paused": False, "model": model or "unreachable"}
+        if reply is not None:
+            shown["error"] = str(reply.get("error", "no answer"))
     shown["running"] = running
-    if args.json:
+    if args.json:  # a status bar reads the state from the JSON, whatever it is
         print(json.dumps(shown))
-    elif running:
+        return 0
+    if "error" in shown:
+        print(f"jarvis: running but not answering ({shown['error']}), model: {shown['model']}")
+        return 1
+    if running:
         print(f"jarvis: {shown.get('state')}, model: {shown.get('model')}")
-    else:
-        model = "server unreachable" if shown["model"] == "unreachable" else shown["model"]
-        print(f"jarvis: not running, model: {model}")
-    return 0 if running or shown["model"] != "unreachable" else 1
+        return 0
+    model = "server unreachable" if shown["model"] == "unreachable" else shown["model"]
+    print(f"jarvis: not running, model: {model}")
+    return 0 if shown["model"] != "unreachable" else 1
 
 
 def _control(command: str, done: Callable[[dict[str, object]], str]) -> int:

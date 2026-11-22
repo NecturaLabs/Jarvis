@@ -15,6 +15,7 @@ import pytest
 
 from jarvis import cli, control
 from jarvis.audio import FRAME, AudioError, MicPausedError, PausableMic
+from jarvis.audit import AuditLog
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -378,18 +379,30 @@ def test_a_reader_open_across_a_quick_pause_and_resume_still_ends() -> None:
     assert next(mic.frames()) is FRAME_DATA
 
 
-def test_a_reader_opened_while_paused_waits_for_resume() -> None:
+def test_a_reader_opened_while_paused_ends_at_once() -> None:
+    # A request that would start listening after the pause must not wait and then take
+    # whatever is said after resume as a request.
+    mic = PausableMic(Capture())
+    mic.start()
+    mic.pause()
+
+    with pytest.raises(MicPausedError):
+        next(mic.frames())
+
+
+def test_the_loop_waits_for_resume_then_reads_the_reopened_microphone() -> None:
     capture = Capture()
     mic = PausableMic(capture)
     mic.start()
     mic.pause()
     got = threading.Event()
 
-    def read() -> None:
+    def wait_then_read() -> None:
+        mic.wait_resumed()
         next(mic.frames())
         got.set()
 
-    threading.Thread(target=read, daemon=True).start()
+    threading.Thread(target=wait_then_read, daemon=True).start()
 
     assert not got.wait(0.1)
     assert mic.resume()
@@ -398,26 +411,23 @@ def test_a_reader_opened_while_paused_waits_for_resume() -> None:
     assert not mic.paused
 
 
-def test_stop_ends_a_reader_waiting_in_a_pause_with_an_audio_error() -> None:
+def test_stop_ends_a_wait_for_resume_and_then_every_reader() -> None:
     mic = PausableMic(Capture())
     mic.start()
     mic.pause()
-    errors: list[BaseException] = []
     done = threading.Event()
 
-    def read() -> None:
-        try:
-            next(mic.frames())
-        except AudioError as exc:
-            errors.append(exc)
+    def wait() -> None:
+        mic.wait_resumed()
         done.set()
 
-    threading.Thread(target=read, daemon=True).start()
+    threading.Thread(target=wait, daemon=True).start()
     mic.stop()
 
     assert done.wait(WAIT_S)
-    assert len(errors) == 1
-    assert not isinstance(errors[0], MicPausedError)
+    with pytest.raises(AudioError) as error:
+        next(mic.frames())
+    assert not isinstance(error.value, MicPausedError)
     assert not mic.resume()
 
 
@@ -507,3 +517,106 @@ def test_control_commands_without_a_running_jarvis_fail(
 ) -> None:
     assert cli.main([command]) == 1
     assert "not running" in capsys.readouterr().out
+
+
+def test_commands_that_change_something_are_audited() -> None:
+    audit = AuditLog(None)
+    controls = control.Controls(Loop(), Mic(), Model(), audit, background=Later())
+
+    controls("status")
+    controls("pause")
+    controls("resume")
+    controls("hush")
+
+    assert [(e["command"], e.get("changed")) for e in audit.events] == [
+        ("pause", True),
+        ("resume", True),
+        ("hush", None),
+    ]
+
+
+def test_a_slow_status_does_not_hold_up_a_hush() -> None:
+    release = threading.Event()
+    hushed = threading.Event()
+
+    def handler(command: str) -> dict[str, object]:
+        if command == "status":
+            release.wait(WAIT_S)  # a model server slow to answer
+        else:
+            hushed.set()
+        return {}
+
+    server = control.ControlServer(handler)
+    server.start()
+    try:
+        slow = threading.Thread(target=control.send, args=("status", server.path), daemon=True)
+        slow.start()
+        assert control.send("hush", server.path, timeout=WAIT_S) == {"ok": True}
+        assert hushed.is_set()
+    finally:
+        release.set()
+        server.close()
+
+
+def test_a_jarvis_that_does_not_answer_in_time_is_not_reported_as_not_running() -> None:
+    release = threading.Event()
+
+    def handler(_command: str) -> dict[str, object]:
+        release.wait(WAIT_S)
+        return {}
+
+    server = control.ControlServer(handler)
+    server.start()
+    try:
+        reply = control.send("status", server.path, timeout=0.2)
+    finally:
+        release.set()
+        server.close()
+
+    assert reply == {"ok": False, "error": "Jarvis did not answer in time"}
+
+
+def test_status_json_exits_zero_even_with_nothing_reachable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "_strata", _model_server(None))
+
+    assert cli.main(["status", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "unavailable"
+
+
+def test_an_unload_and_the_load_a_quick_resume_starts_take_turns() -> None:
+    order: list[str] = []
+    unloading = threading.Event()
+    finish_unload = threading.Event()
+
+    def unload() -> bool:
+        unloading.set()
+        finish_unload.wait(WAIT_S)
+        order.append("unloaded")
+        return True
+
+    def warm() -> bool:
+        order.append("warmed")
+        return True
+
+    model = Model()
+    model.unload = unload  # this test's slow server
+    model.warm = warm
+    mic = Mic()
+    workers: list[threading.Thread] = []
+
+    def background(work: Callable[[], object]) -> None:
+        worker = threading.Thread(target=work, daemon=True)
+        workers.append(worker)
+        worker.start()
+
+    controls = control.Controls(Loop(), mic, model, background=background)
+    controls("pause")
+    assert unloading.wait(WAIT_S)
+    controls("resume")
+    finish_unload.set()
+    for worker in workers:
+        worker.join(WAIT_S)
+
+    assert order == ["unloaded", "warmed"]

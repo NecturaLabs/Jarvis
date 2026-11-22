@@ -237,3 +237,25 @@ def test_the_time_is_shown_in_local_time() -> None:
 
 def test_an_entry_without_an_event_name_is_skipped() -> None:
     assert describe({"ts": "2026-11-21T10:00:00+00:00"}) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "text"),
+    [
+        ("pause", "Paused: the microphone is let go (jarvis pause)"),
+        ("resume", "Listening again (jarvis resume)"),
+        ("hush", "Hushed (jarvis hush)"),
+    ],
+)
+def test_a_control_command_shows_as_a_note(command: str, text: str) -> None:
+    shown = describe({"ts": "2026-11-21T10:00:00+00:00", "event": "control", "command": command})
+
+    assert shown is not None
+    assert (shown.kind, shown.text) == ("note", text)
+
+
+def test_a_refused_control_connection_is_a_warning() -> None:
+    shown = describe({"ts": "2026-11-21T10:00:00+00:00", "event": "control_refused"})
+
+    assert shown is not None
+    assert shown.kind == "warn"

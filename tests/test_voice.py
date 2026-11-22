@@ -1396,3 +1396,69 @@ def test_a_pause_ends_the_request_in_flight_silently_and_listening_resumes() -> 
     assert speaker.said == ["Done."]  # no apology for the request the pause ended
     assert script.stops == 1
     assert script.starts == 1
+
+
+def test_hush_silences_the_rest_of_a_streamed_reply_but_the_request_carries_on() -> None:
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        assert hooks.speak is not None
+        hooks.speak("One.")
+        loop.hush()  # `jarvis hush` from the control thread
+        hooks.speak("Two.")
+        return "Three."
+
+    agent = Agent(reply)
+    speaker = Speaker()
+    loop = _loop(agent, Mic(*REQUEST, *REQUEST), speaker)
+
+    _run(loop)
+
+    assert len(agent.calls) == 2  # the hushed request ran to its end
+    assert speaker.said == ["One.", "One."]  # each request is hushed after its first sentence
+    assert speaker.hushed >= 2
+
+
+def test_a_hush_lasts_only_for_the_request_it_came_in() -> None:
+    hushed = [False]
+
+    def reply(_text: str, _hooks: Hooks, _origin: Origin) -> str:
+        if not hushed[0]:
+            hushed[0] = True
+            loop.hush()
+            return "Hushed."
+        return "Heard."
+
+    agent = Agent(reply)
+    speaker = Speaker()
+    loop = _loop(agent, Mic(*REQUEST, *REQUEST), speaker)
+
+    _run(loop)
+
+    assert speaker.said == ["Heard."]
+
+
+def test_a_paused_loop_says_nothing_more() -> None:
+    paused = [False]
+
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        assert hooks.speak is not None
+        hooks.speak("One.")
+        paused[0] = True  # `jarvis pause` while the reply streams
+        hooks.speak("Two.")
+        return "Three."
+
+    agent = Agent(reply)
+    speaker = Speaker()
+    loop = VoiceLoop(
+        agent,
+        Mic(*REQUEST),
+        Wake(),
+        Vad(),
+        speaker,
+        CFG,
+        lambda _samples: "pause the music",
+        paused=lambda: paused[0],
+    )
+
+    _run(loop)
+
+    assert speaker.said == ["One."]

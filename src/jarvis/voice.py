@@ -245,6 +245,7 @@ class VoiceLoop:
         pc_retry_s: float = 1.0,
         dictating: Callable[[], bool] = lambda: False,
         paused: Callable[[], bool] = lambda: False,
+        until_resumed: Callable[[], None] = lambda: None,
     ) -> None:
         """Wire the loop to its parts.
 
@@ -255,7 +256,7 @@ class VoiceLoop:
         `dictating` says whether the owner's own dictation is recording or transcribing; no
         follow-up request is taken from the microphone meanwhile. `paused` says whether
         `jarvis pause` let go of the microphone: a request in flight then ends without an
-        apology, and PC audio is not listened to.
+        apology, and PC audio is not listened to; `until_resumed` returns once it is over.
         """
         super().__init__()
         self._agent = agent
@@ -273,6 +274,8 @@ class VoiceLoop:
         self._pc_retry_s = pc_retry_s
         self._dictating = dictating
         self._paused = paused
+        self._until_resumed = until_resumed
+        self._muted = False  # `jarvis hush` came during this request: say nothing more
         self._answered = False  # the last request was the owner's and was answered by voice
         self._should_stop: Callable[[], bool] = lambda: False
         self._pc_heard: queue.Queue[_PcRequest] = queue.Queue(maxsize=1)
@@ -360,26 +363,30 @@ class VoiceLoop:
                 if self._pc is not None:
                     self._pc.audio.drain()
 
+    def _silent(self) -> bool:
+        """Whether this request may say nothing more: spoken over, hushed or paused."""
+        return self._barged_at is not None or self._muted or self._paused()
+
     def _speak(self, words: str) -> None:
-        if self._barged_at is not None:  # the owner spoke over Jarvis: say nothing more
+        if self._silent():
             return
         self._begin_speaking()
         self._speaker.queue(words)
-        if self._barged_at is not None:  # spoken over while it was being queued
+        if self._silent():  # spoken over or hushed while it was being queued
             self._speaker.hush()
         self._end_speaking()
 
     def _utter(self, text: str) -> None:
         """Queue part of a reply while the agent works on (the agent's `speak` hook)."""
         words = speakable(text)
-        if not words or self._barged_at is not None:
+        if not words or self._silent():
             return
         if self._first_words is None:
             self._first_words = time.perf_counter()
         self._begin_speaking()
         for sentence in split_sentences(words):
             self._speaker.queue(sentence)
-        if self._barged_at is not None:  # spoken over while these were being queued
+        if self._silent():  # spoken over or hushed while these were being queued
             self._speaker.hush()
 
     def _hush(self) -> None:
@@ -392,8 +399,13 @@ class VoiceLoop:
         return self._should_stop() or self._paused() or self._barged_at is not None
 
     def hush(self) -> None:
-        """Stop speaking now (`jarvis hush`); a request in flight carries on silently."""
-        self._hush()
+        """Stop speaking now (`jarvis hush`, from another thread).
+
+        The request in flight carries on but says nothing more; the next one speaks again. The
+        loop's state is left to the loop's own thread.
+        """
+        self._muted = True
+        self._speaker.hush()
 
     def _say(self, text: str) -> None:
         self._speak(speakable(text))
@@ -457,6 +469,7 @@ class VoiceLoop:
         """
         while True:
             self._answered = False
+            self._muted = False
             try:
                 request()
             except Exception:
@@ -663,7 +676,7 @@ class VoiceLoop:
             agent_s = time.perf_counter() - started
         finally:
             self._end_speaking()
-        self._answered = from_owner and not self._cancelled()
+        self._answered = from_owner and not self._cancelled() and not self._muted
         first = self._first_words
         log.info(
             "timing: capture %.2f s, transcription %.2f s, first words after %s, agent %.2f s, "
@@ -818,8 +831,14 @@ class VoiceLoop:
             except MicPausedError:
                 log.info("paused: the microphone is let go")
                 self.state = State.IDLE
+                self._wake.reset()
+                self._until_resumed()
+                # A PC request heard before the pause, or queued as it came, is dropped.
                 with contextlib.suppress(queue.Empty):
-                    self._pc_heard.get_nowait()  # a PC request heard before the pause is dropped
+                    self._pc_heard.get_nowait()
+                if should_stop():
+                    return
+                log.info("resumed: listening for the wake word")
                 continue
             return
 

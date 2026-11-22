@@ -393,8 +393,9 @@ class _Capture(Protocol):
 class PausableMic:
     """A `Microphone` that `jarvis pause` can let go of (its capture ends) and `resume` reopen.
 
-    A frames reader opened before a pause raises `MicPausedError` at its next frame, so a request
-    that was listening ends; a reader opened while paused waits, using no CPU, for `resume`.
+    A frames reader open at a pause raises `MicPausedError` at its next frame, and one opened while
+    paused raises it at once, so a request that was listening or about to ends; the loop then
+    waits in `wait_resumed`, using no CPU.
     """
 
     def __init__(self, mic: _Capture) -> None:
@@ -456,18 +457,23 @@ class PausableMic:
         """Drop frames captured so far."""
         self._mic.drain()
 
+    def wait_resumed(self) -> None:
+        """Return once the microphone is open again, or stopped; waits using no CPU."""
+        self._running.wait()
+
     def frames(self) -> Iterator[NDArray[np.int16]]:
-        """Yield frames until the capture ends, waiting first while paused.
+        """Yield frames until the capture ends.
 
         Raises:
-            MicPausedError: a pause came while this reader was open.
+            MicPausedError: the microphone is paused, or a pause came while this reader was open.
             AudioError: the capture ended, or the microphone was stopped.
         """
-        self._running.wait()
-        pauses = self._pauses
         if self._stopped:
             msg = "the microphone was stopped"
             raise AudioError(msg)
+        if self.paused:  # a request or watcher that would start now ends instead
+            raise MicPausedError
+        pauses = self._pauses
         for frame in self._frames_until_ended():
             if self._pauses != pauses:
                 raise MicPausedError

@@ -16,6 +16,7 @@ from jarvis import __version__, cli, config, models, paths
 from jarvis import audio as audio_module
 from jarvis import voice as voice_module
 from jarvis.agent import Hooks
+from jarvis.audit import AuditLog
 from jarvis.chat.app import ChatApp
 from jarvis.cli import main
 from jarvis.secretfile import write_private_json
@@ -586,7 +587,9 @@ def _cmd_run(
     monkeypatch.setattr(cli, "_load", lambda: cfg or config.Config())
     model = SimpleNamespace(warm=run.warmed.set, is_loaded=lambda: True, load=lambda: True)
     ops = SimpleNamespace(start_refresh=run.refresh.append)
-    jarvis = SimpleNamespace(agent=object(), model=model, ops=ops, hint=lambda: "")
+    jarvis = SimpleNamespace(
+        agent=object(), model=model, ops=ops, hint=lambda: "", audit=AuditLog(None)
+    )
 
     def build(_cfg: config.Config) -> SimpleNamespace:
         return jarvis

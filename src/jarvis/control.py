@@ -9,6 +9,7 @@ The public state, which the Omarchy bar reads (#14), is one of `STATES`.
 """
 
 import contextlib
+import fcntl
 import json
 import logging
 import os
@@ -64,6 +65,15 @@ class _Mic(Protocol):
     def resume(self) -> bool: ...
 
 
+class _Audit(Protocol):
+    def record(self, event: str, **fields: object) -> None: ...
+
+
+class _NoAudit:
+    def record(self, event: str, **fields: object) -> None:
+        pass
+
+
 class _Model(Protocol):
     def status(self) -> str | None: ...
     def unload(self) -> bool: ...
@@ -77,6 +87,10 @@ def _in_background(work: Callable[[], object]) -> None:
 def socket_path() -> Path:
     """Return the control socket's path."""
     return runtime_dir() / "control.sock"
+
+
+def _lock_path(path: Path) -> Path:
+    return path.with_suffix(".lock")
 
 
 def public_state(loop_state: str, *, paused: bool, model: str | None) -> str:
@@ -102,7 +116,9 @@ class Controls:
     """Carries out the control commands on the running voice loop (the server's handler).
 
     `pause` stops the speech, lets go of the microphone and, once the request in flight has
-    ended, unloads the model; `resume` opens the microphone again and loads the model.
+    ended, unloads the model; `resume` opens the microphone again and loads the model. Unloading
+    and loading take turns, so a quick resume cannot end with the model unloaded. Each command
+    that changes something is audited.
     """
 
     def __init__(  # ruff: ignore[too-many-arguments] - collaborators, each a test seam
@@ -110,6 +126,7 @@ class Controls:
         loop: _Loop,
         mic: _Mic,
         model: _Model,
+        audit: _Audit | None = None,
         *,
         background: Callable[[Callable[[], object]], None] = _in_background,
         clock: Callable[[], float] = time.monotonic,
@@ -120,6 +137,8 @@ class Controls:
         self._loop = loop
         self._mic = mic
         self._model = model
+        self._audit = audit or _NoAudit()
+        self._model_turn = threading.Lock()  # an unload and a load never overlap
         self._background = background
         self._clock = clock
         self._sleep = sleep
@@ -134,6 +153,7 @@ class Controls:
                 return self._resume()
             case "hush":
                 self._loop.hush()
+                self._audit.record("control", command="hush")
                 return {}
             case _:
                 return self._status()
@@ -150,6 +170,7 @@ class Controls:
     def _pause(self) -> dict[str, Any]:
         self._loop.hush()
         changed = self._mic.pause()
+        self._audit.record("control", command="pause", changed=changed)
         if changed:
             self._pauses += 1
             pause = self._pauses
@@ -160,15 +181,21 @@ class Controls:
         deadline = self._clock() + IDLE_WAIT_S
         while str(self._loop.state) != "idle" and self._clock() < deadline:
             self._sleep(IDLE_POLL_S)
-        if pause == self._pauses and self._mic.paused:
-            log.info("paused: unloading the model")
-            self._model.unload()
+        with self._model_turn:
+            if pause == self._pauses and self._mic.paused:
+                log.info("paused: unloading the model")
+                self._model.unload()
+
+    def _warm(self) -> None:
+        with self._model_turn:
+            self._model.warm()
 
     def _resume(self) -> dict[str, Any]:
         changed = self._mic.resume()
+        self._audit.record("control", command="resume", changed=changed)
         if changed:
             self._pauses += 1  # a pause's unload still waiting is now stale
-            self._background(self._model.warm)
+            self._background(self._warm)
         return {"paused": False, "changed": changed}
 
 
@@ -206,12 +233,19 @@ def _command(line: bytes | None) -> str | None:
 class ControlServer:
     """Serves the control socket on a thread of its own until `close`."""
 
-    def __init__(self, handler: Handler, path: Path | None = None) -> None:
-        """Answer each known command with `handler(command)`; `path` defaults to `socket_path`."""
+    def __init__(
+        self, handler: Handler, path: Path | None = None, audit: _Audit | None = None
+    ) -> None:
+        """Answer each known command with `handler(command)`; `path` defaults to `socket_path`.
+
+        A connection refused for coming from another user is recorded in `audit`.
+        """
         super().__init__()
         self._handler = handler
         self.path = path or socket_path()
+        self._audit = audit or _NoAudit()
         self._sock: socket.socket | None = None
+        self._lock_fd: int | None = None
         self._thread: threading.Thread | None = None
         self._closed = threading.Event()
 
@@ -228,21 +262,36 @@ class ControlServer:
             msg = f"{folder} is not a folder of this user"
             raise OSError(msg)
         folder.chmod(0o700)
-        if _answers(self.path):
-            msg = f"another Jarvis is already serving {self.path}"
-            raise OSError(msg)
-        with contextlib.suppress(FileNotFoundError):
-            self.path.unlink()
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        old = os.umask(0o177)
+        # Held while serving: a second Jarvis stops here rather than replacing the socket.
+        lock = os.open(_lock_path(self.path), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
-            sock.bind(str(self.path))
-        finally:
-            os.umask(old)
-        sock.listen(4)
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(lock)
+            msg = f"another Jarvis is already serving {self.path}"
+            raise OSError(msg) from None
+        try:
+            sock = self._bind()
+        except OSError:
+            os.close(lock)
+            raise
+        self._lock_fd = lock
         self._sock = sock
         self._thread = threading.Thread(target=self._serve, name="jarvis-control", daemon=True)
         self._thread.start()
+
+    def _bind(self) -> socket.socket:
+        with contextlib.suppress(FileNotFoundError):
+            self.path.unlink()  # left by a run that was killed
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.bind(str(self.path))  # in a 0700 folder, so nobody else can reach it meanwhile
+            self.path.chmod(0o600)
+            sock.listen(8)
+        except OSError:
+            sock.close()
+            raise
+        return sock
 
     def _serve(self) -> None:
         sock = self._sock
@@ -252,15 +301,25 @@ class ControlServer:
                 conn, _ = sock.accept()
             except OSError:
                 return  # closed
-            with conn:
-                try:
-                    self._answer(conn)
-                except OSError as exc:
-                    log.info("control connection failed: %s", exc)
+            # Each connection on its own thread: a slow `status` never holds up a `hush`.
+            threading.Thread(
+                target=self._connection, args=(conn,), name="jarvis-control-conn", daemon=True
+            ).start()
+
+    def _connection(self, conn: socket.socket) -> None:
+        with conn:
+            try:
+                self._answer(conn)
+            except OSError as exc:
+                log.info("control connection failed: %s", exc)
+            except Exception:
+                log.exception("control connection failed")
 
     def _answer(self, conn: socket.socket) -> None:
-        if _peer_uid(conn) != os.getuid():
+        uid = _peer_uid(conn)
+        if uid != os.getuid():
             log.warning("refused a control connection from another user")
+            self._audit.record("control_refused", peer_uid=uid)
             return
         conn.settimeout(TIMEOUT_S)
         command = _command(_read_line(conn))
@@ -285,36 +344,35 @@ class ControlServer:
                 sock.shutdown(socket.SHUT_RDWR)
             sock.close()
             with contextlib.suppress(FileNotFoundError):
-                self.path.unlink()
+                self.path.unlink()  # this run's own: the lock says no other run serves it
+        lock, self._lock_fd = self._lock_fd, None
+        if lock is not None:
+            os.close(lock)
         if self._thread is not None:
             self._thread.join(TIMEOUT_S)
 
 
-def _answers(path: Path) -> bool:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-        probe.settimeout(0.5)
-        try:
-            probe.connect(str(path))
-        except OSError:
-            return False
-    return True
-
-
 def send(command: str, path: Path | None = None, timeout: float = 10.0) -> dict[str, Any] | None:
-    """Send `command` to the running Jarvis; return its reply, or None when none is running."""
+    """Send `command` to the running Jarvis; return its reply, or None when none is running.
+
+    A Jarvis that is running but does not answer in time gets an `ok: false` reply.
+    """
     target = path or socket_path()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
         conn.settimeout(timeout)
         try:
             conn.connect(str(target))
+        except OSError:
+            return None
+        try:
             conn.sendall(json.dumps({"command": command}).encode() + b"\n")
             line = _read_reply(conn)
         except OSError:
-            return None
+            return {"ok": False, "error": "Jarvis did not answer in time"}
     try:
         return obj(json.loads(line))
     except ValueError:
-        return None
+        return {"ok": False, "error": "Jarvis's answer could not be read"}
 
 
 def _read_reply(conn: socket.socket) -> bytes:
