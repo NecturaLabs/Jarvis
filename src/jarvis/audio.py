@@ -7,8 +7,10 @@ Jarvis never touches Voxtype's daemon, config or the owner's recordings.
 
 import collections
 import contextlib
+import functools
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -786,7 +788,11 @@ _DIAGNOSTIC = re.compile(
 
 
 def parse_transcript(stdout: str) -> str:
-    """Return the transcript from `voxtype transcribe` output without its progress and log lines."""
+    """Return the transcript from `voxtype transcribe` output without its progress and log lines.
+
+    `-q` already leaves out the log lines; they are filtered too in case a Voxtype release prints
+    them anyway.
+    """
     lines = [_ANSI.sub("", line).strip() for line in stdout.splitlines()]
     kept = [line for line in lines if line and not _DIAGNOSTIC.match(line)]
     return " ".join(kept).strip()
@@ -810,8 +816,13 @@ def voxtype_settings(threads: int, *, short_window: bool) -> str:
     Whisper pads every clip to 30 s, so a two-second request costs as much as a long one;
     `short_window` (Voxtype's `context_window_optimization`) sizes the window to the clip, about
     five times faster for a spoken command. Whisper.cpp also uses only 4 threads unless told.
+    `keep_failed_recordings` off means Voxtype never leaves the owner's voice in its
+    `failed-audio` folder after one of Jarvis's runs.
     """
     return (
+        "[audio]\n"
+        "keep_failed_recordings = false\n"
+        "\n"
         "[whisper]\n"
         f"threads = {int(threads)}\n"
         f"context_window_optimization = {'true' if short_window else 'false'}\n"
@@ -824,9 +835,9 @@ def voxtype_command(
     """Return the `voxtype transcribe` command; options override the owner's config for one run.
 
     `settings` is a config file of Jarvis's own (see `voxtype_settings`); the owner's Voxtype
-    config is never changed.
+    config is never changed. `-q` (errors only) keeps Voxtype's log lines off the transcript.
     """
-    cmd = ["voxtype"]
+    cmd = ["voxtype", "-q"]
     if settings is not None:
         cmd += ["-c", str(settings)]
     # The `--option=value` form keeps a value that starts with a dash (a song name in the hint)
@@ -983,14 +994,48 @@ def trim_silence(pcm: bytes, rate: int, *, lead_s: float | None, tail_s: float) 
     return samples[start:end].tobytes()
 
 
+RESAMPLE_ZERO_CROSSINGS = 32  # sinc lobes each side of a sample: a transition band about 1 kHz wide
+RESAMPLE_BETA = 8.6  # Kaiser window shape: stopband about 80 dB down
+RESAMPLE_BLOCK = 8000  # output samples worked on at a time
+
+
+@functools.lru_cache(maxsize=4)
+def _resampling_filter(rate: int) -> tuple[int, int, int, NDArray[np.float32]]:
+    """Return (up, down, half, weights) to resample `rate` to RATE, a windowed-sinc low-pass.
+
+    Output sample n sits at input time n * down / up. `weights[r]` holds the `2 * half` taps for
+    the outputs whose position is r / up past an input sample, each row summing to 1.
+    """
+    divisor = math.gcd(RATE, rate)
+    up, down = RATE // divisor, rate // divisor
+    cutoff = 0.45 * min(1.0, RATE / rate)  # cycles per input sample: 90% of the lower Nyquist rate
+    half = math.ceil(RESAMPLE_ZERO_CROSSINGS / (2 * cutoff))
+    t = np.arange(1 - half, half + 1)[None, :] - (np.arange(up)[:, None] / up)
+    window = np.i0(RESAMPLE_BETA * np.sqrt(np.clip(1 - (t / half) ** 2, 0, None)))
+    weights = np.sinc(2 * cutoff * t) * window / np.i0(RESAMPLE_BETA)
+    weights /= weights.sum(axis=1, keepdims=True)
+    return up, down, half, weights.astype(np.float32)
+
+
 def to_16k(pcm: bytes, rate: int) -> NDArray[np.int16]:
-    """Return int16 `pcm` at `rate` resampled to 16 kHz (linear; enough for the wake model)."""
-    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+    """Return int16 `pcm` at `rate` resampled to 16 kHz with a low-pass first.
+
+    Whatever the voice puts above 8 kHz is filtered out (a plain interpolation would fold it into
+    the band the wake model listens to), so the check hears what the microphone would.
+    """
+    samples = np.frombuffer(pcm, dtype=np.int16)
     if rate == RATE or samples.size == 0:
-        return samples.astype(np.int16)
-    count = int(samples.size * RATE / rate)
-    points = np.linspace(0, samples.size - 1, count)
-    return np.interp(points, np.arange(samples.size), samples).astype(np.int16)
+        return samples.copy()
+    up, down, half, weights = _resampling_filter(rate)
+    count = samples.size * up // down
+    padded = np.pad(samples.astype(np.float32), (half, half + 1))
+    taps = np.arange(2 * half)
+    out = np.empty(count, dtype=np.float32)
+    for first in range(0, count, RESAMPLE_BLOCK):
+        n = np.arange(first, min(first + RESAMPLE_BLOCK, count)) * down
+        window = padded[(n // up)[:, None] + taps[None, :] + 1]
+        out[first : first + n.size] = np.einsum("nk,nk->n", window, weights[n % up])
+    return np.clip(np.rint(out), -32768, 32767).astype(np.int16)
 
 
 class _WakeModel(Protocol):

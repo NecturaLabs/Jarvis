@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 SAMPLE_RATE = 24000
 MAX_PHONEMES = 510
 MAX_THREADS = 8
+TOKEN_INPUTS = ("input_ids", "tokens")  # what the v1.0 and the older model builds call the phonemes
 _LANG_SWITCH = re.compile(r"\([^)]+\)")
 _espeak_lock = threading.Lock()
 
@@ -49,6 +50,20 @@ def _espeak_phonemes(text: str, voice: str) -> list[str]:
     return [unicodedata.normalize("NFC", s) for s in sentences if s]
 
 
+def _chunks(phonemes: str) -> list[str]:
+    """Split `phonemes` into pieces of at most MAX_PHONEMES, at a space where there is one."""
+    out: list[str] = []
+    rest = phonemes
+    while len(rest) > MAX_PHONEMES:
+        cut = rest.rfind(" ", 1, MAX_PHONEMES + 1)
+        if cut < 0:
+            cut = MAX_PHONEMES  # one word longer than the window
+        out.append(rest[:cut])
+        rest = rest[cut:].lstrip()
+    out.append(rest)
+    return [chunk for chunk in out if chunk.strip()]
+
+
 def session_options() -> ort.SessionOptions:
     """Return ONNX Runtime options for the voice model: bounded threads that never spin-wait.
 
@@ -72,12 +87,23 @@ class Kokoro:
         """Load the model and pick a voice (e.g. `bm_george`).
 
         Raises:
-            ValueError: the voice pack has no voice of that name.
+            ValueError: the file is not a Kokoro model, or the voice pack has no voice of that
+                name.
         """
         super().__init__()
         self._session = ort.InferenceSession(
             str(model_path), sess_options=session_options(), providers=["CPUExecutionProvider"]
         )
+        inputs = {item.name: str(item.type) for item in self._session.get_inputs()}
+        names = [name for name in TOKEN_INPUTS if name in inputs]
+        if not names or not {"style", "speed"} <= inputs.keys():
+            msg = (
+                f"{model_path} is not a Kokoro model Jarvis can run: it takes {sorted(inputs)}, "
+                f"not one of {TOKEN_INPUTS} with style and speed"
+            )
+            raise ValueError(msg)
+        self._tokens_input = names[0]
+        self._speed_type = np.int32 if inputs["speed"] == "tensor(int32)" else np.float32
         meta = self._session.get_modelmeta().custom_metadata_map
         self._vocab = cast("dict[str, int]", json.loads(meta["kokoro_config"])["vocab"])
         with np.load(voices_path) as pack:
@@ -92,8 +118,8 @@ class Kokoro:
         """Return the token ids of each sentence, split to fit the model's window."""
         out: list[list[int]] = []
         for sentence in _espeak_phonemes(text, self._espeak_voice):
-            ids = [self._vocab[ch] for ch in sentence if ch in self._vocab]
-            out.extend(ids[i : i + MAX_PHONEMES] for i in range(0, len(ids), MAX_PHONEMES))
+            known = "".join(ch for ch in sentence if ch in self._vocab)
+            out.extend([self._vocab[ch] for ch in chunk] for chunk in _chunks(known))
         return [ids for ids in out if ids]
 
     def synthesize(self, text: str) -> NDArray[np.int16]:
@@ -102,9 +128,9 @@ class Kokoro:
         for ids in self.tokens(text):
             style = self._style[min(len(ids), len(self._style)) - 1]
             feed: dict[str, Any] = {
-                "input_ids": np.array([[0, *ids, 0]], dtype=np.int64),
+                self._tokens_input: np.array([[0, *ids, 0]], dtype=np.int64),
                 "style": style.reshape(1, -1),
-                "speed": np.array([self._speed], dtype=np.float32),
+                "speed": np.array([self._speed], dtype=self._speed_type),
             }
             audio = self._session.run(None, feed)[0].reshape(-1)
             parts.extend((audio, np.zeros(int(SAMPLE_RATE * 0.12), dtype=np.float32)))

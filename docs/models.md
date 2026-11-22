@@ -76,11 +76,12 @@ saved checkpoints of the recurrent state (`--ctx-checkpoints`), so the fix belon
 
 Jarvis writes each request to a private temporary WAV file and runs `voxtype transcribe`, never the Voxtype
 daemon and never your Voxtype config or recordings. Each run is
-`voxtype -c <config dir>/voxtype.toml [--model M] [--engine E] [--initial-prompt HINT] transcribe FILE`.
+`voxtype -q -c <config dir>/voxtype.toml [--model M] [--engine E] [--initial-prompt HINT] transcribe FILE`.
 
 - **Settings file:** Jarvis writes `voxtype.toml` in its own config folder at each start with `threads`
   (`audio.transcribe_threads`, default 8) and `context_window_optimization` (`audio.transcribe_short_window`,
-  default on) under `[whisper]`. Whisper pads every clip to a 30 s window, so without the short window a
+  default on) under `[whisper]`, and `keep_failed_recordings = false` under `[audio]`, so Voxtype keeps no audio of a
+  failed transcription from Jarvis's runs. `-q` (errors only) keeps Voxtype's log lines out of the transcript. Whisper pads every clip to a 30 s window, so without the short window a
   two-second request costs as much as a long one; with it a short command took 0.29 s instead of 1.66 s
   (commit `d29d73e`, measured with `small.en`). Whisper.cpp also uses only 4 threads unless told otherwise.
 - **Model:** `audio.transcribe_model`, default `small.en`; it must already be downloaded through Voxtype

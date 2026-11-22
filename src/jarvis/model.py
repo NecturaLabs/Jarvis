@@ -1,6 +1,7 @@
 """OpenAI-compatible chat client for the Strata server, with non-generating health checks."""
 
 import json
+import math
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -18,6 +19,8 @@ if TYPE_CHECKING:
 LOAD_TIMEOUT_S = 300.0  # a cold load from disk took about 110 s while a game ran
 WARM_ATTEMPTS = 60
 WARM_RETRY_S = 2.0
+RETRY_AFTER_RANGE_S = (1.0, 30.0)  # what a server's `Retry-After` is clamped to while warming
+SERVICE_UNAVAILABLE = 503
 DEFAULT_MAX_TOKENS = 400
 
 
@@ -167,6 +170,18 @@ class _Assembly:
         return message
 
 
+def _retry_after(response: httpx.Response) -> float | None:
+    """Return the seconds a `Retry-After` header asks for, clamped; None without one we read."""
+    try:
+        asked = float(response.headers["Retry-After"])
+    except KeyError, ValueError:
+        return None  # absent, or an HTTP date (Strata sends seconds)
+    if math.isnan(asked):
+        return None
+    low, high = RETRY_AFTER_RANGE_S
+    return min(max(asked, low), high)
+
+
 @dataclass(frozen=True, slots=True)
 class StrataModel:
     """Talks to `strata serve` over its OpenAI API."""
@@ -216,10 +231,12 @@ class StrataModel:
         """Load the model once the server is up (at service start); return whether it loaded.
 
         The server may still be starting (unreachable, or answering 409 while busy), so this
-        waits and tries again, up to `attempts` times. A load reads the whole model and can take
-        minutes when it is not in the page cache, so the request waits for it.
+        waits and tries again, up to `attempts` times; a 503 that says `Retry-After` is waited
+        out for that long (1 to 30 seconds) instead of the usual two. A load reads the whole model
+        and can take minutes when it is not in the page cache, so the request waits for it.
         """
         for _ in range(attempts):
+            wait = WARM_RETRY_S
             if self.status() is not None:
                 try:
                     with self._client(LOAD_TIMEOUT_S) as client:
@@ -231,7 +248,9 @@ class StrataModel:
                 else:
                     if response.status_code < 300:  # ruff: ignore[magic-value-comparison]
                         return True
-            self.sleep(WARM_RETRY_S)
+                    if response.status_code == SERVICE_UNAVAILABLE:
+                        wait = _retry_after(response) or wait
+            self.sleep(wait)
         return False
 
     def unload(self) -> bool:

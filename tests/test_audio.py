@@ -17,10 +17,14 @@ import pytest
 from jarvis import audio as audio_module
 from jarvis.audio import (
     FRAME,
+    VAD_CHUNK,
+    VAD_CONTEXT,
     AppAudio,
     AudioError,
     Microphone,
     Speaker,
+    Vad,
+    WakeWord,
     app_record_command,
     app_stream_serials,
     capture_sources,
@@ -29,6 +33,7 @@ from jarvis.audio import (
     match_app_streams,
     parse_transcript,
     pw_record_command,
+    to_16k,
     transcribe,
     voxtype_command,
     voxtype_settings,
@@ -110,12 +115,56 @@ def test_whisper_phantoms_are_recognised(text: str, phantom: bool) -> None:
     assert is_phantom(text) is phantom
 
 
+def _sine(hz: float, rate: int, *, level: float = 8000.0) -> bytes:
+    """One second of a sine at `hz` as int16 PCM."""
+    t = np.arange(rate) / rate
+    return (level * np.sin(2 * np.pi * hz * t)).astype(np.int16).tobytes()
+
+
+def _rms(samples: NDArray[np.int16]) -> float:
+    """Return the RMS of the middle of `samples`, away from the filter's start and end."""
+    middle = samples[samples.size // 4 : -samples.size // 4].astype(np.float64)
+    return float(np.sqrt(np.mean(middle**2)))
+
+
+@pytest.mark.parametrize("rate", [24000, 22050])
+@pytest.mark.parametrize("hz", [8500, 9000, 10000, 11000])
+def test_a_tone_above_the_16k_band_is_cut_instead_of_folded_into_it(rate: int, hz: int) -> None:
+    """Regression: plain interpolation folded a 10 kHz tone down to 6 kHz at full strength."""
+    heard = to_16k(_sine(hz, rate), rate)
+
+    assert _rms(heard) < 0.01 * _rms(np.frombuffer(_sine(hz, rate), dtype=np.int16))
+
+
+@pytest.mark.parametrize("rate", [24000, 22050])
+@pytest.mark.parametrize("hz", [300, 1000, 3000, 6000])
+def test_speech_band_tones_keep_their_level_through_the_resampling(rate: int, hz: int) -> None:
+    heard = to_16k(_sine(hz, rate), rate)
+
+    assert _rms(heard) == pytest.approx(8000 / np.sqrt(2), rel=0.03)
+
+
+def test_the_resampled_tone_keeps_its_frequency() -> None:
+    heard = to_16k(_sine(1000, 24000), 24000).astype(np.float64)
+
+    spectrum = np.abs(np.fft.rfft(heard))
+    assert np.argmax(spectrum) * 16000 / heard.size == pytest.approx(1000, abs=2)
+
+
+def test_16k_audio_and_nothing_pass_through_untouched() -> None:
+    pcm = _sine(500, 16000)
+
+    assert to_16k(pcm, 16000).tobytes() == pcm
+    assert to_16k(b"", 24000).size == 0
+
+
 def test_voxtype_command_passes_overrides_before_the_subcommand() -> None:
     cmd = voxtype_command(
         Path("/x.wav"), model="large-v3-turbo", prompt="Glass Harbor, Night Circuit"
     )
     assert cmd == [
         "voxtype",
+        "-q",
         "--model=large-v3-turbo",
         "--initial-prompt=Glass Harbor, Night Circuit",
         "transcribe",
@@ -126,11 +175,16 @@ def test_voxtype_command_passes_overrides_before_the_subcommand() -> None:
 def test_a_hint_that_starts_with_a_dash_stays_the_hint() -> None:
     cmd = voxtype_command(Path("/x.wav"), engine="-v", model="-c", prompt="--help, Low Tide")
 
-    assert cmd[1:4] == ["--model=-c", "--engine=-v", "--initial-prompt=--help, Low Tide"]
+    assert cmd[2:5] == ["--model=-c", "--engine=-v", "--initial-prompt=--help, Low Tide"]
 
 
 def test_voxtype_command_without_overrides_uses_the_owners_config() -> None:
-    assert voxtype_command(Path("/x.wav")) == ["voxtype", "transcribe", "/x.wav"]
+    assert voxtype_command(Path("/x.wav")) == ["voxtype", "-q", "transcribe", "/x.wav"]
+
+
+def test_voxtype_is_asked_for_errors_only_so_its_log_lines_stay_off_the_transcript() -> None:
+    """`-q` (Voxtype's documented quiet flag) leaves out the tracing lines on stdout."""
+    assert voxtype_command(Path("/x.wav"), model="small.en")[:2] == ["voxtype", "-q"]
 
 
 def _stream(
@@ -600,6 +654,7 @@ def test_voxtype_command_reads_jarvis_settings_first() -> None:
     cmd = voxtype_command(Path("/x.wav"), model="small.en", settings=Path("/s/voxtype.toml"))
     assert cmd == [
         "voxtype",
+        "-q",
         "-c",
         "/s/voxtype.toml",
         "--model=small.en",
@@ -611,7 +666,14 @@ def test_voxtype_command_reads_jarvis_settings_first() -> None:
 @pytest.mark.parametrize(("threads", "short"), [(8, True), (2, False)])
 def test_voxtype_settings_hold_the_speed_options(threads: int, short: bool) -> None:
     settings = tomllib.loads(voxtype_settings(threads, short_window=short))
-    assert settings == {"whisper": {"threads": threads, "context_window_optimization": short}}
+    assert settings["whisper"] == {"threads": threads, "context_window_optimization": short}
+
+
+def test_voxtype_keeps_no_audio_of_a_failed_transcription_for_jarvis() -> None:
+    """Voxtype keeps the audio of a failed transcription by default; Jarvis has none to keep."""
+    settings = tomllib.loads(voxtype_settings(4, short_window=True))
+
+    assert settings["audio"] == {"keep_failed_recordings": False}
 
 
 def test_transcribe_passes_jarvis_settings_to_voxtype() -> None:
@@ -623,7 +685,7 @@ def test_transcribe_passes_jarvis_settings_to_voxtype() -> None:
 
     transcribe(SILENCE, settings=Path("/s/voxtype.toml"), run=run)
 
-    assert seen[0][1:3] == ["-c", "/s/voxtype.toml"]
+    assert seen[0][2:4] == ["-c", "/s/voxtype.toml"]
 
 
 class _FakePiperVoice:
@@ -729,3 +791,152 @@ def test_a_microphone_started_again_after_a_stop_delivers_frames() -> None:
         assert _first_outcome(mic, timeout=0.3) == "blocked"
     finally:
         mic.stop()
+
+
+class _SileroSession:
+    """Stands in for Silero's `InferenceSession`: records what `Vad` feeds and answers in order."""
+
+    def __init__(self, probabilities: list[float]) -> None:
+        super().__init__()
+        self.feeds: list[dict[str, NDArray[np.generic]]] = []
+        self._probabilities = iter(probabilities)
+
+    def run(
+        self, _outputs: None, feed: dict[str, NDArray[np.generic]]
+    ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
+        self.feeds.append({name: value.copy() for name, value in feed.items()})
+        state = np.asarray(feed["state"], dtype=np.float32) + 1  # the model's new state
+        return np.array([[next(self._probabilities)]], dtype=np.float32), state
+
+
+def _vad(monkeypatch: pytest.MonkeyPatch, probabilities: list[float]) -> tuple[Vad, _SileroSession]:
+    session = _SileroSession(probabilities)
+
+    def load(*_args: object, **_kwargs: object) -> _SileroSession:
+        return session
+
+    monkeypatch.setattr(audio_module.ort, "InferenceSession", load)
+    return Vad(Path("/nonexistent/silero.onnx")), session
+
+
+def test_the_vad_feeds_silero_chunks_of_512_samples_with_64_of_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vad, session = _vad(monkeypatch, [0.1, 0.2])
+    frame = (np.arange(VAD_CHUNK * 2) % 1000).astype(np.int16)
+
+    vad.speech_probability(frame)
+
+    first, second = session.feeds
+    assert first["input"].shape == (1, VAD_CONTEXT + VAD_CHUNK)
+    assert first["input"].dtype == np.float32
+    assert not first["input"][:, :VAD_CONTEXT].any()  # nothing came before the first chunk
+    assert first["input"][0, VAD_CONTEXT:].tolist() == pytest.approx(
+        (frame[:VAD_CHUNK] / 32768.0).tolist()
+    )
+    assert first["state"].shape == (2, 1, 128)
+    assert first["sr"].dtype == np.int64
+    assert int(first["sr"]) == audio_module.RATE
+    # The second chunk starts with the last 64 samples of the first, and the model's state.
+    np.testing.assert_array_equal(
+        second["input"][0, :VAD_CONTEXT], first["input"][0, -VAD_CONTEXT:]
+    )
+    assert (second["state"] == 1).all()
+
+
+def test_the_vad_answers_with_the_best_chunk_and_keeps_a_part_chunk_for_the_next_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vad, session = _vad(monkeypatch, [0.2, 0.9, 0.1, 0.4, 0.3])
+    frame = np.zeros(FRAME, dtype=np.int16)  # 1280 samples: two chunks and 256 over
+
+    assert vad.speech_probability(frame) == pytest.approx(0.9)
+    assert len(session.feeds) == 2
+    assert vad.speech_probability(frame) == pytest.approx(0.4)  # 256 + 1280 left: three chunks
+    assert len(session.feeds) == 5
+    assert vad.speech_probability(frame[:100]) == pytest.approx(
+        0.0
+    )  # less than a chunk: nothing to say yet
+    assert len(session.feeds) == 5
+
+
+def test_the_vad_forgets_its_state_when_reset(monkeypatch: pytest.MonkeyPatch) -> None:
+    vad, session = _vad(monkeypatch, [0.5, 0.5])
+    loud = np.full(VAD_CHUNK + 100, 5000, dtype=np.int16)
+    vad.speech_probability(loud)
+
+    vad.reset()
+    vad.speech_probability(loud)
+
+    after = session.feeds[1]
+    assert not after["state"].any()
+    assert not after["input"][:, :VAD_CONTEXT].any()
+    assert after["input"][0, VAD_CONTEXT] == pytest.approx(5000 / 32768.0)
+
+
+class _LiveKitModel:
+    """Stands in for `livekit.wakeword.WakeWordModel`: scores come from the test."""
+
+    def __init__(self, scores: list[dict[str, float]]) -> None:
+        super().__init__()
+        self.scores = iter(scores)
+        self.frames: list[NDArray[np.int16]] = []
+        self.resets = 0
+
+    def predict(self, frame: NDArray[np.int16]) -> dict[str, float]:
+        self.frames.append(frame)
+        return next(self.scores)
+
+    def reset(self) -> None:
+        self.resets += 1
+
+
+def _wake_word(
+    monkeypatch: pytest.MonkeyPatch, scores: list[dict[str, float]], threshold: float = 0.5
+) -> tuple[WakeWord, _LiveKitModel]:
+    model = _LiveKitModel(scores)
+    loaded: list[list[Path]] = []
+
+    def make(*, models: list[Path], sess_options: object) -> _LiveKitModel:
+        assert sess_options is not None
+        loaded.append(models)
+        return model
+
+    monkeypatch.setattr("livekit.wakeword.WakeWordModel", make)
+    wake = WakeWord(Path("/nonexistent/hey_jarvis.onnx"), threshold)
+    assert loaded == [[Path("/nonexistent/hey_jarvis.onnx")]]
+    return wake, model
+
+
+def test_the_wake_word_fires_at_the_threshold_and_forgets_what_it_heard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wake, model = _wake_word(
+        monkeypatch, [{"hey_jarvis": 0.49}, {"hey_jarvis": 0.5}, {"hey_jarvis": 0.1}]
+    )
+    frame = np.zeros(FRAME, dtype=np.int16)
+
+    assert not wake.heard(frame)
+    assert model.resets == 0
+    assert wake.heard(frame)
+    assert model.resets == 1  # so one phrase is not reported twice
+    assert not wake.heard(frame)
+    assert model.frames[0] is frame  # the int16 frame goes in as it is
+
+
+def test_the_wake_word_takes_the_best_score_and_none_means_nothing_heard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wake, _model = _wake_word(monkeypatch, [{}, {"a": 0.1, "b": 0.8}], threshold=0.6)
+    frame = np.zeros(FRAME, dtype=np.int16)
+
+    assert not wake.heard(frame)
+    assert wake.heard(frame)
+
+
+def test_resetting_the_wake_word_resets_the_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    wake, model = _wake_word(monkeypatch, [])
+
+    wake.reset()
+
+    assert model.resets == 1
