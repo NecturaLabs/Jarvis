@@ -34,6 +34,9 @@ traps found along the way. Add a trap the moment it costs time.
   or missing model drive, what was seen, and how to check each.
 - `tools/idle_check.py --unit jarvis.service --unit jarvis-strata.service` measures the "no CPU or GPU while
   idle" rule on a running install; it only reads `/proc`.
+- [wake-training.md](wake-training.md): training a wake word on a CUDA machine with a LiveKit project's key,
+  benchmarking it against the model in use, and deploying it; its traps (speech credit, gated test sets,
+  ONNX Runtime threads) are there.
 
 ## Owner run for speaking while writing (#12)
 

@@ -166,22 +166,44 @@ spoken over.
   LiveKit Cloud project for the generated speech; a model you trained matches no pinned release, so the
   doctor only shows its digest. Detection stays local and needs no account.
   Measured 2026-11-22 for models trained with `livekit-wakeword` 2.1.3 (`setup --wakeword "<phrase>" --plan
-  build --eval`, `train --type standard`, `eval --json`), on the trainer's held-out test set without its two
-  gated sets (ESC-50 and GTZAN, so music and other everyday sounds are not counted): 500 spoken phrases,
-  796 other clips (about 1 hour) and 500 similar-sounding phrases. Threshold is the lowest score that gives
-  at most 0.5 false wakes an hour, and Recall is measured there; Similar is the share of similar-sounding
-  phrases that woke it at that threshold.
+  build --eval`, `train --type standard`, `eval --json`), against the pinned `hey_jarvis` release, as the
+  [wake training playbook](playbook/wake-training.md) says. Two measurements:
 
-  | Model | Threshold | Recall | Similar | Recall at threshold 0.5 |
-  |---|---|---|---|---|
-  | `hey_jarvis` (pinned release) | 0.47 | 92.8 % | 22 % | 92.4 %, no false wakes |
-  | `hey_jarvis` (retrained) | 0.46 | 93.6 % | 19 % | 92.6 %, no false wakes |
-  | `yo_jarvis` | 0.43 | 95.8 % | 17 % | 94.8 %, no false wakes |
-  | `jarvis` (bare word) | 0.85 | 86.2 % | 1 % | 96.0 %, 4.9 false wakes an hour |
+  **The trainer's reduced test set** (without its gated ESC-50 and GTZAN sets, so music and everyday sounds are
+  not in it): 500 spoken phrases and 796 other clips, about 1.01 hours, of which 500 are similar-sounding
+  phrases. These rates rest on about an hour: no false wake there still allows about 3 an hour.
 
-  The pinned `hey_jarvis` hears 2.4 % of bare "jarvis" and 4.2 % of "yo jarvis" phrases, so each phrase
-  needs its own model. Give `jarvis` its own threshold (`audio.wake_thresholds`); the shared 0.5 suits the
-  two-word phrases.
+  | Model | Recall at 0.5 | False wakes at 0.5 | Similar phrases that woke it at 0.5 |
+  |---|---|---|---|
+  | `hey_jarvis` (pinned release) | 92.4 % | 0 in 1.01 h | 20.6 % |
+  | `hey_jarvis` (retrained) | 92.6 % | 0 in 1.01 h | 18.6 % |
+  | `yo_jarvis` | 94.8 % | 0 in 1.01 h | 14.4 % |
+  | `jarvis` (bare word) | 96.0 % | 5 in 1.01 h | 3.0 % |
+
+  **`tools/wake_bench.py`**: 3,595 clips from 55 local Kokoro and Piper voices (none of them LiveKit's), each
+  clean, quiet, under TV and music at 10, 5 and 0 dB SNR, with room echo and far away; 24 hours of real media
+  (10 h TV and YouTube, 4 h music, 10 h parliament speeches); and replays of that media through the models
+  together as Jarvis listens (every model reset after a wake, then 4 s not heard). Recall is on the model's own
+  phrase; the interval is 95 %.
+
+  | Model, threshold | Clean | 5 dB SNR | 0 dB SNR | Far | False wakes on the media, model alone |
+  |---|---|---|---|---|---|
+  | `hey_jarvis` (pinned), 0.5 | 96.5 % | 91.2 % | 81.2 % | 97.9 % | 2.83 an hour (68 in 24 h; 2.20 to 3.59) |
+  | `hey_jarvis` (retrained), 0.5 | 95.9 % | 90.3 % | 78.6 % | 96.8 % | 1.33 an hour (32 in 24 h; 0.91 to 1.88) |
+  | `yo_jarvis`, 0.5 | 100 % | 97.9 % | 91.5 % | 100 % | 4.46 an hour (107 in 24 h; 3.65 to 5.39) |
+  | `jarvis` (bare word), 0.85 | 81.5 % | 69.1 % | 46.8 % | 77.7 % | 0.08 an hour (2 in 24 h; 0.01 to 0.30) |
+
+  The retrained `hey_jarvis` hears fewer of the same clips than the pinned one under noise (2.7 points fewer
+  at 10 dB SNR, McNemar p = 0.004; 2.6 at 0 dB, p = 0.021), so the pinned release stays. Together as Jarvis
+  listens, the pinned `hey_jarvis` at 0.5 woke 2.75 times an hour on the media (66 in 24 h) (5.25 on music, 4.4 on TV, 0.1
+  on speeches); adding `yo_jarvis` at 0.5 raised that to 6.46 an hour (155 in 24 h). A threshold picked on one
+  half of the media for at most 0.5 false wakes an hour, and checked on the other half: 0.68 for the pinned
+  `hey_jarvis` (2 in 12 h, recall 93.8 % clean, 75.8 % at 5 dB SNR) and 0.76 for `yo_jarvis` (2 in 12 h,
+  recall 100 % clean, 90.8 % at 5 dB SNR). The bare `jarvis` model also woke on "Jervis" (98 % of voices), "Pass
+  me a jar of this" (85 %), "Java" (60 %) and "Service" (53 %), so it is not on. No model woke on Jarvis's own
+  replies. The trainer's own `eval --media` gave the pinned model 2.833 false wakes an hour on the same media,
+  in line with the benchmark. These are synthetic voices and recorded media, not your room: the playbook's desk
+  test comes before a default changes.
 - **Azure wake word (optional, `audio.wake_engine = "azure"`):** your own Azure custom keyword `.table`
   model, heard by `src/jarvis/azure_wake_helper.py` (MIT) with Microsoft's Speech SDK
   (`azure-cognitiveservices-speech` 1.53.1, Microsoft Software License Terms: closed source, not
