@@ -9,13 +9,13 @@ import warnings
 import zlib
 from dataclasses import dataclass
 from http import HTTPStatus
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, cast
 from urllib.parse import urljoin, urlsplit
 
 import httpx
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 MAX_REDIRECTS = 5
 # A whole read, every redirect and chunk. A hop begun just before it may still spend its own DNS,
@@ -23,6 +23,10 @@ MAX_REDIRECTS = 5
 READ_LIMIT_S = 15.0
 MAX_TITLE = 160
 MAX_BYTES = 2_000_000
+# Most HTML elements trafilatura is given. Its time grows faster than the size of the page
+# (about 0.7 s at 20,000 elements, 3 s at 60,000), and it runs outside the read deadline, so a
+# page with more is read from its start only.
+MAX_ELEMENTS = 20_000
 MAX_PICTURE_BYTES = 8_000_000
 _TEXT_TYPES = frozenset({"text/html", "application/xhtml+xml", "text/plain"})
 _PICTURE_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"})
@@ -111,6 +115,53 @@ def check_url(url: str) -> str:
     return url
 
 
+# What a browser does not show: the `hidden` attribute, and inline styles that hide or shrink
+# text to nothing. Injected instructions are often put there (page text is someone else's words).
+_LOWER = "'ABCDEFGHIJKLMNOPQRSTUVWXYZ \t\n\r'"
+_STYLE = f"concat(translate(@style, {_LOWER}, 'abcdefghijklmnopqrstuvwxyz'), ';')"
+_ZERO_SIZES = ("", "px", "pt", "em", "rem", "%", "ex", "ch", "vw", "vh")
+_HIDING_STYLES = (
+    "display:none",
+    "visibility:hidden",
+    "opacity:0",
+    *(f"font-size:0{unit}" for unit in _ZERO_SIZES),
+)
+_HIDDEN = " | ".join(
+    [
+        "//*[@hidden]",
+        "//*[translate(@aria-hidden, 'TRUE', 'true')='true']",
+        *(
+            f"//*[contains({_STYLE}, '{style}{end}')]"
+            for style in _HIDING_STYLES
+            for end in (";", "!important")
+        ),
+    ]
+)
+
+
+class _Element(Protocol):
+    """The part of an lxml element used to trim a page (lxml has no type information)."""
+
+    def xpath(self, path: str) -> list[_Element]: ...
+    def iter(self) -> Iterator[_Element]: ...
+    def getparent(self) -> _Element | None: ...
+    def drop_tree(self) -> None: ...
+    def remove(self, element: _Element) -> None: ...
+
+
+def _without_hidden_and_excess(tree: _Element) -> None:
+    """Remove what a browser hides from the page, then every element past `MAX_ELEMENTS`."""
+    for element in tree.xpath(_HIDDEN):
+        if element.getparent() is not None:
+            element.drop_tree()
+    elements = list(tree.iter())
+    # Last first, so a parent goes only after its children.
+    for element in reversed(elements[MAX_ELEMENTS:]):
+        parent = element.getparent()
+        if parent is not None:
+            parent.remove(element)
+
+
 def _extract(html: str, url: str) -> tuple[str, str, str]:
     """Return the page's title, main text and picture (trafilatura, imported on first use)."""
     with warnings.catch_warnings():
@@ -119,8 +170,11 @@ def _extract(html: str, url: str) -> tuple[str, str, str]:
         warnings.filterwarnings("ignore", message="SOCKS support in urllib3")
         import trafilatura  # ruff: ignore[import-outside-top-level] - loaded only when a page is read
 
+    tree = trafilatura.load_html(html)
+    if tree is not None:
+        _without_hidden_and_excess(cast("_Element", tree))
     text = trafilatura.extract(
-        html,
+        tree if tree is not None else html,
         url=url,
         include_comments=False,
         include_tables=False,

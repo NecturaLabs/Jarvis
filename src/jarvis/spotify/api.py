@@ -35,6 +35,9 @@ MAX_PLAYLISTS = 500
 RETRY_DELAY_S = 0.3
 MAX_RETRY_AFTER_S = 2.0
 DEFAULT_RETRY_AFTER_S = 1.0
+# Calls pause this long after a 429 that gave no usable wait, or one for a used-up quota.
+UNKNOWN_BLOCK_S = 60.0
+QUOTA_BLOCK_S = 3600.0
 DEVICE_POLL_S = 1.0
 LIBRARY_TTL_S = 6 * 3600.0
 _LIBRARY_RETRY_S = 60.0
@@ -119,6 +122,9 @@ class SpotifyApi:
         self._clock = clock
         self._library_ttl_s = library_ttl_s
         self._library = _LibraryCache()
+        # After a 429 nothing is sent until this time (on `clock`); `_blocked_quota` says why.
+        self._blocked_until = 0.0
+        self._blocked_quota = False
 
     def ensure_login(self) -> None:
         """Make sure there is a valid access token, refreshing it if it is about to expire.
@@ -140,9 +146,9 @@ class SpotifyApi:
 
         A GET is retried once on a transport error or a 502, 503 or 504. A 429 is retried once
         when Spotify says to wait two seconds or less (it was not executed); a longer or unknown
-        wait or an exhausted quota is reported. A mutating request that failed after it may have
-        been sent (a transport failure, an unreadable answer, a 502 or a 504) raises
-        `UncertainOutcomeError` and is never replayed.
+        wait or an exhausted quota is reported, and nothing is sent until that wait is over. A
+        mutating request that failed after it may have been sent (a transport failure, an
+        unreadable answer, a 502 or a 504) raises `UncertainOutcomeError` and is never replayed.
 
         Raises:
             SpotifyError: Spotify answered with an error (`NoDeviceError` when no device is
@@ -150,6 +156,7 @@ class SpotifyApi:
             UncertainOutcomeError: a mutating request failed after it may have been sent.
             SpotifyLoginExpired: Spotify rejected the login even after a token refresh.
         """
+        self._refuse_while_blocked()
         read = method == "GET"
         force = refreshed = retried = waited = False
         while True:
@@ -184,6 +191,7 @@ class SpotifyApi:
             if status == HTTPStatus.TOO_MANY_REQUESTS:
                 wait = self._rate_limit_wait(method, path, response)
                 if wait is None or waited or wait > MAX_RETRY_AFTER_S:
+                    self._block(UNKNOWN_BLOCK_S if wait is None else wait)
                     raise SpotifyError(self._limit_message(wait), status=status)
                 waited = True
                 self._sleep(wait)
@@ -230,6 +238,25 @@ class SpotifyApi:
         plural = "" if seconds == 1 else "s"
         return f"Spotify's request limit was reached; try again in {seconds} second{plural}"
 
+    def _block(self, seconds: float, *, quota: bool = False) -> None:
+        """Send nothing to Spotify for `seconds` (after a 429)."""
+        self._blocked_until = self._clock() + seconds
+        self._blocked_quota = quota
+
+    def _refuse_while_blocked(self) -> None:
+        """Refuse a call before the wait Spotify asked for is over, without sending anything.
+
+        Raises:
+            SpotifyError: the same limit error the 429 itself raised.
+        """
+        remaining = self._blocked_until - self._clock()
+        if remaining <= 0:
+            return
+        if self._blocked_quota:
+            msg = "Spotify's daily developer quota is used up"
+            raise SpotifyError(msg, status=HTTPStatus.TOO_MANY_REQUESTS, reason=_QUOTA)
+        raise SpotifyError(self._limit_message(remaining), status=HTTPStatus.TOO_MANY_REQUESTS)
+
     def _rate_limit_wait(self, method: str, path: str, response: httpx.Response) -> float | None:
         """Return how long Spotify wants us to wait after a 429, or None when it said something odd.
 
@@ -242,6 +269,7 @@ class SpotifyApi:
         reason, _message = self._error_info(response)
         log.warning("Spotify %s %s: 429 %s", method, path, reason)
         if reason == _QUOTA:
+            self._block(QUOTA_BLOCK_S, quota=True)
             msg = "Spotify's daily developer quota is used up"
             raise SpotifyError(msg, status=response.status_code, reason=reason)
         try:
