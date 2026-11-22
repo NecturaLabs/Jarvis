@@ -474,3 +474,11 @@ def test_a_folder_too_big_to_read_whole_is_listed_from_what_was_read(
 
     assert text.startswith("Folder ~/Projects (more than 50 items):")
     assert len(text.splitlines()) == 1 + 50
+
+
+def test_an_allowed_folder_written_with_a_trailing_slash_still_opens(home: Path) -> None:
+    notes = home / ".notes"
+    notes.mkdir()
+    (notes / "today.md").write_text("call mum\n", encoding="utf-8")
+
+    assert "call mum" in _read(_ops(home, hidden_allow=[".notes/"]), "~/.notes/today.md")

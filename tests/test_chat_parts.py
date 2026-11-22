@@ -1,17 +1,21 @@
 """The chat window's parts alone: command suggestions, kept input, PC load and the toolbar."""
 
+import asyncio
 import io
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import pytest
 from rich.console import Console
+from textual.app import App, ComposeResult
+from textual.widgets import Markdown
 
 from jarvis.activity import Shown
 from jarvis.agent import ContextUse
 from jarvis.chat import commands
 from jarvis.chat.history import InputHistory
 from jarvis.chat.widgets import (
+    ReplyMarkdown,
     duration,
     entry_renderable,
     link_opens,
@@ -256,3 +260,32 @@ def test_the_line_under_a_reply_says_how_long_when_and_how_fast() -> None:
 )
 def test_only_web_links_in_a_reply_open(href: str, *, opens: bool) -> None:
     assert link_opens(href) is opens
+
+
+class _LinkApp(App[None]):
+    """A window with one reply that records what it was asked to open."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.opened: list[str] = []
+
+    @override
+    def compose(self) -> ComposeResult:
+        yield ReplyMarkdown("[a link](https://example.com)")
+
+    @override
+    def open_url(self, url: str, *, new_tab: bool = True) -> None:
+        self.opened.append(url)
+
+
+def test_a_clicked_link_in_a_reply_opens_once_and_only_on_the_web() -> None:
+    async def click() -> list[str]:
+        app = _LinkApp()
+        async with app.run_test() as pilot:
+            reply = app.query_one(ReplyMarkdown)
+            for href in ("file:///etc/passwd", "javascript:alert(1)", " https://example.com\n"):
+                reply.post_message(Markdown.LinkClicked(reply, href))
+                await pilot.pause()
+        return app.opened
+
+    assert asyncio.run(click()) == ["https://example.com"]

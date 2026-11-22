@@ -231,7 +231,8 @@ class Boundary:
         below = path.relative_to(self.home).parts
         if not below or not below[0].startswith("."):
             return False
-        for pattern in self.hidden_allow:
+        for allowed in self.hidden_allow:
+            pattern = allowed.strip().rstrip("/")
             parts = Path(pattern).parts
             if len(below) >= len(parts):
                 if fnmatch.fnmatch("/".join(below[: len(parts)]), pattern):

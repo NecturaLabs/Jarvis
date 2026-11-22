@@ -167,12 +167,17 @@ class ReplyMarkdown(Markdown):
 
     BULLETS: ClassVar[list[str]] = ["- "]
 
+    def __init__(self, markdown: str | None = None, *, classes: str | None = None) -> None:
+        """Set `markdown`; Textual's own link opening is off, `on_markdown_link_clicked` opens."""
+        super().__init__(markdown, classes=classes, open_links=False)
+
     @override
     def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
         """Open a clicked web link in the browser; any other kind of link stays shut."""
-        if link_opens(event.href):
+        href = event.href.strip()
+        if link_opens(href):
             app = cast("_Opener", self.app)  # pyright: ignore[reportUnknownMemberType] - App[Unknown]
-            app.open_url(event.href)
+            app.open_url(href)
 
     @override
     def get_block_class(self, block_name: str) -> type[MarkdownBlock]:

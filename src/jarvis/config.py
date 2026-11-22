@@ -264,7 +264,6 @@ DESKTOP_SETTINGS = (
     ".config/foot",
     ".config/btop",
     ".config/fastfetch",
-    ".config/nvim",
     ".config/jarvis",
 )
 
