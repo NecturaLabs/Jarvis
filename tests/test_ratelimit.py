@@ -8,6 +8,7 @@ import os
 import stat
 import threading
 import time
+import types
 from typing import TYPE_CHECKING
 
 import pytest
@@ -105,17 +106,34 @@ def test_a_link_in_place_of_the_file_is_not_followed(tmp_path: Path) -> None:
 # --- a damaged file, a failed write and a held lock (the review of #30) -----------------------
 
 
+DEEP = '{"taken": ' + "[" * 100_000 + "]" * 100_000 + "}"
+
+
+def _too_deep(_raw: object) -> object:
+    raise RecursionError("maximum recursion depth exceeded while decoding a JSON array")
+
+
 @pytest.mark.parametrize(
-    "damaged",
+    ("damaged", "deep"),
     [
-        '{"taken": [' + "9" * 400 + "]}",  # too long for a float: OverflowError
-        '{"taken": ' + "[" * 100_000 + "]" * 100_000 + "}",  # too deep to read: RecursionError
+        ('{"taken": [' + "9" * 400 + "]}", False),  # too long for a float: OverflowError
+        # How deep JSON may nest before it raises depends on the stack the machine gives Python,
+        # so what `json.loads` raises then is made to happen here.
+        (DEEP, True),
     ],
     ids=["huge-number", "deep-nesting"],
 )
 def test_a_damaged_file_counts_as_empty_and_is_written_again(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, damaged: str
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    damaged: str,
+    deep: bool,
 ) -> None:
+    if deep:
+        monkeypatch.setattr(
+            ratelimit_module, "json", types.SimpleNamespace(loads=_too_deep, dumps=json.dumps)
+        )
     path = tmp_path / "actions.json"
     path.write_text(damaged, encoding="ascii")
     path.chmod(0o600)
