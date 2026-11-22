@@ -60,8 +60,8 @@ between them grows by 2 s or more between two frames, the loop takes it as a sus
 frames from before it, resets the wake word, and asks the model server for its state: a model whose load
 failed is loaded again (not while paused); an unloaded one stays unloaded, since `jarvis unload` before a
 game or the idle unload put it there. The log says `back from sleep after N s: listening afresh`, then
-`back from sleep: the model is <state>`. A stall check
-cannot fire during the sleep itself, since it times with the monotonic clock.
+`back from sleep: the model is <state>`. A stall check cannot fire during the sleep itself, since it
+times with the monotonic clock.
 
 - Not seen yet: no kept boot of this PC has suspended (`journalctl -k | grep 'PM: suspend'`).
 - With the owner: suspend, wake, say the wake word; look for the log line and check
