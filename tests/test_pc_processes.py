@@ -554,6 +554,7 @@ def test_a_protected_program_is_never_listed_and_is_named_as_protected(
 
     assert "4242" not in text
     assert "never stopped" in text
+    assert "No program" not in text
 
 
 @pytest.mark.usefixtures("owner_request")

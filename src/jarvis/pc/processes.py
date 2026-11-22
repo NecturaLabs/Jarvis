@@ -487,7 +487,12 @@ class ProcessOps:
             for item in shown:
                 self._shown.targets[item.proc.pid] = (item.program, item.proc.start)
         lines: list[str] = []
-        if not found:
+        if not found and protected:
+            lines.append(
+                f'Only programs that are never stopped match "{name}". Tell the owner why; do not '
+                "search again with a wider name or guess another program."
+            )
+        elif not found:
             lines.append(
                 f'No program of the owner\'s matches "{name}". Tell the owner; do not search '
                 "again with a wider name or guess another program."
