@@ -230,6 +230,7 @@ def _loop(
     wake: Wake | None = None,
     dictating: Callable[[], bool | None] = lambda: False,
     meeting: Callable[[], bool] = lambda: False,
+    paused: Callable[[], bool] = lambda: False,
     audit: AuditLog | None = None,
     transcribe: Callable[[NDArray[np.int16]], str] | None = None,
     locked: Callable[[], bool] = lambda: False,
@@ -252,6 +253,7 @@ def _loop(
         pc_retry_s=0,
         dictating=dictating,
         meeting=meeting,
+        paused=paused,
         audit=audit,
         locked=locked,
         asleep_s=asleep_s,
@@ -1194,6 +1196,7 @@ def _follow_loop(
     cfg: AudioConfig = FOLLOW_UP,
     dictating: Callable[[], bool | None] = lambda: False,
     meeting: Callable[[], bool] = lambda: False,
+    paused: Callable[[], bool] = lambda: False,
 ) -> VoiceLoop:
     return _loop(
         agent,
@@ -1202,6 +1205,7 @@ def _follow_loop(
         cfg=cfg,
         dictating=dictating,
         meeting=meeting,
+        paused=paused,
         transcribe=_texts(*texts),
     )
 
@@ -1376,6 +1380,78 @@ def test_speech_in_the_window_is_dropped_when_dictation_started_meanwhile() -> N
     _run(_follow_loop(agent, mic, Speaker(), dictating=lambda: dictating[0]))
 
     assert len(agent.calls) == 1
+
+
+def test_no_window_opens_when_jarvis_is_paused_while_it_replies() -> None:
+    paused = [False]
+    states: list[State] = []
+
+    def reply(_text: str, _hooks: Hooks, _origin: Origin) -> str:
+        paused[0] = True  # `jarvis pause` while the reply streams
+        return "Done."
+
+    agent = Agent(reply)
+    mic = Mic(*REQUEST, SILENCE, lambda: states.append(loop.state), *FOLLOW_UP_REQUEST)
+    loop = _follow_loop(agent, mic, Speaker(), paused=lambda: paused[0])
+
+    _run(loop)
+
+    assert len(agent.calls) == 1
+    assert State.FOLLOW_UP not in states
+
+
+def test_speech_in_the_window_is_dropped_when_jarvis_was_paused_meanwhile() -> None:
+    agent = Agent()
+    paused = [False]
+    mic = Mic(*REQUEST, SPEECH, lambda: paused.__setitem__(0, True), *FOLLOW_UP_REQUEST[1:])
+
+    _run(_follow_loop(agent, mic, Speaker(), paused=lambda: paused[0]))
+
+    assert len(agent.calls) == 1
+
+
+def test_a_pause_in_the_open_window_takes_no_request_and_listening_resumes() -> None:
+    # The real microphone ends the window at the pause (a `MicPausedError` at its next frame);
+    # what was said before the resume is not heard, and a wake word after it is.
+    agent = Agent()
+
+    def resume_soon() -> None:
+        def later() -> None:
+            until(lambda: loop.state is State.IDLE)()
+            assert mic.resume()
+
+        threading.Thread(target=later, daemon=True).start()
+
+    def pause() -> None:
+        mic.pause()
+
+    script = Capture(*REQUEST, SILENCE, pause, resume_soon, *FOLLOW_UP_REQUEST, *REQUEST)
+    mic = PausableMic(script)
+    loop = VoiceLoop(
+        agent,
+        mic,
+        Wake(),
+        Vad(),
+        Speaker(),
+        FOLLOW_UP,
+        _texts("a", "b", "c"),
+        paused=lambda: mic.paused,
+    )
+    stop = threading.Event()
+
+    def stop_after_answers() -> None:
+        until(lambda: len(agent.calls) == 2 and loop.state is State.IDLE)()
+        stop.set()
+
+    threading.Thread(target=stop_after_answers, daemon=True).start()
+    try:
+        loop.run(stop.is_set)
+    except AudioError:
+        pass  # the script ended
+    finally:
+        stop.set()
+
+    assert [text for text, _ in agent.calls] == ["a", "b"]  # the wake word's request, not "speech"
 
 
 def test_an_unclear_follow_up_is_dropped_without_an_apology() -> None:
@@ -1888,6 +1964,74 @@ def test_a_wake_word_said_while_the_owner_dictates_starts_no_request() -> None:
     assert speaker.chimes == 0
     assert speaker.said == []
     assert [(e["event"], e["reason"]) for e in audit.events] == [("wake_ignored", "dictating")]
+
+
+def test_dictation_that_starts_mid_request_drops_it_without_a_word() -> None:
+    # The owner starts their own dictation while Jarvis is capturing: what is said from here on
+    # is going into it. Jarvis lets go of its capture; the conftest guard fails the test should
+    # it run `voxtype` to stop or start anything, and the loop has no other way to reach it.
+    agent = Agent()
+    speaker = Speaker()
+    audit = AuditLog(None)
+    dictating = [False]
+
+    def fail(_samples: NDArray[np.int16]) -> str:
+        pytest.fail("dictation was sent to the transcriber")
+
+    mic = Mic(WAKE, SPEECH, lambda: dictating.__setitem__(0, True), *REQUEST[2:])
+
+    _run(
+        _loop(
+            agent,
+            mic,
+            speaker,
+            dictating=lambda: dictating[0],
+            audit=audit,
+            transcribe=fail,
+        )
+    )
+
+    assert agent.calls == []
+    assert speaker.said == []
+    assert [(e["event"], e["reason"]) for e in audit.events] == [("wake_ignored", "dictating")]
+
+
+def test_dictation_over_before_the_capture_ends_still_drops_the_request() -> None:
+    # Dictation seen on one frame and gone by the end of the capture: what came before is still
+    # cut, as the speech may have gone into it.
+    agent = Agent()
+    started = [False]
+
+    def dictating() -> bool:
+        seen, started[0] = started[0], False  # true for one look only
+        return seen
+
+    mic = Mic(
+        WAKE, SPEECH, SPEECH, SPEECH, lambda: started.__setitem__(0, True), SPEECH, *[SILENCE] * 5
+    )
+
+    _run(_loop(agent, mic, Speaker(), dictating=dictating, audit=AuditLog(None)))
+
+    assert agent.calls == []
+
+
+def test_a_request_is_taken_again_after_dictation_that_cut_one_short() -> None:
+    agent = Agent()
+    audit = AuditLog(None)
+    dictating = [False]
+    mic = Mic(
+        WAKE,
+        SPEECH,
+        lambda: dictating.__setitem__(0, True),
+        *REQUEST[2:],
+        lambda: dictating.__setitem__(0, False),
+        *REQUEST,
+    )
+
+    _run(_loop(agent, mic, Speaker(), dictating=lambda: dictating[0], audit=audit))
+
+    assert agent.calls == [("pause the music", Origin.OWNER_SPEECH)]
+    assert [event["event"] for event in audit.events] == ["wake_ignored"]
 
 
 def test_a_wake_word_is_taken_again_once_the_dictation_is_over() -> None:

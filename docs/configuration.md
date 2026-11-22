@@ -234,7 +234,9 @@ See [the PC-audio ADR](adr/0003-pc-audio-is-not-the-owner.md) for why the last f
 Jarvis follows Voxtype's own status with one long-lived `voxtype status --follow --format json --extended`
 (read-only; it costs nothing while the status is the same) and reads what it last said, so asking never waits
 for Voxtype. While your dictation is recording or transcribing, a wake word is ignored: no request, no
-chime, and one `wake_ignored` event in the audit log. While a Voxtype meeting runs (any `meeting_status` but
+chime, and one `wake_ignored` event in the audit log. Dictation that starts while Jarvis is capturing a
+request drops that request the same way: nothing is transcribed, Jarvis says nothing, and Voxtype's recording is
+left alone. While a Voxtype meeting runs (any `meeting_status` but
 `idle`), or while dictation runs, no follow-up window opens. A status that is not known yet or cannot be read (an
 older Voxtype without those options, a line that is not JSON, a status command that ended) never keeps Jarvis
 from taking the wake word, but it does keep follow-ups off. A Voxtype daemon that is not running counts as no
