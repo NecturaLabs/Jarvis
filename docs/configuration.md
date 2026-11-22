@@ -290,7 +290,7 @@ Search needs the SearXNG container running; without it Jarvis says search isn't 
 else keeps working. To start it:
 
 ```sh
-printf 'SEARXNG_SECRET=%s\n' "$(openssl rand -hex 32)" > deploy/searxng/.env
+(umask 077; printf 'SEARXNG_SECRET=%s\n' "$(openssl rand -hex 32)" > deploy/searxng/.env)
 docker compose -f deploy/searxng/compose.yaml up -d
 ```
 

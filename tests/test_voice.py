@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from jarvis import voice
-from jarvis.audio import FRAME, AudioError
+from jarvis.audio import FRAME, AudioError, PausableMic
 from jarvis.config import AudioConfig
 from jarvis.policy import Origin
 from jarvis.voice import PcListener, State, VoiceLoop
@@ -1311,3 +1311,154 @@ def test_a_follow_up_is_taken_when_pc_audio_was_quiet() -> None:
     _run(_loop(agent, mic, Speaker(), pc=pc, cfg=FOLLOW_UP, transcribe=_texts("a", "b")))
 
     assert [text for text, _ in agent.calls] == ["a", "b"]
+
+
+class Capture:
+    """A capture process stand-in that plays one shared script and ends when stopped."""
+
+    def __init__(self, *steps: Step) -> None:
+        super().__init__()
+        self._frames = _steps(steps)
+        self._ended = threading.Event()
+        self.starts = 0
+        self.stops = 0
+
+    @property
+    def pid(self) -> int | None:
+        return None
+
+    def start(self) -> None:
+        self.starts += 1
+        self._ended = threading.Event()
+
+    def stop(self) -> None:
+        self.stops += 1
+        self._ended.set()
+
+    def drain(self) -> None:
+        pass
+
+    def frames(self) -> Iterator[NDArray[np.int16]]:
+        ended = self._ended
+        while not ended.is_set():  # a stopped capture reads nothing more from the script
+            frame = next(self._frames, None)
+            if frame is None:
+                return
+            yield frame
+        msg = "the microphone stream ended"
+        raise AudioError(msg)
+
+
+def test_a_pause_ends_the_request_in_flight_silently_and_listening_resumes() -> None:
+    agent = Agent()
+    speaker = Speaker()
+    resumed = threading.Event()
+
+    def resume_soon() -> None:
+        def later() -> None:
+            until(lambda: loop.state is State.IDLE)()
+            assert mic.resume()
+            resumed.set()
+
+        threading.Thread(target=later, daemon=True).start()
+
+    def pause() -> None:
+        mic.pause()  # the mic made below; a bound method taken now would be unset
+
+    script = Capture(WAKE, SPEECH, pause, resume_soon, SPEECH, *REQUEST)
+    mic = PausableMic(script)
+    loop = VoiceLoop(
+        agent,
+        mic,
+        Wake(),
+        Vad(),
+        speaker,
+        CFG,
+        lambda _samples: "pause the music",
+        paused=lambda: mic.paused,
+    )
+    stop = threading.Event()
+
+    def stop_after_answer() -> None:
+        until(lambda: bool(agent.calls) and loop.state is State.IDLE)()
+        stop.set()
+
+    threading.Thread(target=stop_after_answer, daemon=True).start()
+    try:
+        loop.run(stop.is_set)
+    except AudioError:
+        pass  # the script ended
+    finally:
+        stop.set()
+
+    assert resumed.is_set()
+    assert agent.calls == [("pause the music", Origin.OWNER_SPEECH)]
+    assert speaker.said == ["Done."]  # no apology for the request the pause ended
+    assert script.stops == 1
+    assert script.starts == 1
+
+
+def test_hush_silences_the_rest_of_a_streamed_reply_but_the_request_carries_on() -> None:
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        assert hooks.speak is not None
+        hooks.speak("One.")
+        loop.hush()  # `jarvis hush` from the control thread
+        hooks.speak("Two.")
+        return "Three."
+
+    agent = Agent(reply)
+    speaker = Speaker()
+    loop = _loop(agent, Mic(*REQUEST, *REQUEST), speaker)
+
+    _run(loop)
+
+    assert len(agent.calls) == 2  # the hushed request ran to its end
+    assert speaker.said == ["One.", "One."]  # each request is hushed after its first sentence
+    assert speaker.hushed >= 2
+
+
+def test_a_hush_lasts_only_for_the_request_it_came_in() -> None:
+    hushed = [False]
+
+    def reply(_text: str, _hooks: Hooks, _origin: Origin) -> str:
+        if not hushed[0]:
+            hushed[0] = True
+            loop.hush()
+            return "Hushed."
+        return "Heard."
+
+    agent = Agent(reply)
+    speaker = Speaker()
+    loop = _loop(agent, Mic(*REQUEST, *REQUEST), speaker)
+
+    _run(loop)
+
+    assert speaker.said == ["Heard."]
+
+
+def test_a_paused_loop_says_nothing_more() -> None:
+    paused = [False]
+
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        assert hooks.speak is not None
+        hooks.speak("One.")
+        paused[0] = True  # `jarvis pause` while the reply streams
+        hooks.speak("Two.")
+        return "Three."
+
+    agent = Agent(reply)
+    speaker = Speaker()
+    loop = VoiceLoop(
+        agent,
+        Mic(*REQUEST),
+        Wake(),
+        Vad(),
+        speaker,
+        CFG,
+        lambda _samples: "pause the music",
+        paused=lambda: paused[0],
+    )
+
+    _run(loop)
+
+    assert speaker.said == ["One."]

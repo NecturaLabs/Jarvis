@@ -65,6 +65,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `jarvis pause` lets go of the microphone and, once the request in flight has ended, frees the model;
+  `jarvis resume` listens again and reloads it. `jarvis hush` stops the speech. `jarvis status` says what
+  the running Jarvis is doing (idle, listening, thinking, speaking, paused, model loading, unavailable), and
+  `--json` prints it for the Omarchy bar (#14). These reach `jarvis run` through a socket only your user can
+  open, in `$XDG_RUNTIME_DIR/jarvis/`, and each is recorded in the audit log. A pause lasts until `resume`
+  or until the voice service restarts. `jarvis stop` still stops the services; `hush` is the speech
+  interrupt #22 asked `stop` to be.
+
 - `boundaries.bypass_consent`, on by default (the owner's choice): Jarvis acts without asking for a yes,
   including after outside text and for requests heard in PC audio; an operation set to `deny` is still
   refused, and each bypassed question is audited. `jarvis consent ask` turns asking back on, `jarvis consent
@@ -147,6 +155,18 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Web research is safer and steadier. Text a browser hides (the `hidden` attribute, `aria-hidden`, and
+  inline `display:none`, `visibility:hidden`, `opacity:0` or `font-size:0`) no longer reaches the model, a page
+  with more than 20,000 elements is read from its start so it cannot hold up a request, the weather and
+  Reddit archive answers must arrive within 15 seconds, the SearXNG container is limited to 200 processes, and
+  the documented command now creates its `.env` file readable only by you. After Spotify says "too many
+  requests", Jarvis sends nothing to Spotify until the wait it asked for is over.
+- Voice and speech to text, from a practices audit: the check that asks whether a sentence would wake Jarvis
+  itself now low-pass filters before it drops Kokoro's and Piper's speech to 16 kHz, so sounds above 8 kHz
+  no longer fold into the band; a sentence of more than 510 phonemes is split between words and all of it
+  is spoken, instead of cut mid-word; Kokoro refuses a model file it cannot run when it loads, not at the
+  first sentence, and accepts the older build's `tokens` input; Voxtype runs quietly and keeps no audio of a
+  failed transcription from Jarvis's runs; and Jarvis waits as long as Strata's `Retry-After` says while it loads the model at start.
 - `jarvis chat` could end with a `NoMatches` traceback when it was closed: a timer that redraws the
   window, reads the log or draws the toolbar could fire after the window's parts were taken down.
 - In `jarvis chat`, a request from the log without a time no longer ends in a lone "·", a reply that

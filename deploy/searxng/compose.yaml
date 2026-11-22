@@ -1,6 +1,6 @@
 # The local SearXNG Jarvis searches through (docs/configuration.md, [research]).
 # Reachable only on this machine; its secret comes from `.env` beside this file (never committed):
-#   printf 'SEARXNG_SECRET=%s\n' "$(openssl rand -hex 32)" > deploy/searxng/.env
+#   (umask 077; printf 'SEARXNG_SECRET=%s\n' "$(openssl rand -hex 32)" > deploy/searxng/.env)
 #   docker compose -f deploy/searxng/compose.yaml up -d
 name: jarvis-searxng
 services:
@@ -24,7 +24,10 @@ services:
       - SETUID
     security_opt:
       - no-new-privileges:true
+    # No `read_only: true`: the image updates its certificates at start, which a read-only root breaks
+    # (docs/playbook/README.md).
     mem_limit: 512m
+    pids_limit: 200
     cpus: 1.0
     logging:
       driver: json-file

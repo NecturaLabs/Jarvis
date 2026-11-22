@@ -12,6 +12,7 @@ certificate against the host name in the URL.
 import ipaddress
 import socket
 import threading
+import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast, override
 
@@ -24,6 +25,8 @@ if TYPE_CHECKING:
 ALLOWED_PORTS = frozenset({80, 443})
 DNS_TIMEOUT_S = 5.0
 MAX_ANSWER_BYTES = 1_000_000
+# The whole of one answer from a fixed service, however slowly it arrives (`TIMEOUT` is per read).
+ANSWER_LIMIT_S = 15.0
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 _IPV4_COMPATIBLE = ipaddress.ip_network("::/96")
 _LOW_32_BITS = 0xFFFFFFFF
@@ -260,12 +263,19 @@ class PublicOnlyTransport(httpx.BaseTransport):
         self._pool.close()
 
 
-def read_capped(response: httpx.Response, limit: int = MAX_ANSWER_BYTES) -> bytes:
-    """Return an answer's body, reading no more than `limit` decoded bytes of it.
+def read_capped(
+    response: httpx.Response,
+    limit: int = MAX_ANSWER_BYTES,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+) -> bytes:
+    """Return an answer's body, reading no more than `limit` decoded bytes, in `ANSWER_LIMIT_S`.
 
     Raises:
         ValueError: the body is larger than `limit`.
+        httpx.ReadTimeout: the whole body did not arrive in time.
     """
+    deadline = clock() + ANSWER_LIMIT_S
     chunks: list[bytes] = []
     size = 0
     for chunk in response.iter_bytes():
@@ -274,6 +284,9 @@ def read_capped(response: httpx.Response, limit: int = MAX_ANSWER_BYTES) -> byte
             msg = "the answer is too large"
             raise ValueError(msg)
         chunks.append(chunk)
+        if clock() > deadline:
+            msg = "the answer took too long to arrive"
+            raise httpx.ReadTimeout(msg)
     return b"".join(chunks)
 
 

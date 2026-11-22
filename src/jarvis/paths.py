@@ -29,6 +29,13 @@ def state_dir() -> Path:
     return _xdg("XDG_STATE_HOME", ".local/state") / "jarvis"
 
 
+def runtime_dir() -> Path:
+    """Return `$XDG_RUNTIME_DIR/jarvis` (the user's runtime folder, emptied at logout)."""
+    value = os.environ.get("XDG_RUNTIME_DIR", "")
+    base = Path(value) if value and Path(value).is_absolute() else Path(f"/run/user/{os.getuid()}")
+    return base / "jarvis"
+
+
 def default_data_dir() -> Path:
     """Return `$XDG_DATA_HOME/jarvis`, the default home of wake, VAD and voice models."""
     return _xdg("XDG_DATA_HOME", ".local/share") / "jarvis"

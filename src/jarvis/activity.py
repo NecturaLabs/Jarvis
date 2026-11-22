@@ -257,6 +257,15 @@ def _simple(entry: dict[str, object]) -> _Line | None:
         "reply_limit": ("detail", "the reply reached its length limit", True, ""),
         "result_cleared": ("detail", "cleared an earlier result to make room", True, ""),
         "spoken_before_tool_call": ("detail", "spoke before a tool call", True, ""),
+        "control": (
+            "note",
+            _CONTROL_LINES.get(
+                str(entry.get("command")), f"jarvis {_plain(entry.get('command', ''))}"
+            ),
+            False,
+            "",
+        ),
+        "control_refused": ("warn", "refused a control command from another user", False, ""),
         "pc_audio_permission": (
             "result",
             f"PC audio may ask again for {_seconds(entry)}",
@@ -266,6 +275,12 @@ def _simple(entry: dict[str, object]) -> _Line | None:
     }
     return lines.get(str(entry.get("event")))
 
+
+_CONTROL_LINES = {
+    "pause": "Paused: the microphone is let go (jarvis pause)",
+    "resume": "Listening again (jarvis resume)",
+    "hush": "Hushed (jarvis hush)",
+}
 
 _EVENTS = {
     "request": _request,

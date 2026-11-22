@@ -7,7 +7,14 @@ import httpx
 import pytest
 
 from jarvis.config import Config, ModelConfig
-from jarvis.model import DEFAULT_MAX_TOKENS, LOAD_TIMEOUT_S, Delta, ModelError, StrataModel
+from jarvis.model import (
+    DEFAULT_MAX_TOKENS,
+    LOAD_TIMEOUT_S,
+    WARM_RETRY_S,
+    Delta,
+    ModelError,
+    StrataModel,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -479,3 +486,58 @@ def test_a_streamed_answer_asks_for_and_keeps_the_token_counts() -> None:
     assert json.loads(seen[0].content)["stream_options"] == {"include_usage": True}
     assert reply["usage"] == usage
     assert reply["finish_reason"] == "stop"
+
+
+@pytest.mark.parametrize(
+    ("header", "wait"),
+    [
+        ("7", 7.0),
+        ("0", 1.0),
+        ("999", 30.0),
+        (None, WARM_RETRY_S),
+        ("soon", WARM_RETRY_S),
+        ("nan", WARM_RETRY_S),
+    ],
+)
+def test_warming_waits_as_long_as_a_busy_server_asks(header: str | None, wait: float) -> None:
+    """Regression: a 503 with `Retry-After` was retried after a fixed two seconds."""
+    answers = iter(
+        [
+            httpx.Response(503, headers={"Retry-After": header} if header else {}),
+            httpx.Response(200, json={}),
+        ]
+    )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"status": {"value": "unloaded"}}]})
+        return next(answers)
+
+    waits: list[float] = []
+    model = StrataModel(
+        ModelConfig(base_url=Config().model_base_url()),
+        "key",
+        transport=httpx.MockTransport(handle),
+        sleep=waits.append,
+    )
+
+    assert model.warm() is True
+    assert waits == [wait]
+
+
+def test_a_long_retry_after_does_not_stretch_the_number_of_attempts() -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"status": {"value": "unloaded"}}]})
+        return httpx.Response(503, headers={"Retry-After": "20"})
+
+    waits: list[float] = []
+    model = StrataModel(
+        ModelConfig(base_url=Config().model_base_url()),
+        "key",
+        transport=httpx.MockTransport(handle),
+        sleep=waits.append,
+    )
+
+    assert model.warm(attempts=3) is False
+    assert waits == [20.0, 20.0, 20.0]
