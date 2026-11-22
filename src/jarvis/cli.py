@@ -591,16 +591,24 @@ def _whisper_model(cfg: config.Config) -> list[tuple[bool, str, str]]:
 
     Other engines keep their models in their own forms, so Voxtype itself reports on those.
     """
+    from jarvis import audio as audio_module  # ruff: ignore[import-outside-top-level]
+
     audio = cfg.audio
     name = audio.transcribe_model
     if audio.transcribe_engine not in {"", "whisper"} or not name:
         return []
+    fix = "download it with `voxtype setup model`"
+    installed = None if name.startswith("/") else audio_module.installed_models("whisper")
+    if installed is not None:
+        found = name in installed
+        said = "installed" if found else "not installed"
+        return [(found, f"speech model {name} (Voxtype reports it {said})", fix)]
     model = (
         Path(name)
         if name.startswith("/")
         else paths.xdg_data_home() / "voxtype" / "models" / f"ggml-{name}.bin"
     )
-    return [(model.is_file(), f"speech model {model}", "download it with `voxtype setup model`")]
+    return [(model.is_file(), f"speech model {model}", fix)]
 
 
 def _model_url(cfg: config.Config) -> list[tuple[bool, str, str]]:

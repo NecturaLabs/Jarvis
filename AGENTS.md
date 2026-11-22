@@ -26,9 +26,13 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
 - One agent does all the work. Never add a subagent, delegation or second-agent tool to Jarvis.
 - Boundaries are enforced in code before any tool runs, never only in the prompt: typed operations,
   default deny, provenance on every message part, confirmation bound to one exact action, an audit log.
-- Voxtype is driven only through its integration contract (`voxtype record start --file …`,
-  `voxtype record stop --wait --json`, `voxtype transcribe`). Never edit `~/.config/voxtype/` and never
-  stop a recording Jarvis did not start.
+- Voxtype is driven only through these commands: `voxtype transcribe` (with `-q`, `-c <Jarvis's own
+  file>`, `--model`, `--engine`, `--initial-prompt`), `voxtype status --format json` (also with
+  `--follow --extended`, one long-lived reader instead of polling), and, in
+  `jarvis doctor`, `voxtype info models --json --engine …` (owner's decision, 2026-11-22, #34). The
+  daemon's `record start --file …` and `record stop --wait --json` are its contract if that path is ever
+  built. A new Voxtype command needs the owner's yes. Never edit `~/.config/voxtype/` and never stop a
+  recording Jarvis did not start.
 - Strata serves only Jarvis. Its model lives outside the repository (`strata.model_file`). Health
   checks never generate tokens. The model is loaded when `jarvis run` starts and stays loaded (the owner's
   choice): it may hold RAM and VRAM, but must use no GPU or CPU while idle, and Jarvis runs beside games.

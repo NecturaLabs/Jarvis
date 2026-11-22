@@ -139,7 +139,7 @@ class StrataConfig(_Section):
     expert_vram_gib: float = Field(default=1.0, ge=0, le=64)
     # The prompt-reading chunk (`--prefill`): a size in tokens, or "auto" to leave it to Strata.
     prefill: Annotated[int, Field(ge=128, le=8192)] | Literal["auto"] = 512
-    idle_unload_s: int = Field(default=300, ge=30, le=86400)
+    idle_unload_s: int = Field(default=86400, ge=30, le=86400)  # stays loaded (#34, decision 2)
     reasoning_budget_tokens: int = Field(default=512, gt=0, le=8192)
     memory_max: str = Field(default="40G", pattern=r"^\d+[KMGT]?$")
     # VRAM in MiB the engine leaves free for other programs (`--vram-reserve-mib`); 0 passes

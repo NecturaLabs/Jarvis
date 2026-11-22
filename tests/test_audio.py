@@ -1,6 +1,7 @@
 """Microphone stream handling and transcript parsing, without real audio devices."""
 
 import contextlib
+import json
 import os
 import queue
 import signal
@@ -29,6 +30,7 @@ from jarvis.audio import (
     app_stream_serials,
     capture_sources,
     dictation_active,
+    installed_models,
     is_phantom,
     match_app_streams,
     parse_transcript,
@@ -1016,3 +1018,55 @@ def test_resetting_the_wake_word_resets_the_model(monkeypatch: pytest.MonkeyPatc
     wake.reset()
 
     assert model.resets == 1
+
+
+def _models(
+    stdout: bytes, returncode: int = 0
+) -> Callable[..., subprocess.CompletedProcess[bytes]]:
+    """A `voxtype info models` that prints `stdout`, checking the command it was given."""
+
+    def run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        assert cmd == ["voxtype", "info", "models", "--json", "--engine", "whisper"]
+        return subprocess.CompletedProcess(cmd, returncode, stdout, b"")
+
+    return run
+
+
+WHISPER_MODELS = json.dumps(
+    {
+        "engines": {
+            "whisper": {
+                "default": "base.en",
+                "models": [
+                    {"name": "base.en", "installed": True, "downloadable": True},
+                    {"name": "small.en", "installed": False, "downloadable": True},
+                    {"name": "tiny", "downloadable": True},
+                ],
+            }
+        }
+    }
+).encode()
+
+
+def test_voxtype_says_which_models_are_installed() -> None:
+    assert installed_models("whisper", run=_models(WHISPER_MODELS)) == {"base.en"}
+
+
+@pytest.mark.parametrize(
+    ("stdout", "returncode"),
+    [
+        (WHISPER_MODELS, 2),  # an older Voxtype without `info models`
+        (b"not json", 0),
+        (b"{}", 0),
+        (b'{"engines": {"whisper": {"models": 3}}}', 0),
+    ],
+)
+def test_a_model_list_that_cannot_be_read_says_nothing(stdout: bytes, returncode: int) -> None:
+    assert installed_models("whisper", run=_models(stdout, returncode)) is None
+
+
+def test_a_voxtype_that_cannot_run_says_nothing() -> None:
+    def missing(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise FileNotFoundError(cmd[0])
+
+    assert installed_models("whisper", run=missing) is None

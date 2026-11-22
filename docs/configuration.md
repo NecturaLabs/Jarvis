@@ -118,7 +118,7 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `context` | `24576` | 2048 to 262144 | Context window in tokens (`--max-context`). Each 1,000 tokens more costs about 0.05 GiB of VRAM ([models.md](models.md)). It holds the prompt and the tool schemas (about 5,000 tokens together), the remembered conversation (`agent.memory_tokens` or `chat.memory_tokens`), one reply and the request's tool results; when a long request outgrows it, its oldest tool results are cleared down to their start. |
 | `expert_vram_gib` | `1.0` | 0 to 64 | VRAM budget for expert weights kept on the GPU, passed as `--expert-vram`; the rest of the experts stay in host memory. |
 | `prefill` | `512` | 128 to 8192, or `"auto"` | Prompt-reading chunk size (`--prefill`). `"auto"` leaves the size to Strata (the value its own setup writes). Strata's tuner lists 512 among the sizes it avoids for this model, because smaller chunks read long prompts slower, so `"auto"`, 2048 and 4096 are worth measuring on your card before changing the default ([models.md](models.md#prompt-chunk-size)). |
-| `idle_unload_s` | `300` | 30 to 86400 | Seconds without a request before Strata frees the model. |
+| `idle_unload_s` | `86400` | 30 to 86400 | Seconds without a request before Strata frees the model. The default, 24 hours, keeps it loaded through the day; a lower value gives the RAM back sooner. |
 | `reasoning_budget_tokens` | `512` | 1 to 8192 | Thinking-token cap in the profile. |
 | `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` of the Strata unit. `MemoryMax` is derived from it, 10% above (44G for 40G; a size that does not divide evenly is rounded up and written in bytes), so there is no second key. Past `MemoryHigh` the kernel throttles the unit and reclaims its memory; past `MemoryMax` it kills the unit. |
 | `vram_reserve_mib` | `0` (unset) | 0, or 100 to 65536 | VRAM in MiB the engine leaves free for other programs, passed as `--vram-reserve-mib`. `0` passes nothing, so Strata's own default (700) applies. Set it only after a game that grows once the model is loaded either fails or does not. A card with at most about 8 GB of VRAM cannot start with a reserve (Strata's tuner never tries one there). |
@@ -161,11 +161,11 @@ Both units are written by `jarvis setup`; their text is `jarvis_unit` and `strat
 
 ### Keeping the model loaded
 
-`idle_unload_s` accepts up to 86400 (24 hours), which keeps the model loaded through the day. Measured on the
+`idle_unload_s` defaults to 86400 (24 hours), its largest value, which keeps the model loaded through the day. Measured on the
 reference machine (RX 7900 XT, 64 GB RAM), a loaded idle model holds about 38 GB of RAM and 7.3 GiB of VRAM and
 uses no GPU or CPU while idle. A cold load took about 107 s with a game running; Jarvis says "One moment,
-waking up" while that happens. At the default 300 s the model is freed after five idle minutes and loaded
-again on the next wake word. The default `memory_max` of 40G leaves about 2 GB above the 38 GB measured, so
+waking up" while that happens. At 300 s, say, the model is freed after five idle minutes and loaded again on
+the next wake word. The default `memory_max` of 40G leaves about 2 GB above the 38 GB measured, so
 raise it before holding a larger model. `jarvis unload` frees the model at once.
 
 ## `[spotify]`: your own Spotify developer app

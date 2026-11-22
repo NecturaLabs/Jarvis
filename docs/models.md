@@ -142,8 +142,11 @@ spoken over.
 - `piper-tts` 1.8.0 (OHF-Voice/piper1-gpl). Put a voice at `<data_dir>/voices/<name>.onnx` with
   `<name>.onnx.json` beside it and set `audio.voice = "<name>"`. `audio.speech_speed` sets Piper's length
   scale (the voice's own scale divided by the speed).
-- Licence: `piper-tts` is GPL-3.0-or-later (package metadata). Each Piper voice has its own licence: not
-  checked. Because Jarvis imports `piper-tts` for both voices, Jarvis is published under GPL-3.0-or-later
+- Licence: `piper-tts` is GPL-3.0-or-later (package metadata). Each Piper voice has its own licence: check
+  its model card before using it; Jarvis ships none. Checked 2026-11-22 for `en_GB-alan-medium`: its card
+  names the dataset `MycroftAI/mimic3-voices` `en_UK/apope_low`, whose LICENSE reads "Copyright 2022 Mycroft
+  AI / All Rights Reserved" while the repository's root LICENSE is CC BY-SA 4.0, so that voice's terms are
+  unclear. Because Jarvis imports `piper-tts` for both voices, Jarvis is published under GPL-3.0-or-later
   (`docs/adr/0006-gpl-licence.md`).
 
 ## Wake word and end of speech
