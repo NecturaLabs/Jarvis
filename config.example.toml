@@ -33,7 +33,7 @@ max_tool_calls = 40
 max_seconds = 600.0
 reply_tokens = 2048
 tool_text_chars = 8000
-memory_tokens = 11000
+memory_tokens = 10800
 memory_idle_s = 0.0
 resume = true
 verbosity = "replies"
@@ -112,6 +112,10 @@ addendum = ""
 # twelve_hour = false says "15:42" instead of "3:42 PM".
 [clock]
 twelve_hour = true
+
+# How Jarvis writes numbers everywhere: "," (1,488), " ", "'" or "" for none.
+[format]
+thousands_separator = ","
 
 # Your home, for weather that names no place: a place name such as "Lisbon", or
 # coordinates = [38.72, -9.14] for an exact point (then no lookup is sent).

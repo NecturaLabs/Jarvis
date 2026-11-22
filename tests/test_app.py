@@ -224,6 +224,18 @@ def test_both_channels_offer_the_pc_and_file_operations(tmp_path: Path, channel:
         assert registry.get(name) is not None
 
 
+@pytest.mark.parametrize("channel", ["voice", "chat"])
+def test_both_channels_offer_the_calculator(tmp_path: Path, channel: Channel) -> None:
+    config = Config()
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+
+    registry = channel_registry(
+        config, spotify.operations(), channel_limits(config, channel), channel
+    )
+
+    assert registry.get("calculate") is not None
+
+
 def test_jarvis_own_state_is_never_readable_through_the_file_operations(tmp_path: Path) -> None:
     state = paths.state_dir()
     state.mkdir(parents=True, exist_ok=True)
@@ -298,3 +310,10 @@ def test_an_override_for_a_chat_only_operation_is_known(tmp_path: Path) -> None:
     config = Config(boundaries=BoundariesConfig(classes={"show_image": "deny"}))
 
     assert unknown_overrides(config, spotify.operations()) == []
+
+
+@pytest.mark.parametrize(("separator", "said"), [(",", "1,488"), (" ", "1 488"), ("", "1488")])
+def test_the_prompt_tells_the_model_how_to_write_numbers(separator: str, said: str) -> None:
+    config = Config.model_validate({"format": {"thousands_separator": separator}})
+
+    assert said in system_prompt(config, "chat")

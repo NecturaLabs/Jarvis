@@ -73,7 +73,7 @@ the chat keeps it (see below).
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `11000` and `memory_idle_s` `0.0` (never forget), plus:
+`memory_tokens` `10800` and `memory_idle_s` `0.0` (never forget), plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -312,6 +312,12 @@ be spoken over.
 | `tone` | calm, warm, to the point, with a light touch of dry wit | How it speaks. |
 | `addendum` | empty | Your own extra instructions, added to the system prompt. |
 
+## `[format]`
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `thousands_separator` | `","` | `","`, `" "`, `"'"`, `""` | What Jarvis puts between groups of three digits of a number's whole part, in every reply (the system prompt says so) and in the calculator's answers: 48 times 31 is 1,488. `""` writes none. A calculator answer of more than 20 digits is given in powers of ten without groups. |
+
 ## `[clock]`
 
 | Key | Default | Allowed | What it does |
@@ -398,7 +404,7 @@ A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` wit
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
 its shipped class, which is `safe` for every operation but `write_file` (`confirm`) and `stop_process`
 (`strong`): `spotify_*`, `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`,
-`pc_stats`, `list_dir`, `read_file`, `find_processes`; set one to `deny` to switch it off. `stop_process`
+`pc_stats`, `calculate`, `list_dir`, `read_file`, `find_processes`; set one to `deny` to switch it off. `stop_process`
 may be set only to `strong` or `deny`: a program is stopped by your command and your key alone, so any
 other class stops `jarvis run`, `ask` and `chat` with an error. Whatever the class, side effects are raised to `confirm` while text from outside
 your own speech is in the request, and so are the operations that send words off the PC while a file's text is. Example:

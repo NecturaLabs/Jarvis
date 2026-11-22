@@ -277,9 +277,7 @@ def test_a_wine_game_is_found_by_its_windows_program_name(proc: FakeProc) -> Non
     assert "4300" not in text
 
 
-@pytest.mark.parametrize(
-    "spoken", ["orbit", "The Orbit game", "ORBIT!", "or bit", "the orbit app"]
-)
+@pytest.mark.parametrize("spoken", ["orbit", "The Orbit game", "ORBIT!", "or bit", "the orbit app"])
 @pytest.mark.usefixtures("owner_request")
 def test_the_spoken_name_is_normalised(proc: FakeProc, spoken: str) -> None:
     proc.add(4242, "orbit")
@@ -1181,9 +1179,7 @@ def test_the_agent_stops_a_found_process_after_the_confirm_key(proc: FakeProc) -
     agent.handle("kill the orbit process", Hooks(confirm=_never, confirm_key=key))
 
     bound = {"pid": 4242, "force": False, "program": "Orbit", "started": 777, "window": ""}
-    assert key.asked == [
-        ("Should I stop Orbit (PID 4242)?", action_hash("stop_process", bound))
-    ]
+    assert key.asked == [("Should I stop Orbit (PID 4242)?", action_hash("stop_process", bound))]
     assert stopper.sent == [(4242, signal.SIGTERM)]
     assert any(e["event"] == "tool_result" and e["op"] == "stop_process" for e in audit.events)
 

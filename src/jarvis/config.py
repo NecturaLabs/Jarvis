@@ -118,7 +118,7 @@ class ChatConfig(AgentConfig):
     max_seconds: float = Field(default=600.0, ge=10, le=3600)
     reply_tokens: int = Field(default=2048, ge=64, le=8192)
     tool_text_chars: int = Field(default=8000, ge=500, le=50000)
-    memory_tokens: int = Field(default=11000, ge=0, le=200000)
+    memory_tokens: int = Field(default=10800, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
     resume: bool = True  # open the chat on the conversation it had last time
     verbosity: Literal["replies", "steps", "everything"] = "replies"
@@ -247,6 +247,13 @@ class ClockConfig(_Section):
     twelve_hour: bool = True
 
 
+class FormatConfig(_Section):
+    """How Jarvis writes numbers, in every reply and tool answer."""
+
+    # Between groups of three digits in a whole part: 1,488. "" writes none.
+    thousands_separator: Literal[",", " ", "'", ""] = ","
+
+
 POINT = 2  # a latitude and a longitude
 MAX_LATITUDE = 90.0
 MAX_LONGITUDE = 180.0
@@ -359,6 +366,7 @@ class Config(_Section):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
     clock: ClockConfig = Field(default_factory=ClockConfig)
+    format: FormatConfig = Field(default_factory=FormatConfig)
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
     research: ResearchConfig = Field(default_factory=ResearchConfig)
     files: FilesConfig = Field(default_factory=FilesConfig)

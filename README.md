@@ -32,6 +32,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
   match, asks which one when there are several, and stops only that one once you press the confirm key. It
   never stops the desktop, the sound server, dictation or itself, and nothing heard from PC audio can stop a
   program ([Stopping a program](docs/configuration.md#stopping-a-program)).
+- **Sums:** "how much is 48 times 31", "what percentage is 30 out of 120", "15 percent of 80", square roots,
+  powers and the like are worked out exactly by a calculator in code, never guessed by the model.
 - **Boundaries:** every action is a typed operation checked by a policy engine in code before it runs, and
   every request, decision and result goes to an audit log. See [SECURITY.md](SECURITY.md).
 - **Time and weather:** "what time is it", "what's the weather tomorrow" or "what's the weather in Lisbon".

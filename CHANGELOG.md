@@ -33,8 +33,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   each file's size and header, and falls back to looking for the file when Voxtype cannot say.
   `stop_process` is the one shipped `strong` operation, and `boundaries.classes` may set it only to
   `strong` or `deny`; any other class stops Jarvis with an error.
-- The chat remembers a little less: `chat.memory_tokens` defaults to 11,000 (was 11,500), to make room in
-  the model's context for `find_processes` and `stop_process`.
+- The chat remembers a little less: `chat.memory_tokens` defaults to 10,800 (was 11,500), to make room in
+  the model's context for `find_processes`, `stop_process` and `calculate`.
 - From a practices audit: a name in `boundaries.classes` that is no operation (a typo, say) stops Jarvis
   with an error instead of being ignored; turning questions on or off with `jarvis consent`, and the mode
   the voice service starts in, are recorded in the audit log and shown in the chat; words heard from the PC
@@ -56,7 +56,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   moves while it is open; the letters typed are in bold and the chosen row is lit whole. `/exit` leaves
   (`/quit` still works).
 - Jarvis remembers the conversation. Instead of the last 4 turns, forgotten after 5 minutes, it keeps as
-  much as fits a token budget (`agent.memory_tokens` 6,000 for speech, `chat.memory_tokens` 11,000 for the
+  much as fits a token budget (`agent.memory_tokens` 6,000 for speech, `chat.memory_tokens` 10,800 for the
   chat) and has the model summarize the oldest turns when it outgrows it. Speech forgets after 30 idle
   minutes; the chat never does and resumes its conversation when it opens again (`chat.resume`).
 - Replies are no longer cut. The model is told its length and capped in tokens (`agent.reply_tokens` 400,
@@ -100,6 +100,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `calculate`: Jarvis works out sums in code, exactly, however you ask ("how much is 48 times 31", "what
+  percentage is 30 out of 120", "15 percent of 80", powers, roots, logarithms, factorials), and says the
+  answer; the model never does the arithmetic itself. Numbers in replies and answers come in
+  groups of three (1,488); the new `format.thousands_separator` sets the separator, or none.
 - `audio.vad_neg_threshold`: once speech has started it goes on while the probability stays above this
   (default: `vad_threshold` less 0.15, Silero's own margin), so a breath inside a sentence no longer ends a
   request early. A request after the wake word, from the mic or PC audio, needs 0.15 s of speech, so a click
