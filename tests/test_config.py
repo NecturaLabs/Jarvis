@@ -290,6 +290,25 @@ def test_search_runs_only_on_this_machine() -> None:
     assert config.ResearchConfig().searxng_url == "http://127.0.0.1:8888"
 
 
+def test_speech_ends_below_the_threshold_that_started_it() -> None:
+    assert config.AudioConfig().vad_exit_threshold == pytest.approx(0.35)
+    assert config.AudioConfig(vad_threshold=0.8).vad_exit_threshold == pytest.approx(0.65)
+    assert config.AudioConfig(vad_threshold=0.1).vad_exit_threshold == pytest.approx(0.01)
+    assert config.AudioConfig(vad_neg_threshold=0.2).vad_exit_threshold == pytest.approx(0.2)
+
+
+def test_the_exit_threshold_may_not_be_above_the_entry_threshold() -> None:
+    with pytest.raises(ValueError, match="vad_neg_threshold"):
+        config.AudioConfig(vad_threshold=0.4, vad_neg_threshold=0.5)
+    equal = config.AudioConfig(vad_threshold=0.4, vad_neg_threshold=0.4)
+    assert equal.vad_exit_threshold == pytest.approx(0.4)
+
+
+def test_the_kokoro_phoneme_map_is_off_by_default() -> None:
+    assert config.AudioConfig().kokoro_phoneme_map is False
+    assert config.AudioConfig(kokoro_phoneme_map=True).kokoro_phoneme_map is True
+
+
 EXAMPLE = Path(__file__).resolve().parent.parent / "config.example.toml"
 
 

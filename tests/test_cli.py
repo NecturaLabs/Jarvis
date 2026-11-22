@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 import numpy as np
 import pytest
@@ -276,6 +276,70 @@ def test_doctor_leaves_the_lock_screen_alone_while_jarvis_listens_there(
     cli.main(["doctor"])
 
     assert not any("lock screen" in shown for shown in _doctor_lines(capsys))
+
+
+_MIC_NODE = "alsa_input.usb-Example_Mic-00.analog-stereo"
+
+
+def _fake_pw_dump(monkeypatch: pytest.MonkeyPatch, names: list[str]) -> None:
+    """Make `pw-dump` list one microphone node per name (the real tool is never run)."""
+    nodes = [
+        {
+            "id": 10 + number,
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "props": {
+                    "media.class": "Audio/Source",
+                    "node.name": name,
+                    "object.serial": 100 + number,
+                }
+            },
+        }
+        for number, name in enumerate(names)
+    ]
+    monkeypatch.setattr(audio_module, "pw_dump", lambda: nodes)
+
+
+@pytest.mark.parametrize(
+    ("source", "listed", "line"),
+    [
+        (_MIC_NODE, [_MIC_NODE], "ok "),
+        ("100", [_MIC_NODE], "ok "),
+        ("alsa_input.usb-Typo_Mic-00.analog-stereo", [_MIC_NODE], "FAIL"),
+        (_MIC_NODE, [], "FAIL"),
+    ],
+)
+def test_doctor_checks_that_the_configured_source_is_a_microphone_node(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    source: str,
+    listed: list[str],
+    line: str,
+) -> None:
+    config.save(config.Config(data_dir=home, audio=config.AudioConfig(source=source)))
+    _fake_pw_dump(monkeypatch, listed)
+
+    cli.main(["doctor"])
+
+    (shown,) = [row for row in _doctor_lines(capsys) if f"audio.source {source}" in row]
+    assert shown.startswith(line)
+    assert ("audio.source" in shown and "pw-dump" in shown) is (line == "FAIL")
+
+
+def test_doctor_leaves_the_default_microphone_alone(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def listed() -> object:
+        pytest.fail("the PipeWire graph was read")
+
+    _doctor_config(home)
+    monkeypatch.setattr(audio_module, "pw_dump", listed)
+
+    cli.main(["doctor"])
+
+    assert not any("audio.source" in shown for shown in _doctor_lines(capsys))
 
 
 def test_the_default_speech_model_is_small_en() -> None:
@@ -570,11 +634,20 @@ class _Part:
         self.started = False
         self.stopped = threading.Event()
 
-    def start(self) -> None:
+    def start(self) -> Self:
         self.started = True
+        return self
 
     def stop(self) -> None:
         self.stopped.set()
+
+    @staticmethod
+    def dictating() -> bool | None:
+        return False
+
+    @staticmethod
+    def meeting() -> bool:
+        return False
 
 
 @dataclass
@@ -611,10 +684,10 @@ def _cmd_run(
     cfg: config.Config | None = None,
 ) -> tuple[_Run, int]:
     run = _Run()
-    for name in ("Microphone", "Speaker", "Vad", "WakeWord", "AppAudio"):
+    for name in ("Microphone", "Speaker", "Vad", "WakeWord", "AppAudio", "VoxtypeWatch"):
         monkeypatch.setattr(audio_module, name, run.maker(name))
 
-    def no_voice(*_args: object) -> None:
+    def no_voice(*_args: object, **_kwargs: object) -> None:
         return None
 
     monkeypatch.setattr(audio_module, "make_synthesizer", no_voice)
@@ -706,6 +779,47 @@ def test_the_run_reopens_a_lost_microphone_and_notices_one_gone_silent(
     (mic,) = run.kinds["Microphone"]
     assert mic.kwargs["stall_s"] == audio_module.MIC_STALL_S
     assert callable(run.loops[0]["reopen"])
+
+
+def test_the_run_follows_voxtypes_status_off_the_voice_thread_and_stops_it_with_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def body(run: _Run, should_stop: Callable[[], bool]) -> None:
+        run.handlers[signal.SIGTERM](signal.SIGTERM, None)
+        assert should_stop()
+        assert run.kinds["VoxtypeWatch"][0].stopped.wait(5)
+
+    run, code = _cmd_run(monkeypatch, body)
+
+    assert code == 0
+    (watch,) = run.kinds["VoxtypeWatch"]
+    assert watch.started
+    kwargs = run.loops[0]
+    assert (kwargs["dictating"], kwargs["meeting"]) == (watch.dictating, watch.meeting)
+    assert kwargs["audit"] is run.audit
+
+
+@pytest.mark.parametrize("phoneme_map", [False, True])
+def test_the_speaker_is_built_with_the_kokoro_phoneme_map_setting(
+    monkeypatch: pytest.MonkeyPatch, *, phoneme_map: bool
+) -> None:
+    made: list[tuple[object, ...]] = []
+
+    def synthesizer(*args: object, **kwargs: object) -> None:
+        made.append((*args, kwargs))
+
+    monkeypatch.setattr(audio_module, "make_synthesizer", synthesizer)
+
+    def speaker(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(audio_module, "Speaker", speaker)
+    cfg = config.Config(audio=config.AudioConfig(barge_in=False, kokoro_phoneme_map=phoneme_map))
+
+    cli._speaker(cfg)  # pyright: ignore[reportPrivateUsage]
+
+    ((_data, voice, speed, options),) = made
+    assert (voice, speed, options) == ("kokoro:bm_george", 1.0, {"phoneme_map": phoneme_map})
 
 
 def test_the_lock_screen_is_not_asked_about_while_listening_there_is_on(

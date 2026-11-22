@@ -5,9 +5,10 @@ import os
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import numpy as np
 import pytest
@@ -25,7 +26,7 @@ from jarvis.audio import (
 from jarvis.cli import main
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from numpy.typing import NDArray
 
@@ -206,28 +207,46 @@ def _result(reason: str, *, error: str = "", offset_s: float = 0.0) -> SimpleNam
     ended = "error" if error else "end"
     return SimpleNamespace(
         reason=reason,
-        offset=int(offset_s * 10_000_000),
+        offset=round(offset_s * 10_000_000),
         duration=10_000_000,  # one second
         cancellation_details=SimpleNamespace(reason=ended, error_details=error),
     )
 
 
+@dataclass(frozen=True)
+class _Due:
+    """A recognition result that arrives only once `wait` is true."""
+
+    wait: Callable[[], bool]
+    result: SimpleNamespace
+
+
+type _Next = SimpleNamespace | _Due
+
+
 class _Recognizer:
     """The SDK's keyword recognizer: each recognition ends with the next result in the list."""
 
-    def __init__(self, results: list[SimpleNamespace]) -> None:
+    def __init__(self, results: Sequence[_Next]) -> None:
         super().__init__()
-        self.results = results
+        self.results = list(results)
 
     def recognize_once_async(self, _model: object) -> SimpleNamespace:
-        result = self.results.pop(0)
-        return SimpleNamespace(get=lambda: result)
+        item = self.results.pop(0)
+
+        def get() -> SimpleNamespace:
+            if isinstance(item, _Due):
+                assert _until(item.wait)
+                return item.result
+            return item
+
+        return SimpleNamespace(get=get)
 
 
 END = _result("canceled")  # the input ended
 
 
-def _fake_sdk(results: list[SimpleNamespace], fed: list[bytes]) -> ModuleType:
+def _fake_sdk(results: Sequence[_Next], fed: list[bytes]) -> ModuleType:
     """A stand-in for the Speech SDK; the first result answers the helper's probe."""
     sdk = ModuleType("fake_speech_sdk")
     recognizer = _Recognizer(results)
@@ -263,17 +282,121 @@ def _fake_sdk(results: list[SimpleNamespace], fed: list[bytes]) -> ModuleType:
     return sdk
 
 
+SILENT = b"\0" * azure_wake_helper.SILENCE_BYTES
+
+
+class _Input(io.BytesIO):
+    """The helper's standard input: each chunk is served once its condition holds; then it ends."""
+
+    def __init__(self, *steps: tuple[Callable[[], bool], bytes]) -> None:
+        super().__init__()
+        self._steps = list(steps)
+
+    @override
+    def read(self, size: int | None = -1) -> bytes:
+        del size
+        if not self._steps:
+            return b""
+        ready, chunk = self._steps.pop(0)
+        assert _until(ready)
+        return chunk
+
+
+def _now() -> bool:
+    return True
+
+
 def test_the_helper_says_ready_then_where_each_keyword_ended_until_its_input_ends() -> None:
     fed: list[bytes] = []
     out, err = io.StringIO(), io.StringIO()
-    results = [END, _result("keyword", offset_s=0.5), _result("keyword", offset_s=3.0), END]
+    # The SDK counts the silence the helper adds: 1.5 s first, and again after each keyword.
+    results = [END, _result("keyword", offset_s=2.0), _result("keyword", offset_s=6.0), END]
     sdk = _fake_sdk(results, fed)
+    source = _Input((_now, b"\x00" * 6000), (lambda: fed.count(SILENT) == 3, b""))
 
-    assert azure_wake_helper.listen(sdk, "hey.table", io.BytesIO(b"\x00" * 6000), out, err) == 0
+    assert azure_wake_helper.listen(sdk, "hey.table", source, out, err) == 0
 
-    assert out.getvalue() == "ready\nwake 24000\nwake 64000\n"  # (offset + 1 s) at 16 kHz
+    assert (
+        out.getvalue() == "ready\nwake 24000\nwake 64000\n"
+    )  # (offset + 1 s) at 16 kHz, no silence
     assert not err.getvalue()
     assert _until(lambda: b"".join(fed).count(b"\x00") >= 16000 + 6000)
+
+
+def test_the_keyword_engine_is_given_silence_first_and_after_each_keyword() -> None:
+    fed: list[bytes] = []
+    out, err = io.StringIO(), io.StringIO()
+    first, second, third = (bytes([n]) * 2560 for n in (1, 2, 3))  # 1280 samples each
+    silence, chunk = azure_wake_helper.SILENCE_SAMPLES, 1280
+    # Where the SDK says each keyword ended in its stream: after the second chunk, then after the
+    # third, which came after a second silence.
+    end_1 = silence + 2 * chunk
+    end_2 = 2 * silence + 3 * chunk
+    results = [
+        END,
+        _Due(lambda: second in fed, _result("keyword", offset_s=end_1 / RATE - 1)),
+        _Due(lambda: third in fed, _result("keyword", offset_s=end_2 / RATE - 1)),
+        END,
+    ]
+    source = _Input(
+        (_now, first),
+        (_now, second),
+        (lambda: fed.count(SILENT) == 2, third),
+        (lambda: fed.count(SILENT) == 3, b""),
+    )
+
+    assert azure_wake_helper.listen(_fake_sdk(results, fed), "hey.table", source, out, err) == 0
+
+    assert _until(lambda: len(fed) == 9)
+    assert fed == [
+        b"\0" * azure_wake_helper.PROBE_BYTES,
+        b"",
+        SILENT,
+        first,
+        second,
+        SILENT,
+        third,
+        SILENT,
+        b"",
+    ]
+    # Reported in the input's own samples: the silence before each keyword's end is taken off.
+    assert out.getvalue() == f"ready\nwake {2 * chunk}\nwake {3 * chunk}\n"
+    assert not err.getvalue()
+
+
+def test_a_position_in_the_stream_is_told_as_a_position_in_the_input() -> None:
+    fed: list[bytes] = []
+    stream = azure_wake_helper.PushedStream(_Stream(fed))
+    silence = azure_wake_helper.SILENCE_SAMPLES
+    stream.silence()  # the stream's first 24000 samples
+    stream.write(b"\x01" * 2560)  # then 1280 of the input
+    stream.silence()  # then 24000 more
+
+    assert stream.input_position(silence) == 0  # the end of the first silence
+    assert stream.input_position(silence + 1280) == 1280
+    assert stream.input_position(silence + 1280 + 100) == 1280  # inside the second silence
+    assert stream.input_position(silence + 1280 + silence + 5) == 1285  # then the input again
+    assert stream.input_position(100) == 0  # inside the first
+    # An end before a silence is not shortened by it.
+    assert stream.input_position(silence + 10) == 10
+
+
+def test_the_silence_is_at_least_what_the_keyword_engine_asks_for() -> None:
+    assert azure_wake_helper.SILENCE_S >= 1.5
+    assert azure_wake_helper.SILENCE_BYTES == azure_wake_helper.SILENCE_SAMPLES * 2
+
+
+def test_no_silence_is_written_to_a_stream_whose_input_has_ended() -> None:
+    fed: list[bytes] = []
+    out, err = io.StringIO(), io.StringIO()
+    results = [END, _Due(lambda: fed[-1:] == [b""], _result("keyword", offset_s=2.0)), END]
+    source = _Input((_now, b"\x01" * 2560))  # then it ends, closing the stream
+
+    assert azure_wake_helper.listen(_fake_sdk(results, fed), "hey.table", source, out, err) == 0
+
+    assert fed == [b"\0" * azure_wake_helper.PROBE_BYTES, b"", SILENT, b"\x01" * 2560, b""]
+    assert out.getvalue().startswith("ready\nwake ")
+    assert not err.getvalue()
 
 
 def test_a_model_the_sdk_rejects_is_said_before_ready_and_ends_the_helper() -> None:

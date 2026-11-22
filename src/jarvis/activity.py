@@ -265,6 +265,7 @@ def _simple(entry: dict[str, object]) -> _Line | None:
             False,
             "",
         ),
+        "wake_ignored": ("note", "Ignored the wake word: you were dictating", False, ""),
         "control_refused": ("warn", "refused a control command from another user", False, ""),
         "consent_changed": (
             "note",

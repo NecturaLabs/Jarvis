@@ -80,6 +80,10 @@ def spoken_question(text: str) -> str:
 
 FRAME_S = FRAME / RATE
 MIN_ANSWER_SPEECH_S = 0.15  # two 80 ms frames; a click or knock is usually one
+# The same minimum for a request after the wake word: saying it already shows the intent, so only
+# what Whisper turns into words from a click or a knock (one frame) is dropped, and a short command
+# such as "stop" is not.
+MIN_REQUEST_SPEECH_S = MIN_ANSWER_SPEECH_S
 # A request heard without the wake word must hold more speech than a cough, a click or a word
 # from the room: four 80 ms frames.
 MIN_FOLLOW_UP_SPEECH_S = 0.3
@@ -133,10 +137,12 @@ class _Leads(Protocol):
     def after_wake(self) -> list[NDArray[np.int16]]: ...
 
 
-def _with_lead(wake: object, frames: Iterator[NDArray[np.int16]]) -> Iterator[NDArray[np.int16]]:
-    """Return `frames`, after the frames a late wake word kept since its keyword ended."""
+def _with_lead(
+    wake: object, frames: Iterator[NDArray[np.int16]]
+) -> tuple[Iterator[NDArray[np.int16]], int]:
+    """Return `frames` after those a late wake word kept since its keyword ended, and how many."""
     lead = wake.after_wake() if isinstance(wake, _Leads) else []
-    return itertools.chain(lead, frames)
+    return itertools.chain(lead, frames), len(lead)
 
 
 class _Vad(Protocol):
@@ -146,6 +152,10 @@ class _Vad(Protocol):
 
 class _Responder(Protocol):
     def handle(self, text: str, hooks: Hooks, origin: Origin = Origin.OWNER_SPEECH) -> str: ...
+
+
+class _Audit(Protocol):
+    def record(self, event: str, **fields: object) -> None: ...
 
 
 class _Speaker(Protocol):
@@ -185,9 +195,15 @@ class _PcRequest:
 
 
 def capture_utterance(
-    frames: Iterator[NDArray[np.int16]], vad: _Vad, cfg: AudioConfig
+    frames: Iterator[NDArray[np.int16]], vad: _Vad, cfg: AudioConfig, *, lead_frames: int = 0
 ) -> Utterance:
-    """Collect speech until trailing silence, a no-speech timeout or the length cap."""
+    """Collect speech until trailing silence, a no-speech timeout or the length cap.
+
+    Speech starts at a probability of `vad_threshold` and goes on while it stays above
+    `vad_exit_threshold`, so a breath or a soft syllable inside a sentence is not silence. Only
+    frames at the entry threshold count toward `speech_s`. The first `lead_frames` frames are the
+    wake word's own tail: kept, but not counted as the request's speech.
+    """
     vad.reset()
     kept: list[NDArray[np.int16]] = []
     recent: list[NDArray[np.int16]] = []
@@ -195,9 +211,12 @@ def capture_utterance(
     silent_s = 0.0
     waited_s = 0.0
     speech_s = 0.0
-    for frame in frames:
-        speech = vad.speech_probability(frame) >= cfg.vad_threshold
-        speech_s += FRAME_S if speech else 0.0
+    exit_threshold = cfg.vad_exit_threshold
+    for number, frame in enumerate(frames):
+        probability = vad.speech_probability(frame)
+        speech = probability >= cfg.vad_threshold
+        if speech and number >= lead_frames:
+            speech_s += FRAME_S
         if not started:
             recent = [*recent[-(PRE_ROLL_FRAMES - 1) :], frame]
             waited_s += FRAME_S
@@ -208,12 +227,19 @@ def capture_utterance(
                 return Utterance(None, "no speech")
             continue
         kept.append(frame)
-        silent_s = 0.0 if speech else silent_s + FRAME_S
+        silent_s = 0.0 if probability >= exit_threshold else silent_s + FRAME_S
         if silent_s >= cfg.end_silence_s:
             return Utterance(np.concatenate(kept), "end of speech", speech_s)
         if len(kept) * FRAME_S >= cfg.max_utterance_s:
             return Utterance(np.concatenate(kept), "length cap", speech_s)
     return Utterance(np.concatenate(kept) if kept else None, "stream ended", speech_s)
+
+
+def _no_request(heard: Utterance) -> str:
+    """Say why a capture after the wake word holds no request."""
+    if heard.samples is None:
+        return heard.reason
+    return f"{heard.speech_s:.2f} s of speech is too little"
 
 
 def keep_for_debugging(samples: NDArray[np.int16]) -> None:
@@ -255,7 +281,9 @@ class VoiceLoop:
         names: Sequence[str] = (),
         clock: Callable[[], float] = time.monotonic,
         pc_retry_s: float = 1.0,
-        dictating: Callable[[], bool] = lambda: False,
+        dictating: Callable[[], bool | None] = lambda: False,
+        meeting: Callable[[], bool] = lambda: False,
+        audit: _Audit | None = None,
         paused: Callable[[], bool] = lambda: False,
         until_resumed: Callable[[], None] = lambda: None,
         reopen: Callable[[], bool] | None = None,
@@ -269,8 +297,11 @@ class VoiceLoop:
         confirmation (by default `transcribe`; give one without a vocabulary hint, so the
         hint cannot turn noise into words). `names` are the assistant's names, allowed beside
         a yes. `clock` times wake words for telling one request heard twice from two.
-        `dictating` says whether the owner's own dictation is recording or transcribing; no
-        follow-up request is taken from the microphone meanwhile. `paused` says whether
+        `dictating` says whether the owner's own dictation is recording or transcribing, and None
+        when that is not known: a wake word heard meanwhile is ignored (and said to `audit`), and
+        no follow-up is taken (also while the answer is unknown). `meeting` says whether a Voxtype
+        meeting is running, which blocks follow-ups too. Both must answer at once: they are asked
+        on this thread. `paused` says whether
         `jarvis pause` let go of the microphone: a request in flight then ends without an
         apology, and PC audio is not listened to; `until_resumed` returns once it is over.
         `reopen` starts the microphone again after its capture ended on its own (PipeWire
@@ -294,6 +325,8 @@ class VoiceLoop:
         self._clock = clock
         self._pc_retry_s = pc_retry_s
         self._dictating = dictating
+        self._meeting = meeting
+        self._audit = audit
         self._paused = paused
         self._until_resumed = until_resumed
         self._reopen = reopen
@@ -519,6 +552,8 @@ class VoiceLoop:
         if barged_at is not None:
             if self._ignored_while_locked("a request spoken over Jarvis"):
                 return None
+            if self._ignored_while_dictating("a request spoken over Jarvis"):
+                return None
             return functools.partial(self.handle_wake, barged_at)
         follow_up = self._follow_up()
         if follow_up is not None and self._ignored_while_locked("a follow-up request"):
@@ -537,8 +572,8 @@ class VoiceLoop:
         window_s = self._cfg.follow_up_s
         if window_s <= 0 or not self._answered:
             return None
-        if self._dictating():
-            log.info("no follow-up: the owner is dictating")
+        if self._using_voxtype():
+            log.info("no follow-up: the owner is dictating or in a meeting")
             return None
         self.state = State.FOLLOW_UP
         pc_speech = self._pc_speech
@@ -602,8 +637,8 @@ class VoiceLoop:
         """
         if self._should_stop():
             return False
-        if self._dictating():
-            log.info("dropped a follow-up: the owner started dictating")
+        if self._using_voxtype():
+            log.info("dropped a follow-up: the owner started dictating or a meeting")
             return False
         if self._pc_speech != pc_speech:
             log.info("dropped a follow-up: PC audio held speech meanwhile")
@@ -622,9 +657,10 @@ class VoiceLoop:
         self._chiming.start()
         self.state = State.CAPTURE
         started = time.perf_counter()
-        heard = capture_utterance(_with_lead(self._wake, self._mic.frames()), self._vad, self._cfg)
-        if heard.samples is None:
-            log.info("wake without a request (%s)", heard.reason)
+        frames, lead = _with_lead(self._wake, self._mic.frames())
+        heard = capture_utterance(frames, self._vad, self._cfg, lead_frames=lead)
+        if heard.samples is None or heard.speech_s < MIN_REQUEST_SPEECH_S:
+            log.info("wake without a request (%s)", _no_request(heard))
             self.state = State.IDLE
             return
         self._answer(
@@ -811,13 +847,13 @@ class VoiceLoop:
     ) -> None:
         requests = self._requests
         threading.Thread(target=self._prewarm, daemon=True).start()
-        tap = _with_lead(pc.wake, self._pc_tap(pc, frames, requests))
-        heard = capture_utterance(tap, pc.vad, self._cfg)
+        tap, lead = _with_lead(pc.wake, self._pc_tap(pc, frames, requests))
+        heard = capture_utterance(tap, pc.vad, self._cfg, lead_frames=lead)
         if self._requests == requests and self.state is not State.CONFIRM:
             # Ended by itself. A capture the tap cut short keeps the wake model as it is, so a
             # wake word still being heard on the PC is not lost (it marks the mic's request).
             pc.wake.reset()
-        if heard.samples is None:
+        if heard.samples is None or heard.speech_s < MIN_REQUEST_SPEECH_S:
             return
         if self._requests != requests:
             log.info("dropped a PC audio request: the loop took another one meanwhile")
@@ -907,6 +943,23 @@ class VoiceLoop:
         self._after_sleep()
         return True
 
+    def _using_voxtype(self) -> bool:
+        """Whether speech may be the owner's dictation or a meeting's (or that is not known)."""
+        return self._dictating() is not False or self._meeting()
+
+    def _ignored_while_dictating(self, what: str) -> bool:
+        """Whether the owner's dictation is running, so `what` was said into it, not to Jarvis.
+
+        An answer that is not known counts as no: the wake word is then taken, so a Voxtype whose
+        status cannot be read does not leave Jarvis deaf.
+        """
+        if self._dictating() is not True:
+            return False
+        log.info("%s was ignored: the owner is dictating", what)
+        if self._audit is not None:
+            self._audit.record("wake_ignored", reason="dictating")
+        return True
+
     def _ignored_while_locked(self, what: str) -> bool:
         if not self._locked():
             return False
@@ -932,7 +985,9 @@ class VoiceLoop:
                 self._mic.drain()
                 continue
             if self._wake.heard(frame):
-                if self._ignored_while_locked("the wake word"):
+                if self._ignored_while_locked("the wake word") or self._ignored_while_dictating(
+                    "the wake word"
+                ):
                     self._wake.reset()
                     continue
                 wake_at = self._clock()

@@ -8,6 +8,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- A wake word said while your Voxtype dictation runs is ignored: no request, no chime, one `wake_ignored`
+  event in the audit log; and a running Voxtype meeting keeps follow-ups off like dictation does. Jarvis
+  follows `voxtype status --follow --format json --extended` in the background, so asking never waits for
+  Voxtype (#29).
+- The Azure keyword helper writes 1.5 s of silence into the engine's stream before the first sample and after
+  each detection, which the engine is documented to want before a keyword (#29).
 - From a practices audit: a name in `boundaries.classes` that is no operation (a typo, say) stops Jarvis
   with an error instead of being ignored; turning questions on or off with `jarvis consent`, and the mode
   the voice service starts in, are recorded in the audit log and shown in the chat; words heard from the PC
@@ -73,6 +79,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `audio.vad_neg_threshold`: once speech has started it goes on while the probability stays above this
+  (default: `vad_threshold` less 0.15, Silero's own margin), so a breath inside a sentence no longer ends a
+  request early. A request after the wake word, from the mic or PC audio, needs 0.15 s of speech, so a click
+  after "Hey Jarvis" is dropped untranscribed (#29).
+- `audio.kokoro_phoneme_map` (off by default): rewrite espeak's phonemes into the symbols Kokoro was trained
+  on before they are spoken, to compare by ear (#29).
+- `jarvis doctor` checks that `audio.source` names a microphone PipeWire lists (#29).
 - `jarvis pause` lets go of the microphone and, once the request in flight has ended, frees the model;
   `jarvis resume` listens again and reloads it. `jarvis hush` stops the speech. `jarvis status` says what
   the running Jarvis is doing (idle, listening, thinking, speaking, paused, model loading, unavailable), and

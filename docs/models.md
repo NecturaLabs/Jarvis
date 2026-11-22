@@ -113,7 +113,11 @@ spoken over.
 - Files, under `<data_dir>/voices/kokoro/`: `kokoro-v1.0.onnx` and `voices-v1.0.bin` from the kokoro-onnx
   `model-files-v1.1` release. `jarvis doctor` checks their sha256 against the pinned release.
 - Phonemes come from espeak-ng, whose library and data ship inside the `piper-tts` wheel, so the Piper package
-  is installed and imported even when you use Kokoro.
+  is installed and imported even when you use Kokoro. Raw espeak symbols are what the kokoro-onnx package feeds
+  too. Kokoro was trained on the symbols of misaki, which rewrites espeak's (for example `eɪ` to `A`, `aɪ` to
+  `I`, `tʃ` to `ʧ`, `r` to `ɹ`); `audio.kokoro_phoneme_map` applies that table (misaki 0.9.4, `EspeakFallback`,
+  Apache-2.0), off by default until it is heard to help. Over about 2,200 words of these docs the table loses
+  no symbol to the model's vocabulary; whether it sounds better is not yet heard.
 - Licence: Apache-2.0 for the Kokoro-82M v1.0 weights and voices, rechecked against the
   [model card](https://huggingface.co/hexgrad/Kokoro-82M) on 2026-11-21. The card says it was trained only on
   public-domain audio, audio under permissive licences (Apache, MIT and the like) and synthetic audio from
@@ -150,8 +154,16 @@ spoken over.
   heard 0.3 to 0.6 s after the word ended. The `.table` model is your own, trained under Microsoft's terms for the Speech service, and is never
   shipped with Jarvis. Setup: [configuration.md](configuration.md#azure-wake-word).
 - **End of speech:** Silero VAD 6.2.3 at `<data_dir>/vad/silero_vad.onnx`, MIT as pinned in `models.py`; not
-  rechecked upstream. Threshold and timings: `audio.vad_threshold`, `no_speech_timeout_s`, `end_silence_s`,
-  `max_utterance_s`.
+  rechecked upstream. Threshold and timings: `audio.vad_threshold`, `vad_neg_threshold` (speech goes on
+  above it once started; default `vad_threshold` less 0.15, as Silero's own segmenter does),
+  `no_speech_timeout_s`, `end_silence_s`, `max_utterance_s`. The defaults for the margin and for the 0.15 s of
+  speech a request after the wake word needs were reasoned from the code, not tuned on a voice (2026-11-22):
+  the margin is Silero's own (`threshold - 0.15`), and with 0.7 s of silence needed to end a request it only
+  keeps a breath or a soft syllable from counting as silence; 0.15 s is two 80 ms frames, the minimum a
+  confirmation answer already has (a click is one frame), and less than the 0.3 s asked of a follow-up because
+  saying the wake word already shows intent, so a short command such as "stop" still gets through. Silero's own
+  250 ms minimum is for cutting speech out of noise with no wake word. Tuning them on your voice is still to do;
+  see [configuration.md](configuration.md).
 - Jarvis has no downloader yet: place the four files above (wake, VAD and the two Kokoro files) under
   `data_dir` yourself. `jarvis doctor` names any that are missing.
 

@@ -261,6 +261,15 @@ def test_a_refused_control_connection_is_a_warning() -> None:
     assert shown.kind == "warn"
 
 
+def test_a_wake_word_ignored_during_dictation_shows_as_a_note() -> None:
+    shown = describe(
+        {"ts": "2026-11-22T10:00:00+00:00", "event": "wake_ignored", "reason": "dictating"}
+    )
+
+    assert shown is not None
+    assert (shown.kind, shown.text) == ("note", "Ignored the wake word: you were dictating")
+
+
 @pytest.mark.parametrize(
     ("entry", "text"),
     [

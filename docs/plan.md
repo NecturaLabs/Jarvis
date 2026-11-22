@@ -113,18 +113,23 @@ enforced in code before any tool runs.
 
 ### Audio and transcription
 - One state machine owns the mic, Voxtype calls, TTS and confirmation; every state has a timeout and a cancel path.
-- Silence rules: no speech within 4 s after the wake = cancel; 1.0 s trailing silence ends an utterance; 20 s max.
+- Silence rules: no speech within 4 s after the wake = cancel; 0.7 s trailing silence ends an utterance (speech goes on above `audio.vad_neg_threshold`, 0.15 under the start threshold); a request after the wake word holds at least 0.15 s of speech; 20 s max.
   Wake phrase and chime audio are cut from what is transcribed.
-- Device: explicit PipeWire source chosen in setup; the same source for wake, VAD and Voxtype, checked by `doctor`.
+- Device: explicit PipeWire source chosen in setup; the same source for wake, VAD and Voxtype, checked by `doctor` against the `Audio/Source` nodes in `pw-dump`. A capture that sends nothing for 5 s counts as lost and is reopened.
 - **Transcription path, decided by measurement in phase 2:**
   - A. *Daemon contract* — `record start --file … --model small.en`, Jarvis VAD calls `record stop --wait --json`.
     Uses the warm daemon. Ownership rule: start only when `voxtype status --format json` reports idle, record the
     transcript path Jarvis created, and never stop or cancel a recording whose file is not Jarvis's. If the owner's
-    own dictation begins mid-capture, Jarvis drops its request and says so.
+    own dictation begins mid-capture, Jarvis drops its request and says so. (Path B, built, does the nearer thing: a wake word heard while the owner's dictation runs is ignored, and no follow-up window opens during dictation or a Voxtype meeting.)
   - B. *File transcription* — Jarvis writes its buffered utterance (with pre-roll) to a WAV and runs
     `voxtype transcribe`, parsing the transcript explicitly. No shared daemon state; costs a model load per call.
   - Measure both: wake-to-text latency, first-word clipping, accuracy on 50 recorded commands. Keep one.
 - `small.en` (or the measured winner) is downloaded by `install.sh` through Voxtype's own model setup command.
+- Playback role (decided 2026-11-22, #29 item 4): `pw-play` keeps its default media role (Music); Jarvis's
+  voice is not given another, as nothing needs it and what a role does to Spotify's volume here is unverified.
+- `voxtype transcribe` output (decided 2026-11-22, #29 item 7): it has no documented format, so
+  `parse_transcript` keeps filtering its header and log lines, and the pinned-version tests stay; no upstream
+  issue is filed.
 - Media: during capture Jarvis lowers Spotify through MPRIS volume itself and restores the volume it saved, unless
   the command changed volume or playback (then the command's result wins). Voxtype's `pause_media` is the owner's
   setting; path A inherits it, path B does not touch it.
@@ -165,7 +170,7 @@ enforced in code before any tool runs.
 - Session memory: the conversation is token-budgeted (`agent.memory_tokens`, `chat.memory_tokens`) and
   summarized by the model when it outgrows that room; speech forgets it after 30 min idle, the chat keeps it
   across sessions. Follow-up listening is built and on by default: the next request within `audio.follow_up_s`
-  (6 s) of a spoken reply needs no wake word (never while Voxtype is dictating).
+  (6 s) of a spoken reply needs no wake word (never while Voxtype is dictating or in a meeting).
 - System prompt: `core.md` (shipped: identity, tools, limits) + persona/tone + owner addendum from setup + a
   rendering of the boundaries + the Omarchy skill index (names and descriptions; full text through `os_skill`).
 

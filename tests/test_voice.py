@@ -10,6 +10,7 @@ import pytest
 
 from jarvis import voice
 from jarvis.audio import FRAME, AudioError, PausableMic
+from jarvis.audit import AuditLog
 from jarvis.config import AudioConfig
 from jarvis.policy import Origin
 from jarvis.voice import PcListener, State, VoiceLoop
@@ -225,7 +226,10 @@ def _loop(
     cfg: AudioConfig = CFG,
     clock: Clock | None = None,
     pc_wake: Wake | None = None,
-    dictating: Callable[[], bool] = lambda: False,
+    wake: Wake | None = None,
+    dictating: Callable[[], bool | None] = lambda: False,
+    meeting: Callable[[], bool] = lambda: False,
+    audit: AuditLog | None = None,
     transcribe: Callable[[NDArray[np.int16]], str] | None = None,
     locked: Callable[[], bool] = lambda: False,
     asleep_s: Callable[[], float] = lambda: 0.0,
@@ -235,7 +239,7 @@ def _loop(
     return VoiceLoop(
         agent,
         mic,
-        Wake(),
+        wake or Wake(),
         Vad(),
         speaker,
         cfg,
@@ -246,6 +250,8 @@ def _loop(
         clock=clock or Clock(),
         pc_retry_s=0,
         dictating=dictating,
+        meeting=meeting,
+        audit=audit,
         locked=locked,
         asleep_s=asleep_s,
         after_sleep=after_sleep,
@@ -281,6 +287,127 @@ def test_an_owner_request_is_answered_and_the_loop_goes_back_to_idle() -> None:
     assert speaker.said == ["Paused."]
     assert speaker.chimes == 1
     assert loop.state is State.IDLE
+
+
+@dataclass
+class Probabilities:
+    """A VAD that rates the frames it is given in order, with one scripted probability each."""
+
+    scores: list[float]
+    seen: int = 0
+
+    def speech_probability(self, frame: NDArray[np.int16]) -> float:
+        del frame
+        score = self.scores[self.seen]
+        self.seen += 1
+        return score
+
+    def reset(self) -> None:
+        pass
+
+
+def _capture(scores: list[float], cfg: AudioConfig) -> voice.Utterance:
+    return voice.capture_utterance(iter([SILENCE] * len(scores)), Probabilities(scores), cfg)
+
+
+HYSTERESIS = AudioConfig(
+    vad_threshold=0.5, vad_neg_threshold=0.35, end_silence_s=0.3, no_speech_timeout_s=1.0
+)
+
+
+def test_speech_goes_on_while_the_probability_stays_above_the_exit_threshold() -> None:
+    # Two frames of speech, six that dip between the thresholds (a breath, a trailing syllable),
+    # then four of silence: 0.32 s, over the 0.3 s that ends an utterance.
+    heard = _capture([0.9] * 2 + [0.4] * 6 + [0.1] * 4 + [0.1], HYSTERESIS)
+
+    assert heard.reason == "end of speech"
+    assert heard.samples is not None
+    assert len(heard.samples) == 12 * FRAME
+    assert heard.speech_s == pytest.approx(2 * voice.FRAME_S)  # only the entry threshold counts
+
+
+def test_equal_thresholds_end_speech_as_soon_as_it_dips() -> None:
+    cfg = HYSTERESIS.model_copy(update={"vad_neg_threshold": 0.5})
+
+    heard = _capture([0.9] * 2 + [0.4] * 6 + [0.1] * 4 + [0.1], cfg)
+
+    assert heard.samples is not None
+    assert len(heard.samples) == 6 * FRAME  # the first four dipping frames are the silence
+
+
+def test_a_probability_between_the_thresholds_does_not_start_an_utterance() -> None:
+    heard = _capture([0.4] * 14, HYSTERESIS)
+
+    assert heard.samples is None
+    assert heard.reason == "no speech"
+
+
+@pytest.mark.parametrize("live", [0, 1, 3])
+def test_the_wake_words_own_tail_is_kept_but_not_counted_as_speech(live: int) -> None:
+    scores = [0.9] * 3 + [0.9] * live + [0.0] * 5
+
+    heard = voice.capture_utterance(
+        iter([SILENCE] * len(scores)), Probabilities(scores), HYSTERESIS, lead_frames=3
+    )
+
+    assert heard.samples is not None
+    assert len(heard.samples) == (3 + live + 4) * FRAME  # the tail and the request both kept
+    assert heard.speech_s == pytest.approx(live * voice.FRAME_S)
+
+
+def test_a_click_after_the_wake_word_is_not_a_request() -> None:
+    agent = Agent()
+    speaker = Speaker()
+
+    def fail(_samples: NDArray[np.int16]) -> str:
+        pytest.fail("a click was sent to the transcriber")
+
+    _run(_loop(agent, Mic(WAKE, SPEECH, *[SILENCE] * 5), speaker, transcribe=fail))
+
+    assert agent.calls == []
+    assert speaker.said == []  # no apology either: nothing was asked
+
+
+def test_two_frames_of_speech_after_the_wake_word_are_a_request() -> None:
+    agent = Agent()
+
+    _run(_loop(agent, Mic(WAKE, SPEECH, SPEECH, *[SILENCE] * 5), Speaker()))
+
+    assert len(agent.calls) == 1
+
+
+class LateWake(Wake):
+    """A wake word that is heard late (Azure), so the loop is handed frames from its tail."""
+
+    def __init__(self, lead: list[NDArray[np.int16]]) -> None:
+        super().__init__()
+        self._lead = lead
+
+    def after_wake(self) -> list[NDArray[np.int16]]:
+        lead, self._lead = self._lead, []
+        return lead
+
+
+@pytest.mark.parametrize(("live", "calls"), [(1, 0), (2, 1)])
+def test_the_minimum_speech_is_asked_of_the_request_not_the_keywords_tail(
+    live: int, calls: int
+) -> None:
+    agent = Agent()
+    mic = Mic(WAKE, *[SPEECH] * live, *[SILENCE] * 5)
+
+    _run(_loop(agent, mic, Speaker(), wake=LateWake([SPEECH] * 3)))
+
+    assert len(agent.calls) == calls
+
+
+def test_a_click_after_the_wake_word_in_pc_audio_is_not_a_request() -> None:
+    agent = Agent()
+    pc = PcAudio(SILENCE, WAKE, SPEECH, *[SILENCE] * 5)
+    mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
+
+    _run(_loop(agent, mic, Speaker(), pc=pc))
+
+    assert agent.calls == []
 
 
 def test_a_failing_request_is_apologised_for_and_the_loop_keeps_listening() -> None:
@@ -462,6 +589,7 @@ def test_a_pc_capture_of_a_wake_the_loop_already_took_is_dropped() -> None:
         until(pc_woke.is_set),
         WAKE,
         SPEECH,
+        SPEECH,  # two frames: one is too little for a request
         until(pc_queued.is_set),
         *[SILENCE] * 5,
         *[SILENCE] * 5,
@@ -1052,9 +1180,18 @@ def _follow_loop(
     speaker: Speaker,
     *texts: str,
     cfg: AudioConfig = FOLLOW_UP,
-    dictating: Callable[[], bool] = lambda: False,
+    dictating: Callable[[], bool | None] = lambda: False,
+    meeting: Callable[[], bool] = lambda: False,
 ) -> VoiceLoop:
-    return _loop(agent, mic, speaker, cfg=cfg, dictating=dictating, transcribe=_texts(*texts))
+    return _loop(
+        agent,
+        mic,
+        speaker,
+        cfg=cfg,
+        dictating=dictating,
+        meeting=meeting,
+        transcribe=_texts(*texts),
+    )
 
 
 def test_follow_up_listening_is_on_by_default_for_six_seconds() -> None:
@@ -1204,8 +1341,17 @@ def test_the_wake_word_inside_the_window_starts_one_request() -> None:
 
 def test_no_window_opens_while_the_owner_is_dictating() -> None:
     agent = Agent()
+    # The owner starts dictating once the request is taken: a wake word said into dictation is
+    # ignored, so it cannot be dictating from the start.
 
-    _run(_follow_loop(agent, Mic(*REQUEST, *FOLLOW_UP_REQUEST), Speaker(), dictating=lambda: True))
+    _run(
+        _follow_loop(
+            agent,
+            Mic(*REQUEST, *FOLLOW_UP_REQUEST),
+            Speaker(),
+            dictating=lambda: bool(agent.calls),
+        )
+    )
 
     assert len(agent.calls) == 1
 
@@ -1271,11 +1417,13 @@ def test_a_wake_without_a_request_opens_no_window() -> None:
 
 def test_the_window_does_not_even_open_while_the_owner_is_dictating() -> None:
     states: list[State] = []
+    agent = Agent()
     mic = Mic(*EXACT_REQUEST, SILENCE, lambda: states.append(loop.state), SILENCE)
-    loop = _follow_loop(Agent(), mic, Speaker(), dictating=lambda: True)
+    loop = _follow_loop(agent, mic, Speaker(), dictating=lambda: bool(agent.calls))
 
     _run(loop)
 
+    assert agent.calls  # the request was taken, then dictation began
     assert states == [State.IDLE]
 
 
@@ -1712,3 +1860,87 @@ def test_a_microphone_lost_mid_request_ends_it_without_an_apology() -> None:
 
     assert speaker.said == ["Done."]  # the second request's answer, and no apology
     assert agent.calls == [("pause the music", Origin.OWNER_SPEECH)]
+
+
+def test_a_wake_word_said_while_the_owner_dictates_starts_no_request() -> None:
+    agent = Agent()
+    speaker = Speaker()
+    audit = AuditLog(None)
+
+    def fail(_samples: NDArray[np.int16]) -> str:
+        pytest.fail("dictation was sent to the transcriber")
+
+    _run(_loop(agent, Mic(*REQUEST), speaker, dictating=lambda: True, audit=audit, transcribe=fail))
+
+    assert agent.calls == []
+    assert speaker.chimes == 0
+    assert speaker.said == []
+    assert [(e["event"], e["reason"]) for e in audit.events] == [("wake_ignored", "dictating")]
+
+
+def test_a_wake_word_is_taken_again_once_the_dictation_is_over() -> None:
+    agent = Agent()
+    audit = AuditLog(None)
+    dictating = [True]
+    mic = Mic(*REQUEST, lambda: dictating.__setitem__(0, False), *REQUEST)
+
+    _run(_loop(agent, mic, Speaker(), dictating=lambda: dictating[0], audit=audit))
+
+    assert len(agent.calls) == 1
+    assert len(audit.events) == 1
+
+
+def test_a_wake_word_is_taken_while_the_status_is_unknown() -> None:
+    # Voxtype's status cannot be read (an older Voxtype, no daemon to ask): Jarvis stays usable.
+    agent = Agent()
+
+    _run(_loop(agent, Mic(*REQUEST), Speaker(), dictating=lambda: None))
+
+    assert len(agent.calls) == 1
+
+
+def test_a_wake_word_is_taken_while_a_meeting_runs() -> None:
+    agent = Agent()
+
+    _run(_loop(agent, Mic(*REQUEST), Speaker(), meeting=lambda: True))
+
+    assert len(agent.calls) == 1
+
+
+def test_a_wake_word_said_over_jarvis_while_the_owner_dictates_starts_no_request() -> None:
+    reply, _ = _replies("Here is a long answer.", "Skipped.")
+    agent = Agent(reply)
+    speaker = Playing()
+    audit = AuditLog(None)
+    mic = Mic(*REQUEST, until(lambda: speaker.busy), SILENCE, WAKE, *REQUEST[1:])
+
+    _run(_loop(agent, mic, speaker, dictating=lambda: bool(agent.calls), audit=audit))
+
+    assert len(agent.calls) == 1
+    assert [event["event"] for event in audit.events] == ["wake_ignored"]
+
+
+def test_no_window_opens_while_a_meeting_runs() -> None:
+    agent = Agent()
+
+    _run(_follow_loop(agent, Mic(*REQUEST, *FOLLOW_UP_REQUEST), Speaker(), meeting=lambda: True))
+
+    assert len(agent.calls) == 1
+
+
+def test_speech_in_the_window_is_dropped_when_a_meeting_started_meanwhile() -> None:
+    agent = Agent()
+    meeting = [False]
+    mic = Mic(*REQUEST, SPEECH, lambda: meeting.__setitem__(0, True), *FOLLOW_UP_REQUEST[1:])
+
+    _run(_follow_loop(agent, mic, Speaker(), meeting=lambda: meeting[0]))
+
+    assert len(agent.calls) == 1
+
+
+def test_no_window_opens_while_the_status_is_unknown() -> None:
+    agent = Agent()
+
+    _run(_follow_loop(agent, Mic(*REQUEST, *FOLLOW_UP_REQUEST), Speaker(), dictating=lambda: None))
+
+    assert len(agent.calls) == 1

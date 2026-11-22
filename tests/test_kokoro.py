@@ -1,3 +1,4 @@
+# ruff: file-ignore[ambiguous-unicode-character-string, ambiguous-unicode-character-comment]
 """Kokoro's session settings and its own logic, against a stand-in model."""
 
 import json
@@ -8,7 +9,14 @@ import numpy as np
 import pytest
 
 from jarvis import kokoro
-from jarvis.kokoro import MAX_PHONEMES, MAX_THREADS, SAMPLE_RATE, Kokoro, session_options
+from jarvis.kokoro import (
+    MAX_PHONEMES,
+    MAX_THREADS,
+    SAMPLE_RATE,
+    Kokoro,
+    session_options,
+)
+from jarvis.phonemes import trained_phonemes
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -50,6 +58,9 @@ def _kokoro(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     inputs: dict[str, str] | None = None,
+    *,
+    voice: str = "bm_george",
+    phoneme_map: bool = False,
 ) -> tuple[Kokoro, _Session]:
     session = _Session(
         inputs or {"input_ids": "tensor(int64)", "style": "tensor(float)", "speed": "tensor(float)"}
@@ -62,8 +73,9 @@ def _kokoro(
     voices = tmp_path / "voices.bin"
     rows = np.arange(MAX_PHONEMES * STYLE_WIDTH, dtype=np.float32)
     with voices.open("wb") as handle:
-        np.savez(handle, bm_george=rows.reshape(MAX_PHONEMES, 1, STYLE_WIDTH))
-    return Kokoro(tmp_path / "model.onnx", voices, "bm_george"), session
+        packs: dict[str, Any] = {voice: rows.reshape(MAX_PHONEMES, 1, STYLE_WIDTH)}
+        np.savez(handle, **packs)
+    return Kokoro(tmp_path / "model.onnx", voices, voice, phoneme_map=phoneme_map), session
 
 
 def test_the_voice_model_uses_a_bounded_number_of_threads() -> None:
@@ -167,3 +179,91 @@ def test_espeak_turns_text_into_ids_of_the_models_vocabulary(
     assert len(phonemes) == 2
     assert len(sentences) == 2
     assert all(sentences)
+
+
+# The symbols of the vocabulary in `kokoro-v1.0.onnx`'s own metadata (114 entries).
+V1_VOCAB = frozenset(
+    ' !"(),.:;?AIOQSTWYabcdefhijklmnopqrstuvwxyzæçðøŋœɐɑɒɔɕɖəɚɛɜɟɡɣɤɥɨɪɯɰɲɳɴɸɹɻɽɾ'
+    "ʁʂʃʈʊʋʌʎʒʔʝʣʤʥʦʧʨʰʲˈˌː̃βθχᵊᵝᵻ—“”…→↓↗↘ꭧ"
+)
+
+BRITISH = [
+    ("kˈæfeɪ", "kˈæfA"),  # eɪ is A
+    ("plˈeɪɪŋ ɡlˈɑːs hˈɑːbɐ baɪ nˈaɪt sˈɜːkɪt nˈaʊ.", "plˈAɪŋ ɡlˈɑːs hˈɑːbə bI nˈIt sˈɜːkɪt nˈW."),
+    ("ɡˈəʊ", "ɡˈQ"),
+    ("tʃˈɜːtʃ dʒˈʌdʒ", "ʧˈɜːʧ ʤˈʌʤ"),
+    ("hˈeə nˈiə", "hˈɛː nˈɪə"),
+    ("ɔɪl", "Yl"),
+    ("rˈɛd", "ɹˈɛd"),
+    ("bˈʌʔn̩", "bˈʌtn"),  # a glottal stop is t, and the n after it is not syllabic
+    ("ˈɪtl̩", "ˈɪtᵊl"),  # a syllabic mark moves to a ᵊ in front
+    ("lˈɒʔ ʔ", "lˈɒt t"),
+    ("lˈɒx", "lˈɒk"),
+    ("sʲˈuː ʲə ʲo", "sˈuː jə jɔ"),  # a palatal mark goes, or turns into j
+]
+AMERICAN = [
+    ("ɡˈoʊt", "ɡˈOt"),
+    ("wˈɔːɾɚ", "wˈɔTəɹ"),  # the long mark goes, a tap is T, ɚ is əɹ
+    ("bˈɜːd hˈɑːɹbɚ", "bˈɜɹd hˈɑɹbəɹ"),
+    ("nˈɪə", "nˈiə"),
+    ("dʒˈʌdʒ tʃ", "ʤˈʌʤ ʧ"),
+    ("nˈaɪnti", "nˈInti"),
+    ("ˈeɪ", "ˈA"),
+]
+
+
+@pytest.mark.parametrize(("espeak", "trained"), BRITISH)
+def test_british_espeak_phonemes_become_the_symbols_kokoro_was_trained_on(
+    espeak: str, trained: str
+) -> None:
+    assert trained_phonemes(espeak, british=True) == trained
+
+
+@pytest.mark.parametrize(("espeak", "trained"), AMERICAN)
+def test_american_espeak_phonemes_become_the_symbols_kokoro_was_trained_on(
+    espeak: str, trained: str
+) -> None:
+    assert trained_phonemes(espeak, british=False) == trained
+
+
+@pytest.mark.parametrize("british", [True, False])
+def test_what_the_table_writes_is_in_the_models_vocabulary_and_is_not_rewritten_again(
+    *, british: bool
+) -> None:
+    for espeak, trained in BRITISH if british else AMERICAN:
+        assert set(trained) <= V1_VOCAB, trained
+        assert trained_phonemes(trained, british=british) == trained, espeak
+
+
+def test_a_longer_match_wins_over_a_shorter_one() -> None:
+    # `ɜːɹ` is one sound, not `ɜː` followed by `ɹ` (which would be spoken twice).
+    assert trained_phonemes("ɜːɹ", british=False) == "ɜɹ"
+    assert trained_phonemes("ɔɪ", british=True) == "Y"  # not ɔ then ɪ
+
+
+def test_the_table_is_off_unless_asked_for(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _say(monkeypatch, ["kˈæfeɪ"])
+    vocab = {char: number for number, char in enumerate(sorted(V1_VOCAB), start=1)}
+    plain, _ = _kokoro(tmp_path, monkeypatch)
+    plain._vocab = vocab  # pyright: ignore[reportPrivateUsage]
+    mapped, _ = _kokoro(tmp_path, monkeypatch, phoneme_map=True)
+    mapped._vocab = vocab  # pyright: ignore[reportPrivateUsage]
+
+    as_text = {number: char for char, number in vocab.items()}
+    assert "".join(as_text[i] for i in plain.tokens("Cafe")[0]) == "kˈæfeɪ"
+    assert "".join(as_text[i] for i in mapped.tokens("Cafe")[0]) == "kˈæfA"
+
+
+def test_the_table_follows_the_voices_dialect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _say(monkeypatch, ["ɡˈoʊt ɡˈəʊ"])
+    vocab = {char: number for number, char in enumerate(sorted(V1_VOCAB), start=1)}
+    as_text = {number: char for char, number in vocab.items()}
+    heard: dict[str, str] = {}
+    for name in ("am_adam", "bm_george"):
+        voice, _ = _kokoro(tmp_path, monkeypatch, voice=name, phoneme_map=True)
+        voice._vocab = vocab  # pyright: ignore[reportPrivateUsage]
+        heard[name] = "".join(as_text[i] for i in voice.tokens("x")[0])
+
+    assert heard == {"am_adam": "ɡˈOt ɡˈəʊ", "bm_george": "ɡˈɔʊt ɡˈQ"}
