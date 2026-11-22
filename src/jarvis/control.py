@@ -1,0 +1,327 @@
+"""The control socket: `jarvis status`, `pause`, `resume` and `hush` reach the running voice loop.
+
+`jarvis run` serves a Unix socket in `$XDG_RUNTIME_DIR/jarvis/` (folder 0700, socket 0600) and
+answers only processes of the same user (`SO_PEERCRED`). Each connection carries one JSON line
+(`{"command": "status"}`) and gets one JSON line back. The socket does nothing while nobody
+connects: its thread sleeps in `accept`.
+
+The public state, which the Omarchy bar reads (#14), is one of `STATES`.
+"""
+
+import contextlib
+import json
+import logging
+import os
+import socket
+import stat
+import struct
+import threading
+import time
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Any, Protocol
+
+from jarvis.jsonutil import obj
+from jarvis.paths import runtime_dir
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+STATES = ("idle", "listening", "thinking", "speaking", "paused", "model loading", "unavailable")
+COMMANDS = ("status", "pause", "resume", "hush")
+MAX_LINE = 1024  # bytes of one request
+TIMEOUT_S = 2.0  # how long one connection may take to send its line
+_UCRED = struct.Struct("3i")  # pid, uid, gid
+
+# The voice loop's states (voice.State values) as the bar shows them.
+_LOOP_STATES = {
+    "idle": "idle",
+    "capture": "listening",
+    "follow-up": "listening",
+    "confirm": "listening",
+    "transcribe": "thinking",
+    "think": "thinking",
+    "speak": "speaking",
+}
+
+IDLE_WAIT_S = 120.0  # how long a pause waits for the request in flight before unloading
+IDLE_POLL_S = 0.25
+
+type Handler = Callable[[str], Mapping[str, Any]]
+
+
+class _Loop(Protocol):
+    @property
+    def state(self) -> str: ...
+    def hush(self) -> None: ...
+
+
+class _Mic(Protocol):
+    @property
+    def paused(self) -> bool: ...
+    def pause(self) -> bool: ...
+    def resume(self) -> bool: ...
+
+
+class _Model(Protocol):
+    def status(self) -> str | None: ...
+    def unload(self) -> bool: ...
+    def warm(self) -> bool: ...
+
+
+def _in_background(work: Callable[[], object]) -> None:
+    threading.Thread(target=work, name="jarvis-control-work", daemon=True).start()
+
+
+def socket_path() -> Path:
+    """Return the control socket's path."""
+    return runtime_dir() / "control.sock"
+
+
+def public_state(loop_state: str, *, paused: bool, model: str | None) -> str:
+    """Map the loop's state, the pause and the model server's state to one of `STATES`.
+
+    A request in flight shows what the loop does whatever the model's state; at rest, a model
+    server that cannot be reached is `unavailable`, and a model on its way into memory is
+    `model loading`.
+    """
+    if paused:
+        return "paused"
+    shown = _LOOP_STATES.get(loop_state, "idle")
+    if shown != "idle":
+        return shown
+    if model is None or model == "failed":
+        return "unavailable"
+    if model == "loading":
+        return "model loading"
+    return "idle"
+
+
+class Controls:
+    """Carries out the control commands on the running voice loop (the server's handler).
+
+    `pause` stops the speech, lets go of the microphone and, once the request in flight has
+    ended, unloads the model; `resume` opens the microphone again and loads the model.
+    """
+
+    def __init__(  # ruff: ignore[too-many-arguments] - collaborators, each a test seam
+        self,
+        loop: _Loop,
+        mic: _Mic,
+        model: _Model,
+        *,
+        background: Callable[[Callable[[], object]], None] = _in_background,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        """Act on `loop`, `mic` and `model`; slow work (unloading, loading) goes to `background`."""
+        super().__init__()
+        self._loop = loop
+        self._mic = mic
+        self._model = model
+        self._background = background
+        self._clock = clock
+        self._sleep = sleep
+        self._pauses = 0
+
+    def __call__(self, command: str) -> dict[str, Any]:
+        """Run one of `COMMANDS` and return what to answer."""
+        match command:
+            case "pause":
+                return self._pause()
+            case "resume":
+                return self._resume()
+            case "hush":
+                self._loop.hush()
+                return {}
+            case _:
+                return self._status()
+
+    def _status(self) -> dict[str, Any]:
+        model = self._model.status()
+        paused = self._mic.paused
+        return {
+            "state": public_state(str(self._loop.state), paused=paused, model=model),
+            "paused": paused,
+            "model": model or "unreachable",
+        }
+
+    def _pause(self) -> dict[str, Any]:
+        self._loop.hush()
+        changed = self._mic.pause()
+        if changed:
+            self._pauses += 1
+            pause = self._pauses
+            self._background(lambda: self._unload_when_idle(pause))
+        return {"paused": True, "changed": changed}
+
+    def _unload_when_idle(self, pause: int) -> None:
+        deadline = self._clock() + IDLE_WAIT_S
+        while str(self._loop.state) != "idle" and self._clock() < deadline:
+            self._sleep(IDLE_POLL_S)
+        if pause == self._pauses and self._mic.paused:
+            log.info("paused: unloading the model")
+            self._model.unload()
+
+    def _resume(self) -> dict[str, Any]:
+        changed = self._mic.resume()
+        if changed:
+            self._pauses += 1  # a pause's unload still waiting is now stale
+            self._background(self._model.warm)
+        return {"paused": False, "changed": changed}
+
+
+def _peer_uid(conn: socket.socket) -> int | None:
+    try:
+        raw = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, _UCRED.size)
+    except OSError:
+        return None
+    _pid, uid, _gid = _UCRED.unpack(raw)
+    return uid
+
+
+def _read_line(conn: socket.socket) -> bytes | None:
+    data = b""
+    while b"\n" not in data:
+        chunk = conn.recv(MAX_LINE + 1 - len(data))
+        if not chunk:
+            break
+        data += chunk
+        if len(data) > MAX_LINE:
+            return None
+    return data.split(b"\n", 1)[0]
+
+
+def _command(line: bytes | None) -> str | None:
+    if line is None:
+        return None
+    try:
+        command = obj(json.loads(line)).get("command")
+    except ValueError:
+        return None
+    return command if isinstance(command, str) else None
+
+
+class ControlServer:
+    """Serves the control socket on a thread of its own until `close`."""
+
+    def __init__(self, handler: Handler, path: Path | None = None) -> None:
+        """Answer each known command with `handler(command)`; `path` defaults to `socket_path`."""
+        super().__init__()
+        self._handler = handler
+        self.path = path or socket_path()
+        self._sock: socket.socket | None = None
+        self._thread: threading.Thread | None = None
+        self._closed = threading.Event()
+
+    def start(self) -> None:
+        """Bind the socket (replacing a stale one) and start answering.
+
+        Raises:
+            OSError: the folder or socket could not be made, or another Jarvis is serving it.
+        """
+        folder = self.path.parent
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = folder.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+            msg = f"{folder} is not a folder of this user"
+            raise OSError(msg)
+        folder.chmod(0o700)
+        if _answers(self.path):
+            msg = f"another Jarvis is already serving {self.path}"
+            raise OSError(msg)
+        with contextlib.suppress(FileNotFoundError):
+            self.path.unlink()
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        old = os.umask(0o177)
+        try:
+            sock.bind(str(self.path))
+        finally:
+            os.umask(old)
+        sock.listen(4)
+        self._sock = sock
+        self._thread = threading.Thread(target=self._serve, name="jarvis-control", daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        sock = self._sock
+        assert sock is not None  # ruff: ignore[assert] - only started after binding
+        while not self._closed.is_set():
+            try:
+                conn, _ = sock.accept()
+            except OSError:
+                return  # closed
+            with conn:
+                try:
+                    self._answer(conn)
+                except OSError as exc:
+                    log.info("control connection failed: %s", exc)
+
+    def _answer(self, conn: socket.socket) -> None:
+        if _peer_uid(conn) != os.getuid():
+            log.warning("refused a control connection from another user")
+            return
+        conn.settimeout(TIMEOUT_S)
+        command = _command(_read_line(conn))
+        if command is None:
+            reply: Mapping[str, Any] = {"ok": False, "error": "send one JSON line with a command"}
+        elif command not in COMMANDS:
+            reply = {"ok": False, "error": f"unknown command {command!r}"}
+        else:
+            try:
+                reply = {"ok": True, **self._handler(command)}
+            except Exception:
+                log.exception("control command %s failed", command)
+                reply = {"ok": False, "error": f"{command} failed; see the log"}
+        conn.sendall(json.dumps(reply).encode() + b"\n")
+
+    def close(self) -> None:
+        """Stop answering and remove the socket."""
+        self._closed.set()
+        sock, self._sock = self._sock, None
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
+            sock.close()
+            with contextlib.suppress(FileNotFoundError):
+                self.path.unlink()
+        if self._thread is not None:
+            self._thread.join(TIMEOUT_S)
+
+
+def _answers(path: Path) -> bool:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.5)
+        try:
+            probe.connect(str(path))
+        except OSError:
+            return False
+    return True
+
+
+def send(command: str, path: Path | None = None, timeout: float = 10.0) -> dict[str, Any] | None:
+    """Send `command` to the running Jarvis; return its reply, or None when none is running."""
+    target = path or socket_path()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+        conn.settimeout(timeout)
+        try:
+            conn.connect(str(target))
+            conn.sendall(json.dumps({"command": command}).encode() + b"\n")
+            line = _read_reply(conn)
+        except OSError:
+            return None
+    try:
+        return obj(json.loads(line))
+    except ValueError:
+        return None
+
+
+def _read_reply(conn: socket.socket) -> bytes:
+    data = b""
+    while b"\n" not in data:
+        chunk = conn.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    return data.split(b"\n", 1)[0]

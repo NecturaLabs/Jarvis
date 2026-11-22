@@ -86,7 +86,9 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis setup` | Write the config, the Strata profile and the user units (`--enable` also starts them). |
 | `jarvis spotify-login` | Connect Jarvis to your Spotify account with PKCE (`--no-browser` only prints the link). |
 | `jarvis start` / `stop` / `restart` | Start Jarvis and its model server, stop both (which frees the model), or restart the voice service after a config change. |
-| `jarvis status` | Show whether the model is loaded. |
+| `jarvis status` | Show what Jarvis is doing (idle, listening, thinking, speaking, paused, model loading or unavailable) and the model's state; `--json` prints one JSON object for a status bar. |
+| `jarvis pause` / `resume` | Let go of the microphone and free the model, until `resume` opens the microphone and loads the model again. |
+| `jarvis hush` | Stop Jarvis speaking now. |
 | `jarvis unload` | Free the model's memory now, for example before a game. |
 | `jarvis doctor` | Check every part without loading the model. |
 | `jarvis logs` | Follow the live log (Ctrl+C to leave). |

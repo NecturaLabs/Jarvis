@@ -61,6 +61,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `jarvis pause` lets go of the microphone and, once the request in flight has ended, frees the model;
+  `jarvis resume` listens again and reloads it. `jarvis hush` stops the speech. `jarvis status` says what
+  the running Jarvis is doing (idle, listening, thinking, speaking, paused, model loading, unavailable), and
+  `--json` prints it for the Omarchy bar (#14). These reach `jarvis run` through a socket only your user can
+  open, in `$XDG_RUNTIME_DIR/jarvis/`.
+
 - `boundaries.bypass_consent`, on by default (the owner's choice): Jarvis acts without asking for a yes,
   including after outside text and for requests heard in PC audio; an operation set to `deny` is still
   refused, and each bypassed question is audited. `jarvis consent ask` turns asking back on, `jarvis consent
