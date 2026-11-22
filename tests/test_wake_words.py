@@ -167,7 +167,7 @@ def test_the_doctor_fails_when_no_wake_word_that_is_on_has_a_file() -> None:
     check, _notes = cli._wake_checks(config.load())  # pyright: ignore[reportPrivateUsage] - the doctor's wake check
 
     assert not check[0]
-    assert "hey_jarvis.onnx" in check[1]
+    assert check[1] == f"wake word files: none found in {config.load().data_dir / 'wake'}"
     assert check[2] == "see docs/models.md"
 
 

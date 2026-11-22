@@ -163,7 +163,7 @@ spoken over.
   also names `yo_jarvis`, which you train yourself: Jarvis ships no trained phrase, and the doctor notes it
   as missing until you do or take it off the list. Training needs a CUDA GPU or an Apple silicon Mac and a
   LiveKit Cloud project for the generated speech; a model you trained matches no pinned release, so the
-  doctor only notes its digest. Detection stays local and needs no account.
+  doctor only shows its digest. Detection stays local and needs no account.
 - **Azure wake word (optional, `audio.wake_engine = "azure"`):** your own Azure custom keyword `.table`
   model, heard by `src/jarvis/azure_wake_helper.py` (MIT) with Microsoft's Speech SDK
   (`azure-cognitiveservices-speech` 1.53.1, Microsoft Software License Terms: closed source, not

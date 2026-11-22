@@ -184,7 +184,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--words",
         type=_wake_names,
         metavar="NAME,...",
-        help="the LiveKit wake word models to listen for, by file name (hey_jarvis,yo_jarvis)",
+        help=(
+            "LiveKit wake word models to listen for, by file name without .onnx, "
+            "e.g. hey_jarvis,yo_jarvis"
+        ),
     )
     consent = sub.add_parser(
         "consent", help="whether Jarvis asks before acting (bypass: never asks; ask: asks first)"
@@ -760,16 +763,17 @@ def _wake_checks(cfg: config.Config) -> tuple[tuple[bool, str, str], list[str]]:
     not trained yet is a note.
     """
     files = wake_files(cfg)
+    folder = cfg.data_dir / WAKE_DIR
     found = [path for path in files if path.is_file()]
     names = ", ".join(path.stem for path in found)
     check = (
         bool(found),
-        f"wake word files ({names})" if found else f"wake word files: none of {files}",
+        f"wake word files ({names})" if found else f"wake word files: none found in {folder}",
         "see docs/models.md",
     )
     notes = [
         f"note: wake word {path.stem} is on but has no file {path}; train it (docs/models.md) "
-        "or turn it off with `jarvis wake --words`"
+        "or drop it with `jarvis wake --words`"
         for path in files
         if path not in found
     ]
