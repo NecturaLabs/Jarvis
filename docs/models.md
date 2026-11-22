@@ -199,7 +199,9 @@ spoken over.
   on speeches); adding `yo_jarvis` at 0.5 raised that to 6.46 an hour (155 in 24 h). A threshold picked on one
   half of the media for at most 0.5 false wakes an hour, and checked on the other half: 0.68 for the pinned
   `hey_jarvis` (2 in 12 h, recall 93.8 % clean, 75.8 % at 5 dB SNR) and 0.76 for `yo_jarvis` (2 in 12 h,
-  recall 100 % clean, 90.8 % at 5 dB SNR). The bare `jarvis` model also woke on "Jervis" (98 % of voices), "Pass
+  recall 100 % clean, 90.8 % at 5 dB SNR). Replayed at those thresholds, the pinned `hey_jarvis` at 0.68 woke 0.25
+  times an hour (6 in 24 h); with `yo_jarvis` at 0.76 beside it, 0.54 an hour (13 in 24 h); and `yo_jarvis` at
+  0.76 beside the pinned model at 0.5 added 0.21 an hour (71 against 66 in 24 h). The bare `jarvis` model also woke on "Jervis" (98 % of voices), "Pass
   me a jar of this" (85 %), "Java" (60 %) and "Service" (53 %), so it is not on. No model woke on Jarvis's own
   replies. The trainer's own `eval --media` gave the pinned model 2.833 false wakes an hour on the same media,
   in line with the benchmark. These are synthetic voices and recorded media, not your room: the playbook's desk
