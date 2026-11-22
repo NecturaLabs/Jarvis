@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: NecturaLabs and the Jarvis contributors
 # SPDX-License-Identifier: MIT
+# Microsoft's Speech SDK is installed only in the helper's own environment, not Jarvis's, and ships
+# no type stubs, so pyright cannot resolve or type what it returns; these rules are off here only.
 # pyright: reportMissingImports=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 # pyright: reportUnknownArgumentType=false, reportMissingTypeStubs=false
 # pyright: reportAttributeAccessIssue=false
