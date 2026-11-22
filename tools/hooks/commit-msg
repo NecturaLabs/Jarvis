@@ -38,6 +38,12 @@ case "${subject}" in
     ;;
 esac
 
+# Every commit message is published: nothing about one person or machine (tools/check_private.py).
+if ! uv run --quiet python tools/check_private.py --message "${message_file}"; then
+  echo "commit-msg: the message names something private; make it generic and commit again." >&2
+  exit 1
+fi
+
 if ! "${signed_off}"; then
   echo "commit-msg: warning, no Signed-off-by line (CONTRIBUTING.md asks for one: git commit -s)." >&2
 fi

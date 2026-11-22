@@ -105,6 +105,9 @@ jobs:
       - name: Docs match the tracked files
         run: uv run python tools/check_docs.py
 
+      - name: No private details (the general rules; the private list stays on the maintainer's PC)
+        run: uv run python tools/check_private.py
+
       - name: Known vulnerabilities in the locked dependencies
         run: |
           set -euo pipefail

@@ -76,7 +76,10 @@ These hold on the maintainer's machine; elsewhere, use your own folders and keep
 
 Jarvis is public under GPL-3.0-or-later (it imports `piper-tts`, GPL-3.0-or-later). Every commit is published:
 no personal data, tokens, recordings or internal hostnames; owner- and machine-specific values live in config, not
-code; commit under the public identity the repository is configured with. Check the licence of every new
+code; commit under the public identity the repository is configured with. Keep everything generic: describe what
+Jarvis does, asked in any words, never the owner's own phrases, titles, apps, drives or habits;
+`tools/check_private.py` (in `check.sh`, CI and the hooks) enforces it, with the owner's terms in
+`.git/info/private-terms`. Install the hooks (`tools/install-hooks.sh`) before pushing. Check the licence of every new
 dependency, model and voice against GPL-3.0-or-later before adding it, and keep `uv run reuse lint` clean. Outside
 contributions follow `CONTRIBUTING.md` (DCO sign-off).
 

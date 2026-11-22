@@ -22,6 +22,7 @@ TOOLS = Path(__file__).resolve().parent.parent / "tools"
 HOOKS = TOOLS / "hooks"
 PRE_COMMIT = HOOKS / "pre-commit"
 COMMIT_MSG = HOOKS / "commit-msg"
+PRE_PUSH = HOOKS / "pre-push"
 
 _FAKE_UV = """#!{python}
 import json, os, sys
@@ -132,8 +133,18 @@ def sandbox(tmp_path: Path) -> Sandbox:
     return Sandbox(tmp_path)
 
 
+PRIVATE = ["run", "--quiet", "python", "tools/check_private.py", "--staged"]
+
+
 def _uv_commands(box: Sandbox) -> list[list[str]]:
     return [call["args"] for call in box.uv_calls()]
+
+
+def _check_calls(box: Sandbox) -> list[UvCall]:
+    """The calls after the private-details check, which runs first for every commit."""
+    calls = box.uv_calls()
+    assert calls[0]["args"] == PRIVATE
+    return calls[1:]
 
 
 # --- pre-commit ---------------------------------------------------------------------------------
@@ -146,14 +157,14 @@ def test_pre_commit_skips_when_nothing_relevant_is_staged(sandbox: Sandbox) -> N
 
     assert done.returncode == 0, done.stderr
     assert "skipped" in done.stderr
-    assert sandbox.uv_calls() == []
+    assert _uv_commands(sandbox) == [PRIVATE]
 
 
 def test_pre_commit_skips_when_nothing_is_staged(sandbox: Sandbox) -> None:
     done = sandbox.run(PRE_COMMIT)
 
     assert done.returncode == 0, done.stderr
-    assert sandbox.uv_calls() == []
+    assert _uv_commands(sandbox) == [PRIVATE]
 
 
 @pytest.mark.parametrize(
@@ -177,6 +188,7 @@ def test_pre_commit_runs_the_checks_for_a_relevant_file(sandbox: Sandbox, name: 
 
     assert done.returncode == 0, done.stderr
     assert _uv_commands(sandbox) == [
+        PRIVATE,
         ["run", ".lint/check.sh"],
         ["run", "pytest", "-q", "-m", "not local"],
     ]
@@ -190,7 +202,7 @@ def test_pre_commit_runs_the_checks_for_a_deleted_python_file(sandbox: Sandbox) 
     done = sandbox.run(PRE_COMMIT)
 
     assert done.returncode == 0, done.stderr
-    assert len(sandbox.uv_calls()) == 2
+    assert len(_check_calls(sandbox)) == 2
 
 
 def test_pre_commit_runs_the_tests_silently(sandbox: Sandbox) -> None:
@@ -198,7 +210,7 @@ def test_pre_commit_runs_the_tests_silently(sandbox: Sandbox) -> None:
 
     sandbox.run(PRE_COMMIT)
 
-    pytest_call = sandbox.uv_calls()[1]
+    pytest_call = _check_calls(sandbox)[1]
     assert pytest_call["pipewire_remote"] == "/nonexistent"
     assert pytest_call["pulse_server"] == "unix:/nonexistent"
 
@@ -209,7 +221,7 @@ def test_pre_commit_reads_a_file_name_with_a_newline_as_one_name(sandbox: Sandbo
     done = sandbox.run(PRE_COMMIT)
 
     assert done.returncode == 0, done.stderr
-    assert len(sandbox.uv_calls()) == 2
+    assert len(_check_calls(sandbox)) == 2
 
 
 def test_pre_commit_does_not_split_a_file_name_at_a_newline(sandbox: Sandbox) -> None:
@@ -220,7 +232,7 @@ def test_pre_commit_does_not_split_a_file_name_at_a_newline(sandbox: Sandbox) ->
 
     assert done.returncode == 0, done.stderr
     assert "skipped" in done.stderr
-    assert sandbox.uv_calls() == []
+    assert _uv_commands(sandbox) == [PRIVATE]
 
 
 def test_pre_commit_refuses_when_the_checks_fail(sandbox: Sandbox) -> None:
@@ -230,7 +242,7 @@ def test_pre_commit_refuses_when_the_checks_fail(sandbox: Sandbox) -> None:
 
     assert done.returncode == 1
     assert "the checks found problems" in done.stderr
-    assert _uv_commands(sandbox) == [["run", ".lint/check.sh"]]
+    assert _uv_commands(sandbox) == [PRIVATE, ["run", ".lint/check.sh"]]
 
 
 def test_pre_commit_refuses_when_a_test_fails(sandbox: Sandbox) -> None:
@@ -240,7 +252,7 @@ def test_pre_commit_refuses_when_a_test_fails(sandbox: Sandbox) -> None:
 
     assert done.returncode == 1
     assert "a test failed" in done.stderr
-    assert len(sandbox.uv_calls()) == 2
+    assert len(_check_calls(sandbox)) == 2
 
 
 def _hooks_path(sandbox: Sandbox, path: Path) -> None:
@@ -274,7 +286,8 @@ def test_pre_commit_unsets_the_variables_git_exports(sandbox: Sandbox) -> None:
     assert done.returncode == 0, done.stderr
     local_vars = set(sandbox.git("rev-parse", "--local-env-vars").stdout.split())
     assert {"GIT_DIR", "GIT_INDEX_FILE"} <= local_vars
-    calls = sandbox.uv_calls()
+    # commit-msg's own private-details check follows; only the checks and tests are counted here.
+    calls = [c for c in _check_calls(sandbox) if "tools/check_private.py" not in c["args"]]
     assert len(calls) == 2
     for call in calls:
         # GIT_DIR, GIT_INDEX_FILE, GIT_PREFIX and the rest of the repository context are gone; the
@@ -293,6 +306,30 @@ def test_a_failing_check_stops_a_real_commit(sandbox: Sandbox) -> None:
 
     assert done.returncode != 0
     assert sandbox.git("rev-parse", "--verify", "HEAD", check=False).returncode != 0
+
+
+def test_pre_commit_refuses_a_private_line_whatever_the_file(sandbox: Sandbox) -> None:
+    sandbox.stage("notes.txt")
+
+    done = sandbox.run(PRE_COMMIT, env={"FAKE_UV_FAIL": "--staged"})
+
+    assert done.returncode == 1
+    assert "names something private" in done.stderr
+    assert _uv_commands(sandbox) == [PRIVATE]
+
+
+def test_pre_push_refuses_what_the_private_check_refuses(sandbox: Sandbox) -> None:
+    done = sandbox.run(PRE_PUSH, env={"FAKE_UV_FAIL": "--push"})
+
+    assert done.returncode == 1
+    assert "names something private" in done.stderr
+    assert _uv_commands(sandbox) == [
+        ["run", "--quiet", "python", "tools/check_private.py", "--push"]
+    ]
+
+
+def test_pre_push_passes_a_clean_push(sandbox: Sandbox) -> None:
+    assert sandbox.run(PRE_PUSH).returncode == 0
 
 
 # --- commit-msg ---------------------------------------------------------------------------------
@@ -428,7 +465,7 @@ def _installed(box: Sandbox, hook: str) -> Path:
     return path if path.is_absolute() else box.repo / path
 
 
-HOOK_NAMES = ("pre-commit", "commit-msg")
+HOOK_NAMES = ("pre-commit", "commit-msg", "pre-push")
 
 
 def test_install_copies_the_hooks_into_the_repositorys_own_hooks_folder(
@@ -606,3 +643,12 @@ def test_uninstall_refuses_and_deletes_nothing_under_another_hooks_path(
     assert done.returncode == 1
     assert str(elsewhere) in done.stderr
     assert marked.is_file()
+
+
+def test_commit_msg_refuses_a_message_naming_something_private(sandbox: Sandbox) -> None:
+    message = _message(sandbox, "docs: tidy" + _SIGNED)
+
+    done = sandbox.run(COMMIT_MSG, str(message), env={"FAKE_UV_FAIL": "--message"})
+
+    assert done.returncode == 1
+    assert "names something private" in done.stderr
