@@ -120,6 +120,13 @@ class Conversation:
         """Whether anything remembered came from outside text."""
         return self.summary_outside or any(turn.outside for turn in self.turns)
 
+    def holds_outside_text_but(self, origin: str) -> bool:
+        """Whether anything remembered came from outside text of another origin than `origin`.
+
+        A summary of outside text counts, whatever its origin.
+        """
+        return self.summary_outside or any(t.outside not in {"", origin} for t in self.turns)
+
     @property
     def holds_private_text(self) -> bool:
         """Whether anything remembered came from the owner's files."""

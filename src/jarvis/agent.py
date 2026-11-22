@@ -21,6 +21,7 @@ from jarvis.operations import (
     OperationError,
     Result,
     UncertainOutcomeError,
+    request_scope,
     validate_args,
 )
 from jarvis.pictures import PICTURE_TOKENS
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
     from jarvis.audit import AuditLog
     from jarvis.config import AgentConfig
     from jarvis.model import ChatModel, Delta
-    from jarvis.operations import Operation, Registry
+    from jarvis.operations import Operation, Registry, Request
     from jarvis.pictures import Picture
 
 log = logging.getLogger(__name__)
@@ -531,6 +532,7 @@ class _Turn:
     limit_s: float = MAX_SECONDS
     first: int = 0  # where this request's own messages begin, after the remembered ones
     foreign: bool = False
+    request: Request | None = None
     untrusted: bool = False
     outside: str = ""  # where the first outside text this request read came from
     private: bool = False  # text from the owner's files is in the conversation
@@ -760,7 +762,21 @@ class Agent:
         the reply says it cannot, and the model is not called). What a picture shows was made by
         anyone, so it counts as outside data: side effects then need a yes. The conversation
         keeps the pictures' names, not the pictures.
+
+        Operations run inside the request's scope (`request_scope`), so one can tell this
+        request from the next and a request heard in PC audio from the owner's.
         """
+        with request_scope(foreign=origin not in TRUSTED_ORIGINS) as request:
+            return self._answer(text, hooks, (origin, request), pictures)
+
+    def _answer(
+        self,
+        text: str,
+        hooks: Hooks,
+        source: tuple[Origin, Request],
+        pictures: Sequence[Picture],
+    ) -> str:
+        origin, request = source
         started = self._clock()
         foreign = origin not in TRUSTED_ORIGINS
         self._written = [0, 0.0]
@@ -781,6 +797,8 @@ class Agent:
         )
         hit = None if pictures else shortcuts.match(text, self._registry.shortcuts(), self._names)
         remembered = [] if foreign else self._remembered(started, plain=hit is not None)
+        if remembered and self._memory.holds_outside_text_but(Origin.PROCESS.value):
+            request.saw("memory")
         turn = _Turn(
             [
                 {"role": "system", "content": self._system},
@@ -792,10 +810,12 @@ class Agent:
             limit_s=self._limits.max_seconds,
             first=1 + len(remembered),
             foreign=foreign,
+            request=request,
         )
         if pictures:
             turn.untrusted = True
             turn.outside = Origin.PICTURE.value
+            request.saw(Origin.PICTURE.value)
         reply = self._shortcut(hit, hooks, turn) if hit is not None else None
         if reply is None:
             # A plain command is the owner's own words; what the model chooses may have been
@@ -1050,7 +1070,11 @@ class Agent:
             body = result.text[: self._limits.tool_text_chars]
             if result.origin not in TRUSTED_ORIGINS:
                 turn.untrusted = True
-                turn.outside = turn.outside or result.origin.value
+                # A process listing is remembered as such only when nothing else outside came in.
+                if turn.outside in {"", Origin.PROCESS.value}:
+                    turn.outside = result.origin.value
+                if turn.request is not None:
+                    turn.request.saw(result.origin.value)
                 turn.private = turn.private or result.origin is Origin.FILE
                 body = f'<data origin="{result.origin.value}">{_inert(body)}</data>'
             turn.messages.append(

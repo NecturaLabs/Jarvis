@@ -1,13 +1,15 @@
 """Typed operations: a name, a JSON schema for its arguments, a class and an executor."""
 
 import math
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.policy import OpClass, Origin
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Generator, Iterable
 
     from jarvis.shortcuts import Shortcut
 
@@ -34,6 +36,43 @@ class OperationError(Exception):
         """Keep the message and the origin of its words."""
         super().__init__(message)
         self.origin = origin
+
+
+@dataclass(frozen=True, eq=False, slots=True)
+class Request:
+    """The request the agent is handling, while it handles it.
+
+    Each request is its own object, equal only to itself, so an operation can keep what it showed
+    the owner in one request and refuse to act on it in another. `foreign` says the request was
+    heard in PC audio, not from the owner. `outside` holds the origins of the outside text that
+    came into the request so far (`"memory"` for outside text it remembers).
+    """
+
+    foreign: bool
+    outside: set[str] = field(default_factory=set[str])
+
+    def saw(self, origin: str) -> None:
+        """Note that text of `origin` came into the request."""
+        self.outside.add(origin)
+
+
+_CURRENT: ContextVar[Request | None] = ContextVar("jarvis_request", default=None)
+
+
+def current_request() -> Request | None:
+    """Return the request being handled, or None outside one."""
+    return _CURRENT.get()
+
+
+@contextmanager
+def request_scope(*, foreign: bool) -> Generator[Request]:
+    """Mark everything run inside as part of one new request."""
+    request = Request(foreign)
+    token = _CURRENT.set(request)
+    try:
+        yield request
+    finally:
+        _CURRENT.reset(token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +102,7 @@ class Operation:
     `shortcuts` are the phrasings that mean this operation without the model's help.
     `outbound` marks an operation that sends words the model wrote (a search, a place) to a
     service off this PC; while file text is in the conversation it needs a yes.
+    `lowest_class` is as low as the owner's `boundaries.classes` may set it.
     """
 
     name: str
@@ -70,6 +110,7 @@ class Operation:
     parameters: dict[str, Any]
     run: Callable[[dict[str, Any]], Result]
     default_class: OpClass = OpClass.SAFE
+    lowest_class: OpClass = OpClass.SAFE
     side_effect: bool = True
     outbound: bool = False
     spoken_summary: Callable[[dict[str, Any]], str] = field(default=lambda _args: "do that")

@@ -73,7 +73,7 @@ the chat keeps it (see below).
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `11500` and `memory_idle_s` `0.0` (never forget), plus:
+`memory_tokens` `11000` and `memory_idle_s` `0.0` (never forget), plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -396,9 +396,11 @@ A table from operation name to a class: `safe` (runs), `confirm` (needs your spo
 (needs the confirm key, below; never a spoken yes, and not skipped by `bypass_consent`) or `deny`.
 A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` with an error, so a typo
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
-its shipped class, which is `safe` for every operation but `write_file` (`confirm`): `spotify_*`, `time_now`,
-`weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`, `pc_stats`, `list_dir`, `read_file`; set
-one to `deny` to switch it off. Whatever the class, side effects are raised to `confirm` while text from outside
+its shipped class, which is `safe` for every operation but `write_file` (`confirm`) and `stop_process`
+(`strong`): `spotify_*`, `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`,
+`pc_stats`, `list_dir`, `read_file`, `find_processes`; set one to `deny` to switch it off. `stop_process`
+may be set only to `strong` or `deny`: a program is stopped by your command and your key alone, so any
+other class stops `jarvis run`, `ask` and `chat` with an error. Whatever the class, side effects are raised to `confirm` while text from outside
 your own speech is in the request, and so are the operations that send words off the PC while a file's text is. Example:
 
 ```toml
@@ -432,3 +434,34 @@ o.bind("SUPER + CTRL + Y", "Jarvis confirm", "jarvis confirm")
   refuse a `strong` action.
 - Each press, refused or not, is in the audit log (`confirm_key`), and the answer is a `confirmation`
   event with `"method": "key"`.
+
+## Stopping a program
+
+Ask in any words ("close Discord", "end the Orbit game", "Blender is frozen, kill it"). Jarvis first
+looks for the programs of yours that match the name you said (`find_processes`, `safe`): by the program's
+name, its executable, the name it was started as (a Wine or Proton game's `Orbit.exe`), or its window's
+class or title. It lists at most 8, folds a program's own child processes into it, and, when more than one
+matches, reads them out and asks which; when none matches it says so and never tries a wider name. It then
+stops the one you chose (`stop_process`, `strong`): "Should I stop Orbit (PID 4242)?", and only your
+confirm key allows it. That allows that exact process: if it ended and its PID went to another program
+before the press, nothing is stopped. It is asked to close (SIGTERM); a forced stop (SIGKILL) only when you
+ask for one. Jarvis says whether it ended within 3 seconds.
+
+In code, whatever the model says:
+
+- `stop_process` takes only a PID that `find_processes` listed in the same request, never a name or pattern.
+- A request heard in PC audio stops nothing, even with the key pressed and questions bypassed. Nor does
+  a request that also read outside text (a web page, a file, a picture, Spotify names, or such text
+  remembered from earlier): ask again in a request of its own.
+- A program matched only by one window's title (a browser tab's, say) is marked so, and the question
+  names that title and says all its windows close.
+- Only your own processes are listed. Never listed or stopped: PID 1, kernel threads, other users'
+  processes and set-user-ID programs, processes another user started (or whose parent cannot be seen) and
+  those in the login session's own scope (`session-N.scope`), Jarvis and the terminal or shell it runs in,
+  the processes that started the desktop session, login shells, the `jarvis` and `jarvis-strata`
+  services, and `systemd`, D-Bus, PipeWire, WirePlumber, Hyprland, Xwayland, `uwsm`, the bar (`waybar`,
+  Omarchy's `quickshell`), `hyprlock`, `hypridle`, the desktop portals, the keyring, the polkit agent,
+  `dconf-service`, the accessibility bus, `gvfs*`, `mako`, `swayosd-server`, `hyprsunset`, `walker`,
+  `elephant`, `fcitx5`, Omarchy's own `omarchy-*` helpers, Voxtype and Strata. A name is checked in full
+  (a program's executable, or a script's file name), not only its first 15 characters. The list, with the
+  reason for each, is in `src/jarvis/pc/processes.py`.

@@ -42,6 +42,7 @@ class Origin(StrEnum):
     WEB = "web"
     FILE = "file"
     PICTURE = "picture"  # a picture the owner shared: what it shows was made by anyone
+    PROCESS = "process"  # program names and window titles: other programs' words
 
 
 TRUSTED_ORIGINS = frozenset({Origin.SYSTEM, Origin.OWNER_SPEECH, Origin.TOOL_STATUS})
@@ -70,6 +71,11 @@ class Classified(Protocol):
         """Whether it sends words the model wrote to a service off this PC."""
         ...
 
+    @property
+    def lowest_class(self) -> OpClass:
+        """The lowest class the owner may set it to."""
+        ...
+
 
 class Verdict(StrEnum):
     """The outcome of a policy decision."""
@@ -96,9 +102,13 @@ def action_hash(op_name: str, args: Mapping[str, object]) -> str:
 
 
 def effective_class(op: Classified, overrides: Mapping[str, str]) -> OpClass:
-    """Return the owner's class for the operation if set, else its shipped default."""
+    """Return the owner's class for the operation if set, else its shipped default.
+
+    An override below the operation's `lowest_class` is raised to it.
+    """
     override = overrides.get(op.name)
-    return OpClass(override) if override in OpClass._value2member_map_ else op.default_class
+    cls = OpClass(override) if override in OpClass._value2member_map_ else op.default_class
+    return max(cls, op.lowest_class, key=_RANK.__getitem__)
 
 
 def decide(
