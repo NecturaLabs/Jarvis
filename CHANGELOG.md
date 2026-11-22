@@ -266,6 +266,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A yes spoken after the PC woke from a suspend no longer answers a question asked before it. The question is
+  now counted as a no, and Jarvis listens afresh (#22). A sleep also ends the follow-up window, so speech
+  after waking is no longer taken as a request without the wake word, and drops a request begun after the
+  wake word; speech heard before the sleep is not answered either (#22).
 - Your Voxtype dictation starting while Jarvis is capturing a request now drops that request: before, what you
   dictated could be transcribed and answered as a request. Jarvis stops capturing, says nothing, records one
   `wake_ignored` event and never touches Voxtype's recording (#3). A pause that lands after the last
