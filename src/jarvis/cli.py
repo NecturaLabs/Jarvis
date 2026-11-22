@@ -1,6 +1,7 @@
 """Command-line entry point for `jarvis`."""
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -17,6 +18,7 @@ from urllib.parse import urlsplit
 from jarvis import __version__, config, models, paths
 from jarvis.agent import Hooks
 from jarvis.app import SetupError, build, chat_pictures, echoes_hint
+from jarvis.jsonutil import obj, objs
 from jarvis.model import StrataModel
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
@@ -35,6 +37,7 @@ WAKE_MODEL = "wake/hey_jarvis.onnx"
 VAD_MODEL = "vad/silero_vad.onnx"
 AZURE_PYTHON = "azure-wake/venv/bin/python"
 AZURE_CHECK_S = 30.0
+VOXTYPE_INFO_S = 15.0  # `voxtype info models` checks every model file it lists
 WAKE_NAME = re.compile(r"\bjarvis\b", re.IGNORECASE)  # what an Azure model also wakes on
 
 
@@ -528,21 +531,53 @@ def _release_lines(cfg: config.Config) -> tuple[list[str], list[tuple[bool, str,
     return lines, failures
 
 
+def _installed_whisper_models(
+    run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> dict[str, bool] | None:
+    """Return which Whisper models `voxtype info models --json` lists as installed.
+
+    Voxtype decides where its models live and checks each one's integrity. None when it cannot be
+    asked or its answer cannot be read.
+    """
+    try:
+        done = run(
+            ["voxtype", "info", "models", "--json", "--engine", "whisper"],
+            capture_output=True,
+            timeout=VOXTYPE_INFO_S,
+            check=False,
+        )
+        listed = objs(
+            obj(obj(obj(json.loads(done.stdout)).get("engines")).get("whisper")).get("models")
+        )
+    except OSError, ValueError, subprocess.SubprocessError:
+        return None
+    if done.returncode != 0:
+        return None
+    models = {str(item["name"]): item.get("installed") is True for item in listed if "name" in item}
+    return models or None
+
+
 def _whisper_model(cfg: config.Config) -> list[tuple[bool, str, str]]:
     """Return the check that Voxtype has downloaded the Whisper model Jarvis asks it for.
 
-    Other engines keep their models in their own forms, so Voxtype itself reports on those.
+    Voxtype's own list says which models are installed; a model it does not list (or no answer
+    from it) is looked for at the file Voxtype would keep it in. Other engines keep their models
+    in their own forms, so Voxtype itself reports on those.
     """
     audio = cfg.audio
     name = audio.transcribe_model
     if audio.transcribe_engine not in {"", "whisper"} or not name:
         return []
+    fix = "download it with `voxtype setup model`"
+    installed = None if name.startswith("/") else _installed_whisper_models()
+    if installed is not None and name in installed:
+        return [(installed[name], f"speech model {name} (listed by Voxtype)", fix)]
     model = (
         Path(name)
         if name.startswith("/")
         else paths.xdg_data_home() / "voxtype" / "models" / f"ggml-{name}.bin"
     )
-    return [(model.is_file(), f"speech model {model}", "download it with `voxtype setup model`")]
+    return [(model.is_file(), f"speech model {model}", fix)]
 
 
 def _model_url(cfg: config.Config) -> list[tuple[bool, str, str]]:
