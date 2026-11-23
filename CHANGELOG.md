@@ -342,6 +342,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- An audit event is no longer lost when the log rotates while another Jarvis process (the voice service,
+  the chat window, `jarvis ask`) writes to it, and a full log is rotated once rather than twice. Every
+  writer now holds a lock on the log for the size check, the rotation and the write.
 - Emptying or damaging the shared action count (`actions.json`) no longer lifts `boundaries.max_actions`:
   each process's own count must allow an action too. The shared file's answer used to replace it.
 
