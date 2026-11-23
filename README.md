@@ -35,6 +35,9 @@ Jarvis is pre-1.0 software; see [Status](#status).
   program ([Stopping a program](docs/configuration.md#stopping-a-program)).
   A shell command you say can run too, only if you turn it on (`[shell]`, off by default) and only after
   your confirm key, with time and memory limits and no sudo ([`[shell]`](docs/configuration.md)).
+- **Omarchy questions:** Jarvis answers questions about Omarchy (settings, themes, key bindings, crashes,
+  building an app) from the guides Omarchy ships in `/usr/share/omarchy/default/agents/skills/`. It reads
+  them as reference text and never runs a command they contain.
 - **Sums:** arithmetic, however you ask it (products, percentages, square roots, powers and the like), is
   worked out exactly by a calculator in code, never guessed by the model.
 - **Boundaries:** every action is a typed operation checked by a policy engine in code before it runs, and

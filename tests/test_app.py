@@ -1,9 +1,10 @@
 import json
+import os
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis import paths
+from jarvis import osskills, paths
 from jarvis.agent import Agent, Hooks
 from jarvis.app import (
     MAX_HINT_CHARS,
@@ -114,12 +115,30 @@ def test_speech_hint_ends_as_a_sentence(names: list[str]) -> None:
     assert speech_hint(Config(), Registry([_op("spotify_pause")]), names).endswith(".")
 
 
+def _full_catalog(root: Path) -> None:
+    """Fill `root` with Omarchy skills up to the catalog's size, long names and all."""
+    words = " ".join(["word"] * 80)
+    for n in range(40):
+        folder = root / f"a-long-omarchy-skill-name-number-{n:02}"
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text(
+            f"---\ndescription: {words}. Second.\n---\n# Skill\n", encoding="utf-8"
+        )
+        for m in range(6):
+            (folder / f"a-long-guide-file-name-number-{m:02}.md").write_text("# Guide\n")
+
+
 @pytest.mark.parametrize("channel", ["voice", "chat"])
 def test_the_default_context_holds_the_whole_remembered_conversation(
-    tmp_path: Path, channel: Channel
+    tmp_path: Path, channel: Channel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The prompt, every tool schema, one reply and two tool results at their cap leave room for
-    # the configured memory, so the defaults never squeeze it.
+    # the configured memory, so the defaults never squeeze it, even with a full Omarchy catalog.
+    _full_catalog(tmp_path / "skills")
+    monkeypatch.setattr("jarvis.osskills.ROOT", tmp_path / "skills")
+    monkeypatch.setattr("jarvis.osskills.OWNER", os.getuid())
+    full = osskills.catalog()
+    assert sum(skill.catalog_chars() for skill in full) > osskills.MAX_CATALOG_CHARS * 0.8
     config = Config()
     spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
     limits = channel_limits(config, channel)
@@ -328,3 +347,47 @@ def test_the_prompt_tells_the_model_how_to_write_numbers(separator: str, said: s
     config = Config.model_validate({"format": {"thousands_separator": separator}})
 
     assert said in system_prompt(config, "chat")
+
+
+def test_both_channels_offer_omarchy_skills_when_they_are_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "skills"
+    (root / "omarchy").mkdir(parents=True)
+    (root / "omarchy" / "SKILL.md").write_text(
+        "---\nname: omarchy\ndescription: Change the desktop.\n---\n# Omarchy\n", encoding="utf-8"
+    )
+    monkeypatch.setattr("jarvis.osskills.ROOT", root)
+    monkeypatch.setattr("jarvis.osskills.OWNER", os.getuid())
+    config = Config()
+
+    for channel in ("voice", "chat"):
+        limits = channel_limits(config, channel)
+        op = channel_registry(config, [], limits, channel).get("os_skill")
+        assert op is not None
+        result = op.run({"file": "omarchy/SKILL.md", "part": 1})
+        assert "# Omarchy" in result.text
+        assert len(result.text) <= limits.tool_text_chars
+        assert "  - omarchy: Change the desktop.\n" in system_prompt(config, channel)
+
+
+def test_no_omarchy_skill_operation_without_the_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("jarvis.osskills.ROOT", tmp_path / "absent")
+    config = Config()
+
+    registry = channel_registry(config, [], channel_limits(config, "voice"), "voice")
+
+    assert registry.get("os_skill") is None
+    assert "os_skill" not in system_prompt(config, "voice")
+
+
+def test_an_os_skill_override_is_known_even_without_the_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PC without Omarchy's guides must still start with `os_skill` set in the config."""
+    monkeypatch.setattr("jarvis.osskills.ROOT", tmp_path / "absent")
+    config = Config(boundaries=BoundariesConfig(classes={"os_skill": "deny"}))
+
+    assert unknown_overrides(config, []) == []
