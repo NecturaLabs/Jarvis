@@ -404,6 +404,21 @@ class AppsConfig(_Section):
     )
 
 
+class ShellConfig(_Section):
+    """The opt-in shell operation, `pc_shell` (ADR 0002): off unless `enabled` is set.
+
+    When on, every command is `strong` (the confirm key at the PC) and runs once in a user scope
+    limited to `memory_max_mib` of memory with no swap, `cpu_percent` of one core (200 is two),
+    `tasks_max` processes and threads, and `timeout_s` seconds; never with raised rights.
+    """
+
+    enabled: bool = False
+    timeout_s: float = Field(default=30.0, ge=1, le=600)
+    memory_max_mib: int = Field(default=1024, ge=64, le=65536)
+    cpu_percent: int = Field(default=100, ge=10, le=6400)
+    tasks_max: int = Field(default=256, ge=8, le=4096)
+
+
 class BoundariesConfig(_Section):
     """Per-operation class overrides set by the owner, and whether Jarvis asks before acting.
 
@@ -439,6 +454,7 @@ class Config(_Section):
     research: ResearchConfig = Field(default_factory=ResearchConfig)
     files: FilesConfig = Field(default_factory=FilesConfig)
     apps: AppsConfig = Field(default_factory=AppsConfig)
+    shell: ShellConfig = Field(default_factory=ShellConfig)
     boundaries: BoundariesConfig = Field(default_factory=BoundariesConfig)
 
     def strata_url(self) -> str:

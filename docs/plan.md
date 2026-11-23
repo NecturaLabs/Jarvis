@@ -180,6 +180,9 @@ enforced in code before any tool runs.
   owner sets classes in setup; default profile "ask for risky".
 - Generic shell (`pc.shell`) is off by default; when the owner enables it, every call is `strong`, runs with a
   timeout under `systemd-run --user --scope` with memory/CPU limits, no sudo, in a scrubbed environment.
+  Built as `pc_shell` (`src/jarvis/pc/shell.py`, `[shell]`, #19): the class cannot be set below `strong`,
+  `setpriv --no-new-privs` keeps sudo out, and a request heard in PC audio or holding outside text runs
+  nothing.
 - Process control: stop only a PID Jarvis shows, `strong` class; never by name or pattern. Built as
   `find_processes` and `stop_process` (`src/jarvis/pc/processes.py`): the PID must come from
   `find_processes` in the same request, the class cannot be set below `strong`, and a request heard in
@@ -264,7 +267,7 @@ enforced in code before any tool runs.
    time is it?" spoken back, and a denied action refused correctly.
 4. **Spotify** (built) — client, PKCE login in the wizard, MPRIS transport, device handling. Milestone: play artist / song
    / playlist, skip, volume, now playing, queue, like, all by voice, with recorded-fixture tests.
-5. **PC operations** (partly built) — PC stats, files and process stop built; app, workspace, volume, Omarchy commands, os_skill and the optional strong-class shell to come.
+5. **PC operations** (partly built) — PC stats, files, process stop and the optional strong-class shell built; app, workspace, volume, Omarchy commands and os_skill to come.
 6. **Research** (mostly built) — SearXNG, search/fetch, URL policy, sourced answers.
 7. **Polish** (partly built) — sentence streaming and voice barge-in built, echo cancellation documented as a PipeWire setup;
    follow-up listening, the bar module (`tools/bar_status.py`), optional bare-"Jarvis" wake word.

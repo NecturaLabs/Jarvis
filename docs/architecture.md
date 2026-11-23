@@ -99,6 +99,7 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 | `pc/hyprland.py` | Hyprland's own socket (`$XDG_RUNTIME_DIR/hypr/<signature>/.socket.sock`): `clients` (the windows, `j/clients`), `run_lua` (`hyprctl eval`) and `lua_string`, each answer read whole up to `MAX_HYPR_BYTES` within `HYPR_TIMEOUT_S`. | Start a program itself, or wait on Hyprland without a timeout. |
 | `pc/apps.py` | `AppOps`: `open_app` (`safe`): one program from `[apps]`, on the workspace the owner named (1 to 10) or in the background (the special workspace `jarvis`), started by Hyprland with a `[workspace N silent]` rule, then read back through the socket until its window shows, moved if it landed elsewhere and checked again a second later. Refused in a request heard in PC audio. | Start a program not in `[apps]`, choose a workspace itself, or open a program again that is already open. |
 | `pc/processes.py` | `ProcessOps`: `find_processes` (`safe`; the owner's own processes matching a spoken name by command, executable, argv[0], or Hyprland window class and title read from Hyprland's socket, at most 8, children folded into their program) and `stop_process` (`strong`, never lower): only a PID `find_processes` listed in the same request, bound to its program and start time before the question, checked again once held by a pidfd, then SIGTERM (SIGKILL with `force`); refused in a request heard in PC audio or holding outside text other than its own listing (`Request.outside`, noted by `Agent`). The protected list (`PROTECTED_PROGRAMS`, `PROTECTED_UNITS`, `PROTECTED_RULES`), each entry with its reason. | Stop anything by name or pattern, a PID it did not list in this request, another user's process, a protected one, or anything for PC audio; start a program. |
+| `pc/shell.py` | `ShellOps`: `pc_shell` (`strong`, never lower), offered only when `[shell] enabled` is set: one command the owner said, run once by `systemd-run --user --scope` (a unit of its own, with `MemoryMax`, no swap, `CPUQuota`, `TasksMax` and `RuntimeMaxSec`), behind `setpriv --no-new-privs` and `env -i` with only `PATH`, `HOME`, `LANG` and `TERM`; when it returns, or past `timeout_s`, the scope is stopped with all it started. Output is capped as it is read and returned as `process` text. Refused in a request heard in PC audio or holding outside text. | Run anything without the confirm key, with raised rights, with Jarvis's environment, or for PC audio. |
 | `pc/stats.py` | `StatsOps`: `pc_stats` (specs, CPU, memory, graphics card, VRAM, temperatures, disks, uptime) with its shortcuts and spoken sentence. | Start a program. |
 | `calc.py` | `calculate`: works out an arithmetic expression exactly (fractions, a few functions and constants) from Python's syntax tree, with every step bounded. | Run the text, read a name it does not list, or work out a sum without a bound. |
 | `sysinfo.py` | `Sampler`: the CPU's busy share and temperature, memory, and the biggest graphics card's load, VRAM and temperature, read from `/proc` and `/sys`. | Start a program or fail on a missing file; a figure it cannot read is left out. |
@@ -246,7 +247,8 @@ server on its own thread until the callback arrives.
 Child processes Jarvis starts: `pw-record` (microphone and PC audio), `pw-dump` (find app streams),
 `pw-play` (speech and chime), `voxtype transcribe` (one per utterance), `systemctl --user` and
 `journalctl --user` (the lifecycle commands in `cli.py`), `xdg-open` (the login link, unless
-`--no-browser`) and `wl-paste` (the chat's Ctrl+V, `chat/clipboard.py`). A program the owner asks
+`--no-browser`), `wl-paste` (the chat's Ctrl+V, `chat/clipboard.py`) and, only when `[shell]` is on,
+`systemd-run --user --scope` and `systemctl --user stop` for `pc_shell` (`pc/shell.py`). A program the owner asks
 to open (`open_app`, `pc/apps.py`) is started by Hyprland, not by Jarvis: Jarvis sends the command
 through Hyprland's socket.
 
@@ -280,7 +282,7 @@ falls under its catch-all entry, so a change anywhere still asks for review). Th
 - the units and the config that become systemd lines: `services.py`, `config.py`;
 - the system prompt: `prompts/core.md`;
 - the web tools: `web/`, above all `web/guard.py` and `web/page.py`;
-- the PC-operation tools: `pc/`, above all `pc/files.py` and `pc/processes.py`;
+- the PC-operation tools: `pc/`, above all `pc/files.py`, `pc/processes.py` and `pc/shell.py`;
 - pictures: `pictures.py`, which decodes picture bytes anyone may have made, and `chat/clipboard.py`,
   which starts `wl-paste`.
 

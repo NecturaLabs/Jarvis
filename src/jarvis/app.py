@@ -14,6 +14,7 @@ from jarvis.paths import audit_file, spotify_token_file, strata_key_file  # re-e
 from jarvis.pc.apps import AppOps
 from jarvis.pc.files import Boundary, FileOps
 from jarvis.pc.processes import ProcessOps
+from jarvis.pc.shell import ShellOps
 from jarvis.pc.stats import StatsOps
 from jarvis.pictures import PictureCache
 from jarvis.policy import effective_class
@@ -193,7 +194,10 @@ def web_operations(config: Config, shown: PictureCache | None = None) -> list[Op
 
 
 def pc_operations(config: Config, limits: Limits, home: Path | None = None) -> list[Operation]:
-    """Return `pc_stats`, the files within `[files]`, processes, and `open_app` over `[apps]`.
+    """Return the PC operations: stats, files, processes, `open_app` and the opt-in `pc_shell`.
+
+    The files are those within `[files]`, `open_app` opens only what `[apps]` lists, and
+    `pc_shell` is there only when `[shell]` turns it on.
 
     Jarvis's own state (its tokens and keys) is never read or written, whatever the roots say.
     """
@@ -203,6 +207,7 @@ def pc_operations(config: Config, limits: Limits, home: Path | None = None) -> l
         *FileOps(boundary, max_chars=limits.tool_text_chars).operations(),
         *ProcessOps().operations(),
         *AppOps(config.apps.programs).operations(),
+        *ShellOps(config.shell, home or Path.home(), max_chars=limits.tool_text_chars).operations(),
     ]
 
 
