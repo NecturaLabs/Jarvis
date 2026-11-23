@@ -558,10 +558,15 @@ def test_the_script_shows_not_running_when_nobody_serves_the_socket() -> None:
 def test_the_script_exits_zero_with_a_state_when_the_runtime_folder_is_odd(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # A relative folder falls back to the user's own, where a real Jarvis may be running, so the
+    # state shown depends on this machine: any state the script can show, never a crash.
     monkeypatch.setenv("XDG_RUNTIME_DIR", "relative")
+    assert socket_path() == f"/run/user/{os.getuid()}/jarvis/control.sock"
     done = run_script()
     assert done.returncode == 0
-    assert json.loads(done.stdout)["class"] == ["not-running"]
+    (shown,) = json.loads(done.stdout)["class"]
+    faces = {name.replace(" ", "-") for name in FACES}
+    assert shown in {*faces, "not-running", "timeout", "failed", "malformed"}
 
 
 def test_the_script_never_starts_jarvis(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

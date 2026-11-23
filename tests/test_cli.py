@@ -1038,6 +1038,16 @@ def test_restart_starts_a_stopped_strata(monkeypatch: pytest.MonkeyPatch) -> Non
     assert ("start", "jarvis-strata.service") in calls
 
 
+def _states(monkeypatch: pytest.MonkeyPatch, **states: str) -> None:
+    """Answer `systemctl is-active` per unit (`jarvis`, `strata`), "inactive" otherwise."""
+    names = {"jarvis.service": "jarvis", "jarvis-strata.service": "strata"}
+
+    def state(unit: str) -> str:
+        return states.get(names[unit], "inactive")
+
+    monkeypatch.setattr(cli, "_unit_state", state)
+
+
 def test_start_clears_a_failed_state_before_starting_both_units(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1049,12 +1059,29 @@ def test_start_clears_a_failed_state_before_starting_both_units(
         return 0
 
     monkeypatch.setattr(cli, "_systemctl", systemctl)
+    _states(monkeypatch, jarvis="failed", strata="failed")
 
     assert cli.main(["start"]) == 0
     assert calls == [
         ("reset-failed", "jarvis-strata.service", "jarvis.service"),
         ("start", "jarvis-strata.service", "jarvis.service"),
     ]
+
+
+def test_start_resets_only_a_unit_that_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Regression: `reset-failed` on a stopped unit systemd had unloaded printed
+    # "Unit jarvis.service not loaded" on every `jarvis start`.
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(*args: str) -> int:
+        calls.append(args)
+        return 0
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+    _states(monkeypatch, jarvis="inactive", strata="active")
+
+    assert cli.main(["start"]) == 0
+    assert calls == [("start", "jarvis-strata.service", "jarvis.service")]
 
 
 def test_a_failed_reset_does_not_stop_start(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1066,6 +1093,7 @@ def test_a_failed_reset_does_not_stop_start(monkeypatch: pytest.MonkeyPatch) -> 
         return 1 if args[0] == "reset-failed" else 0
 
     monkeypatch.setattr(cli, "_systemctl", systemctl)
+    _states(monkeypatch, jarvis="failed")
 
     assert cli.main(["start"]) == 0
     assert calls[-1][0] == "start"
@@ -1074,6 +1102,7 @@ def test_a_failed_reset_does_not_stop_start(monkeypatch: pytest.MonkeyPatch) -> 
 def test_restart_clears_a_failed_state_before_starting_anything(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _states(monkeypatch, jarvis="failed", strata="failed")
     calls = _restart_calls(monkeypatch, None)
 
     assert calls[0] == ("reset-failed", "jarvis-strata.service", "jarvis.service")
@@ -1260,3 +1289,12 @@ def test_jarvis_ask_with_yes_has_no_confirm_key(
 
     assert seen[0].confirm_key is None
     assert "I can't." in capsys.readouterr().out
+
+
+def test_help_lists_the_commands_as_dash_dash_help_does(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["help"]) == 0
+    shown = capsys.readouterr().out
+
+    cli.build_parser().print_help()
+    assert shown == capsys.readouterr().out
+    assert "doctor" in shown
