@@ -203,8 +203,9 @@ spoken over.
   times an hour (6 in 24 h); with `yo_jarvis` at 0.76 beside it, 0.54 an hour (13 in 24 h); and `yo_jarvis` at
   0.76 beside the pinned model at 0.5 added 0.21 an hour (71 against 66 in 24 h). The bare `jarvis` model also woke on "Jervis" (98 % of voices), "Pass
   me a jar of this" (85 %), "Java" (60 %) and "Service" (53 %), so it is not on. No model woke on Jarvis's own
-  replies. The trainer's own `eval --media` gave the pinned model 2.833 false wakes an hour on the same media,
-  in line with the benchmark. These are synthetic voices and recorded media, not your room: the playbook's desk
+  replies. The trainer's own `eval --media` on the same media agrees with the benchmark for every model: 2.833
+  false wakes an hour for the pinned `hey_jarvis`, 1.333 for the retrained one and 4.458 for `yo_jarvis` at
+  0.5, and 0.083 for the bare `jarvis` at 0.85. These are synthetic voices and recorded media, not your room: the playbook's desk
   test comes before a default changes.
 - **Azure wake word (optional, `audio.wake_engine = "azure"`):** your own Azure custom keyword `.table`
   model, heard by `src/jarvis/azure_wake_helper.py` (MIT) with Microsoft's Speech SDK
