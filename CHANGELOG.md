@@ -342,6 +342,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The calculator keeps a floor division exact: `(7 // 2)!` is 6 and `10**18 // 7` is 142857142857142857. A
+  floor division of two exact numbers gave a plain integer, which a factorial or `round`'s digits refused
+  and which was shown through a float (142857142857142864).
+
 - A request that finds the model unloaded gives its first model call the 180 s the load may take on top of
   `model.request_timeout_s`. The request was allowed 270 s, but the call was cut at 120 s, leaving about 13 s
   for the answer after a load measured at 107 s while gaming; a slower load ended in "My model isn't

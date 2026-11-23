@@ -39,6 +39,12 @@ from jarvis.policy import OpClass
         ("17 % + 5", "2"),  # spaced on both sides: the remainder of 17 by +5
         ("17%5", "2"),  # touching both numbers: the remainder
         ("17%(2 + 3)", "2"),
+        ("(7 // 2)!", "6"),  # a floor division is a whole number like any other
+        ("factorial(7 // 2)", "6"),
+        ("round(2.567, 4 // 2)", "2.57"),
+        ("10**18 // 7", "142857142857142857"),
+        ("(10**18 + 1) // 1", "1000000000000000001"),
+        ("7.5 // 2", "3"),
         ("10 ** 5000 / 10 ** 4999", "10"),
         ("1e3 + 1", "1001"),
         ("sqrt(144)", "12"),

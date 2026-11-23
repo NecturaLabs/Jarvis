@@ -221,7 +221,8 @@ def _divide(op: ast.operator, left: Number, right: Number) -> Number:
     if isinstance(op, ast.Div):
         return left / right
     if isinstance(op, ast.FloorDiv):
-        return left // right
+        whole = left // right  # an int from two fractions, which is not a `Number`
+        return Fraction(whole) if isinstance(whole, int) else whole
     return left % right
 
 
