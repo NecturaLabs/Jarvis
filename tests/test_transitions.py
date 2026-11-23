@@ -218,10 +218,10 @@ def test_a_drive_that_goes_away_after_the_start_is_noticed_at_the_next_request(
 def test_the_model_client_knows_the_model_file_of_the_run_config(tmp_path: Path) -> None:
     gguf = tmp_path / "models" / "q4.gguf"
     cfg = Config(strata=StrataConfig(run_config=engine_run_config(tmp_path, model=gguf)))
+    gguf.unlink()  # the drive is not mounted when Jarvis starts
 
     model = strata_model(cfg, "key")
 
-    gguf.unlink()  # the drive unmounted
     assert model.file_missing()
     gguf.write_bytes(b"")
     assert not model.file_missing()

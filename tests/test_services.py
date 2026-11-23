@@ -35,6 +35,7 @@ def _config(tmp_path: Path, *, engine: bool = True, **strata: object) -> Config:
     }
     if "run_config" not in settings:
         settings["run_config"] = engine_run_config(tmp_path)
+        settings.setdefault("vram_reserve_mib", 12000)  # its engine's cache would fill the card
     return Config(strata=StrataConfig.model_validate(settings))
 
 
@@ -534,7 +535,9 @@ def _args(profile: dict[str, object]) -> list[str]:
 
 
 def test_no_vram_reserve_is_passed_unless_one_is_set(tmp_path: Path) -> None:
-    args = _args(services.strata_profile(_config(tmp_path)))
+    # On an engine that takes a size for its experts; the other needs one (see above).
+    cfg = _config(tmp_path, run_config=inkling_run_config(tmp_path))
+    args = _args(services.strata_profile(cfg))
 
     assert "--vram-reserve-mib" not in args
 
@@ -581,7 +584,7 @@ def test_an_engine_with_a_routing_profile_learns_jarvis_own_and_starts_from_it(
     tmp_path: Path,
 ) -> None:
     cfg, _ = _with_routing_profile(tmp_path)
-    learned = str(services.expert_profile_file())
+    learned = str(services.expert_profile_file(cfg))
 
     args = _args(services.strata_profile(cfg))
 
@@ -593,7 +596,7 @@ def test_setup_starts_the_learned_profile_from_stratas_once_and_keeps_what_was_l
     tmp_path: Path,
 ) -> None:
     cfg, _ = _with_routing_profile(tmp_path)
-    learned = services.expert_profile_file()
+    learned = services.expert_profile_file(cfg)
 
     path = services.write_strata_profile(cfg)
     first = path.read_text(encoding="utf-8")
@@ -609,7 +612,7 @@ def test_the_first_setup_copies_stratas_routing_profile(tmp_path: Path) -> None:
 
     services.write_strata_profile(cfg)
 
-    assert services.expert_profile_file().read_bytes() == b"generic"
+    assert services.expert_profile_file(cfg).read_bytes() == b"generic"
 
 
 def test_learning_experts_is_left_out_when_off_or_when_the_engine_has_no_profile(
@@ -622,4 +625,89 @@ def test_learning_experts_is_left_out_when_off_or_when_the_engine_has_no_profile
     assert off_args[off_args.index("--expert-profile") + 1] == str(generic)
     assert "--expert-profile-save" not in _args(services.strata_profile(_config(tmp_path / "b")))
     services.write_strata_profile(off)
-    assert not services.expert_profile_file().exists()
+    assert not services.expert_profile_file(off).exists()
+
+
+def test_pictures_stay_on_while_the_models_drive_is_not_mounted(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    (tmp_path / "models" / "q4.gguf").unlink()
+    (tmp_path / "models" / "mmproj.gguf").unlink()
+
+    assert services.reads_pictures(cfg)
+    assert services.model_name(cfg) == "flash-q4"
+
+
+def test_an_engine_whose_cache_fills_the_card_needs_a_vram_reserve(tmp_path: Path) -> None:
+    with pytest.raises(services.StrataSetupError, match="vram_reserve_mib"):
+        services.strata_profile(_config(tmp_path, vram_reserve_mib=0))
+
+
+def test_the_learned_expert_profile_is_kept_per_model(tmp_path: Path) -> None:
+    cfg, _ = _with_routing_profile(tmp_path)
+    run = tmp_path / "install" / "strata-q4.json"
+    data = json.loads(run.read_text(encoding="utf-8"))
+    data["model_name"] = "other-model"
+    other = tmp_path / "install" / "strata-other.json"
+    other.write_text(json.dumps(data), encoding="utf-8")
+    other_cfg = _config(tmp_path, run_config=other)
+
+    assert services.expert_profile_file(cfg) != services.expert_profile_file(other_cfg)
+
+
+@pytest.mark.parametrize("flag", ["--host", "--port"])
+def test_a_run_config_that_picks_its_own_address_is_refused(tmp_path: Path, flag: str) -> None:
+    cfg = _config(tmp_path)
+    run = tmp_path / "install" / "strata-q4.json"
+    data = json.loads(run.read_text(encoding="utf-8"))
+    data["args"] += [flag, "192.0.2.1" if flag == "--host" else "9000"]
+    run.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(services.StrataSetupError, match=flag):
+        services.strata_profile(cfg)
+
+
+def test_a_relative_routing_profile_is_a_setup_error(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    run = tmp_path / "install" / "strata-q4.json"
+    data = json.loads(run.read_text(encoding="utf-8"))
+    data["args"] += ["--expert-profile", "data/expert-profile.bin"]
+    run.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(services.StrataSetupError, match="expert-profile"):
+        services.write_strata_profile(cfg)
+
+
+def test_a_bare_vision_flag_without_a_reader_is_dropped(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    run = tmp_path / "install" / "strata-q4.json"
+    data = json.loads(run.read_text(encoding="utf-8"))
+    del data["vision"]
+    run.write_text(json.dumps(data), encoding="utf-8")
+
+    assert "--vision" not in _args(services.strata_profile(cfg))
+    assert not services.reads_pictures(cfg)
+
+
+@pytest.mark.parametrize("arg", ["--host=192.0.2.1", "--port=9000"])
+def test_an_address_given_with_an_equals_sign_is_refused_too(tmp_path: Path, arg: str) -> None:
+    cfg = _config(tmp_path)
+    run = tmp_path / "install" / "strata-q4.json"
+    data = json.loads(run.read_text(encoding="utf-8"))
+    data["args"].append(arg)
+    run.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(services.StrataSetupError, match=arg.split("=", maxsplit=1)[0]):
+        services.strata_profile(cfg)
+
+
+def test_a_fixed_expert_cache_needs_no_reserve(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, vram_reserve_mib=0)
+    run = tmp_path / "install" / "strata-q4.json"
+    data = json.loads(run.read_text(encoding="utf-8"))
+    at = data["args"].index("--expert-cache")
+    data["args"][at + 1] = "2000"
+    run.write_text(json.dumps(data), encoding="utf-8")
+
+    args = _args(services.strata_profile(cfg))
+
+    assert args[args.index("--expert-cache") + 1] == "2000"

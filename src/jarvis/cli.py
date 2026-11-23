@@ -786,21 +786,28 @@ def _release_lines(cfg: config.Config) -> tuple[list[str], list[tuple[bool, str,
 
 
 def _model_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
-    """Return the checks that the files Strata loads are there (and its run config readable)."""
+    """Return the checks that the files Strata loads are there (and its run config usable)."""
     try:
         run = services.read_run_config(cfg)
     except services.StrataSetupError as exc:
         return [(False, f"Strata run config {cfg.strata.run_config}", str(exc))]
+    others = [f for f in services.missing_files(run) if Path(f) != run.model]
     checks = [
+        (run.model.is_file(), f"model {run.model}", "mount its drive"),
         (
-            run.model.is_file(),
-            f"model {run.model}",
-            "mount its drive, or run `strata launch` for it again",
-        )
+            not others,
+            f"files the run config names{': ' + ', '.join(others) + ' missing' if others else ''}",
+            "run `strata launch` for the model again, then jarvis setup",
+        ),
     ]
     if services.learns_experts(cfg, run):
-        learned = services.expert_profile_file()
-        checks.append((learned.is_file(), f"expert profile {learned}", "run jarvis setup"))
+        learned = services.expert_profile_file(cfg)
+        usable = learned.is_file() and learned.stat().st_size > 0
+        checks.append((usable, f"expert profile {learned}", "run jarvis setup"))
+    if services.fills_the_card(run) and not cfg.strata.vram_reserve_mib:
+        checks.append(
+            (False, "VRAM left for games", "set strata.vram_reserve_mib (docs/models.md)")
+        )
     return checks
 
 
