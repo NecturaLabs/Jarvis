@@ -342,6 +342,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `files.deny` closes a folder however its path is written: `~/Documents/private`, an absolute path, a
+  trailing slash or a leading `./`. Only `Documents/private` matched before; the other forms were accepted
+  and matched nothing, so the folder stayed readable. An absolute path now also closes a folder under a
+  read root outside home, and an entry that could never match is refused when the config loads.
+
 - The calculator reads a percentage followed by a plus or minus as a percentage: `80 * 15% + 80` is 92 and
   `100 - 20% - 5` is 94.8. It read the `%` as a remainder and answered 0 and 100. A `%` with space on both
   sides (`17 % 5`) or between two numbers (`17%5`) is still the remainder, and so is `mod`.

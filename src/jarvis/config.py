@@ -2,7 +2,7 @@
 
 import re
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal, Self, cast
 from urllib.parse import urlsplit
 
@@ -392,20 +392,48 @@ DESKTOP_SETTINGS = (
 )
 
 
+def deny_pattern(entry: str) -> str:
+    """Return a `files.deny` entry in one form: a name, a path under home, or an absolute path.
+
+    `~/notes`, `./notes` and `notes/` are all the path `notes` under home.
+
+    Raises:
+        ValueError: the entry could never match anything.
+    """
+    text = entry.strip().removeprefix("~/")
+    text = str(PurePosixPath(text)) if text else ""
+    if text in {"", "."} or text.startswith("~") or ".." in PurePosixPath(text).parts:
+        msg = (
+            f"files.deny entry {entry!r} can never match: write a name (diary*), a path under "
+            "home (~/Documents/private) or an absolute path, without '..'"
+        )
+        raise ValueError(msg)
+    return text
+
+
+def _check_deny(entry: str) -> str:
+    deny_pattern(entry)
+    return entry
+
+
+DenyEntry = Annotated[SafeText, AfterValidator(_check_deny)]
+
+
 class FilesConfig(_Section):
     """The folders Jarvis may read and write (`~` is the owner's home).
 
     Secrets (keys, tokens, browser profiles, Jarvis's own state) are never read or written,
-    whatever the roots; `deny` adds names or paths under home to that list (shell-style
-    patterns such as `diary*` or `.config/app`). Hidden files and folders under home (shell
-    history, app logins and caches live there) are not read unless `hidden_allow` names them;
-    by default it opens the desktop's own settings. Writing asks first, unless
-    `boundaries.bypass_consent` is on, and never touches a hidden file or folder.
+    whatever the roots; `deny` adds names, paths under home or absolute paths to that list
+    (shell-style patterns such as `diary*`, `~/.config/app` or `/data/finance`). Hidden files
+    and folders under home (shell history, app logins and caches live there) are not read
+    unless `hidden_allow` names them; by default it opens the desktop's own settings. Writing
+    asks first, unless `boundaries.bypass_consent` is on, and never touches a hidden file or
+    folder.
     """
 
     read_roots: list[RootPath] = Field(default_factory=lambda: ["~"])
     write_roots: list[RootPath] = Field(default_factory=lambda: ["~/Documents"])
-    deny: list[SafeText] = Field(default_factory=list[str])
+    deny: list[DenyEntry] = Field(default_factory=list[str])
     hidden_allow: list[SafeText] = Field(default_factory=lambda: list(DESKTOP_SETTINGS))
 
 

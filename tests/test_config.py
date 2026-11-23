@@ -379,3 +379,14 @@ def test_at_most_30_actions_run_in_10_minutes_unless_the_owner_says_otherwise() 
     assert (boundaries.max_actions, boundaries.actions_window_s) == (30, 600.0)
     with pytest.raises(ValueError, match="max_actions"):
         config.BoundariesConfig(max_actions=0)
+
+
+@pytest.mark.parametrize("entry", ["", " ", "~", "~other/notes", "./", "Documents/../.ssh", ".."])
+def test_a_files_deny_entry_that_can_never_match_is_refused(entry: str) -> None:
+    with pytest.raises(ValueError, match="deny"):
+        config.FilesConfig(deny=[entry])
+
+
+@pytest.mark.parametrize("entry", ["diary*", "~/Documents/private", "/data/finance", "a/b/"])
+def test_a_files_deny_entry_in_any_usual_form_is_kept_as_written(entry: str) -> None:
+    assert config.FilesConfig(deny=[entry]).deny == [entry]

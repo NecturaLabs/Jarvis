@@ -26,15 +26,18 @@ existing file) and never makes a file executable.
 import contextlib
 import errno
 import fnmatch
+import glob
 import itertools
 import os
+import re
 import secrets
 import stat
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
+from jarvis.config import deny_pattern
 from jarvis.operations import (
     DATA_WRAP_CHARS,
     Operation,
@@ -168,6 +171,30 @@ def _inside(path: Path, roots: Iterable[Path]) -> bool:
     return any(path == root or path.is_relative_to(root) for root in roots)
 
 
+_WILDCARD = re.compile(r"[*?\[]")
+
+
+def _anchored(pattern: str, home: Path) -> str:
+    """Return a `files.deny` path as an absolute pattern: under home unless written absolute.
+
+    The folders before the first wildcard are resolved through links, as the paths it is matched
+    with are, and taken literally.
+    """
+    written = PurePosixPath(pattern)
+    base, parts = (
+        (written.anchor, written.parts[1:]) if written.is_absolute() else (home, written.parts)
+    )
+    fixed = next((i for i, part in enumerate(parts) if _WILDCARD.search(part)), len(parts))
+    head = glob.escape(os.path.realpath(PurePosixPath(base, *parts[:fixed])))
+    return str(PurePosixPath(head, *parts[fixed:]))
+
+
+def _starts_with(path: Path, pattern: str) -> bool:
+    """Return whether a resolved path is what an absolute pattern names, or inside it."""
+    depth = len(PurePosixPath(pattern).parts)
+    return len(path.parts) >= depth and fnmatch.fnmatch(str(Path(*path.parts[:depth])), pattern)
+
+
 def _listed(names: list[str]) -> str:
     """Return names as they are said in a list: "a", "a and b", "a, b and c"."""
     return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
@@ -221,7 +248,8 @@ class Boundary:
     home: Path
     read_roots: tuple[Path, ...]
     write_roots: tuple[Path, ...]
-    deny: tuple[str, ...] = ()
+    deny: tuple[str, ...] = ()  # the owner's names, matched against every part of a path
+    deny_paths: tuple[str, ...] = ()  # the owner's paths, absolute (under home when written so)
     protected: tuple[Path, ...] = ()
     hidden_allow: tuple[str, ...] = ()
 
@@ -234,11 +262,13 @@ class Boundary:
             text = str(home) + root[1:] if root.startswith("~") else root
             return Path(os.path.realpath(text))
 
+        deny = [deny_pattern(entry) for entry in config.deny]
         return cls(
             home,
             tuple(expand(root) for root in config.read_roots),
             tuple(expand(root) for root in config.write_roots),
-            tuple(config.deny),
+            tuple(d for d in deny if "/" not in d),
+            tuple(_anchored(d, home) for d in deny if "/" in d),
             tuple(Path(os.path.realpath(path)) for path in (*protected, *SYSTEM_FOLDERS)),
             tuple(config.hidden_allow),
         )
@@ -282,12 +312,14 @@ class Boundary:
         base = self._base(path)
         below = path.relative_to(base).parts if base is not None else path.parts
         names = [part.casefold() for part in below]
-        for pattern in (*SECRET_NAMES, *(d for d in self.deny if "/" not in d)):
+        for pattern in (*SECRET_NAMES, *self.deny):
             if any(fnmatch.fnmatchcase(name, pattern.casefold()) for name in names):
                 return True
+        if any(_starts_with(path, pattern) for pattern in self.deny_paths):
+            return True
         if base != self.home:
             return False
-        for pattern in (*SECRET_PATHS, *(d for d in self.deny if "/" in d)):
+        for pattern in SECRET_PATHS:
             depth = len(Path(pattern).parts)
             if len(below) >= depth and fnmatch.fnmatch("/".join(below[:depth]), pattern):
                 return True

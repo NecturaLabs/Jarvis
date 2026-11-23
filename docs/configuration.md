@@ -384,7 +384,7 @@ Arctic Shift archive, a free copy of public Reddit that can lag behind it by a l
 |---|---|---|---|
 | `read_roots` | `["~"]` | `~`, paths under `~/`, absolute paths | Folders whose files Jarvis may list and read (`list_dir`, `read_file`). |
 | `write_roots` | `["~/Documents"]` | the same | Folders Jarvis may create files in, or replace or add to them (`write_file`, asked first unless `bypass_consent` is on). |
-| `deny` | `[]` | shell-style patterns | More names (`diary*`) or paths under home (`.config/app`) never read or written. |
+| `deny` | `[]` | shell-style patterns | More names (`diary*`), paths under home (`.config/app`, `~/Documents/private`) or absolute paths (`/data/finance`) never read or written, with what is inside them. A trailing slash or a leading `./` makes no difference. An entry that could never match (`..` in it, `~` alone, another user's `~name`) is refused when the config loads. |
 | `hidden_allow` | the desktop's settings: `.config/hypr`, `omarchy`, `waybar`, `walker`, `mako`, `swayosd`, `kitty`, `alacritty`, `ghostty`, `foot`, `btop`, `fastfetch`, `jarvis` | paths under home, shell-style | The hidden files and folders directly under home Jarvis may read (`.config/app` and the like). Everything else hidden there (shell history, app logins, cookies, caches) stays shut; `[]` shuts them all. A hidden folder deeper down (`~/Projects/site/.git`) is not shut by this; secret names still are. |
 
 Whatever the roots say, Jarvis never reads or writes keys, tokens, password stores, browser profiles
