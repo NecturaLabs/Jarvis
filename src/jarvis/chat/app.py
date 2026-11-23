@@ -17,6 +17,7 @@ working line on the first, and the words, the caret and the footer two cells in.
 
 import contextlib
 import inspect
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -72,6 +73,8 @@ if TYPE_CHECKING:
     from jarvis.memory import Conversation
     from jarvis.pictures import Picture, PictureCache
     from jarvis.sysinfo import Stats
+
+log = logging.getLogger(__name__)
 
 
 POLL_S = 0.25
@@ -946,6 +949,9 @@ class ChatApp(App[None]):
                 picture = load()
             except PictureError as exc:
                 self._from_worker(self._note, str(exc), "warn")
+            except Exception:  # a picture never ends the window
+                log.exception("a picture could not be read")
+                self._from_worker(self._note, "That picture couldn't be read.", "warn")
             else:
                 self._from_worker(self._attach_picture, picture)
 

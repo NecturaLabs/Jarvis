@@ -342,6 +342,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The chat no longer closes on a picture whose header claims more than about 179 million pixels (a big scan
+  or map, or a crafted file): Pillow refused it with an error the picture check did not catch, and the
+  window ended. It is now refused as too large to read, from the chat and from `show_image`, and any other
+  failure while loading a picture leaves a note instead of ending the window.
+
 - `files.deny` closes a folder however its path is written: `~/Documents/private`, an absolute path, a
   trailing slash or a leading `./`. Only `Documents/private` matched before; the other forms were accepted
   and matched nothing, so the folder stayed readable. An absolute path now also closes a folder under a

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from PIL import Image
 from rich.console import Console
 from rich.text import Text
+from test_pictures import claimed_png
 from textual import events
 from textual.containers import VerticalScroll
 from textual.widgets import Markdown, OptionList, Static
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
     from pathlib import Path
     from typing import Any
 
+    import pytest
     from textual.app import App
     from textual.pilot import Pilot
     from textual.widget import Widget
@@ -1113,6 +1115,35 @@ def test_ctrl_v_attaches_a_copied_picture_as_a_tag_like_claude_code() -> None:
         assert session.asked == ["[Image #1] what?"]
         assert session.pictures == [["pasted picture"]]
         await _until(pilot, lambda: not app.query_one("#pictures").display)
+
+    _run(test, app)
+
+
+def test_a_picture_claiming_a_huge_size_is_refused_with_a_note() -> None:
+    huge = Clip(image=claimed_png(20000, 20000), mime="image/png")
+    app = _picture_app(FakeSession(), paste=_clipboard(huge))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.press("ctrl+v")
+        await _until(pilot, lambda: _has(app, "too large"))
+        assert app.is_running
+
+    _run(test, app)
+
+
+def test_a_picture_that_fails_to_load_unexpectedly_leaves_the_window_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(_data: bytes, _name: str) -> Picture:
+        raise RuntimeError("decoder bug")
+
+    monkeypatch.setattr("jarvis.chat.app.prepare", broken)
+    app = _picture_app(FakeSession(), paste=_clipboard(Clip(image=_png(), mime="image/png")))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.press("ctrl+v")
+        await _until(pilot, lambda: _has(app, "couldn't be read"))
+        assert app.is_running
 
     _run(test, app)
 
