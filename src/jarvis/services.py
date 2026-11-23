@@ -148,9 +148,13 @@ def strata_profile_file() -> Path:
     return paths.config_dir() / "strata-profile.json"
 
 
-def expert_profile_file() -> Path:
-    """Return where the engine keeps what it learned about the experts Jarvis's requests use."""
-    return paths.state_dir() / "strata-expert-profile.bin"
+def expert_profile_file(config: Config) -> Path:
+    """Return where the engine keeps what it learned about the experts Jarvis's requests use.
+
+    One file per model, so a profile learned on one model never starts another.
+    """
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", read_run_config(config).name) or "model"
+    return paths.state_dir() / f"strata-expert-profile-{name}.bin"
 
 
 def strata_ready_file() -> Path:
@@ -235,11 +239,13 @@ class RunConfig:
 
 
 def read_run_config(config: Config) -> RunConfig:
-    """Read `strata.run_config`.
+    """Read `strata.run_config`, without checking that the files it names are there.
+
+    A model drive that is not mounted yet still gives its model's path (`missing_files` checks).
 
     Raises:
-        StrataSetupError: it is unset or unreadable, is not a Strata run config, or names a file
-            that is missing (the model moved, or a Strata update removed it).
+        StrataSetupError: it is unset or unreadable, is not a Strata run config, or picks its own
+            address (`--host`, `--port`: Jarvis serves on 127.0.0.1 at `strata.port`).
     """
     path = config.strata.run_config
     if path == Path():
@@ -259,15 +265,33 @@ def read_run_config(config: Config) -> RunConfig:
         msg = f"{path} is not a Strata run config (no Strata engine and arguments in it)"
         raise StrataSetupError(msg)
     run = RunConfig(path, data, tuple(str(a) for a in cast("list[object]", raw)))
+    for flag in ("--host", "--port"):
+        if flag in run.args:
+            msg = f"{path} sets its own {flag}; Jarvis serves on 127.0.0.1 at strata.port"
+            raise StrataSetupError(msg)
+    return run
+
+
+def missing_files(run: RunConfig) -> list[str]:
+    """Return the files the run config names that are not there (a drive not mounted, a move)."""
     named = [*run.args, *(str(f) for f in (run.picture_reader,) if f is not None)]
-    missing = sorted({a for a in named if a.startswith("/") and not Path(a).exists()})
+    return sorted({a for a in named if a.startswith("/") and not Path(a).exists()})
+
+
+def _require_files(run: RunConfig) -> None:
+    """Raise `StrataSetupError` when a file the run config names is missing.
+
+    Raises:
+        StrataSetupError: naming the missing files.
+    """
+    missing = missing_files(run)
     if missing:
         msg = (
-            f"the Strata run config {path} names files that are missing: {', '.join(missing)}; "
-            "run `strata launch` for the model again, then `jarvis setup`"
+            f"the Strata run config {run.path} names files that are missing: {', '.join(missing)}; "
+            "mount the model's drive, or run `strata launch` for the model again, then "
+            "`jarvis setup`"
         )
         raise StrataSetupError(msg)
-    return run
 
 
 def reads_pictures(config: Config) -> bool:
@@ -317,10 +341,20 @@ def _tuned_args(config: Config, run: RunConfig) -> list[str]:
     `--expert-vram` or `--vram-experts-gb` take `expert_vram_gib` (the experts kept on the card,
     the rest go to RAM); an engine whose expert cache fills the card (`--expert-cache`) is held back
     by `vram_reserve_mib`, the VRAM it leaves free. An engine that starts from a routing profile
-    learns Jarvis's own (`learn_experts`, `expert_profile_file`). Without `strata.pictures` the
-    reader is dropped.
+    learns Jarvis's own (`learn_experts`, `expert_profile_file`). Without `strata.pictures`, or
+    without a reader set up, `--vision` is dropped.
+
+    Raises:
+        StrataSetupError: the engine's expert cache would fill the card and no reserve is set.
     """
     s = config.strata
+    if "--expert-cache" in run.args and not s.vram_reserve_mib:
+        msg = (
+            "this model's engine fills the card with its expert cache (--expert-cache), which "
+            "leaves no VRAM for a game: set strata.vram_reserve_mib (12000 holds "
+            "Qwen3.8-Flash-Next at about 8 GiB on a 20 GB card, see docs/models.md)"
+        )
+        raise StrataSetupError(msg)
     args = _with(list(run.args), "--max-context", str(s.context))
     for flag in ("--expert-vram", "--vram-experts-gb"):
         if flag in args:
@@ -331,9 +365,9 @@ def _tuned_args(config: Config, run: RunConfig) -> list[str]:
     if s.kv_resident:
         args = _with(args, "--kv-resident", str(s.kv_resident))
     if learns_experts(config, run):
-        learned = str(expert_profile_file())  # `write_strata_profile` starts it from Strata's own
+        learned = str(expert_profile_file(config))  # `write_strata_profile` starts it from Strata's
         args = _with(_with(args, "--expert-profile", learned), "--expert-profile-save", learned)
-    if not s.pictures:
+    if not s.pictures or run.picture_reader is None:
         args = _without(args, "--vision")
     return args
 
@@ -371,6 +405,7 @@ def strata_profile(config: Config) -> dict[str, object]:
     """
     s = config.strata
     run = read_run_config(config)
+    _require_files(run)
     args = _tuned_args(config, run)
     profile: dict[str, object] = {
         **{key: value for key, value in run.data.items() if key not in _LAUNCH_KEYS},
@@ -409,14 +444,20 @@ def write_strata_profile(config: Config) -> Path:
 
     When the engine learns Jarvis's experts and has learned nothing yet, it starts from a copy of
     the run config's own routing profile, so the profile never has to change once it has.
+
+    Raises:
+        StrataSetupError: as `strata_profile`, or that routing profile is not an absolute file.
     """
     path = strata_profile_file()
     profile = strata_profile(config)
     run = read_run_config(config)
-    learned = expert_profile_file()
-    if learns_experts(config, run) and not learned.is_file() and run.expert_profile is not None:
-        learned.parent.mkdir(parents=True, exist_ok=True)
-        write_atomic_bytes(learned, run.expert_profile.read_bytes())
+    seed = run.expert_profile
+    learned = expert_profile_file(config)
+    if learns_experts(config, run) and seed is not None and not learned.is_file():
+        if not (seed.is_absolute() and seed.is_file()):
+            msg = f"the run config's --expert-profile {seed} is not a file Jarvis can start from"
+            raise StrataSetupError(msg)
+        write_atomic_bytes(learned, seed.read_bytes())
     _write_if_changed(path, json.dumps(profile, indent=1) + "\n")
     return path
 

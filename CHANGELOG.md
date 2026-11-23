@@ -17,8 +17,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   flags, tokenizer and picture reader come from that file, and Jarvis adds only its own limits (context,
   VRAM, one request at a time, lazy load). Nothing model-specific is hardcoded any more. The VRAM limit goes
   through whichever flag the model's engine takes. `strata.learn_experts` (on) lets an engine that keeps a
-  routing profile learn which experts Jarvis's requests use and start with them on the card. The default
-  model moves to Qwen3.8-Flash-Next (measured beside a game's budget: 7.95 GiB of VRAM, 35.5 GiB of RAM,
+  routing profile learn which experts Jarvis's requests use and start with them on the card. Jarvis has no
+  model of its own default; the one set up and measured here is Qwen3.8-Flash-Next (measured beside a game's budget: 7.95 GiB of VRAM, 35.5 GiB of RAM,
   under a second for a two-tool request, and the prompt reused between requests); Inkling 2 Mini is set up
   to compare and is too slow with only 8 GiB of VRAM today ([docs/models.md](docs/models.md)).
   **Migration:** `strata.model_file`, `tokenizer_dir`, `model_id`, `prefill` and `vision_file` are gone,
@@ -341,6 +341,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   recipes and agents for coding agents (`.claude/`, `.codex/`, `.agents/`).
 
 ### Fixed
+
+- From the review of the run-config change: a model whose drive is not mounted when Jarvis starts is known
+  again by its path, so a request says the model file is missing at once instead of waiting for the server,
+  and pictures stay on for when the drive is back. `jarvis setup` refuses a run config whose engine would
+  fill the card with its expert cache unless `strata.vram_reserve_mib` is set, and `jarvis doctor` fails
+  "VRAM left for games" then; it also names a missing model drive as such. The learned expert profile is
+  kept per model, a run config that sets its own `--host` or `--port` is refused, a relative routing
+  profile is a setup error, and a bare `--vision` without a picture reader is dropped.
 
 - The chat's working line says "Checking the time" while Jarvis reads the clock; it said "Running Time now".
 
