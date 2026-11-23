@@ -139,7 +139,7 @@ class ChatConfig(AgentConfig):
     max_seconds: float = Field(default=600.0, ge=10, le=3600)
     reply_tokens: int = Field(default=2048, ge=64, le=8192)
     tool_text_chars: int = Field(default=8000, ge=500, le=50000)
-    memory_tokens: int = Field(default=9900, ge=0, le=200000)
+    memory_tokens: int = Field(default=9400, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
     resume: bool = True  # open the chat on the conversation it had last time
     verbosity: Literal["replies", "steps", "everything"] = "replies"

@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis import osskills, paths
+from jarvis import control, osskills, paths
 from jarvis.agent import Agent, Hooks
 from jarvis.app import (
     MAX_HINT_CHARS,
@@ -24,6 +24,7 @@ from jarvis.app import (
     strata_key_file,
     system_prompt,
     unknown_overrides,
+    voice_service_running,
 )
 from jarvis.audit import AuditLog
 from jarvis.config import (
@@ -407,3 +408,50 @@ def test_an_os_skill_override_is_known_even_without_the_folder(
     config = Config(boundaries=BoundariesConfig(classes={"os_skill": "deny"}))
 
     assert unknown_overrides(config, []) == []
+
+
+@pytest.mark.parametrize("channel", ["voice", "chat"])
+def test_both_channels_offer_reminders(tmp_path: Path, channel: Channel) -> None:
+    config = Config()
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+
+    registry = channel_registry(
+        config, spotify.operations(), channel_limits(config, channel), channel
+    )
+
+    for name in ("schedule_add", "schedule_list", "schedule_cancel"):
+        assert registry.get(name) is not None
+
+
+def test_a_reminder_set_with_no_voice_service_running_says_it_will_not_be_said(
+    tmp_path: Path,
+) -> None:
+    config = Config()
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+    registry = channel_registry(
+        config, spotify.operations(), channel_limits(config, "chat"), "chat", lambda: False
+    )
+    add = registry.get("schedule_add")
+    assert add is not None
+
+    result = add.run({"text": "stretch", "in_minutes": 20})
+
+    assert "isn't running" in result.spoken
+    assert paths.schedule_file().exists()
+
+
+@pytest.mark.parametrize(("reply", "running"), [(None, False), ({"ok": True}, True)])
+def test_the_voice_service_counts_as_running_when_its_control_socket_answers(
+    monkeypatch: pytest.MonkeyPatch, reply: dict[str, Any] | None, *, running: bool
+) -> None:
+    asked: list[str] = []
+
+    def send(command: str, path: object = None, timeout: float = 10.0) -> dict[str, Any] | None:
+        del path, timeout
+        asked.append(command)
+        return reply
+
+    monkeypatch.setattr(control, "send", send)
+
+    assert voice_service_running() is running
+    assert asked == ["status"]

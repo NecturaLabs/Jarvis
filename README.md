@@ -42,6 +42,10 @@ Jarvis is pre-1.0 software; see [Status](#status).
   worked out exactly by a calculator in code, never guessed by the model.
 - **Boundaries:** every action is a typed operation checked by a policy engine in code before it runs, and
   every request, decision and result goes to an audit log. See [SECURITY.md](SECURITY.md).
+- **Reminders and scheduled requests:** "remind me in 20 minutes", every weekday at a time, or every so
+  many minutes; or a request Jarvis carries out later, such as pausing the music at midnight. Set them by
+  voice or in the chat; the voice service says them when due. See
+  [the ADR](docs/adr/0011-reminders-and-scheduled-requests.md).
 - **Time and weather:** the time, or the weather now, later or in a named place, asked in any words.
   The time comes from this PC; the weather from Open-Meteo, free and without an account. Set your home in
   [`[weather]`](docs/configuration.md).

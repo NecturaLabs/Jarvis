@@ -16,7 +16,7 @@ import queue
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -34,6 +34,7 @@ from jarvis.audio import (
     write_wav,
 )
 from jarvis.policy import Origin, is_yes
+from jarvis.schedule import reminder_words, scheduled_request
 from jarvis.sentences import split_sentences
 
 if TYPE_CHECKING:
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 
     from jarvis.config import AudioConfig
     from jarvis.confirmkey import ConfirmKey, Waiting
+    from jarvis.schedule import Due
 
 log = logging.getLogger(__name__)
 
@@ -323,6 +325,7 @@ class VoiceLoop:
         asleep_s: Callable[[], float] = time_asleep,
         after_sleep: Callable[[], None] = lambda: None,
         keys: ConfirmKey | None = None,
+        due: Callable[[], Sequence[Due]] = tuple,
     ) -> None:
         """Wire the loop to its parts.
 
@@ -345,6 +348,9 @@ class VoiceLoop:
         ignored (it is asked only then). `asleep_s` is how long the PC has slept since boot: when
         it grows, the loop listens afresh and calls `after_sleep`. `keys` is the confirm key a
         `strong` action waits for (`jarvis confirm`); without it such an action is refused.
+        `due` takes the reminders and scheduled requests whose time came (`JobStore.take_due`);
+        it is asked between every two frames, so it must be cheap. What it gives waits while the
+        owner dictates or a meeting runs.
         """
         super().__init__()
         self._agent = agent
@@ -369,6 +375,9 @@ class VoiceLoop:
         self._reopen = reopen
         self._locked = locked
         self._keys = keys
+        self._due = due
+        self._due_failed = False  # the last look at the due jobs failed (logged once)
+        self._held: list[tuple[Due, float]] = []  # due jobs waiting for dictation to end, and when
         self._asleep_s = asleep_s
         self._after_sleep = after_sleep
         self._asleep = asleep_s()  # the sleep seen so far
@@ -910,6 +919,22 @@ class VoiceLoop:
                 self._answered = True
             return
         log.info("heard (%s): %r", origin.value, text)
+        started = time.perf_counter()
+        agent_s = self._think(text, origin)
+        self._answered = from_owner and not self._cancelled() and not self._muted
+        first = self._first_words
+        log.info(
+            "timing: capture %.2f s, transcription %.2f s, first words after %s, agent %.2f s, "
+            "done speaking after %.2f s",
+            capture_s,
+            stt_s,
+            "-" if first is None else f"{first - started:.2f} s",
+            agent_s,
+            time.perf_counter() - started,
+        )
+
+    def _think(self, text: str, origin: Origin) -> float:
+        """Hand `text` to the agent and speak its reply; return the seconds the agent took."""
         self.state = State.THINK
         started = time.perf_counter()
         self._first_words = None
@@ -927,20 +952,64 @@ class VoiceLoop:
                 ),
                 origin,
             )
-            agent_s = time.perf_counter() - started
+            return time.perf_counter() - started
         finally:
             self._end_speaking()
-        self._answered = from_owner and not self._cancelled() and not self._muted
-        first = self._first_words
-        log.info(
-            "timing: capture %.2f s, transcription %.2f s, first words after %s, agent %.2f s, "
-            "done speaking after %.2f s",
-            capture_s,
-            stt_s,
-            "-" if first is None else f"{first - started:.2f} s",
-            agent_s,
-            time.perf_counter() - started,
-        )
+
+    def _take_due(self) -> list[Due]:
+        """Return the jobs whose time came, how late each is now.
+
+        While the owner dictates or a meeting runs, they are held and given once it is over.
+        """
+        try:
+            taken = self._due()
+        except Exception:
+            if not self._due_failed:
+                log.exception("could not read the reminders and scheduled requests")
+            self._due_failed = True
+            taken = ()
+        else:
+            self._due_failed = False
+        now = self._clock()
+        self._held.extend((item, now) for item in taken)
+        if not self._held or self._dictating() is True or self._meeting():
+            return []
+        held, self._held = self._held, []
+        return [replace(item, late_s=item.late_s + now - at) for item, at in held]
+
+    def _served_due(self) -> bool:
+        """Serve each job whose time came, if any; return whether there was one."""
+        due = self._take_due()
+        for item in due:
+            self._requests += 1
+            self._serve(functools.partial(self._run_due, item))
+        if not due:
+            return False
+        self._mic.drain()
+        self._wake.reset()
+        return True
+
+    def _run_due(self, due: Due) -> None:
+        """Say a due reminder, or carry out a due request as if the owner had just asked.
+
+        One that came too late is not done, only audited as missed.
+        """
+        job = due.job
+        fields = {"id": job.id, "action": job.action, "late_s": round(due.late_s)}
+        if due.missed:
+            log.info("job %d is %.0f s late: not done", job.id, due.late_s)
+            if self._audit is not None:
+                self._audit.record("schedule_missed", **fields)
+            return
+        log.info("job %d is due (%s)", job.id, job.action)
+        if self._audit is not None:
+            self._audit.record("schedule_due", **fields)
+        if job.action == "remind":
+            self.state = State.SPEAK
+            self._chime()
+            self._say(reminder_words(due))
+            return
+        self._think(scheduled_request(job), Origin.OWNER_SPEECH)
 
     def _watch_pc(self, should_stop: Callable[[], bool]) -> None:
         """Listen to PC audio for the wake word, restarting after a failure, until stopped."""
@@ -1172,6 +1241,8 @@ class VoiceLoop:
                 self._requests += 1
                 self._serve(functools.partial(self._answer_pc, pc_request))
                 self._mic.drain()
+                continue
+            if self._served_due():
                 continue
             if self._wake.heard(frame):
                 if self._ignored_while_locked("the wake word") or self._ignored_while_dictating(

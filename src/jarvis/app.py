@@ -19,6 +19,7 @@ from jarvis.pc.stats import StatsOps
 from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
+from jarvis.schedule import JobStore, ScheduleOps
 from jarvis.secretfile import read_api_key
 from jarvis.services import StrataSetupError, read_run_config, reads_pictures
 from jarvis.spotify.api import SpotifyApi
@@ -225,6 +226,13 @@ def _number_rule(separator: str) -> str:
     )
 
 
+def voice_service_running() -> bool:
+    """Whether `jarvis run` answers on its control socket."""
+    from jarvis import control  # ruff: ignore[import-outside-top-level] - the socket client, kept out of programs that never ask
+
+    return control.send("status", timeout=1.0) is not None
+
+
 class SetupError(Exception):
     """Something setup provides is missing."""
 
@@ -236,12 +244,17 @@ def channel_limits(config: Config, channel: Channel) -> Limits:
 
 
 def channel_registry(
-    config: Config, spotify: list[Operation], limits: Limits, channel: Channel
+    config: Config,
+    spotify: list[Operation],
+    limits: Limits,
+    channel: Channel,
+    voice_running: Callable[[], bool] = lambda: True,
 ) -> Registry:
     """Return every operation a channel's agent is offered, sized to its limits.
 
     A read page fills the chat's room for one result; spoken requests keep the configured length.
-    Resetting the registry forgets what the web operations' searches returned.
+    Resetting the registry forgets what the web operations' searches returned. `voice_running`
+    says whether a voice service is there to say the reminders set here.
     """
     room = limits.tool_text_chars - PAGE_HEADROOM
     pages = room if channel == "chat" else min(config.research.page_chars, room)
@@ -257,6 +270,11 @@ def channel_registry(
             *online.operations(),
             *pc_operations(config, limits),
             *calc.operations(config.format),
+            *ScheduleOps(
+                JobStore(paths.schedule_file()),
+                twelve_hour=config.clock.twelve_hour,
+                voice_running=voice_running,
+            ).operations(),
             *([skills.skill_operation(shipped)] if shipped else []),
             *(
                 [
@@ -381,7 +399,14 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
         raise SetupError(msg)
     channel: Channel = "chat" if via == "chat" else "voice"
     limits = channel_limits(config, channel)
-    registry = channel_registry(config, ops.operations(), limits, channel)
+    elsewhere = via in {"chat", "ask"}  # the voice service says reminders; is one running?
+    registry = channel_registry(
+        config,
+        ops.operations(),
+        limits,
+        channel,
+        voice_running=voice_service_running if elsewhere else lambda: True,
+    )
     remembered = chat_memory_file() if channel == "chat" else None
     if remembered is not None and not config.chat.resume:
         remembered.unlink(missing_ok=True)

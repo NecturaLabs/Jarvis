@@ -21,10 +21,11 @@ from jarvis.confirmkey import MIN_PRESS_S, NOTHING_WAITING, STRAY_HOLD_S, Confir
 from jarvis.model import Delta, StrataModel
 from jarvis.operations import Operation, Registry, Result
 from jarvis.policy import OpClass, Origin
+from jarvis.schedule import Due, Job
 from jarvis.voice import PcListener, State, VoiceLoop
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterable, Iterator
+    from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
     from pathlib import Path
 
     from numpy.typing import NDArray
@@ -245,6 +246,7 @@ def _loop(
     locked: Callable[[], bool] = lambda: False,
     asleep_s: Callable[[], float] = lambda: 0.0,
     after_sleep: Callable[[], None] = lambda: None,
+    due: Callable[[], Sequence[Due]] = tuple,
 ) -> VoiceLoop:
     listener = None if pc is None else PcListener(pc, pc_wake or Wake(), Vad())
     return VoiceLoop(
@@ -268,6 +270,7 @@ def _loop(
         locked=locked,
         asleep_s=asleep_s,
         after_sleep=after_sleep,
+        due=due,
     )
 
 
@@ -3143,3 +3146,155 @@ def test_an_answer_transcribed_as_nothing_says_so() -> None:
     _run(_loop(Agent(_answering(answers)), Mic(*REQUEST, *ANSWER), Speaker(), answer=_saying(" ")))
 
     assert answers == [Declined(NoReason.UNTRANSCRIBED)]
+
+
+def _job(ident: int, action: str, text: str) -> Job:
+    return Job(ident, cast("Any", action), text, "none", "", (), 0, 1000.0)
+
+
+@dataclass
+class DueJobs:
+    """The jobs file's due jobs: given once, at the first look after `ready` turns true."""
+
+    items: list[Due]
+    ready: Callable[[], bool] = lambda: True
+    looks: int = 0
+
+    def __call__(self) -> list[Due]:
+        self.looks += 1
+        if not self.ready():
+            return []
+        items, self.items = self.items, []
+        return items
+
+
+def test_a_due_reminder_is_said_after_a_chime_and_audited() -> None:
+    agent = Agent()
+    speaker = Speaker()
+    audit = AuditLog(None)
+    jobs = DueJobs([Due(_job(3, "remind", "take the bread out"), 5.0)])
+
+    _run(_loop(agent, Mic(*[SILENCE] * 3), speaker, audit=audit, due=jobs))
+
+    assert speaker.chimes == 1
+    assert speaker.said == ["Reminder: take the bread out"]
+    assert agent.calls == []
+    assert [(e["event"], e["id"], e["action"]) for e in audit.events] == [
+        ("schedule_due", 3, "remind")
+    ]
+
+
+def test_a_late_reminder_says_how_late_it_is() -> None:
+    speaker = Speaker()
+    jobs = DueJobs([Due(_job(1, "remind", "call the garage"), 25 * 60.0)])
+
+    _run(_loop(Agent(), Mic(SILENCE), speaker, due=jobs))
+
+    assert speaker.said == ["Reminder from 25 minutes ago: call the garage"]
+
+
+def test_a_due_request_goes_to_the_agent_as_the_owners_and_its_reply_is_spoken() -> None:
+    agent = Agent(lambda _t, _h, _o: "Paused.")
+    speaker = Speaker()
+    jobs = DueJobs([Due(_job(2, "do", "pause the music"), 1.0)])
+
+    _run(_loop(agent, Mic(SILENCE), speaker, due=jobs))
+
+    assert len(agent.calls) == 1
+    text, origin = agent.calls[0]
+    assert text.endswith("pause the music")
+    assert origin is Origin.OWNER_SPEECH
+    assert speaker.said == ["Paused."]
+    assert speaker.chimes == 0
+
+
+def test_a_job_that_came_too_late_is_not_done_but_audited_as_missed() -> None:
+    agent = Agent()
+    speaker = Speaker()
+    audit = AuditLog(None)
+    jobs = DueJobs(
+        [
+            Due(_job(4, "do", "pause the music"), 3600.0),
+            Due(_job(5, "remind", "stretch"), 7 * 3600.0),
+        ]
+    )
+
+    _run(_loop(agent, Mic(SILENCE), speaker, audit=audit, due=jobs))
+
+    assert agent.calls == []
+    assert speaker.said == []
+    assert [(e["event"], e["id"], e["late_s"]) for e in audit.events] == [
+        ("schedule_missed", 4, 3600),
+        ("schedule_missed", 5, 7 * 3600),
+    ]
+
+
+def test_due_jobs_wait_while_the_owner_dictates_or_a_meeting_runs() -> None:
+    speaker = Speaker()
+    dictating = threading.Event()
+    dictating.set()
+    meeting = threading.Event()
+    jobs = DueJobs([Due(_job(1, "remind", "stretch"), 0.0)])
+    mic = Mic(
+        *[SILENCE] * 3,
+        dictating.clear,
+        meeting.set,
+        *[SILENCE] * 3,
+        lambda: _no_word_yet(speaker),
+        meeting.clear,
+        *[SILENCE] * 3,
+    )
+
+    _run(_loop(Agent(), mic, speaker, dictating=dictating.is_set, meeting=meeting.is_set, due=jobs))
+
+    assert speaker.said == ["Reminder: stretch"]
+
+
+def test_a_request_held_back_by_dictation_for_too_long_is_missed() -> None:
+    agent = Agent()
+    audit = AuditLog(None)
+    clock = Clock()
+    dictating = threading.Event()
+    dictating.set()
+    jobs = DueJobs([Due(_job(6, "do", "pause the music"), 60.0)])
+    mic = Mic(SILENCE, clock.advance(15 * 60), dictating.clear, *[SILENCE] * 3)
+
+    _run(
+        _loop(agent, mic, Speaker(), clock=clock, dictating=dictating.is_set, audit=audit, due=jobs)
+    )
+
+    assert agent.calls == []
+    assert [(e["event"], e["late_s"]) for e in audit.events] == [("schedule_missed", 16 * 60)]
+
+
+def _no_word_yet(speaker: Speaker) -> None:
+    assert speaker.said == []
+
+
+def test_no_follow_up_is_taken_after_a_reminder() -> None:
+    # Nobody asked for the reminder: speech right after it is not taken as a request.
+    agent = Agent()
+    speaker = Speaker()
+    cfg = CFG.model_copy(update={"follow_up_s": 2.0})
+    jobs = DueJobs([Due(_job(1, "remind", "stretch"), 0.0)])
+
+    _run(_loop(agent, Mic(SILENCE, *ANSWER, *[SILENCE] * 5), speaker, cfg=cfg, due=jobs))
+
+    assert agent.calls == []
+    assert speaker.said == ["Reminder: stretch"]
+
+
+def test_a_jobs_file_that_cannot_be_read_is_logged_once_and_listening_goes_on(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    agent = Agent()
+
+    def broken() -> list[Due]:
+        msg = "permission denied"
+        raise OSError(msg)
+
+    with caplog.at_level(logging.ERROR, logger="jarvis.voice"):
+        _run(_loop(agent, Mic(*[SILENCE] * 3, *REQUEST), Speaker(), due=broken))
+
+    assert agent.calls == [("pause the music", Origin.OWNER_SPEECH)]
+    assert len([r for r in caplog.records if "scheduled requests" in r.getMessage()]) == 1

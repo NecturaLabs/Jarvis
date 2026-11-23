@@ -61,6 +61,11 @@ def audit_file() -> Path:
     return state_dir() / "audit.jsonl"
 
 
+def schedule_file() -> Path:
+    """Return the file of reminders and scheduled requests, shared by Jarvis's processes."""
+    return state_dir() / "schedule.json"
+
+
 def actions_file() -> Path:
     """Return the file that counts recent side-effecting actions across Jarvis's processes."""
     return state_dir() / "actions.json"

@@ -152,6 +152,18 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Reminders and scheduled requests ([ADR 0011](docs/adr/0011-reminders-and-scheduled-requests.md)):
+  `schedule_add` sets a reminder Jarvis says, or a request it carries out as if you had just asked, in so
+  many minutes or at a time of day (today, tomorrow or a weekday), once, every day, on weekdays, at
+  weekends, every week, or every 5 to 1,440 minutes; `schedule_list` and `schedule_cancel` list and cancel
+  them. They are kept in `~/.local/state/jarvis/schedule.json` (mode 0600) and said by the voice service
+  between requests, never while you dictate or a meeting runs. A one-off reminder up to six hours late is
+  still said, with how late it is; anything else more than ten minutes late is not done, and the audit log
+  and the chat window's activity show it as missed. The chat window and `jarvis ask` say when the voice
+  service is not running to say a job. To make room for the three operations in the default context,
+  `chat.memory_tokens` defaults to 9,400 (was 9,900); a config that still sets a higher number gets what
+  the window leaves.
+
 - `strata.kv_resident` keeps that many context cells in VRAM and the whole context in pinned RAM
   (`--kv-resident`, Strata's KV streaming), so `strata.context` can grow without more VRAM. It is off
   (`0`) by default until a bigger context has been measured on this PC.

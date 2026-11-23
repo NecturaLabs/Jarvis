@@ -163,6 +163,17 @@ def _local_time(stamp: object) -> str:
         return ""
 
 
+def _job_kind(entry: dict[str, object]) -> str:
+    return "scheduled request" if entry.get("action") == "do" else "reminder"
+
+
+def _late(entry: dict[str, object]) -> str:
+    late = entry.get("late_s")
+    minutes = round(late / 60) if isinstance(late, int | float) else 0
+    hours, rest = divmod(minutes, 60)
+    return f"{hours} h {rest} min" if hours else f"{minutes} min"
+
+
 def _action(op: object) -> str:
     words = _plain(str(op).removeprefix("spotify_").replace("_", " "))
     return words[:1].upper() + words[1:]
@@ -316,6 +327,18 @@ def _simple(entry: dict[str, object]) -> _Line | None:
             "Dropped a request: you started dictating"
             if entry.get("reason") == "dictation started mid-request"
             else "Ignored the wake word: you were dictating",
+            False,
+            "",
+        ),
+        "schedule_due": (
+            "note",
+            f"{_job_kind(entry).capitalize()} {_plain(entry.get('id', '?'))} came due",
+            False,
+            "",
+        ),
+        "schedule_missed": (
+            "warn",
+            f"Missed {_job_kind(entry)} {_plain(entry.get('id', '?'))}: {_late(entry)} late",
             False,
             "",
         ),
