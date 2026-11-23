@@ -323,6 +323,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The calculator rounds a half away from zero, as calculators do: `round(2.5)` is 3 and `round(0.125, 2)`
+  is 0.13. It used Python's rounding to even, which gave 2 and 0.12.
+
 - A plain command that needs the model after all (it failed, or its result needs wording) no longer sends
   the model a remembered conversation larger than its budget: the conversation is summarized or trimmed
   first, as for any other request.

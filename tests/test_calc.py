@@ -48,6 +48,10 @@ from jarvis.policy import OpClass
         ("2 \u00d7 3 \u00f7 4 \u2212 1", "0.5"),  # the signs as typed: times, divide, minus
         ("1 / 3 * 3", "1"),
         ("123456789 * 987654321", "121932631112635269"),
+        ("round(2.5)", "3"),  # a half rounds away from zero, as calculators do
+        ("round(-2.5)", "-3"),
+        ("round(0.125, 2)", "0.13"),
+        ("round(cos(0) * 0.5)", "1"),
     ],
 )
 def test_an_expression_is_worked_out_exactly(expression: str, value: str) -> None:

@@ -132,9 +132,10 @@ def _round(x: Number, places: Number | None = None) -> Number:
     if not 0 <= digits <= SIGNIFICANT:
         msg = f"rounding takes 0 to {SIGNIFICANT} places"
         raise CalcError(msg)
-    if isinstance(x, Fraction):
-        return Fraction(round(x, digits))
-    return round(x, digits)
+    # Half away from zero, as calculators round: round(2.5) is 3, not Python's 2.
+    scale = Fraction(10) ** digits
+    whole = math.floor(abs(Fraction(x)) * scale + Fraction(1, 2))
+    return Fraction(whole if x >= 0 else -whole) / scale
 
 
 def _floor(x: Number) -> Number:
