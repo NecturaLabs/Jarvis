@@ -297,6 +297,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `jarvis start` and `jarvis restart` no longer print "Failed to reset failed state of unit jarvis.service:
+  Unit jarvis.service not loaded" when Jarvis was stopped: only a unit in the `failed` state is reset.
+  `jarvis help` now lists the commands, as `jarvis --help` does.
 - The audit log now says why a confirmation ended as no (#38). Before, the PC sleeping with the question
   open, no answer in time, a lost microphone and a spoken no all wrote the same line. Each no now carries a
   `reason` from a fixed list, and the chat's activity pane shows it. Only a clear yes approves, as before.

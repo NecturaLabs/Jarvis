@@ -175,6 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("restart", help="restart the voice service (after a config change)")
     sub.add_parser("logs", help="follow Jarvis's live log (Ctrl+C to leave)")
     sub.add_parser("doctor", help="check every part without loading the model")
+    sub.add_parser("help", help="show this list of commands (as --help does)")
     status = sub.add_parser(
         "status", help="show what Jarvis is doing and whether the model is loaded"
     )
@@ -1001,9 +1002,26 @@ def _unit_state(unit: str) -> str:
     return done.stdout.strip() or "unknown"
 
 
+def _reset_failed(*units: str) -> None:
+    """Clear the failed state (and start limit) of the units that are in it, before a start.
+
+    A unit stopped by its start limit refuses to start until reset. Only a failed unit is reset:
+    systemd unloads a stopped unit that nothing needs, and `reset-failed` on it prints an error.
+    """
+    failed = [unit for unit in units if _unit_state(unit) == "failed"]
+    if failed:
+        _systemctl("reset-failed", *failed)
+
+
+def cmd_help(_args: argparse.Namespace) -> int:
+    """Print the list of commands, as `jarvis --help` does."""
+    build_parser().print_help()
+    return 0
+
+
 def cmd_start(_args: argparse.Namespace) -> int:
     """Start both services."""
-    _systemctl("reset-failed", STRATA_UNIT, JARVIS_UNIT)
+    _reset_failed(STRATA_UNIT, JARVIS_UNIT)
     code = _systemctl("start", STRATA_UNIT, JARVIS_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
     return code
@@ -1063,7 +1081,7 @@ def cmd_restart(_args: argparse.Namespace) -> int:
 
     A running Strata is otherwise left alone, so the model stays loaded.
     """
-    _systemctl("reset-failed", STRATA_UNIT, JARVIS_UNIT)
+    _reset_failed(STRATA_UNIT, JARVIS_UNIT)
     started = _started_at(STRATA_UNIT)
     changed = started is not None and _strata_changed_since(started)
     code = _systemctl("restart" if changed else "start", STRATA_UNIT)
@@ -1231,6 +1249,7 @@ def cmd_overview(args: argparse.Namespace) -> int:
 
 
 COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
+    "help": cmd_help,
     "start": cmd_start,
     "stop": cmd_stop,
     "restart": cmd_restart,

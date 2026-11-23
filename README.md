@@ -106,6 +106,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis unload` | Free the model's memory now, for example before a game. |
 | `jarvis doctor` | Check every part without loading the model. |
 | `jarvis logs` | Follow the live log (Ctrl+C to leave). |
+| `jarvis help` | List the commands (the same as `jarvis --help`). |
 | `jarvis ask <text>` | Send one typed request as if spoken; `--yes` answers yes to confirmations. |
 | `jarvis chat` | Open a Textual window where you type requests and watch what Jarvis does, live. |
 | `jarvis wake [livekit\|azure]` | Show or switch the wake word model; `--model FILE` names the Azure `.table` file; `--words hey_jarvis,yo_jarvis` picks the LiveKit models that listen. |

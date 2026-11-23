@@ -166,7 +166,7 @@ Both units are written by `jarvis setup`; their text is `jarvis_unit` and `strat
   user manager delegates only the `cpu`, `memory` and `pids` controllers.
 - The start limit: a unit that fails five times in 15 minutes stays `failed` and shows in `jarvis status` instead
   of restarting for ever (each Strata restart reads the model again). `jarvis start` and `jarvis restart` run
-  `systemctl --user reset-failed` first, so they bring a failed unit back.
+  `systemctl --user reset-failed` first on a unit that is `failed`, so they bring it back.
 - These options were checked with transient units on this PC (`systemd-run --user`), not with the model loaded
   on the GPU; [the playbook](playbook/README.md#owner-runs-for-the-service-units-33) lists what the owner still runs.
 
