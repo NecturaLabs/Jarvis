@@ -323,6 +323,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- With the Azure wake word, a pause after "Hey Jarvis" no longer loses the request. The keyword's own last
+  quarter second started the capture, so a pause longer than `end_silence_s` ended it before the request
+  was said, and it was dropped as too little speech. Now only speech after the keyword starts a request,
+  and Jarvis waits up to `no_speech_timeout_s` for it, as with the built-in wake word.
+
 - Reading an Omarchy guide in parts: each part names the guide's version, and a later part asked for
   after an Omarchy update changed the guide is refused with a note to read it again from part 1, instead
   of mixing two versions.
