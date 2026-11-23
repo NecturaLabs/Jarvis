@@ -342,6 +342,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The chat window's view of the voice service no longer misses a line written to the audit log just before
+  it rotated.
 - A Strata key written in quotes in its environment file (`STRATA_API_KEY="..."`) is now read without
   them, as systemd reads it for Strata. Jarvis used to send the quotes too, and Strata refused it.
 - After a file was read, "what time is it" and the weather at home no longer ask first. Only a call that

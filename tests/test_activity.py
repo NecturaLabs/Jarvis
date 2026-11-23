@@ -1,6 +1,7 @@
 """What the chat window shows of the audit log: new events as they are written, one line each."""
 
 import json
+import pathlib
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,6 +11,7 @@ from jarvis.agent import NoReason
 from jarvis.audit import AuditLog
 
 if TYPE_CHECKING:
+    import os
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
@@ -104,6 +106,33 @@ def test_nothing_is_lost_when_the_log_is_rotated_between_reads(
     seen = [entry["n"] for entry in tail.read()]
 
     assert seen == written
+
+
+def test_lines_written_just_before_a_rotation_are_read_from_the_old_log(
+    tmp_path: Path, audit_tail: Callable[[Path], AuditTail], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path)
+    log.record("step", n=0)
+    tail = audit_tail(path)
+    stat = pathlib.Path.stat
+    rotated: list[bool] = []
+
+    def write_and_rotate_first(self: Path, **kwargs: bool) -> os.stat_result:
+        # After the tail drained the log and before it asks whether the log was replaced, another
+        # process writes one more line to it and rotates it.
+        if self == path and not rotated:
+            rotated.append(True)
+            log.record("step", n=1)
+            path.replace(path.with_name("audit.jsonl.1"))
+            log.record("step", n=2)
+        return stat(self, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "stat", write_and_rotate_first)
+
+    seen = [entry["n"] for entry in tail.read()]
+
+    assert seen == [1, 2]
 
 
 def test_a_truncated_log_is_read_again_from_its_start(

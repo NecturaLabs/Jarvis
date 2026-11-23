@@ -75,6 +75,9 @@ class AuditTail:
         """Return the complete events written since the last read, oldest first."""
         lines = self._drain()
         if self._replaced():
+            # What was written to the old log after the read above and before it was moved
+            # aside is still in it: nothing writes to it once it is replaced.
+            lines += self._drain()
             if self._file is not None:
                 with contextlib.suppress(OSError):
                     self._file.close()
