@@ -390,3 +390,66 @@ def test_a_files_deny_entry_that_can_never_match_is_refused(entry: str) -> None:
 @pytest.mark.parametrize("entry", ["diary*", "~/Documents/private", "/data/finance", "a/b/"])
 def test_a_files_deny_entry_in_any_usual_form_is_kept_as_written(entry: str) -> None:
     assert config.FilesConfig(deny=[entry]).deny == [entry]
+
+
+def test_saving_the_defaults_pins_none_of_them(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+
+    config.save(config.Config(), path)
+
+    assert tomllib.loads(path.read_text(encoding="utf-8")) == {"schema_version": 1}
+
+
+def test_saving_writes_only_what_differs_from_the_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    changed = config.Config(audio=config.AudioConfig(follow_up_s=2.0, wake_thresholds={"a": 0.7}))
+
+    config.save(changed, path)
+
+    saved = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert saved == {
+        "schema_version": 1,
+        "audio": {"follow_up_s": 2.0, "wake_thresholds": {"a": 0.7}},
+    }
+    assert config.load(path) == changed
+
+
+def test_saving_one_change_keeps_the_owners_file_as_written(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "# my settings\nschema_version = 1\n\n[audio]\n"
+        "follow_up_s = 6.0  # the default, kept on purpose\nbarge_in = false\n\n"
+        '[boundaries.classes]\nspotify_play = "confirm"\nspotify_queue = "deny"\n',
+        encoding="utf-8",
+    )
+    before = config.load(path)
+    classes = {"spotify_play": "confirm"}  # spotify_queue taken out
+    after = before.model_copy(
+        update={
+            "audio": before.audio.model_copy(update={"barge_in": True}),
+            "boundaries": before.boundaries.model_copy(update={"classes": classes}),
+        }
+    )
+
+    config.save(after, path)
+
+    text = path.read_text(encoding="utf-8")
+    assert "# my settings" in text
+    assert "follow_up_s = 6.0  # the default, kept on purpose" in text
+    assert "barge_in" not in text  # back to its default, so it is no longer pinned
+    assert "spotify_queue" not in text
+    assert "bypass_consent" not in text
+    assert config.load(path) == after
+
+
+def test_a_mapping_is_saved_whole_so_its_default_entries_survive(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    programs = {
+        **config.AppsConfig().programs,
+        "notes": config.AppConfig(command=["notes"], window="notes"),
+    }
+    changed = config.Config(apps=config.AppsConfig(programs=programs))
+
+    config.save(changed, path)
+
+    assert config.load(path) == changed

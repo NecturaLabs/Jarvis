@@ -32,7 +32,12 @@ current file. The running voice service reads it once, when it starts.
   otherwise leaves a running Strata, and its loaded model, alone. An empty `model.base_url` follows
   Strata's port; a saved URL that only repeated that port is dropped when the file is read, and
   `jarvis doctor` fails a saved URL on another port than Strata's.
-- `jarvis pc-audio on|off` rewrites the file and restarts the voice service itself when it is running.
+- `jarvis pc-audio on|off` changes the file and restarts the voice service itself when it is running.
+
+A command or the chat that saves a setting (`jarvis setup`, `consent`, `pc-audio`, `wake`, the chat's
+`/config`) changes only that setting in the file and keeps the rest as you wrote it, comments included. It
+never writes a default the file does not already hold, and takes out a key set back to its default, so a
+changed default in a later version reaches you.
 
 ## Top level
 

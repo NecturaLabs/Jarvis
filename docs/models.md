@@ -284,6 +284,7 @@ spoken over.
 | pydantic | 2.14.3 | MIT |
 | textual (the `jarvis chat` window) | 8.2.8 | MIT |
 | textual-image (pictures in the chat window) | 0.14.2 | LGPL-3.0-or-later |
+| tomlkit (saves a setting into `config.toml` without touching the rest) | 0.15.2 | MIT |
 | trafilatura (the main text of a web page) | 2.3.1 | Apache-2.0 |
 
 What textual pulls in: rich 15.0.0, markdown-it-py 4.3.0, mdit-py-plugins 0.7.0, mdurl 0.1.2 and platformdirs
@@ -291,6 +292,8 @@ What textual pulls in: rich 15.0.0, markdown-it-py 4.3.0, mdit-py-plugins 0.7.0,
 
 textual-image needs only pillow and rich, both above. It is LGPL-3.0-or-later, which a GPL-3.0-or-later
 program may use. Version 0.14.2 (2026-10-20) is pinned because 0.14.3 and 0.14.4 were under two weeks old.
+
+tomlkit has no dependencies of its own.
 
 What trafilatura pulls in: lxml 6.1.3 and lxml-html-clean 0.4.6 (BSD-3-Clause), jusText 3.0.2 (BSD-2-Clause,
 read from its LICENSE), courlan 1.5.0, htmldate 1.11.0 and tzlocal 5.4.5, dateparser 1.5.1, python-dateutil

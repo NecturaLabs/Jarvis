@@ -342,6 +342,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Saving a setting (`jarvis setup`, `consent`, `pc-audio`, `wake`, the chat's `/config`) changes only that
+  setting in `config.toml` and keeps the rest of the file, comments included. It wrote every setting with
+  its value at the time, about 140 lines, so a default changed in a later version never reached the install
+  and comments were lost. A setting set back to its default is taken out of the file. Defaults written by
+  an earlier save stay until they are changed or removed by hand. Jarvis now depends on tomlkit (MIT).
+
 - A question in the chat no longer takes words typed ahead as a yes. It opened with "Yes" chosen and took
   Enter, `1` or `y` for yes after 0.4 s, so the owner typing the next request could answer it. "No" is now
   chosen at first (Enter says no), `y` no longer means yes, and a `1` typed among other letters waits until

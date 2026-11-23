@@ -2,10 +2,12 @@
 
 import re
 import tomllib
+from collections.abc import MutableMapping
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Literal, Self, cast
+from typing import Annotated, Any, Literal, Self, cast
 from urllib.parse import urlsplit
 
+import tomlkit
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -591,65 +593,67 @@ def _without_derived_url(cfg: Config) -> Config:
     return cfg.model_copy(update={"model": cfg.model.model_copy(update={"base_url": ""})})
 
 
-_TOML_ESCAPES = {
-    "\\": "\\\\",
-    '"': '\\"',
-    "\b": "\\b",
-    "\t": "\\t",
-    "\n": "\\n",
-    "\f": "\\f",
-    "\r": "\\r",
-}
-_DEL = 0x7F
+def dumps(config: Config, text: str = "") -> str:
+    """Return the config as TOML: `text` (a config file) changed to say `config`.
 
-
-def _toml_char(char: str) -> str:
-    if char in _TOML_ESCAPES:
-        return _TOML_ESCAPES[char]
-    if ord(char) < ord(" ") or ord(char) == _DEL:
-        return f"\\u{ord(char):04X}"
-    return char
-
-
-def _toml_value(value: object) -> str:
-    if isinstance(value, list):
-        return "[" + ", ".join(_toml_value(v) for v in cast("list[object]", value)) + "]"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return repr(value)
-    return '"' + "".join(_toml_char(c) for c in str(value)) + '"'
-
-
-def dumps(config: Config) -> str:
-    """Render the config as TOML."""
-    data = config.model_dump(mode="json")
-    lines = [
-        f"schema_version = {data.pop('schema_version')}",
-        f"data_dir = {_toml_value(data.pop('data_dir'))}",
-    ]
-    for section, values in data.items():
-        _table(section, values, lines, quoted=False)
-    return "\n".join(lines) + "\n"
-
-
-def _table(name: str, values: dict[str, object], lines: list[str], *, quoted: bool) -> None:
-    """Add the TOML table `name`: its plain keys first, then each nested table under it.
-
-    Keys of a section's own settings are written bare; keys inside a nested table (operation
-    names, program names) are quoted, as the owner may have written anything there.
+    Only what differs from the file is written. A key the file lacks is added only when its value
+    is not the default, and a key whose value goes back to the default is taken out, so a later
+    release's defaults reach the install; everything else in the file, comments included, stays
+    as the owner wrote it.
     """
-    lines.append(f"\n[{name}]")
-    nested: dict[str, dict[str, object]] = {}
+    doc = tomlkit.parse(text) if text.strip() else tomlkit.document()
+    if "schema_version" not in doc:
+        doc["schema_version"] = SCHEMA_VERSION
+    _merge(doc, config, Config(), keep=frozenset({"schema_version"}))
+    return tomlkit.dumps(doc)
+
+
+def _merge(
+    table: MutableMapping[str, Any],
+    model: BaseModel,
+    default: BaseModel,
+    *,
+    keep: frozenset[str] = frozenset(),
+) -> None:
+    """Make the TOML `table` say `model`, writing as little as `dumps` says.
+
+    A section is merged key by key, since loading fills what it lacks from the defaults. Any
+    other value, a mapping included (`apps.programs`), is written whole, since it is read whole.
+    """
+    values = model.model_dump(mode="json")
+    defaults = default.model_dump(mode="json")
+    for key in [key for key in table if key not in values]:
+        del table[key]  # a key this version no longer has
     for key, value in values.items():
-        if isinstance(value, dict):
-            nested[key] = cast("dict[str, object]", value)
-        else:
-            lines.append(f"{_toml_value(key) if quoted else key} = {_toml_value(value)}")
-    for key, table in nested.items():
-        _table(f"{name}.{_toml_value(key) if quoted else key}", table, lines, quoted=True)
+        section = getattr(model, key)
+        if isinstance(section, BaseModel):
+            if key not in table and value == defaults[key]:
+                continue
+            if not isinstance(table.get(key), MutableMapping):
+                table[key] = tomlkit.table()
+            _merge(table[key], section, cast("BaseModel", getattr(default, key)))
+        elif key in table:
+            if _plain(table[key]) == value:
+                continue
+            if value == defaults[key] and key not in keep:
+                del table[key]
+            else:
+                table[key] = value
+        elif value != defaults[key]:
+            table[key] = value
+
+
+def _plain(item: object) -> object:
+    """Return a TOML item's plain value."""
+    unwrap = getattr(item, "unwrap", None)
+    return unwrap() if callable(unwrap) else item
 
 
 def save(config: Config, path: Path | None = None) -> None:
     """Write the config file (not secret) in one step, so a reader never sees half of it."""
-    write_atomic(path or paths.config_file(), dumps(config))
+    target = path or paths.config_file()
+    try:
+        text = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    write_atomic(target, dumps(config, text))

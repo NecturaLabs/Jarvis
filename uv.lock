@@ -335,6 +335,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "textual" },
     { name = "textual-image" },
+    { name = "tomlkit" },
     { name = "trafilatura" },
 ]
 
@@ -360,6 +361,7 @@ requires-dist = [
     { name = "pydantic", specifier = "==2.14.3" },
     { name = "textual", specifier = "==8.2.8" },
     { name = "textual-image", specifier = "==0.14.2" },
+    { name = "tomlkit", specifier = "==0.15.2" },
     { name = "trafilatura", specifier = "==2.3.1" },
 ]
 
