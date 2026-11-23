@@ -342,6 +342,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A web page whose server names no charset is now read in the one the page declares (`<meta charset>`)
+  rather than always as UTF-8, and a gzip body made of several parts is read whole instead of only up
+  to the end of the first.
 - The chat window's view of the voice service no longer misses a line written to the audit log just before
   it rotated.
 - A Strata key written in quotes in its environment file (`STRATA_API_KEY="..."`) is now read without

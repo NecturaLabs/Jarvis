@@ -425,6 +425,49 @@ def test_a_gzipped_page_is_read() -> None:
     assert "white vinegar" in PageReader(client).read("http://public.example/kettle").text
 
 
+def test_a_gzipped_page_of_several_members_is_read_whole() -> None:
+    half = len(ARTICLE) // 2
+    body = gzip.compress(ARTICLE[:half]) + gzip.compress(ARTICLE[half:]) + b"\0\0\0"
+    client, _ = _guarded(_http("200 OK", body, Content_Type="text/html", Content_Encoding="gzip"))
+
+    text = PageReader(client).read("http://public.example/kettle").text
+
+    assert "white vinegar" in text
+    assert "Citric acid" in text
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        b'<meta charset="windows-1252">',
+        b'<meta http-equiv="Content-Type" content="text/html; charset=windows-1252">',
+    ],
+)
+def test_a_page_without_a_charset_header_is_read_in_the_one_it_declares(declared: bytes) -> None:
+    html = ARTICLE.replace(b"<head>", b"<head>" + declared).replace(
+        b"Citric acid", "Caf\u00e9 citric acid".encode("windows-1252")
+    )
+    client, _ = _guarded(_http("200 OK", html, Content_Type="text/html"))
+
+    assert "Caf\u00e9 citric acid" in PageReader(client).read("http://public.example/kettle").text
+
+
+def test_a_charset_header_wins_over_the_one_the_page_declares() -> None:
+    html = ARTICLE.replace(b"<head>", b'<head><meta charset="windows-1252">').replace(
+        b"Citric acid", "Caf\u00e9 citric acid".encode()
+    )
+    client, _ = _guarded(_http("200 OK", html, Content_Type="text/html; charset=utf-8"))
+
+    assert "Caf\u00e9 citric acid" in PageReader(client).read("http://public.example/a").text
+
+
+def test_a_page_that_declares_no_charset_anywhere_is_read_as_utf_8() -> None:
+    html = ARTICLE.replace(b"Citric acid", "Caf\u00e9 citric acid".encode())
+    client, _ = _guarded(_http("200 OK", html, Content_Type="text/html"))
+
+    assert "Caf\u00e9 citric acid" in PageReader(client).read("http://public.example/a").text
+
+
 def test_a_broken_compressed_page_is_a_page_error() -> None:
     client, _ = _guarded(
         _http("200 OK", b"not gzip at all", Content_Type="text/html", Content_Encoding="gzip")
