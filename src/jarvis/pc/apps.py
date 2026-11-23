@@ -138,14 +138,14 @@ class AppOps:
                 f"Started {name}, but no window of it showed within {OPEN_WAIT_S:g} seconds; it "
                 "may still be starting."
             )
-            return Result(text, Origin.TOOL_STATUS, ok=False)
+            return Result(text, Origin.TOOL_STATUS, ok=False, acted=True)
         self._gather(new, workspace)
         self._sleep(SETTLE_S)
         strays = self._gather(new, workspace)
         if strays:
             seen = ", ".join(sorted({_where(_place_named(w.workspace)) for w in strays}))
             text = f"Opened {name}, but a window of it stayed {seen}, not {_where(place)}."
-            return Result(text, Origin.TOOL_STATUS, ok=False)
+            return Result(text, Origin.TOOL_STATUS, ok=False, acted=True)
         sentence = f"Opened {name} {_where(place)}."
         return Result(sentence, Origin.TOOL_STATUS, spoken=sentence)
 

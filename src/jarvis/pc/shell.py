@@ -330,15 +330,16 @@ class ShellOps:
                 "The command ran, but its scope could not be seen ended, so something it started "
                 f"may still be running (unit {unit}.scope)."
             )
-            return Result(f"{head}\n{output}", Origin.SHELL, ok=False, spoken=head)
+            return Result(f"{head}\n{output}", Origin.SHELL, ok=False, spoken=head, acted=True)
         if ran.status is None:
             head = f"Stopped after {self._config.timeout_s:g} seconds, the time limit."
-            return Result(f"{head}\n{output}", Origin.SHELL, ok=False, spoken=head)
+            return Result(f"{head}\n{output}", Origin.SHELL, ok=False, spoken=head, acted=True)
         if ran.status < 0:  # a memory limit ends a command with SIGKILL
             head = f"Ended by signal {-ran.status}, perhaps by a limit."
         else:
             head = f"Exit status {ran.status}."
-        return Result(f"{head}\n{output}", Origin.SHELL, ok=ran.status == 0)
+        clean = ran.status == 0
+        return Result(f"{head}\n{output}", Origin.SHELL, ok=clean, acted=not clean)
 
     def operations(self) -> list[Operation]:
         """Return `pc_shell` when `[shell] enabled` is set, else nothing."""

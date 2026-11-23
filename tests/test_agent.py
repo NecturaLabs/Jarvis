@@ -262,6 +262,20 @@ def test_a_claim_after_only_failed_tools_is_challenged_with_the_failure() -> Non
     assert model.seen[2][-1] == {"role": "user", "content": FAILED_REMINDER}
 
 
+def test_an_action_that_ran_with_a_caveat_may_be_reported() -> None:
+    def ran(_args: dict[str, Any]) -> Result:
+        return Result("Exit status 1.", ok=False, acted=True)
+
+    op = Operation("run", "run", {"type": "object", "properties": {}}, ran)
+    model = ScriptedModel([_call("run"), _say("Done, it exited with status 1.")])
+    agent, audit = _agent(model, [op])
+
+    assert agent.handle("run it", NO_CONFIRM) == "Done, it exited with status 1."
+    assert "claimed_without_action" not in _events(audit)
+    (logged,) = [e for e in audit.events if e["event"] == "tool_result"]
+    assert logged["acted"] is True
+
+
 def test_a_claim_after_only_a_look_up_is_challenged() -> None:
     counter = Counter()
     replies = [_call("now_playing"), _say("Paused it for you."), _say("Jazz is playing.")]

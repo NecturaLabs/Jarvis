@@ -227,6 +227,13 @@ def _clauses(text: str) -> list[tuple[str, bool]]:
     return out or [(text, False)]
 
 
+def _outcome(result: Result) -> str:
+    """Say how a call ended, for the note of what a request did."""
+    if result.ok:
+        return "ok"
+    return "done, not cleanly" if result.acted else "not done"
+
+
 def _complete_prefix(body: str) -> str:
     """Return the start of a JSON string's inside up to its closing quote or last whole character.
 
@@ -1245,12 +1252,10 @@ class Agent:
             name = str(obj(call.get("function")).get("name", ""))
             op = self._registry.get(name)
             result = self._guarded(call, hooks, turn, taint=(untrusted, private))
-            turn.actions.append(
-                f"{name if op is not None else _UNKNOWN} -> {'ok' if result.ok else 'not done'}"
-            )
+            turn.actions.append(f"{name if op is not None else _UNKNOWN} -> {_outcome(result)}")
             if op is None or op.side_effect:
                 turn.tried = True
-                turn.succeeded = turn.succeeded or (op is not None and result.ok)
+                turn.succeeded = turn.succeeded or (op is not None and (result.ok or result.acted))
             body = result.text[: self._limits.tool_text_chars]
             if result.origin not in TRUSTED_ORIGINS:
                 turn.untrusted = True
@@ -1383,7 +1388,11 @@ class Agent:
         result = self._run_counted(op, args, digest)
         if isinstance(result, _Failed):
             return result.result
-        shown = {"picture": result.picture, "caption": result.caption} if result.picture else {}
+        shown: dict[str, object] = (
+            {"picture": result.picture, "caption": result.caption} if result.picture else {}
+        )
+        if result.acted:
+            shown["acted"] = True
         kept = (
             {"text": result.text[:MAX_AUDIT_TEXT]}
             if op.audit_text

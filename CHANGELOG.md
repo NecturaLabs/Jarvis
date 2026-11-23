@@ -342,6 +342,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- An action that ran but did not end cleanly is no longer reported as not done: a shell command that
+  exits non-zero, a program asked to stop that is still running, and a program that started without its
+  window showing where asked. A reply may say what happened, instead of being replaced by "Sorry, I didn't
+  manage to do that", and the chat's steps show "done, not cleanly" rather than "not done".
+
 - A reply that says something was done is checked against what ran: only an action that succeeded
   counts, so after Jarvis has only looked something up (what is playing, a process list, a folder, a
   search) "Paused it for you" is challenged like any claim with nothing behind it. The check also knows

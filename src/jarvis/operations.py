@@ -110,6 +110,9 @@ class Result:
     `spoken` is a finished sentence for the owner. An operation sets it when its result needs no
     wording by the model, which lets a shortcut request be answered without the model. `picture`
     is a picture file the chat shows (with its `caption`), from Jarvis's own picture folder.
+    `acted` marks a result that is not `ok` although the operation did act: a command ran but
+    exited non-zero, a program was asked to stop but is still running, a program started but its
+    window did not show where asked. A reply may then say what was done.
     """
 
     text: str
@@ -118,6 +121,7 @@ class Result:
     spoken: str = ""
     picture: str = ""
     caption: str = ""
+    acted: bool = False
 
 
 @dataclass(frozen=True, slots=True)

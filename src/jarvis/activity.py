@@ -252,9 +252,11 @@ def _tool_result(entry: dict[str, object]) -> _Line:
         words = f"{entry.get('op', 'a tool')} finished; its output is not kept in the log"
     else:
         words = _plain(entry.get("text", ""))
-    return (
-        ("result", words, True, "") if entry.get("ok") else ("warn", f"not done: {words}", True, "")
-    )
+    if entry.get("ok"):
+        return ("result", words, True, "")
+    if entry.get("acted"):  # it ran, but did not end cleanly
+        return ("warn", f"done, not cleanly: {words}", True, "")
+    return ("warn", f"not done: {words}", True, "")
 
 
 def _seconds(entry: dict[str, object]) -> str:

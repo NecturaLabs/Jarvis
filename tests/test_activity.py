@@ -147,6 +147,12 @@ def _line(entry: dict[str, object]) -> str:
         ({"event": "confirm_key", "outcome": "nothing waiting"}, "warn", "nothing was waiting"),
         ({"event": "confirm_key", "outcome": "too soon"}, "warn", "too soon"),
         ({"event": "confirm_key", "outcome": "held off"}, "warn", "held off"),
+        ({"event": "tool_result", "ok": False, "text": "Nothing is playing."}, "warn", "not done"),
+        (
+            {"event": "tool_result", "ok": False, "acted": True, "text": "Exit 1"},
+            "warn",
+            "not clean",
+        ),
         ({"event": "tool_failed", "op": "spotify_play", "error": "no device"}, "warn", "device"),
         ({"event": "tool_uncertain", "op": "spotify_queue"}, "warn", "not sure"),
         ({"event": "model_error", "error": "refused"}, "error", "refused"),

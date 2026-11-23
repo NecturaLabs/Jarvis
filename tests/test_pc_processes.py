@@ -997,11 +997,12 @@ def test_a_process_still_running_after_the_wait_is_reported(proc: FakeProc) -> N
     ops = _ops(proc, stopper)
     _find(ops, "orbit")
 
-    ok, text = _stop(ops, _bind(ops, 4242))
+    result = _op(ops, "stop_process").run(_bind(ops, 4242))
 
-    assert not ok
-    assert "still running" in text
-    assert "force" in text
+    assert not result.ok
+    assert result.acted  # the signal was sent
+    assert "still running" in result.text
+    assert "force" in result.text
 
 
 @pytest.mark.parametrize(
