@@ -515,8 +515,8 @@ In code, whatever the model says:
 
 - `stop_process` takes only a PID that `find_processes` listed in the same request, never a name or pattern.
 - A request heard in PC audio stops nothing, even with the key pressed and questions bypassed. Nor does
-  a request that also read outside text (a web page, a file, a picture, a long paste, Spotify names, or
-  such text remembered from earlier): ask again in a request of its own.
+  a request that also read outside text (a web page, a file, a picture, a long paste, Spotify names, a
+  shell command's output, or such text remembered from earlier): ask again in a request of its own.
 - A program matched only by one window's title (a browser tab's, say) is marked so, and the question
   names that title and says all its windows close.
 - Only your own processes are listed. Never listed or stopped: PID 1, kernel threads, other users'
@@ -549,8 +549,9 @@ out character by character, so that two commands that run differently never soun
 its name ("ls space star dot txt"), each space as "space", and capitals marked ("all capitals HOME",
 "capitalised Notes"). A command with a tab, a line break or two spaces in a row, or one too long to read out
 in full, is refused before anything is asked. A request heard in PC audio runs nothing, nor does a request
-that also read outside text (a page, a file, a picture, a long paste, Spotify names, a program's output):
-say the command in a request of its own.
+that also read outside text (a page, a file, a picture, a long paste, Spotify names, a program's output,
+or such text remembered from earlier): say the command in a request of its own. A command's output counts
+as file text as well: a search that sends text off the PC afterwards needs your yes.
 
 Each command runs once in its own `systemd-run --user --scope` unit (`jarvis-shell-<random>`, described
 only as "Jarvis shell command", so the journal never holds the command), in your home folder, with the

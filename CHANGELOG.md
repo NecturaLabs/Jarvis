@@ -323,6 +323,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A shell command's output (`pc_shell`) is now outside text of its own kind, `shell`. It was marked as a
+  process listing, which `stop_process` lets through, so in the chat a remembered output (a file shown with
+  `cat`, a page fetched with `curl`) did not stop a later shell command, and in one request it did not stop
+  a process from being stopped. The output also counts as file text now: a search that sends text off the
+  PC afterwards needs your yes.
+
 - With the Azure wake word, a pause after "Hey Jarvis" no longer loses the request. The keyword's own last
   quarter second started the capture, so a pause longer than `end_silence_s` ended it before the request
   was said, and it was dropped as too little speech. Now only speech after the keyword starts a request,

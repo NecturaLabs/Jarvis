@@ -44,6 +44,7 @@ class Origin(StrEnum):
     PICTURE = "picture"  # a picture the owner shared: what it shows was made by anyone
     PASTE = "paste"  # a long paste into the chat: anyone may have written it
     PROCESS = "process"  # program names and window titles: other programs' words
+    SHELL = "shell"  # a shell command's output: anything the owner's user can read or reach
     OS_SKILL = "os_skill"  # Omarchy's guides: shipped OS text written for coding agents
 
 

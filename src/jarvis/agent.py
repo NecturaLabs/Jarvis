@@ -160,6 +160,9 @@ _EDGES = "\"'\u201c\u201d\u2018)]"
 _ACTIONS_NOTE = re.compile(r"^\[actions taken:[^\]]*\]\s*", re.IGNORECASE)
 _REPLY_KEY = '{"reply":"'
 _REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
+# Results that may hold the owner's own data: the turn is marked private, so text that leaves the PC
+# waits for a yes. A shell command's output can be any file the owner's user can read.
+_PRIVATE_ORIGINS = frozenset({Origin.FILE, Origin.SHELL})
 _WRAPPED = re.compile(r'(?P<head><data origin="[a-z_]+">)(?P<body>.*)</data>', re.DOTALL)
 _HIGH_SURROGATE = re.compile(r"\\u[dD][89abAB][0-9a-fA-F]{2}")
 
@@ -650,7 +653,7 @@ class _Turn:
     request: Request | None = None
     untrusted: bool = False
     outside: str = ""  # where the first outside text this request read came from
-    private: bool = False  # text from the owner's files is in the conversation
+    private: bool = False  # the owner's own data (a file, a command's output) is in it
     nudged: bool = False
     stuck: bool = False
     last: bool = False  # the request's last step: the model may only answer
@@ -1240,7 +1243,7 @@ class Agent:
                     turn.outside = result.origin.value
                 if turn.request is not None:
                     turn.request.saw(result.origin.value)
-                turn.private = turn.private or result.origin is Origin.FILE
+                turn.private = turn.private or result.origin in _PRIVATE_ORIGINS
                 body = _wrapped(result.origin.value, result.text, self._limits.tool_text_chars)
             turn.messages.append(
                 {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": body}
