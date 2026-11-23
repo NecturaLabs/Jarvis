@@ -393,7 +393,7 @@ _LABELS = {
     "reddit_search": "Searching Reddit",
     "reddit_read": "Reading a Reddit thread",
     "weather": "Checking the weather",
-    "time": "Checking the time",
+    "time_now": "Checking the time",
     "read_skill": "Reading its notes",
     "os_skill": "Reading Omarchy's guide",
     "no_action": "Writing",

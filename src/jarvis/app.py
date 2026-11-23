@@ -17,7 +17,7 @@ from jarvis.pc.processes import ProcessOps
 from jarvis.pc.shell import ShellOps
 from jarvis.pc.stats import StatsOps
 from jarvis.pictures import PictureCache
-from jarvis.policy import effective_class
+from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
 from jarvis.secretfile import read_api_key
 from jarvis.spotify.api import SpotifyApi
@@ -288,17 +288,20 @@ def unknown_overrides(config: Config, spotify: list[Operation]) -> list[str]:
     return sorted(set(config.boundaries.classes) - known)
 
 
-def overrides_below_floor(config: Config, spotify: list[Operation]) -> list[str]:
-    """Return the names `boundaries.classes` sets below the lowest class their operation allows."""
+def overrides_below_floor(config: Config, spotify: list[Operation]) -> dict[str, list[str]]:
+    """Return each name `boundaries.classes` sets below its operation's lowest class.
+
+    Each maps to the classes that operation does allow.
+    """
     classes = config.boundaries.classes
-    low: set[str] = set()
+    low: dict[str, list[str]] = {}
     for channel in ("voice", "chat"):
         registry = channel_registry(config, spotify, channel_limits(config, channel), channel)
         for name, override in classes.items():
             op = registry.get(name)
             if op is not None and effective_class(op, {name: override}).value != override:
-                low.add(name)
-    return sorted(low)
+                low[name] = [c.value for c in OpClass if effective_class(op, {name: c}) is c]
+    return dict(sorted(low.items()))
 
 
 def chat_pictures() -> PictureCache:
@@ -366,10 +369,11 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
         )
         raise SetupError(msg)
     if low := overrides_below_floor(config, ops.operations()):
-        msg = (
-            f"boundaries.classes sets {', '.join(low)} below what it allows; "
-            'stop_process takes only "strong" or "deny"'
+        allowed = "; ".join(
+            f"{name} takes only {' or '.join(f'"{c}"' for c in classes)}"
+            for name, classes in low.items()
         )
+        msg = f"boundaries.classes sets {', '.join(low)} below what it allows; {allowed}"
         raise SetupError(msg)
     channel: Channel = "chat" if via == "chat" else "voice"
     limits = channel_limits(config, channel)

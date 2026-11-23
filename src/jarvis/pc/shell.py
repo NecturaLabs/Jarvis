@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass
 from typing import IO, TYPE_CHECKING, Any, Protocol
 
-from jarvis.operations import Operation, OperationError, Result, current_request
+from jarvis.operations import Operation, OperationError, Result, current_request, cut_inert
 from jarvis.policy import OpClass, Origin
 
 if TYPE_CHECKING:
@@ -39,6 +39,8 @@ ENV = "/usr/bin/env"
 SH = "/bin/sh"
 PATH = "/usr/local/bin:/usr/bin"
 STOP_WAIT_S = 10.0
+# The longest status line, the note that output was cut and the agent's wrapper around a result.
+HEADROOM = 250
 DESCRIPTION = "Jarvis shell command"  # never the command line, which the journal would keep
 
 
@@ -320,22 +322,23 @@ class ShellOps:
             msg = f"the command could not be started: {exc.strerror or exc}"
             raise OperationError(msg) from exc
         output = ran.output
-        if len(output) > self._max_chars:
-            output = f"{output[: self._max_chars]}\n[output cut at {self._max_chars} characters]"
+        kept = cut_inert(output, max(self._max_chars // 2, self._max_chars - HEADROOM))
+        if kept != output:
+            output = f"{kept}\n[output cut at {len(kept)} characters]"
         if not ran.ended:
             head = (
                 "The command ran, but its scope could not be seen ended, so something it started "
                 f"may still be running (unit {unit}.scope)."
             )
-            return Result(f"{head}\n{output}", Origin.PROCESS, ok=False, spoken=head)
+            return Result(f"{head}\n{output}", Origin.SHELL, ok=False, spoken=head)
         if ran.status is None:
             head = f"Stopped after {self._config.timeout_s:g} seconds, the time limit."
-            return Result(f"{head}\n{output}", Origin.PROCESS, ok=False, spoken=head)
+            return Result(f"{head}\n{output}", Origin.SHELL, ok=False, spoken=head)
         if ran.status < 0:  # a memory limit ends a command with SIGKILL
             head = f"Ended by signal {-ran.status}, perhaps by a limit."
         else:
             head = f"Exit status {ran.status}."
-        return Result(f"{head}\n{output}", Origin.PROCESS, ok=ran.status == 0)
+        return Result(f"{head}\n{output}", Origin.SHELL, ok=ran.status == 0)
 
     def operations(self) -> list[Operation]:
         """Return `pc_shell` when `[shell] enabled` is set, else nothing."""

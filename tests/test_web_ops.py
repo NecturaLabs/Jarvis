@@ -13,7 +13,7 @@ from PIL import Image
 
 from jarvis import app as app_module
 from jarvis.agent import Agent, Hooks
-from jarvis.app import no_action_operation, web_operations
+from jarvis.app import PAGE_HEADROOM, no_action_operation, web_operations
 from jarvis.audit import AuditLog
 from jarvis.config import ClockConfig, Config, ResearchConfig, WeatherConfig
 from jarvis.operations import (
@@ -695,6 +695,23 @@ def test_a_read_page_offers_its_own_picture(tmp_path: Path) -> None:
 
     assert "Picture: [image_id i1]" in page.text
     assert Path(_run(ops, "show_image", image_id="i1").picture).is_file()
+
+
+def test_a_page_of_brackets_keeps_its_picture_within_the_room_once_wrapped(
+    tmp_path: Path,
+) -> None:
+    config = Config(research=ResearchConfig(page_chars=500))
+    net = Net()
+    ops = _ops(net, config, shown=_shown(tmp_path))
+    _run(ops, "web_search", query="kettle")
+    net.page = PAGE_WITH_PICTURE.replace(b"<p>Now", b"<p>" + b"if a &lt; b &gt; c " * 200 + b"Now")
+
+    page = _run(ops, "web_read", url="https://kettles.example/descale")
+
+    brackets = page.text.count("<") + page.text.count(">")
+    wrapped = len(page.text) + 3 * brackets + len('<data origin="web"></data>')
+    assert wrapped <= config.research.page_chars + PAGE_HEADROOM
+    assert "Picture: [image_id i1]" in page.text
 
 
 def test_without_a_place_to_show_pictures_a_page_offers_none() -> None:

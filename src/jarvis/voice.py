@@ -228,7 +228,9 @@ def capture_utterance(
     Speech starts at a probability of `vad_threshold` and goes on while it stays above
     `vad_exit_threshold`, so a breath or a soft syllable inside a sentence is not silence. Only
     frames at the entry threshold count toward `speech_s`. The first `lead_frames` frames are the
-    wake word's own tail: kept, but not counted as the request's speech.
+    wake word's own tail: they neither start the request nor count as its speech, and are kept
+    only when the request starts within the pre-roll after them, so a pause after the wake word
+    is waited out like the silence before any other request.
     """
     vad.reset()
     kept: list[NDArray[np.int16]] = []
@@ -240,12 +242,15 @@ def capture_utterance(
     exit_threshold = cfg.vad_exit_threshold
     for number, frame in enumerate(frames):
         probability = vad.speech_probability(frame)
-        speech = probability >= cfg.vad_threshold
-        if speech and number >= lead_frames:
+        speech = probability >= cfg.vad_threshold and number >= lead_frames
+        if speech:
             speech_s += FRAME_S
         if not started:
-            recent = [*recent[-(PRE_ROLL_FRAMES - 1) :], frame]
-            waited_s += FRAME_S
+            recent.append(frame)
+            if number + 1 - PRE_ROLL_FRAMES >= lead_frames:  # the pre-roll is past the tail
+                del recent[:-PRE_ROLL_FRAMES]
+            if number >= lead_frames:  # the wait starts once the wake word has ended
+                waited_s += FRAME_S
             if speech:
                 started = True
                 kept.extend(recent)

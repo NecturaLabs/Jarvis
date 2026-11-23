@@ -207,7 +207,7 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | `vad_threshold` | `0.5` | above 0, below 1 | Speech probability that starts speech. |
 | `vad_neg_threshold` | `0.0` | 0 to below 1, and not above `vad_threshold` | Once speech has started it goes on while the probability stays above this, so a breath or a soft syllable inside a sentence is not taken for the end. `0` means `vad_threshold` less 0.15 (never below 0.01), as Silero's own segmenter does, 0.35 at the default. Set it equal to `vad_threshold` for no margin. It applies to the end of every request, answer and follow-up; PC audio's speech count while Jarvis waits for a yes keeps `vad_threshold`, as it only counts frames. |
 | `no_speech_timeout_s` | `4.0` | above 0, up to 30 | Silence after the wake word before Jarvis gives up. |
-| `end_silence_s` | `0.7` | above 0, up to 5 | Trailing silence (below the exit threshold) that ends a request. A request after the wake word, by mic or PC audio, needs at least 0.15 s of speech (two 80 ms frames) or it is dropped without a word: a click is not a request. With the Azure wake word, only the keyword's last quarter second, kept with the request, is left out of that count. |
+| `end_silence_s` | `0.7` | above 0, up to 5 | Trailing silence (below the exit threshold) that ends a request. A request after the wake word, by mic or PC audio, needs at least 0.15 s of speech (two 80 ms frames) or it is dropped without a word: a click is not a request. With the Azure wake word, the keyword's last quarter second, handed over with the request, neither starts the request nor counts toward that 0.15 s. After the keyword Jarvis waits up to `no_speech_timeout_s` for speech, as with the built-in wake word. |
 | `max_utterance_s` | `20.0` | above 1, up to 120 | Longest request. |
 | `confirm_window_s` | `8.0` | above 1, up to 30 | How long Jarvis waits for the answer to a confirmation question. |
 | `confirm_key_s` | `30.0` | 5 to 120 | How long a `strong` action waits for the confirm key (`jarvis confirm`) after Jarvis has asked about it. |
@@ -364,7 +364,7 @@ With neither set, Jarvis asks you to name a place.
 |---|---|---|---|
 | `searxng_url` | `http://127.0.0.1:8888` | an `http://` or `https://` URL on `127.0.0.1`, `localhost` or `::1` | The local SearXNG Jarvis searches through. |
 | `results` | `5` | 1 to 8 | Results per search when the model does not ask for a number. |
-| `page_chars` | `2800` | 500 to 50000 | Most characters of a page or Reddit thread passed to the model for a spoken request, within `agent.tool_text_chars`. The chat reads up to its own `tool_text_chars`. |
+| `page_chars` | `2800` | 500 to 50000 | Most characters of a page or Reddit thread passed to the model for a spoken request, within `agent.tool_text_chars`, counting each `<` or `>` as the four characters it is sent as. The chat reads up to its own `tool_text_chars`. |
 | `reddit_comments` | `6` | 1 to 10 | Top comments read from a Reddit thread. |
 
 Search needs the SearXNG container running; without it Jarvis says search isn't running, and everything
@@ -409,7 +409,7 @@ different size, inode, modification or change time, so a file swapped for anothe
 caught). A replace keeps the old file's read and write permissions, so a private file stays private; it
 never carries an execute bit over.
 
-A file's text is data, like a web page: while it is in the conversation, side effects need your yes,
+A file's text is data, like a web page (a shell command's output counts as one): while it is in the conversation, side effects need your yes,
 and so do the operations that send words off the PC (`web_search`, `reddit_search`, and `weather` or
 `time_now` for a named place), so a file's contents cannot leave in a search without you seeing it.
 With `boundaries.bypass_consent` on (the default) none of these questions is asked, which is why the
@@ -438,7 +438,7 @@ its shipped class, which is `safe` for every operation but `write_file` (`confir
 `pc_stats`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`; set one to `deny` to switch it off. `stop_process`
 may be set only to `strong` or `deny`: a program is stopped by your command and your key alone, so any
 other class stops `jarvis run`, `ask` and `chat` with an error. Whatever the class, side effects are raised to `confirm` while text from outside
-your own speech is in the request, and so are the operations that send words off the PC while a file's text is. Example:
+your own speech is in the request, and so are the operations that send words off the PC while a file's text or a shell command's output is. Example:
 
 ```toml
 [boundaries.classes]
@@ -515,8 +515,8 @@ In code, whatever the model says:
 
 - `stop_process` takes only a PID that `find_processes` listed in the same request, never a name or pattern.
 - A request heard in PC audio stops nothing, even with the key pressed and questions bypassed. Nor does
-  a request that also read outside text (a web page, a file, a picture, a long paste, Spotify names, or
-  such text remembered from earlier): ask again in a request of its own.
+  a request that also read outside text (a web page, a file, a picture, a long paste, Spotify names, a
+  shell command's output, or such text remembered from earlier): ask again in a request of its own.
 - A program matched only by one window's title (a browser tab's, say) is marked so, and the question
   names that title and says all its windows close.
 - Only your own processes are listed. Never listed or stopped: PID 1, kernel threads, other users'
@@ -549,8 +549,9 @@ out character by character, so that two commands that run differently never soun
 its name ("ls space star dot txt"), each space as "space", and capitals marked ("all capitals HOME",
 "capitalised Notes"). A command with a tab, a line break or two spaces in a row, or one too long to read out
 in full, is refused before anything is asked. A request heard in PC audio runs nothing, nor does a request
-that also read outside text (a page, a file, a picture, a long paste, Spotify names, a program's output):
-say the command in a request of its own.
+that also read outside text (a page, a file, a picture, a long paste, Spotify names, a program's output,
+or such text remembered from earlier): say the command in a request of its own. A command's output counts
+as file text as well: a search that sends text off the PC afterwards needs your yes.
 
 Each command runs once in its own `systemd-run --user --scope` unit (`jarvis-shell-<random>`, described
 only as "Jarvis shell command", so the journal never holds the command), in your home folder, with the

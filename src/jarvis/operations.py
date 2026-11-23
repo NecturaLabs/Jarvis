@@ -15,6 +15,34 @@ if TYPE_CHECKING:
 
 MAX_STRING = 200
 MAX_INTEGER = 2**31 - 1
+# The agent's `<data origin="…">` and `</data>` around outside text, at the longest origin's name.
+DATA_WRAP_CHARS = len('<data origin=""></data>') + max(len(origin.value) for origin in Origin)
+
+
+def inert(text: str) -> str:
+    """Return outside text with its angle brackets spelled out, so it cannot close its wrapper."""
+    return text.replace("<", "&lt;").replace(">", "&gt;")
+
+
+def inert_chars(text: str) -> int:
+    """Return how long `text` is once `inert` spells out its angle brackets."""
+    return len(text) + 3 * (text.count("<") + text.count(">"))
+
+
+def cut_inert(text: str, room: int) -> str:
+    """Return the longest start of `text` that `inert` keeps within `room` characters.
+
+    A result read in parts is sized with this, so the agent's own cut at a tool result's cap
+    never takes the line that says where the next part starts.
+    """
+    if inert_chars(text) <= room:
+        return text
+    used = 0
+    for index, char in enumerate(text):
+        used += 4 if char in "<>" else 1
+        if used > room:
+            return text[:index]
+    return text
 
 
 class UncertainOutcomeError(Exception):

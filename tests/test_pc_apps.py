@@ -1,5 +1,6 @@
 """`open_app`: a program opens only when the owner asks, exactly where the owner said."""
 
+import re
 from dataclasses import dataclass, field
 
 import pytest
@@ -189,6 +190,38 @@ def test_no_listed_program_means_no_operation() -> None:
 
 def test_the_default_list_has_spotify_only() -> None:
     assert list(Config().apps.programs) == ["spotify"]
+
+
+def _lua_bytes(inner: str) -> bytes:
+    """Read a Lua string literal's inside as Lua does: `\\ddd` is one byte, up to three digits."""
+    out, index = bytearray(), 0
+    while index < len(inner):
+        if inner[index] == "\\":
+            digits = re.match(r"\d{1,3}", inner[index + 1 :])
+            assert digits is not None
+            value = int(digits.group())
+            assert value <= 255, f"Lua refuses the escape \\{digits.group()}"
+            out.append(value)
+            index += 1 + len(digits.group())
+        else:
+            out += inner[index].encode()
+            index += 1
+    return bytes(out)
+
+
+@pytest.mark.parametrize(
+    "text", ["zero\u200bwidth", "line\u2028separator", "tab\there", "plain é and 中文"]
+)
+def test_a_lua_string_reads_back_as_the_same_text(text: str) -> None:
+    quoted = hyprland.lua_string(text)
+
+    assert _lua_bytes(quoted[1:-1]).decode() == text
+
+
+def test_a_lone_surrogate_is_escaped_rather_than_refused() -> None:
+    quoted = hyprland.lua_string("odd \ud800 text")
+
+    assert _lua_bytes(quoted[1:-1]) == "odd \ud800 text".encode("utf-8", "surrogatepass")
 
 
 @pytest.mark.parametrize("text", ['a" .. os.exit() .. "', "line\nbreak", "back\\slash", "it's"])

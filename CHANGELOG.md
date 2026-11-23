@@ -323,6 +323,47 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The chat's working line says "Checking the time" while Jarvis reads the clock; it said "Running Time now".
+
+- The calculator works out a negative number that is not exact (`cos(pi)`, `sin(4)`) to a whole power;
+  it refused it as a fractional power.
+
+- The calculator rounds a half away from zero, as calculators do: `round(2.5)` is 3 and `round(0.125, 2)`
+  is 0.13. It used Python's rounding to even, which gave 2 and 0.12.
+
+- A plain command that needs the model after all (it failed, or its result needs wording) no longer sends
+  the model a remembered conversation larger than its budget: the conversation is summarized or trimmed
+  first, as for any other request.
+
+- `open_app` builds a valid Hyprland command for a program whose command or window name holds an invisible
+  character beyond Latin-1 (a zero-width space, a line separator). Such a character was escaped in a form Lua
+  refuses, so the program did not open.
+
+- Reading in parts no longer skips text full of angle brackets (HTML, XML, code). `read_file`, `list_dir`
+  and `os_skill` sized each part in plain characters, but each `<` and `>` reaches the model spelled out
+  in four, and the result is then cut to its cap: the cut took the line that says where the next part
+  starts, so what followed was never read. Parts are now sized as they are sent. A cut `pc_shell` output
+  keeps its note that it was cut, and a page that has a picture names the picture before the text, so a cut
+  never takes either.
+
+- `read_file` no longer loses most of a line longer than one part (a one-line JSON or minified file). It
+  cut the line at about 2,900 characters and reported it as read; now it says which characters it gave,
+  and `from_char` reads on inside the line.
+
+- A `[boundaries.classes]` entry that sets `pc_shell` below `strong` is refused with a message that names
+  what `pc_shell` takes; it named only `stop_process` before.
+
+- A shell command's output (`pc_shell`) is now outside text of its own kind, `shell`. It was marked as a
+  process listing, which `stop_process` lets through. So a remembered output (a file shown with `cat`, a page
+  fetched with `curl`) did not block a later shell command in the chat, and within one request it did not
+  block `stop_process`. The output also counts as file text now: a search that sends text off the
+  PC afterwards needs your yes.
+
+- With the Azure wake word, a pause after "Hey Jarvis" no longer loses the request. The keyword's own last
+  quarter second started the capture, so a pause longer than `end_silence_s` ended it before the request
+  was said, and it was dropped as too little speech. Now only speech after the keyword starts a request,
+  and Jarvis waits up to `no_speech_timeout_s` for it, as with the built-in wake word.
+
 - Reading an Omarchy guide in parts: each part names the guide's version, and a later part asked for
   after an Omarchy update changed the guide is refused with a note to read it again from part 1, instead
   of mixing two versions.

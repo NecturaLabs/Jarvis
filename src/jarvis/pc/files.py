@@ -35,7 +35,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from jarvis.operations import Operation, OperationError, Result
+from jarvis.operations import (
+    DATA_WRAP_CHARS,
+    Operation,
+    OperationError,
+    Result,
+    cut_inert,
+    inert_chars,
+)
 from jarvis.policy import OpClass, Origin
 
 if TYPE_CHECKING:
@@ -50,7 +57,11 @@ MAX_SCANNED = 10_000  # entries read from one folder; a bigger one is listed fro
 MAX_READ_BYTES = 4 * 1024 * 1024
 BINARY_PROBE = 8192
 KIB = 1024
-HEADROOM = 120  # the header and the closing line of a result
+# A result's header without its path, its closing line and the agent's wrapper around it.
+HEADROOM = 200 + DATA_WRAP_CHARS
+# What one result always holds, however long its path: a few spelled-out brackets, so reading
+# in parts always moves on. Only a path near MAX_PATH at the lowest cap makes a result overshoot.
+MIN_ROOM = 32
 FILE_MODE = 0o644
 FOLDER_MODE = 0o755
 _CARRIED_MODE = 0o666  # what a replace keeps of the old file's mode: never execute or special bits
@@ -136,6 +147,11 @@ class FileRefusalError(OperationError):
     def __init__(self, message: str) -> None:
         """Keep the message, marked as file data."""
         super().__init__(message, origin=Origin.FILE)
+
+
+def _content(line: str) -> str:
+    """Return a line without its line ending."""
+    return line.splitlines()[0] if line else ""
 
 
 def _size(count: int) -> str:
@@ -408,12 +424,18 @@ class FileOps:
         """Work within `boundary`, giving at most `max_chars` characters a result."""
         super().__init__()
         self._boundary = boundary
-        self._room = max(200, max_chars - HEADROOM)
+        self._max_chars = max_chars
 
     # --- reading ------------------------------------------------------------------------------
 
+    def _room(self, shown: str) -> int:
+        """Return how much of a file or listing one result holds, measured as the agent sends it."""
+        return max(MIN_ROOM, self._max_chars - HEADROOM - inert_chars(shown))
+
     def read_file(self, args: dict[str, Any]) -> Result:
         """Return a text file's lines from `from_line` on, as much as fits one result.
+
+        A line longer than a whole result is given in pieces: `from_char` reads on inside it.
 
         Raises:
             FileRefusalError: the path is not allowed, not a readable regular file, or not text.
@@ -427,25 +449,55 @@ class FileOps:
             msg = f"{shown} is not text ({_size(info.st_size)}), so I can't show it."
             raise FileRefusalError(msg)
         lines = data.decode("utf-8", errors="replace").splitlines(keepends=True)
-        total = len(lines)
-        first = max(1, int(args.get("from_line", 1)))
-        if total and first > total:
-            msg = f"{shown} has only {total} lines."
-            raise FileRefusalError(msg)
-        body, last = "", first - 1
-        for line in lines[first - 1 :]:
-            if body and len(body) + len(line) > self._room:
-                break
-            body += line[: self._room]
-            last += 1
-        span = f"lines {first} to {last} of {total}" if total else "empty"
+        span, body, more = self._part(
+            lines,
+            max(1, int(args.get("from_line", 1))),
+            max(1, int(args.get("from_char", 1))),
+            shown,
+        )
         head = f"File {shown} ({_size(info.st_size)}, changed {_when(info.st_mtime)}, {span}):"
         tail = ""
-        if last < total:
-            tail = f"\n(More follows: read_file with from_line={last + 1}.)"
+        if more:
+            tail = f"\n(More follows: read_file with {more}.)"
         elif len(data) >= MAX_READ_BYTES and info.st_size > MAX_READ_BYTES:
             tail = f"\n(Only the first {_size(MAX_READ_BYTES)} can be read.)"
         return Result(f"{head}\n{body.rstrip(chr(10))}{tail}", Origin.FILE)
+
+    def _part(self, lines: list[str], first: int, column: int, shown: str) -> tuple[str, str, str]:
+        """Return the span read, the text and where the next part starts ("" at the end).
+
+        Raises:
+            FileRefusalError: `first` or `column` is past the end of the file or line.
+        """
+        total = len(lines)
+        if total and first > total:
+            msg = f"{shown} has only {total} lines."
+            raise FileRefusalError(msg)
+        pending = lines[first - 1 :]
+        length = len(_content(pending[0])) if pending else 0
+        if column > 1:
+            if column > length:
+                msg = f"Line {first} of {shown} has only {length} characters."
+                raise FileRefusalError(msg)
+            pending[0] = pending[0][column - 1 :]
+        room = self._room(shown)
+        if pending and inert_chars(_content(pending[0])) > room:
+            # A line longer than a whole result: this piece of it, and where the next one starts.
+            piece = cut_inert(pending[0], room)
+            end = column - 1 + len(piece)
+            span = f"line {first} of {total}, characters {column} to {end} of {length}"
+            return span, piece, f"from_line={first}, from_char={end + 1}"
+        body, used, last = "", 0, first - 1
+        for line in pending:
+            if body and used + inert_chars(line) > room:
+                break
+            body += line
+            used += inert_chars(line)
+            last += 1
+        span = f"lines {first} to {last} of {total}" if total else "empty"
+        if column > 1:
+            span = f"lines {first} (from character {column}) to {last} of {total}"
+        return span, body, f"from_line={last + 1}" if last < total else ""
 
     def list_dir(self, args: dict[str, Any]) -> Result:
         """List a folder: folders first, then files, with sizes and when they changed.
@@ -475,12 +527,12 @@ class FileOps:
             os.close(folder)
         rows.sort(key=lambda row: (not row[0], row[1].casefold()))
         lines: list[str] = []
-        used = 0
+        used, room = 0, max(MIN_ROOM, self._room(shown) - inert_chars(pattern))
         for _folder, _name, line in rows[:MAX_ENTRIES]:
-            if used + len(line) + 1 > self._room:
+            if lines and used + inert_chars(line) + 1 > room:  # the first always shows
                 break
             lines.append(line)
-            used += len(line) + 1
+            used += inert_chars(line) + 1
         what = (
             f"more than {len(rows)} items"
             if more
@@ -690,12 +742,13 @@ class FileOps:
             ),
             Operation(
                 "read_file",
-                "Read a text file on the owner's PC; a long one in parts (from_line reads on).",
+                "Read a text file on the owner's PC, in parts if long.",
                 {
                     "type": "object",
                     "properties": {
                         "path": path,
                         "from_line": {"type": "integer", "minimum": 1, "maximum": 10_000_000},
+                        "from_char": {"type": "integer", "minimum": 1, "maximum": MAX_READ_BYTES},
                     },
                     "required": ["path"],
                     "additionalProperties": False,

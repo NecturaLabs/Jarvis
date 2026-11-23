@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from jarvis.config import FilesConfig
-from jarvis.operations import Operation, OperationError, Registry, validate_args
+from jarvis.operations import ArgumentError, Operation, OperationError, Registry, validate_args
 from jarvis.pc import files as files_module
 from jarvis.pc.files import Boundary, FileOps
 from jarvis.policy import OpClass, Origin
@@ -204,6 +204,129 @@ def test_a_long_file_is_read_in_parts_by_line(home: Path) -> None:
     assert "from_line=" in first
     assert later.split("\n", 1)[1].startswith("line 200\n")
     assert "of 400" in later
+
+
+def test_a_line_longer_than_one_part_is_read_on_from_where_it_was_cut(home: Path) -> None:
+    line = "".join(f"{n:05d}," for n in range(400))  # 2,400 characters on one line
+    (home / "Documents" / "data.json").write_text(f"{line}\nend\n", encoding="utf-8")
+    ops = _ops(home, max_chars=500)
+
+    seen, args = "", {}
+    for _part in range(20):
+        text = _read(ops, "~/Documents/data.json", **args)
+        seen += text.split("\n", 1)[1].split("\n(More follows")[0]
+        if "(More follows" not in text:
+            break
+        args = {
+            key: int(value)
+            for key, value in (
+                pair.split("=") for pair in text.rsplit("read_file with ", 1)[1][:-2].split(", ")
+            )
+        }
+
+    assert seen == f"{line}\nend"  # every character once, in order
+
+
+def test_a_part_cut_inside_a_line_is_not_reported_as_whole_lines(home: Path) -> None:
+    (home / "Documents" / "data.json").write_text("x" * 2400 + "\n", encoding="utf-8")
+
+    text = _read(_ops(home, max_chars=500), "~/Documents/data.json")
+
+    assert "lines 1 to 1" not in text
+    assert "from_char=" in text
+
+
+@pytest.mark.parametrize("from_char", [0, -1, "2"])
+def test_a_character_to_read_from_is_a_whole_number_from_1(home: Path, from_char: object) -> None:
+    with pytest.raises(ArgumentError):
+        _read(_ops(home), "~/Documents/todo.md", from_char=from_char)
+
+
+def test_reading_from_a_character_past_the_line_is_refused(home: Path) -> None:
+    with pytest.raises(OperationError, match="characters"):
+        _read(_ops(home), "~/Documents/todo.md", from_line=1, from_char=50)
+
+
+def _as_data(text: str) -> int:
+    """How long `text` is once the agent spells out its brackets and wraps it as `file` data."""
+    return len(text) + 3 * (text.count("<") + text.count(">")) + len('<data origin="file"></data>')
+
+
+def _read_on(text: str) -> dict[str, int]:
+    """Return the arguments a part's "More follows" line names, or {} at the end."""
+    if "\n(More follows: read_file with " not in text:
+        return {}
+    named = text.rsplit("read_file with ", 1)[1].removesuffix(".)")
+    return {key: int(value) for key, value in (pair.split("=") for pair in named.split(", "))}
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "".join(f"<a href='#{n}'>item {n}</a>\n" for n in range(300)),  # brackets on every line
+        "<" * 3000 + "\n" + "x>" * 900 + "\n",  # lines longer than a part, all brackets
+    ],
+)
+def test_every_part_of_a_file_of_brackets_fits_its_room_once_wrapped(
+    home: Path, content: str
+) -> None:
+    (home / "Documents" / "page.html").write_text(content, encoding="utf-8")
+    ops = _ops(home, max_chars=600)
+
+    seen, args = "", {}
+    for _part in range(200):
+        text = _read(ops, "~/Documents/page.html", **args)
+        assert _as_data(text) <= 600  # so the agent never cuts the line that says where to go on
+        args = _read_on(text)
+        seen += text.split("\n", 1)[1].split("\n(More follows")[0]
+        if not args:
+            break
+        seen += "" if "from_char" in args else "\n"
+
+    assert seen == content.removesuffix("\n")
+
+
+def test_a_long_path_at_the_lowest_cap_still_fits_once_wrapped(home: Path) -> None:
+    folder = home / "Documents" / ("a" * 60) / ("b" * 60)
+    folder.mkdir(parents=True)
+    (folder / "page.html").write_text("<" * 600 + "\n", encoding="utf-8")
+    shown = f"~/Documents/{'a' * 60}/{'b' * 60}/page.html"
+    ops = _ops(home, max_chars=500)  # the lowest tool_text_chars the config allows
+
+    seen, args = "", {}
+    for _part in range(200):
+        text = _read(ops, shown, **args)
+        assert _as_data(text) <= 500
+        args = _read_on(text)
+        seen += text.split("\n", 1)[1].split("\n(More follows")[0]
+        if not args:
+            break
+    listing = _list(ops, f"~/Documents/{'a' * 60}/{'b' * 60}")
+
+    assert seen == "<" * 600
+    assert _as_data(listing) <= 500
+
+
+def test_a_folder_on_a_very_long_path_still_lists_its_first_entry(home: Path) -> None:
+    parts = ["c" * 120, "d" * 120]
+    folder = home / "Documents" / parts[0] / parts[1]
+    folder.mkdir(parents=True)
+    for n in range(3):
+        (folder / f"entry {n:02d} with a fairly long name.txt").write_text("x", encoding="utf-8")
+
+    listing = _list(_ops(home, max_chars=500), f"~/Documents/{parts[0]}/{parts[1]}")
+
+    assert "entry 00" in listing
+
+
+def test_a_listing_of_names_with_brackets_fits_its_room_once_wrapped(home: Path) -> None:
+    for n in range(60):
+        (home / "Documents" / f"<<<<{n:02d}>>>>.txt").write_text("x", encoding="utf-8")
+
+    text = _list(_ops(home, max_chars=600), "~/Documents")
+
+    assert _as_data(text) <= 600
+    assert text.endswith("more.")
 
 
 # --- listing ----------------------------------------------------------------------------------

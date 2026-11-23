@@ -132,9 +132,10 @@ def _round(x: Number, places: Number | None = None) -> Number:
     if not 0 <= digits <= SIGNIFICANT:
         msg = f"rounding takes 0 to {SIGNIFICANT} places"
         raise CalcError(msg)
-    if isinstance(x, Fraction):
-        return Fraction(round(x, digits))
-    return round(x, digits)
+    # Half away from zero, as calculators round: round(2.5) is 3, not Python's 2.
+    scale = Fraction(10) ** digits
+    whole = math.floor(abs(Fraction(x)) * scale + Fraction(1, 2))
+    return Fraction(whole if x >= 0 else -whole) / scale
 
 
 def _floor(x: Number) -> Number:
@@ -207,7 +208,7 @@ def _power(base: Number, exponent: Number) -> Number:
             msg = "you can't divide by zero"
             raise CalcError(msg)
         return base**power
-    if base < 0:
+    if base < 0 and not float(exponent).is_integer():
         msg = "a negative number to a fractional power is not a real number"
         raise CalcError(msg)
     return _float_call(math.pow, base, exponent)

@@ -377,7 +377,7 @@ def test_a_probability_between_the_thresholds_does_not_start_an_utterance() -> N
     assert heard.reason == "no speech"
 
 
-@pytest.mark.parametrize("live", [0, 1, 3])
+@pytest.mark.parametrize("live", [1, 3])
 def test_the_wake_words_own_tail_is_kept_but_not_counted_as_speech(live: int) -> None:
     scores = [0.9] * 3 + [0.9] * live + [0.0] * 5
 
@@ -388,6 +388,58 @@ def test_the_wake_words_own_tail_is_kept_but_not_counted_as_speech(live: int) ->
     assert heard.samples is not None
     assert len(heard.samples) == (3 + live + 4) * FRAME  # the tail and the request both kept
     assert heard.speech_s == pytest.approx(live * voice.FRAME_S)
+
+
+def test_the_wake_words_own_tail_alone_starts_no_request() -> None:
+    scores = [0.9] * 4 + [0.0] * 8
+
+    heard = voice.capture_utterance(
+        iter([SILENCE] * len(scores)), Probabilities(scores), HYSTERESIS, lead_frames=4
+    )
+
+    assert heard.samples is None  # still waiting for the request when the stream ended
+
+
+@pytest.mark.parametrize(("gap", "tail_kept"), [(0, True), (1, True), (2, False)])
+def test_the_tail_is_kept_only_when_the_request_follows_within_the_pre_roll(
+    gap: int, *, tail_kept: bool
+) -> None:
+    scores = [0.9] * 4 + [0.0] * gap + [0.9] * 3 + [0.0] * 4
+
+    heard = voice.capture_utterance(
+        iter([SILENCE] * len(scores)), Probabilities(scores), HYSTERESIS, lead_frames=4
+    )
+
+    assert heard.samples is not None
+    before = 4 + gap if tail_kept else voice.PRE_ROLL_FRAMES - 1
+    assert len(heard.samples) == (before + 3 + 4) * FRAME
+
+
+def test_the_wait_for_a_request_starts_after_the_wake_words_tail() -> None:
+    # 12 frames of silence (0.96 s) after the tail is within the 1 s no-speech timeout.
+    scores = [0.9] * 4 + [0.0] * 12 + [0.9] * 3 + [0.0] * 4
+
+    heard = voice.capture_utterance(
+        iter([SILENCE] * len(scores)), Probabilities(scores), HYSTERESIS, lead_frames=4
+    )
+
+    assert heard.speech_s == pytest.approx(3 * voice.FRAME_S)
+
+
+def test_a_pause_after_the_wake_word_does_not_end_the_request() -> None:
+    # The keyword's tail, then a pause longer than the trailing silence that ends a request (the
+    # owner draws breath after "Hey Jarvis"), then the request itself.
+    scores = [0.9] * 4 + [0.0] * 6 + [0.9] * 3 + [0.0] * 4
+
+    heard = voice.capture_utterance(
+        iter([SILENCE] * len(scores)), Probabilities(scores), HYSTERESIS, lead_frames=4
+    )
+
+    assert heard.reason == "end of speech"
+    assert heard.speech_s == pytest.approx(3 * voice.FRAME_S)
+    assert heard.samples is not None
+    pre_roll = voice.PRE_ROLL_FRAMES - 1
+    assert len(heard.samples) == (pre_roll + 3 + 4) * FRAME  # not the tail: the pause came first
 
 
 def test_a_click_after_the_wake_word_is_not_a_request() -> None:
