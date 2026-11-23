@@ -323,6 +323,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The chat's working line says "Checking the time" while Jarvis reads the clock; it said "Running Time now".
+
 - The calculator works out a negative number that is not exact (`cos(pi)`, `sin(4)`) to a whole power;
   it refused it as a fractional power.
 

@@ -258,6 +258,7 @@ def test_each_event_shows_from_its_verbosity_level(entry: dict[str, object], lev
         ({"event": "tool_call", "op": "web_search"}, "Searching the web"),
         ({"event": "tool_call", "op": "spotify_play"}, "Talking to Spotify"),
         ({"event": "tool_call", "op": "brand_new_op"}, "Running Brand new op"),
+        ({"event": "tool_call", "op": "time_now"}, "Checking the time"),
         ({"event": "model_call"}, "Thinking"),
         ({"event": "request", "text": "hi"}, None),
     ],
