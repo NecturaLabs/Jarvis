@@ -323,6 +323,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Outside text in a tool result (a web page, a file) now fits the size planned for it: its angle
+  brackets are spelled out before it is cut, not after, which could make it four times as long. A long
+  request also keeps its tool results whole while they fit: the system prompt was counted twice when
+  making room.
+
 - `jarvis status`, `status --json` and the status bar say the model is loading while a load Jarvis asked
   for is under way (at start, after a resume, on a wake word). Strata reports only loaded or unloaded, so a
   2-minute load after `jarvis restart` showed `model: unloaded`. Each load request now waits as long as

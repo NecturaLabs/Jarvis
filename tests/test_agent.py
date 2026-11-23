@@ -2411,3 +2411,38 @@ def test_with_consent_bypassed_a_strong_action_is_refused_where_there_is_no_key(
     agent.handle("wipe", Hooks(confirm=_never_asked))
 
     assert counter.runs == []
+
+
+@pytest.mark.parametrize("text", ["<" * 5000, "a<b>" * 1500, "x" * 5000])
+def test_an_outside_result_reaches_the_model_within_its_cap_once_wrapped(text: str) -> None:
+    """Regression: escaping after the cut let a result of angle brackets grow to four times it."""
+    model = ScriptedModel([_call("read", {"q": "1"}), _say("Done.")])
+    limits = Limits(tool_text_chars=3000)
+    agent, _ = _agent(model, [Counter().op("read", text=text, origin=Origin.WEB)], limits=limits)
+
+    agent.handle("read it", NO_CONFIRM)
+
+    result = next(m["content"] for m in model.seen[-1] if m["role"] == "tool")
+    assert len(result) <= limits.tool_text_chars
+    assert result.startswith('<data origin="web">')
+    assert result.endswith("</data>")
+    body = result.removeprefix('<data origin="web">').removesuffix("</data>")
+    assert "<" not in body
+    assert ">" not in body
+    assert text.startswith(body.replace("&lt;", "<").replace("&gt;", ">"))
+
+
+def test_a_request_that_fits_keeps_its_results_whole() -> None:
+    """Regression: the system prompt was counted twice, so results were cleared with room left."""
+    page = "w" * 6000
+    replies = [_call("read", {"q": str(n)}, f"c{n}") for n in range(2)] + [_say("Done.")]
+    model = ScriptedModel(replies)
+    system = "s" * 12000
+    registry = Registry([Counter().op("read", text=page), no_action_operation()])
+    limits = Limits(context_tokens=12000, reply_tokens=500, tool_text_chars=6000, memory_tokens=0)
+    agent = Agent(model, registry, system, AuditLog(None), {}, limits=limits)
+
+    agent.handle("read both", NO_CONFIRM)
+
+    results = [m["content"] for m in model.seen[-1] if m["role"] == "tool"]
+    assert results == [page, page]

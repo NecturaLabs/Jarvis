@@ -378,6 +378,24 @@ def _inert(text: str) -> str:
     return text.replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _wrapped(origin: str, text: str, cap: int) -> str:
+    """Return outside text, made inert and wrapped as data, in at most `cap` characters.
+
+    The text is cut after its angle brackets are spelled out, so the wrapped result keeps to the
+    cap the context was planned for, and never in the middle of a spelled-out bracket.
+    """
+    head, tail = f'<data origin="{origin}">', "</data>"
+    room = max(0, cap - len(head) - len(tail))
+    body = _inert(text)
+    if len(body) > room:
+        cut = body[:room]
+        amp = cut.rfind("&", max(0, room - 3))
+        if amp >= 0 and body[amp : amp + 4] in {"&lt;", "&gt;"}:
+            cut = cut[:amp]
+        body = cut
+    return f"{head}{body}{tail}"
+
+
 def _text(message: Mapping[str, Any]) -> str:
     content: object = message.get("content")
     if isinstance(content, str):
@@ -711,7 +729,8 @@ class Agent:
         self._audit = audit
         self._overrides = overrides
         self._limits = limits or Limits()
-        self._fixed = tokens(system_prompt) + tokens(json.dumps(registry.tool_schemas()))
+        self._schemas = tokens(json.dumps(registry.tool_schemas()))
+        self._fixed = tokens(system_prompt) + self._schemas
         self._memory = Conversation(self._memory_budget(), self._limits.memory_idle_s)
         self._memory_file = memory_file
         if memory_file is not None:
@@ -1137,7 +1156,7 @@ class Agent:
         """
         limit = self._limits.context_tokens - CONTEXT_MARGIN - self._limits.reply_tokens
         messages = turn.messages
-        used = self._fixed + sum(_cost(m) for m in messages)
+        used = self._schemas + sum(_cost(m) for m in messages)  # the messages hold the prompt
         for message in messages[turn.first :]:
             if used <= limit:
                 return
@@ -1222,7 +1241,7 @@ class Agent:
                 if turn.request is not None:
                     turn.request.saw(result.origin.value)
                 turn.private = turn.private or result.origin is Origin.FILE
-                body = f'<data origin="{result.origin.value}">{_inert(body)}</data>'
+                body = _wrapped(result.origin.value, result.text, self._limits.tool_text_chars)
             turn.messages.append(
                 {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": body}
             )
