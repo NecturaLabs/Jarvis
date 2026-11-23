@@ -342,6 +342,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- PC audio from an app that plays through several streams is now heard whole. Only its first stream was
+  recorded, which also weakened the check for other people's speech during a confirmation.
 - `jarvis ask` takes a typed `y` as yes. It asked `[yes/no]` but read the answer as speech, where `y` is
   no, so a `y` declined the action.
 - When the model answers a question with no words after looking something up, Jarvis now asks it once

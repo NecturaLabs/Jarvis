@@ -106,13 +106,8 @@ def _nodes(objects: object) -> Iterator[tuple[object, dict[str, object], dict[st
             yield item.get("id"), info, props
 
 
-def match_app_streams(objects: object, apps: list[str]) -> list[str]:
-    """Return the serials of playback streams (in `pw-dump` output) that belong to one of `apps`.
-
-    An app matches by a case-insensitive part of its process binary, application or node name,
-    so "discord" finds Discord's voice stream (its application name is "WEBRTC VoiceEngine").
-    Streams that are playing come first: an app may also hold idle ones.
-    """
+def _app_streams(objects: object, apps: list[str]) -> tuple[list[str], list[str]]:
+    """Return the serials of the apps' playback streams that play and those that are idle."""
     wanted = [a.casefold() for a in apps if a.strip()]
     playing: list[str] = []
     idle: list[str] = []
@@ -126,7 +121,28 @@ def match_app_streams(objects: object, apps: list[str]) -> list[str]:
         if any(app in names for app in wanted):
             group = playing if info.get("state", "running") == "running" else idle
             group.append(str(props["object.serial"]))
+    return playing, idle
+
+
+def match_app_streams(objects: object, apps: list[str]) -> list[str]:
+    """Return the serials of playback streams (in `pw-dump` output) that belong to one of `apps`.
+
+    An app matches by a case-insensitive part of its process binary, application or node name,
+    so "discord" finds Discord's voice stream (its application name is "WEBRTC VoiceEngine").
+    Streams that are playing come first: an app may also hold idle ones.
+    """
+    playing, idle = _app_streams(objects, apps)
     return playing + idle
+
+
+def playing_app_streams(objects: object, apps: list[str]) -> list[str]:
+    """Return the serials of every stream of `apps` that plays, or of one idle one if none does.
+
+    The apps are matched as in `match_app_streams`. All playing streams are recorded together,
+    so an app that plays through several is heard whole.
+    """
+    playing, idle = _app_streams(objects, apps)
+    return playing or idle[:1]
 
 
 def others_playing(objects: object, ours: Callable[[int], bool]) -> bool:
@@ -213,8 +229,8 @@ def pw_dump() -> object:
 
 
 def app_stream_serials(apps: list[str]) -> list[str]:
-    """Return the serials of the given apps' playback streams playing now (empty if none)."""
-    return match_app_streams(pw_dump(), apps)
+    """Return the serials of the given apps' streams to record now (`playing_app_streams`)."""
+    return playing_app_streams(pw_dump(), apps)
 
 
 def capture_source_serials(pid: int) -> list[str]:
@@ -239,7 +255,8 @@ class AppAudio:
     """Streams frames of what some apps play (Discord by default), or of all PC output.
 
     The apps' streams come and go (a call starts, ends), so this waits for one to appear,
-    records it until it goes away and then waits again. With no apps named, it records the
+    records it until it goes away and then waits again. Every stream the apps play is recorded,
+    each by its own recorder pinned to it, and heard mixed. With no apps named, it records the
     default output (everything the speakers play).
     """
 
@@ -253,6 +270,7 @@ class AppAudio:
     ) -> None:
         """Follow `apps` (by process or app name), checking for their streams every `poll_s`.
 
+        `find` returns the serials of the streams to record (`playing_app_streams`).
         `command_for(target)` builds the capture command, all PC output for "" (a test seam).
         """
         super().__init__()
@@ -262,82 +280,151 @@ class AppAudio:
         self._command_for = command_for
         self._feeds = feeds
         self._stopping = threading.Event()
-        self._mic: Microphone | None = None
+        self._mics: list[Microphone] = []
 
-    def _target(self) -> str | None:
-        """Return what to record now: a stream's serial, "" for all PC output, None for nothing."""
+    def _targets(self) -> list[str] | None:
+        """Return what to record now: the streams' serials, [""] for all PC output, or None."""
         if not self._apps:
-            return ""
-        serials = self._find(self._apps)
-        return serials[0] if serials else None
+            return [""]
+        return list(dict.fromkeys(self._find(self._apps))) or None
 
-    def _misplaced(self, target: str, pid: int | None) -> str:
-        """Return why the recorder no longer hears `target` (empty while it does).
+    def _misplaced(self, targets: list[str], mics: list[Microphone]) -> str:
+        """Return why the recorders no longer hear just `targets` (empty while they do).
 
-        The stream may have gone, or the recorder may have been linked to something else (the
-        default microphone, on a session manager that ignores the pinning properties). Either
-        way its frames are not the app's any more and must not be passed on.
+        A stream may have gone or a new one started, or a recorder may have been linked to
+        something else (the default microphone, on a session manager that ignores the pinning
+        properties). Either way the frames are not the apps' as they play now.
         """
-        if target not in self._find(self._apps):
+        found = set(self._find(self._apps))
+        if not found.issuperset(targets):
             return "the stream is gone"
-        if pid is not None and any(source != target for source in self._feeds(pid)):
-            return "the recorder was linked to another source"
+        if found.difference(targets):
+            return "another stream started"
+        for target, mic in zip(targets, mics, strict=True):
+            pid = mic.pid
+            if pid is not None and any(source != target for source in self._feeds(pid)):
+                return "the recorder was linked to another source"
         return ""
 
-    def _record(self, target: str) -> Iterator[NDArray[np.int16]]:
-        """Yield frames from `target` until it ends or stops being what the recorder hears."""
-        mic = Microphone(command=self._command_for(target))
-        mic.start()
-        self._mic = mic
+    def _record(self, targets: list[str]) -> Iterator[NDArray[np.int16]]:
+        """Yield frames from `targets` until one ends or the recorders stop hearing just them."""
+        mics = [Microphone(command=self._command_for(target)) for target in targets]
         try:
+            for mic in mics:
+                mic.start()
+                self._mics.append(mic)
+            frames = mics[0].frames() if len(mics) == 1 else _mixed(mics)
             checked = time.monotonic()
-            for frame in mic.frames():
-                if target and time.monotonic() - checked >= self._poll_s:
+            for frame in frames:
+                if targets != [""] and time.monotonic() - checked >= self._poll_s:
                     checked = time.monotonic()
-                    reason = self._misplaced(target, mic.pid)
+                    reason = self._misplaced(targets, mics)
                     if reason:
                         log.info("PC audio recorder dropped: %s", reason)
                         return
                 yield frame
         finally:
-            self._mic = None
-            mic.stop()
+            self._mics = []
+            for mic in mics:
+                mic.stop()
 
-    def _session(self, target: str) -> Generator[NDArray[np.int16]]:
+    def _session(self, targets: list[str]) -> Generator[NDArray[np.int16]]:
         try:
-            yield from self._record(target)
+            yield from self._record(targets)
         except AudioError as exc:
             log.info("PC audio stream ended (%s); waiting for it to come back", exc)
 
     def sessions(self) -> Generator[Generator[NDArray[np.int16]]]:
-        """Yield one frame stream per matching stream that plays, each ending with it.
+        """Yield one frame stream per set of matching streams that play, each ending with them.
 
         A consumer that reads speech from one session cannot run on into the next stream. Runs
         until stopped.
         """
         while not self._stopping.is_set():
-            target = self._target()
-            if target is not None:
-                yield self._session(target)
+            targets = self._targets()
+            if targets is not None:
+                yield self._session(targets)
             self._stopping.wait(self._poll_s)
 
     def frames(self) -> Iterator[NDArray[np.int16]]:
-        """Yield frames from whichever matching stream is playing, until stopped."""
+        """Yield frames from whichever matching streams are playing, until stopped."""
         for session in self.sessions():
             yield from session
 
     def drain(self) -> None:
         """Drop frames captured so far."""
-        mic = self._mic
-        if mic is not None:
+        for mic in list(self._mics):
             mic.drain()
 
     def stop(self) -> None:
         """Stop following the apps."""
         self._stopping.set()
-        mic = self._mic
-        if mic is not None:
+        for mic in list(self._mics):
             mic.stop()
+
+
+_ACTIVE_S = 0.5  # a recorder that sent nothing for this long is not waited for in the mix
+
+
+def _mixed(mics: list[Microphone]) -> Iterator[NDArray[np.int16]]:
+    """Yield the sum of one frame from each recorder that is sending, until all have ended.
+
+    Each recorder is read on its own thread. A frame is let out once every recorder heard
+    lately has given one, or one gives a second before the rest: a paused stream that sends
+    nothing holds up the others for no longer than `_ACTIVE_S`.
+
+    Raises:
+        AudioError: every recorder's capture ended.
+    """
+    shared: queue.Queue[tuple[int, NDArray[np.int16]]] = queue.Queue(maxsize=400 * len(mics))
+    readers = [
+        threading.Thread(
+            target=_forward, args=(n, mic, shared), name="jarvis-pc-audio-mix", daemon=True
+        )
+        for n, mic in enumerate(mics)
+    ]
+    for reader in readers:
+        reader.start()
+    pending: dict[int, NDArray[np.int16]] = {}
+    heard: dict[int, float] = {}
+    while True:
+        try:
+            index, frame = shared.get(timeout=0.2)
+        except queue.Empty:
+            if not any(reader.is_alive() for reader in readers):
+                msg = "the PC audio streams ended"
+                raise AudioError(msg) from None
+            continue
+        if index in pending:
+            yield _mix(list(pending.values()))
+            pending.clear()
+        now = time.monotonic()
+        pending[index], heard[index] = frame, now
+        lately = {n for n, at in heard.items() if now - at < _ACTIVE_S and readers[n].is_alive()}
+        if lately.issubset(pending):
+            yield _mix(list(pending.values()))
+            pending.clear()
+
+
+def _forward(
+    index: int, mic: Microphone, shared: queue.Queue[tuple[int, NDArray[np.int16]]]
+) -> None:
+    """Pass the recorder's frames on, tagged with `index`, the oldest dropped when full."""
+    with contextlib.suppress(AudioError):
+        for frame in mic.frames():
+            while True:
+                try:
+                    shared.put_nowait((index, frame))
+                    break
+                except queue.Full:
+                    with contextlib.suppress(queue.Empty):
+                        shared.get_nowait()
+
+
+def _mix(frames: list[NDArray[np.int16]]) -> NDArray[np.int16]:
+    """Return the frames added together, clipped to 16 bits."""
+    total = np.sum(np.stack(frames).astype(np.int32), axis=0)
+    return np.clip(total, -32768, 32767).astype(np.int16)
 
 
 class Microphone:

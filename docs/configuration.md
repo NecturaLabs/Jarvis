@@ -228,7 +228,7 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | `vocabulary_hint` | `true` | true or false | Prime speech-to-text with Jarvis's name, its actions and your artist names. |
 | `hint_names` | `40` | 0 to 200 | Most artist names put in the hint (the hint also stops at 800 characters). |
 | `listen_to_pc` | `false` | true or false | Also take requests heard in PC audio. `jarvis pc-audio on`. |
-| `pc_audio_apps` | `["discord"]` | list of app or process names | Whose audio to listen to. An empty list means all PC output. `--apps`, `--all-output`. |
+| `pc_audio_apps` | `["discord"]` | list of app or process names | Whose audio to listen to: every stream they play is recorded and heard mixed. An empty list means all PC output. `--apps`, `--all-output`. |
 | `pc_audio_grant_s` | `600.0` | 0 to 86400 | After you say yes to a PC-audio request, how long further PC-audio requests run without asking. 0 asks every time. Time the PC spends asleep counts. |
 | `confirm_blocks_on_pc_speech` | `true` | true or false | A yes counts as no if speech was heard in PC audio while Jarvis waited for it. |
 | `pc_audio_cooldown_s` | `5.0` | 0 to 600 | Pause after a PC-audio request during which another is ignored. |
