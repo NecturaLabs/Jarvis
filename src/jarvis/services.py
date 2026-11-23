@@ -213,6 +213,8 @@ def strata_profile(config: Config) -> dict[str, object]:
     ]  # fmt: skip
     if s.vram_reserve_mib:
         args += ["--vram-reserve-mib", str(s.vram_reserve_mib)]
+    if s.kv_resident:
+        args += ["--kv-resident", str(s.kv_resident)]
     vision = _vision(config) if s.pictures else None
     if vision is not None:
         args.append("--vision")

@@ -57,6 +57,18 @@ def _reserve_or_unset(mib: int) -> int:
     return mib
 
 
+KV_RESIDENT_MIN_CELLS = 20480  # the engine's own floor for `--kv-resident`
+
+
+def _streamed_or_unset(cells: int) -> int:
+    if cells != 0 and cells < KV_RESIDENT_MIN_CELLS:
+        msg = f"must be 0 (unset) or at least {KV_RESIDENT_MIN_CELLS}"
+        raise ValueError(msg)
+    return cells
+
+
+KvResident = Annotated[int, Field(ge=0, le=262144), AfterValidator(_streamed_or_unset)]
+
 VramReserve = Annotated[
     int, Field(ge=0, le=VRAM_RESERVE_MAX_MIB), AfterValidator(_reserve_or_unset)
 ]
@@ -152,6 +164,9 @@ class StrataConfig(_Section):
     # VRAM in MiB the engine leaves free for other programs (`--vram-reserve-mib`); 0 passes
     # nothing, so Strata's own default (700) applies.
     vram_reserve_mib: VramReserve = 0
+    # Context cells kept in VRAM (`--kv-resident`); the whole context then lives in pinned RAM, so
+    # `context` can grow past them without more VRAM. 0: all of the context in VRAM.
+    kv_resident: KvResident = 0
     # The picture reader (the model's mmproj file, beside it); unset: Jarvis reads no pictures.
     vision_file: SafePath = Path()
     vision_idle_s: int = Field(default=120, ge=10, le=86400)  # the reader stops after this idle
