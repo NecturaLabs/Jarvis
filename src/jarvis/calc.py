@@ -180,6 +180,11 @@ def _log10(x: Number) -> Number:
     return _log(x, Fraction(10))
 
 
+def _calculator_log(x: Number, base: Number | None = None) -> Number:
+    """`log`: to `base`, else to base 10 as on a calculator (`ln` is the natural logarithm)."""
+    return _log(x, Fraction(10) if base is None else base)
+
+
 def _log2(x: Number) -> Number:
     return _log(x, Fraction(2))
 
@@ -191,7 +196,7 @@ _FUNCTIONS: dict[str, tuple[Callable[..., Number], int, int]] = {
     "round": (_round, 1, 2),
     "floor": (_floor, 1, 1),
     "ceil": (_ceil, 1, 1),
-    "log": (_log, 1, 2),
+    "log": (_calculator_log, 1, 2),
     "ln": (_log, 1, 1),
     "log10": (_log10, 1, 1),
     "log2": (_log2, 1, 1),
@@ -445,7 +450,7 @@ def operations(config: FormatConfig | None = None) -> list[Operation]:
             "Work out arithmetic exactly, instead of your own sums. Write the owner's words as an"
             " expression, numbers without commas: 48 * 31; 30 / 120 * 100 for a percentage;"
             " 15% * 80; 100 * (1 - 20%) for 20 percent off. Has // % ** ! sqrt"
-            " round(x, places) log(x, base) ln sin cos tan min max pi e.",
+            " round(x, places) log(x, base; 10 if none) ln sin cos tan min max pi e.",
             {
                 "type": "object",
                 "properties": {

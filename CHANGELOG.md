@@ -342,6 +342,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The calculator's `log` with one number is to base 10, as on a calculator: `log(100)` is 2. It was the
+  natural logarithm (4.6), which `ln` still gives.
+
 - The calculator bounds a logarithm like every other step: a 47-character `log` of a huge exact base ran for
   more than 30 s while it checked for a whole answer, and now answers at once. A logarithm to a base just
   above 1 (`log(5, 1 + 1/10**30)`) is worked out instead of failing with an internal error, and one too

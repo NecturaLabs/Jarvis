@@ -58,6 +58,7 @@ from jarvis.policy import OpClass
         ("log10(1000)", "3"),
         ("log(8, 2)", "3"),
         ("ln(e)", "1"),
+        ("log(100)", "2"),  # log alone is base 10, as on a calculator; ln is the natural one
         ("pi * 2", "6.283185307"),
         ("max(3, 9, 4) - min(3, 9, 4)", "6"),
         ("10!", "3628800"),
