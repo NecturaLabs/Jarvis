@@ -121,6 +121,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- An opt-in shell command, `pc_shell` (#19), off unless `[shell] enabled` is set. Each command needs the
+  confirm key, which no class setting lowers, and runs once in its own user scope with time, memory, CPU
+  and task limits. It runs with no new privileges, so `sudo` cannot work, and with only `PATH`, `HOME`,
+  `LANG` and `TERM` set. A request heard in PC audio, or one that read outside text, runs nothing.
 - Wake word training and benchmark tools: `tools/wake_train.sh` trains and scores a phrase with a chosen
   LiveKit project's key, `tools/wake_ungated.py` runs the trainer without the gated test sets (#37), and
   `tools/wake_bench.py` scores models on 55 local voices and about 24 hours of real media, alone and

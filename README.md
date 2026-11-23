@@ -33,6 +33,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
   match, asks which one when there are several, and stops only that one once you press the confirm key. It
   never stops the desktop, the sound server, dictation or itself, and nothing heard from PC audio can stop a
   program ([Stopping a program](docs/configuration.md#stopping-a-program)).
+  A shell command you say can run too, only if you turn it on (`[shell]`, off by default) and only after
+  your confirm key, with time and memory limits and no sudo ([`[shell]`](docs/configuration.md)).
 - **Sums:** arithmetic, however you ask it (products, percentages, square roots, powers and the like), is
   worked out exactly by a calculator in code, never guessed by the model.
 - **Boundaries:** every action is a typed operation checked by a policy engine in code before it runs, and

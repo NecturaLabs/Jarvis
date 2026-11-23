@@ -48,6 +48,9 @@ SUBPROCESS_FILES = {
     "Azure keyword helper, only inside `unshare --net` (ADR 0010)",
     "chat/clipboard.py": "`wl-paste` with a fixed argument list, for Ctrl+V in the chat (the "
     "owner's request, 2026-11-21)",
+    "pc/shell.py": "`pc_shell`, the opt-in `strong` shell ADR 0002 allows (#19): "
+    "`systemd-run --user --scope` with fixed limits and `setpriv --no-new-privs`, and "
+    "`systemctl --user stop` of that scope",
 }
 
 # Files that may build a path with a `voxtype` component other than the config directory.

@@ -529,6 +529,35 @@ In code, whatever the model says:
   (a program's executable, or a script's file name), not only its first 15 characters. The list, with the
   reason for each, is in `src/jarvis/pc/processes.py`.
 
+## `[shell]`: an opt-in shell command (off)
+
+`pc_shell` runs one shell command you say, as you, and only when you turn it on:
+
+```toml
+[shell]
+enabled = true       # off by default
+timeout_s = 30       # stopped after this (1 to 600)
+memory_max_mib = 1024
+cpu_percent = 100    # of one core; 200 is two
+tasks_max = 256      # processes and threads together
+```
+
+Every command is `strong`: Jarvis says the exact command, and only your confirm key runs it. No
+`[boundaries.classes]` entry lowers that (`deny` still turns it off), and `bypass_consent` never skips it.
+A request heard in PC audio runs nothing, nor does a request that also read outside text (a page, a file, a
+picture, a long paste, Spotify names, a program's output): say the command in a request of its own.
+
+Each command runs once in its own `systemd-run --user --scope` unit (`jarvis-shell-<random>`), in your home
+folder, with the limits above and no swap. When it returns or runs out of time, the scope is stopped, which
+ends anything it left running in the background. It runs behind `setpriv --no-new-privs`, so `sudo`
+and every other set-user-ID program cannot raise its rights. Its environment holds only `PATH`, `HOME`, `LANG` and `TERM`: none of
+Jarvis's own, so no token or key is passed on. It has no input. Jarvis keeps the first part of the output
+(`[agent] tool_text_chars`, the same cap as a file read) with the exit status, as text from a program, not
+your words.
+
+**What a scope does not do:** it limits resources only. The command can read, change and delete whatever
+your user can, and reach the network. The audit log keeps the command and the start of its output.
+
 ## The Omarchy bar module (#14)
 
 Omarchy's bar is part of `omarchy-shell` (Quickshell), not Waybar. It takes a custom module with `"type":
