@@ -342,6 +342,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- No follow-up window opens while another program plays audio (music, a video, a game, a call): anything the
+  microphone heard for 6 s after a reply was taken as your next request, so sung or played lyrics started
+  requests, and each reply opened the window again. Speech heard in the window is dropped too if such audio
+  started meanwhile. `audio.follow_up_over_audio = true` keeps the window open over other audio.
+
 - The chat no longer closes on a picture whose header claims more than about 179 million pixels (a big scan
   or map, or a crafted file): Pillow refused it with an error the picture check did not catch, and the
   window ended. It is now refused as too large to read, from the chat and from `show_image`, and any other

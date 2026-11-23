@@ -39,6 +39,7 @@ from jarvis.audio import (
     is_phantom,
     match_app_streams,
     next_retry_wait,
+    others_playing,
     parse_transcript,
     parse_voxtype_status,
     pw_record_command,
@@ -218,20 +219,22 @@ def _stream(
     app: str,
     media_class: str = "Stream/Output/Audio",
     state: str = "running",
+    *,
+    pid: int | None = None,
 ) -> dict[str, object]:
+    props: dict[str, object] = {
+        "media.class": media_class,
+        "object.serial": serial,
+        "application.process.binary": binary,
+        "application.name": app,
+        "node.name": app,
+    }
+    if pid is not None:
+        props["application.process.id"] = str(pid)
     return {
         "id": serial,
         "type": "PipeWire:Interface:Node",
-        "info": {
-            "state": state,
-            "props": {
-                "media.class": media_class,
-                "object.serial": serial,
-                "application.process.binary": binary,
-                "application.name": app,
-                "node.name": app,
-            },
-        },
+        "info": {"state": state, "props": props},
     }
 
 
@@ -245,6 +248,20 @@ def test_only_the_named_apps_streams_are_followed() -> None:
     assert match_app_streams(objects, ["discord"]) == ["2"]
     assert match_app_streams(objects, ["DISCORD", "spotify"]) == ["1", "2"]
     assert match_app_streams(objects, []) == []
+
+
+def test_audio_playing_elsewhere_is_any_running_output_stream_but_jarvis_own() -> None:
+    def ours(pid: int) -> bool:
+        return pid == 7
+
+    jarvis = _stream(1, "pw-play", "pw-play", pid=7)
+    spotify = _stream(2, "spotify", "Spotify", pid=50)
+    paused = _stream(3, "spotify", "Spotify", state="idle", pid=50)
+    mic = _stream(4, "Discord", "mic", media_class="Stream/Input/Audio", pid=60)
+
+    assert others_playing([jarvis, spotify], ours)
+    assert not others_playing([jarvis, paused, mic, {"id": 5, "info": None}], ours)
+    assert others_playing([_stream(6, "mpv", "mpv")], ours)  # no process id: not Jarvis's
 
 
 def test_app_audio_waits_for_the_app_then_records_it() -> None:

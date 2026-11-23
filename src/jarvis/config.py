@@ -261,6 +261,7 @@ class AudioConfig(_Section):
     listen_when_locked: bool = True
     # Seconds after a spoken reply in which the next request needs no wake word; 0 turns it off.
     follow_up_s: float = Field(default=6.0, ge=0, le=15)
+    follow_up_over_audio: bool = False  # open the window while another program plays audio too
     wake_engine: Literal["livekit", "azure"] = "livekit"
     azure_keyword_model: str = ""  # the Azure custom keyword `.table` file
     azure_python: str = ""  # the Python with the Speech SDK; empty: <data_dir>/azure-wake/venv

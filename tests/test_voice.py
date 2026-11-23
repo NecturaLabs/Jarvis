@@ -238,6 +238,7 @@ def _loop(
     wake: Wake | None = None,
     dictating: Callable[[], bool | None] = lambda: False,
     meeting: Callable[[], bool] = lambda: False,
+    media: Callable[[], bool | None] = lambda: False,
     paused: Callable[[], bool] = lambda: False,
     audit: AuditLog | None = None,
     transcribe: Callable[[NDArray[np.int16]], str] | None = None,
@@ -261,6 +262,7 @@ def _loop(
         pc_retry_s=0,
         dictating=dictating,
         meeting=meeting,
+        media_playing=media,
         paused=paused,
         audit=audit,
         locked=locked,
@@ -1281,6 +1283,7 @@ def _follow_loop(
     dictating: Callable[[], bool | None] = lambda: False,
     meeting: Callable[[], bool] = lambda: False,
     paused: Callable[[], bool] = lambda: False,
+    media: Callable[[], bool | None] = lambda: False,
 ) -> VoiceLoop:
     return _loop(
         agent,
@@ -1289,6 +1292,7 @@ def _follow_loop(
         cfg=cfg,
         dictating=dictating,
         meeting=meeting,
+        media=media,
         paused=paused,
         transcribe=_texts(*texts),
     )
@@ -2240,6 +2244,43 @@ def test_speech_in_the_window_is_dropped_when_a_meeting_started_meanwhile() -> N
     mic = Mic(*REQUEST, SPEECH, lambda: meeting.__setitem__(0, True), *FOLLOW_UP_REQUEST[1:])
 
     _run(_follow_loop(agent, mic, Speaker(), meeting=lambda: meeting[0]))
+
+    assert len(agent.calls) == 1
+
+
+def test_no_window_opens_while_other_audio_plays() -> None:
+    """Lyrics, a video or a call are not the owner's next request."""
+    agent = Agent()
+
+    _run(_follow_loop(agent, Mic(*REQUEST, *FOLLOW_UP_REQUEST), Speaker(), media=lambda: True))
+
+    assert len(agent.calls) == 1
+
+
+def test_the_owner_can_keep_the_window_while_other_audio_plays() -> None:
+    agent = Agent()
+    cfg = FOLLOW_UP.model_copy(update={"follow_up_over_audio": True})
+    mic = Mic(*REQUEST, *FOLLOW_UP_REQUEST)
+
+    _run(_follow_loop(agent, mic, Speaker(), cfg=cfg, media=lambda: True))
+
+    assert len(agent.calls) == 2
+
+
+def test_no_window_opens_while_it_cannot_be_told_whether_audio_plays() -> None:
+    agent = Agent()
+
+    _run(_follow_loop(agent, Mic(*REQUEST, *FOLLOW_UP_REQUEST), Speaker(), media=lambda: None))
+
+    assert len(agent.calls) == 1
+
+
+def test_speech_in_the_window_is_dropped_when_audio_started_meanwhile() -> None:
+    agent = Agent()
+    playing = [False]
+    mic = Mic(*REQUEST, SPEECH, lambda: playing.__setitem__(0, True), *FOLLOW_UP_REQUEST[1:])
+
+    _run(_follow_loop(agent, mic, Speaker(), media=lambda: playing[0]))
 
     assert len(agent.calls) == 1
 

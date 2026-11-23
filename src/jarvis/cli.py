@@ -635,6 +635,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         PausableMic,
         Vad,
         VoxtypeWatch,
+        audio_playing_elsewhere,
         screen_locked,
     )
     from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, which loads numpy and ONNX Runtime
@@ -705,6 +706,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         names=(cfg.persona.name,),
         dictating=voxtype.dictating,
         meeting=voxtype.meeting,
+        media_playing=audio_playing_elsewhere,
         audit=jarvis.audit,
         paused=lambda: mic.paused,
         until_resumed=mic.wait_resumed,

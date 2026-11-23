@@ -129,6 +129,44 @@ def match_app_streams(objects: object, apps: list[str]) -> list[str]:
     return playing + idle
 
 
+def others_playing(objects: object, ours: Callable[[int], bool]) -> bool:
+    """Whether a playback stream (in `pw-dump` output) is running that is not Jarvis's own.
+
+    `ours` says whether a process id is Jarvis or one of its players.
+    """
+    for _id, info, props in _nodes(objects):
+        if props.get("media.class") != "Stream/Output/Audio" or info.get("state") != "running":
+            continue
+        pid = str(props.get("application.process.id", ""))
+        if not (pid.isdigit() and ours(int(pid))):
+            return True
+    return False
+
+
+def _ours(pid: int) -> bool:
+    """Whether `pid` is this process or a child of it (a `pw-play` speaking a reply)."""
+    if pid == os.getpid():
+        return True
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    fields = stat.rpartition(")")[2].split()  # the name before it may hold spaces
+    return len(fields) > 1 and fields[1] == str(os.getpid())
+
+
+def audio_playing_elsewhere() -> bool | None:
+    """Whether another program plays audio now, or None when PipeWire cannot be read."""
+    try:
+        done = subprocess.run(["pw-dump"], capture_output=True, text=True, timeout=5, check=False)
+        objects: object = json.loads(done.stdout)
+    except OSError, subprocess.TimeoutExpired, ValueError:
+        return None
+    if done.returncode != 0:
+        return None
+    return others_playing(objects, _ours)
+
+
 def capture_sources(objects: object, pid: int) -> list[str]:
     """Return the serials of the nodes that feed process `pid`'s streams (in `pw-dump` output)."""
     clients = {
