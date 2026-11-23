@@ -249,7 +249,8 @@ def capture_utterance(
             recent.append(frame)
             if number + 1 - PRE_ROLL_FRAMES >= lead_frames:  # the pre-roll is past the tail
                 del recent[:-PRE_ROLL_FRAMES]
-            waited_s += FRAME_S
+            if number >= lead_frames:  # the wait starts once the wake word has ended
+                waited_s += FRAME_S
             if speech:
                 started = True
                 kept.extend(recent)
