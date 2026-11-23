@@ -17,8 +17,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   flags, tokenizer and picture reader come from that file, and Jarvis adds only its own limits (context,
   VRAM, one request at a time, lazy load). Nothing model-specific is hardcoded any more. The VRAM limit goes
   through whichever flag the model's engine takes. `strata.learn_experts` (on) lets an engine that keeps a
-  routing profile learn which experts Jarvis's requests use and start with them on the card. Jarvis has no
-  model of its own default; the one set up and measured here is Qwen3.8-Flash-Next (measured beside a game's budget: 7.95 GiB of VRAM, 35.5 GiB of RAM,
+  routing profile learn which experts Jarvis's requests use and start with them on the card. Jarvis no longer
+  has a model default of its own; the model set up and measured here is Qwen3.8-Flash-Next (measured beside a game's budget: 7.95 GiB of VRAM, 35.5 GiB of RAM,
   under a second for a two-tool request, and the prompt reused between requests); Inkling 2 Mini is set up
   to compare and is too slow with only 8 GiB of VRAM today ([docs/models.md](docs/models.md)).
   **Migration:** `strata.model_file`, `tokenizer_dir`, `model_id`, `prefill` and `vision_file` are gone,

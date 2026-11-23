@@ -198,7 +198,7 @@ class RunConfig:
     data: dict[str, object]
     args: tuple[str, ...]
 
-    def _after(self, flag: str) -> str | None:
+    def value_of(self, flag: str) -> str | None:
         """Return the value after `flag`, or None when the flag is absent or takes no value."""
         if flag not in self.args:
             return None
@@ -209,13 +209,13 @@ class RunConfig:
     @property
     def model(self) -> Path:
         """The model file the engine loads (`--native`)."""
-        native = self._after("--native")
+        native = self.value_of("--native")
         return Path(native) if native else Path()
 
     @property
     def expert_profile(self) -> Path | None:
         """The routing profile the engine starts from (`--expert-profile`), if it takes one."""
-        value = self._after("--expert-profile")
+        value = self.value_of("--expert-profile")
         return Path(value) if value else None
 
     @property
@@ -234,7 +234,7 @@ class RunConfig:
         if isinstance(vision, dict):
             mmproj = cast("dict[str, object]", vision).get("mmproj")
             return Path(str(mmproj)) if mmproj else None
-        value = self._after("--vision")
+        value = self.value_of("--vision")
         return Path(value) if value else None
 
 
@@ -266,10 +266,15 @@ def read_run_config(config: Config) -> RunConfig:
         raise StrataSetupError(msg)
     run = RunConfig(path, data, tuple(str(a) for a in cast("list[object]", raw)))
     for flag in ("--host", "--port"):
-        if flag in run.args:
+        if any(a == flag or a.startswith(f"{flag}=") for a in run.args):
             msg = f"{path} sets its own {flag}; Jarvis serves on 127.0.0.1 at strata.port"
             raise StrataSetupError(msg)
     return run
+
+
+def fills_the_card(run: RunConfig) -> bool:
+    """Whether the engine's expert cache takes all free VRAM (`--expert-cache auto`)."""
+    return run.value_of("--expert-cache") == "auto"
 
 
 def missing_files(run: RunConfig) -> list[str]:
@@ -348,7 +353,7 @@ def _tuned_args(config: Config, run: RunConfig) -> list[str]:
         StrataSetupError: the engine's expert cache would fill the card and no reserve is set.
     """
     s = config.strata
-    if "--expert-cache" in run.args and not s.vram_reserve_mib:
+    if fills_the_card(run) and not s.vram_reserve_mib:
         msg = (
             "this model's engine fills the card with its expert cache (--expert-cache), which "
             "leaves no VRAM for a game: set strata.vram_reserve_mib (12000 holds "

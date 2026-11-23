@@ -686,3 +686,28 @@ def test_a_bare_vision_flag_without_a_reader_is_dropped(tmp_path: Path) -> None:
 
     assert "--vision" not in _args(services.strata_profile(cfg))
     assert not services.reads_pictures(cfg)
+
+
+@pytest.mark.parametrize("arg", ["--host=192.0.2.1", "--port=9000"])
+def test_an_address_given_with_an_equals_sign_is_refused_too(tmp_path: Path, arg: str) -> None:
+    cfg = _config(tmp_path)
+    run = tmp_path / "install" / "strata-q4.json"
+    data = json.loads(run.read_text(encoding="utf-8"))
+    data["args"].append(arg)
+    run.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(services.StrataSetupError, match=arg.split("=", maxsplit=1)[0]):
+        services.strata_profile(cfg)
+
+
+def test_a_fixed_expert_cache_needs_no_reserve(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, vram_reserve_mib=0)
+    run = tmp_path / "install" / "strata-q4.json"
+    data = json.loads(run.read_text(encoding="utf-8"))
+    at = data["args"].index("--expert-cache")
+    data["args"][at + 1] = "2000"
+    run.write_text(json.dumps(data), encoding="utf-8")
+
+    args = _args(services.strata_profile(cfg))
+
+    assert args[args.index("--expert-cache") + 1] == "2000"

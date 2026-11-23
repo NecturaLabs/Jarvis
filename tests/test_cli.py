@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from strata_fixture import engine_run_config, install_engine
 
-from jarvis import __version__, app, cli, config, models, paths
+from jarvis import __version__, app, cli, config, models, paths, services
 from jarvis import audio as audio_module
 from jarvis import voice as voice_module
 from jarvis.agent import Hooks
@@ -1512,3 +1512,22 @@ def test_doctor_names_a_missing_model_drive_and_fails_vram_left_for_games(
         line.startswith("FAIL") and "q4.gguf" in line and "mount its drive" in line for line in out
     )
     assert any(line.startswith("FAIL") and "VRAM left for games" in line for line in out)
+
+
+def test_doctor_fails_an_empty_learned_expert_profile(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = engine_run_config(home)
+    data = json.loads(run.read_text(encoding="utf-8"))
+    data["args"] += ["--expert-profile", str(home / "models" / "q4.gguf")]
+    run.write_text(json.dumps(data), encoding="utf-8")
+    cfg = config.Config(strata=config.StrataConfig(run_config=run, vram_reserve_mib=12000))
+    config.save(cfg)
+    learned = services.expert_profile_file(cfg)
+    learned.parent.mkdir(parents=True, exist_ok=True)
+    learned.write_bytes(b"")
+
+    cli.main(["doctor"])
+
+    out = _doctor_lines(capsys)
+    assert any(line.startswith("FAIL") and "expert profile" in line for line in out)

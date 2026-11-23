@@ -804,7 +804,7 @@ def _model_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
         learned = services.expert_profile_file(cfg)
         usable = learned.is_file() and learned.stat().st_size > 0
         checks.append((usable, f"expert profile {learned}", "run jarvis setup"))
-    if "--expert-cache" in run.args and not cfg.strata.vram_reserve_mib:
+    if services.fills_the_card(run) and not cfg.strata.vram_reserve_mib:
         checks.append(
             (False, "VRAM left for games", "set strata.vram_reserve_mib (docs/models.md)")
         )

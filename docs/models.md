@@ -65,10 +65,10 @@ none comes as a Strata pack.
 - Strata's run config names the model's picture reader, and `jarvis doctor` hashes it. For Qwen3.6 it is
   `mmproj-F16.gguf` (899,283,584 bytes) from `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` at revision
   `5bc3e238d916f48a861bac2f8a1990a0e9b7e98d`, Apache-2.0, sha256 `71f3cbc1…0f160`.
-  Qwen3.8-Flash-Next's is `mmproj-Qwen3.8-Flash-Next-BF16.gguf` (907,543,008 bytes) from
+  Qwen3.8-Flash-Next's reader is `mmproj-Qwen3.8-Flash-Next-BF16.gguf` (907,543,008 bytes) from
   `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF` at revision `ed59f92082b1e93c0e96d60a8b11aab089b52f09`, sha256
   `b1a82259…49bd0`, under Qwen's own licence (the quantiser's card says apache-2.0; the weights are Qwen's).
-  Inkling 2 Mini's is `Inkling-2-Mini-Vision.strata` (636,526,592 bytes) from `strata-engine/Inkling-2-Mini-Strata`
+  Inkling 2 Mini's reader is `Inkling-2-Mini-Vision.strata` (636,526,592 bytes) from `strata-engine/Inkling-2-Mini-Strata`
   at revision `04996a1e2c45009b6a04f2af126cb6bdb2ba3587`, Apache-2.0, sha256 `6589eff4…6fc677`. Each digest was
   checked against the file on this PC, the one Strata recorded at download, and the upstream LFS record
   (2026-11-23).
