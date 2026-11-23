@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis import control, osskills, paths
+from jarvis import __version__, control, osskills, paths
 from jarvis.agent import Agent, Hooks
 from jarvis.app import (
     MAX_HINT_CHARS,
@@ -36,6 +36,7 @@ from jarvis.config import (
     PersonaConfig,
     ShellConfig,
     SpotifyConfig,
+    StrataConfig,
 )
 from jarvis.operations import Operation, OperationError, Registry, Result
 from jarvis.secretfile import ensure_api_key
@@ -455,3 +456,52 @@ def test_the_voice_service_counts_as_running_when_its_control_socket_answers(
 
     assert voice_service_running() is running
     assert asked == ["status"]
+
+
+@pytest.mark.parametrize("channel", ["voice", "chat"])
+def test_both_channels_let_jarvis_look_itself_up(tmp_path: Path, channel: Channel) -> None:
+    config = Config()
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+
+    registry = channel_registry(
+        config, spotify.operations(), channel_limits(config, channel), channel
+    )
+
+    assert registry.get("about_jarvis") is not None
+    assert registry.get("read_jarvis_file") is not None
+
+
+def test_the_prompt_names_jarvis_version_and_the_model_strata_serves(tmp_path: Path) -> None:
+    run_config = tmp_path / "strata-some-model.json"
+    run_config.write_text(
+        json.dumps({"exe": "component:strata-engine", "args": [], "model_name": "some-model-q4"}),
+        encoding="utf-8",
+    )
+
+    prompt = system_prompt(Config(strata=StrataConfig(run_config=run_config)))
+
+    assert f"Jarvis {__version__}" in prompt
+    assert "the some-model-q4 model" in prompt
+
+
+def test_with_no_run_config_the_prompt_names_no_model() -> None:
+    assert "on\na local model served by Strata" in system_prompt(Config())
+
+
+def test_jarvis_files_the_owner_denied_are_not_read_by_read_jarvis_file(tmp_path: Path) -> None:
+    run_config = tmp_path / "install" / "strata-some-model.json"
+    run_config.parent.mkdir()
+    run_config.write_text('{"exe": "component:strata-engine", "args": []}', encoding="utf-8")
+    config = Config(
+        strata=StrataConfig(run_config=run_config),
+        files=FilesConfig(deny=[str(run_config.parent)]),
+    )
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+    registry = channel_registry(
+        config, spotify.operations(), channel_limits(config, "chat"), "chat"
+    )
+    read = registry.get("read_jarvis_file")
+    assert read is not None
+
+    with pytest.raises(OperationError, match="kept private"):
+        read.run({"file": "strata_run_config"})

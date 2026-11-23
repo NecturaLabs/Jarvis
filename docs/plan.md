@@ -25,7 +25,8 @@ which parts exist. Details of what is built are in [configuration.md](configurat
 | 7. Polish | Partly built | Built: sentence streaming and voice barge-in ([ADR 0008](adr/0008-speak-while-writing-and-barge-in.md)); echo cancellation is a documented PipeWire setup for the owner, which broke the PC's sound output when applied on 2026-11-21 and was reverted (#13); follow-up listening (`audio.follow_up_s`, 6 s by default; the owner's live run is still to come). The Omarchy bar module is built (`tools/bar_status.py`, #14) and waits for the owner to add it to the bar. |
 | 8. Hardening | Planned | No `install.sh`, `jarvis update`, rollback or uninstall. `jarvis doctor`, `status` (with `--json`), `pause`, `resume`, `hush`, `logs`, `unload`, `start`, `stop` and `restart` exist. |
 
-Built beyond the plan, each with an ADR: reminders and scheduled requests, said or carried out by the
+Also beyond the plan: Jarvis answers about itself (`about_jarvis`) and reads its own configuration files
+(`read_jarvis_file`). Built beyond the plan, each with an ADR: reminders and scheduled requests, said or carried out by the
 voice service ([0011](adr/0011-reminders-and-scheduled-requests.md)); speech heard in PC audio is treated as someone else's
 ([0003](adr/0003-pc-audio-is-not-the-owner.md)); plain commands skip the model
 ([0004](adr/0004-model-free-path-for-plain-commands.md)); no hosted backend

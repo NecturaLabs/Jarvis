@@ -78,7 +78,7 @@ the chat keeps it (see below).
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `9400` and `memory_idle_s` `0.0` (never forget), plus:
+`memory_tokens` `9100` and `memory_idle_s` `0.0` (never forget), plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -403,6 +403,13 @@ folder swapped for a link in between is refused, not followed. A file under home
 disk (a hard link) is never read or added to, since that name could be a secret's; outside home hard
 links are read as usual. Writing never touches a hidden file or folder (no `~/.bashrc`, no `~/.config`),
 never overwrites unless asked to replace, and never makes a file executable.
+
+Jarvis's own configuration files are read by `read_jarvis_file`, from a fixed list whatever the read roots
+say: `config` (this file), `strata_run_config`, `strata_profile`, `voxtype` (its own Voxtype settings) and
+the two units (`voice_unit`, `strata_unit`). `files.deny` and the lists above still apply to them, a value
+under a name such as `api_key`, `token` or `password` is hidden, and nothing is ever written: Jarvis does not
+change its own configuration. `about_jarvis` tells it its version, model and settings without reading a
+file.
 
 The question before a write names the file, how much text, the folders it would make ("making the new
 folder Documents/work") and, for a replace, the old file's size ("replace todo.md in Documents (2.1 KB
