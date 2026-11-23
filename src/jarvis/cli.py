@@ -28,6 +28,7 @@ from jarvis.confirmkey import ConfirmKey
 from jarvis.files import write_atomic
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.policy import is_yes
+from jarvis.schedule import JobStore
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
 from jarvis.services import JARVIS_UNIT, STRATA_UNIT, reads_pictures
 from jarvis.spotify.auth import SpotifyAuthError, TokenStore, login, redirect_uri
@@ -715,6 +716,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         locked=_never if cfg.audio.listen_when_locked else screen_locked,
         after_sleep=after_sleep,
         keys=keys,
+        due=JobStore(paths.schedule_file()).take_due,
     )
     handler = control.Controls(loop, mic, jarvis.model, jarvis.audit, keys=keys)
     handler.warm_at_start()  # the model loads now, so the first request does not wait for it

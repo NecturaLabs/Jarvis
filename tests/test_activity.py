@@ -397,3 +397,33 @@ def test_consent_changes_and_the_services_start_show_as_notes(
 def test_every_no_reason_has_words_in_the_window() -> None:
     asked = {NoReason.EARLIER_NO, NoReason.NO_KEY}  # shown as "not asked", or by the key lines
     assert set(NO_REASON_WORDS) == {reason.value for reason in NoReason} - asked
+
+
+@pytest.mark.parametrize(
+    ("entry", "kind", "text"),
+    [
+        ({"event": "schedule_due", "id": 3, "action": "remind"}, "note", "Reminder 3 came due"),
+        (
+            {"event": "schedule_due", "id": 4, "action": "do"},
+            "note",
+            "Scheduled request 4 came due",
+        ),
+        (
+            {"event": "schedule_missed", "id": 5, "action": "do", "late_s": 3900},
+            "warn",
+            "Missed scheduled request 5: 1 h 5 min late",
+        ),
+        (
+            {"event": "schedule_missed", "id": 6, "action": "remind", "late_s": 660},
+            "warn",
+            "Missed reminder 6: 11 min late",
+        ),
+    ],
+)
+def test_due_and_missed_jobs_show_in_the_window(
+    entry: dict[str, object], kind: str, text: str
+) -> None:
+    shown = describe({"ts": "2026-11-23T10:00:00+00:00", **entry})
+
+    assert shown is not None
+    assert (shown.kind, shown.text) == (kind, text)

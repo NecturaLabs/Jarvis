@@ -11,7 +11,7 @@ Every setting lives in one TOML file, validated when Jarvis reads it. This page 
 | Strata profile (generated) | `~/.config/jarvis/strata-profile.json` | `jarvis setup` |
 | Jarvis's own Voxtype settings (generated) | `~/.config/jarvis/voxtype.toml` | `jarvis run`, at each start |
 | User units | `~/.config/systemd/user/jarvis.service` and `jarvis-strata.service` | `jarvis setup` |
-| Strata API key, Spotify tokens, audit log, action count, Strata log | `~/.local/state/jarvis/` (`$XDG_STATE_HOME/jarvis/`): `strata.env`, `spotify-token.json`, `audit.jsonl` (and five older `audit.jsonl.1` to `.5`), `actions.json`, `strata.log` | Jarvis; the key, token, log and count files are mode 0600 |
+| Strata API key, Spotify tokens, audit log, action count, reminders and scheduled requests, Strata log | `~/.local/state/jarvis/` (`$XDG_STATE_HOME/jarvis/`): `strata.env`, `spotify-token.json`, `audit.jsonl` (and five older `audit.jsonl.1` to `.5`), `actions.json`, `schedule.json` (and its `schedule.json.lock`), `strata.log` | Jarvis; the key, token, log, count and jobs files are mode 0600 |
 | Wake, VAD and voice model files | `data_dir`, default `~/.local/share/jarvis/` | you; see [models.md](models.md) |
 
 [`config.example.toml`](../config.example.toml) in the repository lists every key at its default, with no
@@ -78,7 +78,7 @@ the chat keeps it (see below).
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `9900` and `memory_idle_s` `0.0` (never forget), plus:
+`memory_tokens` `9400` and `memory_idle_s` `0.0` (never forget), plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -534,6 +534,23 @@ In code, whatever the model says:
   `elephant`, `fcitx5`, Omarchy's own `omarchy-*` helpers, Voxtype and Strata. A name is checked in full
   (a program's executable, or a script's file name), not only its first 15 characters. The list, with the
   reason for each, is in `src/jarvis/pc/processes.py`.
+
+## Reminders and scheduled requests
+
+There are no keys to set. Ask by voice or in the chat: a reminder ("remind me to stretch in 20 minutes",
+"every weekday at 9:00") is said when due, after the chime; a scheduled request ("pause the music at
+midnight") is carried out then as if you had just asked, with every question asked aloud and nobody
+answering counted as a no. A time is minutes from now (up to a week) or a time of day today, tomorrow or on a
+weekday; a job is once, daily, on weekdays, at weekends, weekly, or every 5 to 1,440 minutes. Ask what is set
+to hear the list by number, and cancel one by its number or all of them. Times are said as `[clock]` sets.
+
+Only the voice service (`jarvis run`) says them, between requests; the chat and `jarvis ask` say so when it
+is not running. Due jobs wait while your Voxtype dictation or a meeting runs. A one-off reminder is still
+said up to six hours late, and says how late; a scheduled request or a repeating reminder more than ten
+minutes late (the PC slept, Jarvis was stopped or paused) is not done but shown as missed, and a repeating one
+moves on to its next time. The jobs live in `~/.local/state/jarvis/schedule.json` ([privacy](privacy.md)); at
+most 50, 200 characters each. Why it works this way is in
+[ADR 0011](adr/0011-reminders-and-scheduled-requests.md).
 
 ## `[shell]`: an opt-in shell command (off)
 
