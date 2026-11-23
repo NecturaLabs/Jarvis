@@ -342,6 +342,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The calculator reads a percentage followed by a plus or minus as a percentage: `80 * 15% + 80` is 92 and
+  `100 - 20% - 5` is 94.8. It read the `%` as a remainder and answered 0 and 100. A `%` with space on both
+  sides (`17 % 5`) or between two numbers (`17%5`) is still the remainder, and so is `mod`.
+
 - The wait for your answer no longer counts against a request's time limit. Reading a question out, waiting
   for a spoken yes or for the confirm key came out of `agent.max_seconds`, so an approved action could run
   and the reply still said "That took too long, so I stopped." or, with a few seconds left, "My model isn't

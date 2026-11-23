@@ -309,7 +309,9 @@ def _postfix_factorials(text: str) -> str:
 
 
 _NUMBER = r"\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
-_PERCENT = re.compile(rf"({_NUMBER})\s*%(?!\s*[-+\d(.])")  # 15% is a fifteenth part; 17 % 5 is mod
+# 15% is fifteen hundredths, and so is 15% + 80 (the % touches its number); 17 % 5, 17 % -5 and
+# 17%5 are remainders. A % with no number or bracket after it can only be a percentage.
+_PERCENT = re.compile(rf"({_NUMBER})(?:%(?!\s*[\d(.])|\s*%(?!\s*[-+\d(.]))")
 _SPOKEN = {  # signs as people type or paste them
     "\u00d7": "*",  # multiplication sign
     "\u00b7": "*",  # middle dot

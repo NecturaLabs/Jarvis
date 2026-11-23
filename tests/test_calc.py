@@ -30,7 +30,15 @@ from jarvis.policy import OpClass
         ("max(5,100)", "100"),  # a comma between arguments is never a thousands separator
         ("log(1000,10)", "3"),
         ("log(10 ** 400, 10)", "400"),
-        ("7 % -3", "-2"),  # % before a signed number is the remainder
+        ("7 % -3", "-2"),  # % with space around it, before a signed number, is the remainder
+        ("80 * 15% + 80", "92"),  # a percentage touching its number, then a plus, is a percentage
+        ("100 - 20% - 5", "94.8"),
+        ("15% + 5%", "0.2"),
+        ("50% + 10", "10.5"),
+        ("200 * 10% - 5", "15"),
+        ("17 % + 5", "2"),  # spaced on both sides: the remainder of 17 by +5
+        ("17%5", "2"),  # touching both numbers: the remainder
+        ("17%(2 + 3)", "2"),
         ("10 ** 5000 / 10 ** 4999", "10"),
         ("1e3 + 1", "1001"),
         ("sqrt(144)", "12"),
