@@ -1,5 +1,6 @@
 """The `jarvis` command, run against a throw-away home: never the owner's config or services."""
 
+import contextlib
 import hashlib
 import json
 import signal
@@ -10,7 +11,7 @@ import types
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, cast
 
 import numpy as np
 import pytest
@@ -27,6 +28,7 @@ from jarvis.secretfile import write_private_json
 from jarvis.services import strata_profile_file
 
 if TYPE_CHECKING:
+    import argparse
     from pathlib import Path
 
 
@@ -185,6 +187,21 @@ def _doctor_lines(capsys: pytest.CaptureFixture[str]) -> list[str]:
     return capsys.readouterr().out.splitlines()
 
 
+def test_doctor_lines_up_its_checks_and_ends_with_a_count(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli.main(["doctor"])
+    lines = _doctor_lines(capsys)
+
+    checks = [line for line in lines if line[:5] in {"ok   ", "FAIL ", "note "}]
+    assert checks
+    assert all(line[4] == " " and line[5] != " " for line in checks)
+    failed = sum(line.startswith("FAIL") for line in lines)
+    total = sum(line[:5] in {"ok   ", "FAIL "} for line in lines)
+    assert not any(line.startswith("ok  ") and line[4] != " " for line in lines)
+    assert lines[-1] == f"{total} checks, {failed} failed"
+
+
 def test_doctor_names_the_release_of_a_model_file_it_recognises(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -198,9 +215,13 @@ def test_doctor_names_the_release_of_a_model_file_it_recognises(
 
     out = _doctor_lines(capsys)
     assert any(
-        line.startswith("ok ") and "Example wake 9.9" in line and "MIT" in line for line in out
+        line.startswith("ok   hey_jarvis.onnx: ") and "Example wake 9.9" in line and "MIT" in line
+        for line in out
     )
     assert not any("not a known release" in line for line in out)
+    assert out[-1].endswith(" failed")
+    total = sum(line[:5] in {"ok   ", "FAIL "} for line in out)
+    assert out[-1].startswith(f"{total} checks, ")
 
 
 def test_doctor_notes_an_unknown_digest_without_failing_the_file(
@@ -261,7 +282,7 @@ def test_doctor_still_fails_a_missing_file_and_points_at_the_models_doc(
 
 @pytest.mark.parametrize(
     ("state", "line"),
-    [(None, "FAIL lock screen state (unknown)"), (False, "ok  lock screen state (unlocked)")],
+    [(None, "FAIL lock screen state (unknown)"), (False, "ok   lock screen state (unlocked)")],
 )
 def test_doctor_checks_the_lock_screen_can_be_read_when_jarvis_must_not_listen_there(
     home: Path,
@@ -1298,3 +1319,115 @@ def test_help_lists_the_commands_as_dash_dash_help_does(capsys: pytest.CaptureFi
     cli.build_parser().print_help()
     assert shown == capsys.readouterr().out
     assert "doctor" in shown
+
+
+def _help(capsys: pytest.CaptureFixture[str], *args: str) -> str:
+    """Return a command's help as a wide colour terminal would get it."""
+    with contextlib.suppress(SystemExit):
+        cli.main([*args, "--help"])
+    return capsys.readouterr().out
+
+
+def test_help_lists_every_command_once_in_groups_within_80_columns(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    shown = _help(capsys)
+    lines = shown.splitlines()
+
+    assert lines[0] == "usage: jarvis [<command> [options]]"
+    assert "{" not in shown  # no list of every command's name in a brace
+    assert "positional arguments" not in shown
+    for command in cli.COMMANDS:
+        if command != "overview":
+            assert sum(line.split()[:1] == [command] for line in lines) == 1, command
+    assert all(len(line) <= 80 for line in lines)
+    for group in ("Everyday", "Running Jarvis", "Settings", "First-time setup"):
+        assert f"  {group}" in lines
+    assert "Run `jarvis <command> --help` for a command's options." in shown
+
+
+@pytest.mark.parametrize("command", ["pause", "doctor", "unload", "chat", "logs", "status"])
+def test_each_command_says_what_it_does_in_its_own_help(
+    capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    lines = _help(capsys, command).splitlines()
+
+    description = lines[2]
+    assert description[:1].isupper()
+    assert description.endswith(".")
+
+
+def test_every_argument_of_every_command_is_explained(capsys: pytest.CaptureFixture[str]) -> None:
+    parser = cli.build_parser()
+    actions = parser._actions
+    commands = next(a.choices for a in actions if a.dest == "command")
+    for name, command in cast("dict[str, argparse.ArgumentParser]", commands).items():
+        for action in command._actions:
+            assert action.help, f"{name} {action.dest}"
+        assert "_" not in _help(capsys, name).split("options:")[0], name
+
+
+@pytest.mark.parametrize("command", [None, *[n for _g, c in cli.COMMAND_GROUPS for n, _s in c]])
+def test_every_help_page_is_plain_text_within_80_columns_on_a_wide_colour_terminal(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, command: str | None
+) -> None:
+    monkeypatch.setenv("COLUMNS", "160")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    shown = _help(capsys, *([command] if command else []))
+
+    assert "\x1b[" not in shown
+    assert all(len(line) <= 80 for line in shown.splitlines()), command
+
+
+@pytest.mark.parametrize(
+    ("command", "said"),
+    [
+        ("consent", "confirm key"),
+        ("ask", "confirm key"),
+        ("restart", "model server"),
+        ("spotify-login", "waits"),
+        ("pc-audio", "with no argument"),
+        ("wake", "with no argument"),
+    ],
+)
+def test_help_says_what_each_option_really_does(
+    capsys: pytest.CaptureFixture[str], command: str, said: str
+) -> None:
+    assert said in " ".join(_help(capsys, command).split()).casefold()
+
+
+def test_the_overview_asks_systemd_for_each_unit_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    asked: list[str] = []
+
+    def state(unit: str) -> str:
+        asked.append(unit)
+        return "inactive"
+
+    monkeypatch.setattr(cli, "_unit_state", state)
+
+    assert main([]) == 0
+    capsys.readouterr()
+    assert len(asked) <= 4, asked  # each one can take seconds when systemd is slow
+
+
+def test_a_mistyped_command_gets_a_suggestion(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["stauts"])
+
+    assert "maybe you meant 'status'?" in capsys.readouterr().err
+
+
+def test_no_arguments_names_the_units_in_plain_words_and_points_at_help(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main([]) == 0
+    lines = capsys.readouterr().out.splitlines()
+
+    assert lines[0] == "jarvis: stopped   model server: stopped"
+    assert not any(line.startswith("commands:") for line in lines)
+    assert "All commands: jarvis help" in lines

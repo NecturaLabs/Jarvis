@@ -8,6 +8,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- The command line reads better. `jarvis help` lists the commands in groups (everyday, running Jarvis,
+  settings, first-time setup, other) with what each does, instead of argparse's list of every name,
+  twice. Every help page is plain text within 80 columns. `jarvis <command> --help` says what the command
+  does and explains every option, including what `consent bypass`, `ask --yes` and `spotify-login
+  --no-browser` do not do, and a mistyped command gets a suggestion when one is close. `jarvis` alone
+  names the services as running or stopped and points at `jarvis help`. `jarvis doctor` lines its checks
+  up and ends with how many failed.
+
 - The chat remembers a little less: `chat.memory_tokens` defaults to 10,000 (was 10,500), to make room in
   the default context for the list of Omarchy's guides. A config that still sets 10,500 gets what the window
   leaves, about 10,000.

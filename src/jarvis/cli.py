@@ -135,59 +135,202 @@ def _wake_names(value: str) -> list[str]:
     return names
 
 
+# What `jarvis help` lists, by group, with each command's one-line summary.
+COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "Everyday",
+        (
+            ("status", "show what Jarvis is doing and whether the model is loaded"),
+            ("pause", "let go of the microphone and free the model until resume"),
+            ("resume", "listen again after pause"),
+            ("hush", "stop Jarvis speaking now"),
+            ("confirm", "allow the action Jarvis is asking about (bind it to a key)"),
+            ("chat", "type requests and watch what Jarvis does, live"),
+            ("ask", "send one typed request, as if spoken"),
+        ),
+    ),
+    (
+        "Running Jarvis",
+        (
+            ("start", "start Jarvis: the voice service and its model server"),
+            ("stop", "stop Jarvis and free the model"),
+            ("restart", "restart Jarvis after a config change"),
+            ("logs", "follow Jarvis's live log (Ctrl+C to leave)"),
+            ("unload", "free the model's memory now"),
+            ("doctor", "check every part without loading the model"),
+        ),
+    ),
+    (
+        "Settings",
+        (
+            ("wake", "show or switch the wake word model (livekit or azure)"),
+            ("consent", "show or set whether Jarvis asks before acting"),
+            ("pc-audio", "let Jarvis take requests from PC audio (Discord by default)"),
+        ),
+    ),
+    (
+        "First-time setup",
+        (
+            ("setup", "write the config, the Strata profile and the user units"),
+            ("spotify-login", "connect Jarvis to your Spotify account"),
+        ),
+    ),
+    (
+        "Other",
+        (
+            ("help", "show this list"),
+            ("run", "run the voice loop in this terminal (jarvis.service runs it)"),
+        ),
+    ),
+)
+_NAME_WIDTH = 15
+HELP_WIDTH = 80
+# What a command's own help adds to its one-line summary.
+_DETAILS = {
+    "restart": (
+        "Restarts the voice service. A stopped model server is started; a running one is "
+        "restarted only when its settings changed since it started, so the model stays loaded "
+        "otherwise."
+    ),
+    "consent": (
+        "With no argument, shows the setting. A strong action always waits for the confirm "
+        "key, and an operation set to deny is always refused."
+    ),
+    "wake": "With no argument and no option, shows the settings and the wake word files.",
+    "pc-audio": (
+        "With no argument and no option, shows the settings. --apps and --all-output change "
+        "which audio is heard without turning listening on or off."
+    ),
+}
+
+
+def _commands_help() -> str:
+    """Return the grouped list of commands `jarvis help` ends with."""
+    lines = ["commands:"]
+    for group, commands in COMMAND_GROUPS:
+        lines.append(f"  {group}")
+        lines.extend(f"    {name:{_NAME_WIDTH}} {summary}" for name, summary in commands)
+        lines.append("")
+    lines.extend(
+        (
+            "Run `jarvis <command> --help` for a command's options.",
+            "Running `jarvis` alone shows what is running, then follows the live log while",
+            "Jarvis runs and the output is a terminal.",
+        )
+    )
+    return "\n".join(lines)
+
+
+def _description(name: str, summary: str) -> str:
+    """Return a command's own help text: its summary as a sentence, then any details."""
+    text = summary[:1].upper() + summary[1:] + "."
+    return f"{text} {_DETAILS[name]}" if name in _DETAILS else text
+
+
+class _Formatter(argparse.HelpFormatter):
+    """Help at most `HELP_WIDTH` columns wide, narrower on a narrow terminal."""
+
+    def __init__(self, prog: str) -> None:
+        width = min(HELP_WIDTH, shutil.get_terminal_size().columns)
+        super().__init__(prog, width=width, max_help_position=30)
+
+
+class _ListFormatter(argparse.RawDescriptionHelpFormatter, _Formatter):
+    """The top-level help: the grouped list of commands keeps its own layout."""
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Return the argument parser for the `jarvis` command."""
-    parser = argparse.ArgumentParser(prog="jarvis", description="Local voice agent for Omarchy.")
-    parser.add_argument("--version", action="version", version=f"jarvis {__version__}")
-    sub = parser.add_subparsers(dest="command")
+    parser = argparse.ArgumentParser(
+        prog="jarvis",
+        usage="jarvis [<command> [options]]",
+        description="Jarvis, a local voice agent for Omarchy.",
+        epilog=_commands_help(),
+        formatter_class=_ListFormatter,
+        suggest_on_error=True,
+        color=False,
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"jarvis {__version__}", help="show the version"
+    )
+    sub = parser.add_subparsers(dest="command", metavar="<command>", help=argparse.SUPPRESS)
+    made = {
+        name: sub.add_parser(
+            name,
+            help=summary,
+            description=_description(name, summary),
+            formatter_class=_Formatter,
+            color=False,
+        )
+        for _group, commands in COMMAND_GROUPS
+        for name, summary in commands
+    }
 
-    setup = sub.add_parser("setup", help="write the config, the Strata profile and the user units")
-    setup.add_argument("--spotify-client-id", default=None)
+    setup = made["setup"]
     setup.add_argument(
-        "--data-dir", type=Path, default=None, help="where wake, VAD and voice models live"
+        "--spotify-client-id", default=None, metavar="ID", help="your Spotify app's client ID"
     )
     setup.add_argument(
-        "--strata-home", type=Path, default=None, help="Strata's data folder (STRATA_DATA_DIR)"
+        "--data-dir",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="where wake, VAD and voice models live",
     )
     setup.add_argument(
-        "--strata-components-parent", type=Path, default=None, help="XDG_DATA_HOME for Strata"
+        "--strata-home",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Strata's data folder (STRATA_DATA_DIR)",
     )
-    setup.add_argument("--model-file", type=Path, default=None)
-    setup.add_argument("--tokenizer-dir", type=Path, default=None)
     setup.add_argument(
-        "--mic", default=None, help="PipeWire source node name (empty: the default source)"
+        "--strata-components-parent",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="the folder holding Strata's components (its XDG_DATA_HOME)",
+    )
+    setup.add_argument(
+        "--model-file", type=Path, default=None, metavar="PATH", help="the model file Strata serves"
+    )
+    setup.add_argument(
+        "--tokenizer-dir",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="the model's tokenizer folder",
+    )
+    setup.add_argument(
+        "--mic",
+        default=None,
+        metavar="NODE",
+        help="PipeWire source node name (empty: the default source)",
     )
     setup.add_argument("--enable", action="store_true", help="enable and start the user units")
 
-    login = sub.add_parser("spotify-login", help="connect Jarvis to your Spotify account (PKCE)")
-    login.add_argument("--no-browser", action="store_true", help="only print the login URL")
+    made["spotify-login"].add_argument(
+        "--no-browser",
+        action="store_true",
+        help="print the login link to open yourself instead of opening a browser; it still "
+        "waits for the login",
+    )
 
-    ask = sub.add_parser("ask", help="send one typed request, as if spoken")
-    ask.add_argument("text", nargs="+")
+    ask = made["ask"]
+    ask.add_argument("text", nargs="+", metavar="words", help="the request, as you would say it")
     ask.add_argument(
-        "--yes", action="store_true", help="answer yes to confirmations (default: ask here)"
+        "--yes",
+        action="store_true",
+        help="answer yes to Jarvis's questions (default: ask here); it cannot press the "
+        "confirm key a strong action waits for",
     )
 
-    sub.add_parser("chat", help="type requests and watch what Jarvis does, live")
-    sub.add_parser("run", help="run the voice loop (what jarvis.service runs)")
-    sub.add_parser("start", help="start Jarvis (the voice service and its model server)")
-    sub.add_parser("stop", help="stop Jarvis and free the model")
-    sub.add_parser("restart", help="restart the voice service (after a config change)")
-    sub.add_parser("logs", help="follow Jarvis's live log (Ctrl+C to leave)")
-    sub.add_parser("doctor", help="check every part without loading the model")
-    sub.add_parser("help", help="show this list of commands (as --help does)")
-    status = sub.add_parser(
-        "status", help="show what Jarvis is doing and whether the model is loaded"
+    made["status"].add_argument(
+        "--json", action="store_true", help="print one JSON object (for a status bar)"
     )
-    status.add_argument("--json", action="store_true", help="print one JSON object (for the bar)")
-    sub.add_parser("pause", help="let go of the microphone and free the model until resume")
-    sub.add_parser("resume", help="listen again after pause")
-    sub.add_parser("hush", help="stop Jarvis speaking now")
-    sub.add_parser("confirm", help="allow the action Jarvis is asking about (bind this to a key)")
-    sub.add_parser("unload", help="free the model's memory now")
-    wake = sub.add_parser("wake", help="show or switch the wake word model (livekit or azure)")
+    wake = made["wake"]
     wake.add_argument(
-        "engine", nargs="?", choices=["livekit", "azure"], help="omit to show the setting"
+        "engine", nargs="?", choices=["livekit", "azure"], help="the wake word engine to use"
     )
     wake.add_argument("--model", metavar="FILE", help="the Azure custom keyword .table file")
     wake.add_argument(
@@ -199,16 +342,15 @@ def build_parser() -> argparse.ArgumentParser:
             "e.g. hey_jarvis,yo_jarvis"
         ),
     )
-    consent = sub.add_parser(
-        "consent", help="whether Jarvis asks before acting (bypass: never asks; ask: asks first)"
+    made["consent"].add_argument(
+        "mode",
+        nargs="?",
+        choices=["bypass", "ask"],
+        help="ask: ask for a yes before a risky action or one after outside text; bypass: act "
+        "without asking (a strong action still waits for the confirm key)",
     )
-    consent.add_argument(
-        "mode", nargs="?", choices=["bypass", "ask"], help="omit to show the setting"
-    )
-    pc = sub.add_parser(
-        "pc-audio", help="let Jarvis take requests from PC audio (Discord by default)"
-    )
-    pc.add_argument("state", nargs="?", choices=["on", "off"], help="omit to show the setting")
+    pc = made["pc-audio"]
+    pc.add_argument("state", nargs="?", choices=["on", "off"], help="turn listening on or off")
     which = pc.add_mutually_exclusive_group()
     which.add_argument(
         "--apps",
@@ -630,7 +772,7 @@ def _release_lines(cfg: config.Config) -> tuple[list[str], list[tuple[bool, str,
             lines.append(f"note {path.name}: not a known release (sha256 {verdict.digest})")
         else:
             release = f"{known.project} {known.version} ({known.licence})"
-            lines.append(f"ok  {path.name}: {release}, sha256 verified")
+            lines.append(f"{'ok':4} {path.name}: {release}, sha256 verified")
     return lines, failures
 
 
@@ -742,10 +884,13 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         ),
     ]
     for ok, what, fix in checks:
-        print(f"{'ok ' if ok else 'FAIL'} {what}" + ("" if ok else f"  -> {fix}"))
+        print(f"{'ok' if ok else 'FAIL':4} {what}" + ("" if ok else f"  -> {fix}"))
     for line in [*wake_notes, *release_lines]:
         print(line)
-    return 0 if all(ok for ok, _, _ in checks) else 1
+    failed = sum(not ok for ok, _, _ in checks)
+    verified = sum(line.startswith("ok ") for line in release_lines)
+    print(f"{len(checks) + verified} checks, {failed} failed")
+    return 0 if not failed else 1
 
 
 def _wake_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[str]]:
@@ -1130,7 +1275,8 @@ def _restart_if_running() -> None:
 
 
 CONSENT_SAID = {
-    True: "consent: bypassed (Jarvis acts without asking; `deny` still refuses)",
+    True: "consent: bypassed (Jarvis acts without asking; a strong action still waits for the "
+    "confirm key, and `deny` still refuses)",
     False: "consent: asks (a risky action, or one after outside text, needs your yes)",
 }
 
@@ -1229,20 +1375,23 @@ def _print_wake_models(cfg: config.Config) -> None:
         print(f"  {state:3} {name}{threshold}{missing}")
 
 
+# How a systemd unit's state is named to the owner.
+_UNIT_SHOWN = {"active": "running", "inactive": "stopped", "activating": "starting"}
+
+
 def cmd_overview(args: argparse.Namespace) -> int:
     """Show what is running and the model state, then follow the live log."""
-    state = _strata(_load()).status() if _unit_state(STRATA_UNIT) == "active" else None
-    print(f"jarvis: {_unit_state(JARVIS_UNIT)}   model server: {_unit_state(STRATA_UNIT)}", end="")
+    voice, server = _unit_state(JARVIS_UNIT), _unit_state(STRATA_UNIT)
+    state = _strata(_load()).status() if server == "active" else None
+    shown = (_UNIT_SHOWN.get(unit, unit) for unit in (voice, server))
+    print("jarvis: {}   model server: {}".format(*shown), end="")
     print(f"   model: {state}" if state else "")
     cfg = _load()
     print(f"pc audio: {_pc_audio_summary(cfg.audio)}")
     ok, login, fix = _spotify_login(cfg)
     print(login if ok else f"{login}: run {fix}")
-    print(
-        "commands: jarvis start | stop | restart | status | unload | doctor | logs | chat"
-        " | ask <text> | pc-audio [on|off] | wake [livekit|azure]"
-    )
-    if _unit_state(JARVIS_UNIT) != "active":
+    print("All commands: jarvis help")
+    if voice != "active":
         print("Jarvis is not running; start it with: jarvis start")
         return 0
     if not sys.stdout.isatty():
