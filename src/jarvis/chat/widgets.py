@@ -34,7 +34,7 @@ from textual.widgets.option_list import Option
 from textual_image.widget import Image
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from datetime import datetime
     from pathlib import Path
 
@@ -560,10 +560,23 @@ class PointerList(OptionList):
         self._pointed = highlighted
 
 
+_CHOICE_KEYS = frozenset({"1", "2", "n"})
+
+
 class ChoiceList(PointerList):
-    """The yes-or-no choice; 1 or y chooses yes, 2 or n no."""
+    """The yes-or-no choice; 1 chooses yes, 2 or n no, and Enter the one pointed at.
+
+    `on_typed` is called for any other printable key: the owner is typing words meant for the
+    input, so a 1 among them is not a yes.
+    """
 
     BINDINGS: ClassVar = [
-        Binding("1,y", "app.yes", show=False),
+        Binding("1", "app.yes", show=False),
         Binding("2,n", "app.no", show=False),
     ]
+    on_typed: Callable[[], None] | None = None
+
+    def on_key(self, event: events.Key) -> None:
+        """Note a printable key that is not a choice."""
+        if self.on_typed is not None and event.is_printable and event.character not in _CHOICE_KEYS:
+            self.on_typed()

@@ -342,6 +342,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A question in the chat no longer takes words typed ahead as a yes. It opened with "Yes" chosen and took
+  Enter, `1` or `y` for yes after 0.4 s, so the owner typing the next request could answer it. "No" is now
+  chosen at first (Enter says no), `y` no longer means yes, and a `1` typed among other letters waits until
+  the typing stops; `1`, or moving up to "Yes" and Enter, says yes.
+
 - The calculator's `log` with one number is to base 10, as on a calculator: `log(100)` is 2. It was the
   natural logarithm (4.6), which `ln` still gives.
 

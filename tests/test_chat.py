@@ -651,25 +651,47 @@ def test_the_highlighted_choice_is_pointed_at() -> None:
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "queue low tide")
         await _until(pilot, lambda: _question_open(app))
+        assert _pointed(app, "#choices") == "2. No"  # no is the choice Enter takes at first
+        await pilot.press("up")
         assert _pointed(app, "#choices") == "1. Yes"
-        await pilot.press("down")
-        assert _pointed(app, "#choices") == "2. No"
 
     _run(test, app)
 
 
-def test_enter_1_or_y_answers_yes() -> None:
-    for key in ("enter", "1", "y"):
-        assert _asking((key,)) == [True]
+def test_1_or_up_then_enter_answers_yes() -> None:
+    # Requirement changed (audit): y and Enter no longer say yes, as letters typed ahead did.
+    for keys in (("1",), ("up", "enter")):
+        assert _asking(keys) == [True]
 
 
-def test_2_n_esc_or_down_then_enter_answer_no() -> None:
-    for keys in (("2",), ("n",), ("escape",), ("down", "enter")):
+def test_2_n_esc_or_enter_answer_no() -> None:
+    for keys in (("2",), ("n",), ("escape",), ("enter",)):
         assert _asking(keys) == [False]
 
 
 def test_a_yes_pressed_as_the_question_opens_does_not_count() -> None:
-    assert _asking(("y",), wait=False) == [False]
+    assert _asking(("1",), wait=False) == [False]
+
+
+def test_words_typed_ahead_never_answer_the_question() -> None:
+    answers: list[bool | Declined] = []
+    done = threading.Event()
+    clock = Clock()
+    app = _app(session=_confirming(answers, done), clock=clock)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "queue low tide")
+        await _until(pilot, lambda: _question_open(app))
+        clock.now += 1
+        await pilot.press("w", "h", "y", "space", "1")
+        await pilot.pause(0.05)
+        assert not done.is_set()  # typing, then a 1 among the words: still open
+        clock.now += 1
+        await pilot.press("1")
+        await _until(pilot, done.is_set)
+
+    _run(test, app)
+    assert answers == [True]
 
 
 def test_leaving_while_a_question_waits_answers_no() -> None:

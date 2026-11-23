@@ -387,7 +387,7 @@ class ChatApp(App[None]):
         with Vertical(id="question"):
             yield Static("", id="question-text", markup=False)
             yield ChoiceList(id="choices")
-            yield Static("enter, 1 or y: yes · 2, n or esc: no", classes="panel-hint")
+            yield Static("1: yes · 2, n, esc or enter: no", classes="panel-hint")
         with Vertical(id="settings"):
             yield PointerList(id="settings-list")
             yield Static(
@@ -1376,11 +1376,18 @@ class ChatApp(App[None]):
             words.append(f"\n{preview}", style="bright_black")
         self.query_one("#question-text", Static).update(words)
         choices = self.query_one("#choices", ChoiceList)
-        choices.show([("1. Yes",), ("2. No",)], ("",), ["yes", "no"])
+        choices.show([("1. Yes",), ("2. No",)], ("",), ["yes", "no"], highlighted=1)
+        choices.on_typed = self._typing_over_question
         self.query_one("#question").display = True
         self.query_one("#prompt").display = False
         choices.focus()
         self._tick()
+
+    def _typing_over_question(self) -> None:
+        """The owner is typing words while a question is open: a yes waits `ARM_S` from now."""
+        with self._lock:
+            if self._question is not None:
+                self._question.shown_at = self._clock()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         """Enter on a choice, a command in the menu, or a setting."""
@@ -1397,7 +1404,7 @@ class ChatApp(App[None]):
                 pass
 
     def action_yes(self) -> None:
-        """1 or y: answer the open question yes."""
+        """1: answer the open question yes."""
         self._answer(yes=True)
 
     def action_no(self) -> None:
