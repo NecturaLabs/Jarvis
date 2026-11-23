@@ -1834,6 +1834,23 @@ def test_a_failed_refresh_is_tried_again_after_a_minute_not_a_period(tmp_path: P
     assert stop.waited == [REFRESH_RETRY_S, REFRESH_RETRY_S]
 
 
+def test_a_refresh_in_which_every_part_of_the_library_failed_is_tried_again_soon(
+    tmp_path: Path,
+) -> None:
+    fake = FakeSpotify(top_artists=[GLASS_HARBOR])
+    parts = ("/me/top/artists", "/me/following", "/me/top/tracks", "/me/player/recently-played")
+    for path in parts:
+        fake.script("GET", path, spotify_error(500, "SERVER_ERROR", "Internal error"))
+    ops = build_ops(fake, tmp_path)
+    stop = _Waits(rounds=1)
+
+    thread = ops.start_refresh(stop)
+    thread.join(timeout=5)
+
+    assert stop.waited == [REFRESH_RETRY_S, SpotifyConfig().library_refresh_s]
+    assert ops.artist_names() == ["Glass Harbor"]  # the retry a minute later loaded them
+
+
 def test_an_expired_login_is_not_retried_every_minute(tmp_path: Path) -> None:
     ops, api = _failing_ops(FakeSpotify(top_artists=[GLASS_HARBOR]), tmp_path)
     api.failure = SpotifyLoginExpired("expired")

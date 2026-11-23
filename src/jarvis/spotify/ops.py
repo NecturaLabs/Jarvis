@@ -287,13 +287,14 @@ class SpotifyOps:
     def refresh(self) -> None:
         """Load the owner's library and artist names once, ahead of any request that needs them.
 
-        A failure is logged and swallowed, and the previous names are kept.
+        A failure, or a refresh in which no part of the library loaded, is logged and swallowed,
+        and the previous names are kept.
         """
         self._warm = False
         self._login_expired = False
         try:
             self._api.ensure_login()
-            artists = self._api.library(max_age_s=0).get("artist", [])
+            library = self._api.reload_library()
         except SpotifyLoginExpired:
             self._login_expired = True
             log.warning("Spotify login has expired; run `jarvis spotify-login`")
@@ -304,6 +305,10 @@ class SpotifyOps:
         except Exception:  # a warm-up must never take Jarvis down
             log.exception("Spotify library refresh failed unexpectedly")
             return
+        if library is None:
+            log.warning("Spotify library refresh failed: no part of it could be loaded")
+            return
+        artists = library.get("artist", [])
         self._names = list(dict.fromkeys(str(a["name"]) for a in artists if a.get("name")))
         self._warm = True
 

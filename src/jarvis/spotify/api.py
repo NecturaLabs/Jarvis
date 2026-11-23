@@ -400,11 +400,24 @@ class SpotifyApi:
         fails, the previous good list for that part is kept. A lost login is raised.
         """
         ttl = self._library_ttl_s if max_age_s is None else max_age_s
-        now = self._clock()
-        cache = self._library
+        cache, now = self._library, self._clock()
         if cache.result is not None and cache.loaded_at is not None and now - cache.loaded_at < ttl:
             return cache.result
-        loaded = list(starmap(self._library_part, _LIBRARY_PARTS))
+        return self._load_library()[0]
+
+    def reload_library(self) -> dict[str, list[dict[str, Any]]] | None:
+        """Load the library now, whatever its age; None when no part of it could be loaded.
+
+        A part that failed keeps its previous good list, as in `library`. A lost login is raised.
+        """
+        result, loaded = self._load_library()
+        return result if loaded else None
+
+    def _load_library(self) -> tuple[dict[str, list[dict[str, Any]]], bool]:
+        """Fetch every part of the library; return it and whether any part loaded."""
+        now = self._clock()
+        cache = self._library
+        loaded = any(list(starmap(self._library_part, _LIBRARY_PARTS)))
         parts = cache.parts
         recent = [obj(i.get("track")) for i in parts.get("recent", [])]
         tracks = [t for t in parts.get("top_tracks", []) + recent if t.get("uri")]
@@ -416,8 +429,8 @@ class SpotifyApi:
             "track": tracks,
             "album": [a for a in albums if a.get("uri")],
         }
-        cache.loaded_at = now if any(loaded) else now - ttl + _LIBRARY_RETRY_S
-        return cache.result
+        cache.loaded_at = now if loaded else now - self._library_ttl_s + _LIBRARY_RETRY_S
+        return cache.result, loaded
 
 
 def _count(value: object) -> int:

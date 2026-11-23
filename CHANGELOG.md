@@ -342,6 +342,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A Spotify library refresh in which every request failed (Spotify erroring, the network down with the
+  token still valid) is now tried again after a minute. It used to count as done, so the artist names that
+  help speech to text stayed empty for `spotify.library_refresh_s` (six hours by default).
 - A reply with a sentence that sounds like the wake word can be spoken over again once that sentence
   has played (a second later, for the wake model's lag). The guard used to hold until the whole reply
   ended, and it started when the sentence was made, which could be before the ones ahead of it had played.
