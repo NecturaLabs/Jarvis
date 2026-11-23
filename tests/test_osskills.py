@@ -25,6 +25,11 @@ Run `omarchy-{name}-do` to do it.
 ME = os.getuid()
 
 
+def _version(text: str) -> str:
+    """Return the version a part's continuation line names, or "" for a last part."""
+    return text.rsplit("version ", 1)[1].rstrip(".)") if "\n(Continued in part " in text else ""
+
+
 def _installed(root: Path) -> tuple[osskills.OsSkill, ...]:
     return osskills.installed(root, ME)
 
@@ -135,7 +140,7 @@ def test_a_long_file_is_read_in_parts_that_together_are_the_whole_file(root: Pat
         assert len(result.text) <= 1000
         title, _, body = result.text.partition("\n")
         assert title == f"omarchy/theming.md (part {part} of {count}):"
-        more = f"\n(Continued in part {part + 1}.)"
+        more = f"\n(Continued in part {part + 1}, version {_version(first.text)}.)"
         if part < count:
             assert body.endswith(more)
             body = body.removesuffix(more)
@@ -283,7 +288,8 @@ def test_parts_at_the_lowest_cap_rejoin_into_the_file_and_stay_within_the_schema
         result = op.run(validate_args(op, {"file": "omarchy/theming.md", "part": part}))
         assert len(result.text) <= low
         body = result.text.split("\n", 1)[1]
-        bodies.append(body.removesuffix(f"\n(Continued in part {part + 1}.)"))
+        more = f"\n(Continued in part {part + 1}, version {_version(result.text)}.)"
+        bodies.append(body.removesuffix(more))
     assert "".join(bodies) == text
 
 
@@ -315,3 +321,19 @@ def test_a_guide_too_long_for_the_catalog_is_left_out_and_said(
     assert 0 < len(found) < 40
     assert sum(skill.catalog_chars() for skill in found) <= osskills.MAX_CATALOG_CHARS
     assert "does not fit in the catalog" in caplog.text
+
+
+def test_a_guide_changed_between_parts_is_read_again_from_the_start(root: Path) -> None:
+    """Regression: an Omarchy update between two parts mixed two versions of a guide."""
+    guide = root / "omarchy" / "theming.md"
+    guide.write_text("".join(f"Old line {n}.\n" for n in range(200)), encoding="utf-8")
+    op = osskills.os_skill_operation(_installed(root), max_chars=1000, root=root, owner=ME)
+    first = op.run(validate_args(op, {"file": "omarchy/theming.md"})).text
+    version = _version(first)
+
+    same = op.run(validate_args(op, {"file": "omarchy/theming.md", "part": 2, "version": version}))
+    assert same.text.startswith("omarchy/theming.md (part 2 of ")
+    guide.write_text("".join(f"New line {n}.\n" for n in range(200)), encoding="utf-8")
+
+    with pytest.raises(OperationError, match="changed since"):
+        op.run(validate_args(op, {"file": "omarchy/theming.md", "part": 2, "version": version}))

@@ -323,6 +323,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Reading an Omarchy guide in parts: each part names the guide's version, and a later part asked for
+  after an Omarchy update changed the guide is refused with a note to read it again from part 1, instead
+  of mixing two versions.
+
 - A model server that answers but lists no model (Strata while its engine is down or restarting) is
   shown as `unloaded`, not as unreachable, and a wake word then loads the model.
 
