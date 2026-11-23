@@ -82,6 +82,7 @@ STATUS_S = 10.0
 STATS_S = 2.0
 TICK_S = 0.12
 ARM_S = 0.4  # a choice made sooner than this after a question appears was meant for something else
+STILL_WORKING = "I'm still working on the last request; esc stops it."
 QUIT_WINDOW_S = 2.0  # a second Ctrl+C this soon after the first leaves
 MAX_ENTRIES = 600  # transcript widgets kept; older ones are removed
 RESUMED_TURNS = 12  # remembered turns shown when the window opens on an earlier conversation
@@ -867,6 +868,10 @@ class ChatApp(App[None]):
         """Run a command or send a request."""
         choice = self._menu_choice()
         text = event.text.strip()
+        if text and choice is None and not text.startswith("/") and self._busy():
+            # Refused before anything is taken from the box: the words and pictures stay there.
+            self._note(STILL_WORKING, "warn")
+            return
         pictures = self._sent_pictures(text)
         pasted = self._sent_pastes(text)
         if choice is not None and choice.strip() != text:
@@ -1240,6 +1245,10 @@ class ChatApp(App[None]):
 
     # A request
 
+    def _busy(self) -> bool:
+        with self._lock:
+            return self._work is not None
+
     def _start(self, label: str) -> bool:
         with self._lock:
             if self._work is not None:
@@ -1248,7 +1257,7 @@ class ChatApp(App[None]):
                 busy = False
                 self._work = _Work(self._clock(), label)
         if busy:
-            self._note("I'm still working on the last request; esc stops it.", "warn")
+            self._note(STILL_WORKING, "warn")
             return False
         self._ticker = self.set_interval(TICK_S, self._tick)
         self._tick()

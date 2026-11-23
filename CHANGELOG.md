@@ -342,6 +342,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- In the chat window, a request sent while another is still working now stays in the box with its pictures
+  and pastes, ready to send again. It used to be cleared, and the attached pictures were lost.
 - A streamed model answer that stalls now ends at the call's time limit. The limit was checked only when a
   piece arrived, and the read timeout restarted with each one, so a stalled stream could run to about
   twice its time.

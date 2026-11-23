@@ -1170,6 +1170,37 @@ def test_a_picture_that_fails_to_load_unexpectedly_leaves_the_window_open(
     _run(test, app)
 
 
+def test_a_request_sent_while_another_works_keeps_its_words_and_pictures() -> None:
+    release = threading.Event()
+
+    def answer(text: str, _hooks: Hooks) -> str:
+        if text == "pause":
+            release.wait(5)
+        return "Done."
+
+    session = FakeSession(answer)
+    app = _picture_app(session, paste=_clipboard(Clip(image=_png(), mime="image/png")))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "pause")
+        await _until(pilot, lambda: session.asked == ["pause"])
+        await pilot.press("ctrl+v")
+        await _until(pilot, lambda: "[Image #1]" in _input(app).text)
+        await pilot.press("w", "h", "a", "t", "?")
+        await pilot.press("enter")
+        await _until(pilot, lambda: _has(app, "still working"))
+        assert _input(app).text == "[Image #1] what?"
+        assert "pasted picture" in _attached(app)
+        release.set()
+        await _until(pilot, lambda: not app.query_one("#working", Static).display)
+        await pilot.press("enter")
+        await _until(pilot, lambda: len(session.asked) == 2)
+
+    _run(test, app)
+    assert session.asked == ["pause", "[Image #1] what?"]
+    assert session.pictures == [[], ["pasted picture"]]
+
+
 def test_ctrl_v_pastes_copied_text_where_the_cursor_is() -> None:
     session = FakeSession()
     app = _picture_app(session, paste=_clipboard(Clip(text="the blue one")))
