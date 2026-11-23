@@ -342,8 +342,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - Reading in parts no longer skips text full of angle brackets (HTML, XML, code). `read_file`, `list_dir`
   and `os_skill` sized each part in plain characters, but each `<` and `>` reaches the model spelled out
   in four, and the result is then cut to its cap: the cut took the line that says where the next part
-  starts, so what followed was never read. Parts are now sized as they are sent. `pc_shell` keeps its note
-  that the output was cut, and a read page names its picture before its text, for the same reason.
+  starts, so what followed was never read. Parts are now sized as they are sent. A cut `pc_shell` output
+  keeps its note that it was cut, and a page that has a picture names the picture before the text, so a cut
+  never takes either.
 
 - `read_file` no longer loses most of a line longer than one part (a one-line JSON or minified file). It
   cut the line at about 2,900 characters and reported it as read; now it says which characters it gave,
@@ -353,9 +354,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   what `pc_shell` takes; it named only `stop_process` before.
 
 - A shell command's output (`pc_shell`) is now outside text of its own kind, `shell`. It was marked as a
-  process listing, which `stop_process` lets through, so in the chat a remembered output (a file shown with
-  `cat`, a page fetched with `curl`) did not stop a later shell command, and in one request it did not stop
-  a process from being stopped. The output also counts as file text now: a search that sends text off the
+  process listing, which `stop_process` lets through. So a remembered output (a file shown with `cat`, a page
+  fetched with `curl`) did not block a later shell command in the chat, and within one request it did not
+  block `stop_process`. The output also counts as file text now: a search that sends text off the
   PC afterwards needs your yes.
 
 - With the Azure wake word, a pause after "Hey Jarvis" no longer loses the request. The keyword's own last

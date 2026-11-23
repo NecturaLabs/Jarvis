@@ -409,7 +409,7 @@ different size, inode, modification or change time, so a file swapped for anothe
 caught). A replace keeps the old file's read and write permissions, so a private file stays private; it
 never carries an execute bit over.
 
-A file's text is data, like a web page: while it is in the conversation, side effects need your yes,
+A file's text is data, like a web page (a shell command's output counts as one): while it is in the conversation, side effects need your yes,
 and so do the operations that send words off the PC (`web_search`, `reddit_search`, and `weather` or
 `time_now` for a named place), so a file's contents cannot leave in a search without you seeing it.
 With `boundaries.bypass_consent` on (the default) none of these questions is asked, which is why the
@@ -438,7 +438,7 @@ its shipped class, which is `safe` for every operation but `write_file` (`confir
 `pc_stats`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`; set one to `deny` to switch it off. `stop_process`
 may be set only to `strong` or `deny`: a program is stopped by your command and your key alone, so any
 other class stops `jarvis run`, `ask` and `chat` with an error. Whatever the class, side effects are raised to `confirm` while text from outside
-your own speech is in the request, and so are the operations that send words off the PC while a file's text is. Example:
+your own speech is in the request, and so are the operations that send words off the PC while a file's text or a shell command's output is. Example:
 
 ```toml
 [boundaries.classes]

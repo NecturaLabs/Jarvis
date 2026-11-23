@@ -893,7 +893,9 @@ def test_stop_refuses_a_request_heard_in_pc_audio(proc: FakeProc) -> None:
             _bind(ops, 4242)
 
 
-@pytest.mark.parametrize("origin", ["web", "file", "picture", "spotify", "memory"])
+@pytest.mark.parametrize(
+    "origin", ["web", "file", "picture", "spotify", "memory", Origin.SHELL.value]
+)
 def test_stop_refuses_a_request_that_holds_outside_text(proc: FakeProc, origin: str) -> None:
     proc.add(4242, "orbit")
     ops = _ops(proc)

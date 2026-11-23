@@ -330,6 +330,7 @@ def test_build_names_what_the_overridden_operation_itself_allows() -> None:
         build(config)
 
     assert "stop_process" not in str(refused.value)  # the floor named is pc_shell's own
+    assert 'pc_shell takes only "strong" or "deny"' in str(refused.value)
 
 
 def test_the_system_prompt_says_never_to_stop_a_program_the_owner_did_not_name() -> None:

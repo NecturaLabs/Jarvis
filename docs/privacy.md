@@ -56,8 +56,9 @@ Questions that need the outside world ([ADR 0007](adr/0007-outside-services-for-
 - **Reddit**: thread searches go through SearXNG the same way, with `site:reddit.com` added; the
   `arctic-shift.photon-reddit.com` archive gets the ids of the threads Jarvis reads.
 
-Files Jarvis reads stay on the PC: their text goes only to the local model. While a file's text is in the
-conversation, a search or a place lookup that could carry it out needs your yes first.
+Files Jarvis reads stay on the PC: their text goes only to the local model. While a file's text, or a shell
+command's output, is in the conversation, a search or a place lookup that could carry it out needs your yes
+first.
 
 Pictures you attach in the chat go only to the local model, shrunk; they are not written to disk, and the
 conversation keeps only their names. The clipboard is read only when you press Ctrl+V in the chat.
