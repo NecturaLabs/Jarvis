@@ -226,7 +226,22 @@ def _confirmation(entry: dict[str, object]) -> _Line:
         return "result", "you said yes", True, ""
     if entry.get("asked") is False:
         return "warn", "no: not asked again after an earlier no", True, ""
-    return "warn", "no yes, so nothing was done", True, ""
+    why = NO_REASON_WORDS.get(str(entry.get("reason", "")), "")
+    return "warn", f"no yes{why}, so nothing was done", True, ""
+
+
+NO_REASON_WORDS = {  # the confirmation's `reason`, as the window says it after "no yes"
+    "said_no": "",
+    "no_answer": ": no answer in time",
+    "too_short": ": too little speech for a yes",
+    "untranscribed": ": the answer could not be transcribed",
+    "pc_speech": ": PC audio spoke while you answered",
+    "spoken_over": ": you spoke over the question",
+    "slept": ": the PC slept with the question open",
+    "mic_lost": ": the microphone stopped",
+    "closed": ": the window closed",
+    "failed": ": asking failed",
+}
 
 
 def _tool_result(entry: dict[str, object]) -> _Line:

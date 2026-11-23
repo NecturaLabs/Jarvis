@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from jarvis.activity import AuditTail, describe, working_label
+from jarvis.activity import NO_REASON_WORDS, AuditTail, describe, working_label
+from jarvis.agent import NoReason
 from jarvis.audit import AuditLog
 
 if TYPE_CHECKING:
@@ -135,6 +136,9 @@ def _line(entry: dict[str, object]) -> str:
         ({"event": "tool_call", "op": "x", "verdict": "deny", "reason": "off"}, "warn", "off"),
         ({"event": "confirmation", "approved": True}, "result", "yes"),
         ({"event": "confirmation", "approved": False}, "warn", "no"),
+        ({"event": "confirmation", "approved": False, "reason": "slept"}, "warn", "PC slept"),
+        ({"event": "confirmation", "approved": False, "reason": "no_answer"}, "warn", "in time"),
+        ({"event": "confirmation", "approved": False, "reason": "closed"}, "warn", "closed"),
         ({"event": "tool_call", "op": "x", "verdict": "strong"}, "ask", "confirm key"),
         ({"event": "tool_call", "op": "x", "verdict": "strong", "refused": "no"}, "warn", "key"),
         ({"event": "confirmation", "approved": True, "method": "key"}, "result", "pressed"),
@@ -352,3 +356,8 @@ def test_consent_changes_and_the_services_start_show_as_notes(
     assert shown is not None
     assert shown.kind == "note"
     assert text in shown.text
+
+
+def test_every_no_reason_has_words_in_the_window() -> None:
+    asked = {NoReason.EARLIER_NO, NoReason.NO_KEY}  # shown as "not asked", or by the key lines
+    assert set(NO_REASON_WORDS) == {reason.value for reason in NoReason} - asked

@@ -4,23 +4,23 @@ import logging
 import stat
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 import httpx
 import numpy as np
 import pytest
 
 from jarvis import voice
-from jarvis.agent import MODEL_MISSING
+from jarvis.agent import MODEL_MISSING, Declined, NoReason
 from jarvis.agent import Agent as RealAgent
 from jarvis.app import no_action_operation
 from jarvis.audio import FRAME, AudioError, PausableMic
 from jarvis.audit import AuditLog
 from jarvis.config import AudioConfig, Config, ModelConfig
 from jarvis.confirmkey import MIN_PRESS_S, NOTHING_WAITING, STRAY_HOLD_S, ConfirmKey
-from jarvis.model import StrataModel
-from jarvis.operations import Registry
-from jarvis.policy import Origin
+from jarvis.model import Delta, StrataModel
+from jarvis.operations import Operation, Registry, Result
+from jarvis.policy import OpClass, Origin
 from jarvis.voice import PcListener, State, VoiceLoop
 
 if TYPE_CHECKING:
@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from jarvis.agent import Hooks
+    from jarvis.model import ChatModel
 
 SILENCE = np.zeros(FRAME, dtype=np.int16)
 SPEECH = np.ones(FRAME, dtype=np.int16)
@@ -224,7 +225,7 @@ class Agent:
 
 
 def _loop(
-    agent: Agent,
+    agent: Agent | RealAgent,
     mic: Mic,
     speaker: Speaker,
     *,
@@ -1089,7 +1090,7 @@ def test_a_sentence_that_would_wake_jarvis_itself_is_not_spoken_over() -> None:
 
 
 def test_speaking_over_a_confirmation_question_is_a_no_and_starts_a_new_request() -> None:
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
 
     def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
         if answers:
@@ -1103,7 +1104,7 @@ def test_speaking_over_a_confirmation_question_is_a_no_and_starts_a_new_request(
 
     _run(_loop(agent, mic, speaker))
 
-    assert answers == [False]
+    assert answers == [Declined(NoReason.SPOKEN_OVER)]
     assert speaker.said == ["Should I buy it?", "Fine."]
 
 
@@ -2512,7 +2513,7 @@ def _lost_mic_loop(
 
 
 def test_a_microphone_lost_while_waiting_for_a_spoken_yes_is_a_no_and_is_reopened() -> None:
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
 
     def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
         answers.append(hooks.confirm("Should I stop process 42?"))
@@ -2529,7 +2530,10 @@ def test_a_microphone_lost_while_waiting_for_a_spoken_yes_is_a_no_and_is_reopene
 
     _run(loop)
 
-    assert answers == [False, True]  # the lost microphone is a no, never a yes
+    assert answers == [
+        Declined(NoReason.MIC_LOST),
+        True,
+    ]  # the lost microphone is a no, never a yes
     assert reopened == [State.NO_MIC]
     assert script.starts == 1
     assert speaker.said == [
@@ -2604,7 +2608,7 @@ def test_a_suspend_while_a_request_is_in_flight_is_noticed_once_it_is_answered()
 def test_a_yes_spoken_after_a_suspend_is_not_a_yes_to_the_question_asked_before_it() -> None:
     asleep = [0.0]
     woke: list[bool] = []
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
 
     def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
         answers.append(hooks.confirm("Should I stop process 42?"))
@@ -2625,7 +2629,7 @@ def test_a_yes_spoken_after_a_suspend_is_not_a_yes_to_the_question_asked_before_
 
     _run(loop)
 
-    assert answers == [False]
+    assert answers == [Declined(NoReason.SLEPT)]
     assert speaker.said == ["Should I stop process 42?", "declined"]
     assert woke == [True]  # and the loop still listens afresh
 
@@ -2633,7 +2637,7 @@ def test_a_yes_spoken_after_a_suspend_is_not_a_yes_to_the_question_asked_before_
 def test_a_yes_that_began_before_a_suspend_is_not_a_yes_either() -> None:
     # Speech already kept when the PC wakes is what ending the stream hands back: it must not count.
     asleep = [0.0]
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
 
     def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
         answers.append(hooks.confirm("Should I stop process 42?"))
@@ -2647,7 +2651,7 @@ def test_a_yes_that_began_before_a_suspend_is_not_a_yes_either() -> None:
 
     _run(loop)
 
-    assert answers == [False]
+    assert answers == [Declined(NoReason.SLEPT)]
 
 
 def test_a_confirm_key_wait_open_across_a_suspend_has_run_out_when_the_pc_wakes() -> None:
@@ -2862,3 +2866,135 @@ def test_a_spoken_request_with_the_model_drive_missing_is_apologised_for_at_once
     assert " ".join(speaker.said) == MODEL_MISSING  # heard in full, and no second apology
     assert naps == []  # no waiting for a server that is not coming
     assert loop.state is State.IDLE
+
+
+class _AsksOnce:
+    """A model that asks to run `stop` once, then says what it got back."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._turn = 0
+
+    def chat(
+        self,
+        _messages: list[dict[str, Any]],
+        _tools: list[dict[str, Any]],
+        *,
+        on_delta: Callable[[Delta], None] | None = None,
+        **_options: object,
+    ) -> dict[str, Any]:
+        self._turn += 1
+        if self._turn == 1:
+            call = {"id": "c1", "type": "function", "function": {"name": "stop", "arguments": "{}"}}
+            return {"role": "assistant", "content": "", "tool_calls": [call]}
+        if on_delta is not None:
+            on_delta(Delta(text="Okay."))
+        return {"role": "assistant", "content": "Okay."}
+
+    @staticmethod
+    def is_loaded() -> bool | None:
+        return True
+
+
+def _confirming_agent(audit: AuditLog, runs: list[str]) -> RealAgent:
+    def run(_args: dict[str, Any]) -> Result:
+        runs.append("stop")
+        return Result("stopped", Origin.TOOL_STATUS)
+
+    stop = Operation(
+        "stop",
+        "stop",
+        {"type": "object", "properties": {}},
+        run,
+        default_class=OpClass.CONFIRM,
+        spoken_summary=lambda _args: "stop process 42",
+    )
+    model = cast("ChatModel", _AsksOnce())
+    return RealAgent(model, Registry([stop, no_action_operation()]), "system", audit, {})
+
+
+def _confirmation(audit: AuditLog) -> dict[str, object]:
+    return next(e for e in audit.events if e["event"] == "confirmation")
+
+
+def test_a_suspend_with_the_question_open_is_audited_as_the_reason_for_the_no() -> None:
+    asleep = [0.0]
+    audit = AuditLog(None)
+    runs: list[str] = []
+
+    def suspend() -> None:
+        asleep[0] += 600.0
+
+    mic = Mic(*REQUEST, SILENCE, suspend, *ANSWER, SILENCE)
+    loop = _loop(_confirming_agent(audit, runs), mic, Speaker(), asleep_s=lambda: asleep[0])
+
+    _run(loop)
+
+    assert runs == []
+    confirmation = _confirmation(audit)
+    assert confirmation["approved"] is False
+    assert confirmation["reason"] == "slept"
+
+
+def _answering(answers: list[bool | Declined]) -> Reply:
+    """An agent that asks one question and keeps the hook's answer as it came back."""
+
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        answers.append(hooks.confirm("Should I?"))
+        return "approved" if answers[-1] is True else "declined"
+
+    return reply
+
+
+def _transcriber_failing(error: Exception) -> Callable[[NDArray[np.int16]], str]:
+    def transcribe(_samples: NDArray[np.int16]) -> str:
+        raise error
+
+    return transcribe
+
+
+def _saying(words: str) -> Callable[[NDArray[np.int16]], str]:
+    def transcribe(_samples: NDArray[np.int16]) -> str:
+        return words
+
+    return transcribe
+
+
+@pytest.mark.parametrize(
+    ("after", "answer", "reason"),
+    [
+        ([*[SILENCE] * 40], _saying("yes"), NoReason.NO_ANSWER),
+        ([SPEECH, *[SILENCE] * 5], _saying("Okay."), NoReason.TOO_SHORT),
+        (ANSWER, _saying("no, leave it"), NoReason.SAID_NO),
+        (ANSWER, _transcriber_failing(AudioError("whisper stopped")), NoReason.UNTRANSCRIBED),
+        (ANSWER, _transcriber_failing(RuntimeError("bug")), NoReason.FAILED),
+    ],
+    ids=["no-answer", "too-short", "said-no", "untranscribed", "failed"],
+)
+def test_a_spoken_no_says_why(
+    after: list[Step], answer: Callable[[NDArray[np.int16]], str], reason: NoReason
+) -> None:
+    answers: list[bool | Declined] = []
+
+    _run(_loop(Agent(_answering(answers)), Mic(*REQUEST, *after), Speaker(), answer=answer))
+
+    assert answers == [Declined(reason)]
+
+
+def test_a_yes_blocked_by_pc_speech_says_why() -> None:
+    pc_spoke = threading.Event()
+    answers: list[bool | Declined] = []
+    holder: list[VoiceLoop] = []
+    pc = PcAudio(
+        until(lambda: bool(holder) and holder[0].state is State.CONFIRM),
+        SPEECH,
+        SPEECH,
+        pc_spoke.set,
+    )
+    mic = Mic(*REQUEST, until(pc_spoke.is_set), *ANSWER)
+    loop = _loop(Agent(_answering(answers)), mic, Speaker(), pc=pc)
+    holder.append(loop)
+
+    _run(loop)
+
+    assert answers == [Declined(NoReason.PC_SPEECH)]

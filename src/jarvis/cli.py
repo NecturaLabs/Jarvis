@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 from jarvis import __version__, config, control, models, paths, services
 from jarvis.activity import AuditTail
-from jarvis.agent import Hooks
+from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.app import SetupError, build, chat_memory_file, chat_pictures, echoes_hint, strata_model
 from jarvis.audit import AuditLog
 from jarvis.chat import clipboard
@@ -315,11 +315,11 @@ def cmd_spotify_login(args: argparse.Namespace) -> int:
     return 0
 
 
-def _terminal_confirm(question: str) -> bool:
+def _terminal_confirm(question: str) -> bool | Declined:
     try:
         answer = input(f"{question} [yes/no] ")
     except EOFError:
-        return False
+        return Declined(NoReason.NO_ANSWER)  # no terminal to answer on
 
     return is_yes(answer)
 
@@ -331,7 +331,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
-    confirm: Callable[[str], bool] = (
+    confirm: Callable[[str], bool | Declined] = (
         (lambda q: print(q, "-> yes") is None) if args.yes else _terminal_confirm
     )
     reply = jarvis.agent.handle(

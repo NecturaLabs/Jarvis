@@ -35,7 +35,7 @@ from textual.css.query import NoMatches
 from textual.widgets import OptionList, Static
 
 from jarvis.activity import Shown, describe, full_text, working_label
-from jarvis.agent import MAX_TRUSTED_PASTE, PICTURES_OFF, Hooks
+from jarvis.agent import MAX_TRUSTED_PASTE, PICTURES_OFF, Declined, Hooks, NoReason
 from jarvis.chat import commands
 from jarvis.chat.clipboard import ClipboardError
 from jarvis.chat.commands import VERBOSITY
@@ -179,7 +179,7 @@ class _Question:
     text: str
     shown_at: float = 0.0
     answered: threading.Event = field(default_factory=threading.Event)
-    answer: bool = False
+    answer: bool | Declined = field(default_factory=lambda: Declined(NoReason.CLOSED))
 
 
 @dataclass(slots=True)
@@ -1351,12 +1351,12 @@ class ChatApp(App[None]):
 
     # A question
 
-    def _confirm(self, text: str) -> bool:
+    def _confirm(self, text: str) -> bool | Declined:
         """Ask the owner in the window and wait for the choice (no when it closes)."""
         question = _Question(text)
         with self._lock:
             if self._closing:
-                return False
+                return Declined(NoReason.CLOSED)
             self._question = question
         self._from_worker(self._open_question, question)
         question.answered.wait()  # answered no when the window closes
