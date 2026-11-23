@@ -915,10 +915,13 @@ def cmd_status(args: argparse.Namespace) -> int:
     if "error" in shown:
         print(f"jarvis: running but not answering ({shown['error']}), model: {shown['model']}")
         return 1
-    if running:
-        print(f"jarvis: {shown.get('state')}, model: {shown.get('model')}")
-        return 0
     model = _MODEL_SHOWN.get(str(shown["model"]), shown["model"])
+    if running:
+        state = shown.get("state")
+        print(
+            f"jarvis: {state}" if state == "model loading" else f"jarvis: {state}, model: {model}"
+        )
+        return 0
     print(f"jarvis: not running, model: {model}")
     return 0 if shown["model"] not in _MODEL_SHOWN else 1
 

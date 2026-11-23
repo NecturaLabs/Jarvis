@@ -79,7 +79,7 @@ class Model:
         self.unloads += 1
         return self.accepts
 
-    def warm(self) -> bool:
+    def warm(self, *, keep_going: Callable[[], bool] = lambda: True) -> bool:  # ruff: ignore[unused-method-argument] - the fake never retries
         self.warms += 1
         return self.accepts
 

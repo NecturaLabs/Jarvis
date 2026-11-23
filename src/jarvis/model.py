@@ -2,7 +2,9 @@
 
 import json
 import math
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -11,13 +13,15 @@ import httpx
 from jarvis.jsonutil import obj, objs
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator, Iterator
     from pathlib import Path
 
     from jarvis.config import ModelConfig
 
 
-LOAD_TIMEOUT_S = 300.0  # a cold load from disk took about 110 s while a game ran
+# A load request waits as long as Strata may take to answer it: up to 3 engine starts of 900 s each
+# (`engine_ready_s`), and a margin. A cold load from disk took about 110 s.
+LOAD_TIMEOUT_S = 3 * 900.0 + 120.0
 WARM_ATTEMPTS = 60
 WARM_RETRY_S = 2.0
 RETRY_AFTER_RANGE_S = (1.0, 30.0)  # what a server's `Retry-After` is clamped to while warming
@@ -187,6 +191,46 @@ def _retry_after(response: httpx.Response) -> float | None:
     return min(max(asked, low), high)
 
 
+@dataclass(slots=True)
+class _Loads:
+    """The model loads Jarvis asked for whose answer has not come yet.
+
+    Strata reports a model only as `loaded` or `unloaded`, also while it loads one, and answers a
+    load request once the load has ended, so a load counts while its request waits.
+    """
+
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _asking: int = 0
+
+    @contextmanager
+    def asking(self) -> Generator[None]:
+        """Count a load request while it waits for its answer."""
+        with self._lock:
+            self._asking += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._asking -= 1
+
+    @contextmanager
+    def asking_alone(self) -> Generator[bool]:
+        """Count a load request, unless one is waiting already: then yield False and count none."""
+        with self._lock:
+            alone = self._asking == 0
+            self._asking += alone
+        try:
+            yield alone
+        finally:
+            with self._lock:
+                self._asking -= alone
+
+    def pending(self) -> bool:
+        """Return whether a load request is waiting for its answer."""
+        with self._lock:
+            return self._asking > 0
+
+
 @dataclass(frozen=True, slots=True)
 class StrataModel:
     """Talks to `strata serve` over its OpenAI API."""
@@ -197,6 +241,7 @@ class StrataModel:
     sleep: Callable[[float], None] = time.sleep  # tests wait without waiting
     clock: Callable[[], float] = time.monotonic  # tests move time with their sleep
     model_file: Path | None = None  # what the server loads (`strata.model_file`), when known
+    _loads: _Loads = field(default_factory=_Loads, init=False, repr=False, compare=False)
 
     def file_missing(self) -> bool:
         """Return whether the server's model file is known and not there."""
@@ -211,17 +256,30 @@ class StrataModel:
             transport=self.transport,
         )
 
-    def status(self) -> str | None:
-        """Return the server's model state (`loaded`, `unloaded`...) without generating."""
+    def _listing(self) -> tuple[bool, str | None]:
+        """Return whether the server answered, and the state of the model it lists, if any."""
         try:
             with self._client(5.0) as client:
                 response = client.get("/models")
                 response.raise_for_status()
                 data = objs(obj(response.json()).get("data"))
         except httpx.HTTPError, ValueError:
+            return False, None
+        value = obj(data[0].get("status")).get("value") if data else None
+        return True, (str(value) if value is not None else None)
+
+    def status(self) -> str | None:
+        """Return the model's state (`loaded`, `unloaded`...) without generating.
+
+        While a load Jarvis asked for is under way it is `loading`, whatever the server says
+        (Strata says only `loaded` or `unloaded`); a server that cannot be reached is None.
+        """
+        was_loading = self._loads.pending()  # the server's answer may be from before the load ended
+        answered, state = self._listing()
+        if not answered:
             return None
-        state = obj(data[0].get("status")).get("value") if data else None
-        return str(state) if state is not None else None
+        loading = was_loading or self._loads.pending()
+        return "loading" if state != "loaded" and loading else state
 
     def is_loaded(self) -> bool | None:
         """Return whether the model is in memory (None when the server is unreachable)."""
@@ -229,27 +287,43 @@ class StrataModel:
         return None if state is None else state == "loaded"
 
     def load(self) -> bool:
-        """Ask the server to load the model now (ahead of a request); return whether it accepted."""
+        """Ask the server to load the model now (ahead of a request); return whether it accepted.
+
+        The request waits for the load, as long as Strata lets an engine start; a load still
+        going after that carries on in the server. While a load Jarvis asked for is under way,
+        this one joins it instead of queueing a second behind it.
+        """
         try:
-            with self._client(5.0) as client:
-                response = client.post("/load", json={})
+            with self._loads.asking_alone() as alone:
+                if not alone:
+                    return True
+                with self._client(LOAD_TIMEOUT_S) as client:
+                    response = client.post("/load", json={})
+        except httpx.ReadTimeout:
+            return True
         except httpx.HTTPError:
             return False
         return response.is_success
 
-    def warm(self, attempts: int = WARM_ATTEMPTS) -> bool:
+    def warm(
+        self, attempts: int = WARM_ATTEMPTS, *, keep_going: Callable[[], bool] = lambda: True
+    ) -> bool:
         """Load the model once the server is up (at service start); return whether it loaded.
 
         The server may still be starting (unreachable, or answering 409 while busy), so this
         waits and tries again, up to `attempts` times; a 503 that says `Retry-After` is waited
         out for that long (1 to 30 seconds) instead of the usual two. A load reads the whole model
-        and can take minutes when it is not in the page cache, so the request waits for it.
+        and can take minutes when it is not in the page cache, so the request waits for it. Each
+        attempt first asks `keep_going`, so a load nobody wants any more (a pause came) stops.
         """
         for _ in range(attempts):
+            if not keep_going():
+                return False
             wait = WARM_RETRY_S
-            if self.status() is not None:
+            # Answering, even with no model listed while it restarts; still wanted after the check.
+            if self._listing()[0] and keep_going():
                 try:
-                    with self._client(LOAD_TIMEOUT_S) as client:
+                    with self._loads.asking(), self._client(LOAD_TIMEOUT_S) as client:
                         response = client.post("/load", json={})
                 except httpx.ReadTimeout:
                     return True  # still loading on the server's side

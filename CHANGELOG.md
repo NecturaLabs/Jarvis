@@ -297,6 +297,15 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `jarvis status`, `status --json` and the status bar say the model is loading while a load Jarvis asked
+  for is under way (at start, after a resume, on a wake word). Strata reports only loaded or unloaded, so a
+  2-minute load after `jarvis restart` showed `model: unloaded`. Each load request now waits as long as
+  Strata may take to answer it (three engine starts of 15 minutes), the start-up load is sent even while
+  Strata lists no model, a load a resume asked for stops retrying once you pause again, and a wake word during a load joins it
+  instead of queueing a second load.
+  A running Jarvis whose model server is down now says `server unreachable` or `file missing`, as it
+  does when Jarvis is not running.
+
 - `jarvis start` and `jarvis restart` no longer print "Failed to reset failed state of unit jarvis.service:
   Unit jarvis.service not loaded" when Jarvis was stopped: only a unit in the `failed` state is reset.
   `jarvis help` now lists the commands, as `jarvis --help` does.

@@ -798,7 +798,7 @@ def _cmd_run(
     monkeypatch.setattr(cli.signal, "signal", signal_handler)
     monkeypatch.setattr(cli, "_load", lambda: cfg or config.Config())
     model = SimpleNamespace(
-        warm=run.warmed.set,
+        warm=lambda **_kw: run.warmed.set(),  # pyright: ignore[reportUnknownLambdaType] - a stand-in
         is_loaded=lambda: True,
         load=lambda: True,
         status=lambda: "failed",  # what a suspend can leave behind
