@@ -42,6 +42,14 @@ NO_VOLUME_CONTROL = "This device doesn't allow volume control from here."
 _VOLUME_DISALLOWED = "VOLUME_CONTROL_DISALLOW"
 _NAMED_IN_REPLY = 5
 _NO_ARGS: dict[str, Any] = {"type": "object", "properties": {}, "additionalProperties": False}
+MAX_SKIP = 10  # tracks one skip request may move by
+_SKIP_ARGS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "count": {"type": "integer", "minimum": 1, "maximum": MAX_SKIP},
+    },
+    "additionalProperties": False,
+}
 _QUERY = {
     "type": "string",
     "minLength": 1,
@@ -827,17 +835,53 @@ class SpotifyOps:
             return self._already("resume", exc)
         return Result("Resumed.", spoken="Playing again.")
 
-    def next_track(self, _args: dict[str, Any]) -> Result:
-        """Skip to the next track; it never starts Spotify."""
-        return self._command(
-            "POST", "/me/player/next", Result("Skipped to the next track.", spoken="Skipped.")
-        )
+    def next_track(self, args: dict[str, Any]) -> Result:
+        """Skip to the next track, or `count` tracks ahead; it never starts Spotify."""
+        count = int(args.get("count", 1))
+        if count == 1:
+            done = Result("Skipped to the next track.", spoken="Skipped.")
+        else:
+            done = Result(f"Skipped {count} tracks.", spoken=f"Skipped {count}.")
+        return self._skip("/me/player/next", count, done, "Skipped")
 
-    def previous_track(self, _args: dict[str, Any]) -> Result:
-        """Go back a track; it never starts Spotify."""
-        return self._command(
-            "POST", "/me/player/previous", Result("Went back a track.", spoken="Back one.")
-        )
+    def previous_track(self, args: dict[str, Any]) -> Result:
+        """Go back a track, or `count` tracks; it never starts Spotify."""
+        count = int(args.get("count", 1))
+        if count == 1:
+            done = Result("Went back a track.", spoken="Back one.")
+        else:
+            done = Result(f"Went back {count} tracks.", spoken=f"Back {count}.")
+        return self._skip("/me/player/previous", count, done, "Went back")
+
+    def _skip(self, path: str, count: int, done: Result, verb: str) -> Result:
+        """Send one skip request per track; report how far it got when one fails part-way.
+
+        Raises:
+            SpotifyError: Spotify failed before any track was skipped.
+            UncertainOutcomeError: the first request timed out after it was sent.
+        """
+        for skipped in range(count):
+            try:
+                self._api.request("POST", path)
+            except NoDeviceError:
+                if not skipped:
+                    return _nothing_playing()
+                return self._skipped_part(verb, skipped, count, "the player went away.")
+            except (SpotifyError, UncertainOutcomeError) as exc:
+                if not skipped:
+                    raise
+                why = (
+                    "the next one may not have gone through; do not retry."
+                    if isinstance(exc, UncertainOutcomeError)
+                    else f"Spotify failed: {exc}"
+                )
+                return self._skipped_part(verb, skipped, count, why)
+        return done
+
+    @staticmethod
+    def _skipped_part(verb: str, skipped: int, count: int, why: str) -> Result:
+        """Report a skip that stopped part-way: the tracks it moved by did move."""
+        return Result(f"{verb} {skipped} of {count} tracks, then {why}", ok=False, acted=True)
 
     def _set_volume(self, percent: int) -> Result:
         try:
@@ -950,18 +994,22 @@ class SpotifyOps:
             ),
             Operation(
                 "spotify_next",
-                "Skip to the next track.",
-                _NO_ARGS,
+                "Skip to the next track, or count tracks ahead.",
+                _SKIP_ARGS,
                 self.next_track,
-                spoken_summary=lambda _a: "skip this track",
+                spoken_summary=lambda a: (
+                    f"skip {a['count']} tracks" if a.get("count", 1) > 1 else "skip this track"
+                ),
                 shortcuts=(_NEXT,),
             ),
             Operation(
                 "spotify_previous",
-                "Go back to the previous track.",
-                _NO_ARGS,
+                "Go back to the previous track, or count tracks back.",
+                _SKIP_ARGS,
                 self.previous_track,
-                spoken_summary=lambda _a: "go back a track",
+                spoken_summary=lambda a: (
+                    f"go back {a['count']} tracks" if a.get("count", 1) > 1 else "go back a track"
+                ),
                 shortcuts=(_PREVIOUS,),
             ),
             Operation(

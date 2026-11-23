@@ -1968,6 +1968,11 @@ def test_a_configured_player_is_targeted_by_play_only(tmp_path: Path, case: Wire
 
 
 NO_ARGUMENTS: dict[str, Any] = {"additionalProperties": False, "properties": {}, "type": "object"}
+SKIP_ARGUMENTS: dict[str, Any] = {
+    "type": "object",
+    "properties": {"count": {"type": "integer", "minimum": 1, "maximum": 10}},
+    "additionalProperties": False,
+}
 SHIPPED: list[tuple[str, str, bool, dict[str, Any]]] = [
     (
         "spotify_play",
@@ -1990,8 +1995,8 @@ SHIPPED: list[tuple[str, str, bool, dict[str, Any]]] = [
     ),
     ("spotify_pause", "safe", True, NO_ARGUMENTS),
     ("spotify_resume", "safe", True, NO_ARGUMENTS),
-    ("spotify_next", "safe", True, NO_ARGUMENTS),
-    ("spotify_previous", "safe", True, NO_ARGUMENTS),
+    ("spotify_next", "safe", True, SKIP_ARGUMENTS),
+    ("spotify_previous", "safe", True, SKIP_ARGUMENTS),
     (
         "spotify_set_volume",
         "safe",
@@ -2062,7 +2067,9 @@ SUMMARIES: list[tuple[str, dict[str, Any], str]] = [
     ("spotify_pause", {}, "pause the music"),
     ("spotify_resume", {}, "resume the music"),
     ("spotify_next", {}, "skip this track"),
+    ("spotify_next", {"count": 3}, "skip 3 tracks"),
     ("spotify_previous", {}, "go back a track"),
+    ("spotify_previous", {"count": 2}, "go back 2 tracks"),
     ("spotify_set_volume", {"percent": 40}, "set the volume to 40 percent"),
     ("spotify_change_volume", {"delta": 10}, "change the volume by 10"),
     (
@@ -2117,3 +2124,62 @@ def test_the_queue_size_limit_follows_the_owners_setting(tmp_path: Path) -> None
     queue = find_op(ops, "spotify_queue")
 
     assert queue.parameters["properties"]["count"]["maximum"] == 7
+
+
+# --- Skipping several tracks ---
+
+
+@pytest.mark.parametrize(
+    ("name", "path", "text"),
+    [
+        ("spotify_next", "/me/player/next", "Skipped 3 tracks."),
+        ("spotify_previous", "/me/player/previous", "Went back 3 tracks."),
+    ],
+)
+def test_a_count_skips_that_many_tracks(tmp_path: Path, name: str, path: str, text: str) -> None:
+    fake = FakeSpotify(state=playing_state())
+    op = find_op(build_ops(fake, tmp_path), name)
+
+    result = op.run(validate_args(op, {"count": 3}))
+
+    assert result.ok
+    assert result.text == text
+    assert len(fake.calls("POST", path)) == 3
+
+
+def test_skipping_is_one_track_without_a_count(tmp_path: Path) -> None:
+    fake = FakeSpotify(state=playing_state())
+    op = find_op(build_ops(fake, tmp_path), "spotify_next")
+
+    assert op.run(validate_args(op, {})).spoken == "Skipped."
+    assert len(fake.calls("POST", "/me/player/next")) == 1
+
+
+def test_a_count_is_capped(tmp_path: Path) -> None:
+    op = find_op(build_ops(FakeSpotify(), tmp_path), "spotify_next")
+
+    with pytest.raises(ArgumentError):
+        validate_args(op, {"count": 11})
+
+
+def test_a_skip_that_fails_part_way_says_how_far_it_got(tmp_path: Path) -> None:
+    fake = FakeSpotify(state=playing_state())
+    fake.script("POST", "/me/player/next", httpx.Response(204), httpx.ReadTimeout("slow"))
+    op = find_op(build_ops(fake, tmp_path), "spotify_next")
+
+    result = op.run(validate_args(op, {"count": 3}))
+
+    assert not result.ok
+    assert result.acted
+    assert result.text.startswith("Skipped 1 of 3 tracks")
+    assert "do not retry" in result.text
+    assert len(fake.calls("POST", "/me/player/next")) == 2
+
+
+def test_a_skip_that_fails_at_once_raises(tmp_path: Path) -> None:
+    fake = FakeSpotify(state=playing_state())
+    fake.script("POST", "/me/player/next", httpx.ReadTimeout("slow"))
+    op = find_op(build_ops(fake, tmp_path), "spotify_next")
+
+    with pytest.raises(UncertainOutcomeError):
+        op.run(validate_args(op, {"count": 2}))

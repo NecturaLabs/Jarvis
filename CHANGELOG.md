@@ -342,6 +342,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- "Skip two songs" skips two: `spotify_next` and `spotify_previous` take a `count` (1 to 10), since a second
+  identical call in one request is refused as a repeat. It skipped one and said two. A skip that fails
+  part-way says how many tracks it moved by. To make room for the count in the default context,
+  `chat.memory_tokens` defaults to 9,900 (was 10,000); a config that still sets 10,000 gets what the
+  window leaves.
+
 - An action that ran but did not end cleanly is no longer reported as not done: a shell command that
   exits non-zero, a program asked to stop that is still running, and a program that started without its
   window showing where asked. A reply may say what happened, instead of being replaced by "Sorry, I didn't
