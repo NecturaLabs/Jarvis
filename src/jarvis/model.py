@@ -7,7 +7,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import httpx
 
@@ -52,6 +52,18 @@ class Delta:
     arguments: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class Thinking:
+    """How much the model thinks before it answers: Strata's `reasoning_effort` and a cap.
+
+    Strata closes the thinking once it reaches `tokens` and lets the model answer; the thinking
+    is streamed apart from the answer (`reasoning_content`), so it is never spoken or shown.
+    """
+
+    effort: Literal["low", "medium", "high"]
+    tokens: int
+
+
 class ChatModel(Protocol):
     """What the agent needs from a model."""
 
@@ -65,6 +77,7 @@ class ChatModel(Protocol):
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
         load_s: float = 0.0,
+        thinking: Thinking | None = None,
     ) -> dict[str, Any]:
         """Return the assistant message; with `require_tool`, the model must call a tool.
 
@@ -72,6 +85,7 @@ class ChatModel(Protocol):
         `load_s` is how much longer than one answer it may take, as the model must load first.
         With `on_delta`, the answer is streamed and each piece is passed to it as it arrives; an
         exception it raises ends the call and is raised from here. `max_tokens` caps the answer.
+        With `thinking`, the model thinks first, within its cap; without, it answers at once.
         The message also carries `finish_reason` ("length" when the cap cut it) and `usage`
         (the server's token counts) when the server sent them.
         """
@@ -365,13 +379,17 @@ class StrataModel:
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
         load_s: float = 0.0,
+        thinking: Thinking | None = None,
     ) -> dict[str, Any]:
-        """Send one chat completion with thinking off; retry once after a dropped connection.
+        """Send one chat completion; retry once after a dropped connection.
 
         The call waits at most `timeout_s` (when given) and never longer than the configured
         request timeout, plus `load_s` when the model must load first. With `on_delta` the
         answer is streamed (see `ChatModel.chat`); a connection that drops after a piece was
         passed on is not retried, since that piece may already have been spoken.
+        Without `thinking`, thinking is switched off. With it, the server's `max_tokens` (which
+        counts the thinking too) is the answer's cap plus the thinking's, so the answer keeps all of
+        its room.
 
         Raises:
             ModelError: the server refused, failed, stayed unreachable or ran out of time.
@@ -382,9 +400,14 @@ class StrataModel:
             "messages": messages,
             "max_tokens": max_tokens or DEFAULT_MAX_TOKENS,
             "temperature": self.config.temperature,
-            "reasoning_effort": "none",
-            "chat_template_kwargs": {"enable_thinking": False},
         }
+        if thinking is None:
+            body["reasoning_effort"] = "none"
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+        else:
+            body["reasoning_effort"] = thinking.effort
+            body["reasoning_budget_tokens"] = thinking.tokens
+            body["max_tokens"] += thinking.tokens
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "required" if require_tool else "auto"

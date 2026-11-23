@@ -17,7 +17,7 @@ from jarvis import shortcuts
 from jarvis.confirmkey import boot_clock
 from jarvis.jsonutil import obj, objs
 from jarvis.memory import Conversation, Turn, tokens
-from jarvis.model import ModelMissingError
+from jarvis.model import ModelMissingError, Thinking
 from jarvis.operations import (
     ArgumentError,
     OperationError,
@@ -493,7 +493,8 @@ class Limits:
     cut afterwards; `context_tokens` is the model's whole window, which the prompt, the remembered
     conversation and the request's own work share. With `remember_outside`, a reply that drew on
     outside text is remembered as data (and keeps side effects behind a yes while it is);
-    without, it is left out of later requests.
+    without, it is left out of later requests. With `thinking`, the model thinks before each
+    answer, within its cap, and the window keeps room for that too (`answer_tokens`).
     """
 
     max_steps: int = MAX_STEPS
@@ -505,6 +506,12 @@ class Limits:
     memory_idle_s: float = MEMORY_IDLE_S
     context_tokens: int = CONTEXT_TOKENS
     remember_outside: bool = False
+    thinking: Thinking | None = None
+
+    @property
+    def answer_tokens(self) -> int:
+        """The most one model call writes: its thinking and its reply."""
+        return self.reply_tokens + (self.thinking.tokens if self.thinking is not None else 0)
 
     @classmethod
     def of(cls, section: AgentConfig, context_tokens: int, *, remember_outside: bool) -> Limits:
@@ -519,6 +526,9 @@ class Limits:
             section.memory_idle_s,
             context_tokens,
             remember_outside,
+            None
+            if section.thinking == "none"
+            else Thinking(section.thinking, section.thinking_tokens),
         )
 
 
@@ -789,7 +799,7 @@ class Agent:
         """
         limits = self._limits
         work = 2 * tokens("x" * limits.tool_text_chars)
-        room = limits.context_tokens - CONTEXT_MARGIN - self._fixed - limits.reply_tokens - work
+        room = limits.context_tokens - CONTEXT_MARGIN - self._fixed - limits.answer_tokens - work
         return max(0, min(limits.memory_tokens, room))
 
     @property
@@ -1141,6 +1151,7 @@ class Agent:
                 on_delta=None if stream is None else stream.feed,
                 max_tokens=self._limits.reply_tokens,
                 load_s=COLD_LOAD_S if turn.cold else 0.0,
+                thinking=self._limits.thinking,
             )
         except _Stopped:
             return stream.spoken if stream is not None else ""
@@ -1218,7 +1229,7 @@ class Agent:
 
         Each keeps its start, so the model still sees what it was.
         """
-        limit = self._limits.context_tokens - CONTEXT_MARGIN - self._limits.reply_tokens
+        limit = self._limits.context_tokens - CONTEXT_MARGIN - self._limits.answer_tokens
         messages = turn.messages
         used = self._schemas + sum(_cost(m) for m in messages)  # the messages hold the prompt
         for message in messages[turn.first :]:

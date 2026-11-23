@@ -55,8 +55,9 @@ changed default in a later version reaches you.
 | `request_timeout_s` | `120.0` | above 0, up to 600 | Longest one model call may wait; a request's first call waits 180 s more when the model must load first. A request also stops after `agent.max_seconds` (`chat.max_seconds` in the chat) in total. |
 | `temperature` | `0.2` | 0 to 2 | Sampling temperature. |
 
-Jarvis sends every request with thinking switched off. Older versions saved `max_tokens` here; a file
-that still holds it loads, and the key is ignored: the reply cap is now `reply_tokens` in `[agent]` and
+Jarvis asks for thinking as `[agent]` and `[chat]` set it (`thinking`, `thinking_tokens`); with `none` it switches thinking off. A summary of older turns is always written without thinking.
+
+Older versions saved `max_tokens` here; a file that still holds it loads, and the key is ignored: the reply cap is now `reply_tokens` in `[agent]` and
 `[chat]`.
 
 ## `[agent]`: what one spoken request may do, and what Jarvis remembers
@@ -70,6 +71,8 @@ that still holds it loads, and the key is ignored: the reply cap is now `reply_t
 | `tool_text_chars` | `3000` | 500 to 50000 | Most characters of one tool result the model reads. |
 | `memory_tokens` | `6000` | 0 to 200000 | Room the remembered conversation may take of the context window. When a reply makes it outgrow that, the model summarizes the oldest turns right after the reply, while it is spoken and on its own time (the latest two stay word for word); if that fails, the oldest are dropped. A request that finds it over its room (a plain command's turns, a saved conversation) is given the newest turns that fit, and the summary follows its reply. Jarvis uses less when the window cannot hold it beside the prompt, a reply and two tool results. |
 | `memory_idle_s` | `1800.0` | 0 or more | Forget the conversation after this long without a request (time the PC spends asleep counts); `0` never forgets. |
+| `thinking` | `low` | `none`, `low`, `medium`, `high` | How hard the model thinks before each answer (Strata's reasoning effort). `none` answers at once. Thinking is never spoken or shown, and costs time: at about 65 tokens a second, the full cap below is about 3 s more before the first words of each model call. |
+| `thinking_tokens` | `192` | 32 to 8192 | The most the model thinks before each answer; Strata then closes the thinking and lets it answer. It comes on top of `reply_tokens`, so the reply keeps all its room, and the context keeps room for both. |
 
 A spoken reply that drew on outside text (a web page, a song name) is left out of later requests, as before;
 the chat keeps it (see below).
@@ -78,7 +81,7 @@ the chat keeps it (see below).
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `9100` and `memory_idle_s` `0.0` (never forget), plus:
+`memory_tokens` `8600`, `memory_idle_s` `0.0` (never forget), `thinking` `low` and `thinking_tokens` `512`, plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -132,7 +135,7 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `context` | `24576` | 2048 to 262144 | Context window in tokens (`--max-context`). Each 1,000 tokens more costs about 0.05 GiB of VRAM ([models.md](models.md)). It holds the prompt and the tool schemas (about 5,000 tokens together), the remembered conversation (`agent.memory_tokens` or `chat.memory_tokens`), one reply and the request's tool results; when a long request outgrows it, its oldest tool results are cleared down to their start. |
 | `expert_vram_gib` | `1.0` | 0 to 64 | Expert weights kept in VRAM, for an engine that takes a size: passed as `--expert-vram` or `--vram-experts-gb`, whichever the run config has; the planner keeps the other experts in RAM (Jarvis drops the run config's `--ram-experts-gb`). An engine whose expert cache fills the card (`--expert-cache auto`, Qwen3.8-Flash-Next) ignores it: limit that one with `vram_reserve_mib`. |
 | `idle_unload_s` | `86400` | 30 to 86400 | Seconds without a request before Strata frees the model. The default, 24 hours, keeps it loaded through the day; a lower value gives the RAM back sooner. |
-| `reasoning_budget_tokens` | `512` | 1 to 8192 | Thinking-token cap in the profile. |
+| `reasoning_budget_tokens` | `512` | 1 to 8192 | Thinking-token cap in the profile, for a request that names none; Jarvis's own requests name theirs (`thinking_tokens` in `[agent]` and `[chat]`). |
 | `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` of the Strata unit. `MemoryMax` is derived from it, 10% above (44G for 40G; a size that does not divide evenly is rounded up and written in bytes), so there is no second key. Past `MemoryHigh` the kernel throttles the unit and reclaims its memory; past `MemoryMax` it kills the unit. The size depends on the model: Qwen3.8-Flash-Next IQ2_XS needs `44G` ([models.md](models.md)). |
 | `vram_reserve_mib` | `0` (unset) | 0, or 100 to 65536 | VRAM in MiB the engine leaves free for other programs, passed as `--vram-reserve-mib`. `0` passes nothing, so Strata's own default (700) applies. For an engine whose expert cache fills the card (`--expert-cache auto`) it is the VRAM limit and must be set: `jarvis setup` refuses such a run config without it, and `jarvis doctor` fails "VRAM left for games". On a 20 GB card, 12000 holds Qwen3.8-Flash-Next at about 8 GiB ([models.md](models.md)). A card with at most about 8 GB of VRAM cannot start with a reserve (Strata's tuner never tries one there). |
 | `kv_resident` | `0` (all in VRAM) | 0, or 20480 to 262144 | Context cells kept in VRAM, passed as `--kv-resident`. Set, the whole context also lives in pinned RAM and only this many cells stay on the card, so `context` can grow past them without more VRAM; the VRAM saved goes to expert slots. Pinned RAM counts against `memory_max`. A `context` of this many cells or fewer is not streamed. Reading past the cells on the card is slower; measure before raising `context` far. |

@@ -35,7 +35,7 @@ from jarvis.secretfile import write_private
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from jarvis.model import Delta
+    from jarvis.model import Delta, Thinking
 
 TOOL = Path(first_audio.__file__)
 
@@ -235,6 +235,7 @@ class GoodThenBad:
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
         load_s: float = 0.0,
+        thinking: Thinking | None = None,
     ) -> dict[str, Any]:
         model = self.good if self.good.calls else self.bad
         return model.chat(
@@ -245,6 +246,7 @@ class GoodThenBad:
             on_delta=on_delta,
             max_tokens=max_tokens,
             load_s=load_s,
+            thinking=thinking,
         )
 
     def is_loaded(self) -> bool | None:  # ruff: ignore[no-self-use] - the ChatModel protocol

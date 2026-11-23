@@ -18,6 +18,7 @@ from jarvis.model import (
     ModelError,
     ModelMissingError,
     StrataModel,
+    Thinking,
 )
 
 if TYPE_CHECKING:
@@ -919,3 +920,50 @@ def test_a_server_that_lists_no_model_has_it_unloaded() -> None:
 
     assert model.status() == "unloaded"
     assert model.is_loaded() is False
+
+
+def test_without_thinking_the_model_is_asked_to_answer_at_once() -> None:
+    seen: list[httpx.Request] = []
+
+    _model(_answering({"role": "assistant", "content": "hi"}, seen)).chat(
+        MESSAGES, TOOLS, max_tokens=400
+    )
+
+    body = json.loads(seen[0].content)
+    assert body["reasoning_effort"] == "none"
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert body["max_tokens"] == 400
+    assert "reasoning_budget_tokens" not in body
+
+
+def test_thinking_asks_for_its_effort_and_cap_and_keeps_the_replys_room() -> None:
+    # The server's max_tokens counts the thinking too: the reply's own cap must stay whole.
+    seen: list[httpx.Request] = []
+
+    _model(_answering({"role": "assistant", "content": "hi"}, seen)).chat(
+        MESSAGES, TOOLS, max_tokens=400, thinking=Thinking("low", 192)
+    )
+
+    body = json.loads(seen[0].content)
+    assert body["reasoning_effort"] == "low"
+    assert body["reasoning_budget_tokens"] == 192
+    assert body["max_tokens"] == 400 + 192
+    assert "chat_template_kwargs" not in body
+
+
+def test_streamed_thinking_is_neither_passed_on_nor_part_of_the_answer() -> None:
+    events = (
+        _chunk({"reasoning_content": "The owner wants the music paused."}),
+        _chunk({"content": "Paused it."}),
+        FINISH,
+    )
+    transport = httpx.MockTransport(lambda _r: httpx.Response(200, content=_sse(*events)))
+    pieces: list[Delta] = []
+
+    reply = _model(transport).chat(
+        MESSAGES, TOOLS, on_delta=pieces.append, thinking=Thinking("low", 192)
+    )
+
+    assert pieces == [Delta(text="Paused it.")]
+    assert reply["content"] == "Paused it."
+    assert "reasoning_content" not in reply

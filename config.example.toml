@@ -24,6 +24,8 @@ reply_tokens = 400
 tool_text_chars = 3000
 memory_tokens = 6000
 memory_idle_s = 1800.0
+thinking = "low"
+thinking_tokens = 192
 
 # The same for typed requests in `jarvis chat`, with room for longer written work. resume opens the
 # chat on its last conversation (/clear starts a new one).
@@ -33,8 +35,10 @@ max_tool_calls = 40
 max_seconds = 600.0
 reply_tokens = 2048
 tool_text_chars = 8000
-memory_tokens = 9100
+memory_tokens = 8600
 memory_idle_s = 0.0
+thinking = "low"
+thinking_tokens = 512
 resume = true
 verbosity = "replies"
 toolbar = true

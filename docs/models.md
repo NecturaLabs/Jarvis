@@ -44,6 +44,16 @@ run config that names a file that is gone. The reference machine for every numbe
 - **Qwen3.6-35B-A3B** was the model until 2026-11-23; its profile used to be built by Jarvis itself. Its
   latency and memory are below.
 
+### Thinking
+
+Since 2026-11-23 Jarvis asks for `low` thinking (`[agent]` and `[chat]` `thinking`), capped at
+`thinking_tokens` (192 for speech, 512 in the chat). Strata's engine for the Qwen models takes `low`,
+`medium` and `high`. Every request asks for the same effort, so the prompt start Strata keeps
+(`strata_prefix`) is the same from one request to the next. At the 60 to 71 tokens a second measured above, a full 192-token think is about 3 s
+before each model call answers. That cost and how much it helps have not been measured on this PC yet:
+compare `thinking = "none"` and `"low"` on the same requests (`jarvis ask`, with the timing lines in
+`jarvis logs`).
+
 ### Experts
 
 A mixture-of-experts model keeps some experts on the card and the rest in RAM. On an engine whose run
