@@ -8,6 +8,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- `jarvis doctor` recognises the picture readers of Qwen3.8-Flash-Next and Inkling 2 Mini by their pinned
+  sha256, and the docs say Qwen3.8-Flash-Next needs `strata.memory_max = "44G"` (at 40G the Strata unit sat
+  at its memory mark).
+
 - Jarvis serves whichever model Strata is set up for, from Strata's own run config
   (`strata.run_config`, the `strata-<model>.json` that `strata launch` writes): the model, its engine, its
   flags, tokenizer and picture reader come from that file, and Jarvis adds only its own limits (context,

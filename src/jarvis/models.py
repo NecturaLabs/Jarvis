@@ -71,6 +71,24 @@ KNOWN_MODELS: tuple[KnownModel, ...] = (
         sha256="71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160",
         licence="Apache-2.0",
     ),
+    KnownModel(
+        role="vision",
+        project=(
+            "Qwen3.8-Flash-Next picture reader "
+            "(ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF mmproj-Qwen3.8-Flash-Next-BF16.gguf)"
+        ),
+        version="ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+        sha256="b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0",
+        # The quantiser's card says apache-2.0; the weights are Qwen's, under its own licence.
+        licence="LicenseRef-Qwen-Community-License-1.0",
+    ),
+    KnownModel(
+        role="vision",
+        project="Inkling 2 Mini picture reader (strata-engine/Inkling-2-Mini-Strata)",
+        version="04996a1e2c45009b6a04f2af126cb6bdb2ba3587",
+        sha256="6589eff47f9c20bc3a032faa3d449f10bf4f04a84cc6b2ee8a44d51d2b6fc677",
+        licence="Apache-2.0",
+    ),
 )
 
 
