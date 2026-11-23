@@ -32,7 +32,12 @@ current file. The running voice service reads it once, when it starts.
   otherwise leaves a running Strata, and its loaded model, alone. An empty `model.base_url` follows
   Strata's port; a saved URL that only repeated that port is dropped when the file is read, and
   `jarvis doctor` fails a saved URL on another port than Strata's.
-- `jarvis pc-audio on|off` rewrites the file and restarts the voice service itself when it is running.
+- `jarvis pc-audio on|off` changes the file and restarts the voice service itself when it is running.
+
+A command or the chat that saves a setting (`jarvis setup`, `consent`, `pc-audio`, `wake`, the chat's
+`/config`) changes only that setting in the file and keeps the rest as you wrote it, comments included. It
+never writes a default the file does not already hold, and takes out a key set back to its default, so a
+changed default in a later version reaches you.
 
 ## Top level
 
@@ -47,7 +52,7 @@ current file. The running voice service reads it once, when it starts.
 |---|---|---|---|
 | `base_url` | empty | empty, or an `http://` or `https://` URL on `127.0.0.1`, `localhost` or `::1`; no user name or password | Empty means `http://127.0.0.1:<strata.port>/v1`. |
 | `model` | `jarvis` | text | The model name sent in each request. |
-| `request_timeout_s` | `120.0` | above 0, up to 600 | Longest one model call may wait. A request also stops after `agent.max_seconds` (`chat.max_seconds` in the chat) in total. |
+| `request_timeout_s` | `120.0` | above 0, up to 600 | Longest one model call may wait; a request's first call waits 180 s more when the model must load first. A request also stops after `agent.max_seconds` (`chat.max_seconds` in the chat) in total. |
 | `temperature` | `0.2` | 0 to 2 | Sampling temperature. |
 
 Jarvis sends every request with thinking switched off. Older versions saved `max_tokens` here; a file
@@ -60,11 +65,11 @@ that still holds it loads, and the key is ignored: the reply cap is now `reply_t
 |---|---|---|---|
 | `max_steps` | `8` | 1 to 100 | Most model calls in one request; the last one may only answer, from what the others found. |
 | `max_tool_calls` | `12` | 1 to 200 | Most tool calls in one request. |
-| `max_seconds` | `90.0` | 10 to 3600 | Longest one request may take (180 s more when the model must load first). |
+| `max_seconds` | `90.0` | 10 to 3600 | Longest one request may take (180 s more when the model must load first). Time spent asking you and waiting for your yes or the confirm key does not count. Once an action has run, the model still gets at least 15 s to say how it went, and a request that runs out of time after one says what it did. |
 | `reply_tokens` | `400` | 64 to 8192 | Most tokens the model writes in one answer. The prompt asks for replies that fit; a reply the cap ends anyway is kept and says it was cut short. |
 | `tool_text_chars` | `3000` | 500 to 50000 | Most characters of one tool result the model reads. |
-| `memory_tokens` | `6000` | 0 to 200000 | Room the remembered conversation may take of the context window. When it outgrows it, the model summarizes the oldest turns (the latest two stay word for word); if that fails, the oldest are dropped. Jarvis uses less when the window cannot hold it beside the prompt, a reply and two tool results. |
-| `memory_idle_s` | `1800.0` | 0 or more | Forget the conversation after this long without a request; `0` never forgets. |
+| `memory_tokens` | `6000` | 0 to 200000 | Room the remembered conversation may take of the context window. When a reply makes it outgrow that, the model summarizes the oldest turns right after the reply, while it is spoken and on its own time (the latest two stay word for word); if that fails, the oldest are dropped. A request that finds it over its room (a plain command's turns, a saved conversation) is given the newest turns that fit, and the summary follows its reply. Jarvis uses less when the window cannot hold it beside the prompt, a reply and two tool results. |
+| `memory_idle_s` | `1800.0` | 0 or more | Forget the conversation after this long without a request (time the PC spends asleep counts); `0` never forgets. |
 
 A spoken reply that drew on outside text (a web page, a song name) is left out of later requests, as before;
 the chat keeps it (see below).
@@ -73,7 +78,7 @@ the chat keeps it (see below).
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `10000` and `memory_idle_s` `0.0` (never forget), plus:
+`memory_tokens` `9900` and `memory_idle_s` `0.0` (never forget), plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -211,7 +216,8 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | `confirm_key_s` | `30.0` | 5 to 120 | How long a `strong` action waits for the confirm key (`jarvis confirm`) after Jarvis has asked about it. |
 | `barge_in` | `true` | true or false | Listen for the wake word while Jarvis speaks: saying it stops Jarvis and starts a new request (a question spoken over counts as no). See [ADR 0008](adr/0008-speak-while-writing-and-barge-in.md). |
 | `listen_when_locked` | `true` | true or false | `false`: while the Omarchy lock screen is up, Jarvis takes no request: not after the wake word, not in the follow-up window, not spoken over a reply (the wake word still stops its speech), and none from PC audio. It asks the shell (`omarchy-shell lock isLocked`) once such a request is heard, and a state it cannot read counts as locked; `jarvis doctor` checks it can be read. `true` lets anyone at a locked PC talk to Jarvis. |
-| `follow_up_s` | `6.0` | 0 to 15 | Seconds after a spoken reply in which the next request needs no wake word; 0 turns it off. The window opens once the reply has finished playing, only after a request in your own voice, and never while Voxtype dictation is recording or transcribing or a Voxtype meeting runs, or while that cannot be read (`voxtype status`, see [Dictation and meetings](#dictation-and-meetings)); with `listen_to_pc` on, speech heard while PC audio also held speech is dropped; speech shorter than 0.3 s (a cough, a click) is ignored and the window listens on; speech in it that cannot be made out is dropped without a word. The wake word inside the window starts a request as usual. Background speech in the room can start a request too: if it does, shorten the window or set 0. |
+| `follow_up_s` | `6.0` | 0 to 15 | Seconds after a spoken reply in which the next request needs no wake word; 0 turns it off. The window opens once the reply has finished playing, only after a request in your own voice, and never while Voxtype dictation is recording or transcribing or a Voxtype meeting runs, or while that cannot be read (`voxtype status`, see [Dictation and meetings](#dictation-and-meetings)); with `listen_to_pc` on, speech heard while PC audio also held speech is dropped; speech shorter than 0.3 s (a cough, a click) is ignored and the window listens on; speech in it that cannot be made out is dropped without a word. No window opens while another program plays audio (music, a video, a game, a call), or while PipeWire cannot be read (`pw-dump`), and speech heard in the window is dropped if such audio started meanwhile (see `follow_up_over_audio`). The wake word inside the window starts a request as usual. Background speech in a quiet room can still start a request: if it does, shorten the window or set 0. |
+| `follow_up_over_audio` | `false` | true or false | `true` opens the follow-up window even while another program plays audio. Sung lyrics, a video or a game's voices are then taken as your next request as readily as your own voice. |
 | `voice` | `kokoro:bm_george` | text | `kokoro:<name>` for a Kokoro voice, otherwise a Piper voice name. See [models.md](models.md). |
 | `speech_speed` | `1.0` | 0.5 to 2.0 | Speaking speed, for Kokoro and Piper voices. |
 | `kokoro_phoneme_map` | `false` | true or false | Kokoro voices only. Rewrite espeak's phonemes into the symbols Kokoro was trained on (`eɪ` to `A`, `aɪ` to `I`, `tʃ` to `ʧ`, `r` to `ɹ`, and the rest of the table in `src/jarvis/phonemes.py`) before they are spoken. Off, Kokoro gets espeak's raw output, as the kokoro-onnx package does. It is off until you have heard it help: set it, run `jarvis restart` and compare a few sentences. |
@@ -222,8 +228,8 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | `vocabulary_hint` | `true` | true or false | Prime speech-to-text with Jarvis's name, its actions and your artist names. |
 | `hint_names` | `40` | 0 to 200 | Most artist names put in the hint (the hint also stops at 800 characters). |
 | `listen_to_pc` | `false` | true or false | Also take requests heard in PC audio. `jarvis pc-audio on`. |
-| `pc_audio_apps` | `["discord"]` | list of app or process names | Whose audio to listen to. An empty list means all PC output. `--apps`, `--all-output`. |
-| `pc_audio_grant_s` | `600.0` | 0 to 86400 | After you say yes to a PC-audio request, how long further PC-audio requests run without asking. 0 asks every time. |
+| `pc_audio_apps` | `["discord"]` | list of app or process names | Whose audio to listen to: every stream they play is recorded and heard mixed. An empty list means all PC output. `--apps`, `--all-output`. |
+| `pc_audio_grant_s` | `600.0` | 0 to 86400 | After you say yes to a PC-audio request, how long further PC-audio requests run without asking. 0 asks every time. Time the PC spends asleep counts. |
 | `confirm_blocks_on_pc_speech` | `true` | true or false | A yes counts as no if speech was heard in PC audio while Jarvis waited for it. |
 | `pc_audio_cooldown_s` | `5.0` | 0 to 600 | Pause after a PC-audio request during which another is ignored. |
 
@@ -384,7 +390,7 @@ Arctic Shift archive, a free copy of public Reddit that can lag behind it by a l
 |---|---|---|---|
 | `read_roots` | `["~"]` | `~`, paths under `~/`, absolute paths | Folders whose files Jarvis may list and read (`list_dir`, `read_file`). |
 | `write_roots` | `["~/Documents"]` | the same | Folders Jarvis may create files in, or replace or add to them (`write_file`, asked first unless `bypass_consent` is on). |
-| `deny` | `[]` | shell-style patterns | More names (`diary*`) or paths under home (`.config/app`) never read or written. |
+| `deny` | `[]` | shell-style patterns | More names (`diary*`), paths under home (`.config/app`, `~/Documents/private`) or absolute paths (`/data/finance`) never read or written, with what is inside them. A trailing slash or a leading `./` makes no difference. An entry that could never match (`..` in it, `~` alone, another user's `~name`) is refused when the config loads. |
 | `hidden_allow` | the desktop's settings: `.config/hypr`, `omarchy`, `waybar`, `walker`, `mako`, `swayosd`, `kitty`, `alacritty`, `ghostty`, `foot`, `btop`, `fastfetch`, `jarvis` | paths under home, shell-style | The hidden files and folders directly under home Jarvis may read (`.config/app` and the like). Everything else hidden there (shell history, app logins, cookies, caches) stays shut; `[]` shuts them all. A hidden folder deeper down (`~/Projects/site/.git`) is not shut by this; secret names still are. |
 
 Whatever the roots say, Jarvis never reads or writes keys, tokens, password stores, browser profiles
@@ -405,7 +411,8 @@ becomes a � mark. The write is refused if any of that no longer holds when it 
 have to make that the question did not name, or an old file that is not the one you were asked about (a
 different size, inode, modification or change time, so a file swapped for another of the same size is
 caught). A replace keeps the old file's read and write permissions, so a private file stays private; it
-never carries an execute bit over.
+never carries an execute bit over. A file you made read-only is neither replaced nor added to, and you
+are not asked about it.
 
 A file's text is data, like a web page (a shell command's output counts as one): while it is in the conversation, side effects need your yes,
 and so do the operations that send words off the PC (`web_search`, `reddit_search`, and `weather` or
@@ -418,7 +425,7 @@ hidden files under home stay shut unless you open them.
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
 | `bypass_consent` | `true` | `true`, `false` | `true`: Jarvis never asks for a yes. Every action that would need one runs at once and is audited as run with consent bypassed: `confirm` actions, side effects after outside or file text, searches while file text is in the conversation, and requests heard in PC audio. A `strong` action still waits for the confirm key, and an operation set to `deny` is still refused. `false`: Jarvis asks as described below. `jarvis consent ask` or `jarvis consent bypass` switches it and restarts the voice service. |
-| `max_actions` | `30` | 1 to 10000 | The most side-effecting actions (playback changes, a file write) that run in any `actions_window_s`, counted across the voice service, the chat and `jarvis ask` together, in both consent modes. One past it is refused, audited as `action_limit` and Jarvis says why: with the window already full, before you are asked. Only actions that run count, taking their place once you said yes (or no yes was needed); one you decline, or one declined unasked after a no, takes none. Reads, searches and answers do not count. When the shared count file stays locked for 2 seconds, that process counts only its own actions for that one, and logs it. |
+| `max_actions` | `30` | 1 to 10000 | The most side-effecting actions (playback changes, a file write) that run in any `actions_window_s`, counted across the voice service, the chat and `jarvis ask` together, in both consent modes. One past it is refused, audited as `action_limit` and Jarvis says why: with the window already full, before you are asked. Only actions that run count, taking their place once you said yes (or no yes was needed); one you decline, or one declined unasked after a no, takes none. Reads, searches and answers do not count. When the shared count file stays locked for 2 seconds, that process counts only its own actions for that one, and logs it. Each process's own count holds too, so an emptied or damaged count file does not lift the limit. |
 | `actions_window_s` | `600.0` | 1 to 86400 | The window `max_actions` is counted over, in seconds. |
 
 With consent bypassed, text from a web page, a file, a picture or a call's audio can steer actions with no

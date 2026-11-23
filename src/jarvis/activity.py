@@ -75,6 +75,9 @@ class AuditTail:
         """Return the complete events written since the last read, oldest first."""
         lines = self._drain()
         if self._replaced():
+            # What was written to the old log after the read above and before it was moved
+            # aside is still in it: nothing writes to it once it is replaced.
+            lines += self._drain()
             if self._file is not None:
                 with contextlib.suppress(OSError):
                     self._file.close()
@@ -252,9 +255,11 @@ def _tool_result(entry: dict[str, object]) -> _Line:
         words = f"{entry.get('op', 'a tool')} finished; its output is not kept in the log"
     else:
         words = _plain(entry.get("text", ""))
-    return (
-        ("result", words, True, "") if entry.get("ok") else ("warn", f"not done: {words}", True, "")
-    )
+    if entry.get("ok"):
+        return ("result", words, True, "")
+    if entry.get("acted"):  # it ran, but did not end cleanly
+        return ("warn", f"done, not cleanly: {words}", True, "")
+    return ("warn", f"not done: {words}", True, "")
 
 
 def _seconds(entry: dict[str, object]) -> str:

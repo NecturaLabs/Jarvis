@@ -3,6 +3,8 @@
 import base64
 import io
 import os
+import struct
+import zlib
 from typing import TYPE_CHECKING
 
 import pytest
@@ -83,6 +85,23 @@ def test_a_format_outside_the_list_is_refused() -> None:
 def test_a_picture_with_too_many_pixels_is_refused_before_it_is_decoded() -> None:
     with pytest.raises(PictureError, match="too large"):
         prepare(_png(100, 100), "huge.png", max_pixels=9_999)
+
+
+def claimed_png(width: int, height: int) -> bytes:
+    """Return a tiny PNG whose header claims `width` x `height`, with no picture data."""
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+        )
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IEND", b"")
+
+
+def test_a_picture_claiming_more_pixels_than_pillow_opens_is_refused_as_too_large() -> None:
+    with pytest.raises(PictureError, match="too large"):
+        prepare(claimed_png(20000, 20000), "map.png")
 
 
 def test_an_animated_picture_becomes_its_first_frame() -> None:

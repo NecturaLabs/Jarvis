@@ -4,7 +4,9 @@ Redirects are followed here, one hop at a time, so each new address is checked b
 reached (the connection itself is checked again in `jarvis.web.guard`).
 """
 
+import codecs
 import copy
+import re
 import time
 import warnings
 import zlib
@@ -85,11 +87,62 @@ def _inflater(encoding: str) -> Callable[[bytes, int], bytes] | None:
     if name in {"", "identity"}:
         return None
     if name in {"gzip", "x-gzip"}:
-        return zlib.decompressobj(wbits=zlib.MAX_WBITS | 16).decompress
+        return _Gunzip()
     if name == "deflate":
         return zlib.decompressobj().decompress
     msg = "the page came in a compression Jarvis doesn't read"
     raise PageError(msg)
+
+
+_GZIP_BITS = zlib.MAX_WBITS | 16
+# A page's own word on its text encoding, in its first bytes: `<meta charset=...>` or the
+# `http-equiv` form's `content="...; charset=..."` (the HTML standard's prescan reads 1024).
+_DECLARED = re.compile(
+    rb"<meta[^>]{0,200}?charset\s*=\s*[\"']?\s*([A-Za-z0-9._:-]{1,40})", re.IGNORECASE
+)
+_PRESCAN = 1024
+_BOMS = ((b"\xef\xbb\xbf", "utf-8-sig"), (b"\xff\xfe", "utf-16"), (b"\xfe\xff", "utf-16"))
+
+
+class _Gunzip:
+    """Inflates a gzip body member after member: one file may be several joined together."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._member = zlib.decompressobj(wbits=_GZIP_BITS)
+
+    def __call__(self, data: bytes, max_length: int) -> bytes:
+        """Return at most `max_length` bytes inflated from `data` and what came before it.
+
+        A body that is not gzip, or is broken, raises zlib's own error.
+        """
+        out = b""
+        while data and len(out) < max_length:
+            if self._member.eof:
+                if not data.strip(b"\0"):
+                    break  # zeros padding the end of the file
+                self._member = zlib.decompressobj(wbits=_GZIP_BITS)
+            out += self._member.decompress(data, max_length - len(out))
+            data = self._member.unused_data if self._member.eof else b""
+        return out
+
+
+def _charset(data: bytes, kind: str, header: str | None) -> str:
+    """Return the text encoding of a body.
+
+    The header's, else a byte order mark's, else the page's own declaration, else UTF-8; one
+    Python does not know counts as none.
+    """
+    found = header
+    if not found:
+        found = next((name for mark, name in _BOMS if data.startswith(mark)), None)
+    if not found and kind != "text/plain":
+        declared = _DECLARED.search(data[:_PRESCAN])
+        found = declared.group(1).decode("ascii") if declared else None
+    try:
+        return codecs.lookup(found).name if found else "utf-8"
+    except LookupError:
+        return "utf-8"
 
 
 def check_url(url: str) -> str:
@@ -225,7 +278,7 @@ class PageReader:
                 has no readable text.
         """
         body = self._follow(url, _TEXT_TYPES, self._max_bytes, picture=False)
-        text = body.data.decode(body.encoding or "utf-8", errors="replace")
+        text = body.data.decode(_charset(body.data, body.kind, body.encoding), errors="replace")
         if body.kind == "text/plain":
             return Page(body.url, "", " ".join(text.split()))
         title, main, image = _extract(text, body.url)
@@ -351,4 +404,4 @@ class PageReader:
                 break
             self._in_time()
         raw = b"".join(chunks)[:limit]
-        return _Body(str(resp.url), raw, kind, resp.encoding or ""), "", resp.status_code
+        return _Body(str(resp.url), raw, kind, resp.charset_encoding or ""), "", resp.status_code

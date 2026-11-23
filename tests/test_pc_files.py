@@ -11,7 +11,7 @@ import pytest
 from jarvis.config import FilesConfig
 from jarvis.operations import ArgumentError, Operation, OperationError, Registry, validate_args
 from jarvis.pc import files as files_module
-from jarvis.pc.files import Boundary, FileOps
+from jarvis.pc.files import Boundary, FileOps, FileRefusalError
 from jarvis.policy import OpClass, Origin
 
 if TYPE_CHECKING:
@@ -153,6 +153,56 @@ def test_the_owner_can_add_to_what_is_never_read(home: Path) -> None:
 
     with pytest.raises(OperationError, match="private"):
         _read(_ops(home, deny=["diary*"]), "~/Documents/diary.md")
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "Documents/private",
+        "~/Documents/private",
+        "{home}/Documents/private",  # ruff: ignore[missing-f-string-syntax] - formatted below
+        "Documents/private/",
+        "./Documents/private",
+        "~/Documents/private/",
+        "Documents/priv*",
+    ],
+)
+def test_a_denied_folder_is_closed_however_it_is_written(home: Path, entry: str) -> None:
+    (home / "Documents" / "private").mkdir()
+    (home / "Documents" / "private" / "plan.md").write_text("secret plan\n", encoding="utf-8")
+    (home / "Documents" / "open.md").write_text("open\n", encoding="utf-8")
+    ops = _ops(home, deny=[entry.format(home=home)])
+
+    with pytest.raises(OperationError, match="private"):
+        _read(ops, "~/Documents/private/plan.md")
+    assert "open" in _read(ops, "~/Documents/open.md")
+
+
+def test_a_denied_path_is_matched_literally_up_to_its_first_wildcard(tmp_path: Path) -> None:
+    home = tmp_path / "home[1]"
+    (home / "Documents" / "private-a").mkdir(parents=True)
+    (home / "Documents" / "private-a" / "plan.md").write_text("plan\n", encoding="utf-8")
+    real = tmp_path / "elsewhere"
+    (real / "private-b").mkdir(parents=True)
+    (real / "private-b" / "plan.md").write_text("plan\n", encoding="utf-8")
+    (home / "Linked").symlink_to(real)
+    ops = _ops(home, read_roots=["~", str(real)], deny=["Documents/private*", "Linked/private*"])
+
+    for path in ("~/Documents/private-a/plan.md", "~/Linked/private-b/plan.md"):
+        with pytest.raises(OperationError, match="private"):
+            _read(ops, path)
+
+
+def test_a_denied_path_outside_home_is_closed_under_its_root(home: Path, tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    (data / "finance").mkdir(parents=True)
+    (data / "finance" / "tax.md").write_text("tax\n", encoding="utf-8")
+    (data / "notes.md").write_text("notes\n", encoding="utf-8")
+    ops = _ops(home, read_roots=["~", str(data)], deny=[f"{data}/finance"])
+
+    with pytest.raises(OperationError, match="private"):
+        _read(ops, f"{data}/finance/tax.md")
+    assert "notes" in _read(ops, f"{data}/notes.md")
 
 
 def test_an_ordinary_dotfile_opened_by_the_owner_can_be_read(home: Path) -> None:
@@ -814,6 +864,21 @@ def test_a_replace_keeps_the_old_files_permissions(home: Path, before: int, afte
 
     assert todo.read_text(encoding="utf-8") == "only this\n"
     assert stat.S_IMODE(todo.stat().st_mode) == after
+
+
+@pytest.mark.parametrize("mode", ["replace", "append"])
+def test_a_file_made_read_only_is_not_written_and_not_asked_about(home: Path, mode: str) -> None:
+    todo = home / "Documents" / "todo.md"
+    todo.chmod(0o444)
+    op = _op(_ops(home), "write_file")
+    args = validate_args(op, {"path": "~/Documents/todo.md", "content": "only this", "mode": mode})
+    assert op.prepare is not None
+
+    with pytest.raises(FileRefusalError, match="read-only"):
+        op.prepare(args)
+
+    assert todo.read_text(encoding="utf-8") == "- milk\n- eggs\n"
+    assert stat.S_IMODE(todo.stat().st_mode) == 0o444
 
 
 def test_the_replacement_is_private_until_it_has_the_old_mode(

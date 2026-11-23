@@ -342,6 +342,125 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A web page whose server names no charset is now read in the one the page declares (`<meta charset>`)
+  rather than always as UTF-8, and a gzip body made of several parts is read whole instead of only up
+  to the end of the first.
+- The chat window's view of the voice service no longer misses a line written to the audit log just before
+  it rotated.
+- A Strata key written in quotes in its environment file (`STRATA_API_KEY="..."`) is now read without
+  them, as systemd reads it for Strata. Jarvis used to send the quotes too, and Strata refused it.
+- After a file was read, "what time is it" and the weather at home no longer ask first. Only a call that
+  names a place sends the model's words off the PC; the time and weather here send none. This is what
+  the configuration guide already said.
+- In the chat window, a request sent while another is still working now stays in the box with its pictures
+  and pastes, ready to send again. It used to be cleared, and the attached pictures were lost.
+- A streamed model answer that stalls now ends at the call's time limit. The limit was checked only when a
+  piece arrived, and the read timeout restarted with each one, so a stalled stream could run to about
+  twice its time.
+- PC audio from an app that plays through several streams is now heard whole. Only its first stream was
+  recorded, which also weakened the check for other people's speech during a confirmation.
+- `jarvis ask` takes a typed `y` as yes. It asked `[yes/no]` but read the answer as speech, where `y` is
+  no, so a `y` declined the action.
+- When the model answers a question with no words after looking something up, Jarvis now asks it once
+  more for an answer, then says it found none. It used to say "Done.", which the claim check then turned
+  into "I didn't manage to do that". "Done." is kept for an action that succeeded.
+- Summarising the remembered conversation no longer happens silently at the start of a request, on that
+  request's clock. It now runs right after the reply that made the conversation too long, while the reply
+  is spoken and the model is loaded. With a cold model, the summary used to time out and the older turns
+  were dropped instead.
+- Time the PC spends asleep now counts. The PC-audio permission (`audio.pc_audio_grant_s`) and the
+  conversation's idle expiry (`memory_idle_s`) ran on a clock that stops during a suspend, so a yes
+  given to PC audio before a night asleep still held in the morning. They now run on the boot clock.
+- A Spotify library refresh in which every request failed (Spotify erroring, the network down with the
+  token still valid) is now tried again after a minute. It used to count as done, so the artist names that
+  help speech to text stayed empty for `spotify.library_refresh_s` (six hours by default).
+- A reply with a sentence that sounds like the wake word can be spoken over again once that sentence
+  has played (a second later, for the wake model's lag). The guard used to hold until the whole reply
+  ended, and it started when the sentence was made, which could be before the ones ahead of it had played.
+- `write_file` no longer replaces a file you made read-only: a replace renamed a new file over it, which
+  needs only the folder's permission. A read-only file is now refused for a replace and an append alike,
+  before the question.
+- An audit event is no longer lost when the log rotates while another Jarvis process (the voice service,
+  the chat window, `jarvis ask`) writes to it, and a full log is rotated once rather than twice. Every
+  writer now holds a lock on the log for the size check, the rotation and the write.
+- Emptying or damaging the shared action count (`actions.json`) no longer lifts `boundaries.max_actions`:
+  each process's own count must allow an action too. The shared file's answer used to replace it.
+
+- "Play my liked songs" draws from the whole library: 50 songs picked at random from the newest page and
+  three more pages at random places in it. It always played the newest 50 shuffled and said "your liked
+  songs"; with more than 50 it now says "50 of your liked songs".
+
+- Saving a setting (`jarvis setup`, `consent`, `pc-audio`, `wake`, the chat's `/config`) changes only that
+  setting in `config.toml` and keeps the rest of the file, comments included. It wrote every setting with
+  its value at the time, about 140 lines, so a default changed in a later version never reached the install
+  and comments were lost. A setting set back to its default is taken out of the file. Defaults written by
+  an earlier save stay until they are changed or removed by hand. Jarvis now depends on tomlkit (MIT).
+
+- A question in the chat no longer takes words typed ahead as a yes. It opened with "Yes" chosen and took
+  Enter, `1` or `y` for yes after 0.4 s, so the owner typing the next request could answer it. "No" is now
+  chosen at first (Enter says no), `y` no longer means yes, and a `1` typed among other letters waits until
+  the typing stops; `1`, or moving up to "Yes" and Enter, says yes.
+
+- The calculator's `log` with one number is to base 10, as on a calculator: `log(100)` is 2. It was the
+  natural logarithm (4.6), which `ln` still gives.
+
+- The calculator bounds a logarithm like every other step: a 47-character `log` of a huge exact base ran for
+  more than 30 s while it checked for a whole answer, and now answers at once. A logarithm to a base just
+  above 1 (`log(5, 1 + 1/10**30)`) is worked out instead of failing with an internal error, and one too
+  close to 1 to work out says so. A number with a leading zero is refused, so `min(1,000, 2,500)` says to
+  write 1000 instead of answering 0.
+
+- The calculator keeps a floor division exact: `(7 // 2)!` is 6 and `10**18 // 7` is 142857142857142857. A
+  floor division of two exact numbers gave a plain integer, which a factorial or `round`'s digits refused
+  and which was shown through a float (142857142857142864).
+
+- A request that finds the model unloaded gives its first model call the 180 s the load may take on top of
+  `model.request_timeout_s`. The request was allowed 270 s, but the call was cut at 120 s, leaving about 13 s
+  for the answer after a load measured at 107 s while gaming; a slower load ended in "My model isn't
+  answering right now."
+
+- No follow-up window opens while another program plays audio (music, a video, a game, a call): anything the
+  microphone heard for 6 s after a reply was taken as your next request, so sung or played lyrics started
+  requests, and each reply opened the window again. Speech heard in the window is dropped too if such audio
+  started meanwhile. `audio.follow_up_over_audio = true` keeps the window open over other audio.
+
+- The chat no longer closes on a picture whose header claims more than about 179 million pixels (a big scan
+  or map, or a crafted file): Pillow refused it with an error the picture check did not catch, and the
+  window ended. It is now refused as too large to read, from the chat and from `show_image`, and any other
+  failure while loading a picture leaves a note instead of ending the window.
+
+- `files.deny` closes a folder however its path is written: `~/Documents/private`, an absolute path, a
+  trailing slash or a leading `./`. Only `Documents/private` matched before; the other forms were accepted
+  and matched nothing, so the folder stayed readable. An absolute path now also closes a folder under a
+  read root outside home, and an entry that could never match is refused when the config loads.
+
+- The calculator reads a percentage followed by a plus or minus as a percentage: `80 * 15% + 80` is 92 and
+  `100 - 20% - 5` is 94.8. It read the `%` as a remainder and answered 0 and 100. A `%` with space on both
+  sides (`17 % 5`) or between two numbers (`17%5`) is still the remainder, and so is `mod`.
+
+- The wait for your answer no longer counts against a request's time limit. Reading a question out, waiting
+  for a spoken yes or for the confirm key came out of `agent.max_seconds`, so an approved action could run
+  and the reply still said "That took too long, so I stopped." or, with a few seconds left, "My model isn't
+  answering right now." Once an action has run, the model gets at least 15 s to say how it went, and a
+  request that runs out of time after acting says what it did instead of that it stopped.
+
+- "Skip two songs" skips two: `spotify_next` and `spotify_previous` take a `count` (1 to 10), since a second
+  identical call in one request is refused as a repeat. It skipped one and said two. A skip that fails
+  part-way says how many tracks it moved by. To make room for the count in the default context,
+  `chat.memory_tokens` defaults to 9,900 (was 10,000); a config that still sets 10,000 gets what the
+  window leaves.
+
+- An action that ran but did not end cleanly is no longer reported as not done: a shell command that
+  exits non-zero, a program asked to stop that is still running, and a program that started without its
+  window showing where asked. A reply may say what happened, instead of being replaced by "Sorry, I didn't
+  manage to do that", and the chat's steps show "done, not cleanly" rather than "not done".
+
+- A reply that says something was done is checked against what ran: only an action that succeeded
+  counts, so after Jarvis has only looked something up (what is playing, a process list, a folder, a
+  search) "Paused it for you" is challenged like any claim with nothing behind it. The check also knows
+  the PC verbs (opened, launched, wrote, created, appended, ran, closed, killed, deleted, sent and the
+  like), and a player command with nothing playing counts as not done.
+
 - From the review of the run-config change: a model whose drive is not mounted when Jarvis starts is known
   again by its path, so a request says the model file is missing at once instead of waiting for the server,
   and pictures stay on for when the drive is back. `jarvis setup` refuses a run config whose engine would

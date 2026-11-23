@@ -622,6 +622,24 @@ def test_the_operations_that_send_the_models_words_off_the_pc_are_marked_outboun
     assert outbound == {"time_now", "weather", "web_search", "reddit_search"}
 
 
+@pytest.mark.parametrize(
+    ("name", "args", "sends"),
+    [
+        ("time_now", {}, False),
+        ("time_now", {"place": "Lisbon"}, True),
+        ("weather", {"when": "today"}, False),
+        ("weather", {"place": "Lisbon"}, True),
+        ("web_search", {"query": "kettles"}, True),
+    ],
+)
+def test_only_a_call_that_carries_the_models_words_sends_them(
+    name: str, args: dict[str, str], *, sends: bool
+) -> None:
+    op = next(op for op in _ops(Net()).operations() if op.name == name)
+
+    assert op.sends_words(args) is sends
+
+
 # --- pictures -------------------------------------------------------------------------------------
 
 

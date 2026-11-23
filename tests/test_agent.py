@@ -3,6 +3,7 @@
 import hashlib
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, Any, cast, override
@@ -12,6 +13,7 @@ import pytest
 from jarvis import agent as agent_module
 from jarvis.agent import (
     FAILED_REMINDER,
+    LOOKED_REMINDER,
     MAX_CALLS_PER_TURN,
     MAX_STEPS,
     MAX_TOOL_TEXT,
@@ -33,6 +35,7 @@ from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
 from jarvis.config import FilesConfig
 from jarvis.jsonutil import objs
+from jarvis.memory import tokens
 from jarvis.model import Delta, ModelMissingError
 from jarvis.operations import (
     Operation,
@@ -101,6 +104,7 @@ class ScriptedModel:
     piece: int = 3  # characters per streamed piece
     after_piece: Callable[[int], object] = lambda _number: None
     max_tokens: list[int | None] = field(default_factory=list[int | None])
+    loads: list[float] = field(default_factory=list[float])
 
     def chat(
         self,
@@ -111,7 +115,9 @@ class ScriptedModel:
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
+        load_s: float = 0.0,
     ) -> dict[str, Any]:
+        self.loads.append(load_s)
         self.max_tokens.append(max_tokens)
         self.timeouts.append(timeout_s)
         self.tools_offered.append(len(tools))
@@ -151,6 +157,7 @@ class Counter:
         then: Callable[[], None] = lambda: None,
         side_effect: bool = True,
         outbound: bool = False,
+        outbound_args: tuple[str, ...] = (),
     ) -> Operation:
         def run(args: dict[str, Any]) -> Result:
             self.runs.append({"op": name, **args})
@@ -162,11 +169,16 @@ class Counter:
         return Operation(
             name,
             name,
-            {"type": "object", "properties": {"q": {"type": "string"}}},
+            {
+                "type": "object",
+                "properties": {"q": {"type": "string"}}
+                | {a: {"type": "string"} for a in outbound_args},
+            },
             run,
             default_class=cls,
             side_effect=side_effect,
             outbound=outbound,
+            outbound_args=frozenset(outbound_args),
             spoken_summary=summary,
             prepare=prepare,
             shortcuts=shortcuts,
@@ -261,6 +273,45 @@ def test_a_claim_after_only_failed_tools_is_challenged_with_the_failure() -> Non
     assert model.seen[2][-1] == {"role": "user", "content": FAILED_REMINDER}
 
 
+def test_an_action_that_ran_with_a_caveat_may_be_reported() -> None:
+    def ran(_args: dict[str, Any]) -> Result:
+        return Result("Exit status 1.", ok=False, acted=True)
+
+    op = Operation("run", "run", {"type": "object", "properties": {}}, ran)
+    model = ScriptedModel([_call("run"), _say("Done, it exited with status 1.")])
+    agent, audit = _agent(model, [op])
+
+    assert agent.handle("run it", NO_CONFIRM) == "Done, it exited with status 1."
+    assert "claimed_without_action" not in _events(audit)
+    (logged,) = [e for e in audit.events if e["event"] == "tool_result"]
+    assert logged["acted"] is True
+
+
+def test_a_claim_after_only_a_look_up_is_challenged() -> None:
+    counter = Counter()
+    replies = [_call("now_playing"), _say("Paused it for you."), _say("Jazz is playing.")]
+    model = ScriptedModel(replies)
+    look = counter.op("now_playing", side_effect=False)
+    agent, audit = _agent(model, [look, counter.op("pause")])
+
+    assert agent.handle("pause it", NO_CONFIRM) == "Jazz is playing."
+    assert counter.runs == [{"op": "now_playing"}]
+    assert model.seen[2][-1] == {"role": "user", "content": LOOKED_REMINDER}
+    assert "claimed_without_action" in _events(audit)
+
+
+def test_a_claim_after_a_look_up_and_an_action_is_spoken() -> None:
+    counter = Counter()
+    replies = [_call("now_playing"), _call("pause", call_id="c2"), _say("Paused it for you.")]
+    model = ScriptedModel(replies)
+    agent, audit = _agent(
+        model, [counter.op("now_playing", side_effect=False), counter.op("pause")]
+    )
+
+    assert agent.handle("pause it", NO_CONFIRM) == "Paused it for you."
+    assert "claimed_without_action" not in _events(audit)
+
+
 @pytest.mark.parametrize(
     "reply",
     [
@@ -318,6 +369,20 @@ def test_a_claim_after_only_failed_tools_is_challenged_with_the_failure() -> Non
         "Can do, muted, anything else?",
         "Sure - I paused it, playing next, skipping ahead.",
         "Okay - found it, playing it now, resuming from the start.",
+        "I've opened Firefox on workspace 2.",
+        "Opened Firefox.",
+        "I wrote the file to Documents.",
+        "I've created notes.md in Documents.",
+        "I ran the command.",
+        "I closed Steam.",
+        "Killed it.",
+        "I've launched Steam on workspace 3.",
+        "I appended it to your notes.",
+        "I've deleted it.",
+        "Sent.",
+        "I've written it to your notes.",
+        "I've removed it.",
+        "I've ended it.",
     ],
 )
 def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
@@ -372,6 +437,8 @@ def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
         "I can do that - playing, and pausing.",
         "I can control it - playing, volume and mute.",
         "Here's what I can do - playing, pausing.",
+        "I ran into a problem reading that file.",
+        "I ran out of time looking for it.",
     ],
 )
 def test_an_honest_answer_is_not_a_claim(reply: str) -> None:
@@ -581,6 +648,27 @@ def test_a_search_written_with_the_file_read_cannot_carry_its_text() -> None:
 
     assert [r["op"] for r in counter.runs] == ["read", "search"]
     assert asked == []
+
+
+def test_after_a_file_is_read_the_time_here_is_told_without_a_yes() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    clock = counter.op("clock", side_effect=False, outbound=True, outbound_args=("place",))
+    ops = [*_file_and_search(counter), clock]
+    replies = [
+        _call("read"),
+        _call("clock", call_id="c2"),
+        _call("clock", {"place": "Lisbon"}, "c3"),
+    ]
+    model = ScriptedModel([*replies, _say("It is noon.")])
+    agent, _ = _agent(model, ops)
+
+    agent.handle(
+        "read my notes and tell me the time", Hooks(confirm=lambda q: asked.append(q) or False)
+    )
+
+    assert [r["op"] for r in counter.runs] == ["read", "clock"]  # the place needed a yes
+    assert len(asked) == 1
 
 
 def test_remembered_file_text_puts_the_next_search_behind_a_yes(tmp_path: Path) -> None:
@@ -887,6 +975,53 @@ def test_history_is_forgotten_after_a_long_silence() -> None:
     assert "memory_expired" in _events(audit)
 
 
+def _sleeps(monkeypatch: pytest.MonkeyPatch) -> Callable[[float], None]:
+    """Return a way to put the PC to sleep for some seconds: the boot clock runs on meanwhile,
+    the monotonic clock does not."""
+    real = time.clock_gettime
+    asleep = [0.0]
+
+    def clock_gettime(clock: int) -> float:
+        return real(clock) + (asleep[0] if clock == time.CLOCK_BOOTTIME else 0.0)
+
+    monkeypatch.setattr(time, "clock_gettime", clock_gettime)
+    return lambda seconds: asleep.__setitem__(0, asleep[0] + seconds)
+
+
+def _agent_on_its_own_clock(model: ScriptedModel, ops: list[Operation]) -> Agent:
+    registry = Registry([*ops, no_action_operation()])
+    return Agent(model, registry, "system", AuditLog(None), {})
+
+
+def test_a_night_asleep_counts_as_silence_for_the_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleep = _sleeps(monkeypatch)
+    model = ScriptedModel([_call("no_action"), _say("Hi."), _call("no_action"), _say("Hi.")])
+    agent = _agent_on_its_own_clock(model, [])
+
+    agent.handle("hello", NO_CONFIRM)
+    sleep(8 * 3600)
+    agent.handle("hello again", NO_CONFIRM)
+
+    assert [m["role"] for m in model.seen[2]] == ["system", "user"]
+
+
+def test_a_night_asleep_ends_the_pc_audio_permission(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleep = _sleeps(monkeypatch)
+    counter = Counter()
+    asked: list[str] = []
+    replies = [_call("next"), _say("Skipped."), _call("next", call_id="c2"), _say("Okay.")]
+    agent = _agent_on_its_own_clock(ScriptedModel(replies), [counter.op("next")])
+    answers = iter([True, False])
+    hooks = Hooks(confirm=lambda q: asked.append(q) or next(answers))
+
+    agent.handle("skip", hooks, origin=Origin.PC_AUDIO)
+    sleep(8 * 3600)
+    agent.handle("skip", hooks, origin=Origin.PC_AUDIO)
+
+    assert len(asked) == 2
+    assert len(counter.runs) == 1
+
+
 def test_an_idle_time_of_0_never_forgets() -> None:
     clock = Clock()
     model = ScriptedModel([_call("no_action"), _say("Hi."), _call("no_action"), _say("Hi.")])
@@ -920,6 +1055,60 @@ def test_a_conversation_over_its_budget_is_summarized_before_the_next_request() 
     assert all("request 0" not in str(m["content"]) for m in after[1:])
     assert after[-1] == {"role": "user", "content": "request 4"}
     assert "memory_summarized" in _events(audit)
+
+
+def test_the_summary_runs_after_the_reply_that_outgrew_the_budget_not_inside_a_request() -> None:
+    model = ScriptedModel([*_chatty(4), _say("They talked about kettles."), *_chatty(1)])
+    agent, audit = _agent(model, [], limits=Limits(memory_tokens=700))
+
+    for number in range(5):
+        agent.handle(f"request {number}", NO_CONFIRM)
+
+    events = _events(audit)
+    summarized = events.index("memory_summarized")
+    fourth_reply = [n for n, event in enumerate(events) if event == "reply"][3]
+    fifth_request = [n for n, event in enumerate(events) if event == "request"][4]
+    assert fourth_reply < summarized < fifth_request
+
+
+def test_a_request_that_starts_over_the_budget_gets_what_fits_and_the_summary_comes_after(
+    tmp_path: Path,
+) -> None:
+    saved = tmp_path / "conversation.json"
+    roomy, _ = _agent(ScriptedModel(_chatty(4)), [], memory_file=saved)
+    for number in range(4):
+        roomy.handle(f"request {number}", NO_CONFIRM)
+    model = ScriptedModel([*_chatty(1), _say("They talked about kettles.")])
+    agent, audit = _agent(model, [], limits=Limits(memory_tokens=700), memory_file=saved)
+
+    agent.handle("request 4", NO_CONFIRM)
+
+    asked = model.seen[0]
+    assert asked[-1] == {"role": "user", "content": "request 4"}
+    assert tokens("".join(str(m["content"]) for m in asked[1:-1])) <= 700
+    assert "request 3" in [m["content"] for m in asked if m["role"] == "user"]
+    assert model.seen[2][0]["content"].startswith("You keep the memory of a conversation")
+    assert "request 0" in model.seen[2][1]["content"]  # nothing was dropped to make it fit
+    assert "memory_trimmed" not in _events(audit)
+    assert agent.memory.summary == "They talked about kettles."
+
+
+def test_a_cancelled_request_is_not_followed_by_a_summary() -> None:
+    model = ScriptedModel([*_chatty(4)])
+    agent, audit = _agent(model, [], limits=Limits(memory_tokens=700))
+    for number in range(3):
+        agent.handle(f"request {number}", NO_CONFIRM)
+    stopped = [False]
+
+    def speak(_text: str) -> None:
+        stopped[0] = True  # the owner spoke over the reply
+
+    hooks = Hooks(confirm=lambda _q: False, speak=speak, cancelled=lambda: stopped[0])
+    agent.handle("request 3", hooks)
+
+    assert agent.memory.over_budget()  # it would have been summarized, had it not been stopped
+    assert len(model.seen) == 8
+    assert "memory_summarized" not in _events(audit)
 
 
 def test_the_latest_turns_are_never_folded_into_the_summary() -> None:
@@ -1235,6 +1424,94 @@ def test_after_one_no_the_owner_is_not_asked_again_in_that_request() -> None:
     assert len(asked) == 1
 
 
+def test_only_the_first_call_of_a_cold_request_may_wait_for_the_load() -> None:
+    model = ScriptedModel([_call("pause"), _say("Paused.")], loaded=False)
+    agent, _ = _agent(model, [Counter().op("pause")])
+
+    agent.handle("pause", NO_CONFIRM)
+
+    assert model.loads == [agent_module.COLD_LOAD_S, 0.0]
+
+
+def test_a_warm_request_waits_for_no_load() -> None:
+    model = ScriptedModel([_call("pause"), _say("Paused.")])
+    agent, _ = _agent(model, [Counter().op("pause")])
+
+    agent.handle("pause", NO_CONFIRM)
+
+    assert model.loads == [0.0, 0.0]
+
+
+def test_the_wait_for_the_owners_yes_is_not_the_requests_time() -> None:
+    clock = Clock()
+    counter = Counter()
+
+    def slow_yes(_question: str) -> bool:
+        clock.now += agent_module.MAX_SECONDS + 10
+        return True
+
+    model = ScriptedModel([_call("play"), _say("Playing.")])
+    agent, _ = _agent(model, [counter.op("play", cls=OpClass.CONFIRM)], clock=clock)
+
+    assert agent.handle("play", Hooks(confirm=slow_yes)) == "Playing."
+    assert counter.runs == [{"op": "play"}]
+    assert model.timeouts[1] == agent_module.MAX_SECONDS
+
+
+def test_the_wait_for_the_confirm_key_is_not_the_requests_time() -> None:
+    clock = Clock()
+    counter = Counter()
+
+    def slow_press(_question: str, _digest: str) -> bool:
+        clock.now += 60
+        return True
+
+    model = ScriptedModel([_call("run"), _say("Ran it.")])
+    agent, _ = _agent(model, [counter.op("run", cls=OpClass.STRONG)], clock=clock)
+
+    assert agent.handle("run it", Hooks(confirm=NO_CONFIRM.confirm, confirm_key=slow_press)) == (
+        "Ran it."
+    )
+    assert model.timeouts[1] == agent_module.MAX_SECONDS
+
+
+def test_after_a_slow_action_the_answer_still_gets_time() -> None:
+    clock = Clock()
+
+    def slow() -> None:
+        clock.now += agent_module.MAX_SECONDS - 5
+
+    model = ScriptedModel([_call("run"), _say("Ran it.")])
+    agent, _ = _agent(model, [Counter().op("run", then=slow)], clock=clock)
+
+    assert agent.handle("run it", NO_CONFIRM) == "Ran it."
+    assert model.timeouts[1] == agent_module.AFTER_ACTION_CALL_S
+
+
+def test_running_out_of_time_after_an_action_says_what_ran() -> None:
+    clock = Clock()
+
+    def slow() -> None:
+        clock.now += agent_module.MAX_SECONDS + 1
+
+    model = ScriptedModel([_call("pause"), _say("unused")])
+    agent, _ = _agent(model, [Counter().op("pause", spoken="Paused.", then=slow)], clock=clock)
+
+    assert agent.handle("pause", NO_CONFIRM) == f"Paused. {agent_module.RAN_OUT}"
+
+
+def test_running_out_of_time_with_nothing_done_says_it_stopped() -> None:
+    clock = Clock()
+
+    def slow() -> None:
+        clock.now += agent_module.MAX_SECONDS + 1
+
+    model = ScriptedModel([_call("look"), _say("unused")])
+    agent, _ = _agent(model, [Counter().op("look", side_effect=False, then=slow)], clock=clock)
+
+    assert agent.handle("look", NO_CONFIRM) == TOO_LONG
+
+
 def test_a_call_is_not_started_once_the_request_is_out_of_time() -> None:
     clock = Clock()
     counter = Counter()
@@ -1245,7 +1522,7 @@ def test_a_call_is_not_started_once_the_request_is_out_of_time() -> None:
     model = ScriptedModel([_many("queue", 2), _say("unused")])
     agent, _ = _agent(model, [counter.op("queue", then=slow)], clock=clock)
 
-    assert agent.handle("queue two", NO_CONFIRM) == TOO_LONG
+    assert agent.handle("queue two", NO_CONFIRM) == agent_module.ACTED_THEN_TOO_LONG
     assert len(counter.runs) == 1
 
 
@@ -1685,17 +1962,20 @@ def test_a_long_run_of_spaces_is_checked_quickly() -> None:
     assert not claims_action("Muted" + " " * 1_000_000 + "?")
 
 
-def test_a_plain_command_is_not_kept_waiting_for_a_summary() -> None:
+def test_a_plain_command_is_not_kept_waiting_for_a_summary(tmp_path: Path) -> None:
+    saved = tmp_path / "conversation.json"
+    roomy, _ = _agent(ScriptedModel(_chatty(4)), [], memory_file=saved)
+    for number in range(4):
+        roomy.handle(f"request {number}", NO_CONFIRM)
     counter = Counter()
     pause = counter.op("pause", spoken="Paused.", shortcuts=(Shortcut("pause", lambda _g: {}),))
-    model = ScriptedModel([*_chatty(4)])
-    agent, audit = _agent(model, [pause], limits=Limits(memory_tokens=700))
-    for number in range(4):
-        agent.handle(f"request {number}", NO_CONFIRM)
+    model = ScriptedModel([])
+    agent, audit = _agent(model, [pause], limits=Limits(memory_tokens=700), memory_file=saved)
+    assert agent.memory.over_budget()
 
     assert agent.handle("pause", NO_CONFIRM) == "Paused."
 
-    assert len(model.seen) == 8
+    assert model.seen == []
     assert "memory_summarized" not in _events(audit)
 
 
@@ -2491,3 +2771,33 @@ def test_a_request_that_fits_keeps_its_results_whole() -> None:
 
     results = [m["content"] for m in model.seen[-1] if m["role"] == "tool"]
     assert results == [page, page]
+
+
+# A reply with no words
+
+
+def test_a_reply_with_no_words_after_a_look_up_is_asked_for_again_not_called_done() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("weather"), _say(""), _say("Sunny, 20 degrees.")])
+    agent, audit = _agent(model, [counter.op("weather", side_effect=False)])
+
+    assert agent.handle("what's the weather", NO_CONFIRM) == "Sunny, 20 degrees."
+
+    assert model.seen[2][-1] == {"role": "user", "content": agent_module.WORDS_REMINDER}
+    assert "claimed_without_action" not in _events(audit)
+
+
+def test_a_model_that_still_says_nothing_is_heard_as_no_answer() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("weather"), _say(""), _say("")])
+    agent, _ = _agent(model, [counter.op("weather", side_effect=False)])
+
+    assert agent.handle("what's the weather", NO_CONFIRM) == agent_module.NO_ANSWER
+
+
+def test_a_reply_with_no_words_after_an_action_is_done() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("pause"), _say("")])
+    agent, _ = _agent(model, [counter.op("pause")])
+
+    assert agent.handle("pause", NO_CONFIRM) == "Done."

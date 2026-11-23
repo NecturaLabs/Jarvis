@@ -15,7 +15,7 @@ from jarvis.jsonutil import obj, objs
 from jarvis.operations import Operation, OperationError, Result, UncertainOutcomeError
 from jarvis.policy import Origin
 from jarvis.shortcuts import Shortcut
-from jarvis.spotify.api import SpotifyApi, pick_device
+from jarvis.spotify.api import SAVED_PAGE, SpotifyApi, pick_device
 from jarvis.spotify.errors import NoDeviceError, SpotifyAuthError, SpotifyError, SpotifyLoginExpired
 
 if TYPE_CHECKING:
@@ -33,6 +33,7 @@ CLOSED = (
 PLAYLIST_TTL_S = 300.0
 REFRESH_RETRY_S = 60.0
 QUEUE_BUDGET_S = 30.0
+LIKED_PAGES = 4  # pages of saved songs read to pick a play of liked songs from
 RECENT_QUEUE_S = 30 * 60.0
 ALREADY_QUEUED = "That's already in the queue."
 QUEUED_LATELY = "I queued that a few minutes ago."
@@ -42,6 +43,14 @@ NO_VOLUME_CONTROL = "This device doesn't allow volume control from here."
 _VOLUME_DISALLOWED = "VOLUME_CONTROL_DISALLOW"
 _NAMED_IN_REPLY = 5
 _NO_ARGS: dict[str, Any] = {"type": "object", "properties": {}, "additionalProperties": False}
+MAX_SKIP = 10  # tracks one skip request may move by
+_SKIP_ARGS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "count": {"type": "integer", "minimum": 1, "maximum": MAX_SKIP},
+    },
+    "additionalProperties": False,
+}
 _QUERY = {
     "type": "string",
     "minLength": 1,
@@ -225,6 +234,11 @@ def _say(sentence: str) -> Result:
     return Result(sentence, spoken=sentence)
 
 
+def _nothing_playing() -> Result:
+    """Return the answer to a player command with no player: nothing was done."""
+    return Result(NOTHING_PLAYING, ok=False, spoken=NOTHING_PLAYING)
+
+
 @dataclass(frozen=True, slots=True)
 class _Hit:
     """The best candidate for a request, with how well it matched."""
@@ -273,13 +287,14 @@ class SpotifyOps:
     def refresh(self) -> None:
         """Load the owner's library and artist names once, ahead of any request that needs them.
 
-        A failure is logged and swallowed, and the previous names are kept.
+        A failure, or a refresh in which no part of the library loaded, is logged and swallowed,
+        and the previous names are kept.
         """
         self._warm = False
         self._login_expired = False
         try:
             self._api.ensure_login()
-            artists = self._api.library(max_age_s=0).get("artist", [])
+            library = self._api.reload_library()
         except SpotifyLoginExpired:
             self._login_expired = True
             log.warning("Spotify login has expired; run `jarvis spotify-login`")
@@ -290,6 +305,10 @@ class SpotifyOps:
         except Exception:  # a warm-up must never take Jarvis down
             log.exception("Spotify library refresh failed unexpectedly")
             return
+        if library is None:
+            log.warning("Spotify library refresh failed: no part of it could be loaded")
+            return
+        artists = library.get("artist", [])
         self._names = list(dict.fromkeys(str(a["name"]) for a in artists if a.get("name")))
         self._warm = True
 
@@ -482,13 +501,22 @@ class SpotifyOps:
         return public
 
     def _play_liked(self) -> Result:
-        """Play the owner's saved tracks in random order."""
-        uris = [str(t["uri"]) for t in self._api.saved_tracks()]
+        """Play the owner's saved tracks in random order, drawn from the whole library.
+
+        One play takes `SAVED_PAGE` songs. A bigger library is read from its newest page and
+        `LIKED_PAGES` - 1 more at random places in it, and the songs are picked from all of them.
+        """
+        tracks, total = self._api.saved_tracks()
+        pages = range(SAVED_PAGE, total, SAVED_PAGE)
+        for offset in self._rng.sample(pages, min(LIKED_PAGES - 1, len(pages))):
+            tracks += self._api.saved_tracks(offset)[0]
+        uris = list(dict.fromkeys(str(t["uri"]) for t in tracks))
         if not uris:
             return Result("You have no saved songs to play.", Origin.TOOL_STATUS, ok=False)
-        self._rng.shuffle(uris)
-        self._start({"uris": uris})
-        return Result("Now playing your liked songs, shuffled.", Origin.SPOTIFY)
+        chosen = self._rng.sample(uris, min(SAVED_PAGE, len(uris)))
+        self._start({"uris": chosen})
+        some = f"{len(chosen)} of " if len(chosen) < max(total, len(uris)) else ""
+        return Result(f"Now playing {some}your liked songs, shuffled.", Origin.SPOTIFY)
 
     @staticmethod
     def _play_query(args: dict[str, Any]) -> str:
@@ -778,7 +806,7 @@ class SpotifyOps:
         try:
             self._api.request(method, path, params=dict(params) or None)
         except NoDeviceError:
-            return _say(NOTHING_PLAYING)
+            return _nothing_playing()
         except SpotifyError as exc:
             if exc.status != HTTPStatus.FORBIDDEN or not refusal_check:
                 raise
@@ -793,7 +821,7 @@ class SpotifyOps:
         state = self._api.player()
         playing = bool(state and state.get("is_playing"))
         if command == "pause" and not playing:
-            return _say("It's already paused." if state else NOTHING_PLAYING)
+            return _say("It's already paused.") if state else _nothing_playing()
         if command == "resume" and playing:
             return _say("It's already playing.")
         raise refusal
@@ -822,17 +850,53 @@ class SpotifyOps:
             return self._already("resume", exc)
         return Result("Resumed.", spoken="Playing again.")
 
-    def next_track(self, _args: dict[str, Any]) -> Result:
-        """Skip to the next track; it never starts Spotify."""
-        return self._command(
-            "POST", "/me/player/next", Result("Skipped to the next track.", spoken="Skipped.")
-        )
+    def next_track(self, args: dict[str, Any]) -> Result:
+        """Skip to the next track, or `count` tracks ahead; it never starts Spotify."""
+        count = int(args.get("count", 1))
+        if count == 1:
+            done = Result("Skipped to the next track.", spoken="Skipped.")
+        else:
+            done = Result(f"Skipped {count} tracks.", spoken=f"Skipped {count}.")
+        return self._skip("/me/player/next", count, done, "Skipped")
 
-    def previous_track(self, _args: dict[str, Any]) -> Result:
-        """Go back a track; it never starts Spotify."""
-        return self._command(
-            "POST", "/me/player/previous", Result("Went back a track.", spoken="Back one.")
-        )
+    def previous_track(self, args: dict[str, Any]) -> Result:
+        """Go back a track, or `count` tracks; it never starts Spotify."""
+        count = int(args.get("count", 1))
+        if count == 1:
+            done = Result("Went back a track.", spoken="Back one.")
+        else:
+            done = Result(f"Went back {count} tracks.", spoken=f"Back {count}.")
+        return self._skip("/me/player/previous", count, done, "Went back")
+
+    def _skip(self, path: str, count: int, done: Result, verb: str) -> Result:
+        """Send one skip request per track; report how far it got when one fails part-way.
+
+        Raises:
+            SpotifyError: Spotify failed before any track was skipped.
+            UncertainOutcomeError: the first request timed out after it was sent.
+        """
+        for skipped in range(count):
+            try:
+                self._api.request("POST", path)
+            except NoDeviceError:
+                if not skipped:
+                    return _nothing_playing()
+                return self._skipped_part(verb, skipped, count, "the player went away.")
+            except (SpotifyError, UncertainOutcomeError) as exc:
+                if not skipped:
+                    raise
+                why = (
+                    "the next one may not have gone through; do not retry."
+                    if isinstance(exc, UncertainOutcomeError)
+                    else f"Spotify failed: {exc}"
+                )
+                return self._skipped_part(verb, skipped, count, why)
+        return done
+
+    @staticmethod
+    def _skipped_part(verb: str, skipped: int, count: int, why: str) -> Result:
+        """Report a skip that stopped part-way: the tracks it moved by did move."""
+        return Result(f"{verb} {skipped} of {count} tracks, then {why}", ok=False, acted=True)
 
     def _set_volume(self, percent: int) -> Result:
         try:
@@ -945,18 +1009,22 @@ class SpotifyOps:
             ),
             Operation(
                 "spotify_next",
-                "Skip to the next track.",
-                _NO_ARGS,
+                "Skip to the next track, or count tracks ahead.",
+                _SKIP_ARGS,
                 self.next_track,
-                spoken_summary=lambda _a: "skip this track",
+                spoken_summary=lambda a: (
+                    f"skip {a['count']} tracks" if a.get("count", 1) > 1 else "skip this track"
+                ),
                 shortcuts=(_NEXT,),
             ),
             Operation(
                 "spotify_previous",
-                "Go back to the previous track.",
-                _NO_ARGS,
+                "Go back to the previous track, or count tracks back.",
+                _SKIP_ARGS,
                 self.previous_track,
-                spoken_summary=lambda _a: "go back a track",
+                spoken_summary=lambda a: (
+                    f"go back {a['count']} tracks" if a.get("count", 1) > 1 else "go back a track"
+                ),
                 shortcuts=(_PREVIOUS,),
             ),
             Operation(

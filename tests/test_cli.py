@@ -1326,6 +1326,43 @@ def test_jarvis_ask_with_yes_has_no_confirm_key(
     assert "I can't." in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    ("typed", "allowed"),
+    [
+        ("y", True),
+        ("Y", True),
+        (" y ", True),
+        ("yes", True),
+        ("n", False),
+        ("", False),
+        ("yn", False),
+    ],
+)
+def test_jarvis_ask_takes_a_typed_y_as_yes(
+    monkeypatch: pytest.MonkeyPatch, typed: str, *, allowed: bool
+) -> None:
+    answers: list[object] = []
+
+    def handle(_text: str, hooks: Hooks) -> str:
+        answers.append(hooks.confirm("Should I pause?"))
+        return "ok"
+
+    agent = types.SimpleNamespace(handle=handle)
+
+    def build(_cfg: object, **_kwargs: object) -> object:
+        return types.SimpleNamespace(agent=agent)
+
+    def typing(_prompt: str) -> str:
+        return typed
+
+    monkeypatch.setattr(cli, "build", build)
+    monkeypatch.setattr("builtins.input", typing)
+
+    assert main(["ask", "pause"]) == 0
+
+    assert answers == [allowed]
+
+
 def test_help_lists_the_commands_as_dash_dash_help_does(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["help"]) == 0
     shown = capsys.readouterr().out

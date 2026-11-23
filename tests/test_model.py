@@ -185,6 +185,18 @@ def test_a_call_waits_no_longer_than_the_turn_has_left(asked: float | None, sent
     assert _read_timeout(seen[0]) == sent
 
 
+@pytest.mark.parametrize(("asked", "sent"), [(270.0, 270.0), (999.0, 300.0), (60.0, 60.0)])
+def test_a_call_that_must_load_the_model_may_wait_that_much_longer(
+    asked: float, sent: float
+) -> None:
+    seen: list[httpx.Request] = []
+    model = replace(_model(_answering({"content": "hi"}, seen)), clock=lambda: 0.0)
+
+    model.chat(MESSAGES, TOOLS, timeout_s=asked, load_s=180.0)
+
+    assert _read_timeout(seen[0]) == sent
+
+
 def test_warming_waits_for_the_server_and_retries_a_busy_answer() -> None:
     """Regression: the load sent at service start met a server still starting (409) and was lost."""
     answers = iter([httpx.Response(409), httpx.Response(409), httpx.Response(200, json={})])
@@ -438,6 +450,43 @@ def test_a_stream_that_runs_past_its_time_is_a_model_error() -> None:
 
     with pytest.raises(ModelError, match="too long"):
         model.chat(MESSAGES, TOOLS, timeout_s=5.0, on_delta=slow)
+
+
+class _Stalling(httpx.SyncByteStream):
+    """A response body that sends `first`, then sends nothing until `release` is set."""
+
+    def __init__(self, first: bytes, release: threading.Event) -> None:
+        super().__init__()
+        self._first = first
+        self._release = release
+
+    @override
+    def __iter__(self) -> Iterator[bytes]:
+        yield self._first
+        self._release.wait(30)
+
+
+def test_a_stream_that_stalls_ends_at_its_time_not_when_the_next_piece_comes() -> None:
+    release = threading.Event()
+    body = _Stalling(_sse(_chunk({"content": "Half"}), done=False), release)
+    model = _model(httpx.MockTransport(lambda _r: httpx.Response(200, stream=body)))
+    raised: list[BaseException] = []
+
+    def call() -> None:
+        try:
+            model.chat(MESSAGES, TOOLS, timeout_s=0.3, on_delta=lambda _piece: None)
+        except ModelError as exc:
+            raised.append(exc)
+
+    caller = threading.Thread(target=call, daemon=True)
+    caller.start()
+    try:
+        caller.join(5)
+        assert not caller.is_alive()
+    finally:
+        release.set()
+    assert len(raised) == 1
+    assert "too long" in str(raised[0])
 
 
 def test_an_error_raised_by_the_listener_ends_the_stream_and_is_raised() -> None:

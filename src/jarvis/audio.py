@@ -106,13 +106,8 @@ def _nodes(objects: object) -> Iterator[tuple[object, dict[str, object], dict[st
             yield item.get("id"), info, props
 
 
-def match_app_streams(objects: object, apps: list[str]) -> list[str]:
-    """Return the serials of playback streams (in `pw-dump` output) that belong to one of `apps`.
-
-    An app matches by a case-insensitive part of its process binary, application or node name,
-    so "discord" finds Discord's voice stream (its application name is "WEBRTC VoiceEngine").
-    Streams that are playing come first: an app may also hold idle ones.
-    """
+def _app_streams(objects: object, apps: list[str]) -> tuple[list[str], list[str]]:
+    """Return the serials of the apps' playback streams that play and those that are idle."""
     wanted = [a.casefold() for a in apps if a.strip()]
     playing: list[str] = []
     idle: list[str] = []
@@ -126,7 +121,66 @@ def match_app_streams(objects: object, apps: list[str]) -> list[str]:
         if any(app in names for app in wanted):
             group = playing if info.get("state", "running") == "running" else idle
             group.append(str(props["object.serial"]))
+    return playing, idle
+
+
+def match_app_streams(objects: object, apps: list[str]) -> list[str]:
+    """Return the serials of playback streams (in `pw-dump` output) that belong to one of `apps`.
+
+    An app matches by a case-insensitive part of its process binary, application or node name,
+    so "discord" finds Discord's voice stream (its application name is "WEBRTC VoiceEngine").
+    Streams that are playing come first: an app may also hold idle ones.
+    """
+    playing, idle = _app_streams(objects, apps)
     return playing + idle
+
+
+def playing_app_streams(objects: object, apps: list[str]) -> list[str]:
+    """Return the serials of every stream of `apps` that plays, or of one idle one if none does.
+
+    The apps are matched as in `match_app_streams`. All playing streams are recorded together,
+    so an app that plays through several is heard whole.
+    """
+    playing, idle = _app_streams(objects, apps)
+    return playing or idle[:1]
+
+
+def others_playing(objects: object, ours: Callable[[int], bool]) -> bool:
+    """Whether a playback stream (in `pw-dump` output) is running that is not Jarvis's own.
+
+    `ours` says whether a process id is Jarvis or one of its players.
+    """
+    for _id, info, props in _nodes(objects):
+        if props.get("media.class") != "Stream/Output/Audio" or info.get("state") != "running":
+            continue
+        pid = str(props.get("application.process.id", ""))
+        if not (pid.isdigit() and ours(int(pid))):
+            return True
+    return False
+
+
+def _ours(pid: int) -> bool:
+    """Whether `pid` is this process or a child of it (a `pw-play` speaking a reply)."""
+    if pid == os.getpid():
+        return True
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    fields = stat.rpartition(")")[2].split()  # the name before it may hold spaces
+    return len(fields) > 1 and fields[1] == str(os.getpid())
+
+
+def audio_playing_elsewhere() -> bool | None:
+    """Whether another program plays audio now, or None when PipeWire cannot be read."""
+    try:
+        done = subprocess.run(["pw-dump"], capture_output=True, text=True, timeout=5, check=False)
+        objects: object = json.loads(done.stdout)
+    except OSError, subprocess.TimeoutExpired, ValueError:
+        return None
+    if done.returncode != 0:
+        return None
+    return others_playing(objects, _ours)
 
 
 def capture_sources(objects: object, pid: int) -> list[str]:
@@ -175,8 +229,8 @@ def pw_dump() -> object:
 
 
 def app_stream_serials(apps: list[str]) -> list[str]:
-    """Return the serials of the given apps' playback streams playing now (empty if none)."""
-    return match_app_streams(pw_dump(), apps)
+    """Return the serials of the given apps' streams to record now (`playing_app_streams`)."""
+    return playing_app_streams(pw_dump(), apps)
 
 
 def capture_source_serials(pid: int) -> list[str]:
@@ -201,7 +255,8 @@ class AppAudio:
     """Streams frames of what some apps play (Discord by default), or of all PC output.
 
     The apps' streams come and go (a call starts, ends), so this waits for one to appear,
-    records it until it goes away and then waits again. With no apps named, it records the
+    records it until it goes away and then waits again. Every stream the apps play is recorded,
+    each by its own recorder pinned to it, and heard mixed. With no apps named, it records the
     default output (everything the speakers play).
     """
 
@@ -215,6 +270,7 @@ class AppAudio:
     ) -> None:
         """Follow `apps` (by process or app name), checking for their streams every `poll_s`.
 
+        `find` returns the serials of the streams to record (`playing_app_streams`).
         `command_for(target)` builds the capture command, all PC output for "" (a test seam).
         """
         super().__init__()
@@ -224,82 +280,151 @@ class AppAudio:
         self._command_for = command_for
         self._feeds = feeds
         self._stopping = threading.Event()
-        self._mic: Microphone | None = None
+        self._mics: list[Microphone] = []
 
-    def _target(self) -> str | None:
-        """Return what to record now: a stream's serial, "" for all PC output, None for nothing."""
+    def _targets(self) -> list[str] | None:
+        """Return what to record now: the streams' serials, [""] for all PC output, or None."""
         if not self._apps:
-            return ""
-        serials = self._find(self._apps)
-        return serials[0] if serials else None
+            return [""]
+        return list(dict.fromkeys(self._find(self._apps))) or None
 
-    def _misplaced(self, target: str, pid: int | None) -> str:
-        """Return why the recorder no longer hears `target` (empty while it does).
+    def _misplaced(self, targets: list[str], mics: list[Microphone]) -> str:
+        """Return why the recorders no longer hear just `targets` (empty while they do).
 
-        The stream may have gone, or the recorder may have been linked to something else (the
-        default microphone, on a session manager that ignores the pinning properties). Either
-        way its frames are not the app's any more and must not be passed on.
+        A stream may have gone or a new one started, or a recorder may have been linked to
+        something else (the default microphone, on a session manager that ignores the pinning
+        properties). Either way the frames are not the apps' as they play now.
         """
-        if target not in self._find(self._apps):
+        found = set(self._find(self._apps))
+        if not found.issuperset(targets):
             return "the stream is gone"
-        if pid is not None and any(source != target for source in self._feeds(pid)):
-            return "the recorder was linked to another source"
+        if found.difference(targets):
+            return "another stream started"
+        for target, mic in zip(targets, mics, strict=True):
+            pid = mic.pid
+            if pid is not None and any(source != target for source in self._feeds(pid)):
+                return "the recorder was linked to another source"
         return ""
 
-    def _record(self, target: str) -> Iterator[NDArray[np.int16]]:
-        """Yield frames from `target` until it ends or stops being what the recorder hears."""
-        mic = Microphone(command=self._command_for(target))
-        mic.start()
-        self._mic = mic
+    def _record(self, targets: list[str]) -> Iterator[NDArray[np.int16]]:
+        """Yield frames from `targets` until one ends or the recorders stop hearing just them."""
+        mics = [Microphone(command=self._command_for(target)) for target in targets]
         try:
+            for mic in mics:
+                mic.start()
+                self._mics.append(mic)
+            frames = mics[0].frames() if len(mics) == 1 else _mixed(mics)
             checked = time.monotonic()
-            for frame in mic.frames():
-                if target and time.monotonic() - checked >= self._poll_s:
+            for frame in frames:
+                if targets != [""] and time.monotonic() - checked >= self._poll_s:
                     checked = time.monotonic()
-                    reason = self._misplaced(target, mic.pid)
+                    reason = self._misplaced(targets, mics)
                     if reason:
                         log.info("PC audio recorder dropped: %s", reason)
                         return
                 yield frame
         finally:
-            self._mic = None
-            mic.stop()
+            self._mics = []
+            for mic in mics:
+                mic.stop()
 
-    def _session(self, target: str) -> Generator[NDArray[np.int16]]:
+    def _session(self, targets: list[str]) -> Generator[NDArray[np.int16]]:
         try:
-            yield from self._record(target)
+            yield from self._record(targets)
         except AudioError as exc:
             log.info("PC audio stream ended (%s); waiting for it to come back", exc)
 
     def sessions(self) -> Generator[Generator[NDArray[np.int16]]]:
-        """Yield one frame stream per matching stream that plays, each ending with it.
+        """Yield one frame stream per set of matching streams that play, each ending with them.
 
         A consumer that reads speech from one session cannot run on into the next stream. Runs
         until stopped.
         """
         while not self._stopping.is_set():
-            target = self._target()
-            if target is not None:
-                yield self._session(target)
+            targets = self._targets()
+            if targets is not None:
+                yield self._session(targets)
             self._stopping.wait(self._poll_s)
 
     def frames(self) -> Iterator[NDArray[np.int16]]:
-        """Yield frames from whichever matching stream is playing, until stopped."""
+        """Yield frames from whichever matching streams are playing, until stopped."""
         for session in self.sessions():
             yield from session
 
     def drain(self) -> None:
         """Drop frames captured so far."""
-        mic = self._mic
-        if mic is not None:
+        for mic in list(self._mics):
             mic.drain()
 
     def stop(self) -> None:
         """Stop following the apps."""
         self._stopping.set()
-        mic = self._mic
-        if mic is not None:
+        for mic in list(self._mics):
             mic.stop()
+
+
+_ACTIVE_S = 0.5  # a recorder that sent nothing for this long is not waited for in the mix
+
+
+def _mixed(mics: list[Microphone]) -> Iterator[NDArray[np.int16]]:
+    """Yield the sum of one frame from each recorder that is sending, until all have ended.
+
+    Each recorder is read on its own thread. A frame is let out once every recorder heard
+    lately has given one, or one gives a second before the rest: a paused stream that sends
+    nothing holds up the others for no longer than `_ACTIVE_S`.
+
+    Raises:
+        AudioError: every recorder's capture ended.
+    """
+    shared: queue.Queue[tuple[int, NDArray[np.int16]]] = queue.Queue(maxsize=400 * len(mics))
+    readers = [
+        threading.Thread(
+            target=_forward, args=(n, mic, shared), name="jarvis-pc-audio-mix", daemon=True
+        )
+        for n, mic in enumerate(mics)
+    ]
+    for reader in readers:
+        reader.start()
+    pending: dict[int, NDArray[np.int16]] = {}
+    heard: dict[int, float] = {}
+    while True:
+        try:
+            index, frame = shared.get(timeout=0.2)
+        except queue.Empty:
+            if not any(reader.is_alive() for reader in readers):
+                msg = "the PC audio streams ended"
+                raise AudioError(msg) from None
+            continue
+        if index in pending:
+            yield _mix(list(pending.values()))
+            pending.clear()
+        now = time.monotonic()
+        pending[index], heard[index] = frame, now
+        lately = {n for n, at in heard.items() if now - at < _ACTIVE_S and readers[n].is_alive()}
+        if lately.issubset(pending):
+            yield _mix(list(pending.values()))
+            pending.clear()
+
+
+def _forward(
+    index: int, mic: Microphone, shared: queue.Queue[tuple[int, NDArray[np.int16]]]
+) -> None:
+    """Pass the recorder's frames on, tagged with `index`, the oldest dropped when full."""
+    with contextlib.suppress(AudioError):
+        for frame in mic.frames():
+            while True:
+                try:
+                    shared.put_nowait((index, frame))
+                    break
+                except queue.Full:
+                    with contextlib.suppress(queue.Empty):
+                        shared.get_nowait()
+
+
+def _mix(frames: list[NDArray[np.int16]]) -> NDArray[np.int16]:
+    """Return the frames added together, clipped to 16 bits."""
+    total = np.sum(np.stack(frames).astype(np.int32), axis=0)
+    return np.clip(total, -32768, 32767).astype(np.int16)
 
 
 class Microphone:
@@ -1360,6 +1485,9 @@ WRITE_STEP = 4096  # bytes handed to the player at a time (one pipe page; about 
 QUIET = 300  # samples at or below this level count as silence at the ends of a sentence
 LEAD_KEEP_S = 0.03  # silence kept before the first word Jarvis says
 TAIL_KEEP_S = 0.2  # silence kept after each sentence (the voice pads about 0.35 s)
+# How long after a wake-like sentence ends the wake word stays ignored: the player's buffer and
+# the wake model's own lag, so the end of the sentence heard late does not wake Jarvis.
+GUARD_TAIL_S = 1.0
 
 
 def trim_silence(pcm: bytes, rate: int, *, lead_s: float | None, tail_s: float) -> bytes:
@@ -1466,7 +1594,7 @@ class Speaker:
     what has not been heard yet, so the owner can speak over Jarvis.
     """
 
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-arguments] - the player's settings, keyword-only
         self,
         synthesize: Callable[[str], tuple[bytes, int]],
         *,
@@ -1474,11 +1602,12 @@ class Speaker:
         grace_s: float = PLAY_GRACE_S,
         own_wake: Callable[[bytes, int, str], bool] | None = None,
         linger_s: float = LINGER_S,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """Use `synthesize` for text to speech; `player` builds the playback command for a rate.
 
         `own_wake` tells whether a synthesized sentence (its sound, its rate and its text) would
-        trigger the wake word itself.
+        trigger the wake word itself. `clock` times when each sentence plays (tests).
         """
         super().__init__()
         self._synthesize = synthesize
@@ -1486,12 +1615,15 @@ class Speaker:
         self._grace_s = grace_s
         self._own_wake = own_wake
         self._linger_s = linger_s
+        self._clock = clock
         self._lock = threading.Condition()
         self._items: queue.Queue[tuple[int, str]] = queue.Queue()
         self._pending = 0  # sentences queued, being synthesized or being handed to the player
         self._run = 0  # raised by `hush`: sentences queued before it are dropped
         self._error: AudioError | None = None
-        self._guarded = False  # the speech playing now holds the wake phrase
+        # When each wake-like sentence plays (start, end plus GUARD_TAIL_S), on `_clock`.
+        self._guards: list[tuple[float, float]] = []
+        self._ends = 0.0  # when the sound handed to the open player will have played
         self._worker: threading.Thread | None = None
         self._proc: subprocess.Popen[bytes] | None = None  # the open player
         self._rate = 0
@@ -1513,9 +1645,11 @@ class Speaker:
 
     @property
     def interruptible(self) -> bool:
-        """False while the speech playing would trigger the wake word by itself."""
+        """False while a sentence that would trigger the wake word by itself is playing."""
         with self._lock:
-            return not self._guarded
+            now = self._clock()
+            self._guards = [guard for guard in self._guards if guard[1] > now]
+            return not any(start <= now for start, _ in self._guards)
 
     def say(self, text: str) -> None:
         """Speak `text` after anything already queued; return once it has all played.
@@ -1555,7 +1689,7 @@ class Speaker:
         """Drop every sentence not yet heard and end the one playing, at once."""
         with self._lock:
             self._run += 1
-            self._guarded = False  # what held the wake phrase is no longer playing
+            self._guards.clear()  # what held the wake phrase is no longer playing
             while True:
                 try:
                     self._items.get_nowait()
@@ -1607,11 +1741,17 @@ class Speaker:
         pcm = trim_silence(pcm, rate, lead_s=LEAD_KEEP_S if first else None, tail_s=TAIL_KEEP_S)
         if not pcm:
             return
-        if self._sounds_like_wake(pcm, rate, text):
-            with self._lock:
-                if run != self._run:  # hushed during the check: it will not be played
-                    return
-                self._guarded = True
+        wake_like = self._sounds_like_wake(pcm, rate, text)
+        with self._lock:
+            if run != self._run:  # hushed during the check: it will not be played
+                return
+            # It plays once what the open player already holds has played; a new player starts
+            # it now. Kept before the player opens, so the guard is never late.
+            start = max(self._clock(), self._ends if self._proc is not None else 0.0)
+            self._ends = start + len(pcm) / (2 * rate)
+            if wake_like:
+                self._guards.append((start, self._ends + GUARD_TAIL_S))
+        if wake_like:
             log.info("a sentence sounds like the wake word; it cannot be spoken over")
         proc = self._proc or self._open(rate, run)
         if proc is not None:
@@ -1719,8 +1859,7 @@ class Speaker:
 
     def _release(self) -> None:
         with self._lock:
-            self._proc = None
-            self._guarded = False
+            self._proc = None  # a guard still running out keeps its end: the tail may be heard
             self._lock.notify_all()
 
     def _play(self, pcm: bytes, rate: int) -> None:

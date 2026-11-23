@@ -2,10 +2,12 @@
 
 import re
 import tomllib
-from pathlib import Path
-from typing import Annotated, Literal, Self, cast
+from collections.abc import MutableMapping
+from pathlib import Path, PurePosixPath
+from typing import Annotated, Any, Literal, Self, cast
 from urllib.parse import urlsplit
 
+import tomlkit
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -137,7 +139,7 @@ class ChatConfig(AgentConfig):
     max_seconds: float = Field(default=600.0, ge=10, le=3600)
     reply_tokens: int = Field(default=2048, ge=64, le=8192)
     tool_text_chars: int = Field(default=8000, ge=500, le=50000)
-    memory_tokens: int = Field(default=10000, ge=0, le=200000)
+    memory_tokens: int = Field(default=9900, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
     resume: bool = True  # open the chat on the conversation it had last time
     verbosity: Literal["replies", "steps", "everything"] = "replies"
@@ -261,6 +263,7 @@ class AudioConfig(_Section):
     listen_when_locked: bool = True
     # Seconds after a spoken reply in which the next request needs no wake word; 0 turns it off.
     follow_up_s: float = Field(default=6.0, ge=0, le=15)
+    follow_up_over_audio: bool = False  # open the window while another program plays audio too
     wake_engine: Literal["livekit", "azure"] = "livekit"
     azure_keyword_model: str = ""  # the Azure custom keyword `.table` file
     azure_python: str = ""  # the Python with the Speech SDK; empty: <data_dir>/azure-wake/venv
@@ -392,20 +395,48 @@ DESKTOP_SETTINGS = (
 )
 
 
+def deny_pattern(entry: str) -> str:
+    """Return a `files.deny` entry in one form: a name, a path under home, or an absolute path.
+
+    `~/notes`, `./notes` and `notes/` are all the path `notes` under home.
+
+    Raises:
+        ValueError: the entry could never match anything.
+    """
+    text = entry.strip().removeprefix("~/")
+    text = str(PurePosixPath(text)) if text else ""
+    if text in {"", "."} or text.startswith("~") or ".." in PurePosixPath(text).parts:
+        msg = (
+            f"files.deny entry {entry!r} can never match: write a name (diary*), a path under "
+            "home (~/Documents/private) or an absolute path, without '..'"
+        )
+        raise ValueError(msg)
+    return text
+
+
+def _check_deny(entry: str) -> str:
+    deny_pattern(entry)
+    return entry
+
+
+DenyEntry = Annotated[SafeText, AfterValidator(_check_deny)]
+
+
 class FilesConfig(_Section):
     """The folders Jarvis may read and write (`~` is the owner's home).
 
     Secrets (keys, tokens, browser profiles, Jarvis's own state) are never read or written,
-    whatever the roots; `deny` adds names or paths under home to that list (shell-style
-    patterns such as `diary*` or `.config/app`). Hidden files and folders under home (shell
-    history, app logins and caches live there) are not read unless `hidden_allow` names them;
-    by default it opens the desktop's own settings. Writing asks first, unless
-    `boundaries.bypass_consent` is on, and never touches a hidden file or folder.
+    whatever the roots; `deny` adds names, paths under home or absolute paths to that list
+    (shell-style patterns such as `diary*`, `~/.config/app` or `/data/finance`). Hidden files
+    and folders under home (shell history, app logins and caches live there) are not read
+    unless `hidden_allow` names them; by default it opens the desktop's own settings. Writing
+    asks first, unless `boundaries.bypass_consent` is on, and never touches a hidden file or
+    folder.
     """
 
     read_roots: list[RootPath] = Field(default_factory=lambda: ["~"])
     write_roots: list[RootPath] = Field(default_factory=lambda: ["~/Documents"])
-    deny: list[SafeText] = Field(default_factory=list[str])
+    deny: list[DenyEntry] = Field(default_factory=list[str])
     hidden_allow: list[SafeText] = Field(default_factory=lambda: list(DESKTOP_SETTINGS))
 
 
@@ -562,65 +593,67 @@ def _without_derived_url(cfg: Config) -> Config:
     return cfg.model_copy(update={"model": cfg.model.model_copy(update={"base_url": ""})})
 
 
-_TOML_ESCAPES = {
-    "\\": "\\\\",
-    '"': '\\"',
-    "\b": "\\b",
-    "\t": "\\t",
-    "\n": "\\n",
-    "\f": "\\f",
-    "\r": "\\r",
-}
-_DEL = 0x7F
+def dumps(config: Config, text: str = "") -> str:
+    """Return the config as TOML: `text` (a config file) changed to say `config`.
 
-
-def _toml_char(char: str) -> str:
-    if char in _TOML_ESCAPES:
-        return _TOML_ESCAPES[char]
-    if ord(char) < ord(" ") or ord(char) == _DEL:
-        return f"\\u{ord(char):04X}"
-    return char
-
-
-def _toml_value(value: object) -> str:
-    if isinstance(value, list):
-        return "[" + ", ".join(_toml_value(v) for v in cast("list[object]", value)) + "]"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return repr(value)
-    return '"' + "".join(_toml_char(c) for c in str(value)) + '"'
-
-
-def dumps(config: Config) -> str:
-    """Render the config as TOML."""
-    data = config.model_dump(mode="json")
-    lines = [
-        f"schema_version = {data.pop('schema_version')}",
-        f"data_dir = {_toml_value(data.pop('data_dir'))}",
-    ]
-    for section, values in data.items():
-        _table(section, values, lines, quoted=False)
-    return "\n".join(lines) + "\n"
-
-
-def _table(name: str, values: dict[str, object], lines: list[str], *, quoted: bool) -> None:
-    """Add the TOML table `name`: its plain keys first, then each nested table under it.
-
-    Keys of a section's own settings are written bare; keys inside a nested table (operation
-    names, program names) are quoted, as the owner may have written anything there.
+    Only what differs from the file is written. A key the file lacks is added only when its value
+    is not the default, and a key whose value goes back to the default is taken out, so a later
+    release's defaults reach the install; everything else in the file, comments included, stays
+    as the owner wrote it.
     """
-    lines.append(f"\n[{name}]")
-    nested: dict[str, dict[str, object]] = {}
+    doc = tomlkit.parse(text) if text.strip() else tomlkit.document()
+    if "schema_version" not in doc:
+        doc["schema_version"] = SCHEMA_VERSION
+    _merge(doc, config, Config(), keep=frozenset({"schema_version"}))
+    return tomlkit.dumps(doc)
+
+
+def _merge(
+    table: MutableMapping[str, Any],
+    model: BaseModel,
+    default: BaseModel,
+    *,
+    keep: frozenset[str] = frozenset(),
+) -> None:
+    """Make the TOML `table` say `model`, writing as little as `dumps` says.
+
+    A section is merged key by key, since loading fills what it lacks from the defaults. Any
+    other value, a mapping included (`apps.programs`), is written whole, since it is read whole.
+    """
+    values = model.model_dump(mode="json")
+    defaults = default.model_dump(mode="json")
+    for key in [key for key in table if key not in values]:
+        del table[key]  # a key this version no longer has
     for key, value in values.items():
-        if isinstance(value, dict):
-            nested[key] = cast("dict[str, object]", value)
-        else:
-            lines.append(f"{_toml_value(key) if quoted else key} = {_toml_value(value)}")
-    for key, table in nested.items():
-        _table(f"{name}.{_toml_value(key) if quoted else key}", table, lines, quoted=True)
+        section = getattr(model, key)
+        if isinstance(section, BaseModel):
+            if key not in table and value == defaults[key]:
+                continue
+            if not isinstance(table.get(key), MutableMapping):
+                table[key] = tomlkit.table()
+            _merge(table[key], section, cast("BaseModel", getattr(default, key)))
+        elif key in table:
+            if _plain(table[key]) == value:
+                continue
+            if value == defaults[key] and key not in keep:
+                del table[key]
+            else:
+                table[key] = value
+        elif value != defaults[key]:
+            table[key] = value
+
+
+def _plain(item: object) -> object:
+    """Return a TOML item's plain value."""
+    unwrap = getattr(item, "unwrap", None)
+    return unwrap() if callable(unwrap) else item
 
 
 def save(config: Config, path: Path | None = None) -> None:
     """Write the config file (not secret) in one step, so a reader never sees half of it."""
-    write_atomic(path or paths.config_file(), dumps(config))
+    target = path or paths.config_file()
+    try:
+        text = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    write_atomic(target, dumps(config, text))

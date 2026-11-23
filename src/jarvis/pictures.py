@@ -62,15 +62,17 @@ def _decoded(data: bytes, name: str, max_pixels: int) -> Image.Image:
     Raises:
         PictureError: not a picture in `FORMATS`, too many pixels, or broken.
     """
+    too_large = f"{name} is too large to read (over {max_pixels // 1_000_000} million pixels)"
     try:
         image = Image.open(io.BytesIO(data), formats=FORMATS)
+    except Image.DecompressionBombError as exc:  # Pillow's own, larger limit, checked at open
+        raise PictureError(too_large) from exc
     except (UnidentifiedImageError, ValueError) as exc:
         msg = f"{name} isn't a picture Jarvis reads ({FORMATS_SAID})"
         raise PictureError(msg) from exc
     width, height = image.size
     if width * height > max_pixels:
-        msg = f"{name} is too large to read (over {max_pixels // 1_000_000} million pixels)"
-        raise PictureError(msg)
+        raise PictureError(too_large)
     try:
         image.seek(0)
         image.load()

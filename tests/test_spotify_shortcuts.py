@@ -55,6 +55,7 @@ class ScriptedModel:
         timeout_s: float | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
         on_delta: object = None,  # ruff: ignore[unused-method-argument] - the model's own signature
         max_tokens: int | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
+        load_s: float = 0.0,  # ruff: ignore[unused-method-argument] - the model's own signature
     ) -> dict[str, Any]:
         self.calls += 1
         self.seen.append(messages)
@@ -246,7 +247,7 @@ def test_with_nothing_active_the_answer_is_spoken(
 
     result = _run(fake, tmp_path, name)
 
-    assert result.ok
+    assert not result.ok  # nothing was done, yet the answer needs no model
     assert result.spoken == "Nothing is playing."
 
 
@@ -491,6 +492,7 @@ class ForbiddenModel:
         timeout_s: float | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
         on_delta: object = None,  # ruff: ignore[unused-method-argument] - the model's own signature
         max_tokens: int | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
+        load_s: float = 0.0,  # ruff: ignore[unused-method-argument] - the model's own signature
     ) -> dict[str, Any]:
         self.used.append("chat")
         pytest.fail("the model was called for a plain command")

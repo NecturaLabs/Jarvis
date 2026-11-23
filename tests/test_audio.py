@@ -39,8 +39,10 @@ from jarvis.audio import (
     is_phantom,
     match_app_streams,
     next_retry_wait,
+    others_playing,
     parse_transcript,
     parse_voxtype_status,
+    playing_app_streams,
     pw_record_command,
     screen_locked,
     source_found,
@@ -218,20 +220,22 @@ def _stream(
     app: str,
     media_class: str = "Stream/Output/Audio",
     state: str = "running",
+    *,
+    pid: int | None = None,
 ) -> dict[str, object]:
+    props: dict[str, object] = {
+        "media.class": media_class,
+        "object.serial": serial,
+        "application.process.binary": binary,
+        "application.name": app,
+        "node.name": app,
+    }
+    if pid is not None:
+        props["application.process.id"] = str(pid)
     return {
         "id": serial,
         "type": "PipeWire:Interface:Node",
-        "info": {
-            "state": state,
-            "props": {
-                "media.class": media_class,
-                "object.serial": serial,
-                "application.process.binary": binary,
-                "application.name": app,
-                "node.name": app,
-            },
-        },
+        "info": {"state": state, "props": props},
     }
 
 
@@ -245,6 +249,20 @@ def test_only_the_named_apps_streams_are_followed() -> None:
     assert match_app_streams(objects, ["discord"]) == ["2"]
     assert match_app_streams(objects, ["DISCORD", "spotify"]) == ["1", "2"]
     assert match_app_streams(objects, []) == []
+
+
+def test_audio_playing_elsewhere_is_any_running_output_stream_but_jarvis_own() -> None:
+    def ours(pid: int) -> bool:
+        return pid == 7
+
+    jarvis = _stream(1, "pw-play", "pw-play", pid=7)
+    spotify = _stream(2, "spotify", "Spotify", pid=50)
+    paused = _stream(3, "spotify", "Spotify", state="idle", pid=50)
+    mic = _stream(4, "Discord", "mic", media_class="Stream/Input/Audio", pid=60)
+
+    assert others_playing([jarvis, spotify], ours)
+    assert not others_playing([jarvis, paused, mic, {"id": 5, "info": None}], ours)
+    assert others_playing([_stream(6, "mpv", "mpv")], ours)  # no process id: not Jarvis's
 
 
 def test_app_audio_waits_for_the_app_then_records_it() -> None:
@@ -497,6 +515,65 @@ def test_app_audio_drops_a_recorder_whose_stream_is_gone() -> None:
 
     assert switched
     assert targets == ["42", "43"]
+
+
+def test_app_audio_hears_every_stream_the_app_plays_mixed() -> None:
+    targets: list[str] = []
+
+    def command_for(target: str) -> list[str]:
+        targets.append(target)
+        return _tone({"42": 1, "43": 2}[target])
+
+    audio = AppAudio(
+        ["discord"],
+        find=lambda _apps: ["42", "43"],
+        poll_s=0.01,
+        command_for=command_for,
+        feeds=lambda _pid: [],
+    )
+    heard = _frames_until(audio.frames(), _value(1) + _value(2))
+    audio.stop()
+
+    assert heard
+    assert sorted(targets[:2]) == ["42", "43"]
+
+
+def test_app_audio_takes_in_a_stream_the_app_starts_while_it_records() -> None:
+    targets: list[str] = []
+    finds = iter([["42"], ["42"]])
+
+    def command_for(target: str) -> list[str]:
+        targets.append(target)
+        return _tone({"42": 1, "43": 2}[target])
+
+    audio = AppAudio(
+        ["discord"],
+        find=lambda _apps: next(finds, ["42", "43"]),
+        poll_s=0.01,
+        command_for=command_for,
+        feeds=lambda _pid: [],
+    )
+    heard = _frames_until(audio.frames(), _value(1) + _value(2))
+    audio.stop()
+
+    assert heard
+    assert targets[0] == "42"
+
+
+def test_every_playing_stream_of_the_apps_is_followed_or_else_one_idle_one() -> None:
+    playing = [
+        _stream(1, "Discord", "Chromium", state="idle"),
+        _stream(2, "Discord", "WEBRTC VoiceEngine"),
+        _stream(3, "Discord", "Notifications"),
+    ]
+    idle = [
+        _stream(1, "Discord", "Chromium", state="idle"),
+        _stream(4, "Discord", "x", state="idle"),
+    ]
+
+    assert playing_app_streams(playing, ["discord"]) == ["2", "3"]
+    assert playing_app_streams(idle, ["discord"]) == ["1"]
+    assert playing_app_streams(playing, ["spotify"]) == []
 
 
 def test_app_audio_keeps_waiting_when_the_recorder_cannot_start() -> None:

@@ -15,7 +15,7 @@ import logging
 import math
 import re
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from jarvis.files import write_atomic
@@ -181,6 +181,12 @@ class Conversation:
         self.summary_private = self.summary_private or any(turn.private for turn in folded)
         self.summary = summary.strip()
         del self.turns[: len(folded)]
+
+    def fitted_messages(self) -> list[dict[str, Any]]:
+        """Return what `drop_to_fit` would leave, as messages, and change nothing."""
+        view = replace(self, turns=list(self.turns))
+        view.drop_to_fit()
+        return view.messages()
 
     def drop_to_fit(self) -> int:
         """Drop the oldest turns, then the summary, until the conversation fits; return how many."""

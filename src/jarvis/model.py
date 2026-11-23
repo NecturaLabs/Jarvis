@@ -2,6 +2,7 @@
 
 import json
 import math
+import queue
 import threading
 import time
 from contextlib import contextmanager
@@ -63,11 +64,13 @@ class ChatModel(Protocol):
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
+        load_s: float = 0.0,
     ) -> dict[str, Any]:
         """Return the assistant message; with `require_tool`, the model must call a tool.
 
-        `timeout_s` caps how long this one call may wait (the time the request has left). With
-        `on_delta`, the answer is streamed and each piece is passed to it as it arrives; an
+        `timeout_s` caps how long this one call may wait (the time the request has left);
+        `load_s` is how much longer than one answer it may take, as the model must load first.
+        With `on_delta`, the answer is streamed and each piece is passed to it as it arrives; an
         exception it raises ends the call and is raised from here. `max_tokens` caps the answer.
         The message also carries `finish_reason` ("length" when the cap cut it) and `usage`
         (the server's token counts) when the server sent them.
@@ -361,13 +364,14 @@ class StrataModel:
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
+        load_s: float = 0.0,
     ) -> dict[str, Any]:
         """Send one chat completion with thinking off; retry once after a dropped connection.
 
         The call waits at most `timeout_s` (when given) and never longer than the configured
-        request timeout. With `on_delta` the answer is streamed (see `ChatModel.chat`); a
-        connection that drops after a piece was passed on is not retried, since that piece
-        may already have been spoken.
+        request timeout, plus `load_s` when the model must load first. With `on_delta` the
+        answer is streamed (see `ChatModel.chat`); a connection that drops after a piece was
+        passed on is not retried, since that piece may already have been spoken.
 
         Raises:
             ModelError: the server refused, failed, stayed unreachable or ran out of time.
@@ -388,7 +392,7 @@ class StrataModel:
                 # Strata keeps the system prompt and tools read once, pinned, so a request reads
                 # only its own words (an engine without pin support ignores the mark).
                 body["strata_prefix"] = {"messages": 1}
-        limit = self.config.request_timeout_s
+        limit = self.config.request_timeout_s + load_s
         if timeout_s is not None:
             limit = min(limit, timeout_s)
         deadline = self.clock() + limit
@@ -431,10 +435,7 @@ class StrataModel:
             return _message(response)
         answer = _Assembly()
         finished = False
-        for event in _events(response.iter_lines()):
-            if self.clock() > deadline:
-                msg = "model server took too long to answer"
-                raise ModelError(msg)
+        for event in _events(self._lines_until(response, deadline)):
             usage = event.get("usage")
             if isinstance(usage, dict):
                 answer.usage = cast("dict[str, Any]", usage)
@@ -455,6 +456,42 @@ class StrataModel:
             msg = "model server's answer ended before it was finished"
             raise ModelError(msg)
         return answer.message()
+
+    def _lines_until(self, response: httpx.Response, deadline: float) -> Iterator[str]:
+        """Yield the response's lines, read on a thread of their own, until `deadline` on `clock`.
+
+        The read timeout restarts with every byte, so a stream that stalls, or trickles, would
+        otherwise run on past its time; here it ends at it, whether a line comes or not. Leaving
+        `client.stream` closes the response, which ends the reader.
+
+        Raises:
+            ModelError: the time ran out.
+        """
+        lines: queue.Queue[str | Exception | None] = queue.Queue()
+
+        def read() -> None:
+            try:
+                for line in response.iter_lines():
+                    lines.put(line)
+            except Exception as exc:  # ruff: ignore[blind-except] - raised on the caller's thread
+                lines.put(exc)
+            else:
+                lines.put(None)
+
+        threading.Thread(target=read, name="jarvis-model-stream", daemon=True).start()
+        late = "model server took too long to answer"
+        while True:
+            try:
+                line = lines.get(timeout=max(0.0, deadline - self.clock()))
+            except queue.Empty:
+                raise ModelError(late) from None
+            if self.clock() > deadline:
+                raise ModelError(late)
+            if line is None:
+                return
+            if isinstance(line, Exception):
+                raise line
+            yield line
 
     def _wait_ready(self, seconds: float) -> None:
         deadline = self.clock() + seconds

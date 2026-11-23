@@ -234,6 +234,7 @@ class GoodThenBad:
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
+        load_s: float = 0.0,
     ) -> dict[str, Any]:
         model = self.good if self.good.calls else self.bad
         return model.chat(
@@ -243,6 +244,7 @@ class GoodThenBad:
             timeout_s=timeout_s,
             on_delta=on_delta,
             max_tokens=max_tokens,
+            load_s=load_s,
         )
 
     def is_loaded(self) -> bool | None:  # ruff: ignore[no-self-use] - the ChatModel protocol

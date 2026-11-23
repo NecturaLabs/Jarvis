@@ -131,28 +131,22 @@ class AppOps:
         if not self._compositor.run(f"hl.exec_cmd({hyprland.lua_string(rule)})"):
             msg = f"Hyprland did not take the command, so {name} was not opened"
             raise OperationError(msg)
-        before = {w.address for w in already}
-        new = self._new(mine, before)
+        new = mine  # none of its windows was open, so each one that shows is the new program
         if self._wait(new) is None:
             text = (
                 f"Started {name}, but no window of it showed within {OPEN_WAIT_S:g} seconds; it "
                 "may still be starting."
             )
-            return Result(text, Origin.TOOL_STATUS, ok=False)
+            return Result(text, Origin.TOOL_STATUS, ok=False, acted=True)
         self._gather(new, workspace)
         self._sleep(SETTLE_S)
         strays = self._gather(new, workspace)
         if strays:
             seen = ", ".join(sorted({_where(_place_named(w.workspace)) for w in strays}))
             text = f"Opened {name}, but a window of it stayed {seen}, not {_where(place)}."
-            return Result(text, Origin.TOOL_STATUS, ok=False)
+            return Result(text, Origin.TOOL_STATUS, ok=False, acted=True)
         sentence = f"Opened {name} {_where(place)}."
         return Result(sentence, Origin.TOOL_STATUS, spoken=sentence)
-
-    @staticmethod
-    def _new(mine: Callable[[Placed], bool], before: set[str]) -> Callable[[Placed], bool]:
-        """Match only the program's windows that were not open before it was started."""
-        return lambda w: mine(w) and w.address not in before
 
     def _wait(self, mine: Callable[[Placed], bool]) -> Placed | None:
         """Return the program's first window once it shows, None after `OPEN_WAIT_S`."""

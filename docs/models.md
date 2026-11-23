@@ -82,7 +82,7 @@ none comes as a Strata pack.
 |---|---|---|
 | Plain command: "pause", "next song", "volume 40", "what's playing" | Matched in code, run through the same policy, confirmation and audit as a model call, answered from the operation's own sentence. No model, no load wait. | about 0.3 s |
 | Anything else the model answers (a chat reply is one model call: `no_action` carries the reply) | One prompt read of about 2,900 tokens (2,100 before the web tools), then generation; a call after a tool result reads only the new part | about 4.5 s of prompt reading at about 640 tokens/s, plus generation; the first sentence is spoken once it is written ([ADR 0008](adr/0008-speak-while-writing-and-barge-in.md)) |
-| Model not loaded | Cold load | about 107 s with a game running; Jarvis says "One moment, waking up". The request gets 180 s more (270 s in all instead of 90 s); each model call is still capped by `model.request_timeout_s` |
+| Model not loaded | Cold load | about 107 s with a game running; Jarvis says "One moment, waking up". The request gets 180 s more (270 s in all instead of 90 s), and so does its first model call, which waits for the load (`model.request_timeout_s` plus 180 s); later calls keep `model.request_timeout_s` |
 
 Memory while loaded, idle: about 38 GB of RAM and 7.3 GiB of VRAM at an 8,192-token context, no GPU or CPU
 use. VRAM grows by about 0.05 GiB per 1,000 tokens of context (the engine's `drm-memory-vram` in
@@ -155,7 +155,8 @@ word to 0.03 s and after each sentence to 0.2 s. Measured on 2026-11-21 with `bm
 0.3 to 0.4 s, a first sentence 0.2 to 0.4 s, four sentences 1.4 s. While Strata writes, a two-sentence chunk
 took 1.11 s instead of 0.63 s, and Strata wrote 41 tokens/s instead of 45.7. Before each sentence plays, a
 second copy of the wake model checks it (6 to 33 ms), so a sentence that would trigger the wake word cannot be
-spoken over.
+spoken over while it plays and for a second after (`GUARD_TAIL_S`, the player's buffer and the wake model's lag);
+the sentences before and after it can.
 
 ### Kokoro (default, `kokoro:<name>`)
 
@@ -284,6 +285,7 @@ spoken over.
 | pydantic | 2.14.3 | MIT |
 | textual (the `jarvis chat` window) | 8.2.8 | MIT |
 | textual-image (pictures in the chat window) | 0.14.2 | LGPL-3.0-or-later |
+| tomlkit (saves a setting into `config.toml` without touching the rest) | 0.15.2 | MIT |
 | trafilatura (the main text of a web page) | 2.3.1 | Apache-2.0 |
 
 What textual pulls in: rich 15.0.0, markdown-it-py 4.3.0, mdit-py-plugins 0.7.0, mdurl 0.1.2 and platformdirs
@@ -291,6 +293,8 @@ What textual pulls in: rich 15.0.0, markdown-it-py 4.3.0, mdit-py-plugins 0.7.0,
 
 textual-image needs only pillow and rich, both above. It is LGPL-3.0-or-later, which a GPL-3.0-or-later
 program may use. Version 0.14.2 (2026-10-20) is pinned because 0.14.3 and 0.14.4 were under two weeks old.
+
+tomlkit has no dependencies of its own.
 
 What trafilatura pulls in: lxml 6.1.3 and lxml-html-clean 0.4.6 (BSD-3-Clause), jusText 3.0.2 (BSD-2-Clause,
 read from its LICENSE), courlan 1.5.0, htmldate 1.11.0 and tzlocal 5.4.5, dateparser 1.5.1, python-dateutil

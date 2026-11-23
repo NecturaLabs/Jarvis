@@ -101,8 +101,9 @@ class TimedModel:
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
+        load_s: float = 0.0,
     ) -> dict[str, Any]:
-        del messages, require_tool, timeout_s, max_tokens
+        del messages, require_tool, timeout_s, max_tokens, load_s
         self.offered.append([str(tool["function"]["name"]) for tool in tools])
         written = self.calls.pop(0)
         began = self.clock.now

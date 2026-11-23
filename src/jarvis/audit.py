@@ -9,6 +9,7 @@ goes to the service log instead.
 """
 
 import contextlib
+import fcntl
 import itertools
 import json
 import logging
@@ -35,6 +36,15 @@ def _line(entry: dict[str, object]) -> str:
         return json.dumps(entry, default=str, ensure_ascii=True) + "\n"
     except TypeError, ValueError:
         return json.dumps({k: repr(v) for k, v in entry.items()}, ensure_ascii=True) + "\n"
+
+
+def _is_current(path: Path, status: os.stat_result) -> bool:
+    """Whether the open file with `status` is still the one at `path`."""
+    try:
+        current = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return (current.st_dev, current.st_ino) == (status.st_dev, status.st_ino)
 
 
 class AuditLog:
@@ -80,24 +90,47 @@ class AuditLog:
                 log.exception("the audit log could not be written; event: %s", line.strip())
 
     def _append(self, path: Path, line: str) -> None:
+        """Write `line` under an exclusive lock on the log, rotating it first when it is full.
+
+        Other Jarvis processes write the same log, so the lock is `flock` on the open file: the
+        size check, the rotation and the write happen while no other writer holds it. A writer
+        that waited while the log was rotated finds its file is no longer the log and opens the
+        new one, so a full log is rotated once and no event is lost.
+        """
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         data = line.encode("ascii")
-        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
-        fd = os.open(path, flags, _PRIVATE)
+        fd = self._open_locked(path)
         try:
             status = os.fstat(fd)
-            if stat.S_IMODE(status.st_mode) != _PRIVATE:
-                os.fchmod(fd, _PRIVATE)
             if status.st_size and status.st_size + len(data) > self._max_bytes:
-                os.close(fd)
-                fd = -1
                 self._rotate(path)
-                fd = os.open(path, flags | os.O_EXCL, _PRIVATE)
+                old, fd = fd, -1
+                with contextlib.suppress(OSError):
+                    os.close(old)  # releases the old log's lock once the new one is in place
+                fd = self._open_locked(path)
             os.write(fd, data)
         finally:
             if fd >= 0:
                 with contextlib.suppress(OSError):
                     os.close(fd)
+
+    @staticmethod
+    def _open_locked(path: Path) -> int:
+        """Open the log, private, holding its lock; retry while another writer replaces it."""
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+        while True:
+            fd = os.open(path, flags, _PRIVATE)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                status = os.fstat(fd)
+            except BaseException:
+                os.close(fd)
+                raise
+            if _is_current(path, status):
+                if stat.S_IMODE(status.st_mode) != _PRIVATE:
+                    os.fchmod(fd, _PRIVATE)
+                return fd
+            os.close(fd)  # rotated while waiting: the log is a new file now
 
     def _rotate(self, path: Path) -> None:
         """Move each older log one place on (`.1` to `.2`...), the oldest dropped, then the log."""

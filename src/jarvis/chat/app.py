@@ -17,6 +17,7 @@ working line on the first, and the words, the caret and the footer two cells in.
 
 import contextlib
 import inspect
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -73,12 +74,15 @@ if TYPE_CHECKING:
     from jarvis.pictures import Picture, PictureCache
     from jarvis.sysinfo import Stats
 
+log = logging.getLogger(__name__)
+
 
 POLL_S = 0.25
 STATUS_S = 10.0
 STATS_S = 2.0
 TICK_S = 0.12
 ARM_S = 0.4  # a choice made sooner than this after a question appears was meant for something else
+STILL_WORKING = "I'm still working on the last request; esc stops it."
 QUIT_WINDOW_S = 2.0  # a second Ctrl+C this soon after the first leaves
 MAX_ENTRIES = 600  # transcript widgets kept; older ones are removed
 RESUMED_TURNS = 12  # remembered turns shown when the window opens on an earlier conversation
@@ -384,7 +388,7 @@ class ChatApp(App[None]):
         with Vertical(id="question"):
             yield Static("", id="question-text", markup=False)
             yield ChoiceList(id="choices")
-            yield Static("enter, 1 or y: yes · 2, n or esc: no", classes="panel-hint")
+            yield Static("1: yes · 2, n, esc or enter: no", classes="panel-hint")
         with Vertical(id="settings"):
             yield PointerList(id="settings-list")
             yield Static(
@@ -864,6 +868,10 @@ class ChatApp(App[None]):
         """Run a command or send a request."""
         choice = self._menu_choice()
         text = event.text.strip()
+        if text and choice is None and not text.startswith("/") and self._busy():
+            # Refused before anything is taken from the box: the words and pictures stay there.
+            self._note(STILL_WORKING, "warn")
+            return
         pictures = self._sent_pictures(text)
         pasted = self._sent_pastes(text)
         if choice is not None and choice.strip() != text:
@@ -946,6 +954,9 @@ class ChatApp(App[None]):
                 picture = load()
             except PictureError as exc:
                 self._from_worker(self._note, str(exc), "warn")
+            except Exception:  # a picture never ends the window
+                log.exception("a picture could not be read")
+                self._from_worker(self._note, "That picture couldn't be read.", "warn")
             else:
                 self._from_worker(self._attach_picture, picture)
 
@@ -1234,6 +1245,10 @@ class ChatApp(App[None]):
 
     # A request
 
+    def _busy(self) -> bool:
+        with self._lock:
+            return self._work is not None
+
     def _start(self, label: str) -> bool:
         with self._lock:
             if self._work is not None:
@@ -1242,7 +1257,7 @@ class ChatApp(App[None]):
                 busy = False
                 self._work = _Work(self._clock(), label)
         if busy:
-            self._note("I'm still working on the last request; esc stops it.", "warn")
+            self._note(STILL_WORKING, "warn")
             return False
         self._ticker = self.set_interval(TICK_S, self._tick)
         self._tick()
@@ -1370,11 +1385,18 @@ class ChatApp(App[None]):
             words.append(f"\n{preview}", style="bright_black")
         self.query_one("#question-text", Static).update(words)
         choices = self.query_one("#choices", ChoiceList)
-        choices.show([("1. Yes",), ("2. No",)], ("",), ["yes", "no"])
+        choices.show([("1. Yes",), ("2. No",)], ("",), ["yes", "no"], highlighted=1)
+        choices.on_typed = self._typing_over_question
         self.query_one("#question").display = True
         self.query_one("#prompt").display = False
         choices.focus()
         self._tick()
+
+    def _typing_over_question(self) -> None:
+        """The owner is typing words while a question is open: a yes waits `ARM_S` from now."""
+        with self._lock:
+            if self._question is not None:
+                self._question.shown_at = self._clock()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         """Enter on a choice, a command in the menu, or a setting."""
@@ -1391,7 +1413,7 @@ class ChatApp(App[None]):
                 pass
 
     def action_yes(self) -> None:
-        """1 or y: answer the open question yes."""
+        """1: answer the open question yes."""
         self._answer(yes=True)
 
     def action_no(self) -> None:

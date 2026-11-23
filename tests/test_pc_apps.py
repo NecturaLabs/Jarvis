@@ -6,7 +6,13 @@ from dataclasses import dataclass, field
 import pytest
 
 from jarvis.config import AppConfig, Config
-from jarvis.operations import ArgumentError, OperationError, request_scope, validate_args
+from jarvis.operations import (
+    ArgumentError,
+    OperationError,
+    Result,
+    request_scope,
+    validate_args,
+)
 from jarvis.pc import hyprland
 from jarvis.pc.apps import OPEN_WAIT_S, SPECIAL, AppOps, Placed
 
@@ -61,10 +67,14 @@ def _ops(fake: FakeHyprland, clock: Clock | None = None) -> AppOps:
     return AppOps({"spotify": SPOTIFY}, fake, clock=clock, sleep=clock.sleep)
 
 
-def _open(ops: AppOps, where: str, *, foreign: bool = False) -> str:
+def _opened(ops: AppOps, where: str, *, foreign: bool = False) -> Result:
     (op,) = ops.operations()
     with request_scope(foreign=foreign):
-        return op.run(validate_args(op, {"app": "spotify", "where": where})).text
+        return op.run(validate_args(op, {"app": "spotify", "where": where}))
+
+
+def _open(ops: AppOps, where: str, *, foreign: bool = False) -> str:
+    return _opened(ops, where, foreign=foreign).text
 
 
 def test_it_opens_on_the_workspace_the_owner_named_without_focus() -> None:
@@ -103,21 +113,25 @@ def test_a_window_that_lands_elsewhere_is_moved_and_checked_again() -> None:
 def test_a_window_that_will_not_move_is_reported_not_claimed() -> None:
     fake = FakeHyprland(opens_on="1", moves_work=False)
 
-    result_text = _open(_ops(fake), "4")
+    result = _opened(_ops(fake), "4")
 
     assert (
-        result_text
+        result.text
         == "Opened spotify, but a window of it stayed on workspace 1, not on workspace 4."
     )
+    assert not result.ok
+    assert result.acted
 
 
 def test_no_window_in_time_is_said_plainly() -> None:
     clock = Clock()
     fake = FakeHyprland(opens_on=None)
 
-    text = _open(_ops(fake, clock), "2")
+    result = _opened(_ops(fake, clock), "2")
 
-    assert text.startswith("Started spotify, but no window of it showed within 15 seconds")
+    assert result.text.startswith("Started spotify, but no window of it showed within 15 seconds")
+    assert not result.ok
+    assert result.acted  # the program was started
     assert clock.now >= 1000.0 + OPEN_WAIT_S
 
 

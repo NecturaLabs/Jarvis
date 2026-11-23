@@ -658,6 +658,7 @@ class ProcessOps:
             f"{STOP_WAIT_S:g} seconds; it may be asking to save. Only if the owner asks, stop it "
             "again with force=true.",
             ok=False,
+            acted=True,
         )
 
     def operations(self) -> list[Operation]:

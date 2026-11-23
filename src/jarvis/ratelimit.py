@@ -71,10 +71,12 @@ class ActionRate:
         with self._lock:
             now = self._clock()
             self._own = self._recent(self._own, now)
-            allowed = len(self._own) < self.limit
+            # Both counts must allow it: the shared one may have been emptied or damaged.
+            own = len(self._own) < self.limit
+            allowed = own
             if self._path is not None:
                 try:
-                    allowed = self._shared(self._path, now, take=take)
+                    allowed = self._shared(self._path, now, take=take and own) and own
                 except OSError as exc:
                     log.warning("the action count in %s could not be used: %s", self._path, exc)
             if allowed and take:

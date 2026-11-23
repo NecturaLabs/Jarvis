@@ -267,6 +267,7 @@ def test_a_scope_that_could_not_be_seen_ended_is_reported() -> None:
     result = _run(_ops(FakeRunner(Ran(0, "done\n", ended=False))), "true")
 
     assert not result.ok
+    assert result.acted  # the command ran
     assert "may still be running" in result.text
 
 
@@ -300,6 +301,7 @@ def test_a_failing_command_is_not_ok() -> None:
     result = _run(_ops(FakeRunner(Ran(2, "no such file\n"))), "ls nowhere")
 
     assert not result.ok
+    assert result.acted  # the command ran
     assert result.text.startswith("Exit status 2.")
 
 
@@ -307,6 +309,7 @@ def test_a_command_ended_by_a_signal_says_so() -> None:
     result = _run(_ops(FakeRunner(Ran(-9, ""))), "grow")
 
     assert not result.ok
+    assert result.acted  # the command ran
     assert result.text.startswith("Ended by signal 9")
 
 
@@ -314,6 +317,7 @@ def test_a_command_past_its_time_is_stopped_and_says_so() -> None:
     result = _run(_ops(FakeRunner(Ran(None, "partial"))), "sleep 999")
 
     assert not result.ok
+    assert result.acted  # the command ran
     assert result.spoken == "Stopped after 20 seconds, the time limit."
     assert "partial" in result.text
 

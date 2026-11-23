@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from PIL import Image
 from rich.console import Console
 from rich.text import Text
+from test_pictures import claimed_png
 from textual import events
 from textual.containers import VerticalScroll
 from textual.widgets import Markdown, OptionList, Static
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
     from pathlib import Path
     from typing import Any
 
+    import pytest
     from textual.app import App
     from textual.pilot import Pilot
     from textual.widget import Widget
@@ -649,25 +651,47 @@ def test_the_highlighted_choice_is_pointed_at() -> None:
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "queue low tide")
         await _until(pilot, lambda: _question_open(app))
+        assert _pointed(app, "#choices") == "2. No"  # no is the choice Enter takes at first
+        await pilot.press("up")
         assert _pointed(app, "#choices") == "1. Yes"
-        await pilot.press("down")
-        assert _pointed(app, "#choices") == "2. No"
 
     _run(test, app)
 
 
-def test_enter_1_or_y_answers_yes() -> None:
-    for key in ("enter", "1", "y"):
-        assert _asking((key,)) == [True]
+def test_1_or_up_then_enter_answers_yes() -> None:
+    # Requirement changed (audit): y and Enter no longer say yes, as letters typed ahead did.
+    for keys in (("1",), ("up", "enter")):
+        assert _asking(keys) == [True]
 
 
-def test_2_n_esc_or_down_then_enter_answer_no() -> None:
-    for keys in (("2",), ("n",), ("escape",), ("down", "enter")):
+def test_2_n_esc_or_enter_answer_no() -> None:
+    for keys in (("2",), ("n",), ("escape",), ("enter",)):
         assert _asking(keys) == [False]
 
 
 def test_a_yes_pressed_as_the_question_opens_does_not_count() -> None:
-    assert _asking(("y",), wait=False) == [False]
+    assert _asking(("1",), wait=False) == [False]
+
+
+def test_words_typed_ahead_never_answer_the_question() -> None:
+    answers: list[bool | Declined] = []
+    done = threading.Event()
+    clock = Clock()
+    app = _app(session=_confirming(answers, done), clock=clock)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "queue low tide")
+        await _until(pilot, lambda: _question_open(app))
+        clock.now += 1
+        await pilot.press("w", "h", "y", "space", "1")
+        await pilot.pause(0.05)
+        assert not done.is_set()  # typing, then a 1 among the words: still open
+        clock.now += 1
+        await pilot.press("1")
+        await _until(pilot, done.is_set)
+
+    _run(test, app)
+    assert answers == [True]
 
 
 def test_leaving_while_a_question_waits_answers_no() -> None:
@@ -1115,6 +1139,66 @@ def test_ctrl_v_attaches_a_copied_picture_as_a_tag_like_claude_code() -> None:
         await _until(pilot, lambda: not app.query_one("#pictures").display)
 
     _run(test, app)
+
+
+def test_a_picture_claiming_a_huge_size_is_refused_with_a_note() -> None:
+    huge = Clip(image=claimed_png(20000, 20000), mime="image/png")
+    app = _picture_app(FakeSession(), paste=_clipboard(huge))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.press("ctrl+v")
+        await _until(pilot, lambda: _has(app, "too large"))
+        assert app.is_running
+
+    _run(test, app)
+
+
+def test_a_picture_that_fails_to_load_unexpectedly_leaves_the_window_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(_data: bytes, _name: str) -> Picture:
+        raise RuntimeError("decoder bug")
+
+    monkeypatch.setattr("jarvis.chat.app.prepare", broken)
+    app = _picture_app(FakeSession(), paste=_clipboard(Clip(image=_png(), mime="image/png")))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.press("ctrl+v")
+        await _until(pilot, lambda: _has(app, "couldn't be read"))
+        assert app.is_running
+
+    _run(test, app)
+
+
+def test_a_request_sent_while_another_works_keeps_its_words_and_pictures() -> None:
+    release = threading.Event()
+
+    def answer(text: str, _hooks: Hooks) -> str:
+        if text == "pause":
+            release.wait(5)
+        return "Done."
+
+    session = FakeSession(answer)
+    app = _picture_app(session, paste=_clipboard(Clip(image=_png(), mime="image/png")))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "pause")
+        await _until(pilot, lambda: session.asked == ["pause"])
+        await pilot.press("ctrl+v")
+        await _until(pilot, lambda: "[Image #1]" in _input(app).text)
+        await pilot.press("w", "h", "a", "t", "?")
+        await pilot.press("enter")
+        await _until(pilot, lambda: _has(app, "still working"))
+        assert _input(app).text == "[Image #1] what?"
+        assert "pasted picture" in _attached(app)
+        release.set()
+        await _until(pilot, lambda: not app.query_one("#working", Static).display)
+        await pilot.press("enter")
+        await _until(pilot, lambda: len(session.asked) == 2)
+
+    _run(test, app)
+    assert session.asked == ["pause", "[Image #1] what?"]
+    assert session.pictures == [[], ["pasted picture"]]
 
 
 def test_ctrl_v_pastes_copied_text_where_the_cursor_is() -> None:

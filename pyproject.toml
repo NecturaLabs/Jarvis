@@ -29,6 +29,7 @@ dependencies = [
     "pydantic==2.14.3",
     "textual==8.2.8",
     "textual-image==0.14.2",
+    "tomlkit==0.15.2",
     "trafilatura==2.3.1",
 ]
 

@@ -314,6 +314,7 @@ class VoiceLoop:
         pc_retry_s: float = 1.0,
         dictating: Callable[[], bool | None] = lambda: False,
         meeting: Callable[[], bool] = lambda: False,
+        media_playing: Callable[[], bool | None] = lambda: False,
         audit: _Audit | None = None,
         paused: Callable[[], bool] = lambda: False,
         until_resumed: Callable[[], None] = lambda: None,
@@ -333,7 +334,9 @@ class VoiceLoop:
         when that is not known: a wake word heard meanwhile is ignored (and said to `audit`), and
         no follow-up is taken (also while the answer is unknown). `meeting` says whether a Voxtype
         meeting is running, which blocks follow-ups too. Both must answer at once: they are asked
-        on this thread. `paused` says whether
+        on this thread. `media_playing` says whether another program plays audio (None when not
+        known); no follow-up is taken then either, as what it plays is not the owner speaking to
+        Jarvis. `paused` says whether
         `jarvis pause` let go of the microphone: a request in flight then ends without an
         apology, and PC audio is not listened to; `until_resumed` returns once it is over.
         `reopen` starts the microphone again after its capture ended on its own (PipeWire
@@ -359,6 +362,7 @@ class VoiceLoop:
         self._pc_retry_s = pc_retry_s
         self._dictating = dictating
         self._meeting = meeting
+        self._media_playing = media_playing
         self._audit = audit
         self._paused = paused
         self._until_resumed = until_resumed
@@ -700,7 +704,8 @@ class VoiceLoop:
         """Listen for `follow_up_s` after a spoken reply; return the request heard, if any.
 
         Only after a reply to the owner's own voice has finished playing, and never while the
-        owner dictates: speech in the window then is dictation, not a request. A pause ends the
+        owner dictates (speech in the window then is dictation, not a request) or another
+        program plays audio (sung lyrics, a video, a call). A pause ends the
         window, and nothing heard in it is taken once Jarvis is paused. Speech heard while
         PC audio also held speech is dropped, as it may be a voice from the PC. Speech too short
         for a request (a cough, a click) is dropped untranscribed and the window listens on for
@@ -711,6 +716,9 @@ class VoiceLoop:
             return None
         if self._using_voxtype():
             log.info("no follow-up: the owner is dictating or in a meeting")
+            return None
+        if self._over_audio():
+            log.info("no follow-up: other audio is playing, or that is not known")
             return None
         self.state = State.FOLLOW_UP
         pc_speech = self._pc_speech
@@ -785,6 +793,9 @@ class VoiceLoop:
             return False
         if self._using_voxtype():
             log.info("dropped a follow-up: the owner started dictating or a meeting")
+            return False
+        if self._over_audio():
+            log.info("dropped a follow-up: other audio started playing")
             return False
         if self._pc_speech != pc_speech:
             log.info("dropped a follow-up: PC audio held speech meanwhile")
@@ -1113,6 +1124,10 @@ class VoiceLoop:
         self._mic.drain()  # frames from before the sleep
         self._after_sleep()
         return True
+
+    def _over_audio(self) -> bool:
+        """Whether another program plays audio (or that is not known) and that shuts follow-ups."""
+        return not self._cfg.follow_up_over_audio and self._media_playing() is not False
 
     def _using_voxtype(self) -> bool:
         """Whether speech may be the owner's dictation or a meeting's (or that is not known)."""

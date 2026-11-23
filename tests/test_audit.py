@@ -2,7 +2,9 @@
 
 import json
 import logging
+import pathlib
 import stat
+import threading
 from typing import TYPE_CHECKING
 
 from jarvis.audit import AuditLog
@@ -136,3 +138,48 @@ def test_a_full_log_keeps_five_older_generations(tmp_path: Path) -> None:
     ] + [int(str(entry["text"]).rsplit(" ", 1)[1]) for entry in _lines(path)]
     assert numbers == list(range(numbers[0], 60))  # oldest first, nothing lost between them
     assert all(stat.S_IMODE(p.stat().st_mode) == 0o600 for p in tmp_path.iterdir())
+
+
+def test_an_event_written_by_another_process_during_rotation_does_not_lose_this_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "audit.jsonl"
+    rotating = AuditLog(path, max_bytes=300, generations=3)
+    other = AuditLog(path, max_bytes=300, generations=3)  # another Jarvis process, own lock
+    rotating.record("request", text="x" * 150)
+    replace = pathlib.Path.replace
+
+    def replace_then_other_writes(source: Path, target: Path) -> Path:
+        moved = replace(source, target)
+        if source == path:  # the full log moved aside, before the new one is opened
+            other.record("reply", text="from the other process")
+        return moved
+
+    monkeypatch.setattr(pathlib.Path, "replace", replace_then_other_writes)
+
+    rotating.record("tool_call", text="the call that rotated")
+
+    assert [entry["event"] for entry in _lines(path.with_name("audit.jsonl.1"))] == ["request"]
+    assert sorted(str(entry["event"]) for entry in _lines(path)) == ["reply", "tool_call"]
+
+
+def test_writers_in_several_processes_lose_nothing_and_rotate_each_full_log_once(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "audit.jsonl"
+    writers = [AuditLog(path, max_bytes=2000, generations=40) for _ in range(4)]
+
+    def write(number: int) -> None:
+        for count in range(150):
+            writers[number].record("request", text=f"{number}-{count:03}")
+
+    threads = [threading.Thread(target=write, args=(number,)) for number in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    files = [path, *(path.with_name(f"audit.jsonl.{n}") for n in range(1, 41))]
+    texts = [str(entry["text"]) for file in files if file.exists() for entry in _lines(file)]
+    assert sorted(texts) == sorted(f"{n}-{c:03}" for n in range(4) for c in range(150))
+    assert all(file.stat().st_size <= 2000 for file in files if file.exists())

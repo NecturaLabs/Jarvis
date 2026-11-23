@@ -133,7 +133,7 @@ class FakeSpotify:
                 device["is_active"] = device["id"] in wanted
         if method in {"PUT", "POST"}:
             return httpx.Response(204)
-        return self._read(path)
+        return self._read(path, request)
 
     def _search(self, request: httpx.Request) -> httpx.Response:
         kind = request.url.params["type"]
@@ -142,7 +142,7 @@ class FakeSpotify:
         page = items[offset : offset + self.page_size]
         return httpx.Response(200, json={f"{kind}s": {"items": page}})
 
-    def _read(self, path: str) -> httpx.Response:
+    def _read(self, path: str, request: httpx.Request) -> httpx.Response:
         routes: dict[str, object] = {
             "/me/player/devices": {"devices": self.devices},
             "/me/top/artists": {"items": self.top_artists},
@@ -150,13 +150,18 @@ class FakeSpotify:
             "/me/following": {"artists": {"items": []}},
             "/me/player/recently-played": {"items": []},
             "/me/playlists": {"items": self.playlists},
-            "/me/tracks": {"items": [{"track": t} for t in self.saved]},
             "/me/player/queue": {"currently_playing": self.playing_item, "queue": self.queue_items},
         }
         if path == "/me/player":
             if self.state is None:
                 return httpx.Response(204)
             return httpx.Response(200, json=self.state)
+        if path == "/me/tracks":  # one page of the saved songs, as Spotify pages them
+            offset = int(request.url.params.get("offset", "0"))
+            limit = int(request.url.params.get("limit", "20"))
+            page = self.saved[offset : offset + limit]
+            items = [{"track": t} for t in page]
+            return httpx.Response(200, json={"items": items, "total": len(self.saved)})
         if path in routes:
             return httpx.Response(200, json=routes[path])
         return httpx.Response(404, json={"error": {"message": f"no route {path}"}})
@@ -425,6 +430,21 @@ def test_liked_songs_play_the_owners_saved_tracks_shuffled(tmp_path: Path) -> No
     assert body["uris"] != [t["uri"] for t in saved]
     assert fake.calls("GET", "/me/tracks")[0].url.params["limit"] == "50"
     assert not fake.calls("GET", "/search")
+
+
+def test_a_big_library_of_liked_songs_plays_songs_from_all_of_it(tmp_path: Path) -> None:
+    saved = [_track(f"Song {i}", "Night Circuit", f"spotify:track:{i}") for i in range(2000)]
+    fake = FakeSpotify(saved=saved)
+
+    result = build_ops(fake, tmp_path).play({"query": "my liked songs", "kind": "liked"})
+
+    assert result.ok
+    (body,) = fake.played
+    played = [int(uri.rsplit(":", 1)[1]) for uri in body["uris"]]
+    assert len(played) == len(set(played)) == 50
+    assert max(played) >= 50  # not only the newest page
+    assert len(fake.calls("GET", "/me/tracks")) <= 4
+    assert "50 of your liked songs" in result.text
 
 
 def test_liked_songs_need_no_query(tmp_path: Path) -> None:
@@ -774,7 +794,7 @@ def test_pause_next_and_previous_never_launch_or_look_up_devices(
 
     result = ops[f"spotify_{run}"].run({})
 
-    assert result.ok
+    assert not result.ok  # nothing was done, so a reply may not say it was
     assert result.text == "Nothing is playing."
     assert not fake.calls("GET", "/me/player/devices")
     assert not fake.transfers
@@ -880,7 +900,7 @@ def test_pausing_with_no_player_state_after_a_refusal_says_nothing_is_playing(
 
     result = find_op(build_ops(fake, tmp_path), "spotify_pause").run({})
 
-    assert result.ok
+    assert not result.ok
     assert result.text == "Nothing is playing."
 
 
@@ -1814,6 +1834,23 @@ def test_a_failed_refresh_is_tried_again_after_a_minute_not_a_period(tmp_path: P
     assert stop.waited == [REFRESH_RETRY_S, REFRESH_RETRY_S]
 
 
+def test_a_refresh_in_which_every_part_of_the_library_failed_is_tried_again_soon(
+    tmp_path: Path,
+) -> None:
+    fake = FakeSpotify(top_artists=[GLASS_HARBOR])
+    parts = ("/me/top/artists", "/me/following", "/me/top/tracks", "/me/player/recently-played")
+    for path in parts:
+        fake.script("GET", path, spotify_error(500, "SERVER_ERROR", "Internal error"))
+    ops = build_ops(fake, tmp_path)
+    stop = _Waits(rounds=1)
+
+    thread = ops.start_refresh(stop)
+    thread.join(timeout=5)
+
+    assert stop.waited == [REFRESH_RETRY_S, SpotifyConfig().library_refresh_s]
+    assert ops.artist_names() == ["Glass Harbor"]  # the retry a minute later loaded them
+
+
 def test_an_expired_login_is_not_retried_every_minute(tmp_path: Path) -> None:
     ops, api = _failing_ops(FakeSpotify(top_artists=[GLASS_HARBOR]), tmp_path)
     api.failure = SpotifyLoginExpired("expired")
@@ -1968,6 +2005,11 @@ def test_a_configured_player_is_targeted_by_play_only(tmp_path: Path, case: Wire
 
 
 NO_ARGUMENTS: dict[str, Any] = {"additionalProperties": False, "properties": {}, "type": "object"}
+SKIP_ARGUMENTS: dict[str, Any] = {
+    "type": "object",
+    "properties": {"count": {"type": "integer", "minimum": 1, "maximum": 10}},
+    "additionalProperties": False,
+}
 SHIPPED: list[tuple[str, str, bool, dict[str, Any]]] = [
     (
         "spotify_play",
@@ -1990,8 +2032,8 @@ SHIPPED: list[tuple[str, str, bool, dict[str, Any]]] = [
     ),
     ("spotify_pause", "safe", True, NO_ARGUMENTS),
     ("spotify_resume", "safe", True, NO_ARGUMENTS),
-    ("spotify_next", "safe", True, NO_ARGUMENTS),
-    ("spotify_previous", "safe", True, NO_ARGUMENTS),
+    ("spotify_next", "safe", True, SKIP_ARGUMENTS),
+    ("spotify_previous", "safe", True, SKIP_ARGUMENTS),
     (
         "spotify_set_volume",
         "safe",
@@ -2062,7 +2104,9 @@ SUMMARIES: list[tuple[str, dict[str, Any], str]] = [
     ("spotify_pause", {}, "pause the music"),
     ("spotify_resume", {}, "resume the music"),
     ("spotify_next", {}, "skip this track"),
+    ("spotify_next", {"count": 3}, "skip 3 tracks"),
     ("spotify_previous", {}, "go back a track"),
+    ("spotify_previous", {"count": 2}, "go back 2 tracks"),
     ("spotify_set_volume", {"percent": 40}, "set the volume to 40 percent"),
     ("spotify_change_volume", {"delta": 10}, "change the volume by 10"),
     (
@@ -2117,3 +2161,62 @@ def test_the_queue_size_limit_follows_the_owners_setting(tmp_path: Path) -> None
     queue = find_op(ops, "spotify_queue")
 
     assert queue.parameters["properties"]["count"]["maximum"] == 7
+
+
+# --- Skipping several tracks ---
+
+
+@pytest.mark.parametrize(
+    ("name", "path", "text"),
+    [
+        ("spotify_next", "/me/player/next", "Skipped 3 tracks."),
+        ("spotify_previous", "/me/player/previous", "Went back 3 tracks."),
+    ],
+)
+def test_a_count_skips_that_many_tracks(tmp_path: Path, name: str, path: str, text: str) -> None:
+    fake = FakeSpotify(state=playing_state())
+    op = find_op(build_ops(fake, tmp_path), name)
+
+    result = op.run(validate_args(op, {"count": 3}))
+
+    assert result.ok
+    assert result.text == text
+    assert len(fake.calls("POST", path)) == 3
+
+
+def test_skipping_is_one_track_without_a_count(tmp_path: Path) -> None:
+    fake = FakeSpotify(state=playing_state())
+    op = find_op(build_ops(fake, tmp_path), "spotify_next")
+
+    assert op.run(validate_args(op, {})).spoken == "Skipped."
+    assert len(fake.calls("POST", "/me/player/next")) == 1
+
+
+def test_a_count_is_capped(tmp_path: Path) -> None:
+    op = find_op(build_ops(FakeSpotify(), tmp_path), "spotify_next")
+
+    with pytest.raises(ArgumentError):
+        validate_args(op, {"count": 11})
+
+
+def test_a_skip_that_fails_part_way_says_how_far_it_got(tmp_path: Path) -> None:
+    fake = FakeSpotify(state=playing_state())
+    fake.script("POST", "/me/player/next", httpx.Response(204), httpx.ReadTimeout("slow"))
+    op = find_op(build_ops(fake, tmp_path), "spotify_next")
+
+    result = op.run(validate_args(op, {"count": 3}))
+
+    assert not result.ok
+    assert result.acted
+    assert result.text.startswith("Skipped 1 of 3 tracks")
+    assert "do not retry" in result.text
+    assert len(fake.calls("POST", "/me/player/next")) == 2
+
+
+def test_a_skip_that_fails_at_once_raises(tmp_path: Path) -> None:
+    fake = FakeSpotify(state=playing_state())
+    fake.script("POST", "/me/player/next", httpx.ReadTimeout("slow"))
+    op = find_op(build_ops(fake, tmp_path), "spotify_next")
+
+    with pytest.raises(UncertainOutcomeError):
+        op.run(validate_args(op, {"count": 2}))

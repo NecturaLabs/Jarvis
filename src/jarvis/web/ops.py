@@ -6,7 +6,8 @@ someone else (search results, pages, Reddit) keeps the `web` origin, so it stays
 raises a class. Weather and time answers carry no `web` origin: they are built here from numbers,
 codes, checked identifiers and the place the model asked about, so they do not make the next
 action need a yes. Every operation that sends words the model wrote (a place, a query) is
-`outbound`: while text from the owner's files is in the conversation it needs a yes.
+`outbound`: while text from the owner's files is in the conversation it needs a yes. The time and
+the weather send such words only in a place, so asked about here, they need none.
 
 A page or a Reddit thread can be opened only when a search in this conversation returned it: the
 model cannot be talked into sending conversation text to an address a page made up. The same holds
@@ -79,6 +80,7 @@ _PLACE = {
     "maxLength": MAX_PLACE,
     "description": "A city or place the owner named; leave out for the owner's home",
 }
+_PLACE_ARG = frozenset({"place"})  # the time and weather send the model's words only in it
 _COUNT = {"type": "integer", "minimum": 1, "maximum": 8, "description": "How many results"}
 
 
@@ -514,6 +516,7 @@ class WebOps:
                 self.time,
                 side_effect=False,
                 outbound=True,
+                outbound_args=_PLACE_ARG,
                 spoken_summary=lambda _a: "tell you the time",
                 shortcuts=(_TIME, _DATE),
             ),
@@ -535,6 +538,7 @@ class WebOps:
                 self.weather,
                 side_effect=False,
                 outbound=True,
+                outbound_args=_PLACE_ARG,
                 spoken_summary=lambda _a: "check the weather",
                 shortcuts=(_WEATHER_NOW, _WEATHER_TODAY, _WEATHER_TOMORROW),
             ),

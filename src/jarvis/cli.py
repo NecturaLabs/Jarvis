@@ -463,12 +463,13 @@ def cmd_spotify_login(args: argparse.Namespace) -> int:
 
 
 def _terminal_confirm(question: str) -> bool | Declined:
+    """Ask on the terminal; a typed `y` is a yes, as are the spoken ones (`is_yes`)."""
     try:
-        answer = input(f"{question} [yes/no] ")
+        answer = input(f"{question} [y/n] ")
     except EOFError:
         return Declined(NoReason.NO_ANSWER)  # no terminal to answer on
 
-    return is_yes(answer)
+    return answer.strip().casefold() == "y" or is_yes(answer)
 
 
 def cmd_ask(args: argparse.Namespace) -> int:
@@ -635,6 +636,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         PausableMic,
         Vad,
         VoxtypeWatch,
+        audio_playing_elsewhere,
         screen_locked,
     )
     from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, which loads numpy and ONNX Runtime
@@ -705,6 +707,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         names=(cfg.persona.name,),
         dictating=voxtype.dictating,
         meeting=voxtype.meeting,
+        media_playing=audio_playing_elsewhere,
         audit=jarvis.audit,
         paused=lambda: mic.paused,
         until_resumed=mic.wait_resumed,
