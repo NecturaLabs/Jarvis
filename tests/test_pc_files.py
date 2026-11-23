@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from jarvis.config import FilesConfig
-from jarvis.operations import Operation, OperationError, Registry, validate_args
+from jarvis.operations import ArgumentError, Operation, OperationError, Registry, validate_args
 from jarvis.pc import files as files_module
 from jarvis.pc.files import Boundary, FileOps
 from jarvis.policy import OpClass, Origin
@@ -204,6 +204,47 @@ def test_a_long_file_is_read_in_parts_by_line(home: Path) -> None:
     assert "from_line=" in first
     assert later.split("\n", 1)[1].startswith("line 200\n")
     assert "of 400" in later
+
+
+def test_a_line_longer_than_one_part_is_read_on_from_where_it_was_cut(home: Path) -> None:
+    line = "".join(f"{n:05d}," for n in range(400))  # 2,400 characters on one line
+    (home / "Documents" / "data.json").write_text(f"{line}\nend\n", encoding="utf-8")
+    ops = _ops(home, max_chars=500)
+
+    seen, args = "", {}
+    for _part in range(20):
+        text = _read(ops, "~/Documents/data.json", **args)
+        seen += text.split("\n", 1)[1].split("\n(More follows")[0]
+        if "(More follows" not in text:
+            break
+        args = {
+            key: int(value)
+            for key, value in (
+                pair.split("=") for pair in text.rsplit("read_file with ", 1)[1][:-2].split(", ")
+            )
+        }
+
+    assert seen == f"{line}\nend"  # every character once, in order
+
+
+def test_a_part_cut_inside_a_line_is_not_reported_as_whole_lines(home: Path) -> None:
+    (home / "Documents" / "data.json").write_text("x" * 2400 + "\n", encoding="utf-8")
+
+    text = _read(_ops(home, max_chars=500), "~/Documents/data.json")
+
+    assert "lines 1 to 1" not in text
+    assert "from_char=" in text
+
+
+@pytest.mark.parametrize("from_char", [0, -1, "2"])
+def test_a_character_to_read_from_is_a_whole_number_from_1(home: Path, from_char: object) -> None:
+    with pytest.raises(ArgumentError):
+        _read(_ops(home), "~/Documents/todo.md", from_char=from_char)
+
+
+def test_reading_from_a_character_past_the_line_is_refused(home: Path) -> None:
+    with pytest.raises(OperationError, match="characters"):
+        _read(_ops(home), "~/Documents/todo.md", from_line=1, from_char=50)
 
 
 # --- listing ----------------------------------------------------------------------------------

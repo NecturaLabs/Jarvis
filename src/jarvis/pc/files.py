@@ -138,6 +138,11 @@ class FileRefusalError(OperationError):
         super().__init__(message, origin=Origin.FILE)
 
 
+def _content(line: str) -> str:
+    """Return a line without its line ending."""
+    return line.splitlines()[0] if line else ""
+
+
 def _size(count: int) -> str:
     """Return a size the way people say it: 512 B, 1.2 KB, 3.4 MB."""
     value = float(count)
@@ -415,6 +420,8 @@ class FileOps:
     def read_file(self, args: dict[str, Any]) -> Result:
         """Return a text file's lines from `from_line` on, as much as fits one result.
 
+        A line longer than a whole result is given in pieces: `from_char` reads on inside it.
+
         Raises:
             FileRefusalError: the path is not allowed, not a readable regular file, or not text.
         """
@@ -427,25 +434,52 @@ class FileOps:
             msg = f"{shown} is not text ({_size(info.st_size)}), so I can't show it."
             raise FileRefusalError(msg)
         lines = data.decode("utf-8", errors="replace").splitlines(keepends=True)
-        total = len(lines)
-        first = max(1, int(args.get("from_line", 1)))
-        if total and first > total:
-            msg = f"{shown} has only {total} lines."
-            raise FileRefusalError(msg)
-        body, last = "", first - 1
-        for line in lines[first - 1 :]:
-            if body and len(body) + len(line) > self._room:
-                break
-            body += line[: self._room]
-            last += 1
-        span = f"lines {first} to {last} of {total}" if total else "empty"
+        span, body, more = self._part(
+            lines,
+            max(1, int(args.get("from_line", 1))),
+            max(1, int(args.get("from_char", 1))),
+            shown,
+        )
         head = f"File {shown} ({_size(info.st_size)}, changed {_when(info.st_mtime)}, {span}):"
         tail = ""
-        if last < total:
-            tail = f"\n(More follows: read_file with from_line={last + 1}.)"
+        if more:
+            tail = f"\n(More follows: read_file with {more}.)"
         elif len(data) >= MAX_READ_BYTES and info.st_size > MAX_READ_BYTES:
             tail = f"\n(Only the first {_size(MAX_READ_BYTES)} can be read.)"
         return Result(f"{head}\n{body.rstrip(chr(10))}{tail}", Origin.FILE)
+
+    def _part(self, lines: list[str], first: int, column: int, shown: str) -> tuple[str, str, str]:
+        """Return the span read, the text and where the next part starts ("" at the end).
+
+        Raises:
+            FileRefusalError: `first` or `column` is past the end of the file or line.
+        """
+        total = len(lines)
+        if total and first > total:
+            msg = f"{shown} has only {total} lines."
+            raise FileRefusalError(msg)
+        pending = lines[first - 1 :]
+        length = len(_content(pending[0])) if pending else 0
+        if column > 1:
+            if column > length:
+                msg = f"Line {first} of {shown} has only {length} characters."
+                raise FileRefusalError(msg)
+            pending[0] = pending[0][column - 1 :]
+        if pending and len(_content(pending[0])) > self._room:
+            # A line longer than a whole result: this piece of it, and where the next one starts.
+            end = column - 1 + self._room
+            span = f"line {first} of {total}, characters {column} to {end} of {length}"
+            return span, pending[0][: self._room], f"from_line={first}, from_char={end + 1}"
+        body, last = "", first - 1
+        for line in pending:
+            if body and len(body) + len(line) > self._room:
+                break
+            body += line
+            last += 1
+        span = f"lines {first} to {last} of {total}" if total else "empty"
+        if column > 1:
+            span = f"lines {first} (from character {column}) to {last} of {total}"
+        return span, body, f"from_line={last + 1}" if last < total else ""
 
     def list_dir(self, args: dict[str, Any]) -> Result:
         """List a folder: folders first, then files, with sizes and when they changed.
@@ -690,12 +724,13 @@ class FileOps:
             ),
             Operation(
                 "read_file",
-                "Read a text file on the owner's PC; a long one in parts (from_line reads on).",
+                "Read a text file on the owner's PC, in parts if long.",
                 {
                     "type": "object",
                     "properties": {
                         "path": path,
                         "from_line": {"type": "integer", "minimum": 1, "maximum": 10_000_000},
+                        "from_char": {"type": "integer", "minimum": 1, "maximum": MAX_READ_BYTES},
                     },
                     "required": ["path"],
                     "additionalProperties": False,

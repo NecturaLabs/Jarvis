@@ -7,8 +7,8 @@ description: How to find, read and write the owner's files on this PC.
    folders are ~/Documents, ~/Downloads, ~/Pictures, ~/Music, ~/Videos and ~/Projects.
 2. When you don't know where a file is, list_dir the likely folder, with a pattern such as `*.md`
    or `*invoice*` to narrow it. List a subfolder rather than guessing a path.
-3. read_file gives a long file in parts. When it says "More follows", read on with from_line
-   only if the part you need is further down.
+3. read_file gives a long file in parts. When it says "More follows", read on with the
+   from_line (and from_char) it names, only if the part you need is further down.
 4. write_file creates a new file by default (mode `create`). To change a file, read it first,
    then write it whole with mode `replace`, or add to its end with mode `append`. Put the
    complete content in `content`: no "rest unchanged" placeholders. Text files only: Markdown,

@@ -323,6 +323,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `read_file` no longer loses most of a line longer than one part (a one-line JSON or minified file). It
+  cut the line at about 2,900 characters and reported it as read; now it says which characters it gave,
+  and `from_char` reads on inside the line.
+
 - A `[boundaries.classes]` entry that sets `pc_shell` below `strong` is refused with a message that names
   what `pc_shell` takes; it named only `stop_process` before.
 
