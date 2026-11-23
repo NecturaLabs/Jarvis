@@ -323,6 +323,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `open_app` builds a valid Hyprland command for a program whose command or window name holds an invisible
+  character beyond Latin-1 (a zero-width space, a line separator). Such a character was escaped in a form Lua
+  refuses, so the program did not open.
+
 - Reading in parts no longer skips text full of angle brackets (HTML, XML, code). `read_file`, `list_dir`
   and `os_skill` sized each part in plain characters, but each `<` and `>` reaches the model spelled out
   in four, and the result is then cut to its cap: the cut took the line that says where the next part

@@ -61,9 +61,15 @@ def clients(timeout_s: float = HYPR_TIMEOUT_S) -> list[dict[str, object]]:
 
 
 def lua_string(text: str) -> str:
-    """Return `text` as a Lua string literal, every byte that could end or bend it escaped."""
+    """Return `text` as a Lua string literal, every byte that could end or bend it escaped.
+
+    Lua reads a decimal escape as one byte, so a character escaped is escaped byte by byte in UTF-8.
+    """
     escaped = "".join(
-        ch if ch.isprintable() and ch not in "\\\"'" else f"\\{ord(ch):03d}" for ch in text
+        ch
+        if ch.isprintable() and ch not in "\\\"'"
+        else "".join(f"\\{byte:03d}" for byte in ch.encode())
+        for ch in text
     )
     return f'"{escaped}"'
 
