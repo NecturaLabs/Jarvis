@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from jarvis.policy import OpClass, Origin
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterable
+    from collections.abc import Callable, Generator, Iterable, Mapping
 
     from jarvis.shortcuts import Shortcut
 
@@ -133,7 +133,8 @@ class Operation:
     that acts on "whatever is current" can bind the exact target the owner is asked about.
     `shortcuts` are the phrasings that mean this operation without the model's help.
     `outbound` marks an operation that sends words the model wrote (a search, a place) to a
-    service off this PC; while file text is in the conversation it needs a yes.
+    service off this PC; while file text is in the conversation it needs a yes. With
+    `outbound_args`, only a call that gives one of those arguments sends any (`sends_words`).
     `preview` returns the start of the text a confirmed call would write, which a window shows
     under the question (speech says only how much). `hashed` names the arguments the audit log
     keeps only as a SHA-256 and a length, never as text.
@@ -150,12 +151,25 @@ class Operation:
     lowest_class: OpClass = OpClass.SAFE
     side_effect: bool = True
     outbound: bool = False
+    outbound_args: frozenset[str] = frozenset()
     spoken_summary: Callable[[dict[str, Any]], str] = field(default=lambda _args: "do that")
     prepare: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     shortcuts: tuple[Shortcut, ...] = ()
     preview: Callable[[dict[str, Any]], str] | None = None
     hashed: frozenset[str] = frozenset()
     audit_text: bool = True
+
+    def sends_words(self, args: Mapping[str, Any]) -> bool:
+        """Whether this call sends words the model wrote off the PC.
+
+        An `outbound` operation with `outbound_args` sends them only in those arguments (a place
+        for the weather): a call without any of them sends nothing the model wrote.
+        """
+        if not self.outbound:
+            return False
+        return not self.outbound_args or any(
+            str(args.get(name) or "").strip() for name in self.outbound_args
+        )
 
     def tool_schema(self) -> dict[str, Any]:
         """Return the OpenAI tool definition."""

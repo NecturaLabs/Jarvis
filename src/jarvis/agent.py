@@ -1423,7 +1423,7 @@ class Agent:
             op.name,
             self._overrides,
             untrusted_in_context=tainted,
-            private_in_context=private,
+            private_in_context=private and op.sends_words(args),
         )
         decision, consent = self._consent(decision)
         stopped = _REFUSALS.get(decision.verdict)

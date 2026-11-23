@@ -157,6 +157,7 @@ class Counter:
         then: Callable[[], None] = lambda: None,
         side_effect: bool = True,
         outbound: bool = False,
+        outbound_args: tuple[str, ...] = (),
     ) -> Operation:
         def run(args: dict[str, Any]) -> Result:
             self.runs.append({"op": name, **args})
@@ -168,11 +169,16 @@ class Counter:
         return Operation(
             name,
             name,
-            {"type": "object", "properties": {"q": {"type": "string"}}},
+            {
+                "type": "object",
+                "properties": {"q": {"type": "string"}}
+                | {a: {"type": "string"} for a in outbound_args},
+            },
             run,
             default_class=cls,
             side_effect=side_effect,
             outbound=outbound,
+            outbound_args=frozenset(outbound_args),
             spoken_summary=summary,
             prepare=prepare,
             shortcuts=shortcuts,
@@ -642,6 +648,27 @@ def test_a_search_written_with_the_file_read_cannot_carry_its_text() -> None:
 
     assert [r["op"] for r in counter.runs] == ["read", "search"]
     assert asked == []
+
+
+def test_after_a_file_is_read_the_time_here_is_told_without_a_yes() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    clock = counter.op("clock", side_effect=False, outbound=True, outbound_args=("place",))
+    ops = [*_file_and_search(counter), clock]
+    replies = [
+        _call("read"),
+        _call("clock", call_id="c2"),
+        _call("clock", {"place": "Lisbon"}, "c3"),
+    ]
+    model = ScriptedModel([*replies, _say("It is noon.")])
+    agent, _ = _agent(model, ops)
+
+    agent.handle(
+        "read my notes and tell me the time", Hooks(confirm=lambda q: asked.append(q) or False)
+    )
+
+    assert [r["op"] for r in counter.runs] == ["read", "clock"]  # the place needed a yes
+    assert len(asked) == 1
 
 
 def test_remembered_file_text_puts_the_next_search_behind_a_yes(tmp_path: Path) -> None:

@@ -342,6 +342,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- After a file was read, "what time is it" and the weather at home no longer ask first. Only a call that
+  names a place sends the model's words off the PC; the time and weather here send none. This is what
+  the configuration guide already said.
 - In the chat window, a request sent while another is still working now stays in the box with its pictures
   and pastes, ready to send again. It used to be cleared, and the attached pictures were lost.
 - A streamed model answer that stalls now ends at the call's time limit. The limit was checked only when a
