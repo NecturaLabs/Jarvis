@@ -40,6 +40,7 @@ from jarvis.operations import (
     Registry,
     Result,
     UncertainOutcomeError,
+    current_request,
 )
 from jarvis.pc.files import Boundary, FileOps
 from jarvis.pictures import Picture
@@ -1713,6 +1714,33 @@ def test_a_plain_command_that_needs_the_model_after_all_gets_a_conversation_that
     worded = model.seen[-1]
     assert "They talked about kettles." in worded[1]["content"]
     assert all("request 0" not in str(m["content"]) for m in worded[1:])
+
+
+def test_a_summary_made_for_a_plain_command_marks_the_request_as_holding_memory() -> None:
+    # Remembered process listings alone do not count as outside text, but once folded into a
+    # summary they do, whatever their origin: the refit must mark the request as a full one does.
+    counter = Counter()
+    seen: list[set[str]] = []
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        seen.append(set(request.outside))
+
+    find = counter.op("find", origin=Origin.PROCESS, text="1234 orbit", side_effect=False)
+    pause = counter.op("pause", shortcuts=(Shortcut("pause", lambda _g: {}),))  # no spoken words
+    look = counter.op("look", then=note, side_effect=False)
+    turns = [m for n in range(4) for m in (_call("find"), _say(f"Reply {n}. " * 60))]
+    model = ScriptedModel([*turns, _say("Summary."), _call("look"), _say("Done.")])
+    limits = Limits(memory_tokens=700, remember_outside=True)
+    agent, audit = _agent(model, [find, pause, look], limits=limits)
+    for number in range(4):
+        agent.handle(f"find {number}", NO_CONFIRM)
+
+    agent.handle("pause", NO_CONFIRM)
+
+    assert "memory_summarized" in _events(audit)
+    assert seen == [{"memory"}]
 
 
 # Pictures

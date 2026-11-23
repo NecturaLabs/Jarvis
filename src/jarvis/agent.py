@@ -975,6 +975,8 @@ class Agent:
                 remembered = self._remembered(plain=False)
                 turn.messages[1 : turn.first] = remembered
                 turn.first = 1 + len(remembered)
+                if remembered and self._memory.holds_outside_text_but(Origin.PROCESS.value):
+                    request.saw("memory")  # a summary of outside text counts, whatever its origin
             # A plain command is the owner's own words; what the model chooses may have been
             # steered by outside text it remembers, so that needs a yes for side effects.
             turn.untrusted = turn.untrusted or (
