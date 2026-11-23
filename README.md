@@ -100,16 +100,16 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | Command | What it does |
 |---|---|
 | `jarvis setup` | Write the config, the Strata profile and the user units (`--enable` also starts them). |
-| `jarvis spotify-login` | Connect Jarvis to your Spotify account with PKCE (`--no-browser` only prints the link). |
-| `jarvis start` / `stop` / `restart` | Start Jarvis and its model server, stop both (which frees the model), or restart the voice service after a config change. |
+| `jarvis spotify-login` | Connect Jarvis to your Spotify account with PKCE (`--no-browser` prints the link to open yourself instead of opening a browser, then waits for the login). |
+| `jarvis start` / `stop` / `restart` | Start Jarvis and its model server, stop both (which frees the model), or restart Jarvis after a config change: the voice service restarts, a stopped model server starts, and a running one restarts only when its settings changed. |
 | `jarvis status` | Show what Jarvis is doing (idle, listening, thinking, speaking, paused, model loading or unavailable) and the model's state; `--json` prints one JSON object for a status bar. |
 | `jarvis pause` / `resume` | Let go of the microphone and free the model, until `resume` opens the microphone and loads the model again (or the voice service restarts). |
 | `jarvis hush` | Stop Jarvis speaking now. |
 | `jarvis confirm` | Allow the one action Jarvis is waiting on with "Press the confirm key". Bind it to a key ([configuration](docs/configuration.md#the-confirm-key-jarvis-confirm)). |
 | `jarvis unload` | Free the model's memory now, for example before a game. |
-| `jarvis doctor` | Check every part without loading the model. |
+| `jarvis doctor` | Check every part without loading the model: one line per check (`ok`, `FAIL` with its fix, or `note`), then how many failed. |
 | `jarvis logs` | Follow the live log (Ctrl+C to leave). |
-| `jarvis help` | List the commands (the same as `jarvis --help`). |
+| `jarvis help` | List the commands by group, each with what it does (the same as `jarvis --help`); `jarvis <command> --help` explains one command and its options, and a mistyped command gets a suggestion when one is close. |
 | `jarvis ask <text>` | Send one typed request as if spoken; `--yes` answers yes to confirmations. |
 | `jarvis chat` | Open a Textual window where you type requests and watch what Jarvis does, live. |
 | `jarvis wake [livekit\|azure]` | Show or switch the wake word model; `--model FILE` names the Azure `.table` file; `--words hey_jarvis,yo_jarvis` picks the LiveKit models that listen. |
