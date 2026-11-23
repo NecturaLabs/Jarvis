@@ -342,6 +342,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A request that finds the model unloaded gives its first model call the 180 s the load may take on top of
+  `model.request_timeout_s`. The request was allowed 270 s, but the call was cut at 120 s, leaving about 13 s
+  for the answer after a load measured at 107 s while gaming; a slower load ended in "My model isn't
+  answering right now."
+
 - No follow-up window opens while another program plays audio (music, a video, a game, a call): anything the
   microphone heard for 6 s after a reply was taken as your next request, so sung or played lyrics started
   requests, and each reply opened the window again. Speech heard in the window is dropped too if such audio

@@ -63,11 +63,13 @@ class ChatModel(Protocol):
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
+        load_s: float = 0.0,
     ) -> dict[str, Any]:
         """Return the assistant message; with `require_tool`, the model must call a tool.
 
-        `timeout_s` caps how long this one call may wait (the time the request has left). With
-        `on_delta`, the answer is streamed and each piece is passed to it as it arrives; an
+        `timeout_s` caps how long this one call may wait (the time the request has left);
+        `load_s` is how much longer than one answer it may take, as the model must load first.
+        With `on_delta`, the answer is streamed and each piece is passed to it as it arrives; an
         exception it raises ends the call and is raised from here. `max_tokens` caps the answer.
         The message also carries `finish_reason` ("length" when the cap cut it) and `usage`
         (the server's token counts) when the server sent them.
@@ -361,13 +363,14 @@ class StrataModel:
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
+        load_s: float = 0.0,
     ) -> dict[str, Any]:
         """Send one chat completion with thinking off; retry once after a dropped connection.
 
         The call waits at most `timeout_s` (when given) and never longer than the configured
-        request timeout. With `on_delta` the answer is streamed (see `ChatModel.chat`); a
-        connection that drops after a piece was passed on is not retried, since that piece
-        may already have been spoken.
+        request timeout, plus `load_s` when the model must load first. With `on_delta` the
+        answer is streamed (see `ChatModel.chat`); a connection that drops after a piece was
+        passed on is not retried, since that piece may already have been spoken.
 
         Raises:
             ModelError: the server refused, failed, stayed unreachable or ran out of time.
@@ -388,7 +391,7 @@ class StrataModel:
                 # Strata keeps the system prompt and tools read once, pinned, so a request reads
                 # only its own words (an engine without pin support ignores the mark).
                 body["strata_prefix"] = {"messages": 1}
-        limit = self.config.request_timeout_s
+        limit = self.config.request_timeout_s + load_s
         if timeout_s is not None:
             limit = min(limit, timeout_s)
         deadline = self.clock() + limit

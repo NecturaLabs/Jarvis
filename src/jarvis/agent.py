@@ -677,6 +677,7 @@ class _Turn:
     private: bool = False  # the owner's own data (a file, a command's output) is in it
     nudged: bool = False
     stuck: bool = False
+    cold: bool = False  # the model must load first: the next model call may wait for that too
     last: bool = False  # the request's last step: the model may only answer
     declined: bool = False
     tried: bool = False  # a call that could change something: an action, or a tool not offered
@@ -1077,6 +1078,7 @@ class Agent:
         """Let the model work through the request within the step and time limits."""
         if self._model.is_loaded() is False:
             turn.limit_s += COLD_LOAD_S
+            turn.cold = True
             turn.cues.start()
         try:
             for step in range(self._limits.max_steps):
@@ -1115,6 +1117,7 @@ class Agent:
                 ),
                 on_delta=None if stream is None else stream.feed,
                 max_tokens=self._limits.reply_tokens,
+                load_s=COLD_LOAD_S if turn.cold else 0.0,
             )
         except _Stopped:
             return stream.spoken if stream is not None else ""
@@ -1124,6 +1127,7 @@ class Agent:
             return MODEL_MISSING if isinstance(exc, ModelMissingError) else MODEL_DOWN
         finally:
             turn.cues.settle()
+            turn.cold = False  # the first call waited for the load; the model is in after it
         self._note_usage(message)
         self._audit.record("model_call", step=step, seconds=round(self._clock() - began, 2))
         calls = [] if turn.stuck or turn.last else self._unique(objs(message.get("tool_calls")))

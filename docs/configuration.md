@@ -47,7 +47,7 @@ current file. The running voice service reads it once, when it starts.
 |---|---|---|---|
 | `base_url` | empty | empty, or an `http://` or `https://` URL on `127.0.0.1`, `localhost` or `::1`; no user name or password | Empty means `http://127.0.0.1:<strata.port>/v1`. |
 | `model` | `jarvis` | text | The model name sent in each request. |
-| `request_timeout_s` | `120.0` | above 0, up to 600 | Longest one model call may wait. A request also stops after `agent.max_seconds` (`chat.max_seconds` in the chat) in total. |
+| `request_timeout_s` | `120.0` | above 0, up to 600 | Longest one model call may wait; a request's first call waits 180 s more when the model must load first. A request also stops after `agent.max_seconds` (`chat.max_seconds` in the chat) in total. |
 | `temperature` | `0.2` | 0 to 2 | Sampling temperature. |
 
 Jarvis sends every request with thinking switched off. Older versions saved `max_tokens` here; a file

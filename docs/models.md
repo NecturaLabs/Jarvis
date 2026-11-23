@@ -82,7 +82,7 @@ none comes as a Strata pack.
 |---|---|---|
 | Plain command: "pause", "next song", "volume 40", "what's playing" | Matched in code, run through the same policy, confirmation and audit as a model call, answered from the operation's own sentence. No model, no load wait. | about 0.3 s |
 | Anything else the model answers (a chat reply is one model call: `no_action` carries the reply) | One prompt read of about 2,900 tokens (2,100 before the web tools), then generation; a call after a tool result reads only the new part | about 4.5 s of prompt reading at about 640 tokens/s, plus generation; the first sentence is spoken once it is written ([ADR 0008](adr/0008-speak-while-writing-and-barge-in.md)) |
-| Model not loaded | Cold load | about 107 s with a game running; Jarvis says "One moment, waking up". The request gets 180 s more (270 s in all instead of 90 s); each model call is still capped by `model.request_timeout_s` |
+| Model not loaded | Cold load | about 107 s with a game running; Jarvis says "One moment, waking up". The request gets 180 s more (270 s in all instead of 90 s), and so does its first model call, which waits for the load (`model.request_timeout_s` plus 180 s); later calls keep `model.request_timeout_s` |
 
 Memory while loaded, idle: about 38 GB of RAM and 7.3 GiB of VRAM at an 8,192-token context, no GPU or CPU
 use. VRAM grows by about 0.05 GiB per 1,000 tokens of context (the engine's `drm-memory-vram` in

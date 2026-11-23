@@ -102,6 +102,7 @@ class ScriptedModel:
     piece: int = 3  # characters per streamed piece
     after_piece: Callable[[int], object] = lambda _number: None
     max_tokens: list[int | None] = field(default_factory=list[int | None])
+    loads: list[float] = field(default_factory=list[float])
 
     def chat(
         self,
@@ -112,7 +113,9 @@ class ScriptedModel:
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
+        load_s: float = 0.0,
     ) -> dict[str, Any]:
+        self.loads.append(load_s)
         self.max_tokens.append(max_tokens)
         self.timeouts.append(timeout_s)
         self.tools_offered.append(len(tools))
@@ -1289,6 +1292,24 @@ def test_after_one_no_the_owner_is_not_asked_again_in_that_request() -> None:
 
     assert counter.runs == []
     assert len(asked) == 1
+
+
+def test_only_the_first_call_of_a_cold_request_may_wait_for_the_load() -> None:
+    model = ScriptedModel([_call("pause"), _say("Paused.")], loaded=False)
+    agent, _ = _agent(model, [Counter().op("pause")])
+
+    agent.handle("pause", NO_CONFIRM)
+
+    assert model.loads == [agent_module.COLD_LOAD_S, 0.0]
+
+
+def test_a_warm_request_waits_for_no_load() -> None:
+    model = ScriptedModel([_call("pause"), _say("Paused.")])
+    agent, _ = _agent(model, [Counter().op("pause")])
+
+    agent.handle("pause", NO_CONFIRM)
+
+    assert model.loads == [0.0, 0.0]
 
 
 def test_the_wait_for_the_owners_yes_is_not_the_requests_time() -> None:

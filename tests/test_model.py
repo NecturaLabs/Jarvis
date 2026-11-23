@@ -185,6 +185,18 @@ def test_a_call_waits_no_longer_than_the_turn_has_left(asked: float | None, sent
     assert _read_timeout(seen[0]) == sent
 
 
+@pytest.mark.parametrize(("asked", "sent"), [(270.0, 270.0), (999.0, 300.0), (60.0, 60.0)])
+def test_a_call_that_must_load_the_model_may_wait_that_much_longer(
+    asked: float, sent: float
+) -> None:
+    seen: list[httpx.Request] = []
+    model = replace(_model(_answering({"content": "hi"}, seen)), clock=lambda: 0.0)
+
+    model.chat(MESSAGES, TOOLS, timeout_s=asked, load_s=180.0)
+
+    assert _read_timeout(seen[0]) == sent
+
+
 def test_warming_waits_for_the_server_and_retries_a_busy_answer() -> None:
     """Regression: the load sent at service start met a server still starting (409) and was lost."""
     answers = iter([httpx.Response(409), httpx.Response(409), httpx.Response(200, json={})])
