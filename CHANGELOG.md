@@ -323,6 +323,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A plain command that needs the model after all (it failed, or its result needs wording) no longer sends
+  the model a remembered conversation larger than its budget: the conversation is summarized or trimmed
+  first, as for any other request.
+
 - `open_app` builds a valid Hyprland command for a program whose command or window name holds an invisible
   character beyond Latin-1 (a zero-width space, a line separator). Such a character was escaped in a form Lua
   refuses, so the program did not open.

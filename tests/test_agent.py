@@ -1698,6 +1698,23 @@ def test_a_plain_command_is_not_kept_waiting_for_a_summary() -> None:
     assert "memory_summarized" not in _events(audit)
 
 
+def test_a_plain_command_that_needs_the_model_after_all_gets_a_conversation_that_fits() -> None:
+    counter = Counter()
+    pause = counter.op("pause", shortcuts=(Shortcut("pause", lambda _g: {}),))  # no spoken words
+    summary, wording = _say("They talked about kettles."), _say("Nothing played.")
+    model = ScriptedModel([*_chatty(4), summary, wording])
+    agent, audit = _agent(model, [pause], limits=Limits(memory_tokens=700))
+    for number in range(4):
+        agent.handle(f"request {number}", NO_CONFIRM)
+
+    assert agent.handle("pause", NO_CONFIRM) == "Nothing played."
+
+    assert "memory_summarized" in _events(audit)
+    worded = model.seen[-1]
+    assert "They talked about kettles." in worded[1]["content"]
+    assert all("request 0" not in str(m["content"]) for m in worded[1:])
+
+
 # Pictures
 
 SHOT = Picture("shot.png", "image/png", b"\x89PNG fake", 4, 2)

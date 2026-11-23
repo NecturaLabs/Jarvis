@@ -970,6 +970,11 @@ class Agent:
             request.saw(Origin.PASTE.value)
         reply = self._shortcut(hit, hooks, turn) if hit is not None else None
         if reply is None:
+            if hit is not None and remembered and self._memory.over_budget():
+                # The plain command needs the model after all: fit what it remembers first.
+                remembered = self._remembered(plain=False)
+                turn.messages[1 : turn.first] = remembered
+                turn.first = 1 + len(remembered)
             # A plain command is the owner's own words; what the model chooses may have been
             # steered by outside text it remembers, so that needs a yes for side effects.
             turn.untrusted = turn.untrusted or (
