@@ -207,8 +207,9 @@ line spoken while the agent works (`_cue`: a waiting line, a confirmation questi
    action before any succeeded, and stops once a tool call follows: sentences of the text already
    passed on play out, unless one claims an action; then, as for a `no_action` reply that is not the
    answer, the speaker is hushed (what is playing ends, the rest is dropped).
-   `Agent._final` checks the whole reply that claims an action when no tool succeeded; it
-   challenges the model once, then speaks a plain "I didn't manage that". `Agent._deliver` speaks
+   `Agent._final` checks the whole reply that claims an action when no action succeeded (a tool
+   that only looks something up, `side_effect=False`, does not count); it challenges the model
+   once, then speaks a plain "I didn't manage that". `Agent._deliver` speaks
    what was not streamed yet. `voice.speakable` turns each part into plain words and
    `audio.Speaker` synthesizes each sentence while the one before plays, through one `pw-play`.
 

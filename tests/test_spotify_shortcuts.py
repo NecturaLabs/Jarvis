@@ -246,7 +246,7 @@ def test_with_nothing_active_the_answer_is_spoken(
 
     result = _run(fake, tmp_path, name)
 
-    assert result.ok
+    assert not result.ok  # nothing was done, yet the answer needs no model
     assert result.spoken == "Nothing is playing."
 
 

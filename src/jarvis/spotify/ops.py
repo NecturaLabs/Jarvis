@@ -225,6 +225,11 @@ def _say(sentence: str) -> Result:
     return Result(sentence, spoken=sentence)
 
 
+def _nothing_playing() -> Result:
+    """Return the answer to a player command with no player: nothing was done."""
+    return Result(NOTHING_PLAYING, ok=False, spoken=NOTHING_PLAYING)
+
+
 @dataclass(frozen=True, slots=True)
 class _Hit:
     """The best candidate for a request, with how well it matched."""
@@ -778,7 +783,7 @@ class SpotifyOps:
         try:
             self._api.request(method, path, params=dict(params) or None)
         except NoDeviceError:
-            return _say(NOTHING_PLAYING)
+            return _nothing_playing()
         except SpotifyError as exc:
             if exc.status != HTTPStatus.FORBIDDEN or not refusal_check:
                 raise
@@ -793,7 +798,7 @@ class SpotifyOps:
         state = self._api.player()
         playing = bool(state and state.get("is_playing"))
         if command == "pause" and not playing:
-            return _say("It's already paused." if state else NOTHING_PLAYING)
+            return _say("It's already paused.") if state else _nothing_playing()
         if command == "resume" and playing:
             return _say("It's already playing.")
         raise refusal

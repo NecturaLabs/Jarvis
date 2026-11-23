@@ -12,6 +12,7 @@ import pytest
 from jarvis import agent as agent_module
 from jarvis.agent import (
     FAILED_REMINDER,
+    LOOKED_REMINDER,
     MAX_CALLS_PER_TURN,
     MAX_STEPS,
     MAX_TOOL_TEXT,
@@ -261,6 +262,31 @@ def test_a_claim_after_only_failed_tools_is_challenged_with_the_failure() -> Non
     assert model.seen[2][-1] == {"role": "user", "content": FAILED_REMINDER}
 
 
+def test_a_claim_after_only_a_look_up_is_challenged() -> None:
+    counter = Counter()
+    replies = [_call("now_playing"), _say("Paused it for you."), _say("Jazz is playing.")]
+    model = ScriptedModel(replies)
+    look = counter.op("now_playing", side_effect=False)
+    agent, audit = _agent(model, [look, counter.op("pause")])
+
+    assert agent.handle("pause it", NO_CONFIRM) == "Jazz is playing."
+    assert counter.runs == [{"op": "now_playing"}]
+    assert model.seen[2][-1] == {"role": "user", "content": LOOKED_REMINDER}
+    assert "claimed_without_action" in _events(audit)
+
+
+def test_a_claim_after_a_look_up_and_an_action_is_spoken() -> None:
+    counter = Counter()
+    replies = [_call("now_playing"), _call("pause", call_id="c2"), _say("Paused it for you.")]
+    model = ScriptedModel(replies)
+    agent, audit = _agent(
+        model, [counter.op("now_playing", side_effect=False), counter.op("pause")]
+    )
+
+    assert agent.handle("pause it", NO_CONFIRM) == "Paused it for you."
+    assert "claimed_without_action" not in _events(audit)
+
+
 @pytest.mark.parametrize(
     "reply",
     [
@@ -318,6 +344,20 @@ def test_a_claim_after_only_failed_tools_is_challenged_with_the_failure() -> Non
         "Can do, muted, anything else?",
         "Sure - I paused it, playing next, skipping ahead.",
         "Okay - found it, playing it now, resuming from the start.",
+        "I've opened Firefox on workspace 2.",
+        "Opened Firefox.",
+        "I wrote the file to Documents.",
+        "I've created notes.md in Documents.",
+        "I ran the command.",
+        "I closed Steam.",
+        "Killed it.",
+        "I've launched Steam on workspace 3.",
+        "I appended it to your notes.",
+        "I've deleted it.",
+        "Sent.",
+        "I've written it to your notes.",
+        "I've removed it.",
+        "I've ended it.",
     ],
 )
 def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
@@ -372,6 +412,8 @@ def test_a_reply_that_says_something_was_done_is_a_claim(reply: str) -> None:
         "I can do that - playing, and pausing.",
         "I can control it - playing, volume and mute.",
         "Here's what I can do - playing, pausing.",
+        "I ran into a problem reading that file.",
+        "I ran out of time looking for it.",
     ],
 )
 def test_an_honest_answer_is_not_a_claim(reply: str) -> None:

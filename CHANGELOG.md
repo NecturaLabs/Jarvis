@@ -342,6 +342,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A reply that says something was done is checked against what ran: only an action that succeeded
+  counts, so after Jarvis has only looked something up (what is playing, a process list, a folder, a
+  search) "Paused it for you" is challenged like any claim with nothing behind it. The check also knows
+  the PC verbs (opened, launched, wrote, created, appended, ran, closed, killed, deleted, sent and the
+  like), and a player command with nothing playing counts as not done.
+
 - From the review of the run-config change: a model whose drive is not mounted when Jarvis starts is known
   again by its path, so a request says the model file is missing at once instead of waiting for the server,
   and pictures stay on for when the drive is back. `jarvis setup` refuses a run config whose engine would

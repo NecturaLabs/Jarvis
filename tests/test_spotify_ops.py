@@ -774,7 +774,7 @@ def test_pause_next_and_previous_never_launch_or_look_up_devices(
 
     result = ops[f"spotify_{run}"].run({})
 
-    assert result.ok
+    assert not result.ok  # nothing was done, so a reply may not say it was
     assert result.text == "Nothing is playing."
     assert not fake.calls("GET", "/me/player/devices")
     assert not fake.transfers
@@ -880,7 +880,7 @@ def test_pausing_with_no_player_state_after_a_refusal_says_nothing_is_playing(
 
     result = find_op(build_ops(fake, tmp_path), "spotify_pause").run({})
 
-    assert result.ok
+    assert not result.ok
     assert result.text == "Nothing is playing."
 
 
