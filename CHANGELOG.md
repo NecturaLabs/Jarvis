@@ -323,6 +323,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A `[boundaries.classes]` entry that sets `pc_shell` below `strong` is refused with a message that names
+  what `pc_shell` takes; it named only `stop_process` before.
+
 - A shell command's output (`pc_shell`) is now outside text of its own kind, `shell`. It was marked as a
   process listing, which `stop_process` lets through, so in the chat a remembered output (a file shown with
   `cat`, a page fetched with `curl`) did not stop a later shell command, and in one request it did not stop
