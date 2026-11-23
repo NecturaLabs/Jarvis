@@ -141,6 +141,7 @@ def _clock_of(text: str) -> str:
 
 
 _EVERY_DAY = tuple(range(_WEEK))
+_OWN_DAYS = frozenset({"daily", "weekdays", "weekends", "every"})  # repeats that set their days
 _REPEAT_OF: dict[str, Repeat] = {repeat: repeat for repeat in REPEATS}
 
 
@@ -186,6 +187,8 @@ def _when_of(args: dict[str, Any]) -> _When:
         raise ArgumentError(msg)
     every = int(args.get("every_minutes") or 0)
     day = str(args.get("day", "")).strip().casefold()
+    if args.get("repeat") in _OWN_DAYS:
+        day = ""  # the repeat sets the days: a `day` beside it ("weekday") says nothing more
     if day and day not in {"today", "tomorrow", *DAY_NAMES}:
         msg = "day must be today, tomorrow or a weekday's name"
         raise ArgumentError(msg)
@@ -449,8 +452,16 @@ class ScheduleOps:
         return spoken_when(job, self._clock(), twelve_hour=self._twelve_hour)
 
     def add(self, args: dict[str, Any]) -> Result:
-        """Add a reminder or a scheduled request and say when it is due."""
-        job = self._store.add(args)
+        """Add a reminder or a scheduled request and say when it is due.
+
+        Raises:
+            OperationError: the arguments describe no time to come (the model is told why, to
+                fix them), or there are `MAX_JOBS` already.
+        """
+        try:
+            job = self._store.add(args)
+        except ArgumentError as exc:
+            raise OperationError(str(exc)) from exc
         what = "remind you" if job.action == "remind" else "do that"
         sentence = f"Okay, I'll {what} {self._when(job)}."
         if not self._voice_running():
@@ -475,12 +486,12 @@ class ScheduleOps:
         """Cancel one job by its number, or every job.
 
         Raises:
-            ArgumentError: `id` is neither a number nor `all`.
+            OperationError: `id` is neither a number nor `all` (the model is told so).
         """
         which = str(args["id"]).strip().lower()
         if which != "all" and not which.isdigit():
             msg = "id must be a job's number from schedule_list, or all"
-            raise ArgumentError(msg)
+            raise OperationError(msg)
         gone = self._store.cancel(None if which == "all" else int(which))
         if not gone:
             sentence = (

@@ -374,6 +374,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A reminder or scheduled request the model asked for with a time that does not work (one that has passed
+  today, two times, a day that is not one) is no longer "an internal error": the model is told what was
+  wrong and can fix it, and so can a cancel by something other than a number. A `day` beside a repeat that
+  sets its own days (`daily`, `weekdays`, `weekends`) is ignored. Found by a benchmark with a local model.
+
 - A web page whose server names no charset is now read in the one the page declares (`<meta charset>`)
   rather than always as UTF-8, and a gzip body made of several parts is read whole instead of only up
   to the end of the first.

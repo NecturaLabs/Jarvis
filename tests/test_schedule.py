@@ -336,7 +336,7 @@ def test_the_list_numbers_each_job_and_cancel_takes_a_number_or_all(tmp_path: Pa
     ]
     assert one.spoken == "Cancelled: tea."
     assert not unknown.ok
-    with pytest.raises(ArgumentError):
+    with pytest.raises(OperationError, match="number"):
         _run(ops, "schedule_cancel", id="tea")
     assert _run(ops, "schedule_cancel", id="all").spoken == "Cancelled: pause the music."
     assert _run(ops, "schedule_list").spoken == "You have no reminders or scheduled requests."
@@ -392,3 +392,35 @@ def test_the_question_about_a_scheduled_request_holds_all_of_its_words() -> None
     text = "pause the music " + "and then " * 20 + "turn the volume to ten"
 
     assert ScheduleOps.add_summary({"text": text, "action": "do"}).endswith(text)
+
+
+@pytest.mark.parametrize(
+    ("args", "said"),
+    [
+        ({"text": "tea", "at": "09:00", "day": "someday"}, "day must be"),
+        ({"text": "tea", "at": "08:00", "day": "today"}, "already passed"),
+        ({"text": "tea", "in_minutes": 5, "at": "09:00"}, "not both"),
+        ({"text": "tea"}, "say when"),
+    ],
+)
+def test_a_time_the_model_got_wrong_is_explained_to_it(
+    tmp_path: Path, args: dict[str, Any], said: str
+) -> None:
+    # Only an OperationError's words reach the model; anything else is "an internal error", so
+    # the model could not see what to fix (seen with a local model, 2026-11-23).
+    ops, store = _ops(tmp_path)
+
+    with pytest.raises(OperationError, match=said):
+        _run(ops, "schedule_add", **args)
+    assert store.jobs() == []
+
+
+@pytest.mark.parametrize("repeat", ["daily", "weekdays", "weekends"])
+def test_a_day_beside_a_repeat_that_sets_its_own_days_is_ignored(
+    tmp_path: Path, repeat: str
+) -> None:
+    ops, store = _ops(tmp_path)
+
+    _run(ops, "schedule_add", text="stretch", at="07:30", day="weekday", repeat=repeat)
+
+    assert [job.repeat for job in store.jobs()] == [repeat]
