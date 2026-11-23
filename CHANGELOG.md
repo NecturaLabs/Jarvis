@@ -342,6 +342,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The calculator bounds a logarithm like every other step: a 47-character `log` of a huge exact base ran for
+  more than 30 s while it checked for a whole answer, and now answers at once. A logarithm to a base just
+  above 1 (`log(5, 1 + 1/10**30)`) is worked out instead of failing with an internal error, and one too
+  close to 1 to work out says so. A number with a leading zero is refused, so `min(1,000, 2,500)` says to
+  write 1000 instead of answering 0.
+
 - The calculator keeps a floor division exact: `(7 // 2)!` is 6 and `10**18 // 7` is 142857142857142857. A
   floor division of two exact numbers gave a plain integer, which a factorial or `round`'s digits refused
   and which was shown through a float (142857142857142864).

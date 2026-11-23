@@ -1,5 +1,8 @@
 """The calculator: exact arithmetic on an expression the model writes, and nothing else."""
 
+import subprocess
+import sys
+
 import pytest
 
 from jarvis import calc
@@ -222,3 +225,45 @@ def test_arguments_are_checked_before_anything_runs(args: dict[str, object]) -> 
 
     with pytest.raises(ArgumentError):
         validate_args(op, args)
+
+
+def _within(seconds: float, expression: str) -> str:
+    """Return `evaluate(expression)` worked out in a child process stopped after `seconds`.
+
+    A thread would not do: a big-integer power holds the interpreter lock until it ends.
+    """
+    code = "import sys; from jarvis.calc import evaluate; print(evaluate(sys.argv[1]))"
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", code, expression],
+            capture_output=True,
+            text=True,
+            timeout=seconds,
+            check=True,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"{expression} was still being worked out after {seconds} s")
+    return done.stdout.strip()
+
+
+def test_a_logarithm_of_a_huge_exact_base_is_worked_out_at_once() -> None:
+    # 47 characters; the check for a whole answer raised the 100,000-bit base to the 9933rd power.
+    answer = _within(10.0, "log(2.7, (10**10000 + 10**9996 + 1)/10**10000)")
+
+    assert answer.startswith("9933.")
+
+
+def test_a_logarithm_to_a_base_just_above_one_is_worked_out() -> None:
+    assert evaluate("log(5, 1 + 1/10**30)") == "1.609437912e+30"
+
+
+@pytest.mark.parametrize("expression", ["min(1,000, 2,500)", "000 + 1", "max(00, 5)"])
+def test_a_number_with_a_leading_zero_is_refused(expression: str) -> None:
+    # min(1,000, 2,500) read as min(1, 0, 2, 500) answered 0.
+    with pytest.raises(CalcError, match="start with a zero"):
+        evaluate(expression)
+
+
+def test_a_logarithm_to_a_base_too_close_to_one_says_so() -> None:
+    with pytest.raises(CalcError, match="too close to 1"):
+        evaluate("log(5, 1 + 1/10**400)")

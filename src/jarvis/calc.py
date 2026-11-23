@@ -27,6 +27,7 @@ MAX_NODES = 200  # numbers, signs and calls in one expression
 MAX_DEPTH = 30  # brackets inside brackets
 MAX_BITS = 100_000  # the size of an exact number (about 30,000 digits)
 MAX_EXPONENT = 10_000
+NEAR_ONE = (Fraction(1, 2), Fraction(2))  # where a logarithm is worked out from the distance to 1
 MAX_FACTORIAL = 1000
 SIGNIFICANT = 10  # digits in an answer that is not a whole number
 EXACT_DIGITS = 20  # a whole number up to this long is given in full
@@ -92,6 +93,9 @@ def _log(x: Number, base: Number | None = None) -> Number:
     if x <= 0 or (base is not None and (base <= 0 or base == 1)):
         msg = "that logarithm is not a real number"
         raise CalcError(msg)
+    if isinstance(base, Fraction) and _ln(base) == 0:
+        msg = "that logarithm's base is too close to 1 to work out"
+        raise CalcError(msg)
     if base is not None and isinstance(x, Fraction) and isinstance(base, Fraction):
         exact = _exact_log(x, base)
         if exact is not None:
@@ -104,16 +108,23 @@ def _log(x: Number, base: Number | None = None) -> Number:
 
 
 def _ln(x: Fraction) -> float:
-    """The natural logarithm of a positive fraction of any size (math.log takes big integers)."""
+    """The natural logarithm of a positive fraction of any size (math.log takes big integers).
+
+    Near 1 it is worked out from the distance to 1, which a difference of two logarithms loses.
+    """
+    low, high = NEAR_ONE
+    if low < x < high:
+        return math.log1p(float(x - 1))
     return math.log(x.numerator) - math.log(x.denominator)
 
 
 def _exact_log(x: Fraction, base: Fraction) -> Fraction | None:
     """Return the logarithm when it is a whole number (log10 of 1000 is exactly 3)."""
     guess = round(_ln(x) / _ln(base))
-    if abs(guess) <= MAX_EXPONENT and base**guess == x:
-        return Fraction(guess)
-    return None
+    size = max(base.numerator.bit_length(), base.denominator.bit_length())
+    if abs(guess) > MAX_EXPONENT or size * abs(guess) > MAX_BITS:  # as `_power` bounds it
+        return None
+    return Fraction(guess) if base**guess == x else None
 
 
 def _factorial(n: Number) -> Number:
@@ -313,6 +324,7 @@ _NUMBER = r"\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
 # 15% is fifteen hundredths, and so is 15% + 80 (the % touches its number); 17 % 5, 17 % -5 and
 # 17%5 are remainders. A % with no number or bracket after it can only be a percentage.
 _PERCENT = re.compile(rf"({_NUMBER})(?:%(?!\s*[\d(.])|\s*%(?!\s*[-+\d(.]))")
+_LEADING_ZERO = re.compile(r"(?<![\w.])0\d")  # 000 or 007: a thousands group read as a number
 _SPOKEN = {  # signs as people type or paste them
     "\u00d7": "*",  # multiplication sign
     "\u00b7": "*",  # middle dot
@@ -347,6 +359,11 @@ def _parse(expression: str) -> ast.expr:
     text = _normalised(expression)
     if not text:
         msg = "there is nothing to work out"
+        raise CalcError(msg)
+    if _LEADING_ZERO.search(text):
+        msg = (
+            "a number can't start with a zero (write 1000, not 1,000: a comma separates arguments)"
+        )
         raise CalcError(msg)
     if _nesting(text) > MAX_DEPTH:
         msg = "the expression has too many brackets inside brackets"
