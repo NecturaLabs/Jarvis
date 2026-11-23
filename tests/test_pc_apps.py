@@ -218,6 +218,12 @@ def test_a_lua_string_reads_back_as_the_same_text(text: str) -> None:
     assert _lua_bytes(quoted[1:-1]).decode() == text
 
 
+def test_a_lone_surrogate_is_escaped_rather_than_refused() -> None:
+    quoted = hyprland.lua_string("odd \ud800 text")
+
+    assert _lua_bytes(quoted[1:-1]) == "odd \ud800 text".encode("utf-8", "surrogatepass")
+
+
 @pytest.mark.parametrize("text", ['a" .. os.exit() .. "', "line\nbreak", "back\\slash", "it's"])
 def test_a_lua_string_cannot_be_broken_out_of(text: str) -> None:
     quoted = hyprland.lua_string(text)

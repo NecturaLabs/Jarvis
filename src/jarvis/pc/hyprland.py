@@ -68,7 +68,7 @@ def lua_string(text: str) -> str:
     escaped = "".join(
         ch
         if ch.isprintable() and ch not in "\\\"'"
-        else "".join(f"\\{byte:03d}" for byte in ch.encode())
+        else "".join(f"\\{byte:03d}" for byte in ch.encode("utf-8", "surrogatepass"))
         for ch in text
     )
     return f'"{escaped}"'
