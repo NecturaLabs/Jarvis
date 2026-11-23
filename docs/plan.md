@@ -16,7 +16,7 @@ which parts exist. Details of what is built are in [configuration.md](configurat
 | Phase | Status | Built, and where it differs from the text below |
 |---|---|---|
 | 0. Project setup | Built | Git, `AGENTS.md`, docs, uv project, CI. |
-| 1. Strata | Mostly built | `jarvis setup` writes the Strata profile and `jarvis-strata.service` (lazy load, idle unload, `MemoryHigh`/`MemoryMax`, `CPUWeight`, a start limit, sandboxing options, 127.0.0.1, API key). Defaults differ from the sketch: `expert_vram_gib` 1.0, no `--mmap-experts` flag, `idle_unload_s` 86400 (24 hours, so the model stays loaded; 300 until 2026-11-22), `memory_max` 40G, context 24576 (raised from 8192 for research, 2026-11-21). Not recorded in the repository: the 200-request model eval and its gate. Load-refusal below a memory reserve is not built. `jarvis run` loads the model at start (owner decision 2026-11-21: keep it loaded). |
+| 1. Strata | Mostly built | `jarvis setup` writes the Strata profile, from the model's own Strata run config (`strata.run_config`, since 2026-11-23; nothing model-specific in Jarvis), and `jarvis-strata.service` (lazy load, idle unload, `MemoryHigh`/`MemoryMax`, `CPUWeight`, a start limit, sandboxing options, 127.0.0.1, API key). Defaults differ from the sketch: `expert_vram_gib` 1.0, no `--mmap-experts` flag, `idle_unload_s` 86400 (24 hours, so the model stays loaded; 300 until 2026-11-22), `memory_max` 40G, context 24576 (raised from 8192 for research, 2026-11-21). Not recorded in the repository: the 200-request model eval and its gate. Load-refusal below a memory reserve is not built. `jarvis run` loads the model at start (owner decision 2026-11-21: keep it loaded). |
 | 2. Ears | Mostly built | `pw-record` capture, the LiveKit wake word, Silero VAD and the state machine (IDLE, CAPTURE, TRANSCRIBE, THINK, CONFIRM, SPEAK). Transcription is **path B** (`voxtype transcribe`, with Jarvis's own `-c` settings); path A (the daemon contract) is not built, and neither is volume lowering over MPRIS. The wake test runs (8 h, 100 wakes) are not recorded. |
 | 3. Boundaries, setup and voice | Partly built | Built: config (one schema version, no migrations), the policy engine and its decision table, provenance, spoken confirmation bound to one action, the audit log, the agent loop, Kokoro and Piper voices. Not built: the Textual wizard (`jarvis setup` takes flags instead), quiet hours. The `strong` class waits for the confirm key (`jarvis confirm`), from the voice service only; `stop_process` is the first shipped `strong` operation, and an owner override cannot lower it (`Operation.lowest_class`). |
 | 4. Spotify | Built | PKCE login, Web API client, and the operations play (track, album, artist, playlist, liked songs), pause, resume, next, previous, set and change volume, shuffle, repeat, queue, like, now playing. Players are found through the Web API, and Spotify is never opened unasked: with no player Jarvis says so and asks (`open_app`, #36); MPRIS is not used. No seek, no separate transfer-to-device or my-playlists operation (playing "my playlist" is `play` with `mine`). |
@@ -76,7 +76,8 @@ behind the same speech setting, as the Piper-licence risk below asked.
   for supervisors; mapped low-RAM mode (`--mmap-experts`, or `--resident-budget-gib N`) serves experts through the
   OS file cache, which the kernel can reclaim. `models import --plan` previews only. `strata --version` reports 0.2.16, engine build 0.1.62.
 - Strata's engine runs two model families only (`qwen4exp`: Qwen3.8-Flash-Next; `qwen35moe`: Qwen3.6-35B-A3B);
-  no small dense model. Qwen3.6-35B-A3B (Apache-2.0, 35B total / 3B active, 256 experts, top-8) comes as Unsloth
+  no small dense model. (Strata 0.2.18 and 0.2.19, read 2026-11-23, added shape engines for Tencent Hy4-Flash and
+  Inkling 2 Mini; [models.md](models.md) compares the models measured here.) Qwen3.6-35B-A3B (Apache-2.0, 35B total / 3B active, 256 experts, top-8) comes as Unsloth
   UD-Q4_K_XL 22.9 GB, UD-Q6_K_XL 32.6 GB, Q8_0 37.8 GB. Its hybrid mode keeps some experts in VRAM and the rest in
   RAM: Strata measured 58-60 tok/s decode on an RTX 3060 12 GB with 37 of 256 experts per layer in VRAM (docs
   QWEN36.md). `--expert-cache auto` sizes the cache to the free VRAM; a fixed `--expert-cache N` (N x the largest
@@ -144,11 +145,14 @@ enforced in code before any tool runs.
   voice ever reaches the wake word through the room.
 
 ### Model (Strata)
-- Profile `jarvis`: Qwen3.6-35B-A3B UD-Q4_K_XL (files in the model folder, `strata.model_file`) in hybrid mode with a fixed
-  expert cache sized so the engine's whole VRAM use stays at or under about 8 GB (never `--expert-cache auto`, which
-  takes all free VRAM); 8K context, `--parallel 1`, vision off, `lazy_load` on, `idle_unload_s` 300, mapped experts
-  (`--mmap-experts`, memory the kernel can reclaim), a positive `reasoning_budget_tokens` cap, local access with an
-  API key.
+- Profile `jarvis`: the model's own Strata run config (`strata.run_config`, written by `strata launch`) with
+  Jarvis's limits on top: the engine's whole VRAM use at or under about 8 GB (`expert_vram_gib` for an engine that
+  takes a size, `vram_reserve_mib` for one whose expert cache fills the card), the context, `--parallel 1`,
+  `lazy_load` on, the idle unload, a positive `reasoning_budget_tokens` cap, local access with an API key, and the
+  experts Jarvis uses learned and preloaded (`learn_experts`). Nothing model-specific is hardcoded (owner,
+  2026-11-23). The model is Qwen3.8-Flash-Next IQ2_XS (owner's choice of default, 2026-11-23, to be tested against
+  Inkling 2 Mini; measurements in [models.md](models.md)); Qwen3.6-35B-A3B UD-Q4_K_XL was the model until then,
+  with a profile Jarvis built itself.
 - Under systemd: `strata serve --profile jarvis --ready-file …`, absolute paths, `Restart=on-failure` with backoff,
   `MemoryHigh`/`MemoryMax`. Health checks never generate, so boot and `doctor` leave the model unloaded.
 - Jarvis says "One moment, waking up" when a request finds the model unloaded; `jarvis unload` frees it at once

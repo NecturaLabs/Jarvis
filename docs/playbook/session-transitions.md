@@ -80,7 +80,7 @@ When the model's drive is mounted `nofail`, the desktop starts without it. `jarv
 
 Jarvis then answers a request at once with "My model's file is missing, so I can't answer. Is its drive
 mounted?" instead of waiting 30 s for the server. `jarvis status` shows the model `missing`, and
-`jarvis doctor` fails the model line with "mount its drive, or set --model-file". Once the drive is
+`jarvis doctor` fails the model line with "mount its drive, or run `strata launch` for it again". Once the drive is
 back, `jarvis start` starts Strata.
 
 - Check: `uv run pytest -m local tests/test_transitions_local.py -k strata` (one status GET). Seen
@@ -213,8 +213,9 @@ all in `test_transitions_local.py`.
   `test_a_spoken_request_with_the_model_drive_missing_is_answered_at_once_with_why` (the real client and agent,
   and the apology reaches the speaker), `test_a_streamed_chat_with_the_model_drive_missing_fails_at_once`,
   `test_a_drive_that_goes_away_after_the_start_is_noticed_at_the_next_request`,
-  `test_the_model_client_knows_the_configured_model_file`,
-  `test_a_config_without_a_model_file_never_reports_the_drive_missing`,
+  `test_the_model_client_knows_the_model_file_of_the_run_config`,
+  `test_a_run_config_that_cannot_be_read_never_reports_the_drive_missing`,
+  `test_a_config_without_a_run_config_never_reports_the_drive_missing`,
   `test_a_server_that_is_not_there_is_not_loaded_or_unloaded_and_says_so`,
   `test_the_voice_service_wants_the_model_server_but_does_not_need_it`,
   `test_after_a_suspend_a_missing_model_drive_is_logged_and_nothing_is_loaded`; services

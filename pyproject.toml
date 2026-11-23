@@ -61,8 +61,9 @@ python-preference = "only-system"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The checks in tools/ are scripts, not a package; their tests import them by name.
-pythonpath = ["tools"]
+# The checks in tools/ are scripts, not a package; their tests import them by name, as they do
+# the shared fixtures in tests/strata_fixture.py.
+pythonpath = ["tools", "tests"]
 addopts = ["-ra"]
 strict = true  # strict config, markers, xfail and parametrization ids
 timeout = 30

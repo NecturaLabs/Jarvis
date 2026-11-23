@@ -77,13 +77,11 @@ The unit text and its tests are in the repository; these need this PC's hardware
 - Memory: `MemoryPeak` of both units after a week of use, then choose a `MemoryHigh` for `jarvis.service`
   (it has none today; its `MemoryMax` is 4G).
 - CPU: a timed reply while a game runs, before and after `CPUWeight=50`, with the game's own frame time.
-- Start limit: force a failure (point `strata.model_file` at a file that exists but is not a model, then
-  `jarvis setup`), see five tries in 15 minutes leave the
+- Start limit: force a failure (point the `--native` file of a copy of the run config, set as
+  `strata.run_config`, at a file that exists but is not a model, then `jarvis setup`), see five tries in 15 minutes leave the
   unit `failed` in `jarvis status`, then `jarvis start` brings it back.
-- Prefill and VRAM reserve: `strata.prefill` `"auto"`, 2048 and 4096 against 512 on the usual 2,900-token
-  request: prompt tokens per second, time to the first word, VRAM (`drm-memory-vram` in `/proc/<pid>/fdinfo`,
-  as [models.md](../models.md) does), idle and with a game running. Change the default only if the numbers
-  favour it. Set `strata.vram_reserve_mib` only after a game that grows after the model loaded fails or does not.
+- VRAM reserve: with Qwen3.8-Flash-Next at `strata.vram_reserve_mib = 12000` (7.95 GiB measured idle), a game
+  running: its frame time, and whether a game that grows after the model loaded fails or does not.
 
 Decision on SearXNG, 2026-11-22: `read_only: true` stays off. The container is loopback-only with
 `cap_drop: ALL` and `no-new-privileges`, so the gain is small, and the certificate update at start needs

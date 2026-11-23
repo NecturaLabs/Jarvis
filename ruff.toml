@@ -20,6 +20,8 @@ known-first-party = ["jarvis"]
 # "tools/legacy.py" = ["C901"]
 # The checks in tools/ are command-line scripts run by path, not a package.
 "tools/*.py" = ["INP001"]
+# Fixtures several test modules import by name (pytest's pythonpath), like the tests themselves.
+"tests/strata_fixture.py" = ["INP001"]
 # The OAuth callback test makes a real request to the in-process loopback server with the standard
 # library's client (the tests keep httpx out of it); tests/conftest.py allows only loopback ports a test bound.
 "tests/test_spotify_auth.py" = ["TID251"]

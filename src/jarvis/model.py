@@ -240,7 +240,7 @@ class StrataModel:
     transport: httpx.BaseTransport | None = None  # tests answer in place of the server
     sleep: Callable[[float], None] = time.sleep  # tests wait without waiting
     clock: Callable[[], float] = time.monotonic  # tests move time with their sleep
-    model_file: Path | None = None  # what the server loads (`strata.model_file`), when known
+    model_file: Path | None = None  # what the server loads (the run config's `--native`)
     _loads: _Loads = field(default_factory=_Loads, init=False, repr=False, compare=False)
 
     def file_missing(self) -> bool:

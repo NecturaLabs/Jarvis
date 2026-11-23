@@ -1,6 +1,7 @@
 """Command-line entry point for `jarvis`."""
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -28,7 +29,7 @@ from jarvis.files import write_atomic
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.policy import is_yes
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
-from jarvis.services import JARVIS_UNIT, STRATA_UNIT
+from jarvis.services import JARVIS_UNIT, STRATA_UNIT, reads_pictures
 from jarvis.spotify.auth import SpotifyAuthError, TokenStore, login, redirect_uri
 from jarvis.sysinfo import Sampler
 
@@ -292,14 +293,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="the folder holding Strata's components (its XDG_DATA_HOME)",
     )
     setup.add_argument(
-        "--model-file", type=Path, default=None, metavar="PATH", help="the model file Strata serves"
-    )
-    setup.add_argument(
-        "--tokenizer-dir",
+        "--run-config",
         type=Path,
         default=None,
         metavar="PATH",
-        help="the model's tokenizer folder",
+        help="Strata's run config for the model (the strata-<model>.json `strata launch` writes)",
     )
     setup.add_argument(
         "--mic",
@@ -385,8 +383,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         for key, value in {
             "home": args.strata_home,
             "components_parent": args.strata_components_parent,
-            "model_file": args.model_file,
-            "tokenizer_dir": args.tokenizer_dir,
+            "run_config": args.run_config,
         }.items()
         if value is not None
     }
@@ -406,6 +403,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
         return 2
     config.save(updated)
     ensure_api_key(strata_key_file())
+    if updated.strata.run_config == Path():
+        print(f"config: {paths.config_file()}")
+        print(
+            "next: run `strata launch` for the model, then "
+            "`jarvis setup --run-config <the strata-<model>.json it writes>`"
+        )
+        return 0
     try:
         profile = services.write_strata_profile(updated)
         units = services.write_units(updated, strata_key_file())
@@ -494,7 +498,7 @@ def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
     """Return what /status adds to the services: versions, the model and where things live."""
     return [
         ("jarvis", __version__),
-        ("model", f"{cfg.strata.model_id}, {cfg.strata.context:,} tokens of context"),
+        ("model", f"{services.model_name(cfg)}, {cfg.strata.context:,} tokens of context"),
         ("replies", f"up to {cfg.chat.reply_tokens:,} tokens, {cfg.chat.max_steps} model calls"),
         ("config", str(paths.config_file())),
         ("conversation", str(chat_memory_file())),
@@ -537,7 +541,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         history=InputHistory(paths.state_dir() / "chat-history", cfg.chat.history_size),
         export_dir=documents if documents.is_dir() else Path.home(),
         paste=clipboard.read,
-        pictures=cfg.strata.pictures,
+        pictures=reads_pictures(cfg),
         screenshots=_screenshot_folders(Path.home(), os.environ),
         shown=chat_pictures(),
         twelve_hour=cfg.clock.twelve_hour,
@@ -751,8 +755,10 @@ def _model_files(cfg: config.Config) -> list[tuple[str, Path]]:
     if cfg.audio.voice.startswith(KOKORO_PREFIX):
         model, voices = voice_files(cfg.data_dir, cfg.audio.voice)
         found += [("kokoro-model", model), ("kokoro-voices", voices)]
-    if cfg.strata.pictures:
-        found.append(("vision", cfg.strata.vision_file))
+    with contextlib.suppress(services.StrataSetupError):  # `_model_checks` reports it
+        reader = services.read_run_config(cfg).picture_reader
+        if cfg.strata.pictures and reader is not None:
+            found.append(("vision", reader))
     return found
 
 
@@ -777,6 +783,25 @@ def _release_lines(cfg: config.Config) -> tuple[list[str], list[tuple[bool, str,
             release = f"{known.project} {known.version} ({known.licence})"
             lines.append(f"{'ok':4} {path.name}: {release}, sha256 verified")
     return lines, failures
+
+
+def _model_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
+    """Return the checks that the files Strata loads are there (and its run config readable)."""
+    try:
+        run = services.read_run_config(cfg)
+    except services.StrataSetupError as exc:
+        return [(False, f"Strata run config {cfg.strata.run_config}", str(exc))]
+    checks = [
+        (
+            run.model.is_file(),
+            f"model {run.model}",
+            "mount its drive, or run `strata launch` for it again",
+        )
+    ]
+    if services.learns_experts(cfg, run):
+        learned = services.expert_profile_file()
+        checks.append((learned.is_file(), f"expert profile {learned}", "run jarvis setup"))
+    return checks
 
 
 def _whisper_model(cfg: config.Config) -> list[tuple[bool, str, str]]:
@@ -868,11 +893,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         *unreadable,
         *_whisper_model(cfg),
         *_model_url(cfg),
-        (
-            cfg.strata.model_file.is_file(),
-            f"model {cfg.strata.model_file}",
-            "mount its drive, or set --model-file",
-        ),
+        *_model_checks(cfg),
         *(
             (shutil.which(t) is not None, f"tool {t}", f"install {t}")
             for t in ("pw-record", "pw-play", "voxtype")

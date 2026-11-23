@@ -41,23 +41,21 @@ toolbar = true
 history_size = 1000
 
 # How the jarvis-strata service runs the model; `jarvis setup` writes these into its profile.
-# The paths default to your XDG data folder; set model_file and tokenizer_dir to where you put them.
+# The model, its engine and its flags come from Strata's own run config: run `strata launch` for
+# the model once, then point run_config at the strata-<model>.json it writes.
 [strata]
 # home: default $XDG_DATA_HOME/strata; an absolute path.
 # components_parent: default $XDG_DATA_HOME; an absolute path.
-# model_file = "/path/to/your/model.gguf"
-# tokenizer_dir = "/path/to/its/tokenizer"
-model_id = "qwen3.6-35b-a3b-ud-q4_k_xl"
+# run_config = "/path/to/strata/install/strata-<model>.json"
 port = 8080
 context = 24576
-expert_vram_gib = 1.0
-prefill = 512  # a size in tokens (128 to 8192), or "auto" to leave it to Strata
+expert_vram_gib = 1.0  # experts kept in VRAM, for an engine that takes a size; the rest in RAM
 idle_unload_s = 86400
 reasoning_budget_tokens = 512
 memory_max = "40G"  # MemoryHigh of the Strata unit; MemoryMax is 10% above it
 # vram_reserve_mib = 700  # VRAM left free for other programs (100 to 65536); unset: Strata's own default
 kv_resident = 0  # context cells kept in VRAM (20480 or more), the whole context in RAM; 0: all in VRAM
-# vision_file = "/path/to/mmproj-F16.gguf"  # the model's picture reader; unset: no pictures
+pictures = true  # use the picture reader the run config names; false: no pictures
 vision_idle_s = 120
 
 # Your own Spotify developer app (docs/configuration.md): paste its client ID, or run

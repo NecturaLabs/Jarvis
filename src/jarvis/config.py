@@ -145,19 +145,26 @@ class ChatConfig(AgentConfig):
     history_size: int = Field(default=1000, ge=0, le=100000)  # typed lines ↑ brings back
 
 
+# Keys the model's own Strata run config replaced (its model, tokenizer, name, prompt chunk and
+# picture reader).
+_REPLACED_BY_RUN_CONFIG = frozenset(
+    {"model_file", "tokenizer_dir", "model_id", "prefill", "vision_file"}
+)
+
+
 class StrataConfig(_Section):
     """How the `jarvis-strata` user service runs Strata (written into its profile by setup)."""
 
     home: SafePath = Field(default_factory=lambda: paths.xdg_data_home() / "strata")
     components_parent: SafePath = Field(default_factory=paths.xdg_data_home)
-    model_file: SafePath = Path()
-    tokenizer_dir: SafePath = Path()
-    model_id: SafeText = "qwen3.6-35b-a3b-ud-q4_k_xl"
+    # Strata's own run config for the model (`strata-<model>.json`, written by `strata launch`):
+    # the model, its engine and its flags all come from it.
+    run_config: SafePath = Path()
     port: int = Field(default=8080, ge=1024, le=65535)
     context: int = Field(default=24576, ge=2048, le=262144)
+    # Expert weights kept in VRAM, for an engine that takes a size (`--expert-vram`,
+    # `--vram-experts-gb`); the rest stay in RAM.
     expert_vram_gib: float = Field(default=1.0, ge=0, le=64)
-    # The prompt-reading chunk (`--prefill`): a size in tokens, or "auto" to leave it to Strata.
-    prefill: Annotated[int, Field(ge=128, le=8192)] | Literal["auto"] = 512
     idle_unload_s: int = Field(default=86400, ge=30, le=86400)  # stays loaded (#34, decision 2)
     reasoning_budget_tokens: int = Field(default=512, gt=0, le=8192)
     memory_max: str = Field(default="40G", pattern=r"^\d+[KMGT]?$")
@@ -167,14 +174,34 @@ class StrataConfig(_Section):
     # Context cells kept in VRAM (`--kv-resident`); the whole context then lives in pinned RAM, so
     # `context` can grow past them without more VRAM. 0: all of the context in VRAM.
     kv_resident: KvResident = 0
-    # The picture reader (the model's mmproj file, beside it); unset: Jarvis reads no pictures.
-    vision_file: SafePath = Path()
+    # Let an engine that keeps a routing profile (`--expert-profile`) learn which experts Jarvis's
+    # requests use, and start from them: those experts are on the card from the first request.
+    learn_experts: bool = True
+    # Read pictures with the reader the run config names; off: the profile drops it.
+    pictures: bool = True
     vision_idle_s: int = Field(default=120, ge=10, le=86400)  # the reader stops after this idle
 
-    @property
-    def pictures(self) -> bool:
-        """Whether the model is served with its picture reader."""
-        return self.vision_file != Path()
+    @model_validator(mode="before")
+    @classmethod
+    def _replaced_keys(cls, data: object) -> object:
+        """Refuse the keys the run config replaced, saying what to do instead.
+
+        Raises:
+            ValueError: one of those keys is set.
+        """
+        if not isinstance(data, dict):
+            return data
+        fields = cast("dict[str, object]", data)
+        old = sorted(set(fields) & _REPLACED_BY_RUN_CONFIG)
+        if old:
+            msg = (
+                f"strata.{', strata.'.join(old)} came from before strata.run_config: run "
+                "`strata launch` for the model, set strata.run_config to the "
+                "strata-<model>.json it writes (`jarvis setup --run-config`), and remove "
+                "the old keys"
+            )
+            raise ValueError(msg)
+        return fields
 
 
 class SpotifyConfig(_Section):

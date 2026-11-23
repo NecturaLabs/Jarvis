@@ -89,7 +89,7 @@ The chat remembers replies that drew on outside text, as data. While one is reme
 effect that the model chooses needs your yes; a plain command (`pause`, `volume 40`) does not, since the
 model plays no part in it.
 
-Pictures in the chat need the picture reader (`strata.vision_file`, below). Ctrl+V pastes a copied picture
+Pictures in the chat need the model's picture reader (`strata.pictures`, below). Ctrl+V pastes a copied picture
 as an `[Image #1]` tag in the input, as in Claude Code, or copied text where the cursor is; the terminal's
 own paste (Ctrl+Shift+V) carries only text. A picture file dropped on the terminal, or `/image <path>`,
 attaches that file, and `/image` alone attaches the newest screenshot in `OMASNAP_SCREENSHOT_DIR`,
@@ -122,22 +122,20 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 |---|---|---|---|
 | `home` | `~/.local/share/strata` | path | Strata's data folder (`STRATA_DATA_DIR`). `--strata-home`. |
 | `components_parent` | `~/.local/share` | path | The `XDG_DATA_HOME` Strata runs with. `--strata-components-parent`. |
-| `model_file` | unset | path | The model file. Once set, the Strata unit starts only if the file exists; `jarvis doctor` fails until it is set. `--model-file`. |
-| `tokenizer_dir` | unset | path | The model's tokenizer folder. `--tokenizer-dir`. |
-| `model_id` | `qwen3.6-35b-a3b-ud-q4_k_xl` | text | The model's name inside Strata's profile. |
+| `run_config` | unset | path | Strata's own run config for the model: the `strata-<model>.json` that `strata launch` writes in Strata's `install` folder. The model, its engine, its flags, its tokenizer, its name and its picture reader all come from it; Jarvis sets only the limits in this table. Once set, the Strata unit starts only if the model file it names exists, and `jarvis setup` refuses a run config naming a file that is gone (run `strata launch` for the model again). Unset, `jarvis setup` saves the config and stops there; `jarvis doctor` fails until it is set. `--run-config`. |
 | `port` | `8080` | 1024 to 65535 | Strata's port on `127.0.0.1`. |
 | `context` | `24576` | 2048 to 262144 | Context window in tokens (`--max-context`). Each 1,000 tokens more costs about 0.05 GiB of VRAM ([models.md](models.md)). It holds the prompt and the tool schemas (about 5,000 tokens together), the remembered conversation (`agent.memory_tokens` or `chat.memory_tokens`), one reply and the request's tool results; when a long request outgrows it, its oldest tool results are cleared down to their start. |
-| `expert_vram_gib` | `1.0` | 0 to 64 | VRAM budget for expert weights kept on the GPU, passed as `--expert-vram`; the rest of the experts stay in host memory. |
-| `prefill` | `512` | 128 to 8192, or `"auto"` | Prompt-reading chunk size (`--prefill`). `"auto"` leaves the size to Strata (the value its own setup writes). Strata's tuner lists 512 among the sizes it avoids for this model, because smaller chunks read long prompts slower, so `"auto"`, 2048 and 4096 are worth measuring on your card before changing the default ([models.md](models.md#prompt-chunk-size)). |
+| `expert_vram_gib` | `1.0` | 0 to 64 | Expert weights kept in VRAM, for an engine that takes a size: passed as `--expert-vram` or `--vram-experts-gb`, whichever the run config has; the planner keeps the other experts in RAM (Jarvis drops the run config's `--ram-experts-gb`). An engine whose expert cache fills the card (`--expert-cache auto`, Qwen3.8-Flash-Next) ignores it: limit that one with `vram_reserve_mib`. |
 | `idle_unload_s` | `86400` | 30 to 86400 | Seconds without a request before Strata frees the model. The default, 24 hours, keeps it loaded through the day; a lower value gives the RAM back sooner. |
 | `reasoning_budget_tokens` | `512` | 1 to 8192 | Thinking-token cap in the profile. |
 | `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` of the Strata unit. `MemoryMax` is derived from it, 10% above (44G for 40G; a size that does not divide evenly is rounded up and written in bytes), so there is no second key. Past `MemoryHigh` the kernel throttles the unit and reclaims its memory; past `MemoryMax` it kills the unit. |
-| `vram_reserve_mib` | `0` (unset) | 0, or 100 to 65536 | VRAM in MiB the engine leaves free for other programs, passed as `--vram-reserve-mib`. `0` passes nothing, so Strata's own default (700) applies. Set it only after a game that grows once the model is loaded either fails or does not. A card with at most about 8 GB of VRAM cannot start with a reserve (Strata's tuner never tries one there). |
+| `vram_reserve_mib` | `0` (unset) | 0, or 100 to 65536 | VRAM in MiB the engine leaves free for other programs, passed as `--vram-reserve-mib`. `0` passes nothing, so Strata's own default (700) applies. For an engine whose expert cache fills the card (`--expert-cache auto`) it is the VRAM limit: on a 20 GB card, 12000 holds Qwen3.8-Flash-Next at about 8 GiB ([models.md](models.md)). A card with at most about 8 GB of VRAM cannot start with a reserve (Strata's tuner never tries one there). |
 | `kv_resident` | `0` (all in VRAM) | 0, or 20480 to 262144 | Context cells kept in VRAM, passed as `--kv-resident`. Set, the whole context also lives in pinned RAM and only this many cells stay on the card, so `context` can grow past them without more VRAM; the VRAM saved goes to expert slots. Pinned RAM counts against `memory_max`. A `context` of this many cells or fewer is not streamed. Reading past the cells on the card is slower; measure before raising `context` far. |
-| `vision_file` | unset | path | The model's picture reader (`mmproj-F16.gguf`, [models.md](models.md#pictures)). Set, the profile reads pictures: Strata's reader runs on the processor, in about 0.9 GB of RAM and no VRAM, starts with the first picture and stops after `vision_idle_s`. Unset, Jarvis reads no pictures. |
+| `learn_experts` | `true` | `true` or `false` | For an engine whose run config starts from a routing profile (`--expert-profile`): the engine saves which experts Jarvis's requests use to `~/.local/state/jarvis/strata-expert-profile.bin` (when it stops, and every 10 minutes between requests) and starts from that file next time, so those experts are on the card from the first request. Nothing is deleted from the model. `jarvis setup` starts the file once from a copy of the run config's own profile and never overwrites what the engine learned; `jarvis doctor` fails when it is missing. |
+| `pictures` | `true` | `true` or `false` | Read pictures with the reader the run config names: Strata's reader beside the main engine runs on the processor, in RAM and no VRAM, from the first picture until `vision_idle_s` without one; Inkling's engine reads them itself. `false` drops the reader. A run config without a reader reads no pictures either way. |
 | `vision_idle_s` | `120` | 10 to 86400 | Seconds without a picture before the picture reader stops. |
 
-Fixed by Jarvis, not configurable: lazy loading on, one parallel slot, the HIP backend on GPU 0, `--mtp 2`.
+Fixed by Jarvis, not configurable: lazy loading on, one request at a time, `127.0.0.1`, its own log and working folder. Everything else in the profile is the run config's.
 
 ### What the two units set
 

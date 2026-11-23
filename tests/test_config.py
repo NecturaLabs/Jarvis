@@ -190,15 +190,12 @@ def test_memory_max_refuses_everything_else(value: str) -> None:
         config.StrataConfig(memory_max=value)
 
 
-@pytest.mark.parametrize("value", [128, 512, 8192, "auto"])
-def test_prefill_accepts_a_chunk_size_or_auto(value: int | str) -> None:
-    assert config.StrataConfig.model_validate({"prefill": value}).prefill == value
-
-
-@pytest.mark.parametrize("value", [127, 8193, "fast", "auto:4096", "", "AUTO"])
-def test_prefill_refuses_everything_else(value: int | str) -> None:
-    with pytest.raises(ValueError, match="prefill"):
-        config.StrataConfig.model_validate({"prefill": value})
+@pytest.mark.parametrize(
+    "key", ["model_file", "tokenizer_dir", "model_id", "prefill", "vision_file"]
+)
+def test_a_key_the_run_config_replaced_says_what_to_do_instead(tmp_path: Path, key: str) -> None:
+    with pytest.raises(config.ConfigError, match=rf"strata\.{key}.*strata launch.*run_config"):
+        _load_text(tmp_path, f'[strata]\n{key} = "x"\n')
 
 
 def test_the_vram_reserve_is_unset_by_default() -> None:
@@ -217,22 +214,24 @@ def test_vram_reserve_refuses_a_value_outside_its_range(value: int) -> None:
 
 
 def test_the_new_strata_keys_round_trip(tmp_path: Path) -> None:
-    original = config.Config(strata=config.StrataConfig(prefill="auto", vram_reserve_mib=1536))
+    original = config.Config(
+        strata=config.StrataConfig(
+            run_config=Path("/strata/install/strata-q4.json"), pictures=False, vram_reserve_mib=1536
+        )
+    )
     path = tmp_path / "config.toml"
 
     config.save(original, path)
 
     assert config.load(path) == original
-    assert 'prefill = "auto"' in path.read_text(encoding="utf-8")
+    assert 'run_config = "/strata/install/strata-q4.json"' in path.read_text(encoding="utf-8")
 
 
 _PATH_FIELDS: list[tuple[str, Callable[[str], Any]]] = [
     ("data_dir", lambda v: config.Config(data_dir=Path(v))),
     ("home", lambda v: config.StrataConfig(home=Path(v))),
     ("components_parent", lambda v: config.StrataConfig(components_parent=Path(v))),
-    ("model_file", lambda v: config.StrataConfig(model_file=Path(v))),
-    ("tokenizer_dir", lambda v: config.StrataConfig(tokenizer_dir=Path(v))),
-    ("model_id", lambda v: config.StrataConfig(model_id=v)),
+    ("run_config", lambda v: config.StrataConfig(run_config=Path(v))),
 ]
 
 
@@ -246,14 +245,14 @@ def test_paths_and_unit_strings_refuse_control_characters(
 
 
 def test_a_path_with_a_space_is_fine() -> None:
-    cfg = config.StrataConfig(model_file=Path("/data/my models/q4.gguf"))
+    cfg = config.StrataConfig(run_config=Path("/data/my models/strata-q4.json"))
 
-    assert cfg.model_file.name == "q4.gguf"
+    assert cfg.run_config.name == "strata-q4.json"
 
 
 def test_control_characters_in_a_loaded_path_are_a_config_error(tmp_path: Path) -> None:
-    with pytest.raises(config.ConfigError, match="model_file"):
-        _load_text(tmp_path, '[strata]\nmodel_file = "/a\\nb"\n')
+    with pytest.raises(config.ConfigError, match="run_config"):
+        _load_text(tmp_path, '[strata]\nrun_config = "/a\\nb"\n')
 
 
 def test_loose_match_may_not_exceed_close_match() -> None:

@@ -8,6 +8,7 @@ from typing import cast
 
 import pytest
 from pydantic import ValidationError
+from strata_fixture import engine_run_config, inkling_run_config, install_engine
 
 from jarvis import services
 from jarvis.config import Config, ConfigError, StrataConfig
@@ -23,14 +24,17 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 pytestmark = pytest.mark.usefixtures("home")
 
 
-def _config(tmp_path: Path, **strata: object) -> Config:
+def _config(tmp_path: Path, *, engine: bool = True, **strata: object) -> Config:
+    """Return a config on the main engine's run config, with an installed engine (`engine`)."""
+    if engine:
+        install_engine(tmp_path / "components")
     settings: dict[str, object] = {
         "home": tmp_path / "strata-home",
         "components_parent": tmp_path / "components",
-        "model_file": tmp_path / "models" / "q4.gguf",
-        "tokenizer_dir": tmp_path / "tokenizer",
         **strata,
     }
+    if "run_config" not in settings:
+        settings["run_config"] = engine_run_config(tmp_path)
     return Config(strata=StrataConfig.model_validate(settings))
 
 
@@ -88,7 +92,8 @@ def test_the_strata_unit_keeps_the_servers_own_notes_in_the_journal(tmp_path: Pa
 
 def test_paths_with_spaces_are_quoted_for_systemd(tmp_path: Path) -> None:
     spaced = tmp_path / "my models"
-    cfg = _config(tmp_path, home=spaced / "strata home", model_file=spaced / "q4 k.gguf")
+    run = engine_run_config(tmp_path, model=spaced / "q4 k.gguf")
+    cfg = _config(tmp_path, home=spaced / "strata home", run_config=run)
     key = tmp_path / "my keys" / "strata.env"
 
     lines = _lines(services.strata_unit(cfg, key))
@@ -138,9 +143,7 @@ def test_an_absolute_program_is_written_as_an_exec_word() -> None:
 @pytest.mark.parametrize("bad", ["/a\nExecStartPre=/bin/evil", "/a\rb", "/a\x00b", "/a\x7fb"])
 def test_a_control_character_never_reaches_a_unit(tmp_path: Path, bad: str) -> None:
     cfg = _config(tmp_path)
-    unchecked = cfg.model_copy(
-        update={"strata": cfg.strata.model_copy(update={"model_file": Path(bad)})}
-    )
+    unchecked = cfg.model_copy(update={"strata": cfg.strata.model_copy(update={"home": Path(bad)})})
 
     with pytest.raises(ConfigError, match="control character"):
         services.strata_unit(unchecked, tmp_path / "strata.env")
@@ -165,7 +168,7 @@ def test_a_value_ending_in_a_backslash_is_refused(tmp_path: Path) -> None:
         services.strata_unit(_config(tmp_path), Path("/keys/strata.env\\"))
 
 
-def test_the_model_condition_is_omitted_when_no_model_is_configured(tmp_path: Path) -> None:
+def test_the_model_condition_is_omitted_when_no_run_config_is_set(tmp_path: Path) -> None:
     cfg = Config(strata=StrataConfig(home=tmp_path / "s"))
 
     text = services.strata_unit(cfg, tmp_path / "strata.env")
@@ -189,11 +192,100 @@ def test_the_strata_profile_content(tmp_path: Path) -> None:
     assert profile["host"] == "127.0.0.1"
     assert profile["lazy_load"] is True
     assert profile["idle_unload_s"] == 120
-    assert profile["model_name"] == cfg.strata.model_id
-    assert profile["tokenizer"] == str(tmp_path / "tokenizer")
-    assert profile["args"][:2] == ["--native", str(tmp_path / "models" / "q4.gguf")]
+    assert profile["model_name"] == "flash-q4"
+    assert profile["tokenizer"] == str(tmp_path / "packs" / "q4" / "tokenizer")
+    assert profile["args"][profile["args"].index("--native") + 1] == str(
+        tmp_path / "models" / "q4.gguf"
+    )
     assert profile["args"][profile["args"].index("--max-context") + 1] == "4096"
     assert "api_key" not in json.dumps(profile)
+
+
+def test_the_profile_keeps_the_models_own_settings_and_sets_jarvis_limits(tmp_path: Path) -> None:
+    profile = json.loads(json.dumps(services.strata_profile(_config(tmp_path))))
+
+    assert profile["exe"] == "component:strata-engine"
+    assert profile["backend"] == "hip"
+    args = profile["args"]
+    for flag, value in (("--pack", str(tmp_path / "packs" / "q4")), ("--kv", "int8")):
+        assert args[args.index(flag) + 1] == value  # Strata's own flags, untouched
+    assert args[args.index("--prefill") + 1] == "auto"
+    assert profile["args_written"] == args
+    assert "args_derived" not in profile  # one launch's record, not the model's
+    assert "engine_ready_s" not in profile
+    assert profile["parallel"] == 1
+    assert profile["log"] != "/strata/install/strata-q4.log"
+    assert profile["cwd"] == str(tmp_path / "strata-home" / "terminal" / "current")
+
+
+def test_an_engine_whose_cache_fills_the_card_is_held_back_by_the_reserve(tmp_path: Path) -> None:
+    args = _args(services.strata_profile(_config(tmp_path, vram_reserve_mib=12000)))
+
+    assert args[args.index("--expert-cache") + 1] == "auto"
+    assert args[args.index("--vram-reserve-mib") + 1] == "12000"
+
+
+def test_inklings_experts_on_the_card_follow_expert_vram_gib(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, run_config=inkling_run_config(tmp_path), expert_vram_gib=4)
+
+    profile = json.loads(json.dumps(services.strata_profile(cfg)))
+
+    args = profile["args"]
+    assert profile["exe"] == "component:strata-inkling"
+    assert (profile["arch"], profile["drafting"], profile["parallel"]) == (
+        "inkling2_loop",
+        "dspark",
+        1,
+    )
+    assert args[args.index("--vram-experts-gb") + 1] == "4"
+    assert "--ram-experts-gb" not in args  # the rest is the planner's, in RAM
+    assert args[args.index("--vision") + 1] == str(tmp_path / "models" / "inkling-vision.strata")
+    assert "vision" not in profile  # this engine reads pictures itself
+
+
+def test_pictures_off_drops_the_reader_of_either_engine(tmp_path: Path) -> None:
+    engine = json.loads(json.dumps(services.strata_profile(_config(tmp_path, pictures=False))))
+    inkling = _config(tmp_path, run_config=inkling_run_config(tmp_path), pictures=False)
+    inkling_args = _args(services.strata_profile(inkling))
+
+    assert "--vision" not in engine["args"]
+    assert "vision" not in engine
+    assert "--vision" not in inkling_args
+    assert str(tmp_path / "models" / "inkling-vision.strata") not in inkling_args
+    assert not services.reads_pictures(_config(tmp_path, pictures=False))
+
+
+def test_without_a_run_config_there_is_no_profile(tmp_path: Path) -> None:
+    with pytest.raises(services.StrataSetupError, match="run_config is not set"):
+        services.strata_profile(_config(tmp_path, run_config=Path()))
+
+
+def test_a_run_config_naming_a_missing_file_is_a_setup_error(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    (tmp_path / "models" / "q4.gguf").unlink()
+
+    with pytest.raises(services.StrataSetupError, match=r"missing: .*q4\.gguf.*strata launch"):
+        services.strata_profile(cfg)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["not json", "[]", '{"exe": "something-else", "args": []}', '{"exe": "component:strata-x"}'],
+)
+def test_a_file_that_is_not_a_strata_run_config_is_refused(tmp_path: Path, text: str) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(services.StrataSetupError, match=r"bad\.json"):
+        services.strata_profile(_config(tmp_path, run_config=path))
+
+
+def test_the_model_name_and_reader_come_from_the_run_config(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+
+    assert services.model_name(cfg) == "flash-q4"
+    assert services.reads_pictures(cfg)
+    assert "run_config is not set" in services.model_name(_config(tmp_path, run_config=Path()))
 
 
 def test_units_are_written_atomically_and_leave_no_temp_file(tmp_path: Path) -> None:
@@ -265,19 +357,12 @@ def _engine(tmp_path: Path, *versions: str) -> Path:
     return root
 
 
-def test_without_a_picture_reader_the_profile_reads_no_pictures(tmp_path: Path) -> None:
-    profile = json.loads(json.dumps(services.strata_profile(_config(tmp_path))))
-
-    assert "vision" not in profile
-    assert "--vision" not in profile["args"]
-
-
 def test_the_picture_reader_runs_on_the_processor_and_only_when_a_picture_comes(
     tmp_path: Path,
 ) -> None:
     engine = _engine(tmp_path, "0.1.60-x", "0.1.62-x")
-    reader = tmp_path / "models" / "mmproj-F16.gguf"
-    cfg = _config(tmp_path, vision_file=reader, vision_idle_s=90)
+    reader = tmp_path / "models" / "mmproj.gguf"
+    cfg = _config(tmp_path, vision_idle_s=90)
 
     profile = json.loads(json.dumps(services.strata_profile(cfg)))
 
@@ -285,16 +370,16 @@ def test_the_picture_reader_runs_on_the_processor_and_only_when_a_picture_comes(
     vision = profile["vision"]
     assert vision["exe"] == str(engine / "0.1.62-x" / "strata-vision")
     assert vision["mmproj"] == str(reader)
-    assert vision["model"] == str(cfg.strata.model_file)
+    assert vision["model"] == str(tmp_path / "models" / "q4.gguf")
     assert vision["gpu"] is False  # in RAM, not in the VRAM games need
     assert vision["elastic"] is True  # started by the first picture, stopped when idle
     assert vision["elastic_idle_s"] == 90
-    assert vision["max_tokens"] > 0
+    assert vision["max_tokens"] == 300  # Strata's own choice for the model
     assert 1 <= vision["threads"] <= 16
 
 
 def test_a_picture_reader_without_the_engine_program_is_a_setup_error(tmp_path: Path) -> None:
-    cfg = _config(tmp_path, vision_file=tmp_path / "models" / "mmproj-F16.gguf")
+    cfg = _config(tmp_path, engine=False)
 
     with pytest.raises(services.StrataSetupError, match="picture reader"):
         services.strata_profile(cfg)
@@ -448,18 +533,6 @@ def _args(profile: dict[str, object]) -> list[str]:
     return [str(a) for a in cast("list[object]", args)]
 
 
-def test_the_prompt_chunk_defaults_to_512(tmp_path: Path) -> None:
-    args = _args(services.strata_profile(_config(tmp_path)))
-
-    assert args[args.index("--prefill") + 1] == "512"
-
-
-def test_the_prompt_chunk_may_be_left_to_strata(tmp_path: Path) -> None:
-    args = _args(services.strata_profile(_config(tmp_path, prefill="auto")))
-
-    assert args[args.index("--prefill") + 1] == "auto"
-
-
 def test_no_vram_reserve_is_passed_unless_one_is_set(tmp_path: Path) -> None:
     args = _args(services.strata_profile(_config(tmp_path)))
 
@@ -489,3 +562,64 @@ def test_kv_resident_keeps_that_much_of_the_context_in_vram_and_the_rest_in_ram(
 def test_kv_resident_below_the_engines_minimum_is_refused(tmp_path: Path, cells: int) -> None:
     with pytest.raises(ValidationError, match="at least 20480"):
         _config(tmp_path, kv_resident=cells)
+
+
+def _with_routing_profile(tmp_path: Path, *, learn_experts: bool = True) -> tuple[Config, Path]:
+    """Return a config whose engine starts from a routing profile, and that profile."""
+    cfg = _config(tmp_path, learn_experts=learn_experts)
+    generic = tmp_path / "control" / "expert-profile.bin"
+    generic.parent.mkdir(exist_ok=True)
+    generic.write_bytes(b"generic")
+    run = tmp_path / "install" / "strata-q4.json"
+    data = json.loads(run.read_text(encoding="utf-8"))
+    data["args"] += ["--expert-profile", str(generic)]
+    run.write_text(json.dumps(data), encoding="utf-8")
+    return cfg, generic
+
+
+def test_an_engine_with_a_routing_profile_learns_jarvis_own_and_starts_from_it(
+    tmp_path: Path,
+) -> None:
+    cfg, _ = _with_routing_profile(tmp_path)
+    learned = str(services.expert_profile_file())
+
+    args = _args(services.strata_profile(cfg))
+
+    assert args[args.index("--expert-profile") + 1] == learned
+    assert args[args.index("--expert-profile-save") + 1] == learned
+
+
+def test_setup_starts_the_learned_profile_from_stratas_once_and_keeps_what_was_learned(
+    tmp_path: Path,
+) -> None:
+    cfg, _ = _with_routing_profile(tmp_path)
+    learned = services.expert_profile_file()
+
+    path = services.write_strata_profile(cfg)
+    first = path.read_text(encoding="utf-8")
+    learned.write_bytes(b"learned from requests")  # what the engine saved
+    services.write_strata_profile(cfg)
+
+    assert learned.read_bytes() == b"learned from requests"
+    assert path.read_text(encoding="utf-8") == first  # the profile never changes for it
+
+
+def test_the_first_setup_copies_stratas_routing_profile(tmp_path: Path) -> None:
+    cfg, _ = _with_routing_profile(tmp_path)
+
+    services.write_strata_profile(cfg)
+
+    assert services.expert_profile_file().read_bytes() == b"generic"
+
+
+def test_learning_experts_is_left_out_when_off_or_when_the_engine_has_no_profile(
+    tmp_path: Path,
+) -> None:
+    off, generic = _with_routing_profile(tmp_path, learn_experts=False)
+    off_args = _args(services.strata_profile(off))
+
+    assert "--expert-profile-save" not in off_args
+    assert off_args[off_args.index("--expert-profile") + 1] == str(generic)
+    assert "--expert-profile-save" not in _args(services.strata_profile(_config(tmp_path / "b")))
+    services.write_strata_profile(off)
+    assert not services.expert_profile_file().exists()

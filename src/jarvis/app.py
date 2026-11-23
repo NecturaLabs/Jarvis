@@ -20,6 +20,7 @@ from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
 from jarvis.secretfile import read_api_key
+from jarvis.services import StrataSetupError, read_run_config, reads_pictures
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
@@ -325,7 +326,10 @@ def action_rate(config: Config) -> ActionRate:
 
 def strata_model(config: Config, key: str) -> StrataModel:
     """Return the client for this config's Strata server, knowing its model file when set."""
-    model_file = config.strata.model_file
+    try:
+        model_file = read_run_config(config).model
+    except StrataSetupError:  # no usable run config: the server cannot start, `doctor` says why
+        model_file = Path()
     return StrataModel(
         config.model.model_copy(update={"base_url": config.model_base_url()}),
         key,
@@ -391,7 +395,7 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
         names=(config.persona.name,),
         limits=limits,
         memory_file=remembered,
-        pictures=config.strata.pictures,
+        pictures=reads_pictures(config),
         bypass_consent=config.boundaries.bypass_consent,
         actions=action_rate(config),
     )

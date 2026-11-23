@@ -11,12 +11,13 @@ import os
 import re
 import shutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from jarvis import paths
 from jarvis.config import ConfigError
-from jarvis.files import write_atomic
+from jarvis.files import write_atomic, write_atomic_bytes
 
 if TYPE_CHECKING:
     from jarvis.config import Config
@@ -147,13 +148,17 @@ def strata_profile_file() -> Path:
     return paths.config_dir() / "strata-profile.json"
 
 
+def expert_profile_file() -> Path:
+    """Return where the engine keeps what it learned about the experts Jarvis's requests use."""
+    return paths.state_dir() / "strata-expert-profile.bin"
+
+
 def strata_ready_file() -> Path:
     """Return where the Strata service writes its instance record."""
     return paths.state_dir() / "strata-ready.json"
 
 
 READER = "strata-vision"  # Strata's picture reader on the processor, in each engine folder
-READER_MAX_TOKENS = 300  # the tokens one picture may become (Strata's own default for this reader)
 READER_THREADS_CAP = 16
 
 
@@ -177,61 +182,203 @@ def _reader(config: Config) -> Path:
     return found[-1]
 
 
-def _vision(config: Config) -> dict[str, object]:
-    """Return the profile's picture section: the reader on the processor, started on demand.
+@dataclass(frozen=True, slots=True)
+class RunConfig:
+    """Strata's own run config for a model (`strata-<model>.json`, written by `strata launch`).
 
-    It runs in RAM, not in the VRAM that games and the model's experts use, and only from the first
-    picture until `vision_idle_s` without one ("elastic").
+    Everything model-specific comes from it: the engine, its arguments, the tokenizer, the
+    architecture and the picture reader. Jarvis only sets its own limits on top (`strata_profile`).
+    """
+
+    path: Path
+    data: dict[str, object]
+    args: tuple[str, ...]
+
+    def _after(self, flag: str) -> str | None:
+        """Return the value after `flag`, or None when the flag is absent or takes no value."""
+        if flag not in self.args:
+            return None
+        at = self.args.index(flag) + 1
+        value = self.args[at] if at < len(self.args) else ""
+        return None if not value or value.startswith("--") else value
+
+    @property
+    def model(self) -> Path:
+        """The model file the engine loads (`--native`)."""
+        native = self._after("--native")
+        return Path(native) if native else Path()
+
+    @property
+    def expert_profile(self) -> Path | None:
+        """The routing profile the engine starts from (`--expert-profile`), if it takes one."""
+        value = self._after("--expert-profile")
+        return Path(value) if value else None
+
+    @property
+    def name(self) -> str:
+        """The model's name in Strata."""
+        return str(self.data.get("model_name", ""))
+
+    @property
+    def picture_reader(self) -> Path | None:
+        """The picture reader's file, or None when the model is set up without one.
+
+        One engine runs a reader beside it (`"vision"` with its `mmproj`); another reads pictures
+        itself (`--vision FILE`).
+        """
+        vision = self.data.get("vision")
+        if isinstance(vision, dict):
+            mmproj = cast("dict[str, object]", vision).get("mmproj")
+            return Path(str(mmproj)) if mmproj else None
+        value = self._after("--vision")
+        return Path(value) if value else None
+
+
+def read_run_config(config: Config) -> RunConfig:
+    """Read `strata.run_config`.
+
+    Raises:
+        StrataSetupError: it is unset or unreadable, is not a Strata run config, or names a file
+            that is missing (the model moved, or a Strata update removed it).
+    """
+    path = config.strata.run_config
+    if path == Path():
+        msg = (
+            "strata.run_config is not set: run `strata launch` for the model, then "
+            "`jarvis setup --run-config <its strata-<model>.json>`"
+        )
+        raise StrataSetupError(msg)
+    try:
+        loaded: object = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        msg = f"cannot read the Strata run config {path}: {exc}"
+        raise StrataSetupError(msg) from exc
+    data = cast("dict[str, object]", loaded) if isinstance(loaded, dict) else {}
+    exe, raw = data.get("exe"), data.get("args")
+    if not (isinstance(exe, str) and exe.startswith("component:strata-") and isinstance(raw, list)):
+        msg = f"{path} is not a Strata run config (no Strata engine and arguments in it)"
+        raise StrataSetupError(msg)
+    run = RunConfig(path, data, tuple(str(a) for a in cast("list[object]", raw)))
+    named = [*run.args, *(str(f) for f in (run.picture_reader,) if f is not None)]
+    missing = sorted({a for a in named if a.startswith("/") and not Path(a).exists()})
+    if missing:
+        msg = (
+            f"the Strata run config {path} names files that are missing: {', '.join(missing)}; "
+            "run `strata launch` for the model again, then `jarvis setup`"
+        )
+        raise StrataSetupError(msg)
+    return run
+
+
+def reads_pictures(config: Config) -> bool:
+    """Whether Jarvis serves its model with a picture reader (`strata.pictures` and one set up)."""
+    if not config.strata.pictures:
+        return False
+    try:
+        return read_run_config(config).picture_reader is not None
+    except StrataSetupError:
+        return False
+
+
+def model_name(config: Config) -> str:
+    """Return the served model's name, or what is wrong with its run config."""
+    try:
+        return read_run_config(config).name or "unnamed model"
+    except StrataSetupError as exc:
+        return f"no model ({exc})"
+
+
+def learns_experts(config: Config, run: RunConfig) -> bool:
+    """Whether the engine learns Jarvis's experts: `learn_experts`, and a profile to start from."""
+    return config.strata.learn_experts and run.expert_profile is not None
+
+
+def _with(args: list[str], flag: str, value: str) -> list[str]:
+    """Return `args` with `flag` set to `value`, replacing its old value or adding both."""
+    if flag in args:
+        at = args.index(flag)
+        return [*args[: at + 1], value, *args[at + 2 :]]
+    return [*args, flag, value]
+
+
+def _without(args: list[str], flag: str) -> list[str]:
+    """Return `args` without `flag` and its value, if it has one."""
+    if flag not in args:
+        return args
+    at = args.index(flag)
+    valued = at + 1 < len(args) and not args[at + 1].startswith("--")
+    return [*args[:at], *args[at + (2 if valued else 1) :]]
+
+
+def _tuned_args(config: Config, run: RunConfig) -> list[str]:
+    """Return the run config's arguments with Jarvis's context and VRAM limits.
+
+    A limit is set through whichever flag the model's engine takes, as Strata's setup wrote it:
+    `--expert-vram` or `--vram-experts-gb` take `expert_vram_gib` (the experts kept on the card,
+    the rest go to RAM); an engine whose expert cache fills the card (`--expert-cache`) is held back
+    by `vram_reserve_mib`, the VRAM it leaves free. An engine that starts from a routing profile
+    learns Jarvis's own (`learn_experts`, `expert_profile_file`). Without `strata.pictures` the
+    reader is dropped.
     """
     s = config.strata
+    args = _with(list(run.args), "--max-context", str(s.context))
+    for flag in ("--expert-vram", "--vram-experts-gb"):
+        if flag in args:
+            args = _with(args, flag, f"{s.expert_vram_gib:g}")
+    args = _without(args, "--ram-experts-gb")  # the planner puts what the card does not hold in RAM
+    if s.vram_reserve_mib:
+        args = _with(args, "--vram-reserve-mib", str(s.vram_reserve_mib))
+    if s.kv_resident:
+        args = _with(args, "--kv-resident", str(s.kv_resident))
+    if learns_experts(config, run):
+        learned = str(expert_profile_file())  # `write_strata_profile` starts it from Strata's own
+        args = _with(_with(args, "--expert-profile", learned), "--expert-profile-save", learned)
+    if not s.pictures:
+        args = _without(args, "--vision")
+    return args
+
+
+def _vision(config: Config, run: RunConfig) -> dict[str, object] | None:
+    """Return the profile's picture reader beside the engine, on the processor and on demand.
+
+    It runs in RAM, not in the VRAM that games and the model's experts use, and only from the first
+    picture until `vision_idle_s` without one ("elastic"). None: no reader beside the engine.
+    """
+    vision = run.data.get("vision")
+    if not config.strata.pictures or not isinstance(vision, dict):
+        return None
     threads = max(1, min((os.cpu_count() or 8) // 2, READER_THREADS_CAP))
     return {
+        **cast("dict[str, object]", vision),
         "exe": str(_reader(config)),
-        "mmproj": str(s.vision_file),
-        "model": str(s.model_file),
         "gpu": False,
-        "max_tokens": READER_MAX_TOKENS,
         "threads": threads,
         "elastic": True,
-        "elastic_idle_s": s.vision_idle_s,
+        "elastic_idle_s": config.strata.vision_idle_s,
     }
 
 
-def strata_profile(config: Config) -> dict[str, object]:
-    """Return the Strata run config: Jarvis's model, capped VRAM, lazy load, idle unload.
+# Keys of Strata's run config that describe one launch, not the model; Jarvis sets its own.
+_LAUNCH_KEYS = ("args_written", "args_derived", "engine_ready_s", "vision")
 
-    With `strata.vision_file` set it also reads pictures (`_vision`, which raises
-    `StrataSetupError` when the Strata engine has no picture reader).
+
+def strata_profile(config: Config) -> dict[str, object]:
+    """Return the Strata run config Jarvis serves: the model's own, with Jarvis's limits on top.
+
+    Jarvis's part: one request at a time on 127.0.0.1, lazy load, idle unload, the reasoning cap,
+    its log, and the context and VRAM limits (`_tuned_args`). `StrataSetupError` comes from a run
+    config that cannot be used (`read_run_config`) and from a missing picture reader (`_reader`).
     """
     s = config.strata
-    args = [
-        "--native", str(s.model_file),
-        "--max-context", str(s.context),
-        "--prefill", str(s.prefill),
-        "--mtp", "2",
-        "--expert-vram", f"{s.expert_vram_gib:g}",
-    ]  # fmt: skip
-    if s.vram_reserve_mib:
-        args += ["--vram-reserve-mib", str(s.vram_reserve_mib)]
-    if s.kv_resident:
-        args += ["--kv-resident", str(s.kv_resident)]
-    vision = _vision(config) if s.pictures else None
-    if vision is not None:
-        args.append("--vision")
+    run = read_run_config(config)
+    args = _tuned_args(config, run)
     profile: dict[str, object] = {
-        "exe": "component:strata-engine",
+        **{key: value for key, value in run.data.items() if key not in _LAUNCH_KEYS},
         "args": args,
         "args_written": args,
         "cwd": str(s.home / "terminal" / "current"),
-        "tokenizer": str(s.tokenizer_dir),
-        "model_name": s.model_id,
-        "arch": "qwen35moe",
         "log": str(paths.state_dir() / "strata.log"),
-        "lib_dirs": [],
         "port": s.port,
-        "backend": "hip",
-        "gpu": 0,
-        "gpus_asked": True,
         "host": "127.0.0.1",
         "open_browser": False,
         "parallel": 1,
@@ -239,6 +386,7 @@ def strata_profile(config: Config) -> dict[str, object]:
         "idle_unload_s": s.idle_unload_s,
         "reasoning_budget_tokens": s.reasoning_budget_tokens,
     }
+    vision = _vision(config, run)
     if vision is not None:
         profile["vision"] = vision
     return profile
@@ -257,9 +405,19 @@ def _write_if_changed(path: Path, text: str) -> None:
 
 
 def write_strata_profile(config: Config) -> Path:
-    """Write the Strata run config (no secrets: the key comes from the unit's environment)."""
+    """Write the Strata run config (no secrets: the key comes from the unit's environment).
+
+    When the engine learns Jarvis's experts and has learned nothing yet, it starts from a copy of
+    the run config's own routing profile, so the profile never has to change once it has.
+    """
     path = strata_profile_file()
-    _write_if_changed(path, json.dumps(strata_profile(config), indent=1) + "\n")
+    profile = strata_profile(config)
+    run = read_run_config(config)
+    learned = expert_profile_file()
+    if learns_experts(config, run) and not learned.is_file() and run.expert_profile is not None:
+        learned.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic_bytes(learned, run.expert_profile.read_bytes())
+    _write_if_changed(path, json.dumps(profile, indent=1) + "\n")
     return path
 
 
@@ -274,11 +432,8 @@ def strata_unit(config: Config, key_file: Path) -> str:
     A value that cannot be written safely into a unit (a control character in it) is a ConfigError.
     """
     s = config.strata
-    condition = (
-        f"ConditionPathExists={_path(s.model_file, 'model_file')}\n"
-        if s.model_file != Path()
-        else ""
-    )
+    model = read_run_config(config).model if s.run_config != Path() else Path()
+    condition = f"ConditionPathExists={_path(model, 'model file')}\n" if model != Path() else ""
     start = " ".join(
         [
             exec_program(_strata_bin(config), "strata executable"),

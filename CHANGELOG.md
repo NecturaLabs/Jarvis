@@ -8,6 +8,21 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- Jarvis serves whichever model Strata is set up for, from Strata's own run config
+  (`strata.run_config`, the `strata-<model>.json` that `strata launch` writes): the model, its engine, its
+  flags, tokenizer and picture reader come from that file, and Jarvis adds only its own limits (context,
+  VRAM, one request at a time, lazy load). Nothing model-specific is hardcoded any more. The VRAM limit goes
+  through whichever flag the model's engine takes. `strata.learn_experts` (on) lets an engine that keeps a
+  routing profile learn which experts Jarvis's requests use and start with them on the card. The default
+  model moves to Qwen3.8-Flash-Next (measured beside a game's budget: 7.95 GiB of VRAM, 35.5 GiB of RAM,
+  under a second for a two-tool request, and the prompt reused between requests); Inkling 2 Mini is set up
+  to compare and is too slow with only 8 GiB of VRAM today ([docs/models.md](docs/models.md)).
+  **Migration:** `strata.model_file`, `tokenizer_dir`, `model_id`, `prefill` and `vision_file` are gone,
+  and a config that still sets one is refused with what to do: run `strata launch` for the model, then
+  `jarvis setup --run-config <its strata-<model>.json>` (it replaces `--model-file` and `--tokenizer-dir`),
+  and delete the old keys. `strata.pictures = false` replaces leaving `vision_file` unset. `jarvis setup`
+  without a run config saves the config and says what comes next.
+
 - The command line reads better. `jarvis help` lists the commands in groups (everyday, running Jarvis,
   settings, first-time setup, other) with what each does, instead of argparse's list of every name,
   twice. Every help page is plain text within 80 columns. `jarvis <command> --help` says what the command
