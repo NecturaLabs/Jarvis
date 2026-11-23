@@ -411,7 +411,8 @@ becomes a � mark. The write is refused if any of that no longer holds when it 
 have to make that the question did not name, or an old file that is not the one you were asked about (a
 different size, inode, modification or change time, so a file swapped for another of the same size is
 caught). A replace keeps the old file's read and write permissions, so a private file stays private; it
-never carries an execute bit over.
+never carries an execute bit over. A file you made read-only is neither replaced nor added to, and you
+are not asked about it.
 
 A file's text is data, like a web page (a shell command's output counts as one): while it is in the conversation, side effects need your yes,
 and so do the operations that send words off the PC (`web_search`, `reddit_search`, and `weather` or

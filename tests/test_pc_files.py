@@ -11,7 +11,7 @@ import pytest
 from jarvis.config import FilesConfig
 from jarvis.operations import ArgumentError, Operation, OperationError, Registry, validate_args
 from jarvis.pc import files as files_module
-from jarvis.pc.files import Boundary, FileOps
+from jarvis.pc.files import Boundary, FileOps, FileRefusalError
 from jarvis.policy import OpClass, Origin
 
 if TYPE_CHECKING:
@@ -864,6 +864,21 @@ def test_a_replace_keeps_the_old_files_permissions(home: Path, before: int, afte
 
     assert todo.read_text(encoding="utf-8") == "only this\n"
     assert stat.S_IMODE(todo.stat().st_mode) == after
+
+
+@pytest.mark.parametrize("mode", ["replace", "append"])
+def test_a_file_made_read_only_is_not_written_and_not_asked_about(home: Path, mode: str) -> None:
+    todo = home / "Documents" / "todo.md"
+    todo.chmod(0o444)
+    op = _op(_ops(home), "write_file")
+    args = validate_args(op, {"path": "~/Documents/todo.md", "content": "only this", "mode": mode})
+    assert op.prepare is not None
+
+    with pytest.raises(FileRefusalError, match="read-only"):
+        op.prepare(args)
+
+    assert todo.read_text(encoding="utf-8") == "- milk\n- eggs\n"
+    assert stat.S_IMODE(todo.stat().st_mode) == 0o444
 
 
 def test_the_replacement_is_private_until_it_has_the_old_mode(

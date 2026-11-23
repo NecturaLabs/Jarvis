@@ -630,7 +630,9 @@ class FileOps:
         question names them and the write refuses when they no longer hold.
 
         Raises:
-            FileRefusalError: the path may not be written, or `create` meets an existing file.
+            FileRefusalError: the path may not be written, `create` meets an existing file, or
+                the file is read-only for this user (a replace would get past that, as it
+                renames a new file over the old one).
         """
         path = self._boundary.writable(str(args["path"]))
         mode = str(args.get("mode", "create"))
@@ -640,6 +642,9 @@ class FileOps:
             raise FileRefusalError(msg)
         if mode == "create" and path.exists():
             msg = f"{shown} already exists; say whether to replace it or add to it."
+            raise FileRefusalError(msg)
+        if path.exists() and not _writable(path.stat(follow_symlinks=False)):
+            msg = f"{shown} is read-only, so I don't change it."
             raise FileRefusalError(msg)
         new_folders = 0
         while not path.parents[new_folders].exists():
@@ -835,6 +840,15 @@ def _identity(info: os.stat_result) -> list[int]:
     time, which, unlike the modification time, no one can set back.
     """
     return [info.st_ino, info.st_mtime_ns, info.st_ctime_ns]
+
+
+def _writable(info: os.stat_result) -> bool:
+    """Whether the file's write bit for this user is set, read from its mode, root or not."""
+    if info.st_uid == os.geteuid():
+        return bool(info.st_mode & stat.S_IWUSR)
+    if info.st_gid in {os.getegid(), *os.getgroups()}:
+        return bool(info.st_mode & stat.S_IWGRP)
+    return bool(info.st_mode & stat.S_IWOTH)
 
 
 def _state(info: os.stat_result) -> tuple[int, ...]:

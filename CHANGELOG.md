@@ -342,6 +342,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `write_file` no longer replaces a file you made read-only: a replace renamed a new file over it, which
+  needs only the folder's permission. A read-only file is now refused for a replace and an append alike,
+  before the question.
 - An audit event is no longer lost when the log rotates while another Jarvis process (the voice service,
   the chat window, `jarvis ask`) writes to it, and a full log is rotated once rather than twice. Every
   writer now holds a lock on the log for the size check, the rotation and the write.
