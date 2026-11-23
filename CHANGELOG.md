@@ -323,6 +323,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A model server that answers but lists no model (Strata while its engine is down or restarting) is
+  shown as `unloaded`, not as unreachable, and a wake word then loads the model.
+
 - A pause during the start-up load, or right after a wake word, now frees the model once the load
   is over. Both loads skipped the turn-taking with a pause, so the pause's unload met a busy server and
   Jarvis stayed paused with the model loaded.

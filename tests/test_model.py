@@ -126,7 +126,6 @@ def test_status_reads_the_load_state_without_generating() -> None:
 @pytest.mark.parametrize(
     "response",
     [
-        httpx.Response(200, json={"data": []}),
         httpx.Response(200, json={"data": ["text"]}),
         httpx.Response(200, json={"data": [{"status": "loaded"}]}),
         httpx.Response(503, text="starting"),
@@ -632,7 +631,7 @@ UNLOADED: dict[str, Any] = {"data": [{"status": {"value": "unloaded"}}]}
     [
         ("warm", UNLOADED, "unloaded"),
         ("load", UNLOADED, "unloaded"),
-        ("load", {"data": []}, None),  # a server without idle unload lists no model while it loads
+        ("load", {"data": []}, "unloaded"),  # no idle unload: no model listed while it loads
     ],
 )
 def test_a_load_jarvis_asked_for_shows_as_loading_until_it_ends(
@@ -862,3 +861,12 @@ def test_a_load_asked_for_while_one_is_under_way_joins_it() -> None:
         release.set()
         first.join(5)
     assert posts == ["/v1/load"]
+
+
+def test_a_server_that_lists_no_model_has_it_unloaded() -> None:
+    """Regression: Strata lists no model while its engine is down or restarting, and Jarvis
+    called that server unreachable."""
+    model = _model(httpx.MockTransport(lambda _r: httpx.Response(200, json={"data": []})))
+
+    assert model.status() == "unloaded"
+    assert model.is_loaded() is False
