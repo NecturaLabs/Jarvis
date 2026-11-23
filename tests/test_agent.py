@@ -1291,6 +1291,76 @@ def test_after_one_no_the_owner_is_not_asked_again_in_that_request() -> None:
     assert len(asked) == 1
 
 
+def test_the_wait_for_the_owners_yes_is_not_the_requests_time() -> None:
+    clock = Clock()
+    counter = Counter()
+
+    def slow_yes(_question: str) -> bool:
+        clock.now += agent_module.MAX_SECONDS + 10
+        return True
+
+    model = ScriptedModel([_call("play"), _say("Playing.")])
+    agent, _ = _agent(model, [counter.op("play", cls=OpClass.CONFIRM)], clock=clock)
+
+    assert agent.handle("play", Hooks(confirm=slow_yes)) == "Playing."
+    assert counter.runs == [{"op": "play"}]
+    assert model.timeouts[1] == agent_module.MAX_SECONDS
+
+
+def test_the_wait_for_the_confirm_key_is_not_the_requests_time() -> None:
+    clock = Clock()
+    counter = Counter()
+
+    def slow_press(_question: str, _digest: str) -> bool:
+        clock.now += 60
+        return True
+
+    model = ScriptedModel([_call("run"), _say("Ran it.")])
+    agent, _ = _agent(model, [counter.op("run", cls=OpClass.STRONG)], clock=clock)
+
+    assert agent.handle("run it", Hooks(confirm=NO_CONFIRM.confirm, confirm_key=slow_press)) == (
+        "Ran it."
+    )
+    assert model.timeouts[1] == agent_module.MAX_SECONDS
+
+
+def test_after_a_slow_action_the_answer_still_gets_time() -> None:
+    clock = Clock()
+
+    def slow() -> None:
+        clock.now += agent_module.MAX_SECONDS - 5
+
+    model = ScriptedModel([_call("run"), _say("Ran it.")])
+    agent, _ = _agent(model, [Counter().op("run", then=slow)], clock=clock)
+
+    assert agent.handle("run it", NO_CONFIRM) == "Ran it."
+    assert model.timeouts[1] == agent_module.AFTER_ACTION_CALL_S
+
+
+def test_running_out_of_time_after_an_action_says_what_ran() -> None:
+    clock = Clock()
+
+    def slow() -> None:
+        clock.now += agent_module.MAX_SECONDS + 1
+
+    model = ScriptedModel([_call("pause"), _say("unused")])
+    agent, _ = _agent(model, [Counter().op("pause", spoken="Paused.", then=slow)], clock=clock)
+
+    assert agent.handle("pause", NO_CONFIRM) == f"Paused. {agent_module.RAN_OUT}"
+
+
+def test_running_out_of_time_with_nothing_done_says_it_stopped() -> None:
+    clock = Clock()
+
+    def slow() -> None:
+        clock.now += agent_module.MAX_SECONDS + 1
+
+    model = ScriptedModel([_call("look"), _say("unused")])
+    agent, _ = _agent(model, [Counter().op("look", side_effect=False, then=slow)], clock=clock)
+
+    assert agent.handle("look", NO_CONFIRM) == TOO_LONG
+
+
 def test_a_call_is_not_started_once_the_request_is_out_of_time() -> None:
     clock = Clock()
     counter = Counter()
@@ -1301,7 +1371,7 @@ def test_a_call_is_not_started_once_the_request_is_out_of_time() -> None:
     model = ScriptedModel([_many("queue", 2), _say("unused")])
     agent, _ = _agent(model, [counter.op("queue", then=slow)], clock=clock)
 
-    assert agent.handle("queue two", NO_CONFIRM) == TOO_LONG
+    assert agent.handle("queue two", NO_CONFIRM) == agent_module.ACTED_THEN_TOO_LONG
     assert len(counter.runs) == 1
 
 

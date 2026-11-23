@@ -162,7 +162,7 @@ enforced in code before any tool runs.
 ### Agent loop
 - One agent; tools passed as JSON schemas; each assembled tool call is validated (schema + semantic checks) before
   the policy sees it.
-- Caps per request: 6 tool steps, 60 s (built as 90 s, plus 180 s more when the model must load first), output size per tool. Repeated identical calls are stopped.
+- Caps per request: 6 tool steps, 60 s (built as 90 s, plus 180 s more when the model must load first, and not counting the wait for the owner's yes or confirm key), output size per tool. Repeated identical calls are stopped.
 - Uncertain outcomes (timeout after sending) are never retried blindly for non-idempotent actions (queue, skip,
   like); Jarvis says "I'm not sure that went through" instead.
 - Replies are short and report what happened (tool results, not intentions). The reply is streamed: a finished

@@ -342,6 +342,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The wait for your answer no longer counts against a request's time limit. Reading a question out, waiting
+  for a spoken yes or for the confirm key came out of `agent.max_seconds`, so an approved action could run
+  and the reply still said "That took too long, so I stopped." or, with a few seconds left, "My model isn't
+  answering right now." Once an action has run, the model gets at least 15 s to say how it went, and a
+  request that runs out of time after acting says what it did instead of that it stopped.
+
 - "Skip two songs" skips two: `spotify_next` and `spotify_previous` take a `count` (1 to 10), since a second
   identical call in one request is refused as a repeat. It skipped one and said two. A skip that fails
   part-way says how many tracks it moved by. To make room for the count in the default context,

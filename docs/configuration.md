@@ -60,7 +60,7 @@ that still holds it loads, and the key is ignored: the reply cap is now `reply_t
 |---|---|---|---|
 | `max_steps` | `8` | 1 to 100 | Most model calls in one request; the last one may only answer, from what the others found. |
 | `max_tool_calls` | `12` | 1 to 200 | Most tool calls in one request. |
-| `max_seconds` | `90.0` | 10 to 3600 | Longest one request may take (180 s more when the model must load first). |
+| `max_seconds` | `90.0` | 10 to 3600 | Longest one request may take (180 s more when the model must load first). Time spent asking you and waiting for your yes or the confirm key does not count. Once an action has run, the model still gets at least 15 s to say how it went, and a request that runs out of time after one says what it did. |
 | `reply_tokens` | `400` | 64 to 8192 | Most tokens the model writes in one answer. The prompt asks for replies that fit; a reply the cap ends anyway is kept and says it was cut short. |
 | `tool_text_chars` | `3000` | 500 to 50000 | Most characters of one tool result the model reads. |
 | `memory_tokens` | `6000` | 0 to 200000 | Room the remembered conversation may take of the context window. When it outgrows it, the model summarizes the oldest turns (the latest two stay word for word); if that fails, the oldest are dropped. Jarvis uses less when the window cannot hold it beside the prompt, a reply and two tool results. |
