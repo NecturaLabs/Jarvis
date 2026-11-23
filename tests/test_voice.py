@@ -2201,7 +2201,7 @@ def test_no_window_opens_while_the_status_is_unknown() -> None:
 
 
 def _asking_for_the_key(
-    question: str = "Should I stop process 42?", answers: list[bool] | None = None
+    question: str = "Should I stop process 42?", answers: list[bool | Declined] | None = None
 ) -> Reply:
     """An agent that waits for the confirm key about one action and says whether it came."""
 
@@ -2292,7 +2292,7 @@ def test_no_press_before_the_wait_ends_is_a_no() -> None:
 def test_the_wait_for_the_key_ends_when_its_time_is_up() -> None:
     clock, key_clock = Clock(), Clock()
     key = ConfirmKey(clock=key_clock)
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
     agent = Agent(_asking_for_the_key(answers=answers))
     mic = Mic(
         *REQUEST,
@@ -2327,7 +2327,7 @@ def test_the_wake_word_while_waiting_for_the_key_is_a_no() -> None:
 def test_hush_while_waiting_for_the_key_is_a_no() -> None:
     clock, key_clock = Clock(), Clock()
     key = ConfirmKey(clock=key_clock)
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
     agent = Agent(_asking_for_the_key(answers=answers))
     speaker = Speaker()
 
@@ -2369,7 +2369,7 @@ def test_a_press_the_key_took_before_the_wake_word_still_counts() -> None:
     # `jarvis confirm` already said "confirmed": the first of the two to reach Jarvis decides.
     clock, key_clock = Clock(), Clock()
     key = ConfirmKey(clock=key_clock)
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
     agent = Agent(_asking_for_the_key(answers=answers))
     mic = Mic(*REQUEST, SILENCE, key_clock.advance(1), WAKE, SILENCE)
     loop = _key_loop(agent, mic, Speaker(), key, clock, PressedWithTheWakeWord(key))
@@ -2382,14 +2382,14 @@ def test_a_press_the_key_took_before_the_wake_word_still_counts() -> None:
 def test_speaking_over_the_confirm_key_question_is_a_no_and_arms_nothing() -> None:
     clock, key_clock = Clock(), Clock()
     key = ConfirmKey(clock=key_clock)
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
     agent = Agent(_asking_for_the_key(answers=answers))
     speaker = Playing()
     mic = Mic(*REQUEST, until(lambda: speaker.busy), WAKE, *REQUEST[1:])
 
     _run(_key_loop(agent, mic, speaker, key, clock))
 
-    assert answers[0] is False
+    assert answers[0] == Declined(NoReason.SPOKEN_OVER)
     key_clock.advance(STRAY_HOLD_S)()
     assert key.press()["confirmed"] is None  # nothing was left waiting
 
@@ -2397,7 +2397,7 @@ def test_speaking_over_the_confirm_key_question_is_a_no_and_arms_nothing() -> No
 def test_a_pause_while_waiting_for_the_key_is_a_no() -> None:
     clock, key_clock = Clock(), Clock()
     key = ConfirmKey(clock=key_clock)
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
     paused = threading.Event()
     mic = Mic(*REQUEST, SILENCE, paused.set, SILENCE, key_clock.advance(1), key.press, SILENCE)
     loop = VoiceLoop(
@@ -2444,6 +2444,19 @@ def test_a_press_before_the_question_was_heard_holds_the_key_off() -> None:
     _run(loop)
 
     assert speaker.said[1:] == [voice.KEY_HELD_OFF, "declined"]
+
+
+def test_a_key_that_will_not_arm_says_why() -> None:
+    clock, key_clock = Clock(), Clock()
+    key = ConfirmKey(clock=key_clock)
+    answers: list[bool | Declined] = []
+    speaker = PressingWhileSpeaking(key)
+    mic = Mic(*REQUEST, SILENCE, key_clock.advance(1), key.press, SILENCE)
+    loop = _key_loop(Agent(_asking_for_the_key(answers=answers)), mic, speaker, key, clock)
+
+    _run(loop)
+
+    assert answers == [Declined(NoReason.KEY_HELD_OFF)]
 
 
 def test_without_a_confirm_key_the_agent_is_told_there_is_none() -> None:
@@ -2550,7 +2563,7 @@ def test_a_microphone_lost_while_waiting_for_the_confirm_key_is_a_no_and_the_nex
 ):
     clock, key_clock = Clock(), Clock()
     key = ConfirmKey(clock=key_clock)
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
 
     def end() -> None:
         script.end()
@@ -2572,7 +2585,7 @@ def test_a_microphone_lost_while_waiting_for_the_confirm_key_is_a_no_and_the_nex
 
     _run(loop)
 
-    assert answers == [False, True]  # a no, then the next question is asked afresh
+    assert answers == [Declined(NoReason.MIC_LOST), True]  # a no, then asked afresh
     assert reopened == [State.NO_MIC]
     assert key.press()["confirmed"] is None  # nothing is left waiting
 
@@ -2660,7 +2673,7 @@ def test_a_confirm_key_wait_open_across_a_suspend_has_run_out_when_the_pc_wakes(
     key = ConfirmKey(clock=key_clock)
     asleep = [0.0]
     woke: list[bool] = []
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
     presses: list[dict[str, str | None]] = []
 
     def suspend() -> None:
@@ -2998,3 +3011,42 @@ def test_a_yes_blocked_by_pc_speech_says_why() -> None:
     _run(loop)
 
     assert answers == [Declined(NoReason.PC_SPEECH)]
+
+
+def _hushing_then_asking(loop: list[VoiceLoop], answers: list[bool | Declined]) -> Reply:
+    """An agent whose request is hushed (`jarvis hush`) before it asks its one question."""
+
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        loop[0].hush()
+        answers.append(hooks.confirm("Should I?"))
+        return "approved" if answers[-1] is True else "declined"
+
+    return reply
+
+
+def test_a_yes_to_a_question_that_was_hushed_before_it_was_heard_is_a_no() -> None:
+    # Regression: the question was cut by a hush, and a yes said next still approved it.
+    holder: list[VoiceLoop] = []
+    answers: list[bool | Declined] = []
+    loop = _loop(Agent(_hushing_then_asking(holder, answers)), Mic(*REQUEST, *ANSWER), Speaker())
+    holder.append(loop)
+
+    _run(loop)
+
+    assert answers == [Declined(NoReason.NOT_HEARD)]
+
+
+def test_a_question_that_cannot_be_played_is_a_no() -> None:
+    answers: list[bool | Declined] = []
+
+    _run(_loop(Agent(_answering(answers)), Mic(*REQUEST, *ANSWER), Speaker(broken=True)))
+
+    assert answers == [Declined(NoReason.NOT_HEARD)]
+
+
+def test_an_answer_transcribed_as_nothing_says_so() -> None:
+    answers: list[bool | Declined] = []
+
+    _run(_loop(Agent(_answering(answers)), Mic(*REQUEST, *ANSWER), Speaker(), answer=_saying(" ")))
+
+    assert answers == [Declined(NoReason.UNTRANSCRIBED)]

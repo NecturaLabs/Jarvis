@@ -13,11 +13,13 @@ PIPEWIRE_REMOTE=/nonexistent PULSE_SERVER=unix:/nonexistent uv run pytest tests/
 They run harmless commands (`env`, `sleep`, a Python allocation) and check that:
 
 - the environment holds no variable of Jarvis's, the no-new-privileges flag is set, and `sudo -n true` fails;
-- a command past `timeout_s` is stopped and its scope, with the background `sleep`s it started, is gone;
+- the command reaches the shell as written: `systemd-run` fills in no `${VARIABLE}` itself;
+- a command past `timeout_s` is stopped, and the scope and both background `sleep`s it started, one of
+  them ignoring SIGTERM, are gone (by PID, and the user manager answering that the scope is inactive);
 - a command that returns at once is ended with what it left running in the background;
 - a 512 MiB allocation under a 64 MiB `memory_max_mib` ends by signal 9, while a 16 MiB one runs.
 
-Seen on 2026-11-23: all four passed (systemd's user manager, `setpriv` from util-linux).
+Seen on 2026-11-23: all five passed (systemd's user manager, `setpriv` from util-linux).
 
 ## On a disposable user (owner-run)
 

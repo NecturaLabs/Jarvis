@@ -105,7 +105,9 @@ class Operation:
     `preview` returns the start of the text a confirmed call would write, which a window shows
     under the question (speech says only how much). `hashed` names the arguments the audit log
     keeps only as a SHA-256 and a length, never as text.
-    `lowest_class` is as low as the owner's `boundaries.classes` may set it.
+    `lowest_class` is as low as the owner's `boundaries.classes` may set it. With
+    `audit_text=False` the audit log keeps a result's text only as a SHA-256 and a length (a
+    shell command's output can hold anything the owner's user can read).
     """
 
     name: str
@@ -121,6 +123,7 @@ class Operation:
     shortcuts: tuple[Shortcut, ...] = ()
     preview: Callable[[dict[str, Any]], str] | None = None
     hashed: frozenset[str] = frozenset()
+    audit_text: bool = True
 
     def tool_schema(self) -> dict[str, Any]:
         """Return the OpenAI tool definition."""

@@ -221,7 +221,8 @@ def _confirmation(entry: dict[str, object]) -> _Line:
             return "result", "you pressed the confirm key", True, ""
         if entry.get("asked") is False:
             return "warn", "no: not asked again after an earlier no", True, ""
-        return "warn", "no key press, so nothing was done", True, ""
+        why = NO_REASON_WORDS.get(str(entry.get("reason", "")), "")
+        return "warn", f"no key press{why}, so nothing was done", True, ""
     if entry.get("approved") is True:
         return "result", "you said yes", True, ""
     if entry.get("asked") is False:
@@ -231,7 +232,9 @@ def _confirmation(entry: dict[str, object]) -> _Line:
 
 
 NO_REASON_WORDS = {  # the confirmation's `reason`, as the window says it after "no yes"
-    "said_no": "",
+    "said_no": ": you answered, not with a yes",
+    "not_heard": ": the question was not heard out",
+    "key_held_off": ": the confirm key would not arm",
     "no_answer": ": no answer in time",
     "too_short": ": too little speech for a yes",
     "untranscribed": ": the answer could not be transcribed",
@@ -245,7 +248,10 @@ NO_REASON_WORDS = {  # the confirmation's `reason`, as the window says it after 
 
 
 def _tool_result(entry: dict[str, object]) -> _Line:
-    words = _plain(entry.get("text", ""))
+    if "text" not in entry and "text_sha256" in entry:  # kept only as a digest (`audit_text`)
+        words = f"{entry.get('op', 'a tool')} finished; its output is not kept in the log"
+    else:
+        words = _plain(entry.get("text", ""))
     return (
         ("result", words, True, "") if entry.get("ok") else ("warn", f"not done: {words}", True, "")
     )

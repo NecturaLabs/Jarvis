@@ -124,7 +124,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - An opt-in shell command, `pc_shell` (#19), off unless `[shell] enabled` is set. Each command needs the
   confirm key, which no class setting lowers, and runs once in its own user scope with time, memory, CPU
   and task limits. It runs with no new privileges, so `sudo` cannot work, and with only `PATH`, `HOME`,
-  `LANG` and `TERM` set. A request heard in PC audio, or one that read outside text, runs nothing.
+  `LANG` and `TERM` set. Before the key, the command is read out character by character, so two
+  commands that run differently never sound the same. A request heard in PC audio, or one that read
+  outside text, runs nothing. The audit log keeps the command but only a digest of its output.
 - Wake word training and benchmark tools: `tools/wake_train.sh` trains and scores a phrase with a chosen
   LiveKit project's key, `tools/wake_ungated.py` runs the trainer without the gated test sets (#37), and
   `tools/wake_bench.py` scores models on 55 local voices and about 24 hours of real media, alone and
@@ -298,6 +300,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - The audit log now says why a confirmation ended as no (#38). Before, the PC sleeping with the question
   open, no answer in time, a lost microphone and a spoken no all wrote the same line. Each no now carries a
   `reason` from a fixed list, and the chat's activity pane shows it. Only a clear yes approves, as before.
+- A yes no longer approves a question that was hushed, paused or could not be played before it was heard
+  out: that question is a no (`not_heard`), and no answer is listened for.
 - A yes spoken after the PC woke from a suspend no longer answers a question asked before it. The question is
   now counted as a no, and Jarvis listens afresh (#22). A sleep also ends the follow-up window, so speech
   after waking is no longer taken as a request without the wake word, and drops a request begun after the

@@ -2287,6 +2287,26 @@ def test_a_strong_operation_without_the_key_runs_nothing() -> None:
     assert any(e["event"] == "confirmation" and e["approved"] is False for e in audit.events)
 
 
+@pytest.mark.parametrize(
+    ("answer", "reason"),
+    [(Declined(NoReason.NOT_HEARD), "not_heard"), (False, None), ("yes", "failed")],
+)
+def test_a_key_no_says_why_unless_the_key_event_does(answer: object, reason: str | None) -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("wipe"), _say("Okay.")])
+    agent, audit = _agent(model, [counter.op("wipe", cls=OpClass.STRONG)])
+
+    def key(_question: str, _action: str) -> bool | Declined:
+        return cast("bool | Declined", answer)
+
+    agent.handle("wipe", Hooks(confirm=_never_asked, confirm_key=key))
+
+    assert counter.runs == []
+    confirmation = _confirmation(audit)
+    assert confirmation["approved"] is False
+    assert confirmation.get("reason") == reason
+
+
 def test_a_spoken_yes_never_stands_in_for_the_confirm_key() -> None:
     counter = Counter()
     model = ScriptedModel([_call("wipe"), _say("Okay.")])

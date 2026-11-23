@@ -505,7 +505,9 @@ class NoReason(StrEnum):
     MIC_LOST = "mic_lost"  # the microphone stopped or was paused
     CLOSED = "closed"  # the window asking was closed
     EARLIER_NO = "earlier_no"  # not asked: an earlier no in the same request
+    NOT_HEARD = "not_heard"  # the question was hushed, paused or could not be played
     NO_KEY = "no_key"  # a `strong` action where this channel has no confirm key
+    KEY_HELD_OFF = "key_held_off"  # the confirm key would not arm (`confirmkey`)
     FAILED = "failed"  # asking failed, or the hook returned something that is not an answer
 
 
@@ -542,7 +544,7 @@ class Hooks:
     """
 
     confirm: Callable[[str], bool | Declined]
-    confirm_key: Callable[[str, str], bool] | None = None
+    confirm_key: Callable[[str, str], bool | Declined] | None = None
     waking: Callable[[], None] = lambda: None
     still_waiting: Callable[[], None] = lambda: None
     cancelled: Callable[[], bool] = lambda: False
@@ -1344,14 +1346,15 @@ class Agent:
         if isinstance(result, _Failed):
             return result.result
         shown = {"picture": result.picture, "caption": result.caption} if result.picture else {}
-        self._audit.record(
-            "tool_result",
-            op=op.name,
-            action=digest,
-            ok=result.ok,
-            text=result.text[:MAX_AUDIT_TEXT],
-            **shown,
+        kept = (
+            {"text": result.text[:MAX_AUDIT_TEXT]}
+            if op.audit_text
+            else {
+                "text_sha256": hashlib.sha256(result.text.encode()).hexdigest(),
+                "chars": len(result.text),
+            }
         )
+        self._audit.record("tool_result", op=op.name, action=digest, ok=result.ok, **kept, **shown)
         return result
 
     def _over_limit(self, op: Operation, digest: str) -> Result | None:
@@ -1498,15 +1501,16 @@ class Agent:
             return False
         turn.cues.settle()
         try:
-            approved = key(self._question(op, args, turn, grants=False), digest) is True
+            answer = key(self._question(op, args, turn, grants=False), digest)
         except Exception:
             log.exception("the confirm key for %s could not be asked for", op.name)
-            approved = False
-            failed = {"reason": NoReason.FAILED}
-        else:
-            failed = {}  # the `confirm_key` event before this one says how the wait ended
+            answer = Declined(NoReason.FAILED)
+        approved = answer is True
+        # A plain False is a wait that ended without a press: the `confirm_key` event before this
+        # one says how. A reason is written when the key was never armed, or anything else.
+        why = {} if approved or answer is False else {"reason": _no_reason(answer)}
         self._audit.record(
-            "confirmation", op=op.name, action=digest, approved=approved, method="key", **failed
+            "confirmation", op=op.name, action=digest, approved=approved, method="key", **why
         )
         turn.declined = not approved
         return approved

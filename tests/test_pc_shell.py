@@ -17,12 +17,24 @@ from jarvis.config import Config, ShellConfig
 from jarvis.operations import (
     ArgumentError,
     Operation,
+    OperationError,
     Registry,
     Result,
     request_scope,
     validate_args,
 )
-from jarvis.pc.shell import ENV, SETPRIV, SH, SYSTEMD_RUN, Ran, ShellOps, run_in_scope
+from jarvis.pc.shell import (
+    DESCRIPTION,
+    ENV,
+    SETPRIV,
+    SH,
+    SYSTEMD_RUN,
+    Ran,
+    ShellOps,
+    launcher_environment,
+    run_in_scope,
+    spelled,
+)
 from jarvis.policy import OpClass, Origin, effective_class
 
 HOME = Path("/home/owner")
@@ -162,8 +174,16 @@ def test_the_command_runs_scrubbed_limited_and_without_new_privileges(
     _run(_ops(runner), "ls -la")
 
     ((argv, unit, timeout_s, _keep),) = runner.calls
-    assert argv[:5] == [SYSTEMD_RUN, "--user", "--scope", "--quiet", "--collect"]
+    assert argv[:6] == [
+        SYSTEMD_RUN,
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        "--expand-environment=no",  # else systemd-run fills in $VARS from Jarvis's environment
+    ]
     assert f"--unit={unit}" in argv
+    assert f"--description={DESCRIPTION}" in argv  # the journal never gets the command line
     assert unit.startswith("jarvis-shell-")
     assert f"--working-directory={HOME}" in argv
     properties = [argv[i + 1] for i, part in enumerate(argv[: argv.index("--")]) if part == "-p"]
@@ -186,6 +206,68 @@ def test_the_command_runs_scrubbed_limited_and_without_new_privileges(
     assert inner[inner.index(SH) :] == [SH, "-c", "ls -la"]
     assert "do-not-pass-this" not in " ".join(argv)
     assert timeout_s == 20
+
+
+def test_the_launcher_gets_only_what_reaches_the_user_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SECRET_TOKEN", "do-not-pass-this")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+
+    environment = launcher_environment()
+
+    assert set(environment) <= {"PATH", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"}
+    assert environment["XDG_RUNTIME_DIR"] == "/run/user/1000"
+
+
+@pytest.mark.parametrize(
+    ("one", "other"),
+    [
+        ("ls *.txt", "ls .txt"),
+        ("ls -a", "ls-a"),
+        ("echo $HOME", "echo $home"),
+        ("cat Notes", "cat notes"),
+        ("rm (x)", "rm x"),
+        ("a_b", "ab"),
+        ("echo `id`", "echo id"),
+    ],
+)
+def test_commands_that_run_differently_are_never_read_out_the_same(one: str, other: str) -> None:
+    assert spelled(one) != spelled(other)
+
+
+def test_the_key_question_reads_every_character() -> None:
+    op = _op(_ops(FakeRunner()))
+
+    assert op.spoken_summary({"command": "ls *.txt | wc -l"}) == (
+        "run this shell command: ls space star dot txt space pipe space wc space dash l"
+    )
+
+
+@pytest.mark.parametrize("command", ["ls  -a", "ls\t-a", "ls\n-a", " ls", "ls "])
+def test_a_command_that_cannot_be_read_out_word_for_word_is_refused_before_the_key(
+    command: str,
+) -> None:
+    op = _op(_ops(FakeRunner()))
+    assert op.prepare is not None
+
+    with request_scope(foreign=False), pytest.raises(OperationError, match="word for word"):
+        op.prepare({"command": command})
+
+
+def test_a_command_too_long_to_read_out_is_refused_before_the_key() -> None:
+    op = _op(_ops(FakeRunner()))
+    assert op.prepare is not None
+
+    with request_scope(foreign=False), pytest.raises(OperationError, match="too long"):
+        op.prepare({"command": "-" * 400})
+
+
+def test_a_scope_that_could_not_be_seen_ended_is_reported() -> None:
+    result = _run(_ops(FakeRunner(Ran(0, "done\n", ended=False))), "true")
+
+    assert not result.ok
+    assert "may still be running" in result.text
 
 
 def test_each_run_gets_its_own_scope() -> None:
@@ -266,7 +348,7 @@ def test_it_runs_once_after_the_confirm_key_with_the_command_in_the_question() -
 
     assert len(runner.calls) == 1
     ((question, _action),) = key.asked
-    assert "df -h" in question
+    assert question == "Should I run this shell command: df space dash h?"
     call = next(e for e in audit.events if e["event"] == "tool_call")
     assert call["verdict"] == "strong"
 
@@ -310,29 +392,52 @@ def test_a_command_after_outside_text_is_refused_before_the_key_is_asked() -> No
     assert runner.calls == []
 
 
-def test_the_audit_keeps_the_command_and_no_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_audit_keeps_the_command_but_never_its_output_or_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("SECRET_TOKEN", "do-not-pass-this")
-    agent, audit = _agent(_ops(FakeRunner()), [_call({"command": "df -h"}), _say("Done.")])
+    runner = FakeRunner(Ran(0, "password=hunter2\n"))
+    agent, audit = _agent(_ops(runner), [_call({"command": "cat creds"}), _say("Done.")])
 
-    agent.handle("run df -h", Hooks(confirm=_never, confirm_key=Key()))
+    agent.handle("run cat creds", Hooks(confirm=_never, confirm_key=Key()))
 
     logged = json.dumps(audit.events, default=str)
-    assert "df -h" in logged
+    assert "cat creds" in logged  # what ran, as the owner confirmed it
+    assert "hunter2" not in logged
     assert "do-not-pass-this" not in logged
     assert "systemd-run" not in logged  # the wrapper is not the owner's command
+    result = next(e for e in audit.events if e["event"] == "tool_result")
+    assert result["chars"] == len("Exit status 0.\npassword=hunter2\n")
+    assert len(str(result["text_sha256"])) == 64
 
 
 # The real runner, on this PC's own user manager (never in CI).
 
 
 def _scope_gone(unit: str) -> bool:
+    """Ask the user manager; only a clear answer that the scope is not there counts."""
     shown = subprocess.run(
-        ["/usr/bin/systemctl", "--user", "is-active", f"{unit}.scope"],
+        [
+            "/usr/bin/systemctl",
+            "--user",
+            "show",
+            "--property=ActiveState",
+            "--value",
+            f"{unit}.scope",
+        ],
         capture_output=True,
         text=True,
-        check=False,
+        check=True,
     )
-    return shown.stdout.strip() != "active"
+    return shown.stdout.strip() in {"inactive", "failed"}
+
+
+def _pids(text: str) -> list[int]:
+    return [int(word) for word in text.split() if word.isdigit()]
+
+
+def _alive(pid: int) -> bool:
+    return Path(f"/proc/{pid}").exists()
 
 
 def _real(config: ShellConfig = ON) -> ShellOps:
@@ -356,14 +461,20 @@ def test_real_a_command_runs_in_its_scope_scrubbed_and_cannot_use_sudo() -> None
 def test_real_a_command_past_its_time_is_stopped_with_everything_it_started() -> None:
     ops = _real(ON.model_copy(update={"timeout_s": 2}))
     unit = "jarvis-shell-probe-timeout"
-    argv = ops.command_line("sleep 300 & sleep 300 & wait", unit)
+    # The second child ignores SIGTERM, so only a kill of the whole scope ends it.
+    script = "sleep 300 & echo $!; (trap '' TERM; exec sleep 300) & echo $!; wait"
+    argv = ops.command_line(script, unit)
 
     started = time.monotonic()
     ran = run_in_scope(argv, unit, 2, 4000)
 
     assert ran.status is None
     assert time.monotonic() - started < 15
+    assert ran.ended
     assert _scope_gone(unit)
+    pids = _pids(ran.output)
+    assert len(pids) == 2
+    assert not any(_alive(pid) for pid in pids)
 
 
 @pytest.mark.local
@@ -381,9 +492,26 @@ def test_real_the_memory_limit_ends_a_command_that_grows_past_it() -> None:
 def test_real_what_a_finished_command_left_running_is_ended_with_its_scope() -> None:
     ops = _real()
     unit = "jarvis-shell-probe-leftover"
-    argv = ops.command_line("sleep 300 > /dev/null 2>&1 & echo started", unit)
+    argv = ops.command_line("sleep 300 > /dev/null 2>&1 & echo $!", unit)
 
     ran = run_in_scope(argv, unit, 20, 4000)
 
-    assert (ran.status, ran.output) == (0, "started\n")
+    assert ran.status == 0
+    assert ran.ended
     assert _scope_gone(unit)
+    (pid,) = _pids(ran.output)
+    assert not _alive(pid)
+
+
+@pytest.mark.local
+def test_real_the_command_reaches_the_shell_as_written_with_no_variable_of_jarvis() -> None:
+    os.environ["SECRET_PROBE"] = "leaked"
+    try:
+        # The launcher keeps XDG_RUNTIME_DIR, so systemd-run's own expansion would fill it in.
+        # systemd expands `${VAR}` even inside one argument, so the braces matter here.
+        command = "printf '[%s]' \"$SECRET_PROBE\" '${SECRET_PROBE}' '${XDG_RUNTIME_DIR}'"
+        result = _run(_real(), command)
+    finally:
+        del os.environ["SECRET_PROBE"]
+
+    assert result.text == "Exit status 0.\n[][${SECRET_PROBE}][${XDG_RUNTIME_DIR}]"
