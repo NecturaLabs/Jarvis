@@ -93,6 +93,8 @@ class _Model(Protocol):
     def file_missing(self) -> bool: ...
     def unload(self) -> bool: ...
     def warm(self, *, keep_going: Callable[[], bool] = ...) -> bool: ...
+    def is_loaded(self) -> bool | None: ...
+    def load(self) -> bool: ...
 
 
 def _in_background(work: Callable[[], object]) -> None:
@@ -225,6 +227,24 @@ class Controls:
 
     def _in_flight(self) -> bool:
         return str(self._loop.state) not in {"idle", NO_MIC}
+
+    def warm_at_start(self) -> None:
+        """Load the model in the background as the service starts, taking turns with a pause."""
+        with self._commands:
+            resume = self._pauses
+        self._background(lambda: self._warm(resume))
+
+    def prewarm(self) -> None:
+        """Load the model ahead of a request a wake word starts, unless paused or already in.
+
+        Called on its own thread; it takes turns with a pause's unload, so a pause that comes
+        meanwhile still frees the model once the load is over.
+        """
+        with self._commands:
+            resume = self._pauses
+        with self._model_turn:
+            if resume == self._pauses and not self._mic.paused and not self._model.is_loaded():
+                self._model.load()
 
     def after_sleep(self) -> None:
         """After a suspend: check the model server, and load the model again if its load failed.

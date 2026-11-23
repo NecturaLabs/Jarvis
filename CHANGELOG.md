@@ -323,6 +323,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A pause during the start-up load, or right after a wake word, now frees the model once the load
+  is over. Both loads skipped the turn-taking with a pause, so the pause's unload met a busy server and
+  Jarvis stayed paused with the model loaded.
+
 - Outside text in a tool result (a web page, a file) now fits the size planned for it: its angle
   brackets are spelled out before it is cut, not after, which could make it four times as long. A long
   request also keeps its tool results whole while they fit: the system prompt was counted twice when
