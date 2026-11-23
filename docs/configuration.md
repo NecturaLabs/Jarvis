@@ -542,21 +542,38 @@ cpu_percent = 100    # of one core; 200 is two
 tasks_max = 256      # processes and threads together
 ```
 
-Every command is `strong`: Jarvis says the exact command, and only your confirm key runs it. No
-`[boundaries.classes]` entry lowers that (`deny` still turns it off), and `bypass_consent` never skips it.
-A request heard in PC audio runs nothing, nor does a request that also read outside text (a page, a file, a
-picture, a long paste, Spotify names, a program's output): say the command in a request of its own.
+Every command is `strong`: only your confirm key runs it. No `[boundaries.classes]` entry lowers that
+(`deny` still turns it off), and `bypass_consent` never skips it. Before the key, Jarvis reads the command
+out character by character, so that two commands that run differently never sound the same: each symbol by
+its name ("ls space star dot txt"), each space as "space", and capitals marked ("all capitals HOME",
+"capitalised Notes"). A command with a tab, a line break or two spaces in a row, or one too long to read out
+in full, is refused before anything is asked. A request heard in PC audio runs nothing, nor does a request
+that also read outside text (a page, a file, a picture, a long paste, Spotify names, a program's output):
+say the command in a request of its own.
 
-Each command runs once in its own `systemd-run --user --scope` unit (`jarvis-shell-<random>`), in your home
-folder, with the limits above and no swap. When it returns or runs out of time, the scope is stopped, which
-ends anything it left running in the background. It runs behind `setpriv --no-new-privs`, so `sudo`
-and every other set-user-ID program cannot raise its rights. Its environment holds only `PATH`, `HOME`, `LANG` and `TERM`: none of
-Jarvis's own, so no token or key is passed on. It has no input. Jarvis keeps the first part of the output
-(`[agent] tool_text_chars`, the same cap as a file read) with the exit status, as text from a program, not
-your words.
+Each command runs once in its own `systemd-run --user --scope` unit (`jarvis-shell-<random>`, described
+only as "Jarvis shell command", so the journal never holds the command), in your home folder, with the
+limits above and no swap. `systemd-run` is told not to fill in `$VARIABLES` itself and gets only what it
+needs to reach your user manager. The command runs behind `setpriv --no-new-privs`, so `sudo` and every
+other set-user-ID program cannot raise its rights. Its environment holds only `PATH`, `HOME`, `LANG` and
+`TERM`: none of Jarvis's own, so no token or key is passed on. It has no input. When it returns or runs out
+of time, every process in its scope is killed and Jarvis checks that the scope is gone; if it cannot see
+that, it says something may still be running. Jarvis keeps the first part of the output (`[agent]
+tool_text_chars`, the same cap as a file read) with the exit status, as text from a program, not your
+words. The audit log keeps the command, but only a digest and the length of its output.
 
-**What a scope does not do:** it limits resources only. The command can read, change and delete whatever
-your user can, and reach the network. The audit log keeps the command and the start of its output.
+**What it cannot stop.** A scope limits resources only. An approved command has all of your user's power:
+
+- it can read, change and delete whatever your user can, and reach the network;
+- it can start programs outside its scope and its limits through your user's own services
+  (`systemd-run --user`, D-Bus), which outlive it;
+- it can press the confirm key itself (`jarvis confirm`) for a question Jarvis asks later.
+
+Jarvis cannot check that the command is the one you said: speech-to-text does not write shell syntax, so
+the model writes the command from your words, and the read-out before the key is the check. Whether a
+request is yours is decided by where the wake word was heard: speech from the speakers after you said
+the wake word counts as yours, and the confirm key at the PC is what guards it. Approve only a command
+you would type yourself.
 
 ## The Omarchy bar module (#14)
 

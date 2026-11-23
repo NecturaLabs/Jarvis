@@ -14,8 +14,10 @@ owner's user can, and reach the network. Its output is other programs' words, ke
 
 import logging
 import math
+import os
 import secrets
 import threading
+import time
 from dataclasses import dataclass
 from typing import IO, TYPE_CHECKING, Any, Protocol
 
@@ -37,48 +39,72 @@ ENV = "/usr/bin/env"
 SH = "/bin/sh"
 PATH = "/usr/local/bin:/usr/bin"
 STOP_WAIT_S = 10.0
+DESCRIPTION = "Jarvis shell command"  # never the command line, which the journal would keep
 
 
 @dataclass(frozen=True, slots=True)
 class Ran:
-    """How one command ended: its exit status (None when it ran out of time) and its output."""
+    """How one command ended: its exit status (None when it ran out of time) and its output.
+
+    `ended` is False when the scope could not be seen gone afterwards, so something the command
+    started may still be running.
+    """
 
     status: int | None
     output: str
+    ended: bool = True
 
 
 class Runner(Protocol):
     """Runs an argument list under a named scope, for at most `timeout_s`."""
 
     def __call__(self, argv: list[str], unit: str, timeout_s: float, keep: int) -> Ran:
-        """Run `argv`, keeping the first `keep` bytes of output; on time out, stop `unit`."""
+        """Run `argv`, keeping the first `keep` bytes of output; then end the scope `unit`."""
         ...
 
 
-def run_in_scope(argv: list[str], unit: str, timeout_s: float, keep: int) -> Ran:
-    """Run `argv` with its output and errors together; past `timeout_s`, stop its whole scope.
+def launcher_environment() -> dict[str, str]:
+    """Return the environment `systemd-run` gets: only what it needs to reach the user manager."""
+    keep = ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+    return {"PATH": PATH} | {key: os.environ[key] for key in keep if key in os.environ}
 
-    Only the first `keep` bytes are kept: the rest is read and dropped, so a command that
-    writes without end neither blocks nor fills Jarvis's memory.
+
+def run_in_scope(argv: list[str], unit: str, timeout_s: float, keep: int) -> Ran:
+    """Run `argv` with its output and errors together, then end its whole scope.
+
+    Only the first `keep` bytes are kept: the rest is read and dropped, so a command that writes
+    without end neither blocks nor fills Jarvis's memory. The pipe is read unbuffered, so it can
+    be closed while a reader still waits on it. Whatever happens, the scope is killed (SIGKILL, no
+    grace period) and checked gone.
     """
     import subprocess  # ruff: ignore[import-outside-top-level] - only a command run needs it; building the app must not load it
 
-    with subprocess.Popen(
-        argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
-    ) as process:
-        kept = bytearray()
-        reader = threading.Thread(target=_drain, args=(process.stdout, kept, keep), daemon=True)
-        reader.start()
-        try:
-            status: int | None = process.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            status = None
-        _stop_scope(unit)  # also ends what a finished command left running in the background
-        if status is None:
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=launcher_environment(),
+        bufsize=0,
+    )
+    kept = bytearray()
+    reader = threading.Thread(target=_drain, args=(process.stdout, kept, keep), daemon=True)
+    reader.start()
+    status: int | None = None
+    ended = False
+    try:
+        status = process.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        status = None
+    finally:
+        ended = _end_scope(unit)
+        if process.poll() is None:
             process.kill()
-            process.wait()
+        process.wait()
         reader.join(STOP_WAIT_S)
-        return Ran(status, bytes(kept).decode(errors="replace"))
+        if not reader.is_alive() and process.stdout is not None:
+            process.stdout.close()
+    return Ran(status, bytes(kept).decode(errors="replace"), ended)
 
 
 def _drain(stream: IO[bytes] | None, kept: bytearray, keep: int) -> None:
@@ -91,20 +117,115 @@ def _drain(stream: IO[bytes] | None, kept: bytearray, keep: int) -> None:
             kept.extend(chunk[:room])
 
 
-def _stop_scope(unit: str) -> None:
-    """Stop the scope, which ends every process the command started."""
+def _end_scope(unit: str) -> bool:
+    """Kill every process in the scope, then wait until the user manager no longer has it.
+
+    True once the manager answers that the scope is gone; False if it never does in time or
+    cannot be asked, so the caller can say so.
+    """
     import subprocess  # ruff: ignore[import-outside-top-level] - only a command run needs it; building the app must not load it
 
+    scope = f"{unit}.scope"
+    deadline = time.monotonic() + STOP_WAIT_S
+    env = launcher_environment()
     try:
         subprocess.run(
-            [SYSTEMCTL, "--user", "stop", f"{unit}.scope"],
+            [SYSTEMCTL, "--user", "kill", "--signal=SIGKILL", scope],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=STOP_WAIT_S,
             check=False,
+            env=env,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:  # its `RuntimeMaxSec` still ends it
-        log.warning("the shell command's scope %s could not be stopped: %s", unit, exc)
+        while time.monotonic() < deadline:
+            shown = subprocess.run(
+                [SYSTEMCTL, "--user", "show", "--property=ActiveState", "--value", scope],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=STOP_WAIT_S,
+                check=False,
+                env=env,
+            )
+            if shown.returncode == 0 and shown.stdout.strip() in {"inactive", "failed"}:
+                return True
+            time.sleep(0.05)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log.warning("the shell command's scope %s could not be ended: %s", scope, exc)
+        return False
+    log.warning("the shell command's scope %s was still there after %s s", scope, STOP_WAIT_S)
+    return False
+
+
+_SYMBOLS = {
+    "-": "dash",
+    ".": "dot",
+    "/": "slash",
+    "\\": "backslash",
+    "|": "pipe",
+    "&": "ampersand",
+    ";": "semicolon",
+    ":": "colon",
+    ",": "comma",
+    ">": "greater than",
+    "<": "less than",
+    "=": "equals",
+    "+": "plus",
+    "*": "star",
+    "?": "question mark",
+    "!": "exclamation mark",
+    "~": "tilde",
+    "$": "dollar",
+    "#": "hash",
+    "%": "percent",
+    "^": "caret",
+    "@": "at",
+    "_": "underscore",
+    "'": "single quote",
+    '"': "double quote",
+    "`": "backtick",
+    "(": "open parenthesis",
+    ")": "close parenthesis",
+    "[": "open bracket",
+    "]": "close bracket",
+    "{": "open brace",
+    "}": "close brace",
+}
+MAX_SPELLED = 1500  # within what a spoken question keeps (`voice.MAX_SPOKEN_CHARS`)
+
+
+def spelled(command: str) -> str:
+    """Say a command so that every character of it is heard: each symbol as its name.
+
+    Letters and digits stay as they are, capitals marked, and each single space is said as
+    "space" so that `ls -a` and `ls-a` are told apart. Any other character is named by its code
+    point.
+    """
+    words: list[str] = []
+    in_word = False
+    for char in command:
+        plain = char.isascii() and char.isalnum()
+        if plain and in_word:
+            words[-1] += char
+        elif plain:
+            words.append(char)
+        elif char == " ":
+            words.append("space")
+        else:
+            words.append(_SYMBOLS.get(char, f"character {ord(char):04X}"))
+        in_word = plain
+    return " ".join(_cased(word) for word in words)
+
+
+def _cased(word: str) -> str:
+    """Mark capitals, which a voice cannot show: `HOME` is "all capitals HOME"."""
+    if not (word.isascii() and word.isalnum()) or word == word.lower():
+        return word
+    if word == word.upper() and any(char.isalpha() for char in word):
+        return f"all capitals {word}"
+    if word[0].isupper() and word[1:] == word[1:].lower():
+        return f"capitalised {word}"
+    return " ".join(f"capital {char}" if char.isupper() else char for char in word)
 
 
 class ShellOps:
@@ -137,7 +258,9 @@ class ShellOps:
             "--scope",
             "--quiet",
             "--collect",
+            "--expand-environment=no",
             f"--unit={unit}",
+            f"--description={DESCRIPTION}",
             f"--working-directory={self._home}",
             *[part for key, value in limits.items() for part in ("-p", f"{key}={value}")],
             "--",
@@ -169,6 +292,16 @@ class ShellOps:
                 "owner to say the command in a request of its own."
             )
             raise OperationError(msg)
+        command = str(args.get("command", ""))
+        if command != " ".join(command.split()):
+            msg = (
+                "a shell command is spoken word for word before it runs, so it may hold only "
+                "single spaces between words: no tabs, line breaks or runs of spaces"
+            )
+            raise OperationError(msg)
+        if len(spelled(command)) > MAX_SPELLED:
+            msg = "the command is too long to read out in full before it runs; nothing was run"
+            raise OperationError(msg)
         return args
 
     def run(self, args: dict[str, Any]) -> Result:
@@ -189,6 +322,12 @@ class ShellOps:
         output = ran.output
         if len(output) > self._max_chars:
             output = f"{output[: self._max_chars]}\n[output cut at {self._max_chars} characters]"
+        if not ran.ended:
+            head = (
+                "The command ran, but its scope could not be seen ended, so something it started "
+                f"may still be running (unit {unit}.scope)."
+            )
+            return Result(f"{head}\n{output}", Origin.PROCESS, ok=False, spoken=head)
         if ran.status is None:
             head = f"Stopped after {self._config.timeout_s:g} seconds, the time limit."
             return Result(f"{head}\n{output}", Origin.PROCESS, ok=False, spoken=head)
@@ -225,7 +364,10 @@ class ShellOps:
                 self.run,
                 default_class=OpClass.STRONG,
                 lowest_class=OpClass.STRONG,
-                spoken_summary=lambda a: f"run the shell command {a.get('command', '')}",
+                spoken_summary=lambda a: (
+                    f"run this shell command: {spelled(str(a.get('command', '')))}"
+                ),
                 prepare=self._owner_request,
+                audit_text=False,
             ),
         ]

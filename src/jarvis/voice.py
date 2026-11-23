@@ -524,11 +524,25 @@ class VoiceLoop:
             return Declined(NoReason.FAILED)
 
     def _ask(self, question: str) -> bool | Declined:
-        self._speak(spoken_question(question))
+        heard_out = self._said_in_full(spoken_question(question))
         if self._barged_at is not None:
             log.info("the owner spoke over the question; counting it as no")
             return Declined(NoReason.SPOKEN_OVER)
+        if not heard_out:
+            log.info(
+                "the question was not heard out (hushed, paused or not played); counting it as no"
+            )
+            return Declined(NoReason.NOT_HEARD)
         return self._hear_answer()
+
+    def _said_in_full(self, words: str) -> bool:
+        """Speak a question; True only if it played to its end, unhushed and unpaused."""
+        try:
+            self._speak(words)
+        except AudioError:
+            log.warning("the question could not be played; counting it as no", exc_info=True)
+            return False
+        return not self._silent()
 
     def _capture_answer(self, cfg: AudioConfig) -> Utterance | None:
         """Listen for the answer to a question; None when the PC slept meanwhile (a no)."""
@@ -578,19 +592,23 @@ class VoiceLoop:
             log.info("the answer held %.2f s of speech; too little for a yes", heard.speech_s)
             return Declined(NoReason.TOO_SHORT)
         try:
-            return self._transcribe_answer(heard.samples)
+            words = self._transcribe_answer(heard.samples)
         except AudioError:
             return Declined(NoReason.UNTRANSCRIBED)
+        return words if words.strip() else Declined(NoReason.UNTRANSCRIBED)
 
-    def _confirm_key(self, question: str, action: str) -> bool:
+    def _confirm_key(self, question: str, action: str) -> bool | Declined:
         """Ask about one exact action and wait for the confirm key; anything else is no."""
         try:
             return self._await_key(question, action)
+        except AudioError as exc:
+            log.warning("the microphone failed while waiting for the confirm key (%s); no", exc)
+            return Declined(NoReason.MIC_LOST)
         except Exception:
             log.exception("waiting for the confirm key failed; counting it as no")
-            return False
+            return Declined(NoReason.FAILED)
 
-    def _await_key(self, question: str, action: str) -> bool:
+    def _await_key(self, question: str, action: str) -> bool | Declined:
         """Speak the question, then wait for the key while still listening for the wake word.
 
         Whatever ends the wait first decides: a press the key took before it (so what `jarvis
@@ -598,15 +616,18 @@ class VoiceLoop:
         """
         keys = self._keys
         if keys is None:
-            return False
-        self._speak(f"{spoken_question(question)} {PRESS_KEY}")
-        if self._silent():
+            return Declined(NoReason.NO_KEY)
+        heard_out = self._said_in_full(f"{spoken_question(question)} {PRESS_KEY}")
+        if self._barged_at is not None:
+            log.info("the owner spoke over the confirm key question; counting it as no")
+            return Declined(NoReason.SPOKEN_OVER)
+        if not heard_out:
             log.info("the confirm key question was not heard out; counting it as no")
-            return False
+            return Declined(NoReason.NOT_HEARD)
         waiting = keys.arm(action, question, self._cfg.confirm_key_s)
         if waiting is None:
             self._try_say(KEY_HELD_OFF)
-            return False
+            return Declined(NoReason.KEY_HELD_OFF)
         self.state = State.CONFIRM
         why = "failed"
         try:
