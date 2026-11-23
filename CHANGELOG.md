@@ -342,6 +342,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Time the PC spends asleep now counts. The PC-audio permission (`audio.pc_audio_grant_s`) and the
+  conversation's idle expiry (`memory_idle_s`) ran on a clock that stops during a suspend, so a yes
+  given to PC audio before a night asleep still held in the morning. They now run on the boot clock.
 - A Spotify library refresh in which every request failed (Spotify erroring, the network down with the
   token still valid) is now tried again after a minute. It used to count as done, so the artist names that
   help speech to text stayed empty for `spotify.library_refresh_s` (six hours by default).

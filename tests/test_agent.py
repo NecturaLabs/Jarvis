@@ -3,6 +3,7 @@
 import hashlib
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, Any, cast, override
@@ -944,6 +945,53 @@ def test_history_is_forgotten_after_a_long_silence() -> None:
 
     assert [m["role"] for m in model.seen[2]] == ["system", "user"]
     assert "memory_expired" in _events(audit)
+
+
+def _sleeps(monkeypatch: pytest.MonkeyPatch) -> Callable[[float], None]:
+    """Return a way to put the PC to sleep for some seconds: the boot clock runs on meanwhile,
+    the monotonic clock does not."""
+    real = time.clock_gettime
+    asleep = [0.0]
+
+    def clock_gettime(clock: int) -> float:
+        return real(clock) + (asleep[0] if clock == time.CLOCK_BOOTTIME else 0.0)
+
+    monkeypatch.setattr(time, "clock_gettime", clock_gettime)
+    return lambda seconds: asleep.__setitem__(0, asleep[0] + seconds)
+
+
+def _agent_on_its_own_clock(model: ScriptedModel, ops: list[Operation]) -> Agent:
+    registry = Registry([*ops, no_action_operation()])
+    return Agent(model, registry, "system", AuditLog(None), {})
+
+
+def test_a_night_asleep_counts_as_silence_for_the_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleep = _sleeps(monkeypatch)
+    model = ScriptedModel([_call("no_action"), _say("Hi."), _call("no_action"), _say("Hi.")])
+    agent = _agent_on_its_own_clock(model, [])
+
+    agent.handle("hello", NO_CONFIRM)
+    sleep(8 * 3600)
+    agent.handle("hello again", NO_CONFIRM)
+
+    assert [m["role"] for m in model.seen[2]] == ["system", "user"]
+
+
+def test_a_night_asleep_ends_the_pc_audio_permission(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleep = _sleeps(monkeypatch)
+    counter = Counter()
+    asked: list[str] = []
+    replies = [_call("next"), _say("Skipped."), _call("next", call_id="c2"), _say("Okay.")]
+    agent = _agent_on_its_own_clock(ScriptedModel(replies), [counter.op("next")])
+    answers = iter([True, False])
+    hooks = Hooks(confirm=lambda q: asked.append(q) or next(answers))
+
+    agent.handle("skip", hooks, origin=Origin.PC_AUDIO)
+    sleep(8 * 3600)
+    agent.handle("skip", hooks, origin=Origin.PC_AUDIO)
+
+    assert len(asked) == 2
+    assert len(counter.runs) == 1
 
 
 def test_an_idle_time_of_0_never_forgets() -> None:

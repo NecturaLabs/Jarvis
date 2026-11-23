@@ -69,7 +69,7 @@ that still holds it loads, and the key is ignored: the reply cap is now `reply_t
 | `reply_tokens` | `400` | 64 to 8192 | Most tokens the model writes in one answer. The prompt asks for replies that fit; a reply the cap ends anyway is kept and says it was cut short. |
 | `tool_text_chars` | `3000` | 500 to 50000 | Most characters of one tool result the model reads. |
 | `memory_tokens` | `6000` | 0 to 200000 | Room the remembered conversation may take of the context window. When it outgrows it, the model summarizes the oldest turns (the latest two stay word for word); if that fails, the oldest are dropped. Jarvis uses less when the window cannot hold it beside the prompt, a reply and two tool results. |
-| `memory_idle_s` | `1800.0` | 0 or more | Forget the conversation after this long without a request; `0` never forgets. |
+| `memory_idle_s` | `1800.0` | 0 or more | Forget the conversation after this long without a request (time the PC spends asleep counts); `0` never forgets. |
 
 A spoken reply that drew on outside text (a web page, a song name) is left out of later requests, as before;
 the chat keeps it (see below).
@@ -229,7 +229,7 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | `hint_names` | `40` | 0 to 200 | Most artist names put in the hint (the hint also stops at 800 characters). |
 | `listen_to_pc` | `false` | true or false | Also take requests heard in PC audio. `jarvis pc-audio on`. |
 | `pc_audio_apps` | `["discord"]` | list of app or process names | Whose audio to listen to. An empty list means all PC output. `--apps`, `--all-output`. |
-| `pc_audio_grant_s` | `600.0` | 0 to 86400 | After you say yes to a PC-audio request, how long further PC-audio requests run without asking. 0 asks every time. |
+| `pc_audio_grant_s` | `600.0` | 0 to 86400 | After you say yes to a PC-audio request, how long further PC-audio requests run without asking. 0 asks every time. Time the PC spends asleep counts. |
 | `confirm_blocks_on_pc_speech` | `true` | true or false | A yes counts as no if speech was heard in PC audio while Jarvis waited for it. |
 | `pc_audio_cooldown_s` | `5.0` | 0 to 600 | Pause after a PC-audio request during which another is ignored. |
 

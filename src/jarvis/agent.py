@@ -9,12 +9,12 @@ import json
 import logging
 import re
 import threading
-import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from jarvis import shortcuts
+from jarvis.confirmkey import boot_clock
 from jarvis.jsonutil import obj, objs
 from jarvis.memory import Conversation, Turn, tokens
 from jarvis.model import ModelMissingError
@@ -725,7 +725,7 @@ class Agent:
         audit: AuditLog,
         overrides: Mapping[str, str],
         *,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = boot_clock,
         grant_s: float = 600.0,
         names: Sequence[str] = (),
         still_waiting_s: float = STILL_WAITING_S,
@@ -737,11 +737,12 @@ class Agent:
     ) -> None:
         """Wire the agent to its model, operations, prompt, audit log and the owner's classes.
 
-        `grant_s` is how long the owner's yes to a request heard from PC audio lets further
-        PC-audio requests run without asking again. `names` are what the assistant is called, so
-        "Jarvis, pause" is the plain command "pause". `still_waiting_s` is how long a model load
-        may take before the owner hears a second waiting line. `memory_file` keeps the
-        conversation across sessions: it is read now and written after every request.
+        `clock` counts time asleep (the boot clock), so the PC-audio permission and the memory's
+        idle time run on through a suspend. `grant_s` is how long the owner's yes to a request heard
+        from PC audio lets further PC-audio requests run without asking again. `names` are what the
+        assistant is called, so "Jarvis, pause" is the plain command "pause". `still_waiting_s` is
+        how long a model load may take before the owner hears a second waiting line. `memory_file`
+        keeps the conversation across sessions: it is read now and written after every request.
         `pictures` says whether the model can see pictures (Strata's picture reader is on).
         With `bypass_consent` (`boundaries.bypass_consent`) nothing is asked: an action that
         would need a yes runs, and is audited as run with consent bypassed; `deny` still refuses.
