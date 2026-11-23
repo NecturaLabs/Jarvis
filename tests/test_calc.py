@@ -52,6 +52,9 @@ from jarvis.policy import OpClass
         ("round(-2.5)", "-3"),
         ("round(0.125, 2)", "0.13"),
         ("round(cos(0) * 0.5)", "1"),
+        ("cos(pi) ** 2", "1"),  # a negative number to a whole power is real
+        ("(sin(4) * 2) ** 2", "2.291000068"),
+        ("cos(pi) ** 3", "-1"),
     ],
 )
 def test_an_expression_is_worked_out_exactly(expression: str, value: str) -> None:

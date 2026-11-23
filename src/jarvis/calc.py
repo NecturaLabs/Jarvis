@@ -208,7 +208,7 @@ def _power(base: Number, exponent: Number) -> Number:
             msg = "you can't divide by zero"
             raise CalcError(msg)
         return base**power
-    if base < 0:
+    if base < 0 and not float(exponent).is_integer():
         msg = "a negative number to a fractional power is not a real number"
         raise CalcError(msg)
     return _float_call(math.pow, base, exponent)

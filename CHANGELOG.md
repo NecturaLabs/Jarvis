@@ -323,6 +323,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The calculator works out a negative number that is not exact (`cos(pi)`, `sin(4)`) to a whole power;
+  it refused it as a fractional power.
+
 - The calculator rounds a half away from zero, as calculators do: `round(2.5)` is 3 and `round(0.125, 2)`
   is 0.13. It used Python's rounding to even, which gave 2 and 0.12.
 
