@@ -59,12 +59,19 @@ KEY_VARIABLE = "STRATA_API_KEY"
 
 
 def read_api_key(path: Path) -> str | None:
-    """Return the key from a private `STRATA_API_KEY=...` environment file, or None."""
+    """Return the key from a private `STRATA_API_KEY=...` environment file, or None.
+
+    A value in one pair of single or double quotes is read without them, as systemd reads the
+    same file for Strata, so both send the same key.
+    """
     text = read_private(path)
     for line in (text or "").splitlines():
         name, sep, value = line.partition("=")
-        if sep and name.strip() == KEY_VARIABLE and value.strip():
-            return value.strip()
+        value = value.strip()
+        if len(value) > 1 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if sep and name.strip() == KEY_VARIABLE and value:
+            return value
     return None
 
 

@@ -93,3 +93,19 @@ def test_adding_the_api_key_keeps_the_files_other_settings(tmp_path: Path) -> No
     assert "OTHER=1" in text.splitlines()
     assert "# owner's notes" in text.splitlines()
     assert read_api_key(path) == key
+
+
+@pytest.mark.parametrize(
+    ("line", "key"),
+    [
+        ('STRATA_API_KEY="abc123"', "abc123"),
+        ("STRATA_API_KEY='abc123'", "abc123"),
+        ("STRATA_API_KEY=abc123", "abc123"),
+        ('STRATA_API_KEY= "abc123" ', "abc123"),
+    ],
+)
+def test_the_api_key_is_read_as_systemd_reads_it(tmp_path: Path, line: str, key: str) -> None:
+    path = tmp_path / "strata.env"
+    write_private(path, f"{line}\n")
+
+    assert read_api_key(path) == key
