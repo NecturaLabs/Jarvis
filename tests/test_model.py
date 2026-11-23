@@ -1,6 +1,8 @@
 """The Strata client: what it sends, and that a broken answer never reaches the agent."""
 
+import itertools
 import json
+import threading
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast, override
 
@@ -605,3 +607,258 @@ def _ticking() -> Callable[[], float]:
         return now[0]
 
     return clock
+
+
+def _loading_server(
+    listed: dict[str, Any], *, release: threading.Event, started: threading.Event
+) -> httpx.MockTransport:
+    """Answer `/models` with `listed` and hold `/load` until `release` is set, as Strata does."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json=listed)
+        started.set()
+        release.wait(5)
+        return httpx.Response(200, json={"status": "loaded"})
+
+    return httpx.MockTransport(handle)
+
+
+UNLOADED: dict[str, Any] = {"data": [{"status": {"value": "unloaded"}}]}
+
+
+@pytest.mark.parametrize(
+    ("how", "listed", "after"),
+    [
+        ("warm", UNLOADED, "unloaded"),
+        ("load", UNLOADED, "unloaded"),
+        ("load", {"data": []}, None),  # a server without idle unload lists no model while it loads
+    ],
+)
+def test_a_load_jarvis_asked_for_shows_as_loading_until_it_ends(
+    how: str, listed: dict[str, Any], after: str | None
+) -> None:
+    """Regression: Strata reports only loaded or unloaded, so a 2-minute load showed `unloaded`."""
+    release, started = threading.Event(), threading.Event()
+    model = _model(_loading_server(listed, release=release, started=started))
+    assert model.status() == after
+
+    asking = threading.Thread(target=getattr(model, how))
+    asking.start()
+    assert started.wait(5)
+    try:
+        assert model.status() == "loading"
+        assert model.is_loaded() is False
+    finally:
+        release.set()
+        asking.join(5)
+
+    assert model.status() == after
+
+
+def test_a_load_waits_as_long_as_strata_lets_an_engine_start() -> None:
+    """Strata tries an engine start up to 3 times, 900 s each; the load request outwaits them."""
+    loads: list[float] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json=UNLOADED)
+        loads.append(_read_timeout(request))
+        return httpx.Response(200, json={"status": "loaded"})
+
+    model = _model(httpx.MockTransport(handle))
+
+    assert model.load() is True
+    assert model.warm() is True
+    assert LOAD_TIMEOUT_S > 3 * 900
+    assert loads == [LOAD_TIMEOUT_S, LOAD_TIMEOUT_S]
+
+
+def test_a_load_whose_answer_never_came_is_not_shown_as_loading_after() -> None:
+    """Past the wait Jarvis no longer knows; it shows what the server says, never a guess."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json=UNLOADED)
+        raise httpx.ReadTimeout("no answer", request=request)
+
+    model = _model(httpx.MockTransport(handle))
+
+    assert model.warm() is True
+    assert model.status() == "unloaded"
+
+
+def test_warming_loads_a_server_that_lists_no_model_yet() -> None:
+    """Regression: a reachable Strata listing no model (no idle unload) was never sent the load."""
+    release, started = threading.Event(), threading.Event()
+    model = StrataModel(
+        ModelConfig(base_url=Config().model_base_url()),
+        "key",
+        transport=_loading_server({"data": []}, release=release, started=started),
+        sleep=lambda _s: None,
+    )
+
+    warming = threading.Thread(target=model.warm, kwargs={"attempts": 3})
+    warming.start()
+    try:
+        assert started.wait(5)
+        assert model.status() == "loading"
+    finally:
+        release.set()
+        warming.join(5)
+
+
+def test_a_load_still_going_keeps_the_state_loading_when_another_ends() -> None:
+    gates = [threading.Event(), threading.Event()]
+    asked = itertools.count()
+    both = threading.Barrier(3)
+    ended = threading.Semaphore(0)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json=UNLOADED)
+        gate = gates[next(asked)]
+        both.wait(5)
+        gate.wait(5)
+        return httpx.Response(200, json={})
+
+    model = _model(httpx.MockTransport(handle))
+
+    def load() -> None:  # the start-up load and a resume's, both under way
+        model.warm()
+        ended.release()
+
+    threads = [threading.Thread(target=load) for _ in gates]
+    for thread in threads:
+        thread.start()
+    both.wait(5)
+    gates[0].set()
+    assert ended.acquire(timeout=5)
+    try:
+        assert model.status() == "loading"
+    finally:
+        gates[1].set()
+        for thread in threads:
+            thread.join(5)
+    assert model.status() == "unloaded"
+
+
+def test_an_unreachable_server_is_unknown_even_while_a_load_was_asked_for() -> None:
+    release, started = threading.Event(), threading.Event()
+    reachable = [True]
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if not reachable[0]:
+            raise httpx.ConnectError("refused")
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"status": {"value": "unloaded"}}]})
+        started.set()
+        release.wait(5)
+        return httpx.Response(200, json={})
+
+    model = _model(httpx.MockTransport(handle))
+    asking = threading.Thread(target=model.load)
+    asking.start()
+    assert started.wait(5)
+    reachable[0] = False
+    try:
+        assert model.status() is None
+    finally:
+        release.set()
+        asking.join(5)
+
+
+def test_a_status_read_begun_during_a_load_that_ends_meanwhile_still_says_loading() -> None:
+    """The server's answer was sampled while the load ran; it cannot say the load is over."""
+    finish_load, sampled, release_read = threading.Event(), threading.Event(), threading.Event()
+    loading = threading.Event()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            answer = httpx.Response(200, json=UNLOADED)
+            if loading.is_set():
+                sampled.set()
+                release_read.wait(5)
+            return answer
+        loading.set()
+        finish_load.wait(5)
+        return httpx.Response(200, json={"status": "loaded"})
+
+    model = _model(httpx.MockTransport(handle))
+    seen: list[str | None] = []
+    loader = threading.Thread(target=model.load)
+    loader.start()
+    assert loading.wait(5)
+    reader = threading.Thread(target=lambda: seen.append(model.status()))
+    reader.start()
+    assert sampled.wait(5)
+    finish_load.set()
+    loader.join(5)
+    release_read.set()
+    reader.join(5)
+
+    assert seen == ["loading"]
+
+
+def test_warming_stops_retrying_once_it_is_no_longer_wanted() -> None:
+    """A resume's load must not go on asking after a pause."""
+    loads: list[str] = []
+    wanted = iter([True, True, False])  # each attempt asks before its check and before its load
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json=UNLOADED)
+        loads.append(request.url.path)
+        return httpx.Response(503, headers={"Retry-After": "1"})
+
+    model = StrataModel(
+        ModelConfig(base_url=Config().model_base_url()),
+        "key",
+        transport=httpx.MockTransport(handle),
+        sleep=lambda _s: None,
+    )
+
+    assert model.warm(keep_going=lambda: next(wanted, False)) is False
+    assert len(loads) == 1
+
+
+def test_warming_sends_no_load_when_a_pause_came_during_its_check() -> None:
+    loads: list[str] = []
+    wanted = iter([True, False])
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json=UNLOADED)
+        loads.append(request.url.path)
+        return httpx.Response(200, json={})
+
+    model = _model(httpx.MockTransport(handle))
+
+    assert model.warm(keep_going=lambda: next(wanted, False)) is False
+    assert loads == []
+
+
+def test_a_load_asked_for_while_one_is_under_way_joins_it() -> None:
+    """A wake word during the start-up load must not queue a second load behind the first."""
+    release, started = threading.Event(), threading.Event()
+    posts: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json=UNLOADED)
+        posts.append(request.url.path)
+        started.set()
+        release.wait(5)
+        return httpx.Response(200, json={})
+
+    model = _model(httpx.MockTransport(handle))
+    first = threading.Thread(target=model.load)
+    first.start()
+    assert started.wait(5)
+    try:
+        assert model.load() is True
+        assert model.status() == "loading"
+    finally:
+        release.set()
+        first.join(5)
+    assert posts == ["/v1/load"]

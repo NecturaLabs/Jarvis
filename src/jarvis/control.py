@@ -92,7 +92,7 @@ class _Model(Protocol):
     def status(self) -> str | None: ...
     def file_missing(self) -> bool: ...
     def unload(self) -> bool: ...
-    def warm(self) -> bool: ...
+    def warm(self, *, keep_going: Callable[[], bool] = ...) -> bool: ...
 
 
 def _in_background(work: Callable[[], object]) -> None:
@@ -244,9 +244,12 @@ class Controls:
             self._warm(resume)  # skipped while paused
 
     def _warm(self, resume: int) -> None:
+        def wanted() -> bool:  # not paused again meanwhile
+            return resume == self._pauses and not self._mic.paused
+
         with self._model_turn:
-            if resume == self._pauses and not self._mic.paused:  # not paused again meanwhile
-                self._model.warm()
+            if wanted():
+                self._model.warm(keep_going=wanted)
 
     def _resume(self) -> dict[str, Any]:
         with self._commands:

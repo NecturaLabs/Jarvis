@@ -12,12 +12,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, override
 
+import httpx
 import numpy as np
 import pytest
 
 from jarvis import cli, control, voice
 from jarvis.audio import FRAME, AudioError, MicPausedError, PausableMic
 from jarvis.audit import AuditLog
+from jarvis.config import Config, ModelConfig
+from jarvis.model import StrataModel
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -218,9 +221,12 @@ class Model:
         self.unloads += 1
         return True
 
-    def warm(self) -> bool:
+    def warm(self, *, keep_going: Callable[[], bool] = lambda: True) -> bool:
         self.warms += 1
+        self.wanted = keep_going
         return True
+
+    wanted: Callable[[], bool] = lambda: True
 
 
 @dataclass
@@ -824,7 +830,8 @@ def test_an_unload_and_the_load_a_quick_resume_starts_take_turns() -> None:
         order.append("unloaded")
         return True
 
-    def warm() -> bool:
+    def warm(*, keep_going: Callable[[], bool] = lambda: True) -> bool:
+        assert keep_going()
         order.append("warmed")
         return True
 
@@ -1060,3 +1067,78 @@ def test_confirm_blanks_control_characters_in_the_question(
     assert "\x1b" not in out
     assert "\u202e" not in out
     assert out == 'jarvis: confirmed: "Should I stop  [2Jx exe?"\n'
+
+
+def test_a_load_jarvis_asked_for_shows_as_model_loading() -> None:
+    """Regression: for the 2 minutes of a load after a restart, the status said `unloaded`."""
+    release, started = threading.Event(), threading.Event()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"status": {"value": "unloaded"}}]})
+        started.set()
+        release.wait(5)
+        return httpx.Response(200, json={"status": "loaded"})
+
+    model = StrataModel(
+        ModelConfig(base_url=Config().model_base_url()),
+        "key",
+        transport=httpx.MockTransport(handle),
+    )
+    controls = control.Controls(Loop(), Mic(), model)
+    warming = threading.Thread(target=model.warm)
+    warming.start()
+    assert started.wait(5)
+    try:
+        assert controls("status") == {"state": "model loading", "paused": False, "model": "loading"}
+    finally:
+        release.set()
+        warming.join(5)
+
+
+@pytest.mark.parametrize(
+    ("reply", "out"),
+    [
+        (
+            {"state": "model loading", "paused": False, "model": "loading"},
+            "jarvis: model loading\n",
+        ),
+        (
+            {"state": "unavailable", "paused": False, "model": "unreachable"},
+            "jarvis: unavailable, model: server unreachable\n",
+        ),
+        (
+            {"state": "unavailable", "paused": False, "model": "missing"},
+            "jarvis: unavailable, model: file missing (is its drive mounted?)\n",
+        ),
+        (
+            {"state": "paused", "paused": True, "model": "unloaded"},
+            "jarvis: paused, model: unloaded\n",
+        ),
+    ],
+)
+def test_status_text_from_the_running_jarvis_in_each_state(
+    reply: dict[str, object], out: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    server = _serve_fake(reply)
+    try:
+        cli.main(["status"])
+    finally:
+        server.close()
+
+    assert capsys.readouterr().out == out
+
+
+def test_a_resume_s_load_is_no_longer_wanted_once_paused_again() -> None:
+    """Regression: a resume's load kept retrying after a pause, and the pause could not unload."""
+    model, later = Model("unloaded"), Later()
+    controls = control.Controls(Loop(), Mic(), model, background=later)
+    controls("pause")
+    later.run()
+    controls("resume")
+    later.run()
+    assert model.wanted()
+
+    controls("pause")
+
+    assert not model.wanted()
