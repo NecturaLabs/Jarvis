@@ -16,7 +16,7 @@ from textual import events
 from textual.containers import VerticalScroll
 from textual.widgets import Markdown, OptionList, Static
 
-from jarvis.agent import Agent, ContextUse, Hooks
+from jarvis.agent import Agent, ContextUse, Declined, Hooks, NoReason
 from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
 from jarvis.chat import commands
@@ -584,7 +584,7 @@ def test_one_request_at_a_time() -> None:
 # The owner's yes or no
 
 
-def _confirming(answers: list[bool], done: threading.Event) -> FakeSession:
+def _confirming(answers: list[bool | Declined], done: threading.Event) -> FakeSession:
     def answer(_text: str, hooks: Hooks) -> str:
         answers.append(hooks.confirm("Should I queue Low Tide?"))
         done.set()
@@ -599,8 +599,8 @@ def _question_open(app: ChatApp) -> bool:
     )
 
 
-def _asking(keys: tuple[str, ...], *, wait: bool = True) -> list[bool]:
-    answers: list[bool] = []
+def _asking(keys: tuple[str, ...], *, wait: bool = True) -> list[bool | Declined]:
+    answers: list[bool | Declined] = []
     done = threading.Event()
     clock = Clock()
     app = _app(session=_confirming(answers, done), clock=clock)
@@ -625,7 +625,7 @@ def _asking(keys: tuple[str, ...], *, wait: bool = True) -> list[bool]:
 
 
 def test_the_working_line_waits_for_the_answer_while_a_question_is_open() -> None:
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
     done = threading.Event()
     app = _app(session=_confirming(answers, done))
 
@@ -641,7 +641,7 @@ def test_the_working_line_waits_for_the_answer_while_a_question_is_open() -> Non
 
 
 def test_the_highlighted_choice_is_pointed_at() -> None:
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
     done = threading.Event()
     clock = Clock()
     app = _app(session=_confirming(answers, done), clock=clock)
@@ -671,7 +671,7 @@ def test_a_yes_pressed_as_the_question_opens_does_not_count() -> None:
 
 
 def test_leaving_while_a_question_waits_answers_no() -> None:
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
     done = threading.Event()
     app = _app(session=_confirming(answers, done))
 
@@ -681,7 +681,7 @@ def test_leaving_while_a_question_waits_answers_no() -> None:
 
     _run(test, app)
     assert done.wait(5)
-    assert answers == [False]
+    assert answers == [Declined(NoReason.CLOSED)]  # a no, audited as the window closing
 
 
 # Typing
@@ -1025,7 +1025,7 @@ def test_the_toolbar_can_be_turned_off() -> None:
 
 
 def test_the_window_uses_the_assistants_name() -> None:
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
     done = threading.Event()
     app = _app(session=_confirming(answers, done), name="Friday")
 
@@ -1536,7 +1536,7 @@ def test_a_cleared_box_forgets_what_was_pasted() -> None:
 
 
 def test_the_window_asks_for_previews_and_shows_them_under_the_question() -> None:
-    answers: list[bool] = []
+    answers: list[bool | Declined] = []
     done = threading.Event()
 
     def answer(_text: str, hooks: Hooks) -> str:

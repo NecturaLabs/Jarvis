@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
 
-from jarvis.agent import Hooks
+from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.audio import (
     FRAME,
     RATE,
@@ -99,6 +99,7 @@ MIN_FOLLOW_UP_SPEECH_S = 0.3
 PRE_ROLL_FRAMES = 3
 WAKE_DEDUPE_S = 2.0
 SORRY_INTERNAL = "Sorry, something went wrong on my side."
+NO_SPEECH = "no speech"  # why a capture that timed out before any speech ended
 PC_SPEECH_BLOCKED = "I heard voices from the PC over that, so I didn't count it."
 WAKING = "One moment, waking up."
 STILL_WAITING = "Still waking up, nearly there."
@@ -249,7 +250,7 @@ def capture_utterance(
                 started = True
                 kept.extend(recent)
             elif waited_s >= cfg.no_speech_timeout_s:
-                return Utterance(None, "no speech")
+                return Utterance(None, NO_SPEECH)
             continue
         kept.append(frame)
         silent_s = 0.0 if probability >= exit_threshold else silent_s + FRAME_S
@@ -509,19 +510,24 @@ class VoiceLoop:
         if self.state is State.SPEAK:
             self.state = State.THINK
 
-    def _confirm(self, question: str) -> bool:
+    def _confirm(self, question: str) -> bool | Declined:
         """Ask the owner; anything but a clear spoken yes, a failure included, is no."""
         try:
             return self._ask(question)
+        except AudioError as exc:
+            log.warning(
+                "the microphone failed while the answer was awaited (%s); counting it as no", exc
+            )
+            return Declined(NoReason.MIC_LOST)
         except Exception:
             log.exception("the confirmation failed; counting it as no")
-            return False
+            return Declined(NoReason.FAILED)
 
-    def _ask(self, question: str) -> bool:
+    def _ask(self, question: str) -> bool | Declined:
         self._speak(spoken_question(question))
         if self._barged_at is not None:
             log.info("the owner spoke over the question; counting it as no")
-            return False
+            return Declined(NoReason.SPOKEN_OVER)
         return self._hear_answer()
 
     def _capture_answer(self, cfg: AudioConfig) -> Utterance | None:
@@ -541,30 +547,40 @@ class VoiceLoop:
             return None
         return heard
 
-    def _hear_answer(self) -> bool:
+    def _hear_answer(self) -> bool | Declined:
         pc_speech = self._pc_speech
         self.state = State.CONFIRM
-        cfg = self._cfg.model_copy(update={"no_speech_timeout_s": self._cfg.confirm_window_s})
-        heard = self._capture_answer(cfg)
-        if heard is None or heard.samples is None:
-            return False
-        if heard.speech_s < MIN_ANSWER_SPEECH_S:
-            # Whisper turns a short noise into "Okay." or "Yes."; a spoken yes is longer.
-            log.info("the answer held %.2f s of speech; too little for a yes", heard.speech_s)
-            return False
-        try:
-            answer = self._transcribe_answer(heard.samples)
-        except AudioError:
-            return False
+        answer = self._answer_text()
+        if isinstance(answer, Declined):
+            return answer
         log.info("confirmation answer: %r", answer)
         if not is_yes(answer, self._names):
-            return False
+            return Declined(NoReason.SAID_NO)
         blocks = self._pc is not None and self._cfg.confirm_blocks_on_pc_speech
         if blocks and self._pc_speech != pc_speech:
             log.info("PC audio held speech while waiting for the answer; not counting it")
             self._try_say(PC_SPEECH_BLOCKED)
-            return False
+            return Declined(NoReason.PC_SPEECH)
         return True
+
+    def _answer_text(self) -> str | Declined:
+        """Hear the answer and transcribe it, or say why there is nothing that could be a yes."""
+        cfg = self._cfg.model_copy(update={"no_speech_timeout_s": self._cfg.confirm_window_s})
+        heard = self._capture_answer(cfg)
+        if heard is None:
+            return Declined(NoReason.SLEPT)
+        if heard.samples is None:
+            # Only a timeout ends a capture with nothing heard; otherwise the mic stream ended.
+            gone = heard.reason != NO_SPEECH
+            return Declined(NoReason.MIC_LOST if gone else NoReason.NO_ANSWER)
+        if heard.speech_s < MIN_ANSWER_SPEECH_S:
+            # Whisper turns a short noise into "Okay." or "Yes."; a spoken yes is longer.
+            log.info("the answer held %.2f s of speech; too little for a yes", heard.speech_s)
+            return Declined(NoReason.TOO_SHORT)
+        try:
+            return self._transcribe_answer(heard.samples)
+        except AudioError:
+            return Declined(NoReason.UNTRANSCRIBED)
 
     def _confirm_key(self, question: str, action: str) -> bool:
         """Ask about one exact action and wait for the confirm key; anything else is no."""

@@ -291,6 +291,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The audit log now says why a confirmation ended as no (#38). Before, the PC sleeping with the question
+  open, no answer in time, a lost microphone and a spoken no all wrote the same line. Each no now carries a
+  `reason` from a fixed list, and the chat's activity pane shows it. Only a clear yes approves, as before.
 - A yes spoken after the PC woke from a suspend no longer answers a question asked before it. The question is
   now counted as a no, and Jarvis listens afresh (#22). A sleep also ends the follow-up window, so speech
   after waking is no longer taken as a request without the wake word, and drops a request begun after the

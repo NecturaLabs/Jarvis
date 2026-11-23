@@ -63,8 +63,8 @@ frames from before it, resets the wake word, and asks the model server for its s
 failed is loaded again (not while paused); an unloaded one stays unloaded, since `jarvis unload` before a
 game or the idle unload put it there. The log says `back from sleep after N s: listening afresh`, then
 `back from sleep: the model is <state>`. A stall check cannot fire during the sleep itself, since it
-times with the monotonic clock. A spoken yes awaited when the PC sleeps counts as a no, so a yes said after waking
-never answers a question asked before it; the confirm key's wait runs on the boot clock, so a sleep uses it up.
+times with the monotonic clock. A spoken yes awaited when the PC sleeps counts as a no, audited as
+`confirmation` with `reason` `slept`, so a yes said after waking never answers a question asked before it; the confirm key's wait runs on the boot clock, so a sleep uses it up.
 A sleep also ends the follow-up window and drops a request begun after the wake word: its length is
 counted in audio frames, which stand still while asleep, so what is said after waking is not taken as a
 request without the wake word, and speech kept before the sleep is not answered either.

@@ -23,8 +23,10 @@ from jarvis.agent import (
     TOO_MANY_STEPS,
     UNDONE,
     Agent,
+    Declined,
     Hooks,
     Limits,
+    NoReason,
     claims_action,
 )
 from jarvis.app import no_action_operation
@@ -423,6 +425,84 @@ def test_declined_confirmation_runs_nothing() -> None:
     assert counter.runs == []
     assert len(questions) == 1
     assert any(e["event"] == "confirmation" and e["approved"] is False for e in audit.events)
+
+
+def _confirmed_with(answer: Callable[[str], object]) -> tuple[list[dict[str, Any]], AuditLog]:
+    """Ask about one `confirm` action with `answer` as the hook; return what ran and the audit."""
+    counter = Counter()
+    model = ScriptedModel([_call("play", {"q": "x"}), _say("Okay.")])
+    agent, audit = _agent(model, [counter.op("play", cls=OpClass.CONFIRM)])
+    agent.handle("play x", Hooks(confirm=cast("Callable[[str], bool | Declined]", answer)))
+    return counter.runs, audit
+
+
+def _confirmation(audit: AuditLog) -> dict[str, Any]:
+    return next(e for e in audit.events if e["event"] == "confirmation")
+
+
+@pytest.mark.parametrize("reason", list(NoReason))
+def test_a_no_with_a_reason_is_audited_with_that_reason(reason: NoReason) -> None:
+    runs, audit = _confirmed_with(lambda _q: Declined(reason))
+
+    assert runs == []
+    confirmation = _confirmation(audit)
+    assert (confirmation["op"], confirmation["approved"]) == ("play", False)
+    assert confirmation["reason"] == reason
+
+
+def test_a_plain_no_is_audited_as_said_no() -> None:
+    runs, audit = _confirmed_with(lambda _q: False)
+
+    assert runs == []
+    assert _confirmation(audit)["reason"] == "said_no"
+
+
+def test_a_failing_question_is_audited_as_failed() -> None:
+    def broken(_q: str) -> bool:
+        msg = "speaker gone"
+        raise RuntimeError(msg)
+
+    runs, audit = _confirmed_with(broken)
+
+    assert runs == []
+    assert _confirmation(audit)["reason"] == "failed"
+
+
+@pytest.mark.parametrize("answer", [1, "yes", [True], None, Declined(NoReason.SAID_NO)])
+def test_only_true_approves_and_any_other_answer_is_refused(answer: object) -> None:
+    runs, audit = _confirmed_with(lambda _q: answer)
+
+    assert runs == []
+    confirmation = _confirmation(audit)
+    assert confirmation["approved"] is False
+    assert confirmation["reason"] in set(NoReason)
+
+
+def test_a_yes_is_audited_without_a_reason() -> None:
+    runs, audit = _confirmed_with(lambda _q: True)
+
+    assert len(runs) == 1
+    assert _confirmation(audit)["approved"] is True
+    assert "reason" not in _confirmation(audit)
+
+
+def test_a_declined_answer_is_falsy_so_a_truth_test_reads_it_as_no() -> None:
+    assert not Declined(NoReason.SLEPT)
+
+
+def test_an_action_declined_unasked_after_a_no_is_audited_as_the_earlier_no() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_call("play"), _call("queue", call_id="c2"), _say("Okay.")])
+    ops = [counter.op("play", cls=OpClass.CONFIRM), counter.op("queue", cls=OpClass.CONFIRM)]
+    agent, audit = _agent(model, ops)
+
+    agent.handle("play x then queue y", Hooks(confirm=lambda q: asked.append(q) or False))
+
+    assert counter.runs == []
+    assert len(asked) == 1
+    reasons = [(e["op"], e["reason"]) for e in audit.events if e["event"] == "confirmation"]
+    assert reasons == [("play", "said_no"), ("queue", "earlier_no")]
 
 
 def test_approved_confirmation_runs_once() -> None:

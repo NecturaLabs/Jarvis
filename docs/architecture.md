@@ -189,8 +189,11 @@ line spoken while the agent works (`_cue`: a waiting line, a confirmation questi
      `jarvis ask`) refuses the call, and `boundaries.bypass_consent` never skips it.
    - **The audit entry is written**: `tool_call` (with the verdict and digest, and an operation's
      `hashed` arguments, such as a write's content, as a SHA-256 and a length) before the call runs,
-     then `confirmation` and `tool_result` or `tool_failed`. The first and last events of a request
-     are `request` and `reply`.
+     then `confirmation` and `tool_result` or `tool_failed`. A `confirmation` that is not a yes
+     carries a `reason` from `NoReason` (`said_no`, `no_answer`, `slept`, `mic_lost` and the rest):
+     the hook returns `Declined` with it, only `True` approves, and anything else is a no. A
+     confirm-key no's reason is in the `confirm_key` event before it. The first and last events of a
+     request are `request` and `reply`.
 6. A tool result keeps its origin. Text from outside (Spotify names) is wrapped as
    `<data origin="...">` for the model and marks the rest of the request as untrusted. Jarvis's own
    status text stays trusted.

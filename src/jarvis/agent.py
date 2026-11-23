@@ -11,6 +11,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from jarvis import shortcuts
@@ -491,16 +492,48 @@ class ContextUse:
     summarized: bool
 
 
+class NoReason(StrEnum):
+    """Why a confirmation ended as no: the `reason` the audit log records with it (#38)."""
+
+    SAID_NO = "said_no"  # the owner answered, and not with a yes
+    NO_ANSWER = "no_answer"  # no speech before the answer window closed
+    TOO_SHORT = "too_short"  # too little speech to be a yes
+    UNTRANSCRIBED = "untranscribed"  # the answer could not be transcribed
+    PC_SPEECH = "pc_speech"  # PC audio held speech while the answer was awaited
+    SPOKEN_OVER = "spoken_over"  # the owner spoke over the question
+    SLEPT = "slept"  # the PC slept with the question open
+    MIC_LOST = "mic_lost"  # the microphone stopped or was paused
+    CLOSED = "closed"  # the window asking was closed
+    EARLIER_NO = "earlier_no"  # not asked: an earlier no in the same request
+    NO_KEY = "no_key"  # a `strong` action where this channel has no confirm key
+    FAILED = "failed"  # asking failed, or the hook returned something that is not an answer
+
+
+@dataclass(frozen=True, slots=True)
+class Declined:
+    """A `confirm` hook's no that says why. Only `True` is a yes; every other return is a no.
+
+    It is falsy, so a caller that tests the answer for truth reads it as the no it is.
+    """
+
+    reason: NoReason
+
+    def __bool__(self) -> bool:
+        """Read as false: a no."""
+        return False
+
+
 @dataclass(frozen=True, slots=True)
 class Hooks:
     """How the agent reaches the owner during a request.
 
     `waking` is called when the model has to load first and `still_waiting` once more if that
     takes long; both run beside the model call and have finished before anything else is said.
-    `confirm` asks for a spoken yes. `confirm_key`, where the channel has one, asks the question
-    and waits for the confirm key bound to the action's hash (`confirmkey`); without it a
-    `strong` action is refused. `cancelled` turning true (Jarvis is stopping, or the owner
-    spoke over it) ends the request.
+    `confirm` asks for a spoken yes and returns `True` for one; a no is `False`, or `Declined`
+    when the hook knows why (the PC slept, nothing was heard). `confirm_key`, where the channel
+    has one, asks the question and waits for the confirm key bound to the action's hash
+    (`confirmkey`); without it a `strong` action is refused. `cancelled` turning true (Jarvis
+    is stopping, or the owner spoke over it) ends the request.
     With `speak`, the reply is spoken through it, sentence by sentence and while the model is
     still writing; `hush` drops what was passed to `speak` and not yet heard. `draft` gets the
     reply as far as it has been written, at the same points, for a window to show it growing;
@@ -508,7 +541,7 @@ class Hooks:
     that writes text also shows the start of that text, on the lines after the question.
     """
 
-    confirm: Callable[[str], bool]
+    confirm: Callable[[str], bool | Declined]
     confirm_key: Callable[[str, str], bool] | None = None
     waking: Callable[[], None] = lambda: None
     still_waiting: Callable[[], None] = lambda: None
@@ -517,6 +550,13 @@ class Hooks:
     draft: Callable[[str], None] | None = None
     hush: Callable[[], None] = lambda: None
     preview: bool = False
+
+
+def _no_reason(answer: object) -> NoReason:
+    """Say why a `confirm` hook's answer is a no: its own reason, else said or not an answer."""
+    if isinstance(answer, Declined):
+        return answer.reason
+    return NoReason.SAID_NO if answer is False else NoReason.FAILED
 
 
 def _audited(op: Operation | None, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -1390,18 +1430,25 @@ class Agent:
         """
         if turn.declined:
             self._audit.record(
-                "confirmation", op=op.name, action=digest, approved=False, asked=False
+                "confirmation",
+                op=op.name,
+                action=digest,
+                approved=False,
+                asked=False,
+                reason=NoReason.EARLIER_NO,
             )
             return False
         turn.cues.settle()
         question = self._question(op, args, turn)
         shown = op.preview(args) if hooks.preview and op.preview is not None else ""
         try:
-            approved = hooks.confirm(f"{question}\n{shown}" if shown else question) is True
+            answer = hooks.confirm(f"{question}\n{shown}" if shown else question)
         except Exception:
             log.exception("the confirmation question for %s could not be asked", op.name)
-            approved = False
-        self._audit.record("confirmation", op=op.name, action=digest, approved=approved)
+            answer = Declined(NoReason.FAILED)
+        approved = answer is True
+        why = {} if approved else {"reason": _no_reason(answer)}
+        self._audit.record("confirmation", op=op.name, action=digest, approved=approved, **why)
         turn.declined = not approved
         return approved
 
@@ -1440,7 +1487,13 @@ class Agent:
         key = hooks.confirm_key
         if key is None or turn.declined:
             self._audit.record(
-                "confirmation", op=op.name, action=digest, approved=False, asked=False, method="key"
+                "confirmation",
+                op=op.name,
+                action=digest,
+                approved=False,
+                asked=False,
+                method="key",
+                reason=NoReason.NO_KEY if key is None else NoReason.EARLIER_NO,
             )
             return False
         turn.cues.settle()
@@ -1449,8 +1502,11 @@ class Agent:
         except Exception:
             log.exception("the confirm key for %s could not be asked for", op.name)
             approved = False
+            failed = {"reason": NoReason.FAILED}
+        else:
+            failed = {}  # the `confirm_key` event before this one says how the wait ended
         self._audit.record(
-            "confirmation", op=op.name, action=digest, approved=approved, method="key"
+            "confirmation", op=op.name, action=digest, approved=approved, method="key", **failed
         )
         turn.declined = not approved
         return approved
