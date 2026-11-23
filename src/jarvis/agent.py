@@ -678,6 +678,7 @@ class _Turn:
     nudged: bool = False
     stuck: bool = False
     cold: bool = False  # the model must load first: the next model call may wait for that too
+    answered: bool = False  # a model call returned: the model is in and working
     last: bool = False  # the request's last step: the model may only answer
     declined: bool = False
     tried: bool = False  # a call that could change something: an action, or a tool not offered
@@ -868,19 +869,33 @@ class Agent:
             self._audit.record("memory_expired")
 
     def _remembered(self, *, plain: bool) -> list[dict[str, Any]]:
-        """Return the remembered conversation for a new request, made to fit its budget first.
+        """Return the remembered conversation for a new request, cut to fit its budget.
 
-        A `plain` command is not kept waiting for a summary: that waits for the next request
-        that needs the model.
+        Nothing is summarized here, inside the request's time: a conversation over its budget
+        (one loaded from the memory file, or grown by plain commands) gives the request its
+        newest turns that fit, and keeps the rest for the summary after the reply
+        (`_fit_memory`). A `plain` command gets it whole, as it does not call the model.
         """
         memory = self._memory
         if plain or not memory.over_budget():
             return memory.messages()
-        if not self.compact():
-            dropped = memory.drop_to_fit()
-            self._audit.record("memory_trimmed", turns=dropped)
-            self._save_memory()
-        return memory.messages()
+        return memory.fitted_messages()
+
+    def _fit_memory(self, turn: _Turn, hooks: Hooks) -> None:
+        """Fold the older turns into the summary once a reply outgrew the budget, else drop them.
+
+        It runs after the reply, while it is spoken, and only after a request whose model call
+        returned (so the model is in), on the summary's own time, not the request's; never after
+        a request heard in PC audio (it adds nothing to the conversation) or one stopped.
+        """
+        if not turn.answered or turn.foreign or hooks.cancelled():
+            return
+        memory = self._memory
+        if not memory.over_budget() or self.compact():
+            return
+        dropped = memory.drop_to_fit()
+        self._audit.record("memory_trimmed", turns=dropped)
+        self._save_memory()
 
     def _save_memory(self) -> None:
         if self._memory_file is None:
@@ -1017,6 +1032,7 @@ class Agent:
         if reply and not foreign:
             self._remember(_with_pictures(words if outside else text, pictures), reply, turn)
         self._audit.record("reply", text=reply, seconds=round(self._clock() - started, 2))
+        self._fit_memory(turn, hooks)
         return reply
 
     def _outside_pastes(self, text: str, pasted: Sequence[str]) -> list[str]:
@@ -1129,6 +1145,7 @@ class Agent:
         finally:
             turn.cues.settle()
             turn.cold = False  # the first call waited for the load; the model is in after it
+        turn.answered = True
         self._note_usage(message)
         self._audit.record("model_call", step=step, seconds=round(self._clock() - began, 2))
         calls = [] if turn.stuck or turn.last else self._unique(objs(message.get("tool_calls")))

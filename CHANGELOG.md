@@ -342,6 +342,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Summarising the remembered conversation no longer happens silently at the start of a request, on that
+  request's clock. It now runs right after the reply that made the conversation too long, while the reply
+  is spoken and the model is loaded. With a cold model, the summary used to time out and the older turns
+  were dropped instead.
 - Time the PC spends asleep now counts. The PC-audio permission (`audio.pc_audio_grant_s`) and the
   conversation's idle expiry (`memory_idle_s`) ran on a clock that stops during a suspend, so a yes
   given to PC audio before a night asleep still held in the morning. They now run on the boot clock.

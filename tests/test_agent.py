@@ -35,6 +35,7 @@ from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
 from jarvis.config import FilesConfig
 from jarvis.jsonutil import objs
+from jarvis.memory import tokens
 from jarvis.model import Delta, ModelMissingError
 from jarvis.operations import (
     Operation,
@@ -1029,6 +1030,60 @@ def test_a_conversation_over_its_budget_is_summarized_before_the_next_request() 
     assert "memory_summarized" in _events(audit)
 
 
+def test_the_summary_runs_after_the_reply_that_outgrew_the_budget_not_inside_a_request() -> None:
+    model = ScriptedModel([*_chatty(4), _say("They talked about kettles."), *_chatty(1)])
+    agent, audit = _agent(model, [], limits=Limits(memory_tokens=700))
+
+    for number in range(5):
+        agent.handle(f"request {number}", NO_CONFIRM)
+
+    events = _events(audit)
+    summarized = events.index("memory_summarized")
+    fourth_reply = [n for n, event in enumerate(events) if event == "reply"][3]
+    fifth_request = [n for n, event in enumerate(events) if event == "request"][4]
+    assert fourth_reply < summarized < fifth_request
+
+
+def test_a_request_that_starts_over_the_budget_gets_what_fits_and_the_summary_comes_after(
+    tmp_path: Path,
+) -> None:
+    saved = tmp_path / "conversation.json"
+    roomy, _ = _agent(ScriptedModel(_chatty(4)), [], memory_file=saved)
+    for number in range(4):
+        roomy.handle(f"request {number}", NO_CONFIRM)
+    model = ScriptedModel([*_chatty(1), _say("They talked about kettles.")])
+    agent, audit = _agent(model, [], limits=Limits(memory_tokens=700), memory_file=saved)
+
+    agent.handle("request 4", NO_CONFIRM)
+
+    asked = model.seen[0]
+    assert asked[-1] == {"role": "user", "content": "request 4"}
+    assert tokens("".join(str(m["content"]) for m in asked[1:-1])) <= 700
+    assert "request 3" in [m["content"] for m in asked if m["role"] == "user"]
+    assert model.seen[2][0]["content"].startswith("You keep the memory of a conversation")
+    assert "request 0" in model.seen[2][1]["content"]  # nothing was dropped to make it fit
+    assert "memory_trimmed" not in _events(audit)
+    assert agent.memory.summary == "They talked about kettles."
+
+
+def test_a_cancelled_request_is_not_followed_by_a_summary() -> None:
+    model = ScriptedModel([*_chatty(4)])
+    agent, audit = _agent(model, [], limits=Limits(memory_tokens=700))
+    for number in range(3):
+        agent.handle(f"request {number}", NO_CONFIRM)
+    stopped = [False]
+
+    def speak(_text: str) -> None:
+        stopped[0] = True  # the owner spoke over the reply
+
+    hooks = Hooks(confirm=lambda _q: False, speak=speak, cancelled=lambda: stopped[0])
+    agent.handle("request 3", hooks)
+
+    assert agent.memory.over_budget()  # it would have been summarized, had it not been stopped
+    assert len(model.seen) == 8
+    assert "memory_summarized" not in _events(audit)
+
+
 def test_the_latest_turns_are_never_folded_into_the_summary() -> None:
     model = ScriptedModel([*_chatty(4), _say("Summary."), *_chatty(1)])
     agent, _ = _agent(model, [], limits=Limits(memory_tokens=700))
@@ -1880,17 +1935,20 @@ def test_a_long_run_of_spaces_is_checked_quickly() -> None:
     assert not claims_action("Muted" + " " * 1_000_000 + "?")
 
 
-def test_a_plain_command_is_not_kept_waiting_for_a_summary() -> None:
+def test_a_plain_command_is_not_kept_waiting_for_a_summary(tmp_path: Path) -> None:
+    saved = tmp_path / "conversation.json"
+    roomy, _ = _agent(ScriptedModel(_chatty(4)), [], memory_file=saved)
+    for number in range(4):
+        roomy.handle(f"request {number}", NO_CONFIRM)
     counter = Counter()
     pause = counter.op("pause", spoken="Paused.", shortcuts=(Shortcut("pause", lambda _g: {}),))
-    model = ScriptedModel([*_chatty(4)])
-    agent, audit = _agent(model, [pause], limits=Limits(memory_tokens=700))
-    for number in range(4):
-        agent.handle(f"request {number}", NO_CONFIRM)
+    model = ScriptedModel([])
+    agent, audit = _agent(model, [pause], limits=Limits(memory_tokens=700), memory_file=saved)
+    assert agent.memory.over_budget()
 
     assert agent.handle("pause", NO_CONFIRM) == "Paused."
 
-    assert len(model.seen) == 8
+    assert model.seen == []
     assert "memory_summarized" not in _events(audit)
 
 
