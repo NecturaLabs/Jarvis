@@ -342,6 +342,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Emptying or damaging the shared action count (`actions.json`) no longer lifts `boundaries.max_actions`:
+  each process's own count must allow an action too. The shared file's answer used to replace it.
+
 - "Play my liked songs" draws from the whole library: 50 songs picked at random from the newest page and
   three more pages at random places in it. It always played the newest 50 shuffled and said "your liked
   songs"; with more than 50 it now says "50 of your liked songs".

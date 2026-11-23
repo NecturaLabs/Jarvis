@@ -81,6 +81,22 @@ def test_a_damaged_file_starts_the_count_again(
     assert "actions.json" in caplog.text
 
 
+@pytest.mark.parametrize("contents", ["", "[]", "{not json"])
+def test_emptying_the_shared_file_does_not_lift_this_process_own_count(
+    tmp_path: Path, contents: str
+) -> None:
+    path = tmp_path / "actions.json"
+    rate = ActionRate(path, limit=3, window_s=600.0, clock=Clock())
+    assert [rate.take() for _ in range(3)] == [True, True, True]
+
+    path.write_text(contents, encoding="ascii")
+
+    assert rate.full()
+    assert not rate.take()
+    other = ActionRate(path, limit=3, window_s=600.0, clock=Clock())  # nothing was taken in it
+    assert [other.take() for _ in range(4)] == [True, True, True, False]
+
+
 def test_a_file_that_cannot_be_used_still_leaves_this_process_its_own_count(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
