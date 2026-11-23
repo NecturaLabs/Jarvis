@@ -463,12 +463,13 @@ def cmd_spotify_login(args: argparse.Namespace) -> int:
 
 
 def _terminal_confirm(question: str) -> bool | Declined:
+    """Ask on the terminal; a typed `y` is a yes, as are the spoken ones (`is_yes`)."""
     try:
-        answer = input(f"{question} [yes/no] ")
+        answer = input(f"{question} [y/n] ")
     except EOFError:
         return Declined(NoReason.NO_ANSWER)  # no terminal to answer on
 
-    return is_yes(answer)
+    return answer.strip().casefold() == "y" or is_yes(answer)
 
 
 def cmd_ask(args: argparse.Namespace) -> int:

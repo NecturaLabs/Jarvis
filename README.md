@@ -112,7 +112,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis doctor` | Check every part without loading the model: one line per check (`ok`, `FAIL` with its fix, or `note`), then how many failed. |
 | `jarvis logs` | Follow the live log (Ctrl+C to leave). |
 | `jarvis help` | List the commands by group, each with what it does (the same as `jarvis --help`); `jarvis <command> --help` explains one command and its options, and a mistyped command gets a suggestion when one is close. |
-| `jarvis ask <text>` | Send one typed request as if spoken; `--yes` answers yes to confirmations. |
+| `jarvis ask <text>` | Send one typed request as if spoken; a question is answered `y` or `n` on the terminal, and `--yes` answers yes to confirmations. |
 | `jarvis chat` | Open a Textual window where you type requests and watch what Jarvis does, live. |
 | `jarvis wake [livekit\|azure]` | Show or switch the wake word model; `--model FILE` names the Azure `.table` file; `--words hey_jarvis,yo_jarvis` picks the LiveKit models that listen. |
 | `jarvis pc-audio [on\|off]` | Show or set listening to PC audio; `--apps discord,firefox` names the apps, `--all-output` listens to everything the PC plays. |

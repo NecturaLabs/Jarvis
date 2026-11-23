@@ -342,6 +342,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `jarvis ask` takes a typed `y` as yes. It asked `[yes/no]` but read the answer as speech, where `y` is
+  no, so a `y` declined the action.
 - When the model answers a question with no words after looking something up, Jarvis now asks it once
   more for an answer, then says it found none. It used to say "Done.", which the claim check then turned
   into "I didn't manage to do that". "Done." is kept for an action that succeeded.
