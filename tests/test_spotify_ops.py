@@ -133,7 +133,7 @@ class FakeSpotify:
                 device["is_active"] = device["id"] in wanted
         if method in {"PUT", "POST"}:
             return httpx.Response(204)
-        return self._read(path)
+        return self._read(path, request)
 
     def _search(self, request: httpx.Request) -> httpx.Response:
         kind = request.url.params["type"]
@@ -142,7 +142,7 @@ class FakeSpotify:
         page = items[offset : offset + self.page_size]
         return httpx.Response(200, json={f"{kind}s": {"items": page}})
 
-    def _read(self, path: str) -> httpx.Response:
+    def _read(self, path: str, request: httpx.Request) -> httpx.Response:
         routes: dict[str, object] = {
             "/me/player/devices": {"devices": self.devices},
             "/me/top/artists": {"items": self.top_artists},
@@ -150,13 +150,18 @@ class FakeSpotify:
             "/me/following": {"artists": {"items": []}},
             "/me/player/recently-played": {"items": []},
             "/me/playlists": {"items": self.playlists},
-            "/me/tracks": {"items": [{"track": t} for t in self.saved]},
             "/me/player/queue": {"currently_playing": self.playing_item, "queue": self.queue_items},
         }
         if path == "/me/player":
             if self.state is None:
                 return httpx.Response(204)
             return httpx.Response(200, json=self.state)
+        if path == "/me/tracks":  # one page of the saved songs, as Spotify pages them
+            offset = int(request.url.params.get("offset", "0"))
+            limit = int(request.url.params.get("limit", "20"))
+            page = self.saved[offset : offset + limit]
+            items = [{"track": t} for t in page]
+            return httpx.Response(200, json={"items": items, "total": len(self.saved)})
         if path in routes:
             return httpx.Response(200, json=routes[path])
         return httpx.Response(404, json={"error": {"message": f"no route {path}"}})
@@ -425,6 +430,21 @@ def test_liked_songs_play_the_owners_saved_tracks_shuffled(tmp_path: Path) -> No
     assert body["uris"] != [t["uri"] for t in saved]
     assert fake.calls("GET", "/me/tracks")[0].url.params["limit"] == "50"
     assert not fake.calls("GET", "/search")
+
+
+def test_a_big_library_of_liked_songs_plays_songs_from_all_of_it(tmp_path: Path) -> None:
+    saved = [_track(f"Song {i}", "Night Circuit", f"spotify:track:{i}") for i in range(2000)]
+    fake = FakeSpotify(saved=saved)
+
+    result = build_ops(fake, tmp_path).play({"query": "my liked songs", "kind": "liked"})
+
+    assert result.ok
+    (body,) = fake.played
+    played = [int(uri.rsplit(":", 1)[1]) for uri in body["uris"]]
+    assert len(played) == len(set(played)) == 50
+    assert max(played) >= 50  # not only the newest page
+    assert len(fake.calls("GET", "/me/tracks")) <= 4
+    assert "50 of your liked songs" in result.text
 
 
 def test_liked_songs_need_no_query(tmp_path: Path) -> None:

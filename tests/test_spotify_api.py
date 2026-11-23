@@ -584,13 +584,17 @@ def test_the_queue_and_saved_tracks_are_read_as_item_lists(tmp_path: Path) -> No
     wire.on(
         "GET",
         "/me/tracks",
-        httpx.Response(200, json={"items": [{"track": {"uri": "t1"}}, {"track": None}]}),
+        httpx.Response(
+            200, json={"items": [{"track": {"uri": "t1"}}, {"track": None}], "total": 2}
+        ),
     )
     api, _, _ = _make(tmp_path, wire)
 
     assert [i["uri"] for i in api.queue()] == ["now", "a"]
-    assert [t["uri"] for t in api.saved_tracks()] == ["t1"]
-    assert wire.calls("GET", "/me/tracks")[0].url.params["limit"] == "50"
+    tracks, total = api.saved_tracks(100)
+    assert ([t["uri"] for t in tracks], total) == (["t1"], 2)
+    params = wire.calls("GET", "/me/tracks")[0].url.params
+    assert (params["limit"], params["offset"]) == ("50", "100")
 
 
 def test_devices_drop_restricted_and_idless_ones(tmp_path: Path) -> None:

@@ -342,6 +342,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- "Play my liked songs" draws from the whole library: 50 songs picked at random from the newest page and
+  three more pages at random places in it. It always played the newest 50 shuffled and said "your liked
+  songs"; with more than 50 it now says "50 of your liked songs".
+
 - Saving a setting (`jarvis setup`, `consent`, `pc-audio`, `wake`, the chat's `/config`) changes only that
   setting in `config.toml` and keeps the rest of the file, comments included. It wrote every setting with
   its value at the time, about 140 lines, so a default changed in a later version never reached the install

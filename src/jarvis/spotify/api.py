@@ -32,6 +32,7 @@ API = "https://api.spotify.com/v1"
 SEARCH_LIMIT = 10
 PLAYLIST_PAGE = 50
 MAX_PLAYLISTS = 500
+SAVED_PAGE = 50  # saved tracks Spotify returns in one page at most
 RETRY_DELAY_S = 0.3
 MAX_RETRY_AFTER_S = 2.0
 DEFAULT_RETRY_AFTER_S = 1.0
@@ -362,11 +363,16 @@ class SpotifyApi:
             offset += _count(entries)
         return playlists[:MAX_PLAYLISTS]
 
-    def saved_tracks(self) -> list[dict[str, Any]]:
-        """Return up to 50 of the owner's saved ("liked") tracks, newest first."""
-        data = obj(self.request("GET", "/me/tracks", params={"limit": 50}))
+    def saved_tracks(self, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
+        """Return one page of the owner's saved ("liked") tracks, newest first, and how many.
+
+        A page holds up to `SAVED_PAGE`, starting `offset` songs in.
+        """
+        params = {"limit": SAVED_PAGE, "offset": offset}
+        data = obj(self.request("GET", "/me/tracks", params=params))
         tracks = [obj(item.get("track")) for item in objs(data.get("items"))]
-        return [t for t in tracks if t.get("uri")]
+        total = data.get("total")
+        return [t for t in tracks if t.get("uri")], total if isinstance(total, int) else 0
 
     def _library_part(
         self, name: str, path: str, params: dict[str, Any], inside: tuple[str, ...]

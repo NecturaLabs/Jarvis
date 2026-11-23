@@ -15,7 +15,7 @@ from jarvis.jsonutil import obj, objs
 from jarvis.operations import Operation, OperationError, Result, UncertainOutcomeError
 from jarvis.policy import Origin
 from jarvis.shortcuts import Shortcut
-from jarvis.spotify.api import SpotifyApi, pick_device
+from jarvis.spotify.api import SAVED_PAGE, SpotifyApi, pick_device
 from jarvis.spotify.errors import NoDeviceError, SpotifyAuthError, SpotifyError, SpotifyLoginExpired
 
 if TYPE_CHECKING:
@@ -33,6 +33,7 @@ CLOSED = (
 PLAYLIST_TTL_S = 300.0
 REFRESH_RETRY_S = 60.0
 QUEUE_BUDGET_S = 30.0
+LIKED_PAGES = 4  # pages of saved songs read to pick a play of liked songs from
 RECENT_QUEUE_S = 30 * 60.0
 ALREADY_QUEUED = "That's already in the queue."
 QUEUED_LATELY = "I queued that a few minutes ago."
@@ -495,13 +496,22 @@ class SpotifyOps:
         return public
 
     def _play_liked(self) -> Result:
-        """Play the owner's saved tracks in random order."""
-        uris = [str(t["uri"]) for t in self._api.saved_tracks()]
+        """Play the owner's saved tracks in random order, drawn from the whole library.
+
+        One play takes `SAVED_PAGE` songs. A bigger library is read from its newest page and
+        `LIKED_PAGES` - 1 more at random places in it, and the songs are picked from all of them.
+        """
+        tracks, total = self._api.saved_tracks()
+        pages = range(SAVED_PAGE, total, SAVED_PAGE)
+        for offset in self._rng.sample(pages, min(LIKED_PAGES - 1, len(pages))):
+            tracks += self._api.saved_tracks(offset)[0]
+        uris = list(dict.fromkeys(str(t["uri"]) for t in tracks))
         if not uris:
             return Result("You have no saved songs to play.", Origin.TOOL_STATUS, ok=False)
-        self._rng.shuffle(uris)
-        self._start({"uris": uris})
-        return Result("Now playing your liked songs, shuffled.", Origin.SPOTIFY)
+        chosen = self._rng.sample(uris, min(SAVED_PAGE, len(uris)))
+        self._start({"uris": chosen})
+        some = f"{len(chosen)} of " if len(chosen) < max(total, len(uris)) else ""
+        return Result(f"Now playing {some}your liked songs, shuffled.", Origin.SPOTIFY)
 
     @staticmethod
     def _play_query(args: dict[str, Any]) -> str:
