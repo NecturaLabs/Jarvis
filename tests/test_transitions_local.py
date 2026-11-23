@@ -48,7 +48,8 @@ def test_strata_answers_and_its_model_file_is_there() -> None:
     cfg = config.load()
     model = strata_model(cfg, read_api_key(strata_key_file()) or "")
 
-    assert not model.file_missing(), f"{cfg.strata.model_file} is missing: is its drive mounted?"
+    model_file = services.read_run_config(cfg).model
+    assert not model.file_missing(), f"{model_file} is missing: is its drive mounted?"
     assert model.status() is not None, (
         "Strata is not answering: systemctl --user status jarvis-strata"
     )
@@ -111,7 +112,7 @@ def test_the_installed_units_follow_the_session_and_wait_for_the_model_file() ->
         assert "PartOf=graphical-session.target" in unit
         assert "WantedBy=graphical-session.target" in unit
     assert any(
-        line.startswith("ConditionPathExists=") and str(cfg.strata.model_file) in line
+        line.startswith("ConditionPathExists=") and str(services.read_run_config(cfg).model) in line
         for line in strata
     ), "Strata's unit does not wait for the model file: run `jarvis setup`"
     assert f"Wants={services.STRATA_UNIT}" in voice

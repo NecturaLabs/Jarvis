@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import pytest
+from strata_fixture import engine_run_config
 
 from jarvis import cli, control, services, voice
 from jarvis.agent import MODEL_DOWN, MODEL_MISSING, Agent, Hooks
@@ -214,18 +215,25 @@ def test_a_drive_that_goes_away_after_the_start_is_noticed_at_the_next_request(
     assert not model.file_missing()
 
 
-def test_the_model_client_knows_the_configured_model_file(tmp_path: Path) -> None:
-    gguf = tmp_path / "gone.gguf"
-    cfg = Config(strata=StrataConfig(model_file=gguf))
+def test_the_model_client_knows_the_model_file_of_the_run_config(tmp_path: Path) -> None:
+    gguf = tmp_path / "models" / "q4.gguf"
+    cfg = Config(strata=StrataConfig(run_config=engine_run_config(tmp_path, model=gguf)))
 
     model = strata_model(cfg, "key")
 
+    gguf.unlink()  # the drive unmounted
     assert model.file_missing()
     gguf.write_bytes(b"")
     assert not model.file_missing()
 
 
-def test_a_config_without_a_model_file_never_reports_the_drive_missing() -> None:
+def test_a_run_config_that_cannot_be_read_never_reports_the_drive_missing(tmp_path: Path) -> None:
+    cfg = Config(strata=StrataConfig(run_config=tmp_path / "gone.json"))
+
+    assert not strata_model(cfg, "key").file_missing()
+
+
+def test_a_config_without_a_run_config_never_reports_the_drive_missing() -> None:
     assert not strata_model(Config(), "key").file_missing()
 
 

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Self, cast
 
 import numpy as np
 import pytest
+from strata_fixture import engine_run_config, install_engine
 
 from jarvis import __version__, app, cli, config, models, paths
 from jarvis import audio as audio_module
@@ -245,17 +246,16 @@ def test_doctor_notes_an_unknown_digest_without_failing_the_file(
 def test_doctor_verifies_the_picture_reader_when_pictures_are_on(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    reader = home / "models" / "mmproj-F16.gguf"
-    reader.parent.mkdir(parents=True)
-    reader.write_bytes(b"reader bytes")
-    strata = config.StrataConfig(vision_file=reader)
+    run = engine_run_config(home)
+    (home / "models" / "mmproj.gguf").write_bytes(b"reader bytes")
+    strata = config.StrataConfig(run_config=run)
     config.save(config.Config(data_dir=home / "models", strata=strata))
     monkeypatch.setattr(models, "KNOWN_MODELS", (_known("vision", b"reader bytes"),))
 
     cli.main(["doctor"])
 
     out = _doctor_lines(capsys)
-    assert any(line.startswith("ok ") and "mmproj-F16.gguf" in line for line in out)
+    assert any(line.startswith("ok ") and "mmproj.gguf" in line for line in out)
 
 
 def test_the_picture_reader_pin_is_the_release_strata_names() -> None:
@@ -528,11 +528,12 @@ def test_setup_writes_the_config_profile_and_units_under_the_home(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     calls = _stub_subprocess(monkeypatch)
-    model = home / "models" / "q4.gguf"
+    run = engine_run_config(home)
+    install_engine(home / "data")
 
-    assert main(["setup", "--model-file", str(model), "--spotify-client-id", "abc"]) == 0
+    assert main(["setup", "--run-config", str(run), "--spotify-client-id", "abc"]) == 0
 
-    assert config.load().strata.model_file == model
+    assert config.load().strata.run_config == run
     assert (home / "config" / "systemd" / "user" / "jarvis.service").is_file()
     assert (home / "config" / "jarvis" / "strata-profile.json").is_file()
     assert (home / "state" / "jarvis" / "strata.env").is_file()
@@ -544,9 +545,10 @@ def test_setup_with_enable_clears_a_failed_state_before_starting_the_units(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = _stub_subprocess(monkeypatch)
-    model = home / "models" / "q4.gguf"
+    run = engine_run_config(home)
+    install_engine(home / "data")
 
-    assert main(["setup", "--model-file", str(model), "--enable"]) == 0
+    assert main(["setup", "--run-config", str(run), "--enable"]) == 0
 
     units = ["jarvis-strata.service", "jarvis.service"]
     assert calls == [
@@ -584,9 +586,9 @@ def test_setup_refuses_a_value_that_cannot_go_into_a_unit(
 ) -> None:
     calls = _stub_subprocess(monkeypatch)
 
-    assert main(["setup", "--model-file", "/models/a\nExecStart=/bin/evil"]) == 2
+    assert main(["setup", "--run-config", "/models/a\nExecStart=/bin/evil"]) == 2
 
-    assert "model_file" in capsys.readouterr().err
+    assert "run_config" in capsys.readouterr().err
     assert calls == []
     assert not (home / "config").exists()
 
@@ -1431,3 +1433,42 @@ def test_no_arguments_names_the_units_in_plain_words_and_points_at_help(
     assert lines[0] == "jarvis: stopped   model server: stopped"
     assert not any(line.startswith("commands:") for line in lines)
     assert "All commands: jarvis help" in lines
+
+
+def test_setup_without_a_run_config_saves_the_config_and_says_what_comes_next(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _stub_subprocess(monkeypatch)
+
+    assert main(["setup", "--spotify-client-id", "abc"]) == 0
+
+    assert config.load().spotify.client_id == "abc"
+    assert "strata launch" in capsys.readouterr().out
+    assert not (home / "config" / "systemd" / "user" / "jarvis-strata.service").exists()
+    assert calls == []
+
+
+def test_doctor_fails_a_run_config_it_cannot_use_and_says_how_to_fix_it(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config.save(config.Config(strata=config.StrataConfig(run_config=home / "gone.json")))
+
+    assert cli.main(["doctor"]) == 1
+
+    out = _doctor_lines(capsys)
+    assert any(line.startswith("FAIL") and "gone.json" in line for line in out)
+
+
+def test_doctor_checks_the_learned_expert_profile_when_the_engine_learns(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = engine_run_config(home)
+    data = json.loads(run.read_text(encoding="utf-8"))
+    data["args"] += ["--expert-profile", str(home / "models" / "q4.gguf")]
+    run.write_text(json.dumps(data), encoding="utf-8")
+    config.save(config.Config(strata=config.StrataConfig(run_config=run)))
+
+    cli.main(["doctor"])
+
+    out = _doctor_lines(capsys)
+    assert any(line.startswith("FAIL") and "expert profile" in line for line in out)

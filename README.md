@@ -74,14 +74,16 @@ Not built yet: PC operations other than Spotify and files. The plan marks each a
 
 ```sh
 uv sync
-uv run jarvis setup --model-file <model file> --tokenizer-dir <tokenizer folder> \
+strata launch               # once: pick the model; it downloads it and writes its run config
+uv run jarvis setup --run-config <Strata's install folder>/strata-<model>.json \
     --spotify-client-id <your app's client ID>
 uv run jarvis spotify-login     # prints the redirect URI your Spotify app must list, then opens the login
 uv run jarvis setup --enable    # writes and starts the user units
 uv run jarvis doctor            # one line per check, with its fix; never loads the model
 ```
 
-`jarvis setup` writes the config, the Strata profile, the Strata API key and two systemd user units
+`strata launch` starts a server of its own once the model is ready: stop it (`strata launch --stop`), since
+Jarvis runs its own. `jarvis setup` writes the config, the Strata profile, the Strata API key and two systemd user units
 (`jarvis.service` and `jarvis-strata.service`), and keeps every value already set unless you pass it again.
 Use `--data-dir`, `--strata-home`, `--strata-components-parent` and `--mic` for the other locations and the
 microphone. The config file and every key are in [docs/configuration.md](docs/configuration.md);

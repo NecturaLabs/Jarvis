@@ -33,7 +33,8 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
   daemon's `record start --file …` and `record stop --wait --json` are its contract if that path is ever
   built. A new Voxtype command needs the owner's yes. Never edit `~/.config/voxtype/` and never stop a
   recording Jarvis did not start.
-- Strata serves only Jarvis. Its model lives outside the repository (`strata.model_file`). Health
+- Strata serves only Jarvis. Its model lives outside the repository, named by Strata's own run config
+  (`strata.run_config`); nothing model-specific is hardcoded in Jarvis. Health
   checks never generate tokens. The model is loaded when `jarvis run` starts and stays loaded (the owner's
   choice): it may hold RAM and VRAM, but must use no GPU or CPU while idle, and Jarvis runs beside games.
 - Jarvis runs locally and is free to use and maintain: no hosted model backend, no paid API. Voice activation
@@ -50,7 +51,7 @@ These hold on the maintainer's machine; elsewhere, use your own folders and keep
 - Open nothing on the owner's screen: run windows and terminals hidden; only if that is impossible, on
   workspace 1. Stop only processes you started, by their recorded PID.
 - Downloaded tools, voices and model files go where the maintainer's own environment rules say, never
-  under `~/.local/share`; Strata's model stays where `strata.model_file` points.
+  under `~/.local/share`; Strata's model stays where its run config (`strata.run_config`) points.
 
 ## Workflow
 

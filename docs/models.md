@@ -7,32 +7,67 @@ was checked it says so.
 
 ## The model
 
-- **Qwen3.6-35B-A3B**, Unsloth `UD-Q4_K_XL` quantisation (about 22.9 GB on disk), served by Strata as a
-  profile named by `strata.model_id`. It is a mixture of experts (35B parameters, about 3B active per
-  token). Strata runs it in hybrid mode: some experts in VRAM (`strata.expert_vram_gib`), the rest in host
-  memory.
-- Jarvis writes the Strata profile and the `jarvis-strata.service` unit (`jarvis setup`). Strata listens on
-  `127.0.0.1` only, loads the model on the first real request and frees it after `strata.idle_unload_s`.
-  Health checks (`jarvis status`, `jarvis doctor`) never generate, so they never load it.
-- Requests go to Strata's OpenAI-style chat API with thinking off, a token cap per answer (`agent.reply_tokens`, `chat.reply_tokens`) and the
-  tools as JSON schemas.
-- The model file lives outside the repository; point `jarvis setup --model-file` and `--tokenizer-dir` at it.
-- Licence: Apache-2.0 for Qwen3.6-35B-A3B according to `docs/plan.md`; not rechecked against the model card
-  here. The Unsloth quantisation and Strata itself: not checked.
-- Reference machine for every number below: RX 7900 XT, 64 GB RAM, Strata 0.2.16 (engine build 0.1.62).
+Jarvis serves whichever model Strata's own run config names (`strata.run_config`, the
+`strata-<model>.json` that `strata launch` writes): the model, its engine, flags, tokenizer and picture
+reader come from that file, and Jarvis adds only its limits ([configuration.md](configuration.md#strata-how-the-jarvis-strata-service-runs-the-model)).
+To change models, run `strata launch` for the new one once (it downloads the files and writes the run
+config; stop the server it starts), then `jarvis setup --run-config <its file>` and `jarvis restart`.
+The files live outside the repository, wherever Strata's data folder puts them. `jarvis setup` refuses a
+run config that names a file that is gone. The reference machine for every number below: RX 7900 XT
+(20 GB), 64 GB RAM, Strata 0.2.20 (engine 0.1.66), unless a row says otherwise.
+
+| Model | Engine | Files | Licence | Beside a game (8 GiB of VRAM) |
+|---|---|---|---|---|
+| **Qwen3.8-Flash-Next** IQ2_XS (ISTA-DASLab), 512 experts, about 6B active per token | `strata-engine` | 68 GB, plus its picture reader and DFlash2 drafter | Qwen Community License 1.0 | Works: measured below |
+| **Inkling 2 Mini** SQ-15 (Thinking Machines), 128 experts, 3.4B active | `strata-inkling` | 15 GB with its picture reader | Apache-2.0 | Too slow: measured below |
+| **Qwen3.6-35B-A3B** UD-Q4_K_XL (Unsloth), 256 experts, 3B active | `strata-engine` | 22.9 GB, plus `mmproj-F16.gguf` | Apache-2.0 | Works: the figures under Latency |
+
+- **Qwen3.8-Flash-Next** with `strata.vram_reserve_mib = 12000` (measured 2026-11-23, Jarvis's own
+  profile from Strata's run config): the engine held 7.95 GiB of VRAM and 35.5 GiB of RAM; a request with
+  two tool calls took 0.65 to 0.9 s once loaded, writing 60 to 71 tokens per second; the second request
+  reused 329 of its 336 prompt tokens, because this engine keeps Jarvis's shared prefix (`strata_prefix`)
+  between requests; loading took 13 to 17 s with the files in the OS cache. With Strata's own defaults it
+  took all 20 GB of VRAM. Its licence allows personal and commercial use, asks for the notice to be kept,
+  and needs a separate licence only for a hosted model service or an AI work assistant offered to others;
+  Jarvis uses it locally and ships none of its files (checked against the model's `LICENSE` on
+  2026-11-23).
+- **Inkling 2 Mini** with `strata.expert_vram_gib = 4` (measured 2026-11-23): 7.4 GiB of VRAM and 8 GiB of
+  RAM, but 6 to 7 tokens per second and 17 s for the same request, and no prompt reuse between requests
+  (Strata issue [#6764](https://github.com/Niko1221/Strata/issues/6764)). With all its experts on the card
+  (12.3 GB, Strata's default) it wrote 70 tokens per second in 1.6 s, which leaves no room for a game.
+  Its engine is three days old in this release, with open issues that touch Jarvis: hidden thinking in a
+  reply ([#6675](https://github.com/Niko1221/Strata/issues/6675)) and long prompts failing on RDNA3 cards
+  ([#6835](https://github.com/Niko1221/Strata/issues/6835)).
+- **Qwen3.6-35B-A3B** was the model until 2026-11-23; its profile used to be built by Jarvis itself. Its
+  latency and memory are below.
+
+### Experts
+
+A mixture-of-experts model keeps some experts on the card and the rest in RAM. On an engine whose run
+config starts from a routing profile (`--expert-profile`, Qwen3.8-Flash-Next), `strata.learn_experts`
+lets the engine save which experts Jarvis's own requests use (`~/.local/state/jarvis/strata-expert-profile.bin`,
+when it stops and every 10 minutes between requests) and start from them: those experts are on the card from
+the first request, instead of the ones Strata's generic profile ranks first. `jarvis setup` starts that file
+from a copy of Strata's own profile, so Jarvis's profile names it from the start and never has to change.
+Verified on 2026-11-23: the engine saved it on exit and loaded it at the next start.
+
+Removing experts from the model (REAP pruning) was looked at on 2026-11-23 and not taken: it saves memory,
+not time (each token still runs 10 experts), the pruned Flash-Next builds published are 61 to 82 GB (more
+than this 68 GB IQ2_XS pack, whose experts take 35.5 GiB of RAM), most are pruned on coding traffic, the
+best documented one invents answers more often (25% on its authors' own check, against 0% unpruned), and
+none comes as a Strata pack.
 
 ### Pictures
 
-- The picture reader is the model's own vision projector, `mmproj-F16.gguf` (899,283,584 bytes) from
-  `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` at revision `5bc3e238d916f48a861bac2f8a1990a0e9b7e98d`, the file and
-  revision Strata's own setup pins. Licence: Apache-2.0 (the repository's model card, checked 2026-11-21).
-  `jarvis doctor` checks its sha256 (`71f3cbc1…0f160`).
-- Put it beside the model and set `strata.vision_file` to it, then `jarvis setup` and `jarvis restart`. Strata
-  runs it with its CPU reader (`strata-vision`): on a card under 24 GB Strata keeps it off the VRAM. It starts
-  with the first picture (a few seconds) and stops after `strata.vision_idle_s`; a picture becomes at most 300
-  tokens.
+- Strata's run config names the model's picture reader, and `jarvis doctor` hashes it. For Qwen3.6 it is
+  `mmproj-F16.gguf` (899,283,584 bytes) from `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` at revision
+  `5bc3e238d916f48a861bac2f8a1990a0e9b7e98d`, Apache-2.0, sha256 `71f3cbc1…0f160`; the readers of the
+  other models are not pinned yet, so the doctor notes them as not a known release.
+- On the main engine Strata runs the reader on the processor (`strata-vision`): it starts with the first
+  picture (a few seconds) and stops after `strata.vision_idle_s`; a picture becomes at most 300 tokens.
+  Inkling's engine reads pictures itself. `strata.pictures = false` drops the reader.
 
-### Latency
+### Latency (Qwen3.6-35B-A3B)
 
 | Request | What happens | Cost |
 |---|---|---|
@@ -56,19 +91,16 @@ amdgpu DRM client, and amdgpu published no `drm-engine` busy counters for that c
 which has to listen. See
 [configuration.md](configuration.md#keeping-the-model-loaded).
 
-#### Prompt chunk size
+#### Prompt chunk size and the shared prefix
 
-`strata.prefill` is 512 tokens. The reason for 512 is not recorded. Strata's own tuner lists 512 for this model
-family among the sizes it avoids (smaller chunks read long prompts 11% to 75% slower in its tests), and tries
-`auto`, `auto:16384`, `auto:32768`, 2048 and 4096. `strata.prefill = "auto"` is accepted and passed through as
-`--prefill auto`. Not measured yet: the owner's run (prompt tokens per second, time to the first word on the
-2,900-token request, VRAM, with a game running) is listed in the [playbook](playbook/README.md#owner-runs-for-the-service-units-33).
-The default changes only if the numbers favour it. `strata.vram_reserve_mib` (unset: Strata's default, 700 MiB)
-is the matching VRAM knob.
+The prompt chunk (`--prefill`) is whatever Strata's setup wrote into the run config (`auto` for
+Qwen3.8-Flash-Next). Qwen3.6's profile, which Jarvis built itself until 2026-11-23, used 512, a size
+Strata's own tuner avoids for that model family (smaller chunks read long prompts 11% to 75% slower in its
+tests).
 
 Jarvis marks the system prompt and the tools as Strata's shared prefix (`strata_prefix`, one message) on every
-request that sends tools. The Qwen3.6 engine in Strata 0.1.62 does not use that mark yet, so every request
-still reads the whole prompt. An engine that ignores the mark is harmless; the 4.5 s above is the cost today.
+request that sends tools. Qwen3.8-Flash-Next's engine keeps it between requests (measured above). The
+Qwen3.6 engine in Strata 0.1.62 does not use that mark, so every request still reads the whole prompt. An engine that ignores the mark is harmless; the 4.5 s above is that cost.
 Strata's own tracker has it as [issue #5145](https://github.com/Niko1221/Strata/issues/5145): the Qwen3.6
 engine drops the mark and keeps no checkpoints between requests, which its author calls a new feature, not
 a small fix (still so in 0.2.17).
