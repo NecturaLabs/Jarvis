@@ -59,7 +59,9 @@ BINARY_PROBE = 8192
 KIB = 1024
 # A result's header without its path, its closing line and the agent's wrapper around it.
 HEADROOM = 200 + DATA_WRAP_CHARS
-MIN_ROOM = 200  # what one result always holds, however long its path
+# What one result always holds, however long its path: a few spelled-out brackets, so reading
+# in parts always moves on. Only a path near MAX_PATH at the lowest cap makes a result overshoot.
+MIN_ROOM = 32
 FILE_MODE = 0o644
 FOLDER_MODE = 0o755
 _CARRIED_MODE = 0o666  # what a replace keeps of the old file's mode: never execute or special bits
@@ -525,7 +527,7 @@ class FileOps:
             os.close(folder)
         rows.sort(key=lambda row: (not row[0], row[1].casefold()))
         lines: list[str] = []
-        used, room = 0, self._room(shown) - inert_chars(pattern)
+        used, room = 0, max(MIN_ROOM, self._room(shown) - inert_chars(pattern))
         for _folder, _name, line in rows[:MAX_ENTRIES]:
             if used + inert_chars(line) + 1 > room:
                 break

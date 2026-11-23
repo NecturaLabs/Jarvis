@@ -286,6 +286,27 @@ def test_every_part_of_a_file_of_brackets_fits_its_room_once_wrapped(
     assert seen == content.removesuffix("\n")
 
 
+def test_a_long_path_at_the_lowest_cap_still_fits_once_wrapped(home: Path) -> None:
+    folder = home / "Documents" / ("a" * 60) / ("b" * 60)
+    folder.mkdir(parents=True)
+    (folder / "page.html").write_text("<" * 600 + "\n", encoding="utf-8")
+    shown = f"~/Documents/{'a' * 60}/{'b' * 60}/page.html"
+    ops = _ops(home, max_chars=500)  # the lowest tool_text_chars the config allows
+
+    seen, args = "", {}
+    for _part in range(200):
+        text = _read(ops, shown, **args)
+        assert _as_data(text) <= 500
+        args = _read_on(text)
+        seen += text.split("\n", 1)[1].split("\n(More follows")[0]
+        if not args:
+            break
+    listing = _list(ops, f"~/Documents/{'a' * 60}/{'b' * 60}")
+
+    assert seen == "<" * 600
+    assert _as_data(listing) <= 500
+
+
 def test_a_listing_of_names_with_brackets_fits_its_room_once_wrapped(home: Path) -> None:
     for n in range(60):
         (home / "Documents" / f"<<<<{n:02d}>>>>.txt").write_text("x", encoding="utf-8")
