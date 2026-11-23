@@ -323,6 +323,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Reading in parts no longer skips text full of angle brackets (HTML, XML, code). `read_file`, `list_dir`
+  and `os_skill` sized each part in plain characters, but each `<` and `>` reaches the model spelled out
+  in four, and the result is then cut to its cap: the cut took the line that says where the next part
+  starts, so what followed was never read. Parts are now sized as they are sent. `pc_shell` keeps its note
+  that the output was cut, and a read page names its picture before its text, for the same reason.
+
 - `read_file` no longer loses most of a line longer than one part (a one-line JSON or minified file). It
   cut the line at about 2,900 characters and reported it as read; now it says which characters it gave,
   and `from_char` reads on inside the line.

@@ -288,6 +288,14 @@ def test_the_output_is_data_from_a_program_with_its_exit_status() -> None:
     assert result.text == "Exit status 0.\nhello\n"
 
 
+def test_output_of_brackets_is_cut_to_fit_once_wrapped_and_says_so() -> None:
+    result = _run(_ops(FakeRunner(Ran(0, "<>" * 3000)), max_chars=2000), "cat page.html")
+
+    brackets = result.text.count("<") + result.text.count(">")
+    assert len(result.text) + 3 * brackets + len('<data origin="shell"></data>') <= 2000
+    assert result.text.endswith("characters]")  # the note that it was cut survives the wrapper
+
+
 def test_a_failing_command_is_not_ok() -> None:
     result = _run(_ops(FakeRunner(Ran(2, "no such file\n"))), "ls nowhere")
 
@@ -313,11 +321,13 @@ def test_a_command_past_its_time_is_stopped_and_says_so() -> None:
 def test_long_output_is_cut_and_says_where() -> None:
     runner = FakeRunner(Ran(0, "y\n" * 5000))
 
-    result = _run(_ops(runner, max_chars=100), "yes")
+    result = _run(_ops(runner, max_chars=600), "yes")
 
-    assert result.text.endswith("[output cut at 100 characters]")
-    assert len(result.text) < 200
-    assert runner.calls[0][3] == 400  # the runner keeps no more bytes than that needs
+    kept = result.text.split("\n", 1)[1].rsplit("\n[output cut at ", 1)[0]
+    assert result.text.endswith(f"[output cut at {len(kept)} characters]")
+    assert 0 < len(kept) < len("y\n" * 5000)
+    assert len(result.text) <= 600  # the status line and the note fit with the output
+    assert runner.calls[0][3] == 2400  # the runner keeps no more bytes than that needs
 
 
 def test_a_command_that_cannot_start_is_a_failure_not_a_crash() -> None:

@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from jarvis.operations import Operation, OperationError, Result
+from jarvis.operations import Operation, OperationError, Result, cut_inert
 from jarvis.pictures import SHOWN_SIDE, PictureError, prepare
 from jarvis.policy import Origin
 from jarvis.shortcuts import Shortcut
@@ -333,11 +333,13 @@ class WebOps:
             raise OperationError(msg) from exc
         host = urlsplit(page.url).hostname or ""
         title = f"{page.title} " if page.title else ""
-        body = page.text[: self._research.page_chars]
+        head = f"Page {title}({host}):"
         if page.image and self._shown is not None:
+            # Before the text, so cutting a long page never takes it.
             found = ImageHit(page.title or host, page.image, page.url, 0, 0)
-            body += f"\nPicture: [image_id {self._remember_image(found)}]"
-        return Result(f"Page {title}({host}):\n{body}", Origin.WEB)
+            head += f"\nPicture: [image_id {self._remember_image(found)}]"
+        body = cut_inert(page.text, self._research.page_chars)
+        return Result(f"{head}\n{body}", Origin.WEB)
 
     # --- pictures ---------------------------------------------------------------------------
 
@@ -481,7 +483,7 @@ class WebOps:
             parts.extend(f"- (score {c.score}) {c.body[:MAX_COMMENT]}" for c in comments)
         else:
             parts.append("No comments archived.")
-        return Result("\n".join(parts)[: self._research.page_chars], Origin.WEB)
+        return Result(cut_inert("\n".join(parts), self._research.page_chars), Origin.WEB)
 
     @staticmethod
     def _remember(seen: deque[str], item: str) -> None:

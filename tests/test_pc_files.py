@@ -247,6 +247,55 @@ def test_reading_from_a_character_past_the_line_is_refused(home: Path) -> None:
         _read(_ops(home), "~/Documents/todo.md", from_line=1, from_char=50)
 
 
+def _as_data(text: str) -> int:
+    """How long `text` is once the agent spells out its brackets and wraps it as `file` data."""
+    return len(text) + 3 * (text.count("<") + text.count(">")) + len('<data origin="file"></data>')
+
+
+def _read_on(text: str) -> dict[str, int]:
+    """Return the arguments a part's "More follows" line names, or {} at the end."""
+    if "\n(More follows: read_file with " not in text:
+        return {}
+    named = text.rsplit("read_file with ", 1)[1].removesuffix(".)")
+    return {key: int(value) for key, value in (pair.split("=") for pair in named.split(", "))}
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "".join(f"<a href='#{n}'>item {n}</a>\n" for n in range(300)),  # brackets on every line
+        "<" * 3000 + "\n" + "x>" * 900 + "\n",  # lines longer than a part, all brackets
+    ],
+)
+def test_every_part_of_a_file_of_brackets_fits_its_room_once_wrapped(
+    home: Path, content: str
+) -> None:
+    (home / "Documents" / "page.html").write_text(content, encoding="utf-8")
+    ops = _ops(home, max_chars=600)
+
+    seen, args = "", {}
+    for _part in range(200):
+        text = _read(ops, "~/Documents/page.html", **args)
+        assert _as_data(text) <= 600  # so the agent never cuts the line that says where to go on
+        args = _read_on(text)
+        seen += text.split("\n", 1)[1].split("\n(More follows")[0]
+        if not args:
+            break
+        seen += "" if "from_char" in args else "\n"
+
+    assert seen == content.removesuffix("\n")
+
+
+def test_a_listing_of_names_with_brackets_fits_its_room_once_wrapped(home: Path) -> None:
+    for n in range(60):
+        (home / "Documents" / f"<<<<{n:02d}>>>>.txt").write_text("x", encoding="utf-8")
+
+    text = _list(_ops(home, max_chars=600), "~/Documents")
+
+    assert _as_data(text) <= 600
+    assert text.endswith("more.")
+
+
 # --- listing ----------------------------------------------------------------------------------
 
 

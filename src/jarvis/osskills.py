@@ -22,7 +22,7 @@ from dataclasses import dataclass, replace
 from functools import cache
 from pathlib import Path
 
-from jarvis.operations import Operation, OperationError, Result
+from jarvis.operations import Operation, OperationError, Result, cut_inert
 from jarvis.policy import Origin
 
 log = logging.getLogger(__name__)
@@ -36,7 +36,8 @@ MAX_SUMMARY_CHARS = 300
 MAX_CATALOG_CHARS = 900  # names, summaries and file names together, in the prompt and the schema
 MIN_TOOL_TEXT_CHARS = 500  # the lowest `tool_text_chars` the config allows
 VERSION_CHARS = 8  # of a file's SHA-256, naming its version between parts
-HEADROOM = 200  # a part's title and continuation lines, within the tool result's room
+# A part's title and continuation lines and the agent's wrapper, within the tool result's room.
+HEADROOM = 200
 
 _SKILL_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 _FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}\.md")
@@ -279,12 +280,14 @@ def _read(root: Path, owner: int, skill: str, file: str) -> str:
 def _bounds(text: str, room: int) -> list[tuple[int, int]]:
     """Return where each part of `text` starts and ends.
 
-    A part has at most `room` characters and ends at a line end in its second half if one is there.
+    A part holds at most `room` characters once the agent spells out its angle brackets
+    (`cut_inert`), and ends at a line end in its second half if one is there.
     """
     bounds: list[tuple[int, int]] = []
     start = 0
-    while len(text) - start > room:
-        cut = text.rfind("\n", start + room // 2, start + room) + 1 or start + room
+    while start + len(fit := cut_inert(text[start : start + room], room)) < len(text):
+        end = start + len(fit)
+        cut = text.rfind("\n", start + len(fit) // 2, end) + 1 or end
         bounds.append((start, cut))
         start = cut
     bounds.append((start, len(text)))
@@ -293,7 +296,9 @@ def _bounds(text: str, room: int) -> list[tuple[int, int]]:
 
 def max_parts(max_chars: int) -> int:
     """Return how many parts the largest file allowed can take at a tool result's cap."""
-    return math.ceil(MAX_FILE_BYTES / ((max_chars - HEADROOM) // 2))
+    # A part of nothing but angle brackets holds a quarter of its room, and half of that when
+    # it ends at a line end.
+    return math.ceil(MAX_FILE_BYTES / ((max_chars - HEADROOM) // 8))
 
 
 def prompt_section(skills: tuple[OsSkill, ...]) -> str:

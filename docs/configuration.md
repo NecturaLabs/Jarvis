@@ -364,7 +364,7 @@ With neither set, Jarvis asks you to name a place.
 |---|---|---|---|
 | `searxng_url` | `http://127.0.0.1:8888` | an `http://` or `https://` URL on `127.0.0.1`, `localhost` or `::1` | The local SearXNG Jarvis searches through. |
 | `results` | `5` | 1 to 8 | Results per search when the model does not ask for a number. |
-| `page_chars` | `2800` | 500 to 50000 | Most characters of a page or Reddit thread passed to the model for a spoken request, within `agent.tool_text_chars`. The chat reads up to its own `tool_text_chars`. |
+| `page_chars` | `2800` | 500 to 50000 | Most characters of a page or Reddit thread passed to the model for a spoken request, within `agent.tool_text_chars`, counting each `<` or `>` as the four characters it is sent as. The chat reads up to its own `tool_text_chars`. |
 | `reddit_comments` | `6` | 1 to 10 | Top comments read from a Reddit thread. |
 
 Search needs the SearXNG container running; without it Jarvis says search isn't running, and everything

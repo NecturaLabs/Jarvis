@@ -293,6 +293,38 @@ def test_parts_at_the_lowest_cap_rejoin_into_the_file_and_stay_within_the_schema
     assert "".join(bodies) == text
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "".join(f"<kbd>Super</kbd> + <kbd>{n}</kbd> moves to workspace {n}\n" for n in range(300)),
+        "<>" * 3000,  # no line end, brackets only
+    ],
+)
+def test_every_part_of_a_guide_of_brackets_fits_its_room_once_wrapped(
+    root: Path, text: str
+) -> None:
+    (root / "omarchy" / "theming.md").write_text(text, encoding="utf-8")
+    low = osskills.MIN_TOOL_TEXT_CHARS
+    op = osskills.os_skill_operation(_installed(root), max_chars=low, root=root, owner=ME)
+    count = int(
+        op.run({"file": "omarchy/theming.md"}).text.split("\n", 1)[0].rsplit(" ", 1)[1][:-2]
+    )
+
+    assert count <= op.parameters["properties"]["part"]["maximum"]
+    bodies: list[str] = []
+    for part in range(1, count + 1):
+        result = op.run(validate_args(op, {"file": "omarchy/theming.md", "part": part}))
+        brackets = result.text.count("<") + result.text.count(">")
+        wrapped = len(result.text) + 3 * brackets + len('<data origin="os_skill"></data>')
+        assert wrapped <= low  # so the agent never cuts the line naming the next part
+        body = result.text.split("\n", 1)[1]
+        more = f"\n(Continued in part {part + 1}, version {_version(result.text)}.)"
+        if part < count:
+            assert body.endswith(more)
+        bodies.append(body.removesuffix(more))
+    assert "".join(bodies) == text
+
+
 def test_the_catalog_lists_every_guide_before_any_extra_file_and_keeps_to_its_size(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

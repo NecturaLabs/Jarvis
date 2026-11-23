@@ -35,7 +35,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from jarvis.operations import Operation, OperationError, Result
+from jarvis.operations import (
+    DATA_WRAP_CHARS,
+    Operation,
+    OperationError,
+    Result,
+    cut_inert,
+    inert_chars,
+)
 from jarvis.policy import OpClass, Origin
 
 if TYPE_CHECKING:
@@ -50,7 +57,9 @@ MAX_SCANNED = 10_000  # entries read from one folder; a bigger one is listed fro
 MAX_READ_BYTES = 4 * 1024 * 1024
 BINARY_PROBE = 8192
 KIB = 1024
-HEADROOM = 120  # the header and the closing line of a result
+# A result's header without its path, its closing line and the agent's wrapper around it.
+HEADROOM = 200 + DATA_WRAP_CHARS
+MIN_ROOM = 200  # what one result always holds, however long its path
 FILE_MODE = 0o644
 FOLDER_MODE = 0o755
 _CARRIED_MODE = 0o666  # what a replace keeps of the old file's mode: never execute or special bits
@@ -413,9 +422,13 @@ class FileOps:
         """Work within `boundary`, giving at most `max_chars` characters a result."""
         super().__init__()
         self._boundary = boundary
-        self._room = max(200, max_chars - HEADROOM)
+        self._max_chars = max_chars
 
     # --- reading ------------------------------------------------------------------------------
+
+    def _room(self, shown: str) -> int:
+        """Return how much of a file or listing one result holds, measured as the agent sends it."""
+        return max(MIN_ROOM, self._max_chars - HEADROOM - inert_chars(shown))
 
     def read_file(self, args: dict[str, Any]) -> Result:
         """Return a text file's lines from `from_line` on, as much as fits one result.
@@ -465,16 +478,19 @@ class FileOps:
                 msg = f"Line {first} of {shown} has only {length} characters."
                 raise FileRefusalError(msg)
             pending[0] = pending[0][column - 1 :]
-        if pending and len(_content(pending[0])) > self._room:
+        room = self._room(shown)
+        if pending and inert_chars(_content(pending[0])) > room:
             # A line longer than a whole result: this piece of it, and where the next one starts.
-            end = column - 1 + self._room
+            piece = cut_inert(pending[0], room)
+            end = column - 1 + len(piece)
             span = f"line {first} of {total}, characters {column} to {end} of {length}"
-            return span, pending[0][: self._room], f"from_line={first}, from_char={end + 1}"
-        body, last = "", first - 1
+            return span, piece, f"from_line={first}, from_char={end + 1}"
+        body, used, last = "", 0, first - 1
         for line in pending:
-            if body and len(body) + len(line) > self._room:
+            if body and used + inert_chars(line) > room:
                 break
             body += line
+            used += inert_chars(line)
             last += 1
         span = f"lines {first} to {last} of {total}" if total else "empty"
         if column > 1:
@@ -509,12 +525,12 @@ class FileOps:
             os.close(folder)
         rows.sort(key=lambda row: (not row[0], row[1].casefold()))
         lines: list[str] = []
-        used = 0
+        used, room = 0, self._room(shown) - inert_chars(pattern)
         for _folder, _name, line in rows[:MAX_ENTRIES]:
-            if used + len(line) + 1 > self._room:
+            if used + inert_chars(line) + 1 > room:
                 break
             lines.append(line)
-            used += len(line) + 1
+            used += inert_chars(line) + 1
         what = (
             f"more than {len(rows)} items"
             if more
