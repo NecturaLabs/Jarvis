@@ -152,6 +152,17 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Jarvis knows itself: the prompt names its version and the model Strata serves (from Strata's run
+  config), `about_jarvis` gives its model, engine, context, voice, wake word, speech-to-text model,
+  boundaries, limits and where its files are, and `read_jarvis_file` reads one of its own configuration
+  files (the config, Strata's run config and the profile served from it, its own Voxtype settings, the two
+  systemd units), whole or one `[section]`. Both only read. The file is picked from that fixed list,
+  never by a path; `files.deny` and the never-read lists still apply; a value under a name such as
+  `api_key`, `token` or `password` is hidden; and what the file says counts as file text, so an action
+  after it needs a yes. Jarvis never changes its own configuration. To make room in the default context,
+  `chat.memory_tokens` defaults to 9,100 (was 9,400).
+  The README no longer names one model: Jarvis serves whichever Strata's run config names.
+
 - Reminders and scheduled requests ([ADR 0011](docs/adr/0011-reminders-and-scheduled-requests.md)):
   `schedule_add` sets a reminder Jarvis says, or a request it carries out as if you had just asked, in so
   many minutes or at a time of day (today, tomorrow or a weekday), once, every day, on weekdays, at

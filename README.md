@@ -18,8 +18,9 @@ Jarvis is pre-1.0 software; see [Status](#status).
   [Azure wake word](docs/configuration.md#azure-wake-word)). Silero VAD finds the end of your request.
 - **Speech to text:** Voxtype, run with Jarvis's own settings file. Your own Voxtype configuration is never
   edited.
-- **Reasoning:** one agent on a local Qwen3.6-35B-A3B model served by Strata. Plain commands such as "pause",
-  "next song" or "volume 40" skip the model and answer in about 0.3 s.
+- **Reasoning:** one agent on a local model served by Strata, whichever Strata's run config names
+  (Qwen3.8-Flash-Next on the reference PC; [docs/models.md](docs/models.md) compares the models measured).
+  Plain commands such as "pause", "next song" or "volume 40" skip the model and answer in about 0.3 s.
 - **Voice:** Kokoro by default (`kokoro:bm_george`); a Piper voice can be set instead. Jarvis replies by voice
   only, with no desktop notifications.
 - **Spotify:** play a track, album, artist, playlist or your liked songs; pause, resume, next, previous; set or
@@ -46,6 +47,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
   many minutes; or a request Jarvis carries out later, such as pausing the music at midnight. Set them by
   voice or in the chat; the voice service says them when due. See
   [the ADR](docs/adr/0011-reminders-and-scheduled-requests.md).
+- **About itself:** ask which model it runs, its version, its voice or how it is set up; it answers from its
+  config and Strata's run config, and reads out its own config files, secrets hidden. It never changes them.
 - **Time and weather:** the time, or the weather now, later or in a named place, asked in any words.
   The time comes from this PC; the weather from Open-Meteo, free and without an account. Set your home in
   [`[weather]`](docs/configuration.md).
@@ -68,9 +71,9 @@ Not built yet: PC operations other than Spotify and files. The plan marks each a
 - Omarchy on Arch Linux with PipeWire (`pw-record` and `pw-play`; `pw-dump` too for PC audio) and systemd user services.
 - Voxtype as the dictation backend, with the Whisper model you set in `audio.transcribe_model` downloaded.
 - Python 3.14 and uv.
-- Strata and a Qwen3.6-35B-A3B UD-Q4_K_XL model file with its tokenizer folder. Built and measured on an RX
-  7900 XT with 64 GB of RAM; the loaded model holds about 38 GB of RAM and 7.3 GiB of VRAM there (see
-  [docs/configuration.md](docs/configuration.md)).
+- Strata and a model it runs, set up with `strata launch` (which writes the run config Jarvis serves).
+  Built and measured on an RX 7900 XT with 64 GB of RAM; what each measured model holds in RAM and VRAM is
+  in [docs/models.md](docs/models.md).
 - Spotify Premium and your own Spotify developer app (a client ID; there is no client secret).
 - The wake word, VAD and voice model files, placed under the data folder ([docs/models.md](docs/models.md)).
 

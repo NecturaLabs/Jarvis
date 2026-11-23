@@ -5,7 +5,8 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from jarvis import calc, osskills, paths, skills
+from jarvis import __version__, calc, osskills, paths, skills
+from jarvis.about import AboutOps
 from jarvis.agent import Agent, Limits
 from jarvis.audit import AuditLog
 from jarvis.model import StrataModel
@@ -77,6 +78,15 @@ def no_action_operation(max_reply_chars: int = MAX_REPLY_CHARS) -> Operation:
     )
 
 
+def _served_model(config: Config) -> str:
+    """Return which model Strata serves, from its run config, as the prompt says it."""
+    try:
+        name = read_run_config(config).name
+    except StrataSetupError:
+        name = ""
+    return f"the {name} model" if name else "a local model"
+
+
 def system_prompt(config: Config, channel: Channel = "voice") -> str:
     """Render the shipped prompt for a channel with the owner's persona, skills and addendum.
 
@@ -91,6 +101,8 @@ def system_prompt(config: Config, channel: Channel = "voice") -> str:
         "skills": skills.prompt_section(skills.shipped())
         + osskills.prompt_section(osskills.catalog()),
         "name": config.persona.name,
+        "version": __version__,
+        "model": _served_model(config),
         "tone": config.persona.tone,
         "words": str(words),
         "numbers": _number_rule(config.format.thousands_separator),
@@ -196,6 +208,11 @@ def web_operations(config: Config, shown: PictureCache | None = None) -> list[Op
     return web_ops(config, shown).operations()
 
 
+def files_boundary(config: Config, home: Path | None = None) -> Boundary:
+    """Return where the file operations may read and write; Jarvis's own state is never in it."""
+    return Boundary.of(config.files, home or Path.home(), protected=(paths.state_dir(),))
+
+
 def pc_operations(config: Config, limits: Limits, home: Path | None = None) -> list[Operation]:
     """Return the PC operations: stats, files, processes, `open_app` and the opt-in `pc_shell`.
 
@@ -204,7 +221,7 @@ def pc_operations(config: Config, limits: Limits, home: Path | None = None) -> l
 
     Jarvis's own state (its tokens and keys) is never read or written, whatever the roots say.
     """
-    boundary = Boundary.of(config.files, home or Path.home(), protected=(paths.state_dir(),))
+    boundary = files_boundary(config, home)
     return [
         *StatsOps(Sampler()).operations(),
         *FileOps(boundary, max_chars=limits.tool_text_chars).operations(),
@@ -270,6 +287,7 @@ def channel_registry(
             *online.operations(),
             *pc_operations(config, limits),
             *calc.operations(config.format),
+            *AboutOps(config, channel, limits, refused=files_boundary(config).secret).operations(),
             *ScheduleOps(
                 JobStore(paths.schedule_file()),
                 twelve_hour=config.clock.twelve_hour,
