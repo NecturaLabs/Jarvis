@@ -8,12 +8,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
-- Jarvis thinks a little before each answer, so it picks tools and words more carefully: `thinking`
+- Jarvis thinks a little before each answer: `thinking`
   (`none`, `low`, `medium` or `high`, Strata's reasoning effort) is `low` by default in `[agent]` and
   `[chat]`, capped by `thinking_tokens` (192 for speech, 512 in the chat), after which Strata closes the
   thinking and lets the model answer. The thinking is never spoken or shown, and it comes on top of the
   reply's own cap. It costs time: up to about 3 s more before each spoken model call's first words at the
-  full cap (not yet measured on this PC; `thinking = "none"` turns it off). Plain commands still skip the
+  full cap; measured on 27 spoken requests, it added about 1.2 s per request without making the answers
+  more accurate ([models.md](docs/models.md#thinking); `thinking = "none"` turns it off). Plain commands still skip the
   model. A summary of older turns is written without thinking. To leave the context room for it,
   `chat.memory_tokens` defaults to 8,600 (was 9,100).
 

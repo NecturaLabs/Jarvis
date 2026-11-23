@@ -49,10 +49,24 @@ run config that names a file that is gone. The reference machine for every numbe
 Since 2026-11-23 Jarvis asks for `low` thinking (`[agent]` and `[chat]` `thinking`), capped at
 `thinking_tokens` (192 for speech, 512 in the chat). Strata's engine for the Qwen models takes `low`,
 `medium` and `high`. Every request asks for the same effort, so the prompt start Strata keeps
-(`strata_prefix`) is the same from one request to the next. At the 60 to 71 tokens a second measured above, a full 192-token think is about 3 s
-before each model call answers. That cost and how much it helps have not been measured on this PC yet:
-compare `thinking = "none"` and `"low"` on the same requests (`jarvis ask`, with the timing lines in
-`jarvis logs`).
+(`strata_prefix`) is the same from one request to the next.
+
+Measured on 2026-11-23, with a game running, through Jarvis's own agent, prompt and tool schemas (27
+spoken requests: Spotify, time and weather, sums, PC state, files, programs, reminders, research,
+follow-ups and a page with planted instructions; every tool a recording stub):
+
+| Model and thinking | Handled as expected | Median per request | Slowest |
+|---|---|---|---|
+| Qwen3.8-Flash-Next, `none` | 27 of 27 | 1.4 s | 6.7 s |
+| Qwen3.8-Flash-Next, `low` | 26 of 27 (the miss was a right answer the check did not expect) | 2.6 s | 8.0 s |
+| Inkling 2 Mini, `none` | 22 of 27 | 68 s | 104 s |
+| Inkling 2 Mini, `low` | 16 of 27 | 90 s | 100 s |
+
+On these requests `low` thinking made Qwen3.8 about 1.2 s slower per request without making it more
+accurate. It stays on by default for harder requests; `thinking = "none"` in `[agent]` takes the time back.
+Inkling 2 Mini, with 4 GiB of its experts in VRAM so a game keeps its room, picked the right tools in
+almost every request, but most of its misses were Jarvis's 90 s request limit, and some replies held its
+raw tool-call markup (`<|content_invoke_tool_json|>`), which would be spoken. Qwen3.8 stays the model.
 
 ### Experts
 
