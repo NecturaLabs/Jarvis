@@ -27,7 +27,10 @@ run config that names a file that is gone. The reference machine for every numbe
   two tool calls took 0.65 to 0.9 s once loaded, writing 60 to 71 tokens per second; the second request
   reused 329 of its 336 prompt tokens, because this engine keeps Jarvis's shared prefix (`strata_prefix`)
   between requests; loading took 13 to 17 s with the files in the OS cache. With Strata's own defaults it
-  took all 20 GB of VRAM. Its licence allows personal and commercial use, asks for the notice to be kept,
+  took all 20 GB of VRAM. Under the Strata unit's limits it needs `strata.memory_max = "44G"`: at the default
+  40G the unit sat at the mark with 35.1 GiB of its own memory and the rest file cache trimmed 2,096 times in
+  a few requests; at 44G it never reached the mark (peak 38.2 GiB with a picture read). A picture of a red
+  square was read as "Red" in 0.7 to 0.9 s. Its licence allows personal and commercial use, asks for the notice to be kept,
   and needs a separate licence only for a hosted model service or an AI work assistant offered to others;
   Jarvis uses it locally and ships none of its files (checked against the model's `LICENSE` on
   2026-11-23).
@@ -62,7 +65,13 @@ none comes as a Strata pack.
 - Strata's run config names the model's picture reader, and `jarvis doctor` hashes it. For Qwen3.6 it is
   `mmproj-F16.gguf` (899,283,584 bytes) from `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` at revision
   `5bc3e238d916f48a861bac2f8a1990a0e9b7e98d`, Apache-2.0, sha256 `71f3cbc1…0f160`; the readers of the
-  other models are not pinned yet, so the doctor notes them as not a known release.
+  Qwen3.8-Flash-Next's is `mmproj-Qwen3.8-Flash-Next-BF16.gguf` (907,543,008 bytes) from
+  `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF` at revision `ed59f92082b1e93c0e96d60a8b11aab089b52f09`, sha256
+  `b1a82259…49bd0`, under Qwen's own licence (the quantiser's card says apache-2.0; the weights are Qwen's).
+  Inkling 2 Mini's is `Inkling-2-Mini-Vision.strata` (636,526,592 bytes) from `strata-engine/Inkling-2-Mini-Strata`
+  at revision `04996a1e2c45009b6a04f2af126cb6bdb2ba3587`, Apache-2.0, sha256 `6589eff4…6fc677`. Each digest was
+  checked against the file on this PC, the one Strata recorded at download, and the upstream LFS record
+  (2026-11-23).
 - On the main engine Strata runs the reader on the processor (`strata-vision`): it starts with the first
   picture (a few seconds) and stops after `strata.vision_idle_s`; a picture becomes at most 300 tokens.
   Inkling's engine reads pictures itself. `strata.pictures = false` drops the reader.

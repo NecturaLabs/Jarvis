@@ -258,10 +258,20 @@ def test_doctor_verifies_the_picture_reader_when_pictures_are_on(
     assert any(line.startswith("ok ") and "mmproj.gguf" in line for line in out)
 
 
-def test_the_picture_reader_pin_is_the_release_strata_names() -> None:
-    (pin,) = [m for m in models.KNOWN_MODELS if m.role == "vision"]
-    assert pin.sha256 == "71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160"
-    assert pin.licence == "Apache-2.0"
+@pytest.mark.parametrize(
+    ("sha256", "licence"),
+    [
+        ("71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160", "Apache-2.0"),
+        (
+            "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0",
+            "LicenseRef-Qwen-Community-License-1.0",
+        ),
+        ("6589eff47f9c20bc3a032faa3d449f10bf4f04a84cc6b2ee8a44d51d2b6fc677", "Apache-2.0"),
+    ],
+)
+def test_each_picture_reader_pin_is_the_release_strata_names(sha256: str, licence: str) -> None:
+    (pin,) = [m for m in models.KNOWN_MODELS if m.role == "vision" and m.sha256 == sha256]
+    assert pin.licence == licence
 
 
 def test_doctor_still_fails_a_missing_file_and_points_at_the_models_doc(
