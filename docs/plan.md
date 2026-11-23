@@ -20,7 +20,7 @@ which parts exist. Details of what is built are in [configuration.md](configurat
 | 2. Ears | Mostly built | `pw-record` capture, the LiveKit wake word, Silero VAD and the state machine (IDLE, CAPTURE, TRANSCRIBE, THINK, CONFIRM, SPEAK). Transcription is **path B** (`voxtype transcribe`, with Jarvis's own `-c` settings); path A (the daemon contract) is not built, and neither is volume lowering over MPRIS. The wake test runs (8 h, 100 wakes) are not recorded. |
 | 3. Boundaries, setup and voice | Partly built | Built: config (one schema version, no migrations), the policy engine and its decision table, provenance, spoken confirmation bound to one action, the audit log, the agent loop, Kokoro and Piper voices. Not built: the Textual wizard (`jarvis setup` takes flags instead), quiet hours. The `strong` class waits for the confirm key (`jarvis confirm`), from the voice service only; `stop_process` is the first shipped `strong` operation, and an owner override cannot lower it (`Operation.lowest_class`). |
 | 4. Spotify | Built | PKCE login, Web API client, and the operations play (track, album, artist, playlist, liked songs), pause, resume, next, previous, set and change volume, shuffle, repeat, queue, like, now playing. Players are found through the Web API, and Spotify is never opened unasked: with no player Jarvis says so and asks (`open_app`, #36); MPRIS is not used. No seek, no separate transfer-to-device or my-playlists operation (playing "my playlist" is `play` with `mine`). |
-| 5. PC operations | Partly built | Built: `pc_stats`, `calculate` (exact arithmetic on an expression the model writes, parsed and never run), `list_dir`, `read_file` within `[files]` read roots and `write_file` (`confirm`) within write roots, secrets never touched, file text as data that puts outbound operations behind a yes; `find_processes` and `stop_process` (`strong`, #9): a PID `find_processes` listed in the same request, bound to its program and start time and held by a pidfd before the signal, a protected list of the session's and Jarvis's own processes, nothing for PC audio. `open_app` (#36): a program from `[apps]` on the workspace the owner names or in the background, placed by Hyprland and checked there, never for PC audio. Not built: `workspace`, `set_volume`, `run_omarchy`, `os_skill`, and the owner's spoken check of stopping a program. |
+| 5. PC operations | Partly built | Built: `pc_stats`, `calculate` (exact arithmetic on an expression the model writes, parsed and never run), `list_dir`, `read_file` within `[files]` read roots and `write_file` (`confirm`) within write roots, secrets never touched, file text as data that puts outbound operations behind a yes; `find_processes` and `stop_process` (`strong`, #9): a PID `find_processes` listed in the same request, bound to its program and start time and held by a pidfd before the signal, a protected list of the session's and Jarvis's own processes, nothing for PC audio. `open_app` (#36): a program from `[apps]` on the workspace the owner names or in the background, placed by Hyprland and checked there, never for PC audio. `os_skill`: one file of Omarchy's guides, listed at start, read in parts as outside text, no path from the model and no link followed. Not built: `workspace`, `set_volume`, `run_omarchy`, and the owner's spoken check of stopping a program. |
 | 6. Research | Mostly built | `deploy/searxng/` (pinned image, JSON on, limiter off, `127.0.0.1:8888`), `web_search`, `web_read` (trafilatura, size caps, public-address checks at every connection and redirect, only pages a search returned), plus `reddit_search` and `reddit_read` (SearXNG and the Arctic Shift archive), `time_now` and `weather` (Open-Meteo), [ADR 0007](adr/0007-outside-services-for-answers.md). Not built: SearXNG in an installer, a spoken check with the owner. |
 | 7. Polish | Partly built | Built: sentence streaming and voice barge-in ([ADR 0008](adr/0008-speak-while-writing-and-barge-in.md)); echo cancellation is a documented PipeWire setup for the owner, which broke the PC's sound output when applied on 2026-11-21 and was reverted (#13); follow-up listening (`audio.follow_up_s`, 6 s by default; the owner's live run is still to come). The Omarchy bar module is built (`tools/bar_status.py`, #14) and waits for the owner to add it to the bar. |
 | 8. Hardening | Planned | No `install.sh`, `jarvis update`, rollback or uninstall. `jarvis doctor`, `status` (with `--json`), `pause`, `resume`, `hush`, `logs`, `unload`, `start`, `stop` and `restart` exist. |
@@ -96,7 +96,7 @@ behind the same speech setting, as the Piper-licence risk below asked.
           transcribe: Voxtype (path chosen by measurement, see below)
    agent: OpenAI chat + tools against Strata, step/time/output caps, validated tool calls
    policy: typed operations, default deny, provenance tracking, action-bound confirmation, audit log
-   tools: spotify · pc (typed ops) · os_skill (read Omarchy SKILL.md) · web (later)
+   tools: spotify · pc (typed ops) · os_skill (read Omarchy's guides, in parts) · web (later)
    voice out: Piper → PipeWire
  strata.service (user): `strata serve --profile jarvis` foreground, lazy load, idle unload, mapped experts
  searxng (docker compose, 127.0.0.1 only) — added in the research phase, isolated from voice and Spotify
@@ -170,7 +170,7 @@ enforced in code before any tool runs.
   across sessions. Follow-up listening is built and on by default: the next request within `audio.follow_up_s`
   (6 s) of a spoken reply needs no wake word (never while Voxtype is dictating or in a meeting).
 - System prompt: `core.md` (shipped: identity, tools, limits) + persona/tone + owner addendum from setup + a
-  rendering of the boundaries + the Omarchy skill index (names and descriptions; full text through `os_skill`).
+  rendering of the boundaries + the Omarchy skill index (names and each description's first sentence; full text through `os_skill`).
 
 ### Boundaries (policy engine, enforced in code)
 - **Typed operations, default deny.** Each tool exposes named operations with validated arguments
@@ -267,7 +267,7 @@ enforced in code before any tool runs.
    time is it?" spoken back, and a denied action refused correctly.
 4. **Spotify** (built) — client, PKCE login in the wizard, MPRIS transport, device handling. Milestone: play artist / song
    / playlist, skip, volume, now playing, queue, like, all by voice, with recorded-fixture tests.
-5. **PC operations** (partly built) — PC stats, files, process stop and the optional strong-class shell built; app, workspace, volume, Omarchy commands and os_skill to come.
+5. **PC operations** (partly built) — PC stats, files, process stop, the optional strong-class shell and os_skill built; app, workspace, volume and Omarchy commands to come.
 6. **Research** (mostly built) — SearXNG, search/fetch, URL policy, sourced answers.
 7. **Polish** (partly built) — sentence streaming and voice barge-in built, echo cancellation documented as a PipeWire setup;
    follow-up listening, the bar module (`tools/bar_status.py`), optional bare-"Jarvis" wake word.

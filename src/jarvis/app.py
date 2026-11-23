@@ -5,7 +5,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from jarvis import calc, paths, skills
+from jarvis import calc, osskills, paths, skills
 from jarvis.agent import Agent, Limits
 from jarvis.audit import AuditLog
 from jarvis.model import StrataModel
@@ -86,7 +86,8 @@ def system_prompt(config: Config, channel: Channel = "voice") -> str:
     style = prompts.joinpath(f"{channel}.md").read_text(encoding="utf-8")
     words = int(round(config.chat.reply_tokens * WORDS_PER_TOKEN, -1))
     fill = {
-        "skills": skills.prompt_section(skills.shipped()),
+        "skills": skills.prompt_section(skills.shipped())
+        + osskills.prompt_section(osskills.catalog()),
         "name": config.persona.name,
         "tone": config.persona.tone,
         "words": str(words),
@@ -247,6 +248,7 @@ def channel_registry(
         update={"research": config.research.model_copy(update={"page_chars": pages})}
     )
     shipped = skills.shipped()
+    guides = osskills.catalog()
     online = web_ops(web, chat_pictures() if channel == "chat" else None)
     return Registry(
         [
@@ -255,15 +257,31 @@ def channel_registry(
             *pc_operations(config, limits),
             *calc.operations(config.format),
             *([skills.skill_operation(shipped)] if shipped else []),
+            *(
+                [
+                    osskills.os_skill_operation(
+                        guides,
+                        max_chars=limits.tool_text_chars,
+                        root=osskills.ROOT,
+                        owner=osskills.OWNER,
+                    )
+                ]
+                if guides
+                else []
+            ),
             no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
         ],
         resets=(online.reset,),
     )
 
 
+# Operations offered only when their files are installed, known to `boundaries.classes` either way.
+INSTALLED_ONLY = frozenset({"read_skill", "os_skill"})
+
+
 def unknown_overrides(config: Config, spotify: list[Operation]) -> list[str]:
     """Return the names in `boundaries.classes` that no operation of either channel has."""
-    known: set[str] = set()
+    known: set[str] = set(INSTALLED_ONLY)
     for channel in ("voice", "chat"):
         registry = channel_registry(config, spotify, channel_limits(config, channel), channel)
         known.update(registry.names())

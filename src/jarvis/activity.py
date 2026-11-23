@@ -395,6 +395,7 @@ _LABELS = {
     "weather": "Checking the weather",
     "time": "Checking the time",
     "read_skill": "Reading its notes",
+    "os_skill": "Reading Omarchy's guide",
     "no_action": "Writing",
 }
 

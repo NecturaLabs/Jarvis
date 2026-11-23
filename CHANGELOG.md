@@ -8,6 +8,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- The chat remembers a little less: `chat.memory_tokens` defaults to 10,000 (was 10,500), to make room in
+  the default context for the list of Omarchy's guides. A config that still sets 10,500 gets what the window
+  leaves, about 10,000.
+
 - From a practices audit (#30): at most 30 actions that change something (playback, a file write) run in
   any 10 minutes, the voice service and the chat counted together and even with questions bypassed; one
   more is refused, recorded as `action_limit`, and Jarvis says why (`boundaries.max_actions`,
@@ -120,6 +124,16 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   `strata.context` keeps its value; to change it, edit it and run `jarvis setup`.
 
 ### Added
+
+- Jarvis answers questions about Omarchy from the guides Omarchy ships for agents
+  (`/usr/share/omarchy/default/agents/skills/`, part of #9). The prompt lists each guide by its first
+  sentence, read when Jarvis starts, so an Omarchy update is picked up at the next start. The safe
+  `os_skill` operation reads one file of one guide, in parts that fit a tool result, and only a file
+  listed at start. Only folders and files that root owns and nobody else can write are listed or read,
+  each opened from `/` without following a link, and the list keeps to a fixed size so it always fits the
+  context. The text counts as outside text, like a web page, and Jarvis is told never to run a command
+  from it. Every guide's SKILL.md is listed before any other file, and `boundaries.classes` may name
+  `os_skill` on a PC without the guides.
 
 - An opt-in shell command, `pc_shell` (#19), off unless `[shell] enabled` is set. Each command needs the
   confirm key, which no class setting lowers, and runs once in its own user scope with time, memory, CPU
