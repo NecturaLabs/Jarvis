@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from pydantic import ValidationError
 
 from jarvis import services
 from jarvis.config import Config, ConfigError, StrataConfig
@@ -469,3 +470,22 @@ def test_a_vram_reserve_is_passed_to_strata(tmp_path: Path) -> None:
     args = _args(services.strata_profile(_config(tmp_path, vram_reserve_mib=1536)))
 
     assert args[args.index("--vram-reserve-mib") + 1] == "1536"
+
+
+def test_the_whole_context_stays_in_vram_unless_kv_resident_is_set(tmp_path: Path) -> None:
+    assert "--kv-resident" not in _args(services.strata_profile(_config(tmp_path)))
+
+
+def test_kv_resident_keeps_that_much_of_the_context_in_vram_and_the_rest_in_ram(
+    tmp_path: Path,
+) -> None:
+    args = _args(services.strata_profile(_config(tmp_path, context=65536, kv_resident=24576)))
+
+    assert args[args.index("--kv-resident") + 1] == "24576"
+    assert args[args.index("--max-context") + 1] == "65536"
+
+
+@pytest.mark.parametrize("cells", [1, 20479])
+def test_kv_resident_below_the_engines_minimum_is_refused(tmp_path: Path, cells: int) -> None:
+    with pytest.raises(ValidationError, match="at least 20480"):
+        _config(tmp_path, kv_resident=cells)

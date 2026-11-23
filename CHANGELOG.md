@@ -133,6 +133,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `strata.kv_resident` keeps that many context cells in VRAM and the whole context in pinned RAM
+  (`--kv-resident`, Strata's KV streaming), so `strata.context` can grow without more VRAM. It is off
+  (`0`) by default until a bigger context has been measured on this PC.
+
 - Jarvis answers questions about Omarchy from the guides Omarchy ships for agents
   (`/usr/share/omarchy/default/agents/skills/`, part of #9). The prompt lists each guide by its first
   sentence, read when Jarvis starts, so an Omarchy update is picked up at the next start. The safe
