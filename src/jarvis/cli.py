@@ -666,15 +666,17 @@ def cmd_run(_args: argparse.Namespace) -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     # Off the request path: the Spotify login and library (for the hint and matching) are kept
-    # warm, and the model is loaded now, so the first request waits for neither.
+    # warm, so the first request does not wait for them.
     jarvis.ops.start_refresh(refresh_stop)
-    threading.Thread(target=jarvis.model.warm, name="jarvis-model-warm", daemon=True).start()
     request, answer = _transcribers(cfg, jarvis.hint)
     mic.start()
     wakes = [wake_word(cfg), *([wake_word(cfg)] if pc_audio is not None else [])]
 
     def after_sleep() -> None:
         handler.after_sleep()  # made below, once the loop it controls exists
+
+    def prewarm() -> None:
+        handler.prewarm()  # made below, as above
 
     keys = ConfirmKey(audit=jarvis.audit)  # pressed through the socket, waited on by the loop
 
@@ -687,7 +689,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         speaker,
         cfg.audio,
         request,
-        prewarm=lambda: None if jarvis.model.is_loaded() else jarvis.model.load(),
+        prewarm=prewarm,
         pc=None
         if pc_audio is None
         else PcListener(
@@ -708,6 +710,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         keys=keys,
     )
     handler = control.Controls(loop, mic, jarvis.model, jarvis.audit, keys=keys)
+    handler.warm_at_start()  # the model loads now, so the first request does not wait for it
     jarvis.audit.record("service_started", bypass_consent=cfg.boundaries.bypass_consent)
     return _run_until_stopped(
         loop, stop_requested, _serve_controls(handler, jarvis.audit), voxtype, wakes

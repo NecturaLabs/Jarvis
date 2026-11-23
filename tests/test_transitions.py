@@ -83,6 +83,13 @@ class Model:
         self.warms += 1
         return self.accepts
 
+    def is_loaded(self) -> bool | None:
+        return None if self.state is None else self.state == "loaded"
+
+    def load(self) -> bool:
+        self.warms += 1
+        return True
+
 
 @dataclass
 class Later:

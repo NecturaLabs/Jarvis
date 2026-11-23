@@ -12,6 +12,7 @@ fits in the context. A file's text is outside text: Omarchy wrote it for coding 
 passes on what it says and never runs its commands.
 """
 
+import hashlib
 import logging
 import math
 import os
@@ -34,6 +35,7 @@ MAX_DESCRIPTION_CHARS = 800
 MAX_SUMMARY_CHARS = 300
 MAX_CATALOG_CHARS = 900  # names, summaries and file names together, in the prompt and the schema
 MIN_TOOL_TEXT_CHARS = 500  # the lowest `tool_text_chars` the config allows
+VERSION_CHARS = 8  # of a file's SHA-256, naming its version between parts
 HEADROOM = 200  # a part's title and continuation lines, within the tool result's room
 
 _SKILL_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
@@ -322,28 +324,38 @@ def os_skill_operation(
         skill, file = listed[key]
         part = int(str(args.get("part", 1)))
         text = _read(root, owner, skill, file)
+        version = hashlib.sha256(text.encode()).hexdigest()[:VERSION_CHARS]
+        asked = str(args.get("version", version))
+        if asked != version:
+            msg = f"{key} changed since that version was read; read it again from part 1."
+            raise OperationError(msg)
         bounds = _bounds(text, room)
         if part > len(bounds):
             msg = f"{key} has only {len(bounds)} parts."
             raise OperationError(msg)
         start, end = bounds[part - 1]
-        more = f"\n(Continued in part {part + 1}.)" if part < len(bounds) else ""
+        more = f"\n(Continued in part {part + 1}, version {version}.)" if part < len(bounds) else ""
         title = f"{key} (part {part} of {len(bounds)}):"
         return Result(f"{title}\n{text[start:end]}{more}", Origin.OS_SKILL)
 
     return Operation(
         "os_skill",
-        "Read one part of one file of Omarchy's guides (see Omarchy's guides in your "
-        "instructions), to answer a question about Omarchy.",
+        "Read one part of a file of Omarchy's guides (listed in your instructions).",
         {
             "type": "object",
             "properties": {
-                "file": {"type": "string", "enum": sorted(listed), "description": "The file"},
+                "file": {"type": "string", "enum": sorted(listed)},
                 "part": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": max_parts(max_chars),
-                    "description": "Which part of the file, from 1",
+                    "description": "From 1",
+                },
+                "version": {
+                    "type": "string",
+                    "minLength": VERSION_CHARS,
+                    "maxLength": VERSION_CHARS,
+                    "description": "As the previous part said",
                 },
             },
             "required": ["file"],

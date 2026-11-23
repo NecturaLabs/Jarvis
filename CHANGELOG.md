@@ -323,6 +323,22 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Reading an Omarchy guide in parts: each part names the guide's version, and a later part asked for
+  after an Omarchy update changed the guide is refused with a note to read it again from part 1, instead
+  of mixing two versions.
+
+- A model server that answers but lists no model (Strata while its engine is down or restarting) is
+  shown as `unloaded`, not as unreachable, and a wake word then loads the model.
+
+- A pause during the start-up load, or right after a wake word, now frees the model once the load
+  is over. Both loads skipped the turn-taking with a pause, so the pause's unload met a busy server and
+  Jarvis stayed paused with the model loaded.
+
+- Outside text in a tool result (a web page, a file) now fits the size planned for it: its angle
+  brackets are spelled out before it is cut, not after, which could make it four times as long. A long
+  request also keeps its tool results whole while they fit: the system prompt was counted twice when
+  making room.
+
 - `jarvis status`, `status --json` and the status bar say the model is loading while a load Jarvis asked
   for is under way (at start, after a resume, on a wake word). Strata reports only loaded or unloaded, so a
   2-minute load after `jarvis restart` showed `model: unloaded`. Each load request now waits as long as

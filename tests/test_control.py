@@ -227,6 +227,14 @@ class Model:
         return True
 
     wanted: Callable[[], bool] = lambda: True
+    loads: int = 0
+
+    def is_loaded(self) -> bool | None:
+        return None if self.state is None else self.state == "loaded"
+
+    def load(self) -> bool:
+        self.loads += 1
+        return True
 
 
 @dataclass
@@ -1142,3 +1150,60 @@ def test_a_resume_s_load_is_no_longer_wanted_once_paused_again() -> None:
     controls("pause")
 
     assert not model.wanted()
+
+
+def test_the_start_up_load_and_a_pause_s_unload_take_turns() -> None:
+    """Regression: the start-up load bypassed the model lock, so a pause's unload met a busy
+    server and Jarvis stayed paused with the model loaded."""
+    order: list[str] = []
+    loading, finish = threading.Event(), threading.Event()
+
+    def warm(*, keep_going: Callable[[], bool] = lambda: True) -> bool:
+        loading.set()
+        finish.wait(WAIT_S)
+        order.append("loaded")
+        return keep_going()
+
+    def unload() -> bool:
+        order.append("unloaded")
+        return True
+
+    model = Model("unloaded")
+    model.warm = warm
+    model.unload = unload
+    workers: list[threading.Thread] = []
+
+    def background(work: Callable[[], object]) -> None:
+        worker = threading.Thread(target=work, daemon=True)
+        workers.append(worker)
+        worker.start()
+
+    controls = control.Controls(Loop(), Mic(), model, background=background)
+    controls.warm_at_start()
+    assert loading.wait(WAIT_S)
+    controls("pause")
+    finish.set()
+    for worker in workers:
+        worker.join(WAIT_S)
+
+    assert order == ["loaded", "unloaded"]
+
+
+@pytest.mark.parametrize(("state", "loads"), [("unloaded", 1), ("loaded", 0)])
+def test_a_wake_word_loads_the_model_only_when_it_is_not_in(state: str, loads: int) -> None:
+    model = Model(state)
+    controls = control.Controls(Loop(), Mic(), model)
+
+    controls.prewarm()
+
+    assert model.loads == loads
+
+
+def test_a_wake_word_heard_as_a_pause_came_loads_nothing() -> None:
+    model, later = Model("unloaded"), Later()
+    controls = control.Controls(Loop(), Mic(), model, background=later)
+    controls("pause")
+
+    controls.prewarm()
+
+    assert model.loads == 0

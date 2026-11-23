@@ -298,6 +298,13 @@ class _Model:
         self.warms += 1
         return True
 
+    def is_loaded(self) -> bool | None:
+        return None if self.state is None else self.state == "loaded"
+
+    def load(self) -> bool:
+        self.warms += 1
+        return True
+
 
 LOOP_STATES = ("idle", "capture", "follow-up", "confirm", "transcribe", "think", "speak", "no-mic")
 

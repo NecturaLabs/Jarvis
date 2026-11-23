@@ -257,14 +257,20 @@ class StrataModel:
         )
 
     def _listing(self) -> tuple[bool, str | None]:
-        """Return whether the server answered, and the state of the model it lists, if any."""
+        """Return whether the server answered, and the state of the model it lists, if any.
+
+        Strata lists no model while its engine is down or restarting: the model is not in memory.
+        """
         try:
             with self._client(5.0) as client:
                 response = client.get("/models")
                 response.raise_for_status()
-                data = objs(obj(response.json()).get("data"))
+                listed = obj(response.json()).get("data")
         except httpx.HTTPError, ValueError:
             return False, None
+        if listed == []:
+            return True, "unloaded"
+        data = objs(listed)
         value = obj(data[0].get("status")).get("value") if data else None
         return True, (str(value) if value is not None else None)
 
