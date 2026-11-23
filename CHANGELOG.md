@@ -342,6 +342,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- When the model answers a question with no words after looking something up, Jarvis now asks it once
+  more for an answer, then says it found none. It used to say "Done.", which the claim check then turned
+  into "I didn't manage to do that". "Done." is kept for an action that succeeded.
 - Summarising the remembered conversation no longer happens silently at the start of a request, on that
   request's clock. It now runs right after the reply that made the conversation too long, while the reply
   is spoken and the model is loaded. With a cold model, the summary used to time out and the older turns

@@ -86,6 +86,11 @@ LAST_STEP_REMINDER = (
 )
 CUT_SHORT = "(That is as far as one reply goes; ask me to go on.)"
 UNDONE = "Sorry, I didn't manage to do that."
+NO_ANSWER = "Sorry, I couldn't find an answer to that."
+WORDS_REMINDER = (
+    "System check: your last answer had no words. Answer the owner now, in words, from what the "
+    "tools returned; if they did not answer it, say so plainly."
+)
 NO_ACTION_REMINDER = (
     "System check: you called no tool in this request, so nothing has changed. If I asked for an "
     "action, call the right tool now. Otherwise answer without saying that anything was done."
@@ -676,6 +681,7 @@ class _Turn:
     outside: str = ""  # where the first outside text this request read came from
     private: bool = False  # the owner's own data (a file, a command's output) is in it
     nudged: bool = False
+    wordless: bool = False  # the model answered without words once, and was asked again
     stuck: bool = False
     cold: bool = False  # the model must load first: the next model call may wait for that too
     answered: bool = False  # a model call returned: the model is in and working
@@ -1160,7 +1166,7 @@ class Agent:
             text = _ACTIONS_NOTE.sub("", _text(message).strip())
             if cut and text:
                 text = f"{text} {CUT_SHORT}"
-            return self._final(turn, text or (TOO_MANY_STEPS if turn.last else "Done."))
+            return self._final(turn, text) if text else self._wordless(turn)
         lone_reply = len(calls) == 1 and str(obj(calls[0].get("function")).get("name")) == NO_ACTION
         if not lone_reply or (stream is not None and stream.cut):
             self._cut(stream)  # text before even a lone reply call was not the reply
@@ -1251,6 +1257,25 @@ class Agent:
         (result,) = results
         answer = _ACTIONS_NOTE.sub("", result.spoken.strip()).strip() if result.ok else ""
         return answer or None
+
+    @staticmethod
+    def _wordless(turn: _Turn) -> str | None:
+        """Return what to say for an answer without words, or None after asking for words once.
+
+        After an action that succeeded it is "Done."; after look-ups alone the model is asked
+        once to answer in words, then the owner hears that there is no answer.
+        """
+        if turn.last:
+            return TOO_MANY_STEPS
+        if turn.succeeded:
+            return "Done."
+        if turn.wordless:
+            return NO_ANSWER
+        turn.wordless = True
+        turn.messages.extend(
+            ({"role": "assistant", "content": ""}, {"role": "user", "content": WORDS_REMINDER})
+        )
+        return None
 
     def _final(self, turn: _Turn, reply: str) -> str | None:
         """Return the reply to speak, or None after asking the model to correct a false claim.

@@ -2744,3 +2744,33 @@ def test_a_request_that_fits_keeps_its_results_whole() -> None:
 
     results = [m["content"] for m in model.seen[-1] if m["role"] == "tool"]
     assert results == [page, page]
+
+
+# A reply with no words
+
+
+def test_a_reply_with_no_words_after_a_look_up_is_asked_for_again_not_called_done() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("weather"), _say(""), _say("Sunny, 20 degrees.")])
+    agent, audit = _agent(model, [counter.op("weather", side_effect=False)])
+
+    assert agent.handle("what's the weather", NO_CONFIRM) == "Sunny, 20 degrees."
+
+    assert model.seen[2][-1] == {"role": "user", "content": agent_module.WORDS_REMINDER}
+    assert "claimed_without_action" not in _events(audit)
+
+
+def test_a_model_that_still_says_nothing_is_heard_as_no_answer() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("weather"), _say(""), _say("")])
+    agent, _ = _agent(model, [counter.op("weather", side_effect=False)])
+
+    assert agent.handle("what's the weather", NO_CONFIRM) == agent_module.NO_ANSWER
+
+
+def test_a_reply_with_no_words_after_an_action_is_done() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("pause"), _say("")])
+    agent, _ = _agent(model, [counter.op("pause")])
+
+    assert agent.handle("pause", NO_CONFIRM) == "Done."
