@@ -18,7 +18,7 @@ from test_agent import Clock, Counter
 from jarvis.agent import Agent, Hooks
 from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
-from jarvis.model import Delta
+from jarvis.model import Delta, Thinking
 from jarvis.operations import Registry
 
 if TYPE_CHECKING:
@@ -102,8 +102,9 @@ class TimedModel:
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
         load_s: float = 0.0,
+        thinking: Thinking | None = None,
     ) -> dict[str, Any]:
-        del messages, require_tool, timeout_s, max_tokens, load_s
+        del messages, require_tool, timeout_s, max_tokens, load_s, thinking
         self.offered.append([str(tool["function"]["name"]) for tool in tools])
         written = self.calls.pop(0)
         began = self.clock.now

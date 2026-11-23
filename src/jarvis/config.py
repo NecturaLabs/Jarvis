@@ -119,7 +119,9 @@ class AgentConfig(_Section):
 
     `reply_tokens` caps what the model writes in one go, so a reply is kept short by the model,
     never cut afterwards. `memory_tokens` is the room the remembered conversation may take of the
-    model's context; older turns are summarized to stay within it.
+    model's context; older turns are summarized to stay within it. `thinking` is how hard the
+    model thinks before each answer (`none` answers at once), and `thinking_tokens` the most it
+    may think, on top of the reply's room.
     """
 
     max_steps: int = Field(default=8, ge=1, le=100)  # model calls in one request
@@ -129,6 +131,8 @@ class AgentConfig(_Section):
     tool_text_chars: int = Field(default=3000, ge=500, le=50000)  # of one tool result
     memory_tokens: int = Field(default=6000, ge=0, le=200000)
     memory_idle_s: float = Field(default=1800.0, ge=0)  # forget after this long unused; 0 never
+    thinking: Literal["none", "low", "medium", "high"] = "low"
+    thinking_tokens: int = Field(default=192, ge=32, le=8192)
 
 
 class ChatConfig(AgentConfig):
@@ -139,8 +143,9 @@ class ChatConfig(AgentConfig):
     max_seconds: float = Field(default=600.0, ge=10, le=3600)
     reply_tokens: int = Field(default=2048, ge=64, le=8192)
     tool_text_chars: int = Field(default=8000, ge=500, le=50000)
-    memory_tokens: int = Field(default=9100, ge=0, le=200000)
+    memory_tokens: int = Field(default=8600, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
+    thinking_tokens: int = Field(default=512, ge=32, le=8192)
     resume: bool = True  # open the chat on the conversation it had last time
     verbosity: Literal["replies", "steps", "everything"] = "replies"
     toolbar: bool = True  # the line of PC load, model and context under the input

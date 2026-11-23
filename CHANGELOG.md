@@ -8,6 +8,15 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- Jarvis thinks a little before each answer, so it picks tools and words more carefully: `thinking`
+  (`none`, `low`, `medium` or `high`, Strata's reasoning effort) is `low` by default in `[agent]` and
+  `[chat]`, capped by `thinking_tokens` (192 for speech, 512 in the chat), after which Strata closes the
+  thinking and lets the model answer. The thinking is never spoken or shown, and it comes on top of the
+  reply's own cap. It costs time: up to about 3 s more before each spoken model call's first words at the
+  full cap (not yet measured on this PC; `thinking = "none"` turns it off). Plain commands still skip the
+  model. A summary of older turns is written without thinking. To leave the context room for it,
+  `chat.memory_tokens` defaults to 8,600 (was 9,100).
+
 - `jarvis doctor` recognises the picture readers of Qwen3.8-Flash-Next and Inkling 2 Mini by their pinned
   sha256, and the docs say Qwen3.8-Flash-Next needs `strata.memory_max = "44G"` (at 40G the Strata unit sat
   at its memory mark).

@@ -33,10 +33,10 @@ from jarvis.agent import (
 )
 from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
-from jarvis.config import FilesConfig
+from jarvis.config import AgentConfig, ChatConfig, FilesConfig
 from jarvis.jsonutil import objs
 from jarvis.memory import tokens
-from jarvis.model import Delta, ModelMissingError
+from jarvis.model import Delta, ModelMissingError, Thinking
 from jarvis.operations import (
     Operation,
     OperationError,
@@ -105,6 +105,7 @@ class ScriptedModel:
     after_piece: Callable[[int], object] = lambda _number: None
     max_tokens: list[int | None] = field(default_factory=list[int | None])
     loads: list[float] = field(default_factory=list[float])
+    thinking: list[Thinking | None] = field(default_factory=list[Thinking | None])
 
     def chat(
         self,
@@ -116,8 +117,10 @@ class ScriptedModel:
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
         load_s: float = 0.0,
+        thinking: Thinking | None = None,
     ) -> dict[str, Any]:
         self.loads.append(load_s)
+        self.thinking.append(thinking)
         self.max_tokens.append(max_tokens)
         self.timeouts.append(timeout_s)
         self.tools_offered.append(len(tools))
@@ -2801,3 +2804,60 @@ def test_a_reply_with_no_words_after_an_action_is_done() -> None:
     agent, _ = _agent(model, [counter.op("pause")])
 
     assert agent.handle("pause", NO_CONFIRM) == "Done."
+
+
+def test_every_request_call_thinks_as_the_limits_say_and_a_summary_does_not() -> None:
+    thinking = Thinking("low", 192)
+    model = ScriptedModel([*_chatty(4), _say("They talked about kettles."), *_chatty(1)])
+    agent, _ = _agent(model, [], limits=Limits(memory_tokens=700, thinking=thinking))
+
+    for number in range(5):
+        agent.handle(f"request {number}", NO_CONFIRM)
+
+    assert model.thinking[8] is None  # the summary
+    assert all(seen is thinking for n, seen in enumerate(model.thinking) if n != 8)
+
+
+def test_the_window_keeps_room_for_the_thinking_as_well_as_the_reply() -> None:
+    plain = Limits(memory_tokens=200000, context_tokens=24576)
+    thinking = Limits(memory_tokens=200000, context_tokens=24576, thinking=Thinking("low", 500))
+
+    without, _ = _agent(ScriptedModel([]), [], limits=plain)
+    with_it, _ = _agent(ScriptedModel([]), [], limits=thinking)
+
+    assert without.memory.budget - with_it.memory.budget == 500
+
+
+@pytest.mark.parametrize(
+    ("section", "expected"),
+    [
+        (AgentConfig(), Thinking("low", 192)),
+        (ChatConfig(), Thinking("low", 512)),
+        (AgentConfig(thinking="medium", thinking_tokens=64), Thinking("medium", 64)),
+        (AgentConfig(thinking="none"), None),
+    ],
+)
+def test_the_config_sets_how_hard_each_channel_thinks(
+    section: AgentConfig, expected: Thinking | None
+) -> None:
+    assert Limits.of(section, 24576, remember_outside=False).thinking == expected
+
+
+def test_old_results_are_cleared_to_leave_room_for_the_thinking_too() -> None:
+    page = "w" * 9000
+    replies = [_call("read", {"q": str(n)}, f"c{n}") for n in range(4)] + [_say("Done.")]
+    model = ScriptedModel(replies)
+    limits = Limits(
+        context_tokens=8000,
+        reply_tokens=500,
+        tool_text_chars=9000,
+        memory_tokens=0,
+        thinking=Thinking("low", 1500),
+    )
+    agent, _ = _agent(model, [Counter().op("read", text=page)], limits=limits)
+
+    agent.handle("read them all", NO_CONFIRM)
+
+    for seen in model.seen:
+        estimate = sum(len(str(m.get("content") or "")) / 3 + 8 for m in seen)
+        assert estimate + limits.answer_tokens <= limits.context_tokens

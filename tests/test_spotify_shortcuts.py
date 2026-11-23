@@ -25,6 +25,7 @@ from jarvis.policy import Origin
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from jarvis.model import Thinking
     from jarvis.spotify.ops import SpotifyOps
 
 
@@ -56,6 +57,7 @@ class ScriptedModel:
         on_delta: object = None,  # ruff: ignore[unused-method-argument] - the model's own signature
         max_tokens: int | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
         load_s: float = 0.0,  # ruff: ignore[unused-method-argument] - the model's own signature
+        thinking: Thinking | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
     ) -> dict[str, Any]:
         self.calls += 1
         self.seen.append(messages)
@@ -493,6 +495,7 @@ class ForbiddenModel:
         on_delta: object = None,  # ruff: ignore[unused-method-argument] - the model's own signature
         max_tokens: int | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
         load_s: float = 0.0,  # ruff: ignore[unused-method-argument] - the model's own signature
+        thinking: Thinking | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
     ) -> dict[str, Any]:
         self.used.append("chat")
         pytest.fail("the model was called for a plain command")
