@@ -342,6 +342,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A streamed model answer that stalls now ends at the call's time limit. The limit was checked only when a
+  piece arrived, and the read timeout restarted with each one, so a stalled stream could run to about
+  twice its time.
 - PC audio from an app that plays through several streams is now heard whole. Only its first stream was
   recorded, which also weakened the check for other people's speech during a confirmation.
 - `jarvis ask` takes a typed `y` as yes. It asked `[yes/no]` but read the answer as speech, where `y` is

@@ -2,6 +2,7 @@
 
 import json
 import math
+import queue
 import threading
 import time
 from contextlib import contextmanager
@@ -434,10 +435,7 @@ class StrataModel:
             return _message(response)
         answer = _Assembly()
         finished = False
-        for event in _events(response.iter_lines()):
-            if self.clock() > deadline:
-                msg = "model server took too long to answer"
-                raise ModelError(msg)
+        for event in _events(self._lines_until(response, deadline)):
             usage = event.get("usage")
             if isinstance(usage, dict):
                 answer.usage = cast("dict[str, Any]", usage)
@@ -458,6 +456,42 @@ class StrataModel:
             msg = "model server's answer ended before it was finished"
             raise ModelError(msg)
         return answer.message()
+
+    def _lines_until(self, response: httpx.Response, deadline: float) -> Iterator[str]:
+        """Yield the response's lines, read on a thread of their own, until `deadline` on `clock`.
+
+        The read timeout restarts with every byte, so a stream that stalls, or trickles, would
+        otherwise run on past its time; here it ends at it, whether a line comes or not. Leaving
+        `client.stream` closes the response, which ends the reader.
+
+        Raises:
+            ModelError: the time ran out.
+        """
+        lines: queue.Queue[str | Exception | None] = queue.Queue()
+
+        def read() -> None:
+            try:
+                for line in response.iter_lines():
+                    lines.put(line)
+            except Exception as exc:  # ruff: ignore[blind-except] - raised on the caller's thread
+                lines.put(exc)
+            else:
+                lines.put(None)
+
+        threading.Thread(target=read, name="jarvis-model-stream", daemon=True).start()
+        late = "model server took too long to answer"
+        while True:
+            try:
+                line = lines.get(timeout=max(0.0, deadline - self.clock()))
+            except queue.Empty:
+                raise ModelError(late) from None
+            if self.clock() > deadline:
+                raise ModelError(late)
+            if line is None:
+                return
+            if isinstance(line, Exception):
+                raise line
+            yield line
 
     def _wait_ready(self, seconds: float) -> None:
         deadline = self.clock() + seconds
