@@ -144,7 +144,7 @@ Notes. There is no separate wake state: wake detection runs on the mic frames in
 Jarvis speaks, the `jarvis-barge-in` thread reads the mic and listens for the wake word
 (`audio.barge_in`); hearing it hushes the speaker, cancels the request and makes `_serve` take a new
 one (`SPEAK` to `CAPTURE`). It reads frames only while speech plays, so it never takes one the loop
-needs, and a sentence the speaker found wake-like (`Speaker.interruptible`) is not spoken over. After
+needs, and a sentence the speaker found wake-like (`Speaker.interruptible`) is not spoken over while it plays and for `GUARD_TAIL_S` (1 s) after. After
 speech that was not interrupted, `_end_speaking` drains the capture so Jarvis cannot hear itself. A
 line spoken while the agent works (`_cue`: a waiting line, a confirmation question) moves the loop to
 `SPEAK` and back to `THINK`. Every capture has a timeout, and a failed request ends in `IDLE`.

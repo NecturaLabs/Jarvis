@@ -342,6 +342,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A reply with a sentence that sounds like the wake word can be spoken over again once that sentence
+  has played (a second later, for the wake model's lag). The guard used to hold until the whole reply
+  ended, and it started when the sentence was made, which could be before the ones ahead of it had played.
 - `write_file` no longer replaces a file you made read-only: a replace renamed a new file over it, which
   needs only the folder's permission. A read-only file is now refused for a replace and an append alike,
   before the question.

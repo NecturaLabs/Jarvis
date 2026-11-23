@@ -136,7 +136,7 @@ enforced in code before any tool runs.
 - Built: the reply is spoken sentence by sentence while the model writes it, one player for the whole reply, and
   the wake word stays on while Jarvis speaks: saying it stops the speech and the request and starts a new one
   (`audio.barge_in`). A sentence that would trigger the wake word by itself is checked before it plays and
-  cannot be spoken over. See [ADR 0008](adr/0008-speak-while-writing-and-barge-in.md).
+  cannot be spoken over while it plays. See [ADR 0008](adr/0008-speak-while-writing-and-barge-in.md).
 - Confirmation starts only after TTS playback has drained, accepts yes/no for 8 s, and is bound to one immutable
   action (hash of operation + arguments). Anything else, silence, or the wake word over the question, is no. The
   highest-risk class is confirmed by keybinding (`jarvis confirm`), never by voice, and the consent bypass

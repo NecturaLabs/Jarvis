@@ -1398,6 +1398,9 @@ WRITE_STEP = 4096  # bytes handed to the player at a time (one pipe page; about 
 QUIET = 300  # samples at or below this level count as silence at the ends of a sentence
 LEAD_KEEP_S = 0.03  # silence kept before the first word Jarvis says
 TAIL_KEEP_S = 0.2  # silence kept after each sentence (the voice pads about 0.35 s)
+# How long after a wake-like sentence ends the wake word stays ignored: the player's buffer and
+# the wake model's own lag, so the end of the sentence heard late does not wake Jarvis.
+GUARD_TAIL_S = 1.0
 
 
 def trim_silence(pcm: bytes, rate: int, *, lead_s: float | None, tail_s: float) -> bytes:
@@ -1504,7 +1507,7 @@ class Speaker:
     what has not been heard yet, so the owner can speak over Jarvis.
     """
 
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-arguments] - the player's settings, keyword-only
         self,
         synthesize: Callable[[str], tuple[bytes, int]],
         *,
@@ -1512,11 +1515,12 @@ class Speaker:
         grace_s: float = PLAY_GRACE_S,
         own_wake: Callable[[bytes, int, str], bool] | None = None,
         linger_s: float = LINGER_S,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """Use `synthesize` for text to speech; `player` builds the playback command for a rate.
 
         `own_wake` tells whether a synthesized sentence (its sound, its rate and its text) would
-        trigger the wake word itself.
+        trigger the wake word itself. `clock` times when each sentence plays (tests).
         """
         super().__init__()
         self._synthesize = synthesize
@@ -1524,12 +1528,15 @@ class Speaker:
         self._grace_s = grace_s
         self._own_wake = own_wake
         self._linger_s = linger_s
+        self._clock = clock
         self._lock = threading.Condition()
         self._items: queue.Queue[tuple[int, str]] = queue.Queue()
         self._pending = 0  # sentences queued, being synthesized or being handed to the player
         self._run = 0  # raised by `hush`: sentences queued before it are dropped
         self._error: AudioError | None = None
-        self._guarded = False  # the speech playing now holds the wake phrase
+        # When each wake-like sentence plays (start, end plus GUARD_TAIL_S), on `_clock`.
+        self._guards: list[tuple[float, float]] = []
+        self._ends = 0.0  # when the sound handed to the open player will have played
         self._worker: threading.Thread | None = None
         self._proc: subprocess.Popen[bytes] | None = None  # the open player
         self._rate = 0
@@ -1551,9 +1558,11 @@ class Speaker:
 
     @property
     def interruptible(self) -> bool:
-        """False while the speech playing would trigger the wake word by itself."""
+        """False while a sentence that would trigger the wake word by itself is playing."""
         with self._lock:
-            return not self._guarded
+            now = self._clock()
+            self._guards = [guard for guard in self._guards if guard[1] > now]
+            return not any(start <= now for start, _ in self._guards)
 
     def say(self, text: str) -> None:
         """Speak `text` after anything already queued; return once it has all played.
@@ -1593,7 +1602,7 @@ class Speaker:
         """Drop every sentence not yet heard and end the one playing, at once."""
         with self._lock:
             self._run += 1
-            self._guarded = False  # what held the wake phrase is no longer playing
+            self._guards.clear()  # what held the wake phrase is no longer playing
             while True:
                 try:
                     self._items.get_nowait()
@@ -1645,11 +1654,17 @@ class Speaker:
         pcm = trim_silence(pcm, rate, lead_s=LEAD_KEEP_S if first else None, tail_s=TAIL_KEEP_S)
         if not pcm:
             return
-        if self._sounds_like_wake(pcm, rate, text):
-            with self._lock:
-                if run != self._run:  # hushed during the check: it will not be played
-                    return
-                self._guarded = True
+        wake_like = self._sounds_like_wake(pcm, rate, text)
+        with self._lock:
+            if run != self._run:  # hushed during the check: it will not be played
+                return
+            # It plays once what the open player already holds has played; a new player starts
+            # it now. Kept before the player opens, so the guard is never late.
+            start = max(self._clock(), self._ends if self._proc is not None else 0.0)
+            self._ends = start + len(pcm) / (2 * rate)
+            if wake_like:
+                self._guards.append((start, self._ends + GUARD_TAIL_S))
+        if wake_like:
             log.info("a sentence sounds like the wake word; it cannot be spoken over")
         proc = self._proc or self._open(rate, run)
         if proc is not None:
@@ -1757,8 +1772,7 @@ class Speaker:
 
     def _release(self) -> None:
         with self._lock:
-            self._proc = None
-            self._guarded = False
+            self._proc = None  # a guard still running out keeps its end: the tail may be heard
             self._lock.notify_all()
 
     def _play(self, pcm: bytes, rate: int) -> None:

@@ -170,6 +170,58 @@ def test_a_sentence_that_sounds_like_the_wake_word_cannot_be_spoken_over(
         _end(pid_file)
 
 
+def _timed_voice(text: str) -> tuple[bytes, int]:
+    """Half a second for the wake-like sentence, four seconds for any other."""
+    return _sound(1000, seconds=0.5 if text == "hey jarvis" else 4.0), RATE
+
+
+def _wake_like(_pcm: bytes, _rate: int, text: str) -> bool:
+    return text == "hey jarvis"
+
+
+def _taking(pid_file: Path, heard: Path) -> Callable[[int], list[str]]:
+    """A player that takes all it is given at once, keeps it in `heard`, and never exits."""
+    return lambda _rate: ["sh", "-c", f"echo $$ > {pid_file}; cat > {heard}; exec sleep 600"]
+
+
+def _guard_at(texts: tuple[str, ...], tmp_path: Path, moments: tuple[float, ...]) -> list[bool]:
+    """Queue `texts` at time 0 and return whether the speaker can be spoken over at `moments`."""
+    pid_file, heard = tmp_path / "pid", tmp_path / "heard.raw"
+    now = [0.0]
+    speaker = Speaker(
+        _timed_voice, player=_taking(pid_file, heard), own_wake=_wake_like, clock=lambda: now[0]
+    )
+    try:
+        for text in texts:
+            speaker.queue(text)
+        total = sum(len(_timed_voice(text)[0]) for text in texts)
+        _until(lambda: heard.exists() and heard.stat().st_size == total)
+        found: list[bool] = []
+        for moment in moments:
+            now[0] = moment
+            found.append(speaker.interruptible)
+        return found
+    finally:
+        speaker.hush()
+        _end(pid_file)
+
+
+def test_the_guard_of_a_wake_like_sentence_ends_with_it_not_with_the_reply(tmp_path: Path) -> None:
+    # 0.5 s wake-like sentence, then 4 s of ordinary speech through the same player.
+    found = _guard_at(("hey jarvis", "and then a long ordinary one"), tmp_path, (0.2, 1.6, 4.0))
+
+    assert found == [False, True, True]
+
+
+def test_the_guard_starts_when_the_wake_like_sentence_plays_not_when_it_is_made(
+    tmp_path: Path,
+) -> None:
+    # 4 s of ordinary speech first; the wake-like sentence plays from 4 s to 4.5 s.
+    found = _guard_at(("an ordinary first one", "hey jarvis"), tmp_path, (1.0, 4.2, 5.0, 5.6))
+
+    assert found == [True, False, False, True]
+
+
 def test_ordinary_speech_can_be_spoken_over(tmp_path: Path) -> None:
     pid_file = tmp_path / "pid"
     speaker = Speaker(_voice, player=_endless(pid_file), own_wake=lambda _pcm, _rate, _text: False)

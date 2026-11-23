@@ -155,7 +155,8 @@ word to 0.03 s and after each sentence to 0.2 s. Measured on 2026-11-21 with `bm
 0.3 to 0.4 s, a first sentence 0.2 to 0.4 s, four sentences 1.4 s. While Strata writes, a two-sentence chunk
 took 1.11 s instead of 0.63 s, and Strata wrote 41 tokens/s instead of 45.7. Before each sentence plays, a
 second copy of the wake model checks it (6 to 33 ms), so a sentence that would trigger the wake word cannot be
-spoken over.
+spoken over while it plays and for a second after (`GUARD_TAIL_S`, the player's buffer and the wake model's lag);
+the sentences before and after it can.
 
 ### Kokoro (default, `kokoro:<name>`)
 
