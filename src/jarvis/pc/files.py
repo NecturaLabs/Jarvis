@@ -529,7 +529,7 @@ class FileOps:
         lines: list[str] = []
         used, room = 0, max(MIN_ROOM, self._room(shown) - inert_chars(pattern))
         for _folder, _name, line in rows[:MAX_ENTRIES]:
-            if used + inert_chars(line) + 1 > room:
+            if lines and used + inert_chars(line) + 1 > room:  # the first always shows
                 break
             lines.append(line)
             used += inert_chars(line) + 1

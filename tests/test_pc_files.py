@@ -307,6 +307,18 @@ def test_a_long_path_at_the_lowest_cap_still_fits_once_wrapped(home: Path) -> No
     assert _as_data(listing) <= 500
 
 
+def test_a_folder_on_a_very_long_path_still_lists_its_first_entry(home: Path) -> None:
+    parts = ["c" * 120, "d" * 120]
+    folder = home / "Documents" / parts[0] / parts[1]
+    folder.mkdir(parents=True)
+    for n in range(3):
+        (folder / f"entry {n:02d} with a fairly long name.txt").write_text("x", encoding="utf-8")
+
+    listing = _list(_ops(home, max_chars=500), f"~/Documents/{parts[0]}/{parts[1]}")
+
+    assert "entry 00" in listing
+
+
 def test_a_listing_of_names_with_brackets_fits_its_room_once_wrapped(home: Path) -> None:
     for n in range(60):
         (home / "Documents" / f"<<<<{n:02d}>>>>.txt").write_text("x", encoding="utf-8")
