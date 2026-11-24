@@ -30,6 +30,7 @@ from jarvis.shortcuts import Shortcut
 from jarvis.web.arctic import SUBREDDIT, ArcticShift, Post, RedditUnavailableError
 from jarvis.web.openmeteo import Day, Forecast, OpenMeteo, Place, WeatherUnavailableError
 from jarvis.web.page import PageError, PageReader
+from jarvis.web.regions import find_region
 from jarvis.web.searxng import Hit, ImageHit, SearchUnavailableError, Searxng
 from jarvis.web.zones import Zone, clocks, find_country
 
@@ -79,7 +80,7 @@ _WEATHER_TOMORROW = Shortcut(
 _PLACE = {
     "type": "string",
     "maxLength": MAX_PLACE,
-    "description": "A place the owner named (a state or region: its main city); leave out for home",
+    "description": "A city, state or place the owner named; leave out for the owner's home",
 }
 _PLACE_ARG = frozenset({"place"})  # the time and weather send the model's words only in it
 _COUNT = {"type": "integer", "minimum": 1, "maximum": 8, "description": "How many results"}
@@ -117,7 +118,10 @@ def _and(parts: list[str], last: str = " and ") -> str:
     return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + last + parts[-1]
 
 
-def _where(place: str, country: str) -> str:
+def _where(place: str, country: str, city: str = "") -> str:
+    """Name a place for the model: with its country, and the city a region is answered at."""
+    if city:
+        return f"{place} ({country}, at {city})"
     return f"{place} ({country})" if country else place
 
 
@@ -236,7 +240,7 @@ class WebOps:
         elif place:
             found = self._find(place)
             moment = now.astimezone(ZoneInfo(found.zone))
-            where = f" in {_where(place, found.country)}"
+            where = f" in {_where(place, found.country, found.city)}"
             said = f" in {place}"
         else:
             moment = now.astimezone(self._local_zone) if self._local_zone else now.astimezone()
@@ -290,7 +294,20 @@ class WebOps:
 
     # --- weather ----------------------------------------------------------------------------
 
-    def _find(self, place: str) -> Place:
+    def _find(self, place: str, *, regions: bool = True) -> Place:
+        """Return the place called `place`: a state or province (`regions.py`), else the geocoder's.
+
+        Without `regions` (the configured home, a place the owner lives in) only the geocoder is
+        asked, so a home called "Victoria" stays the city.
+
+        Raises:
+            OperationError: the geocoder failed or knows no such place.
+        """
+        region = find_region(place) if regions else None
+        if region is not None:
+            return Place(
+                region.latitude, region.longitude, region.zone, region.country, region.city
+            )
         try:
             found = self._weather.find(place)
         except WeatherUnavailableError as exc:
@@ -313,7 +330,7 @@ class WebOps:
         if not cfg.place:
             raise OperationError(NO_HOME)
         if self._home is None:
-            self._home = self._find(cfg.place)
+            self._home = self._find(cfg.place, regions=False)
         return self._home.latitude, self._home.longitude, name
 
     def weather(self, args: dict[str, Any]) -> Result:
@@ -327,7 +344,7 @@ class WebOps:
         if place:
             found = self._find(place)
             latitude, longitude = found.latitude, found.longitude
-            where = _where(place, found.country)
+            where = _where(place, found.country, found.city)
         else:
             latitude, longitude, where = self._home_point()
         try:
@@ -554,7 +571,8 @@ class WebOps:
         return [
             Operation(
                 "time_now",
-                "The time or date, here or in a city or country; never search the web for it."
+                "The current time or date, here or in a city, state or country (each of its time"
+                " zones); never search the web for it."
                 " One per call: both only when asked for both.",
                 {
                     "type": "object",
@@ -562,8 +580,7 @@ class WebOps:
                         "what": {"type": "string", "enum": ["time", "date"], "default": "time"},
                         "place": {
                             **_PLACE,
-                            "description": "A city or country (a state or region: its main city);"
-                            " leave out for here",
+                            "description": "A city, state or country; leave out for here",
                         },
                     },
                     "additionalProperties": False,

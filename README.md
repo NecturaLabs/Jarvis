@@ -52,9 +52,9 @@ Jarvis is pre-1.0 software; see [Status](#status).
 - **About itself:** ask which model it runs, its version, its voice or how it is set up; it answers from its
   config and Strata's run config, and reads out its own config files, secrets hidden. It never changes them.
 - **Time and weather:** the time, or the weather now, later or in a named place, asked in any words.
-  The time comes from this PC, for a city or a whole country. A country with several time zones (the
-  United States, Russia, Australia) gets the time on each of its clocks. The weather comes from Open-Meteo,
-  free and without an account. Set your home in [`[weather]`](docs/configuration.md).
+  The time comes from this PC, for a city, a state or province, or a whole country. A country with several
+  time zones (the United States, Russia, Australia) gets the time on each of its clocks. The weather comes
+  from Open-Meteo, free and without an account. Set your home in [`[weather]`](docs/configuration.md).
 - **Research:** questions it can't answer on its own go to a web search through a local SearXNG; it reads
   the best pages and says where the answer came from. Asked what Reddit thinks, it finds Reddit threads and
   reads their top comments from the Arctic Shift archive. Start the search container once as
