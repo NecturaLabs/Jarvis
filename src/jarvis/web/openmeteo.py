@@ -70,12 +70,14 @@ class Place:
     """Where a forecast is for: coordinates, the IANA time zone and the ISO country code.
 
     `country` is a two-letter code or empty; `zone` is checked against the local zone database.
+    `city` names the city a region is answered at (`regions.py`), empty for a place itself.
     """
 
     latitude: float
     longitude: float
     zone: str
     country: str = ""
+    city: str = ""
 
 
 @dataclass(frozen=True, slots=True)
