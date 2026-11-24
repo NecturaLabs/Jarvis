@@ -22,6 +22,7 @@ from jarvis.web.arctic import API, ArcticShift, RedditUnavailableError
 from jarvis.web.guard import (
     BlockedDestinationError,
     PublicOnlyBackend,
+    PublicOnlyTransport,
     is_public,
     public_addresses,
     public_client,
@@ -40,6 +41,7 @@ NAMES = {
     "other.example": ["2606:4700::6810:84e5"],
     "internal.example": ["10.0.0.5"],
     "mixed.example": [PUBLIC, "192.168.1.20"],
+    "two.example": [PUBLIC, "1.1.1.1"],
     "loopback.example": ["127.0.0.1"],
 }
 
@@ -158,6 +160,117 @@ def test_the_client_does_not_follow_redirects_itself() -> None:
 
     assert response.status_code == 302
     assert wire.connected == [(PUBLIC, 80)]
+
+
+@dataclass
+class Refusing(Wire):
+    """A wire on which the listed addresses refuse the connection with `error`."""
+
+    refused: tuple[str, ...] = ()
+    error: type[httpcore.ConnectError | httpcore.ConnectTimeout] = httpcore.ConnectError
+
+    @override
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[Any] | None = None,
+    ) -> httpcore.NetworkStream:
+        if host in self.refused:
+            self.connected.append((host, port))
+            raise self.error(f"{host} refused")
+        return super().connect_tcp(host, port, timeout, local_address, socket_options)
+
+
+def test_an_address_that_refuses_falls_back_to_the_next_checked_one() -> None:
+    wire = Refusing([_http("200 OK", b"hi", Content_Type="text/plain")], refused=(PUBLIC,))
+
+    response = public_client(PublicOnlyBackend(wire, resolve)).get("http://two.example/")
+
+    assert response.text == "hi"
+    assert wire.connected == [(PUBLIC, 80), ("1.1.1.1", 80)]
+
+
+def test_when_every_address_refuses_the_request_fails_as_a_connect_error() -> None:
+    wire = Refusing([], refused=(PUBLIC, "1.1.1.1"))
+
+    with pytest.raises(httpx.ConnectError, match=r"1\.1\.1\.1 refused"):
+        public_client(PublicOnlyBackend(wire, resolve)).get("http://two.example/")
+    assert wire.connected == [(PUBLIC, 80), ("1.1.1.1", 80)]
+
+
+def test_a_connect_timeout_reaches_the_caller_as_one() -> None:
+    wire = Refusing([], refused=(PUBLIC,), error=httpcore.ConnectTimeout)
+
+    with pytest.raises(httpx.ConnectTimeout):
+        public_client(PublicOnlyBackend(wire, resolve)).get("http://public.example/")
+
+
+class _Stalling(httpcore.NetworkStream):
+    """Sends the head of a response, then times out reading the body."""
+
+    def __init__(self, head: bytes) -> None:
+        super().__init__()
+        self._head = [head]
+
+    @override
+    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        if self._head:
+            return self._head.pop()
+        raise httpcore.ReadTimeout("stalled")
+
+    @override
+    def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        pass
+
+    @override
+    def close(self) -> None:
+        pass
+
+
+def test_a_body_that_stalls_is_a_read_timeout_not_a_crash() -> None:
+    @dataclass
+    class StallingWire(Wire):
+        @override
+        def connect_tcp(
+            self,
+            host: str,
+            port: int,
+            timeout: float | None = None,
+            local_address: str | None = None,
+            socket_options: Iterable[Any] | None = None,
+        ) -> httpcore.NetworkStream:
+            self.connected.append((host, port))
+            return _Stalling(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\nabc")
+
+    client = public_client(PublicOnlyBackend(StallingWire([]), resolve))
+
+    with (
+        client.stream("GET", "http://public.example/") as response,
+        pytest.raises(httpx.ReadTimeout),
+    ):
+        response.read()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ws://public.example/",
+        "wss://public.example/",
+        "ftp://public.example/",
+        "file:///etc/passwd",
+    ],
+)
+def test_the_transport_sends_only_http_and_https(url: str) -> None:
+    wire = Wire([])
+
+    with pytest.raises(httpx.UnsupportedProtocol):
+        PublicOnlyTransport(PublicOnlyBackend(wire, resolve)).handle_request(
+            httpx.Request("GET", url)
+        )
+    assert wire.connected == []
 
 
 def test_a_unix_socket_is_refused() -> None:

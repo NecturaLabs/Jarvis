@@ -954,3 +954,44 @@ def test_a_rewrite_with_its_time_set_back_is_not_replaced_either(home: Path) -> 
         op.run(bound)
 
     assert todo.read_text(encoding="utf-8") == "- beer\n- wine\n"
+
+
+def test_a_replace_that_fails_partway_keeps_the_old_file_and_leaves_no_temp_file(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def full(fd: int, _data: bytes, **_options: object) -> None:
+        os.close(fd)
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(files_module, "_fill", full)
+
+    with pytest.raises(OperationError, match="couldn't write"):
+        _write(_ops(home), "~/Documents/todo.md", "only this", mode="replace")
+    assert (home / "Documents" / "todo.md").read_text(encoding="utf-8") == "- milk\n- eggs\n"
+    assert sorted(p.name for p in (home / "Documents").iterdir()) == ["todo.md"]
+
+
+def _stat(mode: int, uid: int, gid: int) -> os.stat_result:
+    return os.stat_result((stat.S_IFREG | mode, 1, 1, 1, uid, gid, 0, 0, 0, 0))
+
+
+@pytest.mark.parametrize(
+    ("mode", "mine", "my_group", "writable"),
+    [
+        (0o644, True, True, True),
+        (0o444, True, True, False),
+        (0o464, True, True, False),  # the owner's own bit decides for the owner, not the group's
+        (0o464, False, True, True),
+        (0o446, False, True, False),  # the group's bit decides for a member, not everyone's
+        (0o446, False, False, True),
+        (0o664, False, False, False),
+    ],
+)
+def test_a_file_is_writable_by_the_bit_that_applies_to_this_user(
+    mode: int, mine: bool, my_group: bool, writable: bool
+) -> None:
+    uid = os.geteuid() if mine else os.geteuid() + 1
+    groups = {os.getegid(), *os.getgroups()}
+    gid = os.getegid() if my_group else max(groups) + 1
+
+    assert files_module._writable(_stat(mode, uid, gid)) is writable  # pyright: ignore[reportPrivateUsage] - the bits for users this test cannot be

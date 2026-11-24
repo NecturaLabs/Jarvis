@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +24,7 @@ from jarvis.operations import (
     request_scope,
     validate_args,
 )
+from jarvis.pc import shell
 from jarvis.pc.shell import (
     DESCRIPTION,
     ENV,
@@ -574,3 +576,120 @@ def test_real_the_command_reaches_the_shell_as_written_with_no_variable_of_jarvi
         del os.environ["SECRET_PROBE"]
 
     assert result.text == "Exit status 0.\n[][${SECRET_PROBE}][${XDG_RUNTIME_DIR}]"
+
+
+def _scope_ends(monkeypatch: pytest.MonkeyPatch, *, ended: bool = True) -> list[str]:
+    """Fake the scope's end; return the units it was asked to end."""
+    units: list[str] = []
+
+    def end(unit: str) -> bool:
+        units.append(unit)
+        return ended
+
+    monkeypatch.setattr(shell, "_end_scope", end)
+    return units
+
+
+def test_only_the_first_bytes_of_endless_output_are_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    units = _scope_ends(monkeypatch)
+    script = (
+        "import sys\nfor _ in range(64): sys.stdout.write('x' * 16384)\n"
+        "print('tail', file=sys.stderr)"
+    )
+
+    ran = run_in_scope([sys.executable, "-c", script], "jarvis-shell-test", 20, 100)
+
+    assert ran.status == 0
+    assert ran.output == "x" * 100
+    assert ran.ended
+    assert units == ["jarvis-shell-test"]
+
+
+def test_errors_come_back_with_the_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    _scope_ends(monkeypatch)
+    script = (
+        "import sys\nprint('out', flush=True)\n"
+        "print('err', file=sys.stderr, flush=True)\nsys.exit(3)"
+    )
+
+    ran = run_in_scope([sys.executable, "-c", script], "jarvis-shell-test", 20, 4000)
+
+    assert ran.status == 3
+    assert ran.output.split() == ["out", "err"]
+
+
+def test_a_command_past_its_time_is_killed_and_its_scope_still_ended(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    units = _scope_ends(monkeypatch, ended=False)
+    started = time.monotonic()
+
+    ran = run_in_scope(
+        [sys.executable, "-c", "import time; time.sleep(60)"], "jarvis-shell-t", 0.3, 4000
+    )
+
+    assert ran.status is None
+    assert not ran.ended
+    assert units == ["jarvis-shell-t"]
+    assert time.monotonic() - started < 10
+
+
+@dataclass
+class FakeSystemctl:
+    """Answers `systemctl --user show` with each state in turn, the last one for ever."""
+
+    states: list[str]
+    calls: list[list[str]] = field(default_factory=list[list[str]])
+    error: Exception | None = None
+
+    def __call__(self, argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        self.calls.append(argv)
+        if self.error is not None:
+            raise self.error
+        if "show" in argv:
+            state = self.states.pop(0) if len(self.states) > 1 else self.states[0]
+            return subprocess.CompletedProcess(argv, 0, f"{state}\n", "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+
+def test_the_scope_is_killed_then_waited_for_until_it_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FakeSystemctl(["active", "deactivating", "inactive"])
+    monkeypatch.setattr(subprocess, "run", fake)
+
+    assert shell._end_scope("jarvis-shell-x")  # pyright: ignore[reportPrivateUsage] - the wait for the scope, without systemd
+    assert fake.calls[0] == [
+        shell.SYSTEMCTL,
+        "--user",
+        "kill",
+        "--signal=SIGKILL",
+        "jarvis-shell-x.scope",
+    ]
+    assert [call[2] for call in fake.calls[1:]] == ["show", "show", "show"]
+
+
+def test_a_failed_scope_counts_as_gone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subprocess, "run", FakeSystemctl(["failed"]))
+
+    assert shell._end_scope("jarvis-shell-x")  # pyright: ignore[reportPrivateUsage] - the wait for the scope, without systemd
+
+
+def test_a_scope_still_there_at_the_deadline_is_reported_not_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(subprocess, "run", FakeSystemctl(["active"]))
+    monkeypatch.setattr(shell, "STOP_WAIT_S", 0.2)
+
+    assert not shell._end_scope("jarvis-shell-x")  # pyright: ignore[reportPrivateUsage] - the wait for the scope, without systemd
+
+
+@pytest.mark.parametrize(
+    "error", [OSError("no systemctl"), subprocess.TimeoutExpired("systemctl", 1)]
+)
+def test_a_user_manager_that_cannot_be_asked_is_reported_not_gone(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    monkeypatch.setattr(subprocess, "run", FakeSystemctl(["inactive"], error=error))
+
+    assert not shell._end_scope("jarvis-shell-x")  # pyright: ignore[reportPrivateUsage] - the wait for the scope, without systemd

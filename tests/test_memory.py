@@ -65,6 +65,34 @@ def test_dropping_to_fit_keeps_the_newest_turns() -> None:
     assert [turn.request for turn in conversation.turns] == ["request 3", "request 4"]
 
 
+def test_only_as_many_old_turns_as_needed_are_folded() -> None:
+    one = _turn(0).cost()
+    conversation = Conversation(budget=one * 6)
+    for number in range(8):
+        conversation.add(_turn(number))
+
+    folded = conversation.oldest_to_fold()
+
+    # Folded down to half the budget (about 3 turns' room), oldest first: 5 of the 6 foldable.
+    assert [turn.request for turn in folded] == [f"request {n}" for n in range(5)]
+
+
+def test_a_summary_too_big_for_the_room_is_dropped_with_its_marks() -> None:
+    conversation = Conversation(budget=50)
+    conversation.add(_turn(0, outside="web"))
+    conversation.add(_turn(1))
+    conversation.add(_turn(2))
+    conversation.fold(conversation.turns[:1], "They read a long page. " * 40)
+
+    dropped = conversation.drop_to_fit()
+
+    assert dropped == 2
+    assert conversation.turns == []
+    assert not conversation.summary
+    assert not conversation.summary_outside
+    assert not conversation.holds_outside_text
+
+
 def test_a_saved_conversation_reads_back_and_is_private(tmp_path: Path) -> None:
     path = tmp_path / "state" / "conversation.json"
     conversation = Conversation(budget=1000)
@@ -96,9 +124,14 @@ def test_a_loaded_conversation_is_not_forgotten_for_the_time_between_sessions(
 
 
 def test_a_broken_or_foreign_file_leaves_the_conversation_empty(tmp_path: Path) -> None:
-    for text in ("not json", json.dumps({"version": 99, "turns": []}), json.dumps([1, 2])):
+    saved = Conversation(budget=1000)
+    saved.add(_turn(0))
+    saved.save(tmp_path / "whole.json")
+    foreign = json.loads((tmp_path / "whole.json").read_text(encoding="utf-8")) | {"version": 99}
+    for text in ("not json", json.dumps(foreign), json.dumps([1, 2])):
         path = tmp_path / "conversation.json"
         path.write_text(text, encoding="utf-8")
+        path.chmod(0o600)  # as Jarvis saves it, so the content itself is what is refused
         conversation = Conversation(budget=1000)
 
         assert not conversation.load(path)
