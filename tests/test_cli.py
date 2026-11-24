@@ -459,6 +459,24 @@ def test_doctor_checks_the_whisper_model_is_downloaded(
     )
 
 
+def test_doctor_checks_a_gguf_engines_model_file_is_there(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    model = home / "stt" / "parakeet.gguf"
+    audio = config.AudioConfig(transcribe_engine="parakeet", transcribe_model=str(model))
+    config.save(config.Config(data_dir=home / "models", audio=audio))
+
+    cli.main(["doctor"])
+
+    assert any(line.startswith("FAIL") and str(model) in line for line in _doctor_lines(capsys))
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"GGUF")
+
+    cli.main(["doctor"])
+
+    assert any(line.startswith("ok ") and str(model) in line for line in _doctor_lines(capsys))
+
+
 def test_doctor_leaves_other_speech_engines_to_voxtype(
     home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -736,6 +754,23 @@ def test_requests_are_transcribed_with_the_hint_and_answers_without(
     assert [hint for hint, _ in heard] == ["Jarvis. play, pause.", ""]
     assert {used for _, used in heard} == {settings}
     assert settings.read_text() == audio_module.voxtype_settings(8, short_window=True)
+
+
+def test_a_gguf_engine_gets_its_model_in_jarvis_settings_and_no_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only Whisper reads `--initial-prompt`; the other engines would ignore the hint."""
+    heard = _transcribed(monkeypatch, "pause")
+    audio = config.AudioConfig(transcribe_engine="parakeet", transcribe_model="/m/p.gguf")
+    request, _ = cli._transcribers(config.Config(audio=audio), lambda: "Jarvis. play.")  # pyright: ignore[reportPrivateUsage] - the helper that builds both transcribers
+
+    request(SAMPLES)
+
+    assert not heard[0][0]
+    settings = (paths.config_dir() / "voxtype.toml").read_text()
+    assert settings == audio_module.voxtype_settings(
+        8, short_window=True, engine="parakeet", model="/m/p.gguf"
+    )
 
 
 def test_a_transcript_that_only_repeats_the_hint_is_dropped(

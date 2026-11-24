@@ -354,7 +354,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--engine",
         default=None,
         metavar="NAME",
-        help="score: another Voxtype engine (give its --model too, or --model '')",
+        help="score: another Voxtype engine; give its model too (a .gguf file for parakeet, "
+        "cohere or gguf)",
     )
     test.add_argument("--model", default=None, metavar="NAME", help="score: another model")
     test.add_argument("--no-hint", action="store_true", help="score: without the vocabulary hint")
@@ -620,11 +621,18 @@ def _transcribers(cfg: config.Config, hint: Callable[[], str]) -> tuple[_Transcr
     settings = paths.config_dir() / "voxtype.toml"
     write_atomic(
         settings,
-        voxtype_settings(audio.transcribe_threads, short_window=audio.transcribe_short_window),
+        voxtype_settings(
+            audio.transcribe_threads,
+            short_window=audio.transcribe_short_window,
+            engine=engine,
+            model=model,
+        ),
     )
+    # Only Whisper reads `--initial-prompt`; another engine would ignore the hint.
+    hinted = audio.vocabulary_hint and engine in {"", "whisper"}
 
     def request(samples: NDArray[np.int16]) -> str:
-        primed = hint() if audio.vocabulary_hint else ""
+        primed = hint() if hinted else ""
         text = transcribe(samples, engine, model, primed, settings=settings)
         if primed and echoes_hint(text, primed):
             log.info("ignored a transcript that only repeats the vocabulary hint: %r", text)
@@ -861,14 +869,18 @@ def _model_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
 
 
 def _whisper_model(cfg: config.Config) -> list[tuple[bool, str, str]]:
-    """Return the check that Voxtype has downloaded the Whisper model Jarvis asks it for.
+    """Return the check that the speech model Jarvis asks Voxtype for is there.
 
-    Other engines keep their models in their own forms, so Voxtype itself reports on those.
+    That is a downloaded Whisper model, or the file a Parakeet, Cohere or GGUF engine is given;
+    other engines keep their models in their own forms, so Voxtype itself reports on those.
     """
     from jarvis import audio as audio_module  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     audio = cfg.audio
     name = audio.transcribe_model
+    if audio_module.model_in_settings(audio.transcribe_engine, name):
+        fix = "download it, or point audio.transcribe_model at the model file"
+        return [(Path(name).is_file(), f"speech model {name}", fix)]
     if audio.transcribe_engine not in {"", "whisper"} or not name:
         return []
     fix = "download it with `voxtype setup model`"

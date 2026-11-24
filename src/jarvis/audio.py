@@ -15,6 +15,7 @@ import os
 import queue
 import re
 import select
+import struct
 import subprocess
 import tempfile
 import threading
@@ -1148,16 +1149,82 @@ def is_phantom(text: str) -> bool:
     return " ".join(words) in _PHANTOMS
 
 
-def voxtype_settings(threads: int, *, short_window: bool) -> str:
+# Engines that read their model file from a section of Voxtype's config named after them, not
+# from `--model`.
+FILE_ENGINES = frozenset({"parakeet", "cohere", "gguf"})
+_GGUF_SCALARS = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+_GGUF_STRING, _GGUF_ARRAY = 8, 9
+_GGUF_MAX_KEYS = 64  # general.architecture comes first in every file seen; never read far
+_GGUF_MAX_TEXT = 1 << 16  # longer than any metadata key or name
+_GGUF_MAX_ITEMS = 1 << 20
+
+
+def gguf_architecture(path: Path) -> str:
+    """Return a GGUF checkpoint's `general.architecture`, or "" when it cannot be read."""
+    try:
+        with path.open("rb") as handle:
+            return _architecture(handle)
+    except OSError, ValueError, struct.error, UnicodeDecodeError:
+        return ""
+
+
+def _take(handle: IO[bytes], size: int) -> bytes:
+    data = handle.read(size)
+    if len(data) < size:
+        msg = "the file ends early"
+        raise ValueError(msg)
+    return data
+
+
+def _text(handle: IO[bytes]) -> str:
+    (length,) = struct.unpack("<Q", _take(handle, 8))
+    if length > _GGUF_MAX_TEXT:
+        msg = "a string too long for metadata"
+        raise ValueError(msg)
+    return _take(handle, length).decode()
+
+
+def _skip(handle: IO[bytes], kind: int) -> None:
+    if kind == _GGUF_STRING:
+        _text(handle)
+    elif kind == _GGUF_ARRAY:
+        inner, count = struct.unpack("<IQ", _take(handle, 12))
+        for _ in range(min(count, _GGUF_MAX_ITEMS)):
+            _skip(handle, inner)
+    else:
+        _take(handle, _GGUF_SCALARS[kind])
+
+
+def _architecture(handle: IO[bytes]) -> str:
+    if _take(handle, 4) != b"GGUF":
+        return ""
+    _version, _tensors, keys = struct.unpack("<IQQ", _take(handle, 20))
+    for _ in range(min(keys, _GGUF_MAX_KEYS)):
+        key = _text(handle)
+        (kind,) = struct.unpack("<I", _take(handle, 4))
+        if key == "general.architecture" and kind == _GGUF_STRING:
+            return _text(handle)
+        _skip(handle, kind)
+    return ""
+
+
+def model_in_settings(engine: str, model: str) -> bool:
+    """Whether `model` goes in Jarvis's Voxtype config rather than on the command line."""
+    return engine in FILE_ENGINES and model.startswith("/")
+
+
+def voxtype_settings(threads: int, *, short_window: bool, engine: str = "", model: str = "") -> str:
     """Return Jarvis's own Voxtype config (TOML), read in place of the owner's for its runs.
 
     Whisper pads every clip to 30 s, so a two-second request costs as much as a long one;
     `short_window` (Voxtype's `context_window_optimization`) sizes the window to the clip, about
     five times faster for a spoken command. Whisper.cpp also uses only 4 threads unless told.
     `keep_failed_recordings` off means Voxtype never leaves the owner's voice in its
-    `failed-audio` folder after one of Jarvis's runs.
+    `failed-audio` folder after one of Jarvis's runs. A model file for an engine in
+    `FILE_ENGINES` goes in that engine's own section, which is where Voxtype reads it; the
+    GGUF engine is also told the file's architecture, which it refuses to guess.
     """
-    return (
+    text = (
         "[audio]\n"
         "keep_failed_recordings = false\n"
         "\n"
@@ -1165,6 +1232,13 @@ def voxtype_settings(threads: int, *, short_window: bool) -> str:
         f"threads = {int(threads)}\n"
         f"context_window_optimization = {'true' if short_window else 'false'}\n"
     )
+    if model_in_settings(engine, model):
+        # A JSON string is a valid TOML basic string, quotes and backslashes escaped.
+        text += f"\n[{engine}]\nmodel = {json.dumps(model)}\n"
+        architecture = gguf_architecture(Path(model)) if engine == "gguf" else ""
+        if architecture:
+            text += f"architecture = {json.dumps(architecture)}\n"
+    return text
 
 
 def voxtype_command(
@@ -1180,7 +1254,7 @@ def voxtype_command(
         cmd += ["-c", str(settings)]
     # The `--option=value` form keeps a value that starts with a dash (a song name in the hint)
     # from being read as another option.
-    if model:
+    if model and not model_in_settings(engine, model):
         cmd.append(f"--model={model}")
     if engine:
         cmd.append(f"--engine={engine}")
