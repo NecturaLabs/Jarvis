@@ -26,6 +26,8 @@ from jarvis.web import regions
         ("Washington State", "Seattle"),
         # Regression: the trailing "territory" of the name itself was taken as a qualifier.
         ("Northern Territory", "Darwin"),
+        ("the territory of Northern Territory", "Darwin"),
+        ("Missouri", "St. Louis"),
         ("the Australian Capital Territory", "Canberra"),
         ("Yukon Territory", "Whitehorse"),
         ("the province of Quebec", "Montreal"),

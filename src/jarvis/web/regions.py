@@ -37,7 +37,7 @@ _ROWS: tuple[tuple[str, str, str, float, float, str], ...] = (
     ("Arkansas", "US", "Little Rock", 34.75, -92.29, "America/Chicago"),
     ("California", "US", "Los Angeles", 34.05, -118.24, "America/Los_Angeles"),
     ("Colorado", "US", "Denver", 39.74, -104.99, "America/Denver"),
-    ("Connecticut", "US", "Bridgeport", 41.19, -73.20, "America/New_York"),
+    ("Connecticut", "US", "Hartford", 41.76, -72.68, "America/New_York"),
     ("Delaware", "US", "Wilmington", 39.74, -75.55, "America/New_York"),
     ("Florida", "US", "Miami", 25.77, -80.19, "America/New_York"),
     ("Georgia", "US", "Atlanta", 33.75, -84.39, "America/New_York"),
@@ -55,7 +55,7 @@ _ROWS: tuple[tuple[str, str, str, float, float, str], ...] = (
     ("Michigan", "US", "Detroit", 42.33, -83.05, "America/Detroit"),
     ("Minnesota", "US", "Minneapolis", 44.98, -93.27, "America/Chicago"),
     ("Mississippi", "US", "Jackson", 32.30, -90.18, "America/Chicago"),
-    ("Missouri", "US", "Kansas City", 39.10, -94.58, "America/Chicago"),
+    ("Missouri", "US", "St. Louis", 38.63, -90.20, "America/Chicago"),
     ("Montana", "US", "Billings", 45.78, -108.50, "America/Denver"),
     ("Nebraska", "US", "Omaha", 41.26, -95.94, "America/Chicago"),
     ("Nevada", "US", "Las Vegas", 36.17, -115.14, "America/Los_Angeles"),
@@ -70,7 +70,7 @@ _ROWS: tuple[tuple[str, str, str, float, float, str], ...] = (
     ("Oregon", "US", "Portland", 45.52, -122.68, "America/Los_Angeles"),
     ("Pennsylvania", "US", "Philadelphia", 39.95, -75.17, "America/New_York"),
     ("Rhode Island", "US", "Providence", 41.82, -71.41, "America/New_York"),
-    ("South Carolina", "US", "Charleston", 32.78, -79.93, "America/New_York"),
+    ("South Carolina", "US", "Greenville", 34.85, -82.40, "America/New_York"),
     ("South Dakota", "US", "Sioux Falls", 43.54, -96.73, "America/Chicago"),
     ("Tennessee", "US", "Nashville", 36.16, -86.78, "America/Chicago"),
     ("Texas", "US", "Houston", 29.76, -95.37, "America/Chicago"),
@@ -113,6 +113,7 @@ _COUNTRY_WORDS = {
 # Said alone, these name something else first: the country Georgia, the capital Washington and
 # Quebec City.
 _NEEDS_A_WORD = frozenset({"georgia", "washington", "quebec"})
+_OF = re.compile(r"^(?:state|province|territory) of ")
 _KIND = re.compile(
     r"^(?:(?:state|province|territory) of )?(?P<name>.+?)(?: (?:state|province|territory))?$"
 )
@@ -128,7 +129,7 @@ def find_region(place: str) -> Region | None:
     kind = _KIND.fullmatch(said)
     stripped = kind["name"] if kind else said
     # The name as said first: "territory" in "Northern Territory" is part of the name.
-    for name in dict.fromkeys((said, stripped)):
+    for name in dict.fromkeys((said, _OF.sub("", said), stripped)):
         region = _BY_NAME.get(name)
         if region is not None:
             return None if name == said and name in _NEEDS_A_WORD else region

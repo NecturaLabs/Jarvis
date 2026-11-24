@@ -359,7 +359,7 @@ def test_the_model_is_told_the_time_tool_takes_a_country() -> None:
         ("Washington state", "Time in Washington state (US, at Seattle): 5:35 AM."),
     ],
 )
-def test_the_time_in_a_state_or_province_is_its_largest_citys_without_the_network(
+def test_the_time_in_a_state_or_province_is_its_main_citys_without_the_network(
     place: str, expected: str
 ) -> None:
     # Regression: the place went to the geocoder as said, and its best "Texas" is a village in
