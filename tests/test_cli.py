@@ -1808,3 +1808,46 @@ def test_a_speech_test_records_the_cards_with_music_marked_and_lets_the_mic_go(
     assert [entry["music"] for entry in saved] == [True]
     assert stopped == [True]
     assert "Saved 1 requests" in capsys.readouterr().out
+
+
+def test_a_speech_test_will_not_record_while_jarvis_is_listening(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _fake_jarvis(monkeypatch, "")
+    opened: list[bool] = []
+
+    def send(_command: str, _path: object = None, timeout: float = 10.0) -> dict[str, object]:
+        assert timeout <= 1
+        return {"ok": True, "paused": False}
+
+    def listener(_cfg: config.Config) -> None:
+        opened.append(True)
+
+    monkeypatch.setattr(cli.control, "send", send)
+    monkeypatch.setattr(cli, "_listener", listener)
+
+    assert main(["speech-test", "record", "--dir", str(home / "set")]) == 1
+
+    assert "jarvis pause" in capsys.readouterr().err
+    assert not opened
+
+
+@pytest.mark.parametrize("count", ["0", "-2", "many"])
+def test_a_speech_test_needs_a_positive_count(
+    count: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit):
+        main(["speech-test", "record", "--count", count])
+
+    assert "--count" in capsys.readouterr().err
+
+
+def test_a_speech_test_compare_says_when_a_score_cannot_be_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+
+    assert main(["speech-test", "compare", str(broken), str(tmp_path / "missing.json")]) == 2
+
+    assert "could not be read" in capsys.readouterr().err

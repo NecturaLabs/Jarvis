@@ -342,7 +342,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="the set's folder (default: speech-test in the data folder)",
     )
     test.add_argument(
-        "--count", type=int, default=40, metavar="N", help="record: how many cards (40)"
+        "--count", type=_positive, default=40, metavar="N", help="record: how many cards (40)"
     )
     test.add_argument(
         "--music", action="store_true", help="record: mark these as said with music playing"
@@ -351,7 +351,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--out", type=Path, default=None, metavar="FILE", help="score: save each request's result"
     )
     test.add_argument(
-        "--engine", default=None, metavar="NAME", help="score: another Voxtype engine"
+        "--engine",
+        default=None,
+        metavar="NAME",
+        help="score: another Voxtype engine (give its --model too, or --model '')",
     )
     test.add_argument("--model", default=None, metavar="NAME", help="score: another model")
     test.add_argument("--no-hint", action="store_true", help="score: without the vocabulary hint")
@@ -1502,6 +1505,28 @@ def cmd_overview(args: argparse.Namespace) -> int:
 LISTEN_WAIT_S = 8.0  # how long a speech-test card waits for speech to start
 
 
+def _positive(text: str) -> int:
+    """Parse a count of at least one.
+
+    Raises:
+        ArgumentTypeError: `text` is not a whole number of at least 1.
+    """
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if value < 1:
+        msg = f"not a count of at least 1: {text!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return value
+
+
+def _listening() -> bool:
+    """Whether a running Jarvis may hold the microphone: it runs, and has not said it is paused."""
+    status = control.send("status", timeout=1.0)
+    return status is not None and status.get("paused") is not True
+
+
 def _listener(
     cfg: config.Config,
 ) -> tuple[Callable[[], NDArray[np.int16] | None], Callable[[], None]]:
@@ -1524,18 +1549,29 @@ def _listener(
     return listen, mic.stop
 
 
+def _compare_scores(scores: list[Path]) -> int:
+    """Print whether two saved scores differ beyond chance; return the exit code."""
+    from jarvis import speechtest  # ruff: ignore[import-outside-top-level] - imports jarvis.audio
+
+    if len(scores) != 2:  # ruff: ignore[magic-value-comparison] - a pair
+        print("jarvis: compare takes two score files saved by `score --out`", file=sys.stderr)
+        return 2
+    try:
+        first, second = (json.loads(path.read_text(encoding="utf-8")) for path in scores)
+    except (OSError, ValueError) as exc:
+        print(f"jarvis: a score could not be read: {exc}", file=sys.stderr)
+        return 2
+    print(speechtest.compare(first, second))
+    return 0
+
+
 def cmd_speech_test(args: argparse.Namespace) -> int:
     """Record a private set of your requests, score speech-to-text on it, or compare two scores."""
     from jarvis import speechtest  # ruff: ignore[import-outside-top-level] - imports jarvis.audio
     from jarvis.audio import AudioError  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     if args.action == "compare":
-        if len(args.scores) != 2:  # ruff: ignore[magic-value-comparison] - a pair
-            print("jarvis: compare takes two score files saved by `score --out`", file=sys.stderr)
-            return 2
-        first, second = (json.loads(path.read_text(encoding="utf-8")) for path in args.scores)
-        print(speechtest.compare(first, second))
-        return 0
+        return _compare_scores(args.scores)
     cfg = _load()
     folder = args.dir or cfg.data_dir / "speech-test"
     audio = cfg.audio.model_copy(
@@ -1557,12 +1593,19 @@ def cmd_speech_test(args: argparse.Namespace) -> int:
         return 2
     jarvis.ops.refresh()  # your artists, for the cards and the hint
     request, _answer = _transcribers(cfg, jarvis.hint)
+    if args.action == "record" and _listening():
+        print("jarvis: Jarvis is listening; `jarvis pause` it first, then record", file=sys.stderr)
+        return 1
+    heard_with = f"{audio.transcribe_engine or 'default'} {audio.transcribe_model}".strip()
+    artists = jarvis.ops.artist_names()
+    if args.action == "record" and not artists:
+        print("No artists from Spotify, so every card is an open request.")
     try:
         if args.action == "record":
-            return _record_set(cfg, folder, request, args, jarvis.ops.artist_names())
-        print(f"Scoring {folder} with {audio.transcribe_engine or 'the default engine'} …")
+            return _record_set(cfg, folder, request, args, (artists, heard_with))
+        print(f"Scoring {folder} with {heard_with} …")
         results = speechtest.score(folder, request, print)
-    except AudioError as exc:
+    except (AudioError, speechtest.FolderError, OSError, ValueError) as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 1
     print(speechtest.report(results))
@@ -1577,19 +1620,30 @@ def _record_set(
     folder: Path,
     request: _Transcriber,
     args: argparse.Namespace,
-    artists: list[str],
+    about: tuple[list[str], str],
 ) -> int:
-    """Record `args.count` cards into `folder`; return the exit code."""
+    """Record `args.count` cards into `folder`; return the exit code.
+
+    `about` holds the owner's artists, for the cards, and the transcriber that hears first.
+    """
+    artists, heard_with = about
     from jarvis import speechtest  # ruff: ignore[import-outside-top-level] - imports jarvis.audio
 
     rng = random.Random()  # ruff: ignore[suspicious-non-cryptographic-random-usage] - card order
     to_say = speechtest.cards(artists, args.count, rng)
     print(f"Recording into {folder}. Say each card in your own words, as you would to Jarvis,")
-    print("without the wake word. Pause Jarvis first (`jarvis pause`) if it is running.")
+    print("without the wake word.")
     listen, stop = _listener(cfg)
     try:
         saved = speechtest.record(
-            folder, to_say, listen, request, ask=input, show=print, music=args.music
+            folder,
+            to_say,
+            listen,
+            request,
+            ask=input,
+            show=print,
+            music=args.music,
+            heard_with=heard_with,
         )
     finally:
         stop()

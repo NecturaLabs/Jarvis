@@ -15,7 +15,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   current settings (`--engine`, `--model` and `--no-hint` try others) and reports the word error rate, the
   names heard right and the time taken, by kind of card; `compare` pairs two saved scores request by
   request and says whether they differ beyond chance (an exact McNemar test on the names, a sign test on
-  the words). The set stays in its folder (0700, files 0600) and is never sent anywhere.
+  the words). The set stays in its folder (0700, files 0600) and is never sent anywhere; an existing folder
+  holding anything but a set is refused and left as it is, and `record` waits until a running Jarvis is
+  paused, so a card said aloud is never acted on.
 - Each request's sound levels are logged before it is transcribed, as one `levels:` line of numbers: peak,
   speech level, the room's floor, the signal-to-noise ratio, how loud its first 20 ms already were (high
   when the start was cut off) and the share of clipped samples. A misheard request can then be told apart:

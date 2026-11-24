@@ -23,6 +23,7 @@ htmlcov/
 
 # Models, recordings, keys and tokens never belong in git
 *.wav
+set.jsonl
 *.onnx
 *.npz
 *.pem

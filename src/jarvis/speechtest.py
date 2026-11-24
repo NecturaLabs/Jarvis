@@ -10,6 +10,7 @@ request by request (an exact McNemar test on the names, a sign test on the words
 Recordings stay in the folder chosen, readable by its owner only, and are never sent anywhere.
 """
 
+import itertools
 import json
 import math
 import os
@@ -22,12 +23,12 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from jarvis.audio import RATE, write_wav
+from jarvis.audio import RATE, AudioError, write_wav
 from jarvis.levels import levels
 
 if TYPE_CHECKING:
     import random
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
 
     from numpy.typing import NDArray
@@ -62,21 +63,45 @@ class Card:
 
 def cards(artists: list[str], count: int, rng: random.Random) -> list[Card]:
     """Return `count` cards: about half name one of `artists`, the rest are open requests."""
-    named = min(round(count * _ARTIST_SHARE), len(artists)) if artists else 0
-    out = [Card("artist", _ARTIST.format(name=name), name) for name in rng.sample(artists, named)]
+    names = list(dict.fromkeys(_printable(name) for name in artists if _printable(name)))
+    named = min(round(count * _ARTIST_SHARE), len(names))
+    out = [Card("artist", _ARTIST.format(name=name), name) for name in rng.sample(names, named)]
     for kind, prompt, asks_name in (rng.choice(_GENERAL) for _ in range(count - named)):
         out.append(Card(kind, prompt, asks_name=asks_name))
     rng.shuffle(out)
     return out
 
 
-def _private_folder(folder: Path) -> None:
-    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    folder.chmod(0o700)
+class FolderError(Exception):
+    """The folder given holds something other than a speech test set."""
+
+
+def _printable(name: str) -> str:
+    """Return a name from Spotify with what a terminal would act on left out."""
+    return " ".join("".join(ch for ch in name if ch.isprintable()).split())
+
+
+def _set_folder(folder: Path) -> None:
+    """Make the set's folder (readable by its owner only), or check an existing one is a set.
+
+    An existing folder is left as it is: only an empty one or one holding a set is used.
+
+    Raises:
+        FolderError: the folder holds other things.
+    """
+    try:
+        folder.mkdir(mode=0o700, parents=True)
+    except FileExistsError:
+        if any(folder.iterdir()) and not (folder / MANIFEST).is_file():
+            msg = f"{folder} is not a speech test set; give an empty or a new folder"
+            raise FolderError(msg) from None
 
 
 def _next_id(folder: Path) -> int:
-    return 1 + max((int(entry["id"]) for entry in read_set(folder)), default=0)
+    """Return the next free number: after every saved request and every recording left behind."""
+    saved = (int(entry["id"]) for entry in read_set(folder))
+    left = (int(path.stem) for path in folder.glob("*.wav") if path.stem.isdigit())
+    return 1 + max(itertools.chain(saved, left), default=0)
 
 
 def read_set(folder: Path) -> list[dict[str, Any]]:
@@ -119,30 +144,66 @@ def record(  # ruff: ignore[too-many-arguments] - the capture and the terminal a
     ask: Callable[[str], str] = input,
     show: Callable[[str], None] = print,
     music: bool = False,
+    heard_with: str = "",
 ) -> int:
     """Record one request per card into `folder` until the cards run out or the owner stops.
 
     Each request is saved with what the owner said: what was heard, confirmed, or the words they
-    typed instead. Returns how many were saved.
+    typed instead, and `heard_with`, the transcriber that heard it first (a score by that one
+    starts from its own words). The end of input stops the session like `q`. Returns how many
+    were saved. A `folder` holding something other than a set raises `FolderError`.
     """
-    _private_folder(folder)
-    number = _next_id(folder)
+    _set_folder(folder)
     saved = 0
+    try:
+        for _entry in _session(
+            folder,
+            to_say,
+            listen,
+            transcribe,
+            ask=ask,
+            show=show,
+            music=music,
+            heard_with=heard_with,
+        ):
+            saved += 1
+    except EOFError:
+        show("")
+    return saved
+
+
+def _session(  # ruff: ignore[too-many-arguments] - the parts of one session
+    folder: Path,
+    to_say: Iterable[Card],
+    listen: Callable[[], NDArray[np.int16] | None],
+    transcribe: Callable[[NDArray[np.int16]], str],
+    *,
+    ask: Callable[[str], str],
+    show: Callable[[str], None],
+    music: bool,
+    heard_with: str,
+) -> Iterator[dict[str, Any]]:
+    """Yield each request saved, one card at a time, until the cards run out or `q`."""
+    number = _next_id(folder)
     for card in to_say:
         show(f"\n[{number:04d}] {card.prompt}")
         start = ask("  Press Enter, then speak (s to skip, q to stop): ").strip().lower()
         if start == STOP:
-            break
+            return
         if start == SKIP:
             continue
         samples = listen()
         if samples is None:
             show("  Nothing was heard; moving on.")
             continue
-        heard = transcribe(samples)
+        try:
+            heard = transcribe(samples)
+        except AudioError as exc:
+            heard = ""
+            show(f"  Speech-to-text failed ({exc}); type what you said.")
         show(f"  Heard: {heard!r}")
         answer = ask("  Enter if that is what you said, or type what you said (s to skip): ")
-        if answer.strip().lower() == SKIP:
+        if answer.strip().lower() == SKIP or not (answer.strip() or heard):
             continue
         name = card.name
         if card.asks_name:
@@ -153,14 +214,14 @@ def record(  # ruff: ignore[too-many-arguments] - the capture and the terminal a
             "prompt": card.prompt,
             "name": name,
             "said": answer.strip() or heard,
+            "heard_with": heard_with,
             "music": music,
             "seconds": round(len(samples) / RATE, 2),
             "levels": asdict(levels(samples)),
         }
         _save(folder, entry, samples)
         number += 1
-        saved += 1
-    return saved
+        yield entry
 
 
 def words(text: str) -> list[str]:
@@ -180,6 +241,17 @@ def word_errors(said: list[str], heard: list[str]) -> int:
 
 def _letters(text: str) -> str:
     return "".join(ch for ch in text.casefold() if ch.isalnum())
+
+
+def name_heard(name: str, heard: str) -> bool:
+    """Whether `name` is in `heard` as whole words, spaced or run together ("glassharbor")."""
+    wanted = _letters(name)
+    said = words(heard)
+    return any(
+        "".join(said[start:end]) == wanted
+        for start in range(len(said))
+        for end in range(start + 1, len(said) + 1)
+    )
 
 
 def score(
@@ -203,7 +275,7 @@ def score(
                 "heard": heard,
                 "errors": word_errors(said, words(heard)),
                 "words": len(said),
-                "name_heard": (_letters(name) in _letters(heard)) if _letters(name) else None,
+                "name_heard": name_heard(name, heard) if _letters(name) else None,
                 "seconds": round(seconds, 3),
             }
         )

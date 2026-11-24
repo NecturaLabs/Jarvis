@@ -1887,6 +1887,21 @@ def test_a_refresh_learns_how_the_library_sounds_ahead_of_any_request(
     assert {"Glass Harbor", "Phlox Daze", "Low Tide"} <= set(said)
 
 
+def test_names_that_cannot_be_sounded_out_still_reach_the_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(_text: str) -> str:
+        msg = "espeak failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(espeak, "sounds", broken)
+    ops = build_ops(FakeSpotify(top_artists=[GLASS_HARBOR]), tmp_path)
+
+    ops.refresh()
+
+    assert ops.artist_names() == ["Glass Harbor"]
+
+
 def test_every_refresh_reloads_even_inside_the_cache_time(tmp_path: Path) -> None:
     fake = FakeSpotify(top_artists=[GLASS_HARBOR])
     ops = build_ops(fake, tmp_path)

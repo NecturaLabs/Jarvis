@@ -188,3 +188,116 @@ def test_a_saved_set_holds_plain_json_lines(tmp_path: Path) -> None:
 
     (line,) = (tmp_path / speechtest.MANIFEST).read_text(encoding="utf-8").splitlines()
     assert json.loads(line)["kind"] == "free"
+
+
+def test_an_existing_folder_that_holds_something_else_is_refused(tmp_path: Path) -> None:
+    folder = tmp_path / "documents"
+    folder.mkdir(mode=0o755)
+    (folder / "notes.txt").write_text("mine", encoding="utf-8")
+
+    with pytest.raises(speechtest.FolderError, match="not a speech test set"):
+        _record(folder, [Card("free", "Ask.")], ["", ""])
+
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o755
+    assert sorted(path.name for path in folder.iterdir()) == ["notes.txt"]
+
+
+def test_an_existing_empty_folder_is_used_as_it_is(tmp_path: Path) -> None:
+    folder = tmp_path / "set"
+    folder.mkdir(mode=0o750)
+
+    _record(folder, [Card("free", "Ask.")], ["", ""])
+
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o750
+    assert len(speechtest.read_set(folder)) == 1
+
+
+def test_a_recording_left_without_its_line_is_not_overwritten(tmp_path: Path) -> None:
+    """A crash between the WAV and its manifest line left an orphan the next session hit."""
+    _record(tmp_path, [Card("free", "Ask.")], ["", ""])
+    (tmp_path / "0002.wav").write_bytes(b"orphan")
+
+    _record(tmp_path, [Card("free", "Ask.")], ["", ""])
+
+    assert [entry["id"] for entry in speechtest.read_set(tmp_path)] == ["0001", "0003"]
+    assert (tmp_path / "0002.wav").read_bytes() == b"orphan"
+
+
+def test_a_failed_transcription_still_lets_the_owner_type_what_they_said(tmp_path: Path) -> None:
+    answers = iter(["", "pause the music"])
+
+    def fail(_samples: object) -> str:
+        msg = "voxtype transcribe failed"
+        raise speechtest.AudioError(msg)
+
+    saved = speechtest.record(
+        tmp_path,
+        [Card("player", "Pause.")],
+        lambda: SPEECH,
+        fail,
+        ask=lambda _prompt: next(answers),
+        show=lambda _line: None,
+    )
+
+    assert saved == 1
+    assert speechtest.read_set(tmp_path)[0]["said"] == "pause the music"
+
+
+def test_end_of_input_stops_the_session_and_keeps_what_was_saved(tmp_path: Path) -> None:
+    answers = iter(["", ""])
+
+    def ask(_prompt: str) -> str:
+        answer = next(answers, None)
+        return _end() if answer is None else answer
+
+    saved = speechtest.record(
+        tmp_path,
+        [Card("free", "Ask.")] * 3,
+        lambda: SPEECH,
+        lambda _samples: "hello",
+        ask=ask,
+        show=lambda _line: None,
+    )
+
+    assert saved == 1
+
+
+def _end() -> str:
+    raise EOFError
+
+
+def test_each_request_notes_which_transcriber_heard_it_first(tmp_path: Path) -> None:
+    answers = iter(["", ""])
+    speechtest.record(
+        tmp_path,
+        [Card("free", "Ask.")],
+        lambda: SPEECH,
+        lambda _samples: "hello",
+        ask=lambda _prompt: next(answers),
+        show=lambda _line: None,
+        heard_with="whisper small.en",
+    )
+
+    assert speechtest.read_set(tmp_path)[0]["heard_with"] == "whisper small.en"
+
+
+def test_a_card_never_carries_terminal_control_characters() -> None:
+    made = speechtest.cards(["Glass\x1b[2J Harbor"], 2, random.Random(1))  # ruff: ignore[suspicious-non-cryptographic-random-usage] - card order
+
+    (card,) = (card for card in made if card.kind == "artist")
+    assert card.prompt.isprintable()
+    assert card.name == "Glass[2J Harbor"
+
+
+@pytest.mark.parametrize(
+    ("name", "heard", "found"),
+    [
+        ("Eve", "play something even better", False),
+        ("Eve", "play eve", True),
+        ("Glass Harbor", "play glass harbor now", True),
+        ("Glass Harbor", "play glassharbor", True),
+        ("Three Days Grace", "play 3 days grace", False),
+    ],
+)
+def test_a_name_counts_as_heard_only_as_whole_words(name: str, heard: str, *, found: bool) -> None:
+    assert speechtest.name_heard(name, heard) is found
