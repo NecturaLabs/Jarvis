@@ -44,6 +44,25 @@ run config that names a file that is gone. The reference machine for every numbe
 - **Qwen3.6-35B-A3B** was the model until 2026-11-23; its profile used to be built by Jarvis itself. Its
   latency and memory are below.
 
+### Context size
+
+Measured on 2026-11-24 with Qwen3.8-Flash-Next and `strata.vram_reserve_mib = 12000`, the context kept on
+the card (no `kv_resident`), through the same 27 spoken requests as below and a long prompt sent twice (the
+second time with the same start, as a follow-up turn is):
+
+| `context` | VRAM | RAM of the Strata unit | 27 requests, median | A 23,000-token prompt, new | Same start again |
+|---|---|---|---|---|---|
+| 24,576 | 8.08 GiB | 37.5 GiB | 1.8 s | 11.0 s | 3.0 s |
+| 49,152 | 8.00 GiB | 38 to 40 GiB | 1.5 s | 11.0 s | 3.1 s |
+| 65,536 | 8.00 GiB | 37 to 39 GiB | 1.7 s | 14.3 s | 2.9 s |
+
+The reserve holds the engine's VRAM where it is, so the game keeps its room at any of these sizes; a larger
+context takes expert slots instead. At 49,152 that cost nothing measurable; at 65,536 more experts were read
+over PCIe (about 20% of those routed, against 16%) and a new long prompt was read about 30% slower. A
+42,000-token prompt at 49,152 took 13.2 s new and 3.0 s with the same start. `kv_resident` would move the
+context to pinned RAM instead, which cannot be given back to a game that needs it; on a 60 GiB PC with
+the model loaded about 9 GiB stayed free, so it was not tried further.
+
 ### Thinking
 
 Jarvis asks for no thinking by default (`[agent]` and `[chat]` `thinking = "none"`). Set to `low`,
