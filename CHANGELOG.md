@@ -8,15 +8,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
-- Jarvis thinks a little before each answer: `thinking`
-  (`none`, `low`, `medium` or `high`, Strata's reasoning effort) is `low` by default in `[agent]` and
-  `[chat]`, capped by `thinking_tokens` (192 for speech, 512 in the chat), after which Strata closes the
-  thinking and lets the model answer. The thinking is never spoken or shown, and it comes on top of the
-  reply's own cap. It costs time: up to about 3 s more before each spoken model call's first words at the
-  full cap; measured on 27 spoken requests, it added about 1.2 s per request without making the answers
-  more accurate ([models.md](docs/models.md#thinking); `thinking = "none"` turns it off). Plain commands still skip the
-  model. A summary of older turns is written without thinking. To leave the context room for it,
-  `chat.memory_tokens` defaults to 8,600 (was 9,100).
+- The model can be asked to think before each answer: `thinking` (`none`, `low`, `medium` or `high`,
+  Strata's reasoning effort) in `[agent]` and `[chat]`, capped by `thinking_tokens` (192 for speech, 512 in
+  the chat), after which Strata closes the thinking and lets the model answer. It is `none` by default:
+  measured three times on 27 spoken requests, every effort handled all of them, as `none` did, and made the
+  median request 1.1 to 1.3 s slower ([models.md](docs/models.md#thinking)). The thinking is never spoken
+  or shown, and it comes on top of the reply's own cap; the context keeps room for it, out of the
+  remembered conversation when it is turned on. A summary of older turns is written without thinking.
 
 - `jarvis doctor` recognises the picture readers of Qwen3.8-Flash-Next and Inkling 2 Mini by their pinned
   sha256, and the docs say Qwen3.8-Flash-Next needs `strata.memory_max = "44G"` (at 40G the Strata unit sat

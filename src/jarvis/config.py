@@ -131,7 +131,7 @@ class AgentConfig(_Section):
     tool_text_chars: int = Field(default=3000, ge=500, le=50000)  # of one tool result
     memory_tokens: int = Field(default=6000, ge=0, le=200000)
     memory_idle_s: float = Field(default=1800.0, ge=0)  # forget after this long unused; 0 never
-    thinking: Literal["none", "low", "medium", "high"] = "low"
+    thinking: Literal["none", "low", "medium", "high"] = "none"
     thinking_tokens: int = Field(default=192, ge=32, le=8192)
 
 
@@ -143,7 +143,7 @@ class ChatConfig(AgentConfig):
     max_seconds: float = Field(default=600.0, ge=10, le=3600)
     reply_tokens: int = Field(default=2048, ge=64, le=8192)
     tool_text_chars: int = Field(default=8000, ge=500, le=50000)
-    memory_tokens: int = Field(default=8600, ge=0, le=200000)
+    memory_tokens: int = Field(default=9100, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
     thinking_tokens: int = Field(default=512, ge=32, le=8192)
     resume: bool = True  # open the chat on the conversation it had last time
