@@ -27,6 +27,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - `jarvis restart` writes Strata's profile and unit from the config, so a `strata` setting changed there
   reaches the model server. Before, only `jarvis setup` wrote them: a `strata.context` of 49,152 in the config
   left Strata running at 24,576 while Jarvis planned for the larger window.
+- The time or weather in a state or region: the model is told to name its main city. Before, the place went
+  to the geocoder as said, and its best "Texas" is a village in Mexico. A bare "Georgia" is the country.
 
 ### Changed
 

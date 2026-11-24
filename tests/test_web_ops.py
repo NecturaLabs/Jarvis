@@ -346,6 +346,15 @@ def test_the_model_is_told_the_time_tool_takes_a_country() -> None:
     assert "country" in op.parameters["properties"]["place"]["description"]
 
 
+@pytest.mark.parametrize("name", ["time_now", "weather"])
+def test_the_model_is_told_to_name_a_city_for_a_state_or_region(name: str) -> None:
+    # Regression: the place went to the geocoder as said, and its best "Texas" is a village in
+    # Mexico, its best "Georgia, US" a hamlet in Alabama on another clock than Atlanta.
+    place = _op(_ops(Net()), name).parameters["properties"]["place"]["description"]
+
+    assert "state or region: its main city" in place
+
+
 def test_an_unknown_place_is_said_so() -> None:
     net = Net()
     net.geo = {}

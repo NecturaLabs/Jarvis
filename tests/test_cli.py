@@ -1105,6 +1105,38 @@ def test_restart_leaves_strata_loaded_when_the_config_holds_what_it_runs(
     assert ("restart", "jarvis-strata.service") not in calls
 
 
+def test_restart_with_a_broken_config_says_so_and_still_restarts_jarvis(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    profile = strata_profile_file()
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text("{}")
+    before = profile.stat().st_mtime_ns
+    paths.config_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.config_file().write_text("[strata\n", encoding="utf-8")  # not TOML
+
+    calls = _restart_calls(monkeypatch, time.time() + 1)
+
+    assert "model server's settings were left as they were" in capsys.readouterr().out
+    assert profile.read_text() == "{}"
+    assert profile.stat().st_mtime_ns == before
+    assert ("daemon-reload",) not in calls
+    assert ("restart", "jarvis.service") in calls
+
+
+def test_restart_with_a_run_config_strata_cannot_use_leaves_its_files_and_restarts_jarvis(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config.save(config.Config(strata=config.StrataConfig(run_config=home / "gone.json")))
+
+    calls = _restart_calls(monkeypatch, time.time() + 1)
+
+    assert "model server's settings were left as they were" in capsys.readouterr().out
+    assert not strata_profile_file().exists()
+    assert ("daemon-reload",) not in calls
+    assert ("restart", "jarvis.service") in calls
+
+
 def test_restart_starts_a_stopped_strata(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _restart_calls(monkeypatch, None)
 

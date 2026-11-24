@@ -25,6 +25,7 @@ SUMMER = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
         ("Russia", "RU"),
         ("france", "FR"),
         ("North Korea", "KP"),
+        ("Georgia", "GE"),  # the country, as the geocoder has it too; the state is said by a city
     ],
 )
 def test_a_country_is_found_by_the_names_people_use(said: str, code: str) -> None:
@@ -34,7 +35,9 @@ def test_a_country_is_found_by_the_names_people_use(said: str, code: str) -> Non
     assert found.code == code
 
 
-@pytest.mark.parametrize("said", ["Tokyo", "New York", "Atlantis", "", "Korea", "Virgin Islands"])
+@pytest.mark.parametrize(
+    "said", ["Tokyo", "New York", "Atlantis", "", "Korea", "Virgin Islands", "Texas", "Georgia, US"]
+)
 def test_a_city_or_a_name_two_countries_share_is_not_a_country(said: str) -> None:
     assert zones.find_country(said) is None
 
