@@ -154,6 +154,32 @@ def test_the_default_context_holds_the_whole_remembered_conversation(
     assert config.research.page_chars + PAGE_HEADROOM <= limits.tool_text_chars
 
 
+def test_the_chat_memory_gives_way_when_thinking_is_turned_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Thinking is off by default; turned on, its room comes out of the remembered conversation
+    # rather than squeezing the window, even with a full Omarchy catalog.
+    _full_catalog(tmp_path / "skills")
+    monkeypatch.setattr("jarvis.osskills.ROOT", tmp_path / "skills")
+    monkeypatch.setattr("jarvis.osskills.OWNER", os.getuid())
+    budgets: list[int] = []
+    for thinking in ("none", "high"):
+        config = Config()
+        config = config.model_copy(
+            update={"chat": config.chat.model_copy(update={"thinking": thinking})}
+        )
+        spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+        limits = channel_limits(config, "chat")
+        registry = channel_registry(config, spotify.operations(), limits, "chat")
+        agent = Agent(
+            _Model([]), registry, system_prompt(config, "chat"), AuditLog(None), {}, limits=limits
+        )
+        budgets.append(agent.memory.budget)
+
+    assert budgets[0] == Config().chat.memory_tokens
+    assert 0 < budgets[1] < budgets[0]
+
+
 def test_the_chat_reads_a_page_to_its_own_room(tmp_path: Path) -> None:
     config = Config()
     spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)

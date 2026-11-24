@@ -2831,8 +2831,10 @@ def test_the_window_keeps_room_for_the_thinking_as_well_as_the_reply() -> None:
 @pytest.mark.parametrize(
     ("section", "expected"),
     [
-        (AgentConfig(), Thinking("low", 192)),
-        (ChatConfig(), Thinking("low", 512)),
+        (AgentConfig(), None),
+        (ChatConfig(), None),
+        (AgentConfig(thinking="low"), Thinking("low", 192)),
+        (ChatConfig(thinking="low"), Thinking("low", 512)),
         (AgentConfig(thinking="medium", thinking_tokens=64), Thinking("medium", 64)),
         (AgentConfig(thinking="none"), None),
     ],

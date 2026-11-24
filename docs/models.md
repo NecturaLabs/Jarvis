@@ -46,10 +46,10 @@ run config that names a file that is gone. The reference machine for every numbe
 
 ### Thinking
 
-Since 2026-11-23 Jarvis asks for `low` thinking (`[agent]` and `[chat]` `thinking`), capped at
-`thinking_tokens` (192 for speech, 512 in the chat). Strata's engine for the Qwen models takes `low`,
-`medium` and `high`. Every request asks for the same effort, so the prompt start Strata keeps
-(`strata_prefix`) is the same from one request to the next.
+Jarvis asks for no thinking by default (`[agent]` and `[chat]` `thinking = "none"`). Set to `low`,
+`medium` or `high` (Strata's engine for the Qwen models takes all three), each model call thinks up to
+`thinking_tokens` (192 for speech, 512 in the chat) before it answers. Every request asks for the same
+effort, so the prompt start Strata keeps (`strata_prefix`) is the same from one request to the next.
 
 Measured on 2026-11-23, with a game running, through Jarvis's own agent, prompt and tool schemas (27
 spoken requests: Spotify, time and weather, sums, PC state, files, programs, reminders, research,
@@ -62,8 +62,22 @@ follow-ups and a page with planted instructions; every tool a recording stub):
 | Inkling 2 Mini, `none` | 22 of 27 | 68 s | 104 s |
 | Inkling 2 Mini, `low` | 16 of 27 | 90 s | 100 s |
 
-On these requests `low` thinking made Qwen3.8 about 1.2 s slower per request without making it more
-accurate. It stays on by default for harder requests; `thinking = "none"` in `[agent]` takes the time back.
+The one `low` miss was the check, not the model: only Spotify may be opened in that config, and the reply
+said so. The thinking efforts were then run three times each on the same 27 requests (2026-11-24, Qwen3.8,
+with the corrected check):
+
+| Thinking | Handled as expected | Median per request | 90th percentile | Slowest |
+|---|---|---|---|---|
+| `none` | 81 of 81 | 1.8 s | 4.5 s | 8.3 s |
+| `low`, 192 tokens | 81 of 81 | 3.1 s | 6.6 s | 11.3 s |
+| `medium`, 192 tokens | 81 of 81 | 2.9 s | 5.7 s | 9.5 s |
+| `medium`, 512 tokens | 81 of 81 | 3.1 s | 7.7 s | 21.4 s |
+
+Thinking made no request more accurate and every one slower, so it is off by default. What it changed was
+the route, not the answer: a thinking model sometimes asked for the time before setting a reminder, or
+searched once more after reading a page. These requests pick a tool and say what happened, which Qwen3.8 does
+right without thinking; harder written work in the chat may still gain from it, and `medium` with 192 tokens
+was the quickest of the thinking efforts.
 Inkling 2 Mini, with 4 GiB of its experts in VRAM so a game keeps its room, picked the right tools in
 almost every request, but most of its misses were Jarvis's 90 s request limit, and some replies held its
 raw tool-call markup (`<|content_invoke_tool_json|>`), which would be spoken. Qwen3.8 stays the model.

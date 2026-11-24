@@ -162,6 +162,14 @@ def test_an_every_job_skips_the_times_it_missed() -> None:
         ({"repeat": "every", "every_minutes": 60}, "every hour, next at 11:00 AM"),
         ({"repeat": "every", "every_minutes": 120}, "every 2 hours, next at 12:00 PM"),
         ({"repeat": "every", "every_minutes": 45}, "every 45 minutes, next at 10:45 AM"),
+        (
+            {"repeat": "every", "every_minutes": 30, "at": "14:00"},
+            "every 30 minutes, next at 2:00 PM",
+        ),
+        (
+            {"repeat": "every", "every_minutes": 30, "at": "09:00"},
+            "every 30 minutes, next tomorrow at 9:00 AM",
+        ),
     ],
 )
 def test_when_a_job_is_due_is_said_plainly(args: dict[str, Any], said: str) -> None:
@@ -263,6 +271,27 @@ def test_nothing_is_due_before_its_time_and_the_file_is_not_read_each_time(
     assert len(reads) == 1  # once to learn when the soonest job is due
 
 
+def test_between_two_frames_the_file_is_not_even_looked_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, clock = _store(tmp_path)
+    store.add({"text": "tea", "in_minutes": 1})
+    clock.now += 2 * 60
+    looks: list[int] = []
+    stamp = store._stamp  # pyright: ignore[reportPrivateUsage] - counted, to show nothing is read
+    monkeypatch.setattr(store, "_stamp", lambda: looks.append(1) or stamp())
+
+    first = store.take_due()
+    clock.now += POLL_S / 2
+    store.add({"text": "milk", "in_minutes": 1})
+    looks.clear()
+    soon = store.take_due()
+
+    assert [item.job.text for item in first] == ["tea"]
+    assert soon == []
+    assert looks == []
+
+
 def test_a_job_another_process_adds_is_seen(tmp_path: Path) -> None:
     store, clock = _store(tmp_path)
     assert store.take_due() == []
@@ -288,6 +317,22 @@ def test_a_damaged_jobs_file_holds_no_jobs(tmp_path: Path) -> None:
     assert [job.text for job in store.jobs()] == ["tea"]
     path.write_text("not json", encoding="utf-8")
     assert store.jobs() == []
+
+
+def test_a_jobs_file_from_a_newer_jarvis_is_never_written_over(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    path = tmp_path / "state" / "schedule.json"
+    path.parent.mkdir(mode=0o700)
+    newer = json.dumps({"version": 2, "next_id": 7, "jobs": [{"id": 6, "shape": "new"}]})
+    path.write_text(newer, encoding="utf-8")
+    path.chmod(0o600)
+
+    assert store.jobs() == []
+    with pytest.raises(OperationError, match="newer"):
+        store.add({"text": "tea", "in_minutes": 5})
+    assert store.cancel(None) == []
+    assert store.take_due() == []
+    assert path.read_text(encoding="utf-8") == newer
 
 
 # --- the operations ------------------------------------------------------------------------------
@@ -339,6 +384,9 @@ def test_the_list_numbers_each_job_and_cancel_takes_a_number_or_all(tmp_path: Pa
     with pytest.raises(OperationError, match="number"):
         _run(ops, "schedule_cancel", id="tea")
     assert _run(ops, "schedule_cancel", id="all").spoken == "Cancelled: pause the music."
+    _run(ops, "schedule_add", text="tea", in_minutes=20)
+    _run(ops, "schedule_add", text="milk", in_minutes=30)
+    assert _run(ops, "schedule_cancel", id="all").spoken == "Cancelled all 2."
     assert _run(ops, "schedule_list").spoken == "You have no reminders or scheduled requests."
 
 

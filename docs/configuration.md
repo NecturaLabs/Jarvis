@@ -71,7 +71,7 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 | `tool_text_chars` | `3000` | 500 to 50000 | Most characters of one tool result the model reads. |
 | `memory_tokens` | `6000` | 0 to 200000 | Room the remembered conversation may take of the context window. When a reply makes it outgrow that, the model summarizes the oldest turns right after the reply, while it is spoken and on its own time (the latest two stay word for word); if that fails, the oldest are dropped. A request that finds it over its room (a plain command's turns, a saved conversation) is given the newest turns that fit, and the summary follows its reply. Jarvis uses less when the window cannot hold it beside the prompt, a reply and two tool results. |
 | `memory_idle_s` | `1800.0` | 0 or more | Forget the conversation after this long without a request (time the PC spends asleep counts); `0` never forgets. |
-| `thinking` | `low` | `none`, `low`, `medium`, `high` | How hard the model thinks before each answer (Strata's reasoning effort). `none` answers at once. Thinking is never spoken or shown, and costs time: at about 65 tokens a second, the full cap below is about 3 s more before the first words of each model call. |
+| `thinking` | `none` | `none`, `low`, `medium`, `high` | How hard the model thinks before each answer (Strata's reasoning effort). `none` answers at once; on everyday requests thinking made answers slower and no more accurate ([models.md](models.md#thinking)). Thinking is never spoken or shown, and costs time: at about 65 tokens a second, the full cap below is about 3 s more before the first words of each model call. |
 | `thinking_tokens` | `192` | 32 to 8192 | The most the model thinks before each answer; Strata then closes the thinking and lets it answer. It comes on top of `reply_tokens`, so the reply keeps all its room, and the context keeps room for both. |
 
 A spoken reply that drew on outside text (a web page, a song name) is left out of later requests, as before;
@@ -81,7 +81,7 @@ the chat keeps it (see below).
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `8600`, `memory_idle_s` `0.0` (never forget), `thinking` `low` and `thinking_tokens` `512`, plus:
+`memory_tokens` `9100` (less when thinking is on, so the window keeps its room), `memory_idle_s` `0.0` (never forget), `thinking` `none` and `thinking_tokens` `512`, plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -559,7 +559,8 @@ is not running. Due jobs wait while your Voxtype dictation or a meeting runs. A 
 said up to six hours late, and says how late; a scheduled request or a repeating reminder more than ten
 minutes late (the PC slept, Jarvis was stopped or paused) is not done but shown as missed, and a repeating one
 moves on to its next time. The jobs live in `~/.local/state/jarvis/schedule.json` ([privacy](privacy.md)); at
-most 50, 200 characters each. Why it works this way is in
+most 50, 200 characters each. A file written by a newer version of Jarvis is left as it is: this one sees no
+jobs in it and refuses to add one, rather than writing over the newer jobs. Why it works this way is in
 [ADR 0011](adr/0011-reminders-and-scheduled-requests.md).
 
 ## `[shell]`: an opt-in shell command (off)
