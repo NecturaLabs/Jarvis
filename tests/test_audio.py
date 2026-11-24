@@ -932,6 +932,7 @@ def test_a_model_path_that_is_no_regular_file_is_not_opened_for_reading(tmp_path
     assert not blocked
     assert found == [""]
     assert not gguf_architecture(tmp_path)
+    assert not gguf_architecture(tmp_path / "a\0b.gguf")  # a config can hold a NUL
 
 
 def test_an_unreadable_gguf_checkpoint_is_logged(

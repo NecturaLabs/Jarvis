@@ -7,6 +7,7 @@ import signal
 import subprocess
 import threading
 import time
+import tomllib
 import types
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -1743,7 +1744,9 @@ def _fake_jarvis(monkeypatch: pytest.MonkeyPatch, heard: str) -> list[config.Con
     def transcribe(_samples: object) -> str:
         return heard
 
-    def transcribers(cfg: config.Config, _hint: Callable[[], str]) -> tuple[object, object]:
+    def transcribers(
+        cfg: config.Config, _hint: Callable[[], str], _settings_file: str = ""
+    ) -> tuple[object, object]:
         given.append(cfg)
         return transcribe, transcribe
 
@@ -1794,18 +1797,40 @@ def test_a_speech_test_score_can_try_another_engine_and_model(
     assert given[0].audio.vocabulary_hint == config.Config().audio.vocabulary_hint
 
 
+def test_a_speech_test_score_leaves_the_settings_of_a_running_jarvis_alone(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A running Jarvis rereads its Voxtype settings for each request; others' would break it."""
+    _fake_build(monkeypatch)
+    running = paths.config_dir() / "voxtype.toml"
+    running.parent.mkdir(parents=True, exist_ok=True)
+    running.write_text("# Jarvis's own\n")
+    model = "/m/p.gguf"
+    args = ["speech-test", "score", "--dir", str(home / "none"), "--engine", "parakeet"]
+
+    assert main([*args, "--model", model]) == 0
+
+    assert running.read_text() == "# Jarvis's own\n"
+    tried = tomllib.loads((paths.config_dir() / "voxtype-speech-test.toml").read_text())
+    assert tried["parakeet"] == {"model": model}
+
+
+def _fake_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Build a Jarvis with no artists, keeping the real transcribers."""
+
+    def build(_cfg: config.Config, *, via: str | None = None) -> object:
+        assert via == "speech-test"
+        ops = SimpleNamespace(refresh=lambda: None, artist_names=list)
+        return SimpleNamespace(ops=ops, hint=str)
+
+    monkeypatch.setattr(cli, "build", build)
+
+
 def test_a_speech_test_says_when_a_model_path_cannot_go_in_voxtype_settings(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A path given on the command line can hold bytes that are not UTF-8; no traceback."""
-
-    def build(_cfg: config.Config, *, via: str | None = None) -> object:
-        assert via == "speech-test"
-        return SimpleNamespace(
-            ops=SimpleNamespace(refresh=lambda: None, artist_names=list), hint=str
-        )
-
-    monkeypatch.setattr(cli, "build", build)
+    _fake_build(monkeypatch)
     args = ["speech-test", "score", "--dir", str(home / "none"), "--engine", "parakeet"]
 
     assert main([*args, "--model", "/m/\udcff.gguf"]) == 1

@@ -11,7 +11,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - Parakeet, Cohere Transcribe and Qwen3-ASR (Voxtype's `gguf` engine) can transcribe requests:
   `audio.transcribe_engine` names the engine and `audio.transcribe_model` the full path to its `.gguf` file,
   which Jarvis writes into its own Voxtype config, with the architecture the file names for `gguf`.
-  `jarvis speech-test score --engine parakeet --model /path/to/model.gguf` scores one on your recordings.
+  `jarvis speech-test score --engine parakeet --model /path/to/model.gguf` scores one on your recordings,
+  with settings of its own, so a running Jarvis keeps its engine.
   The vocabulary hint goes only to Whisper, and `jarvis doctor` checks that the model file is there.
 - `jarvis speech-test` measures speech-to-text on your own voice. `record` shows one card at a time (play
   one of your artists, ask the time somewhere, tell Jarvis to be quiet, anything you would ask) and saves

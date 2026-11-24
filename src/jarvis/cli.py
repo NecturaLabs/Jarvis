@@ -608,17 +608,20 @@ def cmd_chat(_args: argparse.Namespace) -> int:
 type _Transcriber = Callable[[NDArray[np.int16]], str]
 
 
-def _transcribers(cfg: config.Config, hint: Callable[[], str]) -> tuple[_Transcriber, _Transcriber]:
+def _transcribers(
+    cfg: config.Config, hint: Callable[[], str], settings_file: str = "voxtype.toml"
+) -> tuple[_Transcriber, _Transcriber]:
     """Return the request transcriber (with the vocabulary hint) and the yes/no one (without).
 
-    Both run Voxtype with Jarvis's own speed settings, written here; the owner's Voxtype config
-    is never touched.
+    Both run Voxtype with Jarvis's own settings, written here to `settings_file` in Jarvis's
+    config folder; the owner's Voxtype config is never touched. Voxtype rereads the file for
+    each run, so a command trying another engine beside a running Jarvis writes its own.
     """
     from jarvis.audio import transcribe, voxtype_settings  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     audio = cfg.audio
     engine, model = audio.transcribe_engine, audio.transcribe_model
-    settings = paths.config_dir() / "voxtype.toml"
+    settings = paths.config_dir() / settings_file
     write_atomic(
         settings,
         voxtype_settings(
@@ -1612,7 +1615,8 @@ def cmd_speech_test(args: argparse.Namespace) -> int:
     if args.action == "record" and not artists:
         print("No artists from Spotify, so every card is an open request.")
     try:
-        request, _answer = _transcribers(cfg, jarvis.hint)  # ValueError: a path TOML can't hold
+        # ValueError: a --model path TOML can't hold
+        request, _answer = _transcribers(cfg, jarvis.hint, "voxtype-speech-test.toml")
         if args.action == "record":
             return _record_set(cfg, folder, request, args, (artists, heard_with))
         print(f"Scoring {folder} with {heard_with} …")

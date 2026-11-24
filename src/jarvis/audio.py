@@ -1169,7 +1169,7 @@ def gguf_architecture(path: Path) -> str:
     """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
-    except OSError:
+    except OSError, ValueError:  # ValueError: a NUL in the path
         return ""
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
@@ -1181,7 +1181,7 @@ def gguf_architecture(path: Path) -> str:
         os.close(fd)
     try:
         return _architecture(_Head(head))
-    except ValueError, struct.error, UnicodeDecodeError:
+    except ValueError, struct.error:  # UnicodeDecodeError is a ValueError
         return ""
 
 
