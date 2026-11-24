@@ -194,7 +194,17 @@ daemon and never your Voxtype config or recordings. Each run is
   (commit `d29d73e`, measured with `small.en`). Whisper.cpp also uses only 4 threads unless told otherwise.
 - **Model:** `audio.transcribe_model`, default `small.en`; it must already be downloaded through Voxtype
   (`voxtype setup model`), and `jarvis doctor` checks that it is. In that same measurement `small.en` took
-  0.29 s on a short command against 0.49 s for `base.en`, and was more accurate.
+  0.29 s on a short command against 0.49 s for `base.en`, and was more accurate. Measured again on 2026-11-24
+  with 60 synthetic requests (20 requests naming artists, places and controls, three Kokoro voices, a simulated
+  room, noise at 15 dB SNR), CPU build of Voxtype 1.3.0, with the live hint: the share whose key words came
+  through was 53/60 for `base.en` (median 0.17 s), 48/60 for `small.en` (0.45 s), 48/60 for `medium.en` (1.36 s)
+  and 46/60 for `large-v3-turbo` (5.64 s); without the hint, 34, 42, 41 and 46. The misses were unusual
+  spellings ("Tokyo Hotel", "Grey Days"), which the Spotify search matches anyway. A larger model is no more
+  accurate here and several times slower, so the default stays; synthetic voices only rank the models, and the
+  owner's own voice would settle it. Compared clip by clip, `base.en`'s lead with the hint is within chance (it
+  alone got 7 right, `small.en` alone 2; p = 0.18), most of it rare names spelled as in the hint, and it repeated
+  hint words four times; without the hint `small.en` heard better (9 against 1; p = 0.02). A hint of artist names
+  only, without the actions, scored the same: 52/60 for `base.en` and 49/60 for `small.en`.
 - **Hint:** when `audio.vocabulary_hint` is on, `--initial-prompt` carries Jarvis's name, its actions and up to
   `audio.hint_names` of your artist names, shortened, `Jarvis. play, pause, next. Glass Harbor, Night Circuit.`
   It always ends with a full stop: without it Whisper re-decoded short clips and took 1.8 s. A transcript that
