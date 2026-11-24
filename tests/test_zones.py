@@ -26,6 +26,9 @@ SUMMER = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
         ("france", "FR"),
         ("North Korea", "KP"),
         ("Georgia", "GE"),
+        ("Georgia (country)", "GE"),
+        ("the country of Georgia", "GE"),
+        ("Georgia the country", "GE"),
         ("Côte d'Ivoire", "CI"),  # accents and curly quotes are matched as plain letters
         ("Cote d\u2019Ivoire", "CI"),
         ("Ivory Coast", "CI"),

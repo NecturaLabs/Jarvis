@@ -30,7 +30,7 @@ from jarvis.shortcuts import Shortcut
 from jarvis.web.arctic import SUBREDDIT, ArcticShift, Post, RedditUnavailableError
 from jarvis.web.openmeteo import Day, Forecast, OpenMeteo, Place, WeatherUnavailableError
 from jarvis.web.page import PageError, PageReader
-from jarvis.web.regions import find_region
+from jarvis.web.regions import also_meant, find_region, kind_of
 from jarvis.web.searxng import Hit, ImageHit, SearchUnavailableError, Searxng
 from jarvis.web.zones import Zone, clocks, find_country
 
@@ -247,10 +247,29 @@ class WebOps:
             where = said = ""
         clock = spoken_time(moment, twelve_hour=self._clock_config.twelve_hour)
         day = spoken_date(moment.date())
+        other = self._other_reading(place, what, now, clock if what == "time" else day)
         # Only what was asked: the model reads every word it is given aloud.
         if what == "date":
-            return Result(f"Date{where}: {day} {moment.year}.", spoken=f"It's {day}{said}.")
-        return Result(f"Time{where}: {clock}.", spoken=f"It's {clock}{said}.")
+            return Result(f"Date{where}: {day} {moment.year}.{other}", spoken=f"It's {day}{said}.")
+        return Result(f"Time{where}: {clock}.{other}", spoken=f"It's {clock}{said}.")
+
+    def _other_reading(self, place: str, what: str, now: datetime, said: str) -> str:
+        """Return the time or date in the region a plain name may also mean, if it differs.
+
+        "Georgia" is answered as the country, and the US state follows for the model to choose
+        by what the owner said; Quebec City and the province share a clock, so nothing follows.
+        """
+        region = also_meant(place) if place else None
+        if region is None:
+            return ""
+        moment = now.astimezone(ZoneInfo(region.zone))
+        if what == "date":
+            other = spoken_date(moment.date())
+        else:
+            other = spoken_time(moment, twelve_hour=self._clock_config.twelve_hour)
+        if other == said:
+            return ""
+        return f" If the {kind_of(region)} was meant: {other} (at {region.city})."
 
     def _country_time(self, what: str, place: str, zones: list[Zone], now: datetime) -> Result:
         """Say the time on each of a country's clocks, east to west, or the dates they show.

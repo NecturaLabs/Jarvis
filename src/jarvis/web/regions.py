@@ -119,6 +119,24 @@ _KIND = re.compile(
 )
 
 
+_KINDS = {"US": "US state", "CA": "Canadian province", "AU": "Australian state"}
+
+
+def also_meant(place: str) -> Region | None:
+    """Return the region a name said alone may also mean ("Georgia": the US state), or None.
+
+    The plain name is answered as the country or the geocoder's place; this is the other reading,
+    for the caller to offer beside it, since the model passes "the state of Georgia" as "Georgia".
+    """
+    name = bare(place)
+    return _BY_NAME[name] if name in _NEEDS_A_WORD else None
+
+
+def kind_of(region: Region) -> str:
+    """Return what a region is called: "US state", "Canadian province", "Australian state"."""
+    return _KINDS[region.country]
+
+
 def find_region(place: str) -> Region | None:
     """Return the state, province or territory `place` names, or None for anything else.
 

@@ -380,7 +380,12 @@ def test_plain_georgia_is_the_country_and_georgia_state_the_us_state() -> None:
     country = _run(_ops(Net(), now=now), "time_now", place="Georgia")
     state = _run(_ops(Net(), now=now), "time_now", place="Georgia state")
 
-    assert country.text == "Time in Georgia (GE): 5:35 PM."
+    # The model passes "the state of Georgia" as "Georgia", so the state's time follows the
+    # country's, for the model to choose by what the owner said.
+    assert country.text == (
+        "Time in Georgia (GE): 5:35 PM. If the US state was meant: 8:35 AM (at Atlanta)."
+    )
+    assert country.spoken == "It's 5:35 PM in Georgia."
     assert state.text == "Time in Georgia state (US, at Atlanta): 8:35 AM."
 
 

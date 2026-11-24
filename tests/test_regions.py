@@ -65,3 +65,18 @@ def test_every_region_has_a_real_zone_and_a_point_in_its_hemisphere() -> None:
         north = region.country != "AU"
         assert (region.latitude > 0) is north, region.name
         assert region.longitude < 0 if north else region.longitude > 0, region.name
+
+
+@pytest.mark.parametrize(
+    ("said", "city"), [("Georgia", "Atlanta"), ("Washington", "Seattle"), ("quebec", "Montreal")]
+)
+def test_a_plain_name_shared_with_a_region_offers_the_region_too(said: str, city: str) -> None:
+    region = regions.also_meant(said)
+
+    assert region is not None
+    assert region.city == city
+
+
+@pytest.mark.parametrize("said", ["Texas", "Georgia state", "France", ""])
+def test_only_a_shared_plain_name_has_another_reading(said: str) -> None:
+    assert regions.also_meant(said) is None
