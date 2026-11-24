@@ -1125,6 +1125,55 @@ def test_the_wake_word_while_jarvis_speaks_stops_it_and_takes_the_new_request() 
     assert speaker.chimes == 2  # the new request is greeted like any other
 
 
+@dataclass
+class BargeWake(Wake):
+    """Hears the wake frame only at the lower score a barge-in needs, and keeps one miss."""
+
+    miss: str | None = None
+    over_speech: int = 0
+
+    @override
+    def heard(self, frame: NDArray[np.int16]) -> bool:
+        return False if frame[0] == WAKE[0] and self.over_speech else super().heard(frame)
+
+    def heard_over_speech(self, frame: NDArray[np.int16]) -> bool:
+        self.over_speech += 1
+        return bool(frame[0] == WAKE[0])
+
+    def closest_miss(self) -> str | None:
+        miss, self.miss = self.miss, None
+        return miss
+
+
+def test_the_wake_word_over_jarvis_s_speech_is_held_to_the_barge_in_score() -> None:
+    reply, _ = _replies("Here is a long answer.", "Skipped.")
+    speaker = Playing()
+    wake = BargeWake()
+    mic = Mic(*REQUEST, until(lambda: speaker.busy), SILENCE, WAKE, *REQUEST[1:])
+
+    _run(_loop(Agent(reply), mic, speaker, wake=wake))
+
+    assert speaker.hushed == 1  # only the lower score heard it
+    assert wake.over_speech > 0
+
+
+def test_a_wake_score_that_fell_short_over_jarvis_s_speech_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="jarvis.voice")
+    speaker = Playing(play_s=0.05)
+    wake = BargeWake(miss="yo_jarvis score 0.42 (threshold 0.50)")
+
+    _run(
+        _loop(Agent(lambda _t, _h, _o: "Here is a long answer."), Mic(*REQUEST), speaker, wake=wake)
+    )
+
+    assert (
+        "no wake word while speaking; the closest was yo_jarvis score 0.42 (threshold 0.50)"
+        in caplog.text
+    )
+
+
 def test_the_owner_can_switch_speaking_over_jarvis_off() -> None:
     agent = Agent(lambda _t, _h, _o: "Here is a long answer.")
     speaker = Playing(play_s=0.05)
@@ -1398,6 +1447,15 @@ def test_a_follow_up_opens_another_window() -> None:
     )
 
     assert [text for text, _ in agent.calls] == ["a", "b", "c"]
+
+
+def test_a_request_answered_with_silence_opens_no_follow_up_window() -> None:
+    """Told to be quiet, Jarvis says nothing and stops listening without the wake word."""
+    agent = Agent(lambda _t, _h, _o: "")
+
+    _run(_follow_loop(agent, Mic(*REQUEST, *FOLLOW_UP_REQUEST), Speaker(), "be quiet", "b"))
+
+    assert [text for text, _ in agent.calls] == ["be quiet"]
 
 
 def test_a_hushed_reply_opens_no_follow_up_window() -> None:

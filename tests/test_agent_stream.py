@@ -17,7 +17,7 @@ from jarvis.agent import (
     claims_action,
     partial_reply,
 )
-from jarvis.app import no_action_operation
+from jarvis.app import no_action_operation, quiet_operation
 from jarvis.audit import AuditLog
 from jarvis.operations import Operation, Registry
 from jarvis.sentences import sentence_end, split_sentences
@@ -466,3 +466,14 @@ def test_a_claim_before_a_lone_reply_call_is_hushed_and_the_reply_still_heard() 
     assert ear.heard == ["Volume is set to thirty.", "All set."]
     assert ear.hushes == 1
     assert _events(audit).count("spoken_before_tool_call") == 1
+
+
+def test_words_written_before_a_call_to_stay_quiet_are_hushed() -> None:
+    model = ScriptedModel([{**_call("stay_quiet"), "content": "Understood, I'll be quiet."}])
+    ear = Ear(model)
+    agent = Agent(
+        model, Registry([quiet_operation(), no_action_operation()]), "s", AuditLog(None), {}
+    )
+
+    assert not agent.handle("Be quiet.", ear.hooks())
+    assert ear.hushes >= 1  # what was queued of the preamble is dropped

@@ -77,7 +77,12 @@ def livekit_wake(cfg: config.Config) -> WakeWord:
     """Return LiveKit's detector for the wake words that are on (it skips any unusable file)."""
     from jarvis.audio import WakeWord  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
-    return WakeWord(wake_files(cfg), cfg.audio.wake_threshold, cfg.audio.wake_thresholds)
+    return WakeWord(
+        wake_files(cfg),
+        cfg.audio.wake_threshold,
+        cfg.audio.wake_thresholds,
+        over_speech=cfg.audio.barge_in_threshold,
+    )
 
 
 def wake_word(cfg: config.Config) -> WakeWord | FallbackWake:
@@ -1260,12 +1265,32 @@ def _strata_changed_since(started: float) -> bool:
     return any(path.exists() and path.stat().st_mtime > started for path in files)
 
 
+def _refresh_strata() -> None:
+    """Write Strata's profile and unit from the config, so a setting changed there reaches it.
+
+    Files that already hold the same text keep their time, so an unchanged Strata is not
+    restarted. A config that cannot be read or built is said and leaves the files as they are.
+    """
+    try:
+        cfg = config.load()
+        if cfg.strata.run_config == Path():
+            return
+        services.write_strata_profile(cfg)
+        services.write_units(cfg, strata_key_file())
+    except config.ConfigError as exc:
+        print(f"jarvis: the model server's settings were left as they were: {exc}")
+        return
+    _systemctl("daemon-reload")
+
+
 def cmd_restart(_args: argparse.Namespace) -> int:
     """Restart the voice service; restart Strata too when its settings changed since it started.
 
-    A running Strata is otherwise left alone, so the model stays loaded.
+    Strata's profile and unit are written from the config first. A running Strata is otherwise
+    left alone, so the model stays loaded.
     """
     _reset_failed(STRATA_UNIT, JARVIS_UNIT)
+    _refresh_strata()
     started = _started_at(STRATA_UNIT)
     changed = started is not None and _strata_changed_since(started)
     code = _systemctl("restart" if changed else "start", STRATA_UNIT)

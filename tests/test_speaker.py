@@ -5,7 +5,7 @@ import contextlib
 import os
 import signal
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import numpy as np
 import pytest
@@ -275,6 +275,36 @@ def test_the_own_voice_check_runs_the_sentence_through_its_own_wake_model() -> N
     assert check(_sound(7777, seconds=0.5), RATE)
     assert not check(_sound(1000, seconds=0.5), RATE)
     assert wake.resets == 4  # fresh before and after each check, so checks never mix
+
+
+class _BargeWake(_MarkWake):
+    """A wake model that fires only at the lower score a barge-in needs."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.misses_asked = 0
+
+    @staticmethod
+    @override
+    def heard(frame: NDArray[np.int16]) -> bool:
+        return False
+
+    @staticmethod
+    def heard_over_speech(frame: NDArray[np.int16]) -> bool:
+        return bool((frame == 7777).sum() > FRAME // 2)
+
+    def closest_miss(self) -> str | None:
+        self.misses_asked += 1
+        return None
+
+
+def test_the_own_voice_check_holds_a_sentence_to_the_score_a_barge_in_needs() -> None:
+    # A sentence that would pass the idle threshold but trigger the lower one while Jarvis
+    # speaks would stop its own speech, so it cannot be spoken over.
+    wake = _BargeWake()
+
+    assert OwnVoiceCheck(wake)(_sound(7777, seconds=0.5), RATE)
+    assert wake.misses_asked == 1  # its own sentence's score is no miss of the owner's
 
 
 def test_resampling_to_16k_keeps_the_length_in_time() -> None:

@@ -22,7 +22,7 @@ import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, Self, cast
+from typing import TYPE_CHECKING, Protocol, Self, cast, runtime_checkable
 
 import numpy as np
 import onnxruntime as ort
@@ -724,6 +724,10 @@ def wake_load_errors(paths: Sequence[Path]) -> dict[Path, str]:
     return errors
 
 
+# A wake score over Jarvis's speech that falls short but is logged: its own voice stays near 0.05.
+NEAR_MISS = 0.2
+
+
 class WakeWord:
     """LiveKit streaming wake word models, one per phrase, heard side by side."""
 
@@ -732,11 +736,13 @@ class WakeWord:
         model_paths: Sequence[Path],
         threshold: float,
         thresholds: Mapping[str, float] | None = None,
+        over_speech: float | None = None,
     ) -> None:
         """Load the model files, leaving out with a warning any that is missing or unusable.
 
         Each model is held to its own score in `thresholds`, by the name of its file, or else to
-        `threshold`.
+        `threshold`. While Jarvis speaks (`heard_over_speech`) a model needs at most
+        `over_speech`: Jarvis's own voice in the microphone lowers the owner's score.
 
         One bad file (missing, half copied, not a streaming model) must not leave Jarvis deaf to
         the others; only when none loads is the last error (an `OSError` or `ValueError`) raised,
@@ -762,23 +768,56 @@ class WakeWord:
             raise error
         self._threshold = threshold
         self._thresholds = dict(thresholds or {})
+        self._over_speech = over_speech
+        self._closest: tuple[str, float] | None = None  # the best miss while Jarvis spoke
 
     def heard(self, frame: NDArray[np.int16]) -> bool:
         """Feed one frame; return True when any of the wake phrases was detected."""
+        return self._heard(frame, speaking=False)
+
+    def heard_over_speech(self, frame: NDArray[np.int16]) -> bool:
+        """Feed one frame heard while Jarvis speaks; True when a wake phrase was detected.
+
+        A score that falls short is kept for `closest_miss`.
+        """
+        return self._heard(frame, speaking=True)
+
+    def closest_miss(self) -> str | None:
+        """Return, once, the highest score over Jarvis's speech that fell short, from NEAR_MISS."""
+        closest, self._closest = self._closest, None
+        if closest is None:
+            return None
+        name, score = closest
+        return f"{name} score {score:.2f} (threshold {self._needed(name, speaking=True):.2f})"
+
+    def _heard(self, frame: NDArray[np.int16], *, speaking: bool) -> bool:
         scores = self._model.predict(frame)
-        over = {name: score for name, score in scores.items() if score >= self._needed(name)}
+        over = {
+            name: score
+            for name, score in scores.items()
+            if score >= self._needed(name, speaking=speaking)
+        }
         if not over:
+            if speaking and scores:
+                name = max(scores, key=scores.__getitem__)
+                best = self._closest[1] if self._closest is not None else NEAR_MISS
+                if scores[name] >= best:
+                    self._closest = (name, scores[name])
             return False
         heard = ", ".join(
-            f"{name} score {over[name]:.2f} (threshold {self._needed(name):.2f})"
+            f"{name} score {over[name]:.2f} (threshold {self._needed(name, speaking=speaking):.2f})"
             for name in sorted(over, key=over.__getitem__, reverse=True)
         )
         log.info("wake word %s", heard)
+        self._closest = None
         self._model.reset()
         return True
 
-    def _needed(self, name: str) -> float:
-        return self._thresholds.get(name, self._threshold)
+    def _needed(self, name: str, *, speaking: bool = False) -> float:
+        needed = self._thresholds.get(name, self._threshold)
+        if speaking and self._over_speech is not None:
+            return min(needed, self._over_speech)
+        return needed
 
     def reset(self) -> None:
         """Forget audio heard so far."""
@@ -1007,6 +1046,16 @@ class FallbackWake:
         if self._backup is None:
             self._backup = self._make()
         return self._backup.heard(frame)
+
+    def heard_over_speech(self, frame: NDArray[np.int16]) -> bool:
+        """Like `heard`, for a frame heard while Jarvis speaks (LiveKit's model needs less)."""
+        if self._primary is None and isinstance(self._backup, OverSpeech):
+            return self._backup.heard_over_speech(frame)
+        return self.heard(frame)
+
+    def closest_miss(self) -> str | None:
+        """Return the best score that fell short over Jarvis's speech, once (LiveKit's only)."""
+        return self._backup.closest_miss() if isinstance(self._backup, OverSpeech) else None
 
     def after_wake(self) -> list[NDArray[np.int16]]:
         """Return the frames heard since the keyword ended (Azure only)."""
@@ -1554,6 +1603,19 @@ class _WakeModel(Protocol):
     def reset(self) -> None: ...
 
 
+@runtime_checkable
+class OverSpeech(Protocol):
+    """A wake word held to a lower score while Jarvis speaks (`audio.barge_in_threshold`)."""
+
+    def heard_over_speech(self, frame: NDArray[np.int16]) -> bool:
+        """Feed one frame heard while Jarvis speaks; True when a wake phrase was detected."""
+        ...
+
+    def closest_miss(self) -> str | None:
+        """Return, once, the best score over Jarvis's speech that fell short, if one was kept."""
+        ...
+
+
 class OwnVoiceCheck:
     """Tells whether a sentence Jarvis is about to say would itself trigger the wake word.
 
@@ -1576,14 +1638,18 @@ class OwnVoiceCheck:
         if self._names is not None and self._names.search(text):
             return True
         samples = np.concatenate([to_16k(pcm, rate), np.zeros(RATE // 2, dtype=np.int16)])
-        self._wake.reset()
+        # The score a barge-in needs, since that is what the sentence could trigger.
+        wake = self._wake
+        heard = wake.heard_over_speech if isinstance(wake, OverSpeech) else wake.heard
+        wake.reset()
         try:
             return any(
-                self._wake.heard(samples[i : i + FRAME])
-                for i in range(0, samples.size - FRAME + 1, FRAME)
+                heard(samples[i : i + FRAME]) for i in range(0, samples.size - FRAME + 1, FRAME)
             )
         finally:
-            self._wake.reset()
+            if isinstance(wake, OverSpeech):
+                wake.closest_miss()  # its own sentences are no miss of the owner's
+            wake.reset()
 
 
 class Speaker:

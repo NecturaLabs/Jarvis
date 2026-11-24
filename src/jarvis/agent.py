@@ -1178,11 +1178,22 @@ class Agent:
             if cut and text:
                 text = f"{text} {CUT_SHORT}"
             return self._final(turn, text) if text else self._wordless(turn)
+        return self._act(turn, hooks, message, calls)
+
+    def _act(
+        self, turn: _Turn, hooks: Hooks, message: Mapping[str, Any], calls: list[dict[str, Any]]
+    ) -> str | None:
+        """Run the tool calls of one message; return the final reply, or None to go on."""
+        stream = turn.stream
         lone_reply = len(calls) == 1 and str(obj(calls[0].get("function")).get("name")) == NO_ACTION
         if not lone_reply or (stream is not None and stream.cut):
             self._cut(stream)  # text before even a lone reply call was not the reply
         turn.messages.append({"role": "assistant", "content": _text(message), "tool_calls": calls})
         results = self._run_calls(calls, hooks, turn)
+        if any(result.quiet for result in results):
+            self._cut(stream)  # the owner asked for silence: no reply, not even words before it
+            hooks.hush()
+            return ""
         answer = self._no_action_reply(calls, results)
         if answer is None:
             self._cut(stream)  # the model answers again; what it said here was not its reply

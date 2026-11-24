@@ -51,6 +51,8 @@ behind the same speech setting, as the Piper-licence risk below asked.
 - Light on the PC so gaming stays decent at any time: no GPU or CPU use while idle and no heavy CPU use between
   requests (decided 2026-11-21: a loaded idle model may hold RAM and VRAM; Jarvis must run beside games). The tasks are simple, so a small model is enough.
 - Replies by voice (Piper); no desktop notifications.
+- The owner speaks freely and never repeats a set phrase: the model decides what a request means. No new fixed
+  phrasings or keyword lists for spoken requests; a new ability is a typed tool the model picks.
 - Model kept loaded (owner decision, 2026-11-21, replacing "idle by default, including after reboot"): `jarvis run`
   loads it at start, and `strata.idle_unload_s` defaults to 86400 (24 hours) so it stays loaded. While idle it
   holds memory but uses no GPU or CPU. A lower value frees it sooner and loads it again on the next wake.
@@ -137,8 +139,9 @@ enforced in code before any tool runs.
 ### Speaking, barge-in, confirmation
 - Built: the reply is spoken sentence by sentence while the model writes it, one player for the whole reply, and
   the wake word stays on while Jarvis speaks: saying it stops the speech and the request and starts a new one
-  (`audio.barge_in`). A sentence that would trigger the wake word by itself is checked before it plays and
-  cannot be spoken over while it plays. See [ADR 0008](adr/0008-speak-while-writing-and-barge-in.md).
+  (`audio.barge_in`), at the lower score of `audio.barge_in_threshold` since Jarvis's own voice in the
+  microphone lowers the owner's. A sentence that would trigger the wake word by itself is checked before it
+  plays, against that score, and cannot be spoken over while it plays. See [ADR 0008](adr/0008-speak-while-writing-and-barge-in.md).
 - Confirmation starts only after TTS playback has drained, accepts yes/no for 8 s, and is bound to one immutable
   action (hash of operation + arguments). Anything else, silence, or the wake word over the question, is no. The
   highest-risk class is confirmed by keybinding (`jarvis confirm`), never by voice, and the consent bypass

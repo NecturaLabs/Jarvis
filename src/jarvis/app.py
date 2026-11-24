@@ -47,6 +47,20 @@ WORDS_PER_TOKEN = 0.5  # a cautious count of English words a reply token holds
 type Channel = Literal["voice", "chat"]
 
 
+def quiet_operation() -> Operation:
+    """Return the choice to say nothing at all, for an owner who wants Jarvis to be quiet."""
+    return Operation(
+        "stay_quiet",
+        "Call this alone when the owner wants you to stop talking, be quiet or say nothing more,"
+        " however they put it: the request ends in silence, with no reply. Not for stopping"
+        " music or a program.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        lambda _args: Result("Quiet: nothing is said.", quiet=True),
+        side_effect=False,
+        spoken_summary=lambda _args: "stay quiet",
+    )
+
+
 def no_action_operation(max_reply_chars: int = MAX_REPLY_CHARS) -> Operation:
     """Return the explicit "nothing to do" choice the model makes for questions and chat.
 
@@ -306,6 +320,7 @@ def channel_registry(
                 if guides
                 else []
             ),
+            *([quiet_operation()] if channel == "voice" else []),
             no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
         ],
         resets=(online.reset,),

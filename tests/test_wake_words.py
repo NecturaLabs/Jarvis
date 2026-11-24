@@ -1,7 +1,9 @@
 """Choosing which LiveKit wake word models Jarvis listens for (`audio.wake_words`)."""
 
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
+import numpy as np
 import pydantic
 import pytest
 
@@ -10,7 +12,6 @@ from jarvis.cli import main
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    from pathlib import Path
 
     import onnxruntime as ort
 
@@ -19,10 +20,15 @@ class _LiveKit:
     """Stands in for LiveKit's model, which needs its files."""
 
     def __init__(
-        self, paths: list[Path], threshold: float, thresholds: Mapping[str, float]
+        self,
+        paths: list[Path],
+        threshold: float,
+        thresholds: Mapping[str, float],
+        over_speech: float | None = None,
     ) -> None:
         super().__init__()
         self.paths = paths
+        self.over_speech = over_speech
         self.threshold = threshold
         self.thresholds = thresholds
 
@@ -78,6 +84,92 @@ def test_each_wake_word_s_own_threshold_reaches_the_detector(
 
     assert isinstance(wake, _LiveKit)
     assert wake.thresholds == {"jarvis": pytest.approx(0.85)}
+
+
+def test_the_barge_in_threshold_reaches_the_detector(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assert config.AudioConfig().barge_in_threshold == pytest.approx(0.5)
+    cfg = _cfg(monkeypatch, tmp_path, barge_in_threshold=0.4)
+
+    wake = cli.livekit_wake(cfg)
+
+    assert isinstance(wake, _LiveKit)
+    assert wake.over_speech == pytest.approx(0.4)
+
+
+class _Scored:
+    """Stands in for LiveKit's model: every frame scores what `score` holds."""
+
+    score: ClassVar[float] = 0.0
+    resets: ClassVar[int] = 0
+
+    def __init__(self, *, sess_options: ort.SessionOptions) -> None:
+        super().__init__()
+        del sess_options
+
+    @staticmethod
+    def load_model(path: Path) -> None:
+        del path
+
+    @classmethod
+    def predict(cls, _frame: object) -> dict[str, float]:
+        return {"yo_jarvis": cls.score}
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.resets += 1
+
+
+def _scored(monkeypatch: pytest.MonkeyPatch, score: float) -> audio.WakeWord:
+    monkeypatch.setattr(_Scored, "score", score)
+    monkeypatch.setattr("livekit.wakeword.WakeWordModel", _Scored)
+    return audio.WakeWord([Path("yo_jarvis.onnx")], 0.5, {"yo_jarvis": 0.76}, over_speech=0.5)
+
+
+FRAME_OF_SOUND = np.zeros(audio.FRAME, dtype=np.int16)
+
+
+def test_while_jarvis_speaks_the_wake_word_needs_only_the_barge_in_score(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Measured: Jarvis's voice as loud as the owner's drops recall at 0.76 from 99 % to 71 %,
+    # while its voice alone never scored above 0.06 (ADR 0012).
+    wake = _scored(monkeypatch, 0.6)
+
+    assert not wake.heard(FRAME_OF_SOUND)  # idle, the model's own 0.76 holds
+    assert wake.heard_over_speech(FRAME_OF_SOUND)
+
+
+def test_the_barge_in_score_never_raises_a_lower_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_Scored, "score", 0.45)
+    monkeypatch.setattr("livekit.wakeword.WakeWordModel", _Scored)
+    wake = audio.WakeWord([Path("yo_jarvis.onnx")], 0.4, over_speech=0.5)
+
+    assert wake.heard_over_speech(FRAME_OF_SOUND)
+
+
+def test_the_best_score_that_fell_short_over_speech_is_kept_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wake = _scored(monkeypatch, 0.3)
+
+    assert not wake.heard_over_speech(FRAME_OF_SOUND)
+    monkeypatch.setattr(_Scored, "score", 0.42)
+    assert not wake.heard_over_speech(FRAME_OF_SOUND)
+    monkeypatch.setattr(_Scored, "score", 0.25)
+    assert not wake.heard_over_speech(FRAME_OF_SOUND)
+
+    assert wake.closest_miss() == "yo_jarvis score 0.42 (threshold 0.50)"
+    assert wake.closest_miss() is None
+
+
+def test_a_score_like_jarvis_s_own_voice_is_no_miss(monkeypatch: pytest.MonkeyPatch) -> None:
+    wake = _scored(monkeypatch, audio.NEAR_MISS / 2)
+
+    assert not wake.heard_over_speech(FRAME_OF_SOUND)
+    assert not wake.heard(FRAME_OF_SOUND)
+    assert wake.closest_miss() is None
 
 
 @pytest.mark.parametrize(

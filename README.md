@@ -23,6 +23,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
   Plain commands such as "pause", "next song" or "volume 40" skip the model and answer in about 0.3 s.
 - **Voice:** Kokoro by default (`kokoro:bm_george`); a Piper voice can be set instead. Jarvis replies by voice
   only, with no desktop notifications.
+  Tell Jarvis to be quiet, in any words, and it stops without a word. Say the wake word while it speaks
+  to stop it and ask something else.
 - **Spotify:** play a track, album, artist, playlist or your liked songs; pause, resume, next, previous; set or
   change the volume; shuffle; repeat; queue songs; like the current song; say what is playing. When Spotify is
   closed, Jarvis says so and asks whether to open it, and where; it never opens a program unasked.
@@ -50,7 +52,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
 - **About itself:** ask which model it runs, its version, its voice or how it is set up; it answers from its
   config and Strata's run config, and reads out its own config files, secrets hidden. It never changes them.
 - **Time and weather:** the time, or the weather now, later or in a named place, asked in any words.
-  The time comes from this PC; the weather from Open-Meteo, free and without an account. Set your home in
+  The time comes from this PC, for a city or a whole country: a country with several time zones (the
+  United States, Russia, Australia) gets the time on each of its clocks; the weather from Open-Meteo, free and without an account. Set your home in
   [`[weather]`](docs/configuration.md).
 - **Research:** questions it can't answer on its own go to a web search through a local SearXNG; it reads
   the best pages and says where the answer came from. Asked what Reddit thinks, it finds Reddit threads and

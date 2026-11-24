@@ -29,6 +29,7 @@ from jarvis.audio import (
     RATE,
     AudioError,
     MicPausedError,
+    OverSpeech,
     is_phantom,
     keyword_tail,
     write_wav,
@@ -383,6 +384,7 @@ class VoiceLoop:
         self._asleep = asleep_s()  # the sleep seen so far
         self._muted = False  # `jarvis hush` came during this request: say nothing more
         self._answered = False  # the last request was the owner's and was answered by voice
+        self._said_nothing = False  # the agent's last reply had no words
         self._should_stop: Callable[[], bool] = lambda: False
         self._pc_heard: queue.Queue[_PcRequest] = queue.Queue(maxsize=1)
         self._pc_wake_at: float | None = None  # when PC audio last held the wake word
@@ -441,11 +443,23 @@ class VoiceLoop:
             frame = next(frames, None)
             if frame is None:
                 return
-            if self._speaker.interruptible and self._wake.heard(frame):
+            if self._speaker.interruptible and self._heard_over_speech(frame):
                 self._barged_at = self._clock()
                 log.info("wake word while speaking: stopping to listen")
                 self._speaker.hush()
                 return
+
+    def _heard_over_speech(self, frame: NDArray[np.int16]) -> bool:
+        wake = self._wake
+        return wake.heard_over_speech(frame) if isinstance(wake, OverSpeech) else wake.heard(frame)
+
+    def _note_closest_miss(self) -> None:
+        """Log the best wake score Jarvis's speech drowned, so a missed barge-in can be told."""
+        if not isinstance(self._wake, OverSpeech):
+            return
+        missed = self._wake.closest_miss()
+        if missed is not None and self._barged_at is None:
+            log.info("no wake word while speaking; the closest was %s", missed)
 
     def _end_speaking(self) -> None:
         """Wait for the speech to finish (or be spoken over), then put the mic back to rest.
@@ -461,6 +475,7 @@ class VoiceLoop:
                 watcher, done = watching
                 done.set()
                 watcher.join()
+                self._note_closest_miss()
             if self._barged_at is None:
                 # Jarvis's own voice is in what the mics heard meanwhile; after a barge-in the
                 # owner's request follows the wake word, so nothing is dropped then.
@@ -921,7 +936,10 @@ class VoiceLoop:
         log.info("heard (%s): %r", origin.value, text)
         started = time.perf_counter()
         agent_s = self._think(text, origin)
-        self._answered = from_owner and not self._cancelled() and not self._muted
+        # A reply that said nothing (the owner asked for quiet) opens no follow-up window.
+        self._answered = (
+            from_owner and not self._cancelled() and not self._muted and not self._said_nothing
+        )
         first = self._first_words
         log.info(
             "timing: capture %.2f s, transcription %.2f s, first words after %s, agent %.2f s, "
@@ -938,8 +956,9 @@ class VoiceLoop:
         self.state = State.THINK
         started = time.perf_counter()
         self._first_words = None
+        self._said_nothing = False
         try:
-            self._agent.handle(
+            reply = self._agent.handle(
                 text,
                 Hooks(
                     confirm=self._confirm,
@@ -952,6 +971,7 @@ class VoiceLoop:
                 ),
                 origin,
             )
+            self._said_nothing = not reply.strip() and self._first_words is None
             return time.perf_counter() - started
         finally:
             self._end_speaking()
