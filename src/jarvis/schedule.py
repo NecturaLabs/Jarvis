@@ -249,12 +249,26 @@ def _once_at(when: _When, now: float) -> float:
     return _next_on(days, when.clock, now)
 
 
-def _repeating(job: Job, clock: str) -> str | None:
+def _on_day(moment: datetime, now: float, clock: str) -> str:
+    """Return the day and time of `moment` as said from `now`: "tomorrow at 9:00 AM"."""
+    days = (moment.date() - _local(now).date()).days
+    if days in {0, 1}:
+        return f"{'today' if days == 0 else 'tomorrow'} at {clock}"
+    if days < _WEEK:
+        return f"on {moment:%A} at {clock}"
+    return f"on {moment:%A} {moment.day} {moment:%B} at {clock}"
+
+
+def _repeating(job: Job, now: float, clock: str) -> str | None:
     """Return how a repeating job's times are said, or None for a one-off job."""
     if job.repeat == "every":
         hours, minutes = divmod(job.every, _HOUR)
         step = f"{hours} hours" if hours and not minutes else f"{job.every} minutes"
-        return f"every {'hour' if job.every == _HOUR else step}, next at {clock}"
+        moment = _local(job.next)
+        next_one = (
+            f"at {clock}" if moment.date() == _local(now).date() else _on_day(moment, now, clock)
+        )
+        return f"every {'hour' if job.every == _HOUR else step}, next {next_one}"
     if job.repeat == "daily":
         return f"every day at {clock}"
     if job.repeat in {"weekdays", "weekends"}:
@@ -268,15 +282,10 @@ def spoken_when(job: Job, now: float, *, twelve_hour: bool) -> str:
     """Return when a job is due as it is said: "today at 7:30 AM", "every day at 7:30 AM"."""
     moment = _local(job.next)
     clock = spoken_time(moment, twelve_hour=twelve_hour)
-    repeating = _repeating(job, clock)
+    repeating = _repeating(job, now, clock)
     if repeating is not None:
         return repeating
-    days = (moment.date() - _local(now).date()).days
-    if days in {0, 1}:
-        return f"{'today' if days == 0 else 'tomorrow'} at {clock}"
-    if days < _WEEK:
-        return f"on {moment:%A} at {clock}"
-    return f"on {moment:%A} {moment.day} {moment:%B} at {clock}"
+    return _on_day(moment, now, clock)
 
 
 class JobStore:
@@ -290,6 +299,7 @@ class JobStore:
         self._seen: tuple[int, int, int] | None = None
         self._soonest: float | None = None
         self._looked = float("-inf")
+        self._foreign = False  # the file was written by another version of Jarvis: never overwrite
 
     @contextlib.contextmanager
     def _locked(self) -> Generator[tuple[int, list[Job]]]:
@@ -303,7 +313,11 @@ class JobStore:
             os.close(fd)
 
     def _read(self) -> tuple[int, list[Job]]:
-        """Return the next free id and the jobs; a missing or damaged file holds none."""
+        """Return the next free id and the jobs; a missing or damaged file holds none.
+
+        A file of another version holds none either, and is kept as it is (see `_write`).
+        """
+        self._foreign = False
         try:
             text = read_private(self._path)
             data = obj(json.loads(text or "{}"))
@@ -311,6 +325,7 @@ class JobStore:
             log.warning("the jobs file could not be read: %s", exc)
             return 1, []
         if data.get("version") not in {None, FILE_VERSION}:
+            self._foreign = True
             return 1, []
         jobs: list[Job] = []
         for item in objs(data.get("jobs")):
@@ -321,6 +336,17 @@ class JobStore:
         return max([start, *(job.id + 1 for job in jobs)]), jobs
 
     def _write(self, free: int, jobs: list[Job]) -> None:
+        """Save the jobs, unless the file is another version's, which would lose its jobs.
+
+        Raises:
+            OperationError: the file was written by a newer (or unknown) version of Jarvis.
+        """
+        if self._foreign:
+            msg = (
+                "the reminders file was written by a newer version of Jarvis, so this one "
+                "leaves it alone; update Jarvis to change reminders"
+            )
+            raise OperationError(msg)
         data = {"version": FILE_VERSION, "next_id": free, "jobs": [asdict(job) for job in jobs]}
         write_atomic(self._path, json.dumps(data, ensure_ascii=False, indent=1), mode=0o600)
         self._seen = None  # look again at once

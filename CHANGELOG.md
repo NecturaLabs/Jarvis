@@ -379,6 +379,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   reporting a function that does not exist, and refuses `5!!` with a reason rather than guessing between a
   double factorial (15) and two factorials (120!); `(5!)!` still works.
 
+- A reminders file written by a newer version of Jarvis is no longer written over (losing its jobs) when an
+  older one adds a reminder: the older one refuses and says why.
+
+- A reminder repeating every few minutes or hours that starts on another day says which day ("every 30
+  minutes, next tomorrow at 9:00 AM"), not only the time.
+
 - A reminder or scheduled request the model asked for with a time that does not work (one that has passed
   today, two times, a day that is not one) is no longer "an internal error": the model is told what was
   wrong and can fix it, and so can a cancel by something other than a number. A `day` beside a repeat that

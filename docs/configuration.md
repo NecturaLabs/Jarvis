@@ -559,7 +559,8 @@ is not running. Due jobs wait while your Voxtype dictation or a meeting runs. A 
 said up to six hours late, and says how late; a scheduled request or a repeating reminder more than ten
 minutes late (the PC slept, Jarvis was stopped or paused) is not done but shown as missed, and a repeating one
 moves on to its next time. The jobs live in `~/.local/state/jarvis/schedule.json` ([privacy](privacy.md)); at
-most 50, 200 characters each. Why it works this way is in
+most 50, 200 characters each. A file written by a newer version of Jarvis is left as it is: this one sees no
+jobs in it and refuses to add one, rather than writing over the newer jobs. Why it works this way is in
 [ADR 0011](adr/0011-reminders-and-scheduled-requests.md).
 
 ## `[shell]`: an opt-in shell command (off)
