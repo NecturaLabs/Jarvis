@@ -384,7 +384,7 @@ class VoiceLoop:
         self._asleep = asleep_s()  # the sleep seen so far
         self._muted = False  # `jarvis hush` came during this request: say nothing more
         self._answered = False  # the last request was the owner's and was answered by voice
-        self._said_nothing = False  # the agent's last reply had no words
+        self._said_nothing = False  # the last reply had no words, or the owner asked for quiet
         self._should_stop: Callable[[], bool] = lambda: False
         self._pc_heard: queue.Queue[_PcRequest] = queue.Queue(maxsize=1)
         self._pc_wake_at: float | None = None  # when PC audio last held the wake word
@@ -515,6 +515,10 @@ class VoiceLoop:
         self._speaker.hush()
         if self.state is State.SPEAK:
             self.state = State.THINK
+
+    def _asked_quiet(self) -> None:
+        """Note that the owner asked for silence (the agent's `quiet` hook): no follow-up."""
+        self._said_nothing = True
 
     def _cancelled(self) -> bool:
         return self._should_stop() or self._paused() or self._barged_at is not None
@@ -968,10 +972,12 @@ class VoiceLoop:
                     cancelled=self._cancelled,
                     speak=self._utter,
                     hush=self._hush,
+                    quiet=self._asked_quiet,
                 ),
                 origin,
             )
-            self._said_nothing = not reply.strip() and self._first_words is None
+            if not reply.strip() and self._first_words is None:
+                self._said_nothing = True
             return time.perf_counter() - started
         finally:
             self._end_speaking()

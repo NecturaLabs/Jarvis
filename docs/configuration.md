@@ -29,7 +29,9 @@ current file. The running voice service reads it once, when it starts.
   run `jarvis restart`.
 - `strata` keys: run `jarvis restart`. It writes Strata's profile and unit from the config, restarts
   Strata when either changed since Strata started, and otherwise leaves a running Strata, and its loaded
-  model, alone. `jarvis setup` writes them too. An empty `model.base_url` follows
+  model, alone. Only `jarvis setup` writes the voice service's unit, and until it has run, restart writes
+  nothing. A config it cannot read, or a file it cannot write, is said and the voice service restarts
+  anyway. An empty `model.base_url` follows
   Strata's port; a saved URL that only repeated that port is dropped when the file is read, and
   `jarvis doctor` fails a saved URL on another port than Strata's.
 - `jarvis pc-audio on|off` changes the file and restarts the voice service itself when it is running.

@@ -25,7 +25,14 @@ SUMMER = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
         ("Russia", "RU"),
         ("france", "FR"),
         ("North Korea", "KP"),
-        ("Georgia", "GE"),  # the country, as the geocoder has it too; the state is said by a city
+        ("Georgia", "GE"),
+        ("Côte d'Ivoire", "CI"),  # accents and curly quotes are matched as plain letters
+        ("Cote d\u2019Ivoire", "CI"),
+        ("Ivory Coast", "CI"),
+        ("Réunion", "RE"),
+        ("Türkiye", "TR"),
+        ("Burma", "MM"),
+        ("Swaziland", "SZ"),  # the country, as the geocoder has it too; the state is said by a city
     ],
 )
 def test_a_country_is_found_by_the_names_people_use(said: str, code: str) -> None:
@@ -80,6 +87,11 @@ def test_zones_sharing_a_time_are_said_by_the_main_city_in_summer_too() -> None:
         ("Brazil", "Sao Paulo"),
         ("Mexico", "Mexico City"),
         ("Canada", "Vancouver"),
+        ("Canada", "Toronto"),
+        # Regression: the shortest comment named these clocks by a smaller city of the same time.
+        ("Brazil", "Manaus"),
+        ("Russia", "Samara"),
+        ("Russia", "Novosibirsk"),
     ],
 )
 def test_a_large_country_names_its_main_cities(country: str, city: str) -> None:

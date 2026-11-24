@@ -1269,15 +1269,17 @@ def _refresh_strata() -> None:
     """Write Strata's profile and unit from the config, so a setting changed there reaches it.
 
     Files that already hold the same text keep their time, so an unchanged Strata is not
-    restarted. A config that cannot be read or built is said and leaves the files as they are.
+    restarted. Only `jarvis setup` writes the voice unit, which names the environment Jarvis
+    runs from, and before setup has written Strata's unit nothing is written. A config that
+    cannot be read or built, or a file that cannot be written, is said and Jarvis restarts anyway.
     """
     try:
         cfg = config.load()
-        if cfg.strata.run_config == Path():
+        if cfg.strata.run_config == Path() or not (services.unit_dir() / STRATA_UNIT).is_file():
             return
         services.write_strata_profile(cfg)
-        services.write_units(cfg, strata_key_file())
-    except config.ConfigError as exc:
+        services.write_strata_unit(cfg, strata_key_file())
+    except (config.ConfigError, OSError) as exc:
         print(f"jarvis: the model server's settings were left as they were: {exc}")
         return
     _systemctl("daemon-reload")

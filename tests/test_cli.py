@@ -1128,12 +1128,67 @@ def test_restart_with_a_run_config_strata_cannot_use_leaves_its_files_and_restar
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config.save(config.Config(strata=config.StrataConfig(run_config=home / "gone.json")))
+    services.unit_dir().mkdir(parents=True)
+    (services.unit_dir() / "jarvis-strata.service").write_text("[Unit]\n", encoding="utf-8")
 
     calls = _restart_calls(monkeypatch, time.time() + 1)
 
     assert "model server's settings were left as they were" in capsys.readouterr().out
     assert not strata_profile_file().exists()
+    assert (services.unit_dir() / "jarvis-strata.service").read_text(encoding="utf-8") == "[Unit]\n"
     assert ("daemon-reload",) not in calls
+    assert ("restart", "jarvis.service") in calls
+
+
+def test_restart_leaves_the_voice_unit_pointing_where_setup_put_it(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression: restart rewrote both units, so run from another checkout's environment it
+    # pointed the owner's voice service at that checkout.
+    run = engine_run_config(home)
+    install_engine(home / "data")
+    cfg = config.Config(strata=config.StrataConfig(run_config=run, vram_reserve_mib=12000))
+    config.save(cfg)
+    services.write_units(cfg, cli.strata_key_file())
+    voice = services.unit_dir() / "jarvis.service"
+    voice.write_text("[Service]\nExecStart=/the/owners/checkout/jarvis run\n", encoding="utf-8")
+
+    _restart_calls(monkeypatch, time.time() + 1)
+
+    assert (
+        voice.read_text(encoding="utf-8")
+        == "[Service]\nExecStart=/the/owners/checkout/jarvis run\n"
+    )
+
+
+def test_restart_before_setup_writes_no_unit(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = engine_run_config(home)
+    install_engine(home / "data")
+    config.save(config.Config(strata=config.StrataConfig(run_config=run, vram_reserve_mib=12000)))
+
+    calls = _restart_calls(monkeypatch, None)
+
+    assert not services.unit_dir().exists() or not any(services.unit_dir().iterdir())
+    assert ("daemon-reload",) not in calls
+
+
+def test_restart_that_cannot_write_strata_files_says_so_and_still_restarts_jarvis(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = engine_run_config(home)
+    install_engine(home / "data")
+    cfg = config.Config(strata=config.StrataConfig(run_config=run, vram_reserve_mib=12000))
+    config.save(cfg)
+    services.write_units(cfg, cli.strata_key_file())
+
+    def full(_cfg: config.Config) -> Path:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(services, "write_strata_profile", full)
+
+    calls = _restart_calls(monkeypatch, time.time() + 1)
+
+    assert "No space left on device" in capsys.readouterr().out
     assert ("restart", "jarvis.service") in calls
 
 

@@ -32,6 +32,7 @@ class Ear:
     heard: list[str] = field(default_factory=list[str])
     when: list[int] = field(default_factory=list[int])
     hushes: int = 0
+    quiets: int = 0
     hushed_at: list[int] = field(default_factory=list[int])
     stop_after: str = ""  # cancel the request once this has been heard
     cancelled: bool = False
@@ -53,12 +54,16 @@ class Ear:
         self.hushes += 1
         self.hushed_at.append(self._pieces)
 
+    def quiet(self) -> None:
+        self.quiets += 1
+
     def hooks(self) -> Hooks:
         return Hooks(
             confirm=lambda _q: False,
             cancelled=lambda: self.cancelled,
             speak=self.speak,
             hush=self.hush,
+            quiet=self.quiet,
         )
 
 
@@ -143,6 +148,7 @@ def test_words_before_a_tool_call_stop_but_what_was_said_plays_to_its_end() -> N
     agent, audit = _agent(model, [counter.op("pause")])
 
     assert agent.handle("pause", ear.hooks()) == "Paused."
+    assert ear.quiets == 0  # a reply is no request for silence
 
     # "One moment." was not finished when the call began, so it is never said; "Let me look."
     # passed the claim check, so it is heard to its end rather than cut off mid-word.
@@ -477,3 +483,4 @@ def test_words_written_before_a_call_to_stay_quiet_are_hushed() -> None:
 
     assert not agent.handle("Be quiet.", ear.hooks())
     assert ear.hushes >= 1  # what was queued of the preamble is dropped
+    assert ear.quiets == 1  # and the channel is told the owner asked for silence

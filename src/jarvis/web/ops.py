@@ -117,10 +117,6 @@ def _and(parts: list[str], last: str = " and ") -> str:
     return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + last + parts[-1]
 
 
-def _capital(text: str) -> str:
-    return text[:1].upper() + text[1:]
-
-
 def _where(place: str, country: str) -> str:
     return f"{place} ({country})" if country else place
 
@@ -268,8 +264,8 @@ class WebOps:
             parts.append(f"{clock}{day} in {zone.city}")
         listed = _and(parts)
         return Result(
-            f"Time in {place}, which has {len(zones)} time zones now: {listed}.",
-            spoken=f"{_capital(place)} has {len(zones)} time zones: it's {listed}.",
+            f"Time in {place}, on its {len(zones)} clocks now: {listed}.",
+            spoken=f"In {place}, it's {listed}.",
         )
 
     @staticmethod

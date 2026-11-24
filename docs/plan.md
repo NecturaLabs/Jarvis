@@ -29,7 +29,7 @@ Also beyond the plan: Jarvis answers about itself (`about_jarvis`) and reads its
 (`read_jarvis_file`). Built beyond the plan, each with an ADR: reminders and scheduled requests, said or carried out by the
 voice service ([0011](adr/0011-reminders-and-scheduled-requests.md)); speech heard in PC audio is treated as someone else's
 ([0003](adr/0003-pc-audio-is-not-the-owner.md)); plain commands skip the model
-([0004](adr/0004-model-free-path-for-plain-commands.md)); no hosted backend
+([0004](adr/0004-model-free-path-for-plain-commands.md); no new ones, [0013](adr/0013-free-speech-no-new-shortcuts.md)); no hosted backend
 ([0005](adr/0005-local-only.md)). Also built: a vocabulary hint for speech-to-text, a check that a spoken
 reply does not claim an action no tool did, and `jarvis doctor` hashing model files against pinned releases.
 

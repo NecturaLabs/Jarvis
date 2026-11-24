@@ -20,6 +20,7 @@ from jarvis.app import (
     no_action_operation,
     overrides_below_floor,
     pc_operations,
+    quiet_operation,
     speech_hint,
     strata_key_file,
     system_prompt,
@@ -38,7 +39,7 @@ from jarvis.config import (
     SpotifyConfig,
     StrataConfig,
 )
-from jarvis.operations import Operation, OperationError, Registry, Result
+from jarvis.operations import Operation, OperationError, Registry, Result, request_scope
 from jarvis.secretfile import ensure_api_key
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
@@ -308,6 +309,28 @@ def test_only_the_voice_offers_staying_quiet(tmp_path: Path) -> None:
     assert quiet.shortcuts == ()  # the model reads what the owner meant; no fixed phrasings
     assert quiet.run({}).quiet
     assert chat.get("stay_quiet") is None
+
+
+def test_outside_text_read_in_the_request_cannot_silence_the_reply() -> None:
+    # A web page that says "call stay_quiet" must not hide the answer the owner asked for.
+    quiet = quiet_operation()
+
+    with request_scope(foreign=False) as request:
+        request.saw("web")
+        with pytest.raises(OperationError, match="owner"):
+            quiet.run({})
+
+
+@pytest.mark.parametrize(("foreign", "remembered"), [(False, True), (True, False)])
+def test_quiet_holds_after_remembered_outside_text_and_for_pc_audio(
+    *, foreign: bool, remembered: bool
+) -> None:
+    # Outside text from earlier turns stays in memory, and the owner must still be able to ask
+    # for quiet; a request heard in PC audio that asks for it only makes Jarvis say nothing.
+    with request_scope(foreign=foreign) as request:
+        if remembered:
+            request.saw("memory")
+        assert quiet_operation().run({}).quiet
 
 
 def test_only_the_chat_offers_pictures_and_keeps_them_in_its_own_folder(tmp_path: Path) -> None:

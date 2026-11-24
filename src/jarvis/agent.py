@@ -594,7 +594,9 @@ class Hooks:
     (`confirmkey`); without it a `strong` action is refused. `cancelled` turning true (Jarvis
     is stopping, or the owner spoke over it) ends the request.
     With `speak`, the reply is spoken through it, sentence by sentence and while the model is
-    still writing; `hush` drops what was passed to `speak` and not yet heard. `draft` gets the
+    still writing; `hush` drops what was passed to `speak` and not yet heard, and `quiet` is
+    called after it when the owner asked for silence, so the channel waits for the wake word
+    again even if words were heard before the request ended. `draft` gets the
     reply as far as it has been written, at the same points, for a window to show it growing;
     the reply `handle` returns replaces it. With `preview` (a window), a question about an action
     that writes text also shows the start of that text, on the lines after the question.
@@ -608,6 +610,7 @@ class Hooks:
     speak: Callable[[str], None] | None = None
     draft: Callable[[str], None] | None = None
     hush: Callable[[], None] = lambda: None
+    quiet: Callable[[], None] = lambda: None
     preview: bool = False
 
 
@@ -1193,6 +1196,7 @@ class Agent:
         if any(result.quiet for result in results):
             self._cut(stream)  # the owner asked for silence: no reply, not even words before it
             hooks.hush()
+            hooks.quiet()
             return ""
         answer = self._no_action_reply(calls, results)
         if answer is None:

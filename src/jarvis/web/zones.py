@@ -9,6 +9,7 @@ show the same time right now are said once, by the zone that covers the country'
 import functools
 import importlib.resources
 import re
+import unicodedata
 import zoneinfo
 from dataclasses import dataclass
 from datetime import timedelta
@@ -21,6 +22,10 @@ if TYPE_CHECKING:
 # A comment that marks the zone covering most of a country (or of its region).
 _MAIN = re.compile(r"\bmost\b|\bmainland\b", re.IGNORECASE)
 _WORDS = re.compile(r"[^a-z0-9 ]+")
+# Zones whose city is the largest on its clock in its country, where the database's own ranking
+# (below) names a smaller one: Winnipeg over Toronto once Manitoba keeps Eastern time, Boa Vista
+# over Manaus, Saratov over Samara, Barnaul over Novosibirsk.
+_PRINCIPAL = frozenset({"America/Toronto", "America/Manaus", "Europe/Samara", "Asia/Novosibirsk"})
 _ZONE = 2  # the zone's column in the database's tables; the comment follows it
 _NAMED = 2  # a country row in `iso3166.tab`: its code, then its name
 # English names the database spells otherwise ("Britain (UK)", "Korea (South)").
@@ -42,6 +47,10 @@ _ALSO = {
     "democratic republic of the congo": "CD",
     "dr congo": "CD",
     "republic of the congo": "CG",
+    "ivory coast": "CI",
+    "turkiye": "TR",
+    "burma": "MM",
+    "swaziland": "SZ",
 }
 
 
@@ -96,8 +105,12 @@ def _rows(text: str) -> list[list[str]]:
 
 
 def bare(text: str) -> str:
-    """Return a name as bare lowercase words: "The United States!" is "united states"."""
-    words = " ".join(_WORDS.sub(" ", text.casefold().replace(".", "")).split())
+    """Return a name as bare lowercase words: "The United States!" is "united states".
+
+    Accents are dropped, so "Côte d'Ivoire" said with or without them is the same name.
+    """
+    plain = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    words = " ".join(_WORDS.sub(" ", plain.casefold().replace(".", "")).split())
     return words.removeprefix("the ")
 
 
@@ -151,9 +164,10 @@ def find_country(place: str) -> Country | None:
 def clocks(country: Country, now: datetime) -> list[Zone]:
     """Return one zone for each time shown in `country` at `now`, from east to west.
 
-    Of the zones showing the same time, the one said is the database's choice for that clock
-    (`zonenow.tab`, the most populous), then one whose comment marks the main area (the database
-    lists those first), then the one with the shortest comment, the broadest area.
+    Of the zones showing the same time, the one said is a principal city (`_PRINCIPAL`), then
+    the database's choice for that clock (`zonenow.tab`, the most populous), then one whose
+    comment marks the main area (the database lists those first), then the one with the shortest
+    comment, the broadest area.
     """
     groups: dict[timedelta, list[Zone]] = {}
     for zone in country.zones:
@@ -162,9 +176,10 @@ def clocks(country: Country, now: datetime) -> list[Zone]:
 
     leading = _leading()
 
-    def rank(zone: Zone) -> tuple[bool, bool, int, int]:
+    def rank(zone: Zone) -> tuple[bool, bool, bool, int, int]:
         main = _MAIN.search(zone.comment) is not None
         return (
+            zone.name not in _PRINCIPAL,
             zone.name not in leading,
             not main,
             zone.row if main else len(zone.comment),
