@@ -34,7 +34,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   as said: its best "Texas" is a village in Mexico, "California" a town in Colombia and "Ontario" a city in
   California, and asking the model to name a city instead did not change what it passed. A bare "Georgia" is
   the country, and a bare "Washington" or "Quebec" the city; "Georgia state", "Washington state" and "the
-  province of Quebec" are the regions. A home set in `[weather]` is always the place it names.
+  province of Quebec" are the regions. Since the model passes "the state of Georgia" as "Georgia", the time
+  for a plain shared name also gives the region's when its clock differs, and the model answers the one asked
+  for. A home set in `[weather]` is always the place it names.
 
 ### Changed
 

@@ -157,8 +157,13 @@ def countries() -> dict[str, Country]:
 
 
 def find_country(place: str) -> Country | None:
-    """Return the country `place` names, or None for a city or anything else."""
-    return countries().get(bare(place))
+    """Return the country `place` names, or None for a city or anything else.
+
+    It may say what it is: "Georgia (country)", "the country of Georgia".
+    """
+    said = bare(place)
+    name = said.removeprefix("country of ").removesuffix(" country").removesuffix(" the")
+    return countries().get(said) or countries().get(name)
 
 
 def clocks(country: Country, now: datetime) -> list[Zone]:
