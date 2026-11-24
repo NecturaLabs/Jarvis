@@ -405,7 +405,7 @@ def test_the_wake_words_own_tail_alone_starts_no_request() -> None:
     assert heard.samples is None  # still waiting for the request when the stream ended
 
 
-@pytest.mark.parametrize(("gap", "tail_kept"), [(0, True), (1, True), (2, False)])
+@pytest.mark.parametrize(("gap", "tail_kept"), [(0, True), (1, True), (2, False), (3, False)])
 def test_the_tail_is_kept_only_when_the_request_follows_within_the_pre_roll(
     gap: int, *, tail_kept: bool
 ) -> None:
@@ -416,8 +416,22 @@ def test_the_tail_is_kept_only_when_the_request_follows_within_the_pre_roll(
     )
 
     assert heard.samples is not None
-    before = 4 + gap if tail_kept else voice.PRE_ROLL_FRAMES - 1
+    # Within 160 ms the tail is the request's own start; later, none of it is kept, however
+    # far back the lead-in before speech reaches.
+    before = 4 + gap if tail_kept else gap
     assert len(heard.samples) == (before + 3 + 4) * FRAME
+
+
+def test_a_third_of_a_second_before_the_first_speech_is_kept() -> None:
+    """Speech starts softly before the voice detector is sure of it: its first sound is kept."""
+    scores = [0.0] * 10 + [0.9] * 3 + [0.0] * 4
+    frames = [np.full(FRAME, number, dtype=np.int16) for number in range(len(scores))]
+
+    heard = voice.capture_utterance(iter(frames), Probabilities(scores), HYSTERESIS)
+
+    assert heard.samples is not None
+    first = int(heard.samples[0])  # the number of the earliest frame kept
+    assert (10 - first) * voice.FRAME_S >= 0.3
 
 
 def test_the_wait_for_a_request_starts_after_the_wake_words_tail() -> None:
@@ -787,6 +801,20 @@ def test_no_reply_is_spoken_once_jarvis_is_stopping() -> None:
 
     assert cancelled == [True]
     assert speaker.said == []
+
+
+def test_the_sound_levels_of_each_request_are_logged_as_numbers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="jarvis.voice")
+    agent = Agent()
+
+    _run(_loop(agent, Mic(*REQUEST), Speaker()))
+
+    assert len(agent.calls) == 1
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("levels: ")]
+    assert len(lines) == 1
+    assert "dBFS" in lines[0]
 
 
 def test_owner_utterances_are_kept_privately_when_debugging(

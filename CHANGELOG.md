@@ -8,6 +8,21 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `jarvis speech-test` measures speech-to-text on your own voice. `record` shows one card at a time (play
+  one of your artists, ask the time somewhere, tell Jarvis to be quiet, anything you would ask) and saves
+  what you say through Jarvis's own microphone, voice detection and lead-in, with the words you confirm or
+  type; `--music` marks a session said with music playing. `score` transcribes the set again with the
+  current settings (`--engine`, `--model` and `--no-hint` try others) and reports the word error rate, the
+  names heard right and the time taken, by kind of card; `compare` pairs two saved scores request by
+  request and says whether they differ beyond chance (an exact McNemar test on the names, a sign test on
+  the words). The set stays in its folder (0700, files 0600) and is never sent anywhere; an existing folder
+  holding anything but a set is refused and left as it is, and `record` waits until a running Jarvis is
+  paused, so a card said aloud is never acted on.
+- Each request's sound levels are logged before it is transcribed, as one `levels:` line of numbers: peak,
+  speech level, the room's floor, the signal-to-noise ratio, how loud its first 20 ms already were (high
+  when the start was cut off) and the share of clipped samples. A misheard request can then be told apart:
+  a quiet voice, a loud room, or a first sound lost. The sound itself is not kept.
+
 - Tell Jarvis to be quiet, in any words, and it says nothing: the model calls `stay_quiet` (voice only),
   which ends the request without a reply, stops the sentence playing, drops anything queued and opens no
   follow-up window, even when the model had started a sentence first.
@@ -40,6 +55,19 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- Spotify names are matched by sound as well as spelling, whichever is closer, using espeak's phonemes. A
+  name speech-to-text wrote as words that sound like it ("flocks days" for "Phlox Daze", "7" for "seven")
+  now finds your artist or song, and an item of yours of the kind asked for that sounds closer to what was
+  heard beats a search hit only spelled like the mishearing; an exact hit still wins. Measured on a private
+  set of 67 artist names misheard in speech-to-text test runs against a 60-artist library: the right artist
+  scored at least `close_match` (0.8) for 47, against 33 by spelling alone, and at least `loose_match` (0.6)
+  for 58, against 51, with no more of 26 names outside the library matched at either. A name in another
+  script than Latin is compared by spelling only, since the English voice reads all such letters alike.
+  Espeak calls now share Piper's own lock, so a Piper voice, Kokoro and name matching never phonemize at
+  once, and characters espeak cannot take (a NUL, a lone surrogate) are left out of what it reads.
+- The capture keeps 320 ms from before speech is detected, not 160 ms, so a soft first sound the voice
+  detector was not yet sure of reaches speech recognition. The wake word's tail is kept as before: only
+  when the request follows it within 160 ms, and none of it is in the longer lead-in otherwise.
 - The model can be asked to think before each answer: `thinking` (`none`, `low`, `medium` or `high`,
   Strata's reasoning effort) in `[agent]` and `[chat]`, capped by `thinking_tokens` (192 for speech, 512 in
   the chat), after which Strata closes the thinking and lets the model answer. It is `none` by default:

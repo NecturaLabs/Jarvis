@@ -34,6 +34,7 @@ from jarvis.audio import (
     keyword_tail,
     write_wav,
 )
+from jarvis.levels import levels
 from jarvis.policy import Origin, is_yes
 from jarvis.schedule import reminder_words, scheduled_request
 from jarvis.sentences import split_sentences
@@ -99,7 +100,12 @@ MIN_REQUEST_SPEECH_S = MIN_ANSWER_SPEECH_S
 # A request heard without the wake word must hold more speech than a cough, a click or a word
 # from the room: four 80 ms frames.
 MIN_FOLLOW_UP_SPEECH_S = 0.3
-PRE_ROLL_FRAMES = 3
+# The frames kept from before speech is detected, the detected one included: 320 ms of lead, so
+# a soft first sound the detector was not yet sure of is not cut off.
+PRE_ROLL_FRAMES = 5
+# The wake word's tail is kept only when speech follows it within this many frames (160 ms):
+# then the request was said straight after the wake word and may start inside the tail.
+TAIL_GAP_FRAMES = 2
 WAKE_DEDUPE_S = 2.0
 SORRY_INTERNAL = "Sorry, something went wrong on my side."
 NO_SPEECH = "no speech"  # why a capture that timed out before any speech ended
@@ -232,12 +238,13 @@ def capture_utterance(
     `vad_exit_threshold`, so a breath or a soft syllable inside a sentence is not silence. Only
     frames at the entry threshold count toward `speech_s`. The first `lead_frames` frames are the
     wake word's own tail: they neither start the request nor count as its speech, and are kept
-    only when the request starts within the pre-roll after them, so a pause after the wake word
-    is waited out like the silence before any other request.
+    only when the request starts within `TAIL_GAP_FRAMES` after them, so a pause after the wake
+    word is waited out like the silence before any other request. Otherwise up to
+    `PRE_ROLL_FRAMES` from before speech are kept, none of them the tail's.
     """
     vad.reset()
     kept: list[NDArray[np.int16]] = []
-    recent: list[NDArray[np.int16]] = []
+    recent: list[tuple[int, NDArray[np.int16]]] = []
     started = False
     silent_s = 0.0
     waited_s = 0.0
@@ -249,14 +256,16 @@ def capture_utterance(
         if speech:
             speech_s += FRAME_S
         if not started:
-            recent.append(frame)
-            if number + 1 - PRE_ROLL_FRAMES >= lead_frames:  # the pre-roll is past the tail
+            recent.append((number, frame))
+            if number >= lead_frames + TAIL_GAP_FRAMES:  # too late for the tail to be kept
                 del recent[:-PRE_ROLL_FRAMES]
             if number >= lead_frames:  # the wait starts once the wake word has ended
                 waited_s += FRAME_S
             if speech:
                 started = True
-                kept.extend(recent)
+                tail_kept = number < lead_frames + TAIL_GAP_FRAMES
+                first = 0 if tail_kept else max(lead_frames, number + 1 - PRE_ROLL_FRAMES)
+                kept.extend(f for n, f in recent if n >= first)
             elif waited_s >= cfg.no_speech_timeout_s:
                 return Utterance(None, NO_SPEECH)
             continue
@@ -913,6 +922,7 @@ class VoiceLoop:
         follow_up: bool = False,
     ) -> None:
         self.state = State.TRANSCRIBE
+        log.info("levels: %s", levels(samples).summary())
         started = time.perf_counter()
         try:
             text = self._transcribe(samples)

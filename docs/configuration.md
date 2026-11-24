@@ -195,7 +195,7 @@ raise it before holding a larger model. `jarvis unload` frees the model at once.
 | `client_id` | empty | text | Your app's client ID. There is no client secret. `--spotify-client-id`. |
 | `redirect_port` | `8765` | 1024 to 65535 | Port of the login callback, `http://127.0.0.1:<port>/callback`; your app must list exactly this redirect URI. |
 | `device_name` | empty | text | Preferred player, matched by name ignoring case. Empty means whichever player is active or listed. |
-| `close_match` | `0.8` | above 0, up to 1 | How similar a search result must be to your words to be taken as the answer. |
+| `close_match` | `0.8` | above 0, up to 1 | How similar a search result must be to your words to be taken as the answer. Names are compared by spelling and by sound, whichever is closer. |
 | `loose_match` | `0.6` | above 0, up to 1, and not above `close_match` | The weaker similarity used to accept an artist or a library item. |
 | `queue_max` | `20` | 1 to 100 | Most songs one queue request may add. |
 | `search_pages` | `8` | 1 to 20 | Search result pages read while looking for a match. |
