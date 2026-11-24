@@ -95,14 +95,16 @@ class AuditLog:
         Other Jarvis processes write the same log, so the lock is `flock` on the open file: the
         size check, the rotation and the write happen while no other writer holds it. A writer
         that waited while the log was rotated finds its file is no longer the log and opens the
-        new one, so a full log is rotated once and no event is lost.
+        new one, so a full log is rotated once and no event is lost. The new log may have filled
+        in the meantime, so its size is checked again before the write.
         """
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         data = line.encode("ascii")
         fd = self._open_locked(path)
         try:
-            status = os.fstat(fd)
-            if status.st_size and status.st_size + len(data) > self._max_bytes:
+            # Checked again after each rotation: other writers may have filled the new log
+            # between this one letting go of the old log and taking the new one.
+            while (size := os.fstat(fd).st_size) and size + len(data) > self._max_bytes:
                 self._rotate(path)
                 old, fd = fd, -1
                 with contextlib.suppress(OSError):

@@ -40,6 +40,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The audit log could grow past `max_bytes` when several writers ran at once on a busy PC: a writer that
+  had just rotated a full log reopened the new one and wrote without checking its size, though others may
+  have filled it meanwhile. The size is now checked again after each rotation. No event was ever lost.
 - `jarvis restart` writes Strata's profile and unit from the config, so a `strata` setting changed there
   reaches the model server. Before, only `jarvis setup` wrote them: a `strata.context` of 49,152 in the config
   left Strata running at 24,576 while Jarvis planned for the larger window. The voice service's unit is left
