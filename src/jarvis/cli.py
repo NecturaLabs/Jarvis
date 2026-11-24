@@ -1604,7 +1604,6 @@ def cmd_speech_test(args: argparse.Namespace) -> int:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
     jarvis.ops.refresh()  # your artists, for the cards and the hint
-    request, _answer = _transcribers(cfg, jarvis.hint)
     if args.action == "record" and _listening():
         print("jarvis: Jarvis is listening; `jarvis pause` it first, then record", file=sys.stderr)
         return 1
@@ -1613,6 +1612,7 @@ def cmd_speech_test(args: argparse.Namespace) -> int:
     if args.action == "record" and not artists:
         print("No artists from Spotify, so every card is an open request.")
     try:
+        request, _answer = _transcribers(cfg, jarvis.hint)  # ValueError: a path TOML can't hold
         if args.action == "record":
             return _record_set(cfg, folder, request, args, (artists, heard_with))
         print(f"Scoring {folder} with {heard_with} …")

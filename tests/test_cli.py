@@ -1794,6 +1794,25 @@ def test_a_speech_test_score_can_try_another_engine_and_model(
     assert given[0].audio.vocabulary_hint == config.Config().audio.vocabulary_hint
 
 
+def test_a_speech_test_says_when_a_model_path_cannot_go_in_voxtype_settings(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A path given on the command line can hold bytes that are not UTF-8; no traceback."""
+
+    def build(_cfg: config.Config, *, via: str | None = None) -> object:
+        assert via == "speech-test"
+        return SimpleNamespace(
+            ops=SimpleNamespace(refresh=lambda: None, artist_names=list), hint=str
+        )
+
+    monkeypatch.setattr(cli, "build", build)
+    args = ["speech-test", "score", "--dir", str(home / "none"), "--engine", "parakeet"]
+
+    assert main([*args, "--model", "/m/\udcff.gguf"]) == 1
+
+    assert "UTF-8" in capsys.readouterr().err
+
+
 def test_a_speech_test_compares_two_saved_scores(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
