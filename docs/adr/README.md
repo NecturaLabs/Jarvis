@@ -8,7 +8,7 @@ edited once accepted; a later decision supersedes it with a new record that link
 | [0001](0001-own-agent-loop-on-strata.md) | Run Jarvis on its own single-agent loop over Strata's API | accepted |
 | [0002](0002-typed-operation-policy.md) | Bound every action with typed operations and default deny | accepted |
 | [0003](0003-pc-audio-is-not-the-owner.md) | Treat speech heard in PC audio as someone else's | accepted |
-| [0004](0004-model-free-path-for-plain-commands.md) | Answer plain commands without the model | accepted |
+| [0004](0004-model-free-path-for-plain-commands.md) | Answer plain commands without the model | accepted; no new shortcuts since 0013 |
 | [0005](0005-local-only.md) | Run entirely on this PC, with no hosted backend | accepted |
 | [0006](0006-gpl-licence.md) | Publish Jarvis under GPL-3.0-or-later | accepted |
 | [0007](0007-outside-services-for-answers.md) | Reach SearXNG's engines, Open-Meteo and Arctic Shift to answer questions | accepted |
@@ -17,3 +17,4 @@ edited once accepted; a later decision supersedes it with a new record that link
 | [0010](0010-azure-keyword-wake-word.md) | Offer an Azure custom keyword model as a second wake word, run offline in its own process | accepted |
 | [0011](0011-reminders-and-scheduled-requests.md) | Keep reminders and scheduled requests in Jarvis's own jobs file, said by the voice service; a scheduled request runs as the owner's own | accepted |
 | [0012](0012-lower-wake-score-while-speaking.md) | Hold the wake word to a lower score while Jarvis speaks | accepted |
+| [0013](0013-free-speech-no-new-shortcuts.md) | Understand free speech with typed tools; add no new shortcuts | accepted |

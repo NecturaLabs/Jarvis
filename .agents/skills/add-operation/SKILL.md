@@ -1,6 +1,6 @@
 ---
 name: add-operation
-description: End-to-end recipe for adding or changing something Jarvis can do (a typed operation such as a new Spotify action or a PC operation), from the Operation and its argument schema through the policy class, confirmation wording, shortcuts, audit, tests and docs. Use whenever an issue or request adds a tool the model can call or changes what an existing one does.
+description: End-to-end recipe for adding or changing something Jarvis can do (a typed operation such as a new Spotify action or a PC operation), from the Operation and its argument schema through the policy class, confirmation wording, audit, tests and docs. Use whenever an issue or request adds a tool the model can call or changes what an existing one does.
 ---
 
 # Add an operation
@@ -26,9 +26,9 @@ agent before merging.
     target before the question, so the yes is for that target and not for what is current later.
 - `run` returns a `Result`; text from outside (Spotify names, web text) keeps its `origin` so it stays data. Raise
   `UncertainOutcomeError` when the call may or may not have happened: it is not retried.
-- Shortcuts (`shortcuts=`, `src/jarvis/shortcuts.py`): only for plain phrasings with no free text to interpret
-  ([ADR 0004](../../../docs/adr/0004-model-free-path-for-plain-commands.md)); they run through the same policy,
-  confirmation and audit.
+- No shortcuts: a new operation gets no `shortcuts=` phrasing, keyword list or pattern over the owner's words
+  ([ADR 0013](../../../docs/adr/0013-free-speech-no-new-shortcuts.md)). The owner says it in any words, so the
+  description must tell the model when to use it; the shortcuts ADR 0004 already has stay as they are.
 
 Done when: the operation is in the registry `src/jarvis/app.py` builds, so the model's tool schemas carry it; the
 tests below show it.

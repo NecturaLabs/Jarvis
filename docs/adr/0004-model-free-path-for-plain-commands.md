@@ -1,6 +1,6 @@
 # ADR: Answer plain commands without the model
 
-**Status:** accepted
+**Status:** accepted; no new shortcuts since [0013](0013-free-speech-no-new-shortcuts.md)
 **Date:** 2026-11-21
 
 ## Context and problem statement
