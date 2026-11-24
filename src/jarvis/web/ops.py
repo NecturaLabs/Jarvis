@@ -79,7 +79,7 @@ _WEATHER_TOMORROW = Shortcut(
 _PLACE = {
     "type": "string",
     "maxLength": MAX_PLACE,
-    "description": "A city or place the owner named; leave out for the owner's home",
+    "description": "A place the owner named (a state or region: its main city); leave out for home",
 }
 _PLACE_ARG = frozenset({"place"})  # the time and weather send the model's words only in it
 _COUNT = {"type": "integer", "minimum": 1, "maximum": 8, "description": "How many results"}
@@ -558,15 +558,16 @@ class WebOps:
         return [
             Operation(
                 "time_now",
-                "The current time or date, here or in a city or country (each of its time zones);"
-                " never search the web for it. One per call: both only when asked for both.",
+                "The time or date, here or in a city or country; never search the web for it."
+                " One per call: both only when asked for both.",
                 {
                     "type": "object",
                     "properties": {
                         "what": {"type": "string", "enum": ["time", "date"], "default": "time"},
                         "place": {
                             **_PLACE,
-                            "description": "A city or country the owner named; leave out for here",
+                            "description": "A city or country (a state or region: its main city);"
+                            " leave out for here",
                         },
                     },
                     "additionalProperties": False,
