@@ -73,6 +73,11 @@ from jarvis.policy import OpClass
         ("cos(pi) ** 2", "1"),  # a negative number to a whole power is real
         ("(sin(4) * 2) ** 2", "2.291000068"),
         ("cos(pi) ** 3", "-1"),
+        ("-7 // 2", "-4"),  # floor division rounds down, below zero too
+        ("floor(-2.5) + ceil(-2.5)", "-5"),
+        ("log2(8) + log2(0.5)", "2"),
+        ("log(8, 2.5)", "2.269412392"),  # an inexact base is worked out in floating point
+        ("2 ** 0.5", "1.414213562"),
     ],
 )
 def test_an_expression_is_worked_out_exactly(expression: str, value: str) -> None:
@@ -93,6 +98,11 @@ def test_an_expression_is_worked_out_exactly(expression: str, value: str) -> Non
         "1 < 2",
         "sqrt",
         "sqrt(x=4)",
+        "sqrt(*[4])",
+        "foo(1)",
+        "acos(0.5)",
+        "2 @ 3",
+        "1 +",
         "eval('1')",
         "1; 2",
         "",
@@ -114,6 +124,16 @@ def test_anything_but_arithmetic_is_refused(expression: str) -> None:
         ("(-8) ** 0.5", "not a real number"),
         ("2.5!", "whole number"),
         ("(-1)!", "whole number"),
+        ("log(-1)", "not a real number"),
+        ("log(-2.5, 3)", "not a real number"),
+        ("0 ** -1", "divide by zero"),
+        ("(-8) ** (1/3)", "not a real number"),
+        ("factorial(2.5)", "whole number"),
+        ("round(1.25, 0.5)", "whole number"),
+        ("round(2.5, 11)", "0 to 10 places"),
+        ("min()", "1 to 20 numbers"),
+        ("sqrt(1, 2)", "1 to 1 numbers"),
+        ("!3", "number before the !"),
     ],
 )
 def test_an_impossible_sum_says_why(expression: str, says: str) -> None:
@@ -130,6 +150,8 @@ def test_an_impossible_sum_says_why(expression: str, says: str) -> None:
         "100000!",
         "factorial(10 ** 9)",
         "exp(1000)",
+        "2.0 ** 10000.5",
+        "10 ** -10001",
         "(" * 60 + "1" + ")" * 60,
         "1 + " * 300 + "1",
     ],
@@ -263,6 +285,20 @@ def test_a_number_with_a_leading_zero_is_refused(expression: str) -> None:
     # min(1,000, 2,500) read as min(1, 0, 2, 500) answered 0.
     with pytest.raises(CalcError, match="start with a zero"):
         evaluate(expression)
+
+
+@pytest.mark.parametrize(
+    ("expression", "value"),
+    [("sqrt(9)!", "6"), ("abs(-3)!", "6"), ("round(3.2)! + 1", "7"), ("2 * max(1, 3)!", "12")],
+)
+def test_a_factorial_of_a_function_s_answer_is_worked_out(expression: str, value: str) -> None:
+    assert evaluate(expression) == value
+
+
+def test_a_double_factorial_is_refused_rather_than_guessed() -> None:
+    # 5!! is 15 as a double factorial but 120! read as two factorials: say so, never guess.
+    with pytest.raises(CalcError, match="double factorial"):
+        evaluate("5!!")
 
 
 def test_a_logarithm_to_a_base_too_close_to_one_says_so() -> None:

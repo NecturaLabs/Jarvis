@@ -302,11 +302,15 @@ def _value(node: ast.expr) -> Number:
 
 
 def _postfix_factorials(text: str) -> str:
-    """Rewrite `n!` and `(…)!` as `factorial(…)`.
+    """Rewrite `n!`, `(…)!` and `f(…)!` as `factorial(…)`.
 
     Raises:
-        CalcError: a `!` follows no number or bracket.
+        CalcError: a `!` follows no number or bracket, or two follow each other (`5!!` is 15 as
+            a double factorial but 120! read as two factorials, so it is not guessed).
     """
+    if "!!" in text:
+        msg = "a double factorial is not worked out here; write (5!)! for a factorial of one"
+        raise CalcError(msg)
     while (mark := text.find("!")) != -1:
         start = mark
         if start > 0 and text[start - 1] == ")":
@@ -315,6 +319,8 @@ def _postfix_factorials(text: str) -> str:
                 depth += {")": 1, "(": -1}.get(text[start], 0)
                 if depth == 0:
                     break
+            while start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"):
+                start -= 1  # the name of the function whose answer it is
         else:
             while start > 0 and (text[start - 1].isdigit() or text[start - 1] == "."):
                 start -= 1
