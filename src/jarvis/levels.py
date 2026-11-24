@@ -52,7 +52,9 @@ def _dbfs(value: float) -> float:
 
 
 def levels(samples: NDArray[np.int16]) -> Levels:
-    """Measure one capture of 16 kHz, 16-bit samples (at least one sample)."""
+    """Measure one capture of 16 kHz, 16-bit samples; an empty one is digital silence."""
+    if not len(samples):
+        return Levels(_SILENT_DBFS, _SILENT_DBFS, _SILENT_DBFS, 0.0, 0.0)
     wide = samples.astype(np.float64)
     whole = len(wide) // WINDOW * WINDOW or len(wide)
     windows = wide[:whole].reshape(-1, min(WINDOW, whole))

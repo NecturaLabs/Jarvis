@@ -47,13 +47,17 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 - Spotify names are matched by sound as well as spelling, whichever is closer, using espeak's phonemes. A
   name speech-to-text wrote as words that sound like it ("flocks days" for "Phlox Daze", "7" for "seven")
-  now finds your artist or song, and an item of yours that sounds the same as what was heard beats a
-  search hit only spelled like the mishearing. On 67 misheard artist names from speech-to-text test runs,
-  the right artist in the library was found 54 times at a similarity of 0.7, against 45 by spelling alone,
-  with no more names matched that are not in the library. Espeak calls now share Piper's own lock,
-  so a Piper voice, Kokoro and name matching never phonemize at once.
+  now finds your artist or song, and an item of yours of the kind asked for that sounds closer to what was
+  heard beats a search hit only spelled like the mishearing; an exact hit still wins. Measured on a private
+  set of 67 artist names misheard in speech-to-text test runs against a 60-artist library: the right artist
+  scored at least `close_match` (0.8) for 47, against 33 by spelling alone, and at least `loose_match` (0.6)
+  for 58, against 51, with no more of 26 names outside the library matched at either. A name in another
+  script than Latin is compared by spelling only, since the English voice reads all such letters alike.
+  Espeak calls now share Piper's own lock, so a Piper voice, Kokoro and name matching never phonemize at
+  once, and characters espeak cannot take (a NUL, a lone surrogate) are left out of what it reads.
 - The capture keeps 320 ms from before speech is detected, not 160 ms, so a soft first sound the voice
-  detector was not yet sure of reaches speech recognition.
+  detector was not yet sure of reaches speech recognition. The wake word's tail is kept as before: only
+  when the request follows it within 160 ms, and none of it is in the longer lead-in otherwise.
 - The model can be asked to think before each answer: `thinking` (`none`, `low`, `medium` or `high`,
   Strata's reasoning effort) in `[agent]` and `[chat]`, capped by `thinking_tokens` (192 for speech, 512 in
   the chat), after which Strata closes the thinking and lets the model answer. It is `none` by default:

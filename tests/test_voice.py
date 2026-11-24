@@ -405,10 +405,7 @@ def test_the_wake_words_own_tail_alone_starts_no_request() -> None:
     assert heard.samples is None  # still waiting for the request when the stream ended
 
 
-@pytest.mark.parametrize(
-    ("gap", "tail_kept"),
-    [(0, True), (voice.PRE_ROLL_FRAMES - 2, True), (voice.PRE_ROLL_FRAMES - 1, False)],
-)
+@pytest.mark.parametrize(("gap", "tail_kept"), [(0, True), (1, True), (2, False), (3, False)])
 def test_the_tail_is_kept_only_when_the_request_follows_within_the_pre_roll(
     gap: int, *, tail_kept: bool
 ) -> None:
@@ -419,7 +416,9 @@ def test_the_tail_is_kept_only_when_the_request_follows_within_the_pre_roll(
     )
 
     assert heard.samples is not None
-    before = 4 + gap if tail_kept else voice.PRE_ROLL_FRAMES - 1
+    # Within 160 ms the tail is the request's own start; later, none of it is kept, however
+    # far back the lead-in before speech reaches.
+    before = 4 + gap if tail_kept else gap
     assert len(heard.samples) == (before + 3 + 4) * FRAME
 
 

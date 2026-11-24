@@ -1,5 +1,6 @@
 """Spotify operations against an in-process fake of the Web API (httpx.MockTransport)."""
 
+import difflib
 import json
 import logging
 import random
@@ -286,6 +287,68 @@ def test_the_owners_name_that_sounds_the_same_beats_a_hit_spelled_like_the_mishe
     build_ops(fake, tmp_path).play({"query": "Tokyo Lanterns", "kind": "artist"})
 
     assert fake.played == [{"context_uri": "spotify:artist:tokiolanterns"}]
+
+
+def test_names_in_another_script_are_alike_only_by_spelling() -> None:
+    assert likeness("東京", "大阪") == pytest.approx(0.0)
+
+
+def test_a_hit_as_alike_as_the_owners_item_is_played(tmp_path: Path) -> None:
+    fake = FakeSpotify(
+        search={"artist": [{"name": "Paper Moons", "uri": "spotify:artist:hit"}]},
+        top_artists=[{"name": "Paper Moons", "uri": "spotify:artist:mine"}],
+    )
+
+    build_ops(fake, tmp_path).play({"query": "Paper Moon", "kind": "artist"})
+
+    assert fake.played == [{"context_uri": "spotify:artist:hit"}]
+
+
+def test_a_close_hit_of_the_kind_asked_beats_the_owners_item_of_another_kind(
+    tmp_path: Path,
+) -> None:
+    fake = FakeSpotify(
+        search={"track": [_track("Green Lantern", "Paper Moons", "spotify:track:lantern")]},
+        top_artists=[{"name": "Green Lanterns", "uri": "spotify:artist:lanterns"}],
+    )
+
+    build_ops(fake, tmp_path).play({"query": "Green Lanterns", "kind": "track"})
+
+    assert fake.played == [{"uris": ["spotify:track:lantern"]}]
+
+
+def test_a_hit_named_with_a_null_character_is_still_played(tmp_path: Path) -> None:
+    fake = FakeSpotify(search={"artist": [{"name": "Glass\x00 Harbor", "uri": "spotify:artist:g"}]})
+
+    build_ops(fake, tmp_path).play({"query": "glass harbor", "kind": "artist"})
+
+    assert fake.played == [{"context_uri": "spotify:artist:g"}]
+
+
+def test_a_library_name_espeak_cannot_take_does_not_spoil_the_refresh(tmp_path: Path) -> None:
+    fake = FakeSpotify(
+        top_artists=[{"name": "Bad\x00Name", "uri": "spotify:artist:bad"}, GLASS_HARBOR]
+    )
+    ops = build_ops(fake, tmp_path)
+
+    ops.refresh()
+
+    assert "Glass Harbor" in ops.artist_names()
+
+
+@pytest.mark.parametrize(
+    ("heard", "name"),
+    [
+        ("grass harbor", "Glass Harbor"),
+        ("secund sun", "Second Sun"),
+        ("Glass Harbour", "glass harbor"),
+    ],
+)
+def test_spelling_counts_as_it_did_before_sounds_were_compared(heard: str, name: str) -> None:
+    assert likeness(heard, name) >= similarity(heard, name)
+    assert similarity(heard, name) == pytest.approx(
+        difflib.SequenceMatcher(None, _letters(heard), _letters(name)).ratio()
+    )
 
 
 def test_an_exact_hit_is_played_though_the_owner_has_a_name_that_sounds_close(
@@ -2328,3 +2391,7 @@ def test_a_skip_that_fails_at_once_raises(tmp_path: Path) -> None:
 
     with pytest.raises(UncertainOutcomeError):
         op.run(validate_args(op, {"count": 2}))
+
+
+def _letters(text: str) -> str:
+    return "".join(ch for ch in text.casefold() if ch.isalnum())

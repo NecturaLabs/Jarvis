@@ -1,6 +1,7 @@
 """The sound levels of one captured request (`jarvis.levels`)."""
 
 import math
+import re
 
 import numpy as np
 import pytest
@@ -83,7 +84,16 @@ def test_a_capture_shorter_than_one_window_is_measured_whole() -> None:
 def test_the_log_line_holds_only_numbers() -> None:
     line = levels(np.concatenate([_noise(0.3, 30), _tone(1.0, 6000)])).summary()
 
-    assert line.startswith("peak ")
-    assert "dBFS" in line
-    assert "SNR" in line
-    assert "clipped 0.00%" in line
+    number = r"[-+]?\d+\.\d+"
+    assert re.fullmatch(
+        rf"peak {number} dBFS, speech {number} dBFS, floor {number} dBFS \(SNR {number} dB\), "
+        rf"start {number} dB over the floor, clipped {number}%",
+        line,
+    ), line
+
+
+def test_an_empty_capture_has_levels_too() -> None:
+    """A diagnostics line must never be what ends a request."""
+    heard = levels(np.zeros(0, dtype=np.int16))
+
+    assert heard.snr_db == 0

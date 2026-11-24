@@ -152,33 +152,6 @@ def similarity(heard: str, name: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio() if a and b else 0.0
 
 
-def _ratio_from(heard: str, floor: float) -> Callable[[str], float]:
-    """Return how alike a text is to `heard` (difflib's ratio), 0 when its quick bound is lower."""
-    matcher = difflib.SequenceMatcher[str](None)
-    matcher.set_seq2(heard)
-
-    def ratio(text: str) -> float:
-        if not text or not heard:
-            return 0.0
-        matcher.set_seq1(text)
-        if matcher.real_quick_ratio() < floor or matcher.quick_ratio() < floor:
-            return 0.0
-        return matcher.ratio()
-
-    return ratio
-
-
-def _alike(heard: str, floor: float = 0.0) -> Callable[[str], float]:
-    """Return how alike names are to one heard name (`likeness`), skipping those plainly off.
-
-    The heard name's spelling and sounds are prepared once, so a whole library can be compared
-    with it; a name whose quick upper bound is under `floor` scores 0 without the full match.
-    """
-    spelling = _ratio_from(_letters(heard), floor)
-    sound = _ratio_from(espeak.sounds(heard), floor)
-    return lambda name: max(spelling(_letters(name)), sound(espeak.sounds(name)))
-
-
 def likeness(heard: str, name: str) -> float:
     """Return how alike a heard name is to a real one (0..1), by spelling or by sound.
 
@@ -186,7 +159,9 @@ def likeness(heard: str, name: str) -> float:
     for "Phlox Daze", digits for a number said in words), which spelling alone misses; whichever
     of the two is closer counts.
     """
-    return _alike(heard)(name)
+    a, b = espeak.sounds(heard), espeak.sounds(name)
+    by_sound = difflib.SequenceMatcher(None, a, b).ratio() if a and b else 0.0
+    return max(similarity(heard, name), by_sound)
 
 
 def best_match(
@@ -334,9 +309,6 @@ class SpotifyOps:
         try:
             self._api.ensure_login()
             library = self._api.reload_library()
-            for items in (library or {}).values():
-                for item in items:
-                    espeak.sounds(str(item.get("name", "")))
         except SpotifyLoginExpired:
             self._login_expired = True
             log.warning("Spotify login has expired; run `jarvis spotify-login`")
@@ -353,6 +325,12 @@ class SpotifyOps:
         artists = library.get("artist", [])
         self._names = list(dict.fromkeys(str(a["name"]) for a in artists if a.get("name")))
         self._warm = True
+        try:
+            for items in library.values():
+                for item in items:
+                    espeak.sounds(str(item.get("name", "")))
+        except Exception:  # a request works them out itself; the names above are kept
+            log.exception("could not work out how the library's names sound")
 
     def start_refresh(self, stop: threading.Event) -> threading.Thread:
         """Refresh now and then every `library_refresh_s` on a daemon thread, until `stop` is set.
@@ -446,9 +424,8 @@ class SpotifyOps:
         Harbor song" heard as "grass harbor", asked as a track), so every kind in the owner's
         library is compared, not only the one asked for, by spelling and by sound (`likeness`).
         """
-        alike = _alike(query, floor=self._settings.loose_match)
         scored = [
-            _Hit(k, item, alike(str(item.get("name", ""))))
+            _Hit(k, item, likeness(query, str(item.get("name", ""))))
             for k, items in self._api.library(
                 max_age_s=2 * self._settings.library_refresh_s
             ).items()
@@ -512,24 +489,26 @@ class SpotifyOps:
             return self._api.search(filtered, kind) or self._api.search(f"{query} {artist}", kind)
         return self._api.search(query, kind)
 
+    def _beats(self, mine: _Hit, best: _Hit | None, kind: str, query: str, artist: str) -> bool:
+        """Whether the owner's item is close and beats the search's best hit outright."""
+        outright = best is None or (mine.kind == kind and mine.score > best.score)
+        by_artist = self._score(mine.item, query, mine.kind, artist)[0]
+        return mine.score >= self._settings.close_match and outright and by_artist
+
     def _find(self, query: str, kind: str, artist: str) -> _Hit | None:
         """Return what to play: the best hit, or the owner's own music for a misheard name.
 
-        A close hit gives way only to an item of the owner's that is more alike still (by the
-        artist named, when one is), such as their "Tokio Lanterns" heard as "Tokyo Lanterns"
-        when Spotify's best hit is "Tokyo Lantern"; nothing beats a hit as alike as can be.
+        A close hit gives way only to an item of the owner's of the same kind that is more alike
+        still (by the artist named, when one is), such as their "Tokio Lanterns" heard as "Tokyo
+        Lanterns" when Spotify's best hit is "Tokyo Lantern"; nothing beats a hit as alike as can
+        be.
         """
         best = self._best_hit(self._search_hits(query, kind, artist), query, kind, artist)
         close = self._settings.close_match
         if best is not None and best.score >= 1.0:
             return best
         mine = self._library_match(query)
-        if (
-            mine is not None
-            and mine.score >= close
-            and (best is None or mine.score > best.score)
-            and self._score(mine.item, query, mine.kind, artist)[0]
-        ):
+        if mine is not None and self._beats(mine, best, kind, query, artist):
             return mine
         if best is not None and best.score >= close:
             return best

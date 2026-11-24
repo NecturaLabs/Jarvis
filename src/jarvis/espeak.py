@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     import threading
 
 AMERICAN = "en-us"
+MAX_CHARS = 200  # longer than any name; bounds the time espeak holds its lock
 _LANG_SWITCH = re.compile(r"\([^)]+\)")  # "(fr)" ... "(en)" around a word read in another language
 
 
@@ -41,7 +42,13 @@ def clauses(text: str, voice: str) -> list[tuple[str, str, bool]]:
 
 def _sound(symbol: str) -> bool:
     """Whether a phoneme symbol is a sound, not stress, length or a modifier."""
-    return unicodedata.category(symbol).startswith("L") and unicodedata.category(symbol) != "Lm"
+    category = unicodedata.category(symbol)
+    return category.startswith("L") and category != "Lm"
+
+
+def _latin(text: str) -> bool:
+    """Whether every letter of `text` is a Latin one ("Måneskin" is, "東京" is not)."""
+    return all(unicodedata.name(ch, "").startswith("LATIN") for ch in text if ch.isalpha())
 
 
 @functools.lru_cache(maxsize=16384)
@@ -49,10 +56,14 @@ def sounds(text: str) -> str:
     """Return how `text` sounds in American English: its phonemes alone, as one string.
 
     Names that sound the same have the same sounds ("Kneel Moons" and "Neil Moons"), and a
-    number is read as words. Results are kept, since the same library names are compared again
-    on every request.
+    number is read as words. Only the first `MAX_CHARS` characters are read, and characters
+    espeak cannot take (a NUL, a lone surrogate, a control character) are left out, since names
+    come from Spotify. A name with letters of another script has no sounds: the English voice
+    reads each such letter by its script's name, so every one would sound alike. Results are
+    kept, since the same library names are compared again on every request.
     """
-    if not any(ch.isalnum() for ch in text):
+    readable = "".join(ch for ch in text[:MAX_CHARS] if ch.isprintable())
+    if not any(ch.isalnum() for ch in readable) or not _latin(readable):
         return ""
-    phonemes = "".join(clause for clause, _end, _sentence in clauses(text, AMERICAN))
+    phonemes = "".join(clause for clause, _end, _sentence in clauses(readable, AMERICAN))
     return "".join(filter(_sound, unicodedata.normalize("NFC", _LANG_SWITCH.sub("", phonemes))))
