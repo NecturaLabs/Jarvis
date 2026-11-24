@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import os
+import random
 import re
 import secrets
 import shutil
@@ -187,6 +188,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("help", "show this list"),
             ("run", "run the voice loop in this terminal (jarvis.service runs it)"),
+            ("speech-test", "record your own voice and score how well it is heard"),
         ),
     ),
 )
@@ -204,6 +206,13 @@ _DETAILS = {
         "key, and an operation set to deny is always refused."
     ),
     "wake": "With no argument and no option, shows the settings and the wake word files.",
+    "speech-test": (
+        "record shows one card at a time and saves what you say, through Jarvis's own "
+        "microphone and voice detection, with the words you confirm or type. score "
+        "transcribes the set again with the current speech-to-text settings, and compare says "
+        "whether two saved scores differ beyond chance. The set stays in its folder, "
+        "readable by you only."
+    ),
     "pc-audio": (
         "With no argument and no option, shows the settings. --apps and --all-output change "
         "which audio is heard without turning listening on or off."
@@ -319,6 +328,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the login link to open yourself instead of opening a browser; it still "
         "waits for the login",
     )
+
+    test = made["speech-test"]
+    test.add_argument("action", choices=("record", "score", "compare"), help="what to do")
+    test.add_argument(
+        "scores", nargs="*", type=Path, metavar="SCORE", help="compare: two files saved by score"
+    )
+    test.add_argument(
+        "--dir",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="the set's folder (default: speech-test in the data folder)",
+    )
+    test.add_argument(
+        "--count", type=int, default=40, metavar="N", help="record: how many cards (40)"
+    )
+    test.add_argument(
+        "--music", action="store_true", help="record: mark these as said with music playing"
+    )
+    test.add_argument(
+        "--out", type=Path, default=None, metavar="FILE", help="score: save each request's result"
+    )
+    test.add_argument(
+        "--engine", default=None, metavar="NAME", help="score: another Voxtype engine"
+    )
+    test.add_argument("--model", default=None, metavar="NAME", help="score: another model")
+    test.add_argument("--no-hint", action="store_true", help="score: without the vocabulary hint")
 
     ask = made["ask"]
     ask.add_argument("text", nargs="+", metavar="words", help="the request, as you would say it")
@@ -1463,6 +1499,104 @@ def cmd_overview(args: argparse.Namespace) -> int:
     return cmd_logs(args)
 
 
+LISTEN_WAIT_S = 8.0  # how long a speech-test card waits for speech to start
+
+
+def _listener(
+    cfg: config.Config,
+) -> tuple[Callable[[], NDArray[np.int16] | None], Callable[[], None]]:
+    """Return a capture of one request as Jarvis takes it after the wake word, and its stop."""
+    from jarvis.audio import MIC_STALL_S, Microphone, Vad  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
+    from jarvis.voice import capture_utterance  # ruff: ignore[import-outside-top-level] - imports jarvis.audio
+
+    mic = Microphone(cfg.audio.source, stall_s=MIC_STALL_S)
+    vad = Vad(cfg.data_dir / VAD_MODEL)
+    settings = cfg.audio.model_copy(
+        update={"no_speech_timeout_s": max(cfg.audio.no_speech_timeout_s, LISTEN_WAIT_S)}
+    )
+    mic.start()
+
+    def listen() -> NDArray[np.int16] | None:
+        mic.drain()
+        print("  listening…")
+        return capture_utterance(mic.frames(), vad, settings).samples
+
+    return listen, mic.stop
+
+
+def cmd_speech_test(args: argparse.Namespace) -> int:
+    """Record a private set of your requests, score speech-to-text on it, or compare two scores."""
+    from jarvis import speechtest  # ruff: ignore[import-outside-top-level] - imports jarvis.audio
+    from jarvis.audio import AudioError  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
+
+    if args.action == "compare":
+        if len(args.scores) != 2:  # ruff: ignore[magic-value-comparison] - a pair
+            print("jarvis: compare takes two score files saved by `score --out`", file=sys.stderr)
+            return 2
+        first, second = (json.loads(path.read_text(encoding="utf-8")) for path in args.scores)
+        print(speechtest.compare(first, second))
+        return 0
+    cfg = _load()
+    folder = args.dir or cfg.data_dir / "speech-test"
+    audio = cfg.audio.model_copy(
+        update={
+            key: value
+            for key, value in (
+                ("transcribe_engine", args.engine),
+                ("transcribe_model", args.model),
+                ("vocabulary_hint", False if args.no_hint else None),
+            )
+            if value is not None
+        }
+    )
+    cfg = cfg.model_copy(update={"audio": audio})
+    try:
+        jarvis = build(cfg, via="speech-test")
+    except SetupError as exc:
+        print(f"jarvis: {exc}", file=sys.stderr)
+        return 2
+    jarvis.ops.refresh()  # your artists, for the cards and the hint
+    request, _answer = _transcribers(cfg, jarvis.hint)
+    try:
+        if args.action == "record":
+            return _record_set(cfg, folder, request, args, jarvis.ops.artist_names())
+        print(f"Scoring {folder} with {audio.transcribe_engine or 'the default engine'} …")
+        results = speechtest.score(folder, request, print)
+    except AudioError as exc:
+        print(f"jarvis: {exc}", file=sys.stderr)
+        return 1
+    print(speechtest.report(results))
+    if args.out is not None:
+        write_atomic(args.out, json.dumps(results, ensure_ascii=False, indent=1) + "\n", 0o600)
+        print(f"Saved each request's result to {args.out}.")
+    return 0
+
+
+def _record_set(
+    cfg: config.Config,
+    folder: Path,
+    request: _Transcriber,
+    args: argparse.Namespace,
+    artists: list[str],
+) -> int:
+    """Record `args.count` cards into `folder`; return the exit code."""
+    from jarvis import speechtest  # ruff: ignore[import-outside-top-level] - imports jarvis.audio
+
+    rng = random.Random()  # ruff: ignore[suspicious-non-cryptographic-random-usage] - card order
+    to_say = speechtest.cards(artists, args.count, rng)
+    print(f"Recording into {folder}. Say each card in your own words, as you would to Jarvis,")
+    print("without the wake word. Pause Jarvis first (`jarvis pause`) if it is running.")
+    listen, stop = _listener(cfg)
+    try:
+        saved = speechtest.record(
+            folder, to_say, listen, request, ask=input, show=print, music=args.music
+        )
+    finally:
+        stop()
+    print(f"Saved {saved} requests; `jarvis speech-test score` scores the set.")
+    return 0
+
+
 COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "help": cmd_help,
     "start": cmd_start,
@@ -1484,6 +1618,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "pc-audio": cmd_pc_audio,
     "consent": cmd_consent,
     "wake": cmd_wake,
+    "speech-test": cmd_speech_test,
 }
 
 

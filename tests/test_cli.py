@@ -1693,3 +1693,118 @@ def test_doctor_fails_an_empty_learned_expert_profile(
 
     out = _doctor_lines(capsys)
     assert any(line.startswith("FAIL") and "expert profile" in line for line in out)
+
+
+def _fake_jarvis(monkeypatch: pytest.MonkeyPatch, heard: str) -> list[config.Config]:
+    """Build a Jarvis whose request transcriber hears `heard`; return the configs it was given."""
+    given: list[config.Config] = []
+
+    def build(_cfg: config.Config, *, via: str | None = None, session: str = "") -> object:
+        assert via == "speech-test"
+        assert not session
+        ops = SimpleNamespace(refresh=lambda: None, artist_names=lambda: ["Glass Harbor"])
+        return SimpleNamespace(ops=ops, hint=lambda: "")
+
+    def transcribe(_samples: object) -> str:
+        return heard
+
+    def transcribers(cfg: config.Config, _hint: Callable[[], str]) -> tuple[object, object]:
+        given.append(cfg)
+        return transcribe, transcribe
+
+    monkeypatch.setattr(cli, "build", build)
+    monkeypatch.setattr(cli, "_transcribers", transcribers)
+    return given
+
+
+def test_a_speech_test_score_reports_and_saves_each_result_privately(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from jarvis import speechtest  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, as the command does
+
+    folder = home / "set"
+    answers = iter(["", "play glass harbor"])
+    speechtest.record(
+        folder,
+        [speechtest.Card("artist", "Ask.", "Glass Harbor")],
+        lambda: np.ones(1600, dtype=np.int16),
+        lambda _samples: "play grass harbor",
+        ask=lambda _prompt: next(answers),
+        show=lambda _line: None,
+    )
+    given = _fake_jarvis(monkeypatch, "play grass harbor")
+    out = home / "score.json"
+
+    code = main(["speech-test", "score", "--dir", str(folder), "--out", str(out), "--no-hint"])
+
+    assert code == 0
+    assert "names heard 0 of 1" in capsys.readouterr().out
+    assert json.loads(out.read_text(encoding="utf-8"))[0]["errors"] == 1
+    assert out.stat().st_mode & 0o777 == 0o600
+    assert not given[0].audio.vocabulary_hint
+
+
+def test_a_speech_test_score_can_try_another_engine_and_model(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    given = _fake_jarvis(monkeypatch, "")
+
+    assert main(["speech-test", "score", "--dir", str(home / "none"), "--engine", "parakeet"]) == 0
+    assert main(["speech-test", "score", "--dir", str(home / "none"), "--model", "base.en"]) == 0
+
+    assert (given[0].audio.transcribe_engine, given[1].audio.transcribe_model) == (
+        "parakeet",
+        "base.en",
+    )
+    assert given[0].audio.vocabulary_hint == config.Config().audio.vocabulary_hint
+
+
+def test_a_speech_test_compares_two_saved_scores(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    row = {"id": "0001", "kind": "artist", "music": False, "heard": "", "words": 3, "seconds": 0.1}
+    first, second = tmp_path / "a.json", tmp_path / "b.json"
+    first.write_text(json.dumps([{**row, "errors": 1, "name_heard": False}]), encoding="utf-8")
+    second.write_text(json.dumps([{**row, "errors": 0, "name_heard": True}]), encoding="utf-8")
+
+    assert main(["speech-test", "compare", str(first), str(second)]) == 0
+
+    assert "0 heard only by the first, 1 only by the second (p = 1.000" in capsys.readouterr().out
+
+
+def test_a_speech_test_compare_needs_two_scores(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["speech-test", "compare", "only-one.json"]) == 2
+
+    assert "two score files" in capsys.readouterr().err
+
+
+def test_a_speech_test_records_the_cards_with_music_marked_and_lets_the_mic_go(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from jarvis import speechtest  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, as the command does
+
+    _fake_jarvis(monkeypatch, "play glass harbor")
+    stopped: list[bool] = []
+
+    def listener(_cfg: config.Config) -> tuple[object, object]:
+        return (lambda: np.ones(1600, dtype=np.int16)), (lambda: stopped.append(True))
+
+    monkeypatch.setattr(cli, "_listener", listener)
+    starts: list[str] = []
+
+    def answer(prompt: str = "") -> str:
+        """Speak for the first card, confirm what was heard, then stop at the second."""
+        if "Press Enter" not in prompt:
+            return ""
+        starts.append(prompt)
+        return "q" if len(starts) > 1 else ""
+
+    monkeypatch.setattr("builtins.input", answer)
+    folder = home / "set"
+
+    assert main(["speech-test", "record", "--dir", str(folder), "--count", "3", "--music"]) == 0
+
+    saved = speechtest.read_set(folder)
+    assert [entry["music"] for entry in saved] == [True]
+    assert stopped == [True]
+    assert "Saved 1 requests" in capsys.readouterr().out
