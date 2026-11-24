@@ -5,8 +5,10 @@ import logging
 import pathlib
 import stat
 import threading
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, tzinfo
+from typing import TYPE_CHECKING, override
 
+from jarvis import audit
 from jarvis.audit import AuditLog
 
 if TYPE_CHECKING:
@@ -183,3 +185,46 @@ def test_writers_in_several_processes_lose_nothing_and_rotate_each_full_log_once
     texts = [str(entry["text"]) for file in files if file.exists() for entry in _lines(file)]
     assert sorted(texts) == sorted(f"{n}-{c:03}" for n in range(4) for c in range(150))
     assert all(file.stat().st_size <= 2000 for file in files if file.exists())
+
+
+class _Clock(datetime):
+    """A clock stopped at a moment with microseconds, so `isoformat` always gives one length."""
+
+    @classmethod
+    @override
+    def now(cls, tz: tzinfo | None = None) -> datetime:
+        return datetime(2026, 1, 2, 3, 4, 5, 678901, tzinfo=tz or UTC)
+
+
+def test_a_log_filled_by_others_while_one_writer_rotated_is_rotated_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under load, other writers could fill the new log before the rotating writer reopened it;
+    its line then went in without a size check, past `max_bytes`."""
+    monkeypatch.setattr(audit, "datetime", _Clock)  # every line exactly as long
+    path = tmp_path / "audit.jsonl"
+    limit = 400
+    rotating = AuditLog(path, max_bytes=limit, generations=5)
+    other = AuditLog(path, max_bytes=limit, generations=5)
+    rotating.record("request", text="first")
+    line = path.stat().st_size  # every line here is as long: same clock, event and text lengths
+    firsts = 1
+    while path.stat().st_size + line <= limit:
+        rotating.record("request", text="first")
+        firsts += 1
+    real = rotating._rotate  # pyright: ignore[reportPrivateUsage] - the step the race falls in
+    others = limit // line
+
+    def rotate_then_others_fill(target: Path) -> None:
+        monkeypatch.setattr(rotating, "_rotate", real)  # once: the race, then as ever
+        real(target)
+        for _ in range(others):  # the new log is full before this writer reopens it
+            other.record("request", text="other")
+
+    monkeypatch.setattr(rotating, "_rotate", rotate_then_others_fill)
+    rotating.record("request", text="lated")
+
+    files = [path, *(path.with_name(f"audit.jsonl.{n}") for n in range(1, 6))]
+    assert all(file.stat().st_size <= limit for file in files if file.exists())
+    texts = [str(entry["text"]) for file in files if file.exists() for entry in _lines(file)]
+    assert sorted(texts) == sorted(["first"] * firsts + ["other"] * others + ["lated"])
