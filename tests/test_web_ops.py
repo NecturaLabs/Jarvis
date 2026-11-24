@@ -374,7 +374,27 @@ def test_the_time_in_a_state_or_province_is_its_largest_citys_without_the_networ
     assert net.seen == []
 
 
-def test_the_weather_in_a_state_is_its_largest_citys() -> None:
+def test_plain_georgia_is_the_country_and_georgia_state_the_us_state() -> None:
+    now = datetime(2026, 11, 24, 13, 35, tzinfo=UTC)
+
+    country = _run(_ops(Net(), now=now), "time_now", place="Georgia")
+    state = _run(_ops(Net(), now=now), "time_now", place="Georgia state")
+
+    assert country.text == "Time in Georgia (GE): 5:35 PM."
+    assert state.text == "Time in Georgia state (US, at Atlanta): 8:35 AM."
+
+
+def test_a_home_named_like_a_region_is_looked_up_as_the_place_it_names() -> None:
+    # A configured home is a place the owner lives in: "Victoria" there is the city, not the state.
+    net = Net()
+    config = Config(weather=WeatherConfig(place="Victoria"))
+
+    _run(_ops(net, config), "weather")
+
+    assert [r.url.host for r in net.seen] == ["geocoding-api.open-meteo.com", "api.open-meteo.com"]
+
+
+def test_the_weather_in_a_state_is_its_main_citys() -> None:
     net = Net()
 
     result = _run(_ops(net), "weather", place="Texas")

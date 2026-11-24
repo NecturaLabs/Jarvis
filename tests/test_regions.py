@@ -24,6 +24,11 @@ from jarvis.web import regions
         ("Georgia, US", "Atlanta"),
         ("the state of Washington", "Seattle"),
         ("Washington State", "Seattle"),
+        # Regression: the trailing "territory" of the name itself was taken as a qualifier.
+        ("Northern Territory", "Darwin"),
+        ("the Australian Capital Territory", "Canberra"),
+        ("Yukon Territory", "Whitehorse"),
+        ("the province of Quebec", "Montreal"),
     ],
 )
 def test_a_region_is_found_by_the_ways_people_say_it(said: str, city: str) -> None:
@@ -38,6 +43,7 @@ def test_a_region_is_found_by_the_ways_people_say_it(said: str, city: str) -> No
     [
         "Georgia",  # the country
         "Washington",  # the capital, left to the geocoder
+        "Quebec",  # Quebec City's own name
         "Washington, D.C.",
         "Houston",
         "Paris",

@@ -1,14 +1,14 @@
-"""States, provinces and territories said as places, each answered at its largest city.
+"""States, provinces and territories said as places, each answered at its main city.
 
 The geocoder finds places by name, not regions: its best "Texas" is a village in Mexico, its best
 "California" a town in Colombia, its best "Ontario" a city in California. A region the owner names
-is answered here instead, at its largest city's point and in its time zone, so its time needs
-nothing from the network and its weather is the forecast for that city. A region with several
-time zones gets its largest city's.
+is answered here instead, at its main city (the centre of its largest metropolitan area) and in
+that city's time zone, so its time needs nothing from the network and its weather is the forecast
+for that city. A region with several time zones gets its main city's.
 
-Two names are a region only with a word that says so ("Georgia state", "Georgia, US", "Washington
-state"): plain "Georgia" is the country, and plain "Washington" is left to the geocoder, which
-finds the capital.
+Three names are a region only with a word that says so ("Georgia state", "Georgia, US",
+"Washington state", "the province of Quebec"): plain "Georgia" is the country, and plain
+"Washington" and "Quebec" are left to the geocoder, which finds the capital and Quebec City.
 """
 
 import re
@@ -19,7 +19,7 @@ from jarvis.web.zones import bare
 
 @dataclass(frozen=True, slots=True)
 class Region:
-    """A state, province or territory: its country's ISO code, and its largest city's place."""
+    """A state, province or territory: its country's ISO code, and its main city's place."""
 
     name: str
     country: str
@@ -29,7 +29,7 @@ class Region:
     zone: str
 
 
-# Name, country, largest city, its latitude and longitude, and its IANA time zone.
+# Name, country, main city, its latitude and longitude, and its IANA time zone.
 _ROWS: tuple[tuple[str, str, str, float, float, str], ...] = (
     ("Alabama", "US", "Birmingham", 33.52, -86.80, "America/Chicago"),
     ("Alaska", "US", "Anchorage", 61.22, -149.90, "America/Anchorage"),
@@ -110,8 +110,9 @@ _COUNTRY_WORDS = {
     "CA": ("canada",),
     "AU": ("australia",),
 }
-# Said alone, these name something else first: the country Georgia, the capital Washington.
-_NEEDS_A_WORD = frozenset({"georgia", "washington"})
+# Said alone, these name something else first: the country Georgia, the capital Washington and
+# Quebec City.
+_NEEDS_A_WORD = frozenset({"georgia", "washington", "quebec"})
 _KIND = re.compile(
     r"^(?:(?:state|province|territory) of )?(?P<name>.+?)(?: (?:state|province|territory))?$"
 )
@@ -125,17 +126,16 @@ def find_region(place: str) -> Region | None:
     """
     said = bare(place)
     kind = _KIND.fullmatch(said)
-    name = kind["name"] if kind else said
-    qualified = name != said
-    region = _BY_NAME.get(name)
-    if region is None:
-        for code, words in _COUNTRY_WORDS.items():
-            for word in words:
-                if name.endswith(f" {word}"):
-                    found = _BY_NAME.get(name.removesuffix(f" {word}"))
-                    if found is not None and found.country == code:
-                        return found
-        return None
-    if region.name.casefold() in _NEEDS_A_WORD and not qualified:
-        return None
-    return region
+    stripped = kind["name"] if kind else said
+    # The name as said first: "territory" in "Northern Territory" is part of the name.
+    for name in dict.fromkeys((said, stripped)):
+        region = _BY_NAME.get(name)
+        if region is not None:
+            return None if name == said and name in _NEEDS_A_WORD else region
+    for code, words in _COUNTRY_WORDS.items():
+        for word in words:
+            if stripped.endswith(f" {word}"):
+                found = _BY_NAME.get(stripped.removesuffix(f" {word}"))
+                if found is not None and found.country == code:
+                    return found
+    return None

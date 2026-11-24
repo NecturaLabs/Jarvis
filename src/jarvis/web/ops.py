@@ -294,13 +294,16 @@ class WebOps:
 
     # --- weather ----------------------------------------------------------------------------
 
-    def _find(self, place: str) -> Place:
+    def _find(self, place: str, *, regions: bool = True) -> Place:
         """Return the place called `place`: a state or province (`regions.py`), else the geocoder's.
+
+        Without `regions` (the configured home, a place the owner lives in) only the geocoder is
+        asked, so a home called "Victoria" stays the city.
 
         Raises:
             OperationError: the geocoder failed or knows no such place.
         """
-        region = find_region(place)
+        region = find_region(place) if regions else None
         if region is not None:
             return Place(
                 region.latitude, region.longitude, region.zone, region.country, region.city
@@ -327,7 +330,7 @@ class WebOps:
         if not cfg.place:
             raise OperationError(NO_HOME)
         if self._home is None:
-            self._home = self._find(cfg.place)
+            self._home = self._find(cfg.place, regions=False)
         return self._home.latitude, self._home.longitude, name
 
     def weather(self, args: dict[str, Any]) -> Result:

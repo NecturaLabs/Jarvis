@@ -201,7 +201,10 @@ daemon and never your Voxtype config or recordings. Each run is
   and 46/60 for `large-v3-turbo` (5.64 s); without the hint, 34, 42, 41 and 46. The misses were unusual
   spellings ("Tokyo Hotel", "Grey Days"), which the Spotify search matches anyway. A larger model is no more
   accurate here and several times slower, so the default stays; synthetic voices only rank the models, and the
-  owner's own voice would settle it. A hint of artist names only, without the actions, scored the same (52 and 49).
+  owner's own voice would settle it. Compared clip by clip, `base.en`'s lead with the hint is within chance (it
+  alone got 7 right, `small.en` alone 2; p = 0.18), most of it rare names spelled as in the hint, and it repeated
+  hint words four times; without the hint `small.en` heard better (9 against 1; p = 0.02). A hint of artist names
+  only, without the actions, scored the same: 52/60 for `base.en` and 49/60 for `small.en`.
 - **Hint:** when `audio.vocabulary_hint` is on, `--initial-prompt` carries Jarvis's name, its actions and up to
   `audio.hint_names` of your artist names, shortened, `Jarvis. play, pause, next. Glass Harbor, Night Circuit.`
   It always ends with a full stop: without it Whisper re-decoded short clips and took 1.8 s. A transcript that
