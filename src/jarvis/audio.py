@@ -15,6 +15,8 @@ import os
 import queue
 import re
 import select
+import stat
+import struct
 import subprocess
 import tempfile
 import threading
@@ -1148,16 +1150,151 @@ def is_phantom(text: str) -> bool:
     return " ".join(words) in _PHANTOMS
 
 
-def voxtype_settings(threads: int, *, short_window: bool) -> str:
+# Engines that read their model file from a section of Voxtype's config named after them, not
+# from `--model`.
+FILE_ENGINES = frozenset({"parakeet", "cohere", "gguf"})
+_GGUF_SCALARS = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+_GGUF_STRING, _GGUF_ARRAY = 8, 9
+# llama.cpp writes general.architecture first; the files seen have it at byte 56. Only this much
+# of a file is read, so a huge or hostile one costs one bounded read and parse.
+_GGUF_HEAD = 1 << 20
+_GGUF_MAX_KEYS = 64
+
+
+def gguf_architecture(path: Path) -> str:
+    """Return a GGUF checkpoint's `general.architecture`, or "" when it cannot be read.
+
+    Only a regular file is read (a named pipe would block), and only its first `_GGUF_HEAD`
+    bytes.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError, ValueError:  # ValueError: a NUL in the path
+        return ""
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return ""
+        head = os.read(fd, _GGUF_HEAD)
+    except OSError:
+        return ""
+    finally:
+        os.close(fd)
+    try:
+        return _architecture(_Head(head))
+    except ValueError, struct.error:  # UnicodeDecodeError is a ValueError
+        return ""
+
+
+class _Head:
+    """The bytes read from the start of a GGUF file, taken in order."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__()
+        self._data = data
+        self._at = 0
+
+    def left(self) -> int:
+        return len(self._data) - self._at
+
+    def take(self, size: int) -> bytes:
+        if size > self.left():
+            msg = "the metadata runs past what was read"
+            raise ValueError(msg)
+        part = self._data[self._at : self._at + size]
+        self._at += size
+        return part
+
+    def numbers(self, layout: str) -> tuple[int, ...]:
+        return struct.unpack(layout, self.take(struct.calcsize(layout)))
+
+    def text(self) -> str:
+        (length,) = self.numbers("<Q")
+        return self.take(length).decode()
+
+
+def _skip(head: _Head, kind: int) -> None:
+    """Read past one value; arrays nest without recursion, and every step reads some bytes.
+
+    Raises:
+        ValueError: the value is of no kind GGUF defines, or longer than the bytes read.
+    """
+    pending = [[kind, 1]]  # [kind, how many still to skip], innermost last
+    while pending:
+        top = pending[-1]
+        item, count = top
+        if not count:
+            pending.pop()
+        elif item in _GGUF_SCALARS:
+            head.take(_GGUF_SCALARS[item] * count)
+            pending.pop()
+        elif item == _GGUF_STRING:
+            top[1] -= 1
+            head.text()
+        elif item == _GGUF_ARRAY:
+            top[1] -= 1
+            inner, items = head.numbers("<IQ")
+            if items > head.left():  # every item takes at least a byte
+                msg = "an array longer than the metadata"
+                raise ValueError(msg)
+            pending.append([inner, items])
+        else:
+            msg = f"a value of unknown kind {item}"
+            raise ValueError(msg)
+
+
+def _architecture(head: _Head) -> str:
+    if head.take(4) != b"GGUF":
+        return ""
+    _version, _tensors, keys = head.numbers("<IQQ")
+    for _ in range(min(keys, _GGUF_MAX_KEYS)):
+        key = head.text()
+        (kind,) = head.numbers("<I")
+        if key == "general.architecture" and kind == _GGUF_STRING:
+            return head.text()
+        _skip(head, kind)
+    return ""
+
+
+_TOML_ESCAPES = {'"': '\\"', "\\": "\\\\"}
+
+
+def _toml_string(text: str) -> str:
+    """Return `text` as a TOML basic string.
+
+    Raises:
+        ValueError: `text` holds a lone surrogate (a path whose bytes are not UTF-8), which a
+            TOML file cannot hold.
+    """
+    try:
+        text.encode()
+    except UnicodeEncodeError as exc:
+        msg = f"{text!r} is not UTF-8 text, which Voxtype's config must be"
+        raise ValueError(msg) from exc
+    escaped = "".join(
+        _TOML_ESCAPES.get(ch) or (f"\\u{ord(ch):04X}" if ch < " " or ch == "\x7f" else ch)
+        for ch in text
+    )
+    return f'"{escaped}"'
+
+
+def model_in_settings(engine: str, model: str) -> bool:
+    """Whether `model` goes in Jarvis's Voxtype config rather than on the command line."""
+    return engine in FILE_ENGINES and model.startswith("/")
+
+
+def voxtype_settings(threads: int, *, short_window: bool, engine: str = "", model: str = "") -> str:
     """Return Jarvis's own Voxtype config (TOML), read in place of the owner's for its runs.
 
     Whisper pads every clip to 30 s, so a two-second request costs as much as a long one;
     `short_window` (Voxtype's `context_window_optimization`) sizes the window to the clip, about
     five times faster for a spoken command. Whisper.cpp also uses only 4 threads unless told.
     `keep_failed_recordings` off means Voxtype never leaves the owner's voice in its
-    `failed-audio` folder after one of Jarvis's runs.
+    `failed-audio` folder after one of Jarvis's runs. A model file for an engine in
+    `FILE_ENGINES` goes in that engine's own section, which is where Voxtype reads it; the
+    GGUF engine is also told the file's architecture, which it refuses to guess. A model path
+    that is not UTF-8 text cannot go in the file, and raises ValueError.
     """
-    return (
+    text = (
         "[audio]\n"
         "keep_failed_recordings = false\n"
         "\n"
@@ -1165,6 +1302,17 @@ def voxtype_settings(threads: int, *, short_window: bool) -> str:
         f"threads = {int(threads)}\n"
         f"context_window_optimization = {'true' if short_window else 'false'}\n"
     )
+    if model_in_settings(engine, model):
+        text += f"\n[{engine}]\nmodel = {_toml_string(model)}\n"
+        architecture = gguf_architecture(Path(model)) if engine == "gguf" else ""
+        if architecture:
+            text += f"architecture = {_toml_string(architecture)}\n"
+        elif engine == "gguf":
+            log.warning(
+                "could not read the architecture of %r; Voxtype refuses a GGUF file without one",
+                model,
+            )
+    return text
 
 
 def voxtype_command(
@@ -1180,7 +1328,7 @@ def voxtype_command(
         cmd += ["-c", str(settings)]
     # The `--option=value` form keeps a value that starts with a dash (a song name in the hint)
     # from being read as another option.
-    if model:
+    if model and not model_in_settings(engine, model):
         cmd.append(f"--model={model}")
     if engine:
         cmd.append(f"--engine={engine}")

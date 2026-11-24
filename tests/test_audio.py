@@ -6,6 +6,7 @@ import logging
 import os
 import queue
 import signal
+import struct
 import subprocess
 import sys
 import threading
@@ -35,6 +36,7 @@ from jarvis.audio import (
     app_record_command,
     app_stream_serials,
     capture_sources,
+    gguf_architecture,
     installed_models,
     is_phantom,
     match_app_streams,
@@ -816,6 +818,164 @@ def test_voxtype_command_reads_jarvis_settings_first() -> None:
 def test_voxtype_settings_hold_the_speed_options(threads: int, short: bool) -> None:
     settings = tomllib.loads(voxtype_settings(threads, short_window=short))
     assert settings["whisper"] == {"threads": threads, "context_window_optimization": short}
+
+
+def _gguf(path: Path, architecture: str, *, before: int = 0) -> Path:
+    """Write the start of a GGUF file: its header and metadata, `before` other keys first."""
+
+    def text(value: str) -> bytes:
+        return struct.pack("<Q", len(value.encode())) + value.encode()
+
+    keys = b"".join(
+        text(f"other.{n}") + struct.pack("<I", 9) + struct.pack("<IQ", 8, 2) + text("a") + text("b")
+        for n in range(before)
+    )
+    keys += text("general.architecture") + struct.pack("<I", 8) + text(architecture)
+    path.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, before + 1) + keys + b"\0" * 64)
+    return path
+
+
+@pytest.mark.parametrize("engine", ["parakeet", "cohere", "gguf"])
+def test_a_model_file_for_a_gguf_engine_goes_in_jarvis_settings(
+    engine: str, tmp_path: Path
+) -> None:
+    """Voxtype reads a Parakeet, Cohere or GGUF checkpoint from its config, not from `--model`."""
+    model = str(_gguf(tmp_path / 'a "quoted" name.gguf', "qwen3_asr"))
+    settings = tomllib.loads(voxtype_settings(8, short_window=True, engine=engine, model=model))
+
+    assert settings[engine]["model"] == model
+    cmd = voxtype_command(Path("/x.wav"), engine, model, settings=Path("/s/voxtype.toml"))
+    assert not any(part.startswith("--model") for part in cmd)
+    assert f"--engine={engine}" in cmd
+
+
+def test_the_gguf_engine_is_told_the_architecture_its_file_names(tmp_path: Path) -> None:
+    """Voxtype refuses a GGUF checkpoint whose architecture it was not told."""
+    model = _gguf(tmp_path / "q.gguf", "qwen3_asr", before=2)
+
+    settings = tomllib.loads(
+        voxtype_settings(8, short_window=True, engine="gguf", model=str(model))
+    )
+
+    assert settings["gguf"] == {"model": str(model), "architecture": "qwen3_asr"}
+
+
+@pytest.mark.parametrize("content", [b"", b"not a gguf file", b"GGUF\x03\x00"])
+def test_a_file_that_is_no_gguf_checkpoint_names_no_architecture(
+    content: bytes, tmp_path: Path
+) -> None:
+    model = tmp_path / "bad.gguf"
+    model.write_bytes(content)
+
+    assert not gguf_architecture(model)
+    assert not gguf_architecture(tmp_path / "missing.gguf")
+
+
+def _key(name: str, kind: int, value: bytes) -> bytes:
+    return struct.pack("<Q", len(name)) + name.encode() + struct.pack("<I", kind) + value
+
+
+def _checkpoint(path: Path, *keys: bytes) -> Path:
+    """Write a GGUF header holding `keys`, then the architecture key."""
+    architecture = _key("general.architecture", 8, struct.pack("<Q", 9) + b"qwen3_asr")
+    count = len(keys) + 1
+    path.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, count) + b"".join(keys) + architecture)
+    return path
+
+
+def test_a_value_of_an_unknown_kind_names_no_architecture(tmp_path: Path) -> None:
+    """A kind no GGUF version defines means the file is not one Jarvis can read; no crash."""
+    model = _checkpoint(tmp_path / "odd.gguf", _key("other", 99, b"\0" * 8))
+
+    assert not gguf_architecture(model)
+
+
+def test_deeply_nested_arrays_are_read_without_recursion(tmp_path: Path) -> None:
+    depth = 5000
+    nested = struct.pack("<IQ", 9, 1) * (depth - 1) + struct.pack("<IQ", 0, 1) + b"\0"
+    model = _checkpoint(tmp_path / "deep.gguf", _key("other", 9, nested))
+
+    assert gguf_architecture(model) == "qwen3_asr"
+
+
+def test_metadata_past_the_read_budget_is_not_looked_for(tmp_path: Path) -> None:
+    """Only the start of a file is read, so a huge or hostile one costs little."""
+    items = 300_000  # each 9 bytes: past the budget, far short of any real checkpoint's tensors
+    strings = struct.pack("<IQ", 8, items) + (struct.pack("<Q", 1) + b"a") * items
+    model = _checkpoint(tmp_path / "big.gguf", _key("other", 9, strings))
+
+    assert not gguf_architecture(model)
+
+
+@pytest.mark.parametrize("count", [1 << 40, (1 << 64) - 1])
+def test_an_array_longer_than_the_file_names_no_architecture(count: int, tmp_path: Path) -> None:
+    model = _checkpoint(tmp_path / "long.gguf", _key("other", 9, struct.pack("<IQ", 4, count)))
+
+    assert not gguf_architecture(model)
+
+
+def test_a_model_path_that_is_no_regular_file_is_not_opened_for_reading(tmp_path: Path) -> None:
+    """A named pipe would block the read until something wrote to it."""
+    fifo = tmp_path / "pipe.gguf"
+    os.mkfifo(fifo)
+    found: list[str] = []
+    reader = threading.Thread(target=lambda: found.append(gguf_architecture(fifo)), daemon=True)
+
+    reader.start()
+    reader.join(timeout=10)
+    blocked = reader.is_alive()
+    if blocked:  # release the blocked open so the thread ends
+        with fifo.open("wb"):
+            pass
+        reader.join()
+
+    assert not blocked
+    assert found == [""]
+    assert not gguf_architecture(tmp_path)
+    assert not gguf_architecture(tmp_path / "a\0b.gguf")  # a config can hold a NUL
+
+
+def test_an_unreadable_gguf_checkpoint_is_logged(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    model = tmp_path / "bad.gguf"
+    model.write_bytes(b"not a gguf file")
+
+    with caplog.at_level(logging.WARNING, logger="jarvis.audio"):
+        settings = tomllib.loads(
+            voxtype_settings(8, short_window=True, engine="gguf", model=str(model))
+        )
+
+    assert settings["gguf"] == {"model": str(model)}
+    assert any(str(model) in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "name", ["🎤 model.gguf", 'a "quoted" \\ name.gguf', "tab\tand\x7fdel\x01.gguf", "日本.gguf"]
+)
+def test_any_utf8_model_path_reaches_voxtype_unchanged(name: str) -> None:
+    model = f"/m/{name}"
+
+    settings = tomllib.loads(voxtype_settings(8, short_window=True, engine="parakeet", model=model))
+
+    assert settings["parakeet"] == {"model": model}
+
+
+def test_a_model_path_that_is_no_utf8_text_is_refused() -> None:
+    """Voxtype's config is UTF-8; a path with bytes that are not cannot be written in it."""
+    with pytest.raises(ValueError, match="UTF-8"):
+        voxtype_settings(8, short_window=True, engine="parakeet", model="/m/\udcff.gguf")
+
+
+@pytest.mark.parametrize(
+    ("engine", "model"), [("", "small.en"), ("whisper", "/m/ggml-small.en.bin"), ("parakeet", "")]
+)
+def test_other_models_are_still_named_on_the_command_line(engine: str, model: str) -> None:
+    settings = tomllib.loads(voxtype_settings(8, short_window=True, engine=engine, model=model))
+    cmd = voxtype_command(Path("/x.wav"), engine, model)
+
+    assert set(settings) == {"audio", "whisper"}
+    assert (f"--model={model}" in cmd) is bool(model)
 
 
 def test_voxtype_keeps_no_audio_of_a_failed_transcription_for_jarvis() -> None:

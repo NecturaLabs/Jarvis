@@ -354,7 +354,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--engine",
         default=None,
         metavar="NAME",
-        help="score: another Voxtype engine (give its --model too, or --model '')",
+        help="score: another Voxtype engine; give its model too (a .gguf file for parakeet, "
+        "cohere or gguf)",
     )
     test.add_argument("--model", default=None, metavar="NAME", help="score: another model")
     test.add_argument("--no-hint", action="store_true", help="score: without the vocabulary hint")
@@ -607,24 +608,34 @@ def cmd_chat(_args: argparse.Namespace) -> int:
 type _Transcriber = Callable[[NDArray[np.int16]], str]
 
 
-def _transcribers(cfg: config.Config, hint: Callable[[], str]) -> tuple[_Transcriber, _Transcriber]:
+def _transcribers(
+    cfg: config.Config, hint: Callable[[], str], settings_file: str = "voxtype.toml"
+) -> tuple[_Transcriber, _Transcriber]:
     """Return the request transcriber (with the vocabulary hint) and the yes/no one (without).
 
-    Both run Voxtype with Jarvis's own speed settings, written here; the owner's Voxtype config
-    is never touched.
+    Both run Voxtype with Jarvis's own settings, written here to `settings_file` in Jarvis's
+    config folder; the owner's Voxtype config is never touched. Voxtype rereads the file for
+    each run, so a command trying another engine beside a running Jarvis writes its own.
     """
     from jarvis.audio import transcribe, voxtype_settings  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     audio = cfg.audio
     engine, model = audio.transcribe_engine, audio.transcribe_model
-    settings = paths.config_dir() / "voxtype.toml"
+    settings = paths.config_dir() / settings_file
     write_atomic(
         settings,
-        voxtype_settings(audio.transcribe_threads, short_window=audio.transcribe_short_window),
+        voxtype_settings(
+            audio.transcribe_threads,
+            short_window=audio.transcribe_short_window,
+            engine=engine,
+            model=model,
+        ),
     )
+    # Only Whisper reads `--initial-prompt`; another engine would ignore the hint.
+    hinted = audio.vocabulary_hint and engine in {"", "whisper"}
 
     def request(samples: NDArray[np.int16]) -> str:
-        primed = hint() if audio.vocabulary_hint else ""
+        primed = hint() if hinted else ""
         text = transcribe(samples, engine, model, primed, settings=settings)
         if primed and echoes_hint(text, primed):
             log.info("ignored a transcript that only repeats the vocabulary hint: %r", text)
@@ -861,14 +872,18 @@ def _model_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
 
 
 def _whisper_model(cfg: config.Config) -> list[tuple[bool, str, str]]:
-    """Return the check that Voxtype has downloaded the Whisper model Jarvis asks it for.
+    """Return the check that the speech model Jarvis asks Voxtype for is there.
 
-    Other engines keep their models in their own forms, so Voxtype itself reports on those.
+    That is a downloaded Whisper model, or the file a Parakeet, Cohere or GGUF engine is given;
+    other engines keep their models in their own forms, so Voxtype itself reports on those.
     """
     from jarvis import audio as audio_module  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     audio = cfg.audio
     name = audio.transcribe_model
+    if audio_module.model_in_settings(audio.transcribe_engine, name):
+        fix = "download it, or point audio.transcribe_model at the model file"
+        return [(Path(name).is_file(), f"speech model {name}", fix)]
     if audio.transcribe_engine not in {"", "whisper"} or not name:
         return []
     fix = "download it with `voxtype setup model`"
@@ -1592,7 +1607,6 @@ def cmd_speech_test(args: argparse.Namespace) -> int:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
     jarvis.ops.refresh()  # your artists, for the cards and the hint
-    request, _answer = _transcribers(cfg, jarvis.hint)
     if args.action == "record" and _listening():
         print("jarvis: Jarvis is listening; `jarvis pause` it first, then record", file=sys.stderr)
         return 1
@@ -1601,6 +1615,8 @@ def cmd_speech_test(args: argparse.Namespace) -> int:
     if args.action == "record" and not artists:
         print("No artists from Spotify, so every card is an open request.")
     try:
+        # ValueError: a --model path TOML can't hold
+        request, _answer = _transcribers(cfg, jarvis.hint, "voxtype-speech-test.toml")
         if args.action == "record":
             return _record_set(cfg, folder, request, args, (artists, heard_with))
         print(f"Scoring {folder} with {heard_with} …")
