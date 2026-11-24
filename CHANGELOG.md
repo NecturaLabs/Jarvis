@@ -6,6 +6,28 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ## [Unreleased]
 
+### Added
+
+- Tell Jarvis to be quiet, in any words, and it says nothing: the model calls `stay_quiet` (voice only),
+  which ends the request without a reply, hushes anything already queued and opens no follow-up window.
+  Before, "shut up" got "Understood, I'll be quiet. Just say the word when you need me."
+- The time in a country: `time_now` takes a country as well as a city, and a country with several time zones
+  gets the time on each of its clocks, from east to west ("The United States has 6 time zones: it's 4:35 AM in
+  New York, ..."), with the day when it is not today here. The zones come from the time zone database on the
+  PC, so nothing is sent anywhere. The model is told never to search the web for the time: asked the time in
+  the United States, it had made seven web searches and page reads, 25.6 s before the first word.
+- `audio.barge_in_threshold` (0.5): while Jarvis speaks, a wake word needs at most this score, since its own
+  voice in the microphone lowers yours. With its voice as loud as yours, a measured 71 % of wake words got
+  through at 0.76 and 94.5 % at 0.5; its own speech never scored above 0.052
+  ([ADR 0012](docs/adr/0012-lower-wake-score-while-speaking.md)). Its sentences are checked against the same
+  score, and a wake word missed over its speech logs the closest score heard.
+
+### Fixed
+
+- `jarvis restart` writes Strata's profile and unit from the config, so a `strata` setting changed there
+  reaches the model server. Before, only `jarvis setup` wrote them: a `strata.context` of 49,152 in the config
+  left Strata running at 24,576 while Jarvis planned for the larger window.
+
 ### Changed
 
 - The model can be asked to think before each answer: `thinking` (`none`, `low`, `medium` or `high`,

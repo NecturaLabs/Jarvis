@@ -112,7 +112,8 @@ class Result:
     is a picture file the chat shows (with its `caption`), from Jarvis's own picture folder.
     `acted` marks a result that is not `ok` although the operation did act: a command ran but
     exited non-zero, a program was asked to stop but is still running, a program started but its
-    window did not show where asked. A reply may then say what was done.
+    window did not show where asked. A reply may then say what was done. `quiet` ends the
+    request with nothing said: the owner asked for silence.
     """
 
     text: str
@@ -122,6 +123,7 @@ class Result:
     picture: str = ""
     caption: str = ""
     acted: bool = False
+    quiet: bool = False
 
 
 @dataclass(frozen=True, slots=True)

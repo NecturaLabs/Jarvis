@@ -76,6 +76,7 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 
 | Module | Owns | Must not |
 |---|---|---|
+| `web/zones.py` | A country's clocks from the time zone database on the PC (`zone.tab`, `iso3166.tab`, `zonenow.tab`, the system's copy or the `tzdata` package's): `find_country` by its names, `clocks` one zone for each time it shows now, east to west. | Send anything off the PC. |
 | `web/ops.py` | `WebOps`: `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`, their shortcuts and spoken sentences, and the addresses and thread ids recent searches returned, forgotten with the conversation (`reset`); in the chat also `image_search` and `show_image`, with the picture ids (`i1`…) an image search or a read page's own picture gave. | Open a page, thread or picture no search returned. Pass search, page or Reddit text on as trusted, or put outside text into a weather or time answer. |
 | `web/guard.py` | `public_client`: an httpx client over an httpcore pool whose every connection is resolved (within 5 s), checked to be a public address on port 80 or 443, and pinned to that address; `read_capped` for the 1 MB cap on service answers. | Follow a redirect itself, use a proxy from the environment, or send anything that names the owner. |
 | `web/page.py` | `PageReader`: one redirect hop at a time with each address checked, 15 s for the whole read, a 2 MB cap counted after inflating gzip (every member of it) or deflate itself, text types only, read in the header's charset, else a byte order mark's or the page's own `<meta>` one, else UTF-8, trafilatura's main-text extraction (its cross-page duplicate check off, so a page read again is read whole) and the page's own picture (`og:image`) at a full, checked address; `picture` fetches PNG, JPEG, WebP, GIF or BMP the same way, up to 8 MB. | Read past the cap or the deadline, or open another scheme, port or a URL with a password. |
@@ -145,8 +146,11 @@ changes as one request moves through.
 
 Notes. There is no separate wake state: wake detection runs on the mic frames in `IDLE`. While
 Jarvis speaks, the `jarvis-barge-in` thread reads the mic and listens for the wake word
-(`audio.barge_in`); hearing it hushes the speaker, cancels the request and makes `_serve` take a new
-one (`SPEAK` to `CAPTURE`). It reads frames only while speech plays, so it never takes one the loop
+(`audio.barge_in`) through `WakeWord.heard_over_speech`, which needs at most
+`audio.barge_in_threshold`; hearing it hushes the speaker, cancels the request and makes `_serve` take a new
+one (`SPEAK` to `CAPTURE`). A stretch of speech that ends without it logs the closest score heard from
+`NEAR_MISS` (0.2) up. A request the agent answers with no words (the owner asked for quiet: `stay_quiet`)
+opens no follow-up window. It reads frames only while speech plays, so it never takes one the loop
 needs, and a sentence the speaker found wake-like (`Speaker.interruptible`) is not spoken over while it plays and for `GUARD_TAIL_S` (1 s) after. After
 speech that was not interrupted, `_end_speaking` drains the capture so Jarvis cannot hear itself. A
 line spoken while the agent works (`_cue`: a waiting line, a confirmation question) moves the loop to

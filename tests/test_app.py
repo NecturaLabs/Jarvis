@@ -296,6 +296,20 @@ def test_jarvis_own_state_is_never_readable_through_the_file_operations(tmp_path
         ops["read_file"].run({"path": str(state / "spotify-token.json")})
 
 
+def test_only_the_voice_offers_staying_quiet(tmp_path: Path) -> None:
+    config = Config()
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+
+    chat = channel_registry(config, spotify.operations(), channel_limits(config, "chat"), "chat")
+    voice = channel_registry(config, spotify.operations(), channel_limits(config, "voice"), "voice")
+
+    quiet = voice.get("stay_quiet")
+    assert quiet is not None
+    assert quiet.shortcuts == ()  # the model reads what the owner meant; no fixed phrasings
+    assert quiet.run({}).quiet
+    assert chat.get("stay_quiet") is None
+
+
 def test_only_the_chat_offers_pictures_and_keeps_them_in_its_own_folder(tmp_path: Path) -> None:
     config = Config()
     spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)

@@ -31,6 +31,7 @@ from jarvis.web.arctic import SUBREDDIT, ArcticShift, Post, RedditUnavailableErr
 from jarvis.web.openmeteo import Day, Forecast, OpenMeteo, Place, WeatherUnavailableError
 from jarvis.web.page import PageError, PageReader
 from jarvis.web.searxng import Hit, ImageHit, SearchUnavailableError, Searxng
+from jarvis.web.zones import Zone, clocks, find_country
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -109,6 +110,15 @@ def _reddit_thread(url: str) -> tuple[str, str] | None:
         return None
     match = _REDDIT_POST.match(parts.path)
     return None if match is None else (match["id"], match["sub"])
+
+
+def _and(parts: list[str], last: str = " and ") -> str:
+    """Join spoken parts: "a, b and c"."""
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + last + parts[-1]
+
+
+def _capital(text: str) -> str:
+    return text[:1].upper() + text[1:]
 
 
 def _where(place: str, country: str) -> str:
@@ -213,13 +223,21 @@ class WebOps:
     def time(self, args: dict[str, Any]) -> Result:
         """Say the time (or the date) here, or in a named place.
 
-        An unknown place, or a failure of the weather service that finds it, raises
-        `OperationError`.
+        A country is looked up in this PC's time zone database, and one with several clocks
+        gets each of them. Any other place goes to the weather service: an unknown one, or a
+        failure of that service, raises `OperationError`.
         """
         what = str(args.get("what", "time"))
         place = str(args.get("place", "")).strip()
         now = self._clock()
-        if place:
+        country = find_country(place) if place else None
+        if country is not None and len(found := clocks(country, now)) > 1:
+            return self._country_time(what, place, found, now)
+        if country is not None:
+            moment = now.astimezone(ZoneInfo(country.zones[0].name))
+            where = f" in {_where(place, country.code)}"
+            said = f" in {place}"
+        elif place:
             found = self._find(place)
             moment = now.astimezone(ZoneInfo(found.zone))
             where = f" in {_where(place, found.country)}"
@@ -233,6 +251,46 @@ class WebOps:
         if what == "date":
             return Result(f"Date{where}: {day} {moment.year}.", spoken=f"It's {day}{said}.")
         return Result(f"Time{where}: {clock}.", spoken=f"It's {clock}{said}.")
+
+    def _country_time(self, what: str, place: str, zones: list[Zone], now: datetime) -> Result:
+        """Say the time on each of a country's clocks, east to west, or the dates they show.
+
+        A clock on another day than here says which day.
+        """
+        if what == "date":
+            return self._country_date(place, zones, now)
+        here = (now.astimezone(self._local_zone) if self._local_zone else now.astimezone()).date()
+        parts: list[str] = []
+        for zone in zones:
+            moment = now.astimezone(ZoneInfo(zone.name))
+            clock = spoken_time(moment, twelve_hour=self._clock_config.twelve_hour)
+            day = "" if moment.date() == here else f" {moment:%A}"
+            parts.append(f"{clock}{day} in {zone.city}")
+        listed = _and(parts)
+        return Result(
+            f"Time in {place}, which has {len(zones)} time zones now: {listed}.",
+            spoken=f"{_capital(place)} has {len(zones)} time zones: it's {listed}.",
+        )
+
+    @staticmethod
+    def _country_date(place: str, zones: list[Zone], now: datetime) -> Result:
+        """Say the date in a country, and where its clocks show another one."""
+        cities: dict[date, list[str]] = {}
+        for zone in zones:
+            cities.setdefault(now.astimezone(ZoneInfo(zone.name)).date(), []).append(zone.city)
+        if len(cities) == 1:
+            (day,) = cities
+            return Result(
+                f"Date in {place}: {spoken_date(day)} {day.year}.",
+                spoken=f"It's {spoken_date(day)} in {place}.",
+            )
+        parts = [f"{spoken_date(day)} in {_and(names)}" for day, names in cities.items()]
+        written = [
+            f"{spoken_date(day)} {day.year} in {_and(names)}" for day, names in cities.items()
+        ]
+        return Result(
+            f"Dates in {place}: {'; '.join(written)}.", spoken=f"It's {_and(parts, ', and ')}."
+        )
 
     # --- weather ----------------------------------------------------------------------------
 
@@ -500,15 +558,15 @@ class WebOps:
         return [
             Operation(
                 "time_now",
-                "The current time or date, here or in a named place; one per call, so both only"
-                " when asked for both.",
+                "The current time or date, here or in a city or country (each of its time zones);"
+                " never search the web for it. One per call: both only when asked for both.",
                 {
                     "type": "object",
                     "properties": {
                         "what": {"type": "string", "enum": ["time", "date"], "default": "time"},
                         "place": {
                             **_PLACE,
-                            "description": "A city the owner named; leave out for here",
+                            "description": "A city or country the owner named; leave out for here",
                         },
                     },
                     "additionalProperties": False,

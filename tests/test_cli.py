@@ -1067,6 +1067,44 @@ def test_restart_leaves_a_running_strata_alone_when_nothing_changed(
     assert ("restart", "jarvis-strata.service") not in calls
 
 
+def test_restart_writes_a_context_changed_in_the_config_to_strata_and_restarts_it(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression: only `jarvis setup` wrote Strata's profile, so a context changed in the config
+    # never reached the server, which kept its old window while Jarvis planned for the new one.
+    run = engine_run_config(home)
+    install_engine(home / "data")
+    cfg = config.Config(
+        strata=config.StrataConfig(run_config=run, context=24576, vram_reserve_mib=12000)
+    )
+    services.write_strata_profile(cfg)
+    services.write_units(cfg, cli.strata_key_file())
+    written = strata_profile_file().stat().st_mtime
+    config.save(cfg.model_copy(update={"strata": cfg.strata.model_copy(update={"context": 49152})}))
+
+    calls = _restart_calls(monkeypatch, written)  # Strata started on the old profile
+
+    args = json.loads(strata_profile_file().read_text(encoding="utf-8"))["args"]
+    assert args[args.index("--max-context") + 1] == "49152"
+    assert ("daemon-reload",) in calls
+    assert ("restart", "jarvis-strata.service") in calls
+
+
+def test_restart_leaves_strata_loaded_when_the_config_holds_what_it_runs(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = engine_run_config(home)
+    install_engine(home / "data")
+    cfg = config.Config(strata=config.StrataConfig(run_config=run, vram_reserve_mib=12000))
+    config.save(cfg)
+    services.write_strata_profile(cfg)
+    services.write_units(cfg, cli.strata_key_file())
+
+    calls = _restart_calls(monkeypatch, time.time() + 1)
+
+    assert ("restart", "jarvis-strata.service") not in calls
+
+
 def test_restart_starts_a_stopped_strata(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _restart_calls(monkeypatch, None)
 

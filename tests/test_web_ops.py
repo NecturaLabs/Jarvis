@@ -175,7 +175,12 @@ class Net:
         return [r.url.host for r in self.seen]
 
 
-def _ops(net: Net, config: Config | None = None, shown: PictureCache | None = None) -> WebOps:
+def _ops(
+    net: Net,
+    config: Config | None = None,
+    shown: PictureCache | None = None,
+    now: datetime = NOW,
+) -> WebOps:
     client = httpx.Client(transport=httpx.MockTransport(net.handle))
     return WebOps(
         config or Config(weather=WeatherConfig(coordinates=[52.52, 13.41], place="Berlin")),
@@ -185,7 +190,7 @@ def _ops(net: Net, config: Config | None = None, shown: PictureCache | None = No
             ArcticShift(client),
             PageReader(client),
         ),
-        clock=lambda: NOW,
+        clock=lambda: now,
         local_zone=BERLIN,
         shown=shown,
     )
@@ -281,6 +286,64 @@ def test_the_date_in_a_named_place_uses_its_zone() -> None:
 
     assert result.spoken == "It's Saturday, 21 November in Tokyo."
     assert result.text == "Date in Tokyo (JP): Saturday, 21 November 2026."
+
+
+def test_the_time_in_a_country_with_several_zones_gives_each_without_the_network() -> None:
+    net = Net()
+
+    result = _run(_ops(net), "time_now", place="the United States")
+
+    assert result.spoken == (
+        "The United States has 6 time zones: it's 9:05 AM in New York, 8:05 AM in Chicago,"
+        " 7:05 AM in Denver, 6:05 AM in Los Angeles, 5:05 AM in Anchorage and 4:05 AM in"
+        " Honolulu."
+    )
+    assert result.text.startswith("Time in the United States, which has 6 time zones now: ")
+    assert net.seen == []  # the zones come from this PC's time zone database
+
+
+def test_a_clock_on_another_day_than_here_says_which_day() -> None:
+    ops = _ops(Net(), now=datetime(2026, 11, 24, 9, 35, tzinfo=UTC))
+
+    result = _run(ops, "time_now", place="United States")
+
+    assert result.spoken.endswith("12:35 AM in Anchorage and 11:35 PM Monday in Honolulu.")
+    assert "4:35 AM in New York" in result.spoken  # Tuesday, as it is here
+
+
+def test_the_date_in_a_country_says_where_its_clocks_show_another_day() -> None:
+    ops = _ops(Net(), now=datetime(2026, 11, 24, 9, 35, tzinfo=UTC))
+
+    result = _run(ops, "time_now", what="date", place="United States")
+
+    assert result.spoken == (
+        "It's Tuesday, 24 November in New York, Chicago, Denver, Los Angeles and Anchorage,"
+        " and Monday, 23 November in Honolulu."
+    )
+    assert result.text == (
+        "Dates in United States: Tuesday, 24 November 2026 in New York, Chicago, Denver,"
+        " Los Angeles and Anchorage; Monday, 23 November 2026 in Honolulu."
+    )
+
+
+def test_a_country_with_one_clock_is_said_like_a_city_without_the_network() -> None:
+    net = Net()
+
+    result = _run(_ops(net), "time_now", place="France")
+    asked_date = _run(_ops(net), "time_now", what="date", place="India")
+
+    assert result.spoken == "It's 3:05 PM in France."
+    assert result.text == "Time in France (FR): 3:05 PM."
+    assert asked_date.spoken == "It's Saturday, 21 November in India."
+    assert net.seen == []
+
+
+def test_the_model_is_told_the_time_tool_takes_a_country() -> None:
+    op = _op(_ops(Net()), "time_now")
+
+    assert "country" in op.description
+    assert "never search the web" in op.description
+    assert "country" in op.parameters["properties"]["place"]["description"]
 
 
 def test_an_unknown_place_is_said_so() -> None:

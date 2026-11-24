@@ -264,6 +264,9 @@ class AudioConfig(_Section):
     # How long a `strong` action waits for the confirm key (`jarvis confirm`) once asked about.
     confirm_key_s: float = Field(default=30.0, ge=5, le=120)
     barge_in: bool = True  # the wake word stops Jarvis mid-sentence and starts a new request
+    # While Jarvis speaks, a LiveKit wake word needs at most this score: its voice in the
+    # microphone lowers the owner's. Jarvis's own sentences are checked against it too.
+    barge_in_threshold: WakeThreshold = 0.5
     # Off: a wake word or PC-audio request is ignored while the Omarchy lock screen is up.
     listen_when_locked: bool = True
     # Seconds after a spoken reply in which the next request needs no wake word; 0 turns it off.

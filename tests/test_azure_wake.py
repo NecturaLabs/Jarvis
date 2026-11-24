@@ -465,10 +465,15 @@ class _LiveKit:
     """Stands in for LiveKit's model, which needs its file."""
 
     def __init__(
-        self, paths: list[Path], threshold: float, thresholds: Mapping[str, float]
+        self,
+        paths: list[Path],
+        threshold: float,
+        thresholds: Mapping[str, float],
+        over_speech: float | None = None,
     ) -> None:
         super().__init__()
         self.loaded = (paths, threshold, thresholds)
+        self.over_speech = over_speech
 
 
 def _engine(monkeypatch: pytest.MonkeyPatch, **audio: object) -> config.Config:

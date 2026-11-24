@@ -40,6 +40,8 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
 - Jarvis runs locally and is free to use and maintain: no hosted model backend, no paid API. Voice activation
   and speech-to-text stay local too.
 - Jarvis replies by voice only; no desktop notifications.
+- Never hardcode spoken commands: the owner says whatever is on their mind, so the model decides what a
+  request means. Add a typed tool with a clear description, never a new shortcut phrasing or keyword list.
 
 ## Working on the maintainer's PC
 

@@ -328,6 +328,17 @@ the sentences before and after it can.
 - Jarvis has no downloader yet: place the four files above (wake, VAD and the two Kokoro files) under
   `data_dir` yourself. `jarvis doctor` names any that are missing.
 
+### Speaking over Jarvis
+
+Jarvis's own voice in the microphone lowers the score of a wake word said over it, so while it speaks a
+wake word needs at most `audio.barge_in_threshold` (0.5). Measured on 2026-11-24 with the owner's
+`yo_jarvis` model: 330 synthetic "Yo Jarvis" clips of the wake benchmark (55 voices), each through a
+simulated room, mixed over Jarvis's reply speech (`bm_george`, its own simulated room). With its voice as
+loud as the wake word, recall was 71.2 % at 0.76 and 94.5 % at 0.5; 3 dB quieter than its voice, 51.8 % and
+84.2 %; 6 dB quieter, 33.6 % and 69.1 %. Alone, the clips woke it 99.4 % of the time at 0.76. Its speech
+alone never scored above 0.052. The full table and the choice are in
+[ADR 0012](adr/0012-lower-wake-score-while-speaking.md).
+
 ## Python dependencies
 
 | Package | Version | Licence (package metadata) |

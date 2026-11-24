@@ -31,7 +31,7 @@ from jarvis.agent import (
     NoReason,
     claims_action,
 )
-from jarvis.app import no_action_operation
+from jarvis.app import no_action_operation, quiet_operation
 from jarvis.audit import AuditLog
 from jarvis.config import AgentConfig, ChatConfig, FilesConfig
 from jarvis.jsonutil import objs
@@ -454,6 +454,16 @@ def test_no_action_choice_does_not_count_as_acting() -> None:
 
     assert agent.handle("hi", NO_CONFIRM) == "Hello."
     assert model.seen[2][-1]["content"] == NO_ACTION_REMINDER
+
+
+def test_asked_to_be_quiet_the_agent_ends_the_request_in_silence() -> None:
+    model = ScriptedModel([_call("stay_quiet")])
+    agent, audit = _agent(model, [quiet_operation()])
+
+    assert not agent.handle("Shut up.", NO_CONFIRM)
+    assert len(model.seen) == 1  # no second call to word a reply
+    assert audit.events[-1]["event"] == "reply"
+    assert not audit.events[-1]["text"]
 
 
 def test_plain_answer_without_claim_is_returned() -> None:
