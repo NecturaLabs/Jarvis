@@ -29,8 +29,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   reaches the model server. Before, only `jarvis setup` wrote them: a `strata.context` of 49,152 in the config
   left Strata running at 24,576 while Jarvis planned for the larger window. The voice service's unit is left
   as `jarvis setup` wrote it, so a restart run from another checkout does not move the service there.
-- The time or weather in a state or region: the model is told to name its main city. Before, the place went
-  to the geocoder as said, and its best "Texas" is a village in Mexico. A bare "Georgia" is the country.
+- The time or weather in a US state, a Canadian province or territory, or an Australian state is its largest
+  city's ("Texas" is Houston's), and its time is worked out on the PC. Before, the place went to the geocoder
+  as said: its best "Texas" is a village in Mexico, "California" a town in Colombia and "Ontario" a city in
+  California, and asking the model to name a city instead did not change what it passed. A bare "Georgia" is
+  the country and a bare "Washington" the capital; "Georgia state" and "Washington state" are the states.
 
 ### Changed
 

@@ -348,13 +348,42 @@ def test_the_model_is_told_the_time_tool_takes_a_country() -> None:
     assert "country" in op.parameters["properties"]["place"]["description"]
 
 
-@pytest.mark.parametrize("name", ["time_now", "weather"])
-def test_the_model_is_told_to_name_a_city_for_a_state_or_region(name: str) -> None:
+@pytest.mark.parametrize(
+    ("place", "expected"),
+    [
+        ("Texas", "Time in Texas (US, at Houston): 7:35 AM."),
+        ("California", "Time in California (US, at Los Angeles): 5:35 AM."),
+        ("Ontario", "Time in Ontario (CA, at Toronto): 8:35 AM."),
+        ("Florida, US", "Time in Florida, US (US, at Miami): 8:35 AM."),
+        ("Georgia state", "Time in Georgia state (US, at Atlanta): 8:35 AM."),
+        ("Washington state", "Time in Washington state (US, at Seattle): 5:35 AM."),
+    ],
+)
+def test_the_time_in_a_state_or_province_is_its_largest_citys_without_the_network(
+    place: str, expected: str
+) -> None:
     # Regression: the place went to the geocoder as said, and its best "Texas" is a village in
-    # Mexico, its best "Georgia, US" a hamlet in Alabama on another clock than Atlanta.
-    place = _op(_ops(Net()), name).parameters["properties"]["place"]["description"]
+    # Mexico, its best "California" a town in Colombia, its best "Ontario" a city in California.
+    net = Net()
 
-    assert "state or region: its main city" in place
+    result = _run(
+        _ops(net, now=datetime(2026, 11, 24, 13, 35, tzinfo=UTC)), "time_now", place=place
+    )
+
+    assert result.text == expected
+    assert net.seen == []
+
+
+def test_the_weather_in_a_state_is_its_largest_citys() -> None:
+    net = Net()
+
+    result = _run(_ops(net), "weather", place="Texas")
+
+    assert "Weather in Texas (US, at Houston) now" in result.text
+    asked = [
+        (r.url.host, r.url.params.get("latitude"), r.url.params.get("longitude")) for r in net.seen
+    ]
+    assert asked == [("api.open-meteo.com", "29.76", "-95.37")]  # the forecast only, no geocoder
 
 
 def test_an_unknown_place_is_said_so() -> None:
