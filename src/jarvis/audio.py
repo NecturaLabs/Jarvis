@@ -1309,7 +1309,7 @@ def voxtype_settings(threads: int, *, short_window: bool, engine: str = "", mode
             text += f"architecture = {_toml_string(architecture)}\n"
         elif engine == "gguf":
             log.warning(
-                "could not read the architecture of %s; Voxtype refuses a GGUF file without one",
+                "could not read the architecture of %r; Voxtype refuses a GGUF file without one",
                 model,
             )
     return text
