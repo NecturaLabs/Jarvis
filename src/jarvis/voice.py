@@ -34,6 +34,7 @@ from jarvis.audio import (
     keyword_tail,
     write_wav,
 )
+from jarvis.levels import levels
 from jarvis.policy import Origin, is_yes
 from jarvis.schedule import reminder_words, scheduled_request
 from jarvis.sentences import split_sentences
@@ -99,7 +100,9 @@ MIN_REQUEST_SPEECH_S = MIN_ANSWER_SPEECH_S
 # A request heard without the wake word must hold more speech than a cough, a click or a word
 # from the room: four 80 ms frames.
 MIN_FOLLOW_UP_SPEECH_S = 0.3
-PRE_ROLL_FRAMES = 3
+# The frames kept from before speech is detected, the detected one included: 320 ms of lead, so
+# a soft first sound the detector was not yet sure of is not cut off.
+PRE_ROLL_FRAMES = 5
 WAKE_DEDUPE_S = 2.0
 SORRY_INTERNAL = "Sorry, something went wrong on my side."
 NO_SPEECH = "no speech"  # why a capture that timed out before any speech ended
@@ -913,6 +916,7 @@ class VoiceLoop:
         follow_up: bool = False,
     ) -> None:
         self.state = State.TRANSCRIBE
+        log.info("levels: %s", levels(samples).summary())
         started = time.perf_counter()
         try:
             text = self._transcribe(samples)

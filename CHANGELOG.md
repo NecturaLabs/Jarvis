@@ -8,6 +8,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Each request's sound levels are logged before it is transcribed, as one `levels:` line of numbers: peak,
+  speech level, the room's floor, the signal-to-noise ratio, how loud its first 20 ms already were (high
+  when the start was cut off) and the share of clipped samples. A misheard request can then be told apart:
+  a quiet voice, a loud room, or a first sound lost. The sound itself is not kept.
+
 - Tell Jarvis to be quiet, in any words, and it says nothing: the model calls `stay_quiet` (voice only),
   which ends the request without a reply, stops the sentence playing, drops anything queued and opens no
   follow-up window, even when the model had started a sentence first.
@@ -40,6 +45,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- The capture keeps 320 ms from before speech is detected, not 160 ms, so a soft first sound the voice
+  detector was not yet sure of reaches speech recognition.
 - The model can be asked to think before each answer: `thinking` (`none`, `low`, `medium` or `high`,
   Strata's reasoning effort) in `[agent]` and `[chat]`, capped by `thinking_tokens` (192 for speech, 512 in
   the chat), after which Strata closes the thinking and lets the model answer. It is `none` by default:
