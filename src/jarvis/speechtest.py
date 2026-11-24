@@ -19,7 +19,7 @@ import statistics
 import time
 import wave
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -76,6 +76,22 @@ class FolderError(Exception):
     """The folder given holds something other than a speech test set."""
 
 
+class ScoreError(ValueError):
+    """A score file does not hold the rows `score` saves."""
+
+
+_ROW_KEYS = frozenset({"id", "kind", "music", "errors", "words", "name_heard", "seconds"})
+
+
+def _rows(score: object) -> list[dict[str, Any]]:
+    if not isinstance(score, list) or not all(
+        isinstance(row, dict) and row.keys() >= _ROW_KEYS for row in cast("list[object]", score)
+    ):
+        msg = "not a score saved by `jarvis speech-test score --out`"
+        raise ScoreError(msg)
+    return cast("list[dict[str, Any]]", score)
+
+
 def _printable(name: str) -> str:
     """Return a name from Spotify with what a terminal would act on left out."""
     return " ".join("".join(ch for ch in name if ch.isprintable()).split())
@@ -92,7 +108,10 @@ def _set_folder(folder: Path) -> None:
     try:
         folder.mkdir(mode=0o700, parents=True)
     except FileExistsError:
-        if any(folder.iterdir()) and not (folder / MANIFEST).is_file():
+        ours = (folder / MANIFEST).is_file() or all(
+            path.suffix == ".wav" and path.stem.isdigit() for path in folder.iterdir()
+        )
+        if not ours:
             msg = f"{folder} is not a speech test set; give an empty or a new folder"
             raise FolderError(msg) from None
 
@@ -246,7 +265,7 @@ def _letters(text: str) -> str:
 def name_heard(name: str, heard: str) -> bool:
     """Whether `name` is in `heard` as whole words, spaced or run together ("glassharbor")."""
     wanted = _letters(name)
-    said = words(heard)
+    said = [_letters(word) for word in words(heard)]
     return any(
         "".join(said[start:end]) == wanted
         for start in range(len(said))
@@ -319,8 +338,12 @@ def two_sided_p(wins: int, losses: int) -> float:
     return min(1.0, 2 * tail)
 
 
-def compare(first: list[dict[str, Any]], second: list[dict[str, Any]]) -> str:
-    """Say whether two scores of the same set differ beyond chance, request by request."""
+def compare(first: object, second: object) -> str:
+    """Say whether two scores of the same set differ beyond chance, request by request.
+
+    Either score not being a list of the rows `score` saves raises `ScoreError`.
+    """
+    first, second = _rows(first), _rows(second)
     by_id = {r["id"]: r for r in first}
     pairs = [(by_id[r["id"]], r) for r in second if r["id"] in by_id]
     if not pairs:

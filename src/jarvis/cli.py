@@ -1558,10 +1558,10 @@ def _compare_scores(scores: list[Path]) -> int:
         return 2
     try:
         first, second = (json.loads(path.read_text(encoding="utf-8")) for path in scores)
-    except (OSError, ValueError) as exc:
+        print(speechtest.compare(first, second))
+    except (OSError, ValueError) as exc:  # ScoreError is a ValueError
         print(f"jarvis: a score could not be read: {exc}", file=sys.stderr)
         return 2
-    print(speechtest.compare(first, second))
     return 0
 
 

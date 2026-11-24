@@ -297,7 +297,25 @@ def test_a_card_never_carries_terminal_control_characters() -> None:
         ("Glass Harbor", "play glass harbor now", True),
         ("Glass Harbor", "play glassharbor", True),
         ("Three Days Grace", "play 3 days grace", False),
+        ("Guns N' Roses", "play guns n' roses", True),
+        ("Don't Stop", "play dont stop", True),
     ],
 )
 def test_a_name_counts_as_heard_only_as_whole_words(name: str, heard: str, *, found: bool) -> None:
     assert speechtest.name_heard(name, heard) is found
+
+
+def test_a_folder_left_by_a_session_that_ended_before_its_first_line_is_still_a_set(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "0001.wav").write_bytes(b"orphan")
+
+    _record(tmp_path, [Card("free", "Ask.")], ["", ""])
+
+    assert [entry["id"] for entry in speechtest.read_set(tmp_path)] == ["0002"]
+
+
+@pytest.mark.parametrize("score", [{"id": "0001"}, [{"id": "0001"}], ["row"]])
+def test_a_score_of_the_wrong_shape_is_refused_with_a_reason(score: object) -> None:
+    with pytest.raises(speechtest.ScoreError):
+        speechtest.compare(score, [_result("0001", name_heard=True, errors=0)])

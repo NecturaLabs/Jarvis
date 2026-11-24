@@ -1851,3 +1851,36 @@ def test_a_speech_test_compare_says_when_a_score_cannot_be_read(
     assert main(["speech-test", "compare", str(broken), str(tmp_path / "missing.json")]) == 2
 
     assert "could not be read" in capsys.readouterr().err
+
+
+def test_a_speech_test_records_while_jarvis_is_paused(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_jarvis(monkeypatch, "")
+    opened: list[bool] = []
+
+    def send(_command: str, _path: object = None, timeout: float = 10.0) -> dict[str, object]:
+        assert timeout <= 1
+        return {"ok": True, "paused": True}
+
+    def listener(_cfg: config.Config) -> tuple[object, object]:
+        opened.append(True)
+        return (lambda: None), (lambda: None)
+
+    monkeypatch.setattr(cli.control, "send", send)
+    monkeypatch.setattr(cli, "_listener", listener)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "q")
+
+    assert main(["speech-test", "record", "--dir", str(home / "set")]) == 0
+    assert opened == [True]
+
+
+def test_a_speech_test_compare_says_when_a_score_has_the_wrong_shape(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    odd = tmp_path / "odd.json"
+    odd.write_text('{"id": "0001"}', encoding="utf-8")
+
+    assert main(["speech-test", "compare", str(odd), str(odd)]) == 2
+
+    assert "could not be read" in capsys.readouterr().err
