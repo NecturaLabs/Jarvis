@@ -293,12 +293,14 @@ def test_the_time_in_a_country_with_several_zones_gives_each_without_the_network
 
     result = _run(_ops(net), "time_now", place="the United States")
 
+    # The count is of clocks showing different times now, not of named zones (in summer, Adak
+    # leaves Anchorage and Arizona keeps Los Angeles's time), so it is never said.
     assert result.spoken == (
-        "The United States has 6 time zones: it's 9:05 AM in New York, 8:05 AM in Chicago,"
+        "In the United States, it's 9:05 AM in New York, 8:05 AM in Chicago,"
         " 7:05 AM in Denver, 6:05 AM in Los Angeles, 5:05 AM in Anchorage and 4:05 AM in"
         " Honolulu."
     )
-    assert result.text.startswith("Time in the United States, which has 6 time zones now: ")
+    assert result.text.startswith("Time in the United States, on its 6 clocks now: ")
     assert net.seen == []  # the zones come from this PC's time zone database
 
 

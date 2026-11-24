@@ -549,6 +549,13 @@ def unit_dir() -> Path:
     return paths.xdg_config_home() / "systemd" / "user"
 
 
+def write_strata_unit(config: Config, key_file: Path) -> Path:
+    """Write `jarvis-strata.service` alone and return its path; a ConfigError writes nothing."""
+    path = unit_dir() / STRATA_UNIT
+    _write_if_changed(path, strata_unit(config, key_file))
+    return path
+
+
 def write_units(config: Config, key_file: Path) -> list[Path]:
     """Write both unit files and return their paths.
 

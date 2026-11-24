@@ -157,6 +157,65 @@ def test_a_helper_that_dies_after_ready_hands_over_to_livekit() -> None:
     wake.close()
 
 
+class _ScoredBackup:
+    """A LiveKit stand-in that hears the wake word only at the lower score over Jarvis's speech."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.frames = 0
+        self.over_speech = 0
+        self.miss: str | None = "yo_jarvis 0.41"
+
+    def heard(self, frame: NDArray[np.int16]) -> bool:
+        self.frames += frame.size
+        return False
+
+    def heard_over_speech(self, frame: NDArray[np.int16]) -> bool:
+        self.frames += frame.size
+        self.over_speech += 1
+        return True
+
+    def closest_miss(self) -> str | None:
+        return self.miss
+
+    def reset(self) -> None:
+        pass
+
+
+def test_over_speech_the_azure_model_is_asked_as_usual_while_it_runs() -> None:
+    made: list[_ScoredBackup] = []
+
+    def backup() -> _ScoredBackup:
+        made.append(_ScoredBackup())
+        return made[-1]
+
+    script = "import sys; print('ready', flush=True)\nwhile sys.stdin.buffer.read(1024): pass"
+    wake = FallbackWake(AzureWake(_fake(script)), backup)
+    try:
+        assert not wake.heard_over_speech(QUIET)  # the keyword model keeps one threshold
+        assert wake.closest_miss() is None  # and keeps no score
+        assert made == []
+    finally:
+        wake.close()
+
+
+def test_over_speech_the_livekit_backup_uses_its_lower_score_once_it_took_over() -> None:
+    backup = _ScoredBackup()
+    script = "import sys; print('ready', flush=True); sys.stderr.write('model broke\\n')"
+    wake = FallbackWake(AzureWake(_fake(script)), lambda: backup)
+    try:
+        assert _until(lambda: not wake.heard(QUIET) and _taken(wake))  # the helper died
+        assert wake.heard_over_speech(QUIET)
+        assert backup.over_speech == 1
+        assert wake.closest_miss() == "yo_jarvis 0.41"
+    finally:
+        wake.close()
+
+
+def _taken(wake: FallbackWake) -> bool:
+    return wake._primary is None  # pyright: ignore[reportPrivateUsage] - whether the backup took over
+
+
 def test_a_helper_that_never_gets_ready_is_an_audio_error_with_its_reason() -> None:
     script = "import sys; sys.stderr.write('no SDK here\\n'); sys.exit(3)"
 

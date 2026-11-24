@@ -9,11 +9,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 ### Added
 
 - Tell Jarvis to be quiet, in any words, and it says nothing: the model calls `stay_quiet` (voice only),
-  which ends the request without a reply, hushes anything already queued and opens no follow-up window.
+  which ends the request without a reply, stops the sentence playing, drops anything queued and opens no
+  follow-up window, even when the model had started a sentence first.
   Before, "shut up" got "Understood, I'll be quiet. Just say the word when you need me."
 - The time in a country: `time_now` takes a country as well as a city, and a country with several time zones
-  gets the time on each of its clocks, from east to west ("The United States has 6 time zones: it's 4:35 AM in
-  New York, ..."), with the day when it is not today here. The zones come from the time zone database on the
+  gets the time on each of its clocks, from east to west ("In the United States, it's 4:35 AM in New York,
+  ..."), each named by its largest city, with the day when it is not today here. The zones come from the time zone database on the
   PC, so nothing is sent anywhere. The model is told never to search the web for the time: asked the time in
   the United States, it had made seven web searches and page reads, 25.6 s before the first word.
 - `audio.barge_in_threshold` (0.5): while Jarvis speaks, a wake word needs at most this score, since its own
@@ -26,7 +27,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 - `jarvis restart` writes Strata's profile and unit from the config, so a `strata` setting changed there
   reaches the model server. Before, only `jarvis setup` wrote them: a `strata.context` of 49,152 in the config
-  left Strata running at 24,576 while Jarvis planned for the larger window.
+  left Strata running at 24,576 while Jarvis planned for the larger window. The voice service's unit is left
+  as `jarvis setup` wrote it, so a restart run from another checkout does not move the service there.
 - The time or weather in a state or region: the model is told to name its main city. Before, the place went
   to the geocoder as said, and its best "Texas" is a village in Mexico. A bare "Georgia" is the country.
 

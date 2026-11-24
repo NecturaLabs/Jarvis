@@ -1458,6 +1458,25 @@ def test_a_request_answered_with_silence_opens_no_follow_up_window() -> None:
     assert [text for text, _ in agent.calls] == ["be quiet"]
 
 
+def test_quiet_asked_for_after_words_were_spoken_still_opens_no_follow_up_window() -> None:
+    """Regression: words spoken before the quiet call made the silent reply look answered."""
+
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        assert hooks.speak is not None
+        hooks.speak("Understood.")
+        hooks.hush()
+        hooks.quiet()
+        return ""
+
+    agent = Agent(reply)
+    speaker = Speaker()
+
+    _run(_follow_loop(agent, Mic(*REQUEST, *FOLLOW_UP_REQUEST), speaker, "be quiet", "b"))
+
+    assert [text for text, _ in agent.calls] == ["be quiet"]
+    assert speaker.said == ["Understood."]
+
+
 def test_a_hushed_reply_opens_no_follow_up_window() -> None:
     """`jarvis hush` ends the exchange: speech right after it needs the wake word again."""
     agent = Agent()
