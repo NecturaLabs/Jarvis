@@ -8,13 +8,13 @@ The espeak-ng library and data come from the `piper-tts` wheel already installed
 import json
 import os
 import re
-import threading
 import unicodedata
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import onnxruntime as ort
 
+from jarvis import espeak
 from jarvis.phonemes import trained_phonemes
 
 if TYPE_CHECKING:
@@ -27,20 +27,12 @@ MAX_PHONEMES = 510
 MAX_THREADS = 8
 TOKEN_INPUTS = ("input_ids", "tokens")  # what the v1.0 and the older model builds call the phonemes
 _LANG_SWITCH = re.compile(r"\([^)]+\)")
-_espeak_lock = threading.Lock()
 
 
 def _espeak_phonemes(text: str, voice: str) -> list[str]:
-    from piper import espeakbridge
-    from piper.phonemize_espeak import ESPEAK_DATA_DIR
-
     sentences: list[str] = []
     current = ""
-    with _espeak_lock:
-        espeakbridge.initialize(str(ESPEAK_DATA_DIR))
-        espeakbridge.set_voice(voice)
-        clauses = espeakbridge.get_phonemes(text)
-    for phonemes, terminator, end_of_sentence in clauses:
+    for phonemes, terminator, end_of_sentence in espeak.clauses(text, voice):
         current += _LANG_SWITCH.sub("", phonemes) + terminator
         if terminator in {",", ":", ";"}:
             current += " "

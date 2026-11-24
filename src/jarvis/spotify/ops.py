@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
+from jarvis import espeak
 from jarvis.jsonutil import obj, objs
 from jarvis.operations import Operation, OperationError, Result, UncertainOutcomeError
 from jarvis.policy import Origin
@@ -151,6 +152,43 @@ def similarity(heard: str, name: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio() if a and b else 0.0
 
 
+def _ratio_from(heard: str, floor: float) -> Callable[[str], float]:
+    """Return how alike a text is to `heard` (difflib's ratio), 0 when its quick bound is lower."""
+    matcher = difflib.SequenceMatcher[str](None)
+    matcher.set_seq2(heard)
+
+    def ratio(text: str) -> float:
+        if not text or not heard:
+            return 0.0
+        matcher.set_seq1(text)
+        if matcher.real_quick_ratio() < floor or matcher.quick_ratio() < floor:
+            return 0.0
+        return matcher.ratio()
+
+    return ratio
+
+
+def _alike(heard: str, floor: float = 0.0) -> Callable[[str], float]:
+    """Return how alike names are to one heard name (`likeness`), skipping those plainly off.
+
+    The heard name's spelling and sounds are prepared once, so a whole library can be compared
+    with it; a name whose quick upper bound is under `floor` scores 0 without the full match.
+    """
+    spelling = _ratio_from(_letters(heard), floor)
+    sound = _ratio_from(espeak.sounds(heard), floor)
+    return lambda name: max(spelling(_letters(name)), sound(espeak.sounds(name)))
+
+
+def likeness(heard: str, name: str) -> float:
+    """Return how alike a heard name is to a real one (0..1), by spelling or by sound.
+
+    Speech-to-text writes a name it does not know as words that sound like it ("flocks days"
+    for "Phlox Daze", digits for a number said in words), which spelling alone misses; whichever
+    of the two is closer counts.
+    """
+    return _alike(heard)(name)
+
+
 def best_match(
     heard: str, candidates: list[dict[str, Any]], threshold: float
 ) -> dict[str, Any] | None:
@@ -287,14 +325,18 @@ class SpotifyOps:
     def refresh(self) -> None:
         """Load the owner's library and artist names once, ahead of any request that needs them.
 
-        A failure, or a refresh in which no part of the library loaded, is logged and swallowed,
-        and the previous names are kept.
+        How each name sounds is worked out here too, so a request compares names without
+        waiting for espeak. A failure, or a refresh in which no part of the library loaded, is
+        logged and swallowed, and the previous names are kept.
         """
         self._warm = False
         self._login_expired = False
         try:
             self._api.ensure_login()
             library = self._api.reload_library()
+            for items in (library or {}).values():
+                for item in items:
+                    espeak.sounds(str(item.get("name", "")))
         except SpotifyLoginExpired:
             self._login_expired = True
             log.warning("Spotify login has expired; run `jarvis spotify-login`")
@@ -402,10 +444,11 @@ class SpotifyOps:
 
         Speech-to-text often mishears names and the model may guess the wrong kind ("a Glass
         Harbor song" heard as "grass harbor", asked as a track), so every kind in the owner's
-        library is compared, not only the one asked for.
+        library is compared, not only the one asked for, by spelling and by sound (`likeness`).
         """
+        alike = _alike(query, floor=self._settings.loose_match)
         scored = [
-            _Hit(k, item, similarity(query, str(item.get("name", ""))))
+            _Hit(k, item, alike(str(item.get("name", ""))))
             for k, items in self._api.library(
                 max_age_s=2 * self._settings.library_refresh_s
             ).items()
@@ -432,20 +475,20 @@ class SpotifyOps:
     def _score(
         self, item: dict[str, Any], query: str, kind: str, artist: str
     ) -> tuple[bool, bool, float]:
-        """Rank one hit: right artist, exact title, then title similarity (API order breaks ties).
+        """Rank one hit: right artist, exact title, then title likeness (API order breaks ties).
 
         The title is compared with the item's own name only, ignoring its version suffix; the
-        artist is checked separately.
+        artist is checked separately. Both are compared by spelling and by sound (`likeness`).
         """
         name = str(item.get("name", ""))
         if kind in {"track", "album"}:
-            score = max(similarity(query, name), similarity(query, _base_title(name)))
+            score = max(likeness(query, name), likeness(query, _base_title(name)))
             exact = _letters(query) in {_letters(name), _letters(_base_title(name))}
         else:
-            score = similarity(query, name)
+            score = likeness(query, name)
             exact = _letters(query) == _letters(name)
         by_artist = not artist or any(
-            similarity(artist, str(a.get("name", ""))) >= self._settings.loose_match
+            likeness(artist, str(a.get("name", ""))) >= self._settings.loose_match
             for a in objs(item.get("artists"))
         )
         return by_artist, exact, score
@@ -470,11 +513,26 @@ class SpotifyOps:
         return self._api.search(query, kind)
 
     def _find(self, query: str, kind: str, artist: str) -> _Hit | None:
-        """Return what to play: the best hit, or the owner's own music for a misheard name."""
+        """Return what to play: the best hit, or the owner's own music for a misheard name.
+
+        A close hit gives way only to an item of the owner's that is more alike still (by the
+        artist named, when one is), such as their "Tokio Lanterns" heard as "Tokyo Lanterns"
+        when Spotify's best hit is "Tokyo Lantern"; nothing beats a hit as alike as can be.
+        """
         best = self._best_hit(self._search_hits(query, kind, artist), query, kind, artist)
-        if best is not None and best.score >= self._settings.close_match:
+        close = self._settings.close_match
+        if best is not None and best.score >= 1.0:
             return best
         mine = self._library_match(query)
+        if (
+            mine is not None
+            and mine.score >= close
+            and (best is None or mine.score > best.score)
+            and self._score(mine.item, query, mine.kind, artist)[0]
+        ):
+            return mine
+        if best is not None and best.score >= close:
+            return best
         if mine is not None and (best is None or mine.score > best.score):
             return mine
         if best is not None and artist and not self._score(best.item, query, kind, artist)[0]:

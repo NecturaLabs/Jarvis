@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast, override
 import httpx
 import pytest
 
+from jarvis import espeak
 from jarvis.config import SpotifyConfig
 from jarvis.operations import (
     ArgumentError,
@@ -26,7 +27,7 @@ from jarvis.secretfile import write_private_json
 from jarvis.spotify.api import API, SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.errors import NoDeviceError, SpotifyAuthError, SpotifyError, SpotifyLoginExpired
-from jarvis.spotify.ops import REFRESH_RETRY_S, SpotifyOps, best_match, similarity
+from jarvis.spotify.ops import REFRESH_RETRY_S, SpotifyOps, best_match, likeness, similarity
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -223,6 +224,94 @@ def test_misheard_artist_matches_by_spelling(heard: str) -> None:
 def test_similarity_ignores_case_and_punctuation() -> None:
     assert similarity("Glass-Harbor!", "glass harbor") == pytest.approx(1.0)
     assert similarity("", "glass harbor") == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    ("heard", "name"),
+    [
+        ("flocks days", "Phlox Daze"),
+        ("7 Nights Sale", "Seven Knights Sail"),
+        ("grass harbor", "Glass Harbor"),
+    ],
+)
+def test_a_misheard_name_is_alike_by_its_sound_or_its_spelling(heard: str, name: str) -> None:
+    assert likeness(heard, name) >= 0.85
+    assert likeness(heard, name) >= similarity(heard, name)
+
+
+@pytest.mark.parametrize(
+    ("heard", "name"), [("breaking news", "Breaking Lanterns"), ("Green Lanterns", "Paper Moons")]
+)
+def test_names_that_neither_sound_nor_look_the_same_are_not_alike(heard: str, name: str) -> None:
+    assert likeness(heard, name) < 0.8
+
+
+PHLOX_DAZE = {"name": "Phlox Daze", "uri": "spotify:artist:phloxdaze"}
+TOKIO_LANTERNS = {"name": "Tokio Lanterns", "uri": "spotify:artist:tokiolanterns"}
+
+
+def test_a_name_misheard_as_words_that_sound_the_same_plays_the_owners_artist(
+    tmp_path: Path,
+) -> None:
+    # The owner said "Phlox Daze"; speech-to-text wrote the words it sounds like.
+    fake = FakeSpotify(
+        search={"artist": [{"name": "Flock Of Days", "uri": "spotify:artist:flock"}]},
+        top_artists=[GLASS_HARBOR, PHLOX_DAZE],
+    )
+
+    build_ops(fake, tmp_path).play({"query": "flocks days", "kind": "artist"})
+
+    assert fake.played == [{"context_uri": "spotify:artist:phloxdaze"}]
+
+
+def test_a_number_heard_as_digits_plays_the_owners_song_named_in_words(tmp_path: Path) -> None:
+    fake = FakeSpotify(
+        search={"track": [_track("7 Nights", "Other", "spotify:track:other")]},
+        top_tracks=[_track("Seven Knights Sail", "Night Circuit", "spotify:track:sail")],
+    )
+
+    build_ops(fake, tmp_path).play({"query": "7 Nights Sale", "kind": "track"})
+
+    assert fake.played == [{"uris": ["spotify:track:sail"]}]
+
+
+def test_the_owners_name_that_sounds_the_same_beats_a_hit_spelled_like_the_mishearing(
+    tmp_path: Path,
+) -> None:
+    fake = FakeSpotify(
+        search={"artist": [{"name": "Tokyo Lantern", "uri": "spotify:artist:tokyolantern"}]},
+        top_artists=[TOKIO_LANTERNS],
+    )
+
+    build_ops(fake, tmp_path).play({"query": "Tokyo Lanterns", "kind": "artist"})
+
+    assert fake.played == [{"context_uri": "spotify:artist:tokiolanterns"}]
+
+
+def test_an_exact_hit_is_played_though_the_owner_has_a_name_that_sounds_close(
+    tmp_path: Path,
+) -> None:
+    fake = FakeSpotify(
+        search={"artist": [{"name": "Green Lanterns", "uri": "spotify:artist:green"}]},
+        top_artists=[{"name": "Grey Lanterns", "uri": "spotify:artist:grey"}],
+    )
+
+    build_ops(fake, tmp_path).play({"query": "Green Lanterns", "kind": "artist"})
+
+    assert fake.played == [{"context_uri": "spotify:artist:green"}]
+
+
+def test_a_hit_by_the_artist_named_beats_the_owners_song_by_another(tmp_path: Path) -> None:
+    fake = FakeSpotify(
+        search={"track": [_track("Tokyo Lantern", "Paper Moons", "spotify:track:moons")]},
+        top_tracks=[_track("Tokio Lanterns", "Night Circuit", "spotify:track:circuit")],
+    )
+
+    build_ops(fake, tmp_path).play(
+        {"query": "Tokyo Lanterns", "kind": "track", "artist": "Paper Moons"}
+    )
+
+    assert fake.played == [{"uris": ["spotify:track:moons"]}]
 
 
 def test_exact_search_hit_is_played_with_one_search(tmp_path: Path) -> None:
@@ -1714,6 +1803,25 @@ def test_a_refresh_loads_the_names_distinct_and_in_order(tmp_path: Path) -> None
 
     assert ops.artist_names() == ["Glass Harbor", "Night Circuit"]
     assert len(fake.requests) == fetched
+
+
+def test_a_refresh_learns_how_the_library_sounds_ahead_of_any_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    espeak.sounds.cache_clear()
+    said: list[str] = []
+    real = espeak.clauses
+
+    def clauses(text: str, voice: str) -> list[tuple[str, str, bool]]:
+        said.append(text)
+        return real(text, voice)
+
+    monkeypatch.setattr(espeak, "clauses", clauses)
+    fake = FakeSpotify(top_artists=[GLASS_HARBOR, PHLOX_DAZE], top_tracks=[LOW_TIDE])
+
+    build_ops(fake, tmp_path).refresh()
+
+    assert {"Glass Harbor", "Phlox Daze", "Low Tide"} <= set(said)
 
 
 def test_every_refresh_reloads_even_inside_the_cache_time(tmp_path: Path) -> None:

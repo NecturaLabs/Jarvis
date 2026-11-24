@@ -45,6 +45,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- Spotify names are matched by sound as well as spelling, whichever is closer, using espeak's phonemes. A
+  name speech-to-text wrote as words that sound like it ("flocks days" for "Phlox Daze", "7" for "seven")
+  now finds your artist or song, and an item of yours that sounds the same as what was heard beats a
+  search hit only spelled like the mishearing. On 67 misheard artist names from speech-to-text test runs,
+  the right artist in the library was found 54 times at a similarity of 0.7, against 45 by spelling alone,
+  with no more names matched that are not in the library. Espeak calls now share Piper's own lock,
+  so a Piper voice, Kokoro and name matching never phonemize at once.
 - The capture keeps 320 ms from before speech is detected, not 160 ms, so a soft first sound the voice
   detector was not yet sure of reaches speech recognition.
 - The model can be asked to think before each answer: `thinking` (`none`, `low`, `medium` or `high`,
