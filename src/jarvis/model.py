@@ -47,16 +47,18 @@ class ModelMissingError(ModelError):
 
 @dataclass(frozen=True, slots=True)
 class Delta:
-    """One piece of an answer as it is written: reply text, or part of a tool call.
+    """One piece of an answer as it is written: reply text, part of a tool call, or thinking.
 
     `call` is the tool call's position in the answer (None for reply text); `name` comes with a
-    call's first piece and `arguments` is the next stretch of its JSON text.
+    call's first piece and `arguments` is the next stretch of its JSON text. A `thinking` piece
+    carries no words: it says the model is still thinking, so a stop need not wait for the answer.
     """
 
     text: str = ""
     call: int | None = None
     name: str = ""
     arguments: str = ""
+    thinking: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +171,9 @@ class _Assembly:
 
     def add(self, delta: dict[str, Any]) -> list[Delta]:
         pieces: list[Delta] = []
+        thought = delta.get("reasoning_content")
+        if isinstance(thought, str) and thought:
+            pieces.append(Delta(thinking=True))
         text = delta.get("content")
         if isinstance(text, str) and text:
             self.content += text

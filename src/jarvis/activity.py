@@ -149,6 +149,26 @@ def _plain(value: object) -> str:
     return text if len(text) <= MAX_SHOWN_CHARS else text[: MAX_SHOWN_CHARS - 1] + "…"
 
 
+def _value(value: object) -> str:
+    """Return a setting's value as the settings show it: on and off for a yes or no."""
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    return _plain(value)
+
+
+# A tool's class as `jarvis tools` and the chat's /config name it.
+_TOOL_LABELS = {
+    "safe": "on",
+    "confirm": "asks first",
+    "strong": "needs the confirm key",
+    "deny": "off",
+}
+
+
+def _tool_label(value: object) -> str:
+    return _TOOL_LABELS.get(str(value), _plain(value))
+
+
 def full_text(value: object) -> str:
     """Return outside text whole, as printable characters and line breaks only."""
     lines = str(value).replace("\r\n", "\n").replace("\t", "    ").split("\n")
@@ -372,6 +392,24 @@ def _simple(entry: dict[str, object]) -> _Line | None:
             "note",
             "The voice service started"
             + (", acting without asking" if entry.get("bypass_consent") is True else ""),
+            False,
+            "",
+        ),
+        "setting_changed": (
+            "note",
+            (
+                f"Setting {_plain(entry.get('setting', '?'))}: "
+                f"{_value(entry.get('was'))} → {_value(entry.get('to'))}"
+            ),
+            False,
+            "",
+        ),
+        "tool_class_changed": (
+            "note",
+            (
+                f"Tool {_plain(entry.get('op', '?'))}: "
+                f"{_tool_label(entry.get('was'))} → {_tool_label(entry.get('to'))}"
+            ),
             False,
             "",
         ),

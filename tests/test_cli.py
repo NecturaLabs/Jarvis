@@ -2272,10 +2272,11 @@ def test_the_chat_sets_jarvis_settings_and_audits_them(monkeypatch: pytest.Monke
     assert loaded.audio.speech_speed == pytest.approx(1.5)
     assert loaded.boundaries.bypass_consent is False
     events = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
-    assert [(e["setting"], e["to"], e["source"]) for e in events] == [
-        ("audio.speech_speed", 1.5, "chat"),
-        ("boundaries.bypass_consent", False, "chat"),
+    assert [(e["event"], e.get("setting"), e["source"]) for e in events] == [
+        ("setting_changed", "audio.speech_speed", "chat"),
+        ("consent_changed", None, "chat"),  # as `jarvis consent` records it
     ]
+    assert events[1]["bypass_consent"] is False
     shown = {s.key: s.value for s in cli._shared_settings()}  # pyright: ignore[reportPrivateUsage] - the chat's hook
     assert shown["audio.speech_speed"] == pytest.approx(1.5)
 
@@ -2305,3 +2306,48 @@ def test_a_restart_that_fails_says_the_old_settings_still_hold(
     cli._restart_if_running()  # pyright: ignore[reportPrivateUsage] - the step itself
 
     assert "still runs on the old settings" in capsys.readouterr().err
+
+
+def test_a_setting_the_chat_could_not_save_is_not_audited(monkeypatch: pytest.MonkeyPatch) -> None:
+    config.save(config.Config(spotify=config.SpotifyConfig(client_id="id")))
+
+    def broken(_cfg: config.Config) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(config, "save", broken)
+    with pytest.raises(OSError, match="disk full"):
+        cli._set_shared("audio.speech_speed", 1.5)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    with pytest.raises(OSError, match="disk full"):
+        cli._next_tool_setting("write_file")  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    assert not paths.audit_file().exists() or not paths.audit_file().read_text()
+
+
+def test_the_chats_own_settings_are_audited_once_saved() -> None:
+    config.save(config.Config())
+
+    chat = config.load().chat.model_copy(update={"thinking": "high", "toolbar": False})
+    cli._save_chat_settings(chat)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    assert config.load().chat.thinking == "high"
+    events = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
+    assert sorted((e["setting"], e["was"], e["to"], e["source"]) for e in events) == [
+        ("chat.thinking", "none", "high", "chat"),
+        ("chat.toolbar", True, False, "chat"),
+    ]
+
+
+def test_a_restart_from_the_chat_that_fails_is_raised_for_the_window_to_show(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unit_state(_unit: str) -> str:
+        return "active"
+
+    def systemctl(*args: str) -> int:
+        return 1 if args[0] == "restart" else 0
+
+    monkeypatch.setattr(cli, "_unit_state", unit_state)
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+
+    with pytest.raises(cli.RestartError, match="still runs on the old settings"):
+        cli._apply_from_chat()  # pyright: ignore[reportPrivateUsage] - the chat's hook

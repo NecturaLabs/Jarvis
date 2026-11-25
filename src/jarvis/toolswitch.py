@@ -46,6 +46,11 @@ class ToolSetting:
         """The setting as it is shown: "on", "asks first", "needs the confirm key" or "off"."""
         return LABELS[self.state]
 
+    @property
+    def shipped_label(self) -> str:
+        """How the tool ships, as `label` says it."""
+        return LABELS[self.shipped]
+
     def following(self) -> OpClass:
         """Return the next class for a menu that cycles: from as shipped, stricter, then back.
 

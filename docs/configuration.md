@@ -69,7 +69,7 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 | `max_steps` | `8` | 1 to 100 | Most model calls in one request; the last one may only answer, from what the others found. |
 | `max_tool_calls` | `12` | 1 to 200 | Most tool calls in one request. The reply call (`no_action`) is the answer and is not counted. |
 | `max_seconds` | `90.0` | 10 to 3600 | Longest one request may take (180 s more when the model must load first). Time spent asking you and waiting for your yes or the confirm key does not count. Once an action has run, the model still gets at least 15 s to say how it went, and a request that runs out of time after one says what it did. |
-| `reply_tokens` | `400` | 64 to 8192 | Most tokens the model writes in one answer. The prompt asks for replies that fit; a reply the cap ends anyway is kept and says it was cut short. |
+| `reply_tokens` | `400` | 64 to 8192 | Most tokens the model writes in one answer. The prompt asks for replies that fit; a reply the cap ends anyway is kept and says it was cut short. A tool call the cap cuts off (a long file being written) is not run: the model is told how much one answer holds and writes the text in parts, adding each to the file; a second cut call ends the request and says so. |
 | `tool_text_chars` | `3000` | 500 to 50000 | Most characters of one tool result the model reads. |
 | `memory_tokens` | `6000` | 0 to 200000 | Room the remembered conversation may take of the context window. When a reply makes it outgrow that, the model summarizes the oldest turns right after the reply, while it is spoken and on its own time (the latest two stay word for word); if that fails, the oldest are dropped. A request that finds it over its room (a plain command's turns, a saved conversation) is given the newest turns that fit, and the summary follows its reply. Jarvis uses less when the window cannot hold it beside the prompt, a reply and two tool results. |
 | `memory_idle_s` | `1800.0` | 0 or more | Forget the conversation after this long without a request (time the PC spends asleep counts); `0` never forgets. |
@@ -96,8 +96,19 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 | `while_working` | `steer` | `steer`, `queue` | What Enter does while a request runs. `steer`: the words join that request as yours, before the model's next call; words it ended before taking run next. `queue`: they wait and run as the next request. Words sent with a picture or a long paste are always queued. Esc still stops the request; queued words then run. `/config` changes it. |
 | `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, with what was pasted into each, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
 
-`/config` in the chat changes `verbosity`, `toolbar`, `resume`, `reply_tokens` and `max_steps` and writes
-them here; the last three apply the next time the chat opens.
+`/config` in the chat opens the settings in sections, each setting with its values, when a change applies
+and a line on what it does; ↑↓ move, Enter or → takes the next value, ← the one before, Esc closes. Under
+Chat it changes `verbosity`, `toolbar`, `while_working` and `thinking` at once, and `reply_tokens`,
+`max_steps` and `resume` from the next time the chat opens, writing them here. Under Voice, Listening and
+Safety it sets `audio.speech_speed`, `audio.listen_to_pc` (off by default) and `boundaries.bypass_consent`,
+and under Tools each tool's setting; the voice service restarts once to take these when the screen closes.
+Acting without asking and taking requests from PC audio are turned on only by a second Enter, after the row
+says what that means, and are marked in red while they are on. A restart that fails is said in the chat.
+
+`/effort` in the chat says how hard the model thinks before it answers, and how far it may raise that itself
+for a hard request. `/effort none`, `low`, `medium` or `high` sets `thinking` here, from the next request on;
+when `thinking_max` is lower, it is raised to the same level. Every chat setting saved here is written to the
+audit log as `setting_changed`, after the save.
 
 The chat remembers replies that drew on outside text, as data. While one is remembered, an action with a side
 effect that the model chooses needs your yes; a plain command (`pause`, `volume 40`) does not, since the
