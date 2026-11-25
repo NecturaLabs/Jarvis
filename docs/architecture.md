@@ -8,8 +8,8 @@ Jarvis is one Python process, `jarvis run`, started as a systemd user unit. One 
 microphone and runs the whole request path: wake word, speech capture, transcription, the agent, the
 spoken reply. There is one agent and no subagents. The model is a separate service, Strata, on
 loopback. Every tool call goes through a typed operation and a policy decision before it runs, and
-every step is written to an audit log. The tools are Spotify's, and the time, the weather, web search and
-Reddit (`web/`).
+every step is written to an audit log. The tools are Spotify's, and the time, the weather, web search,
+Reddit and a headless browser (`web/`).
 
 ```text
  jarvis.service (jarvis run)                          jarvis-strata.service
@@ -24,7 +24,10 @@ Reddit (`web/`).
  │ spotify/ops.py ─▶ spotify/api.py ────────┼──────▶ and the Spotify app
  │ web/ops.py ─▶ web/searxng.py ────────────┼──────▶ SearXNG container, 127.0.0.1:8888
  │    ├─▶ web/openmeteo.py, web/arctic.py ──┼──────▶ Open-Meteo, Arctic Shift (HTTPS)
- │    └─▶ web/page.py ─▶ web/guard.py ──────┼──────▶ public web pages only
+ │    ├─▶ web/page.py ─▶ web/guard.py ──────┼──────▶ public web pages only
+ │    └─▶ web/browserops.py, web/browser.py│
+ │         agent-browser, headless Chrome    │
+ │           └─▶ web/proxy.py on loopback ───┼──────▶ public web pages only
  │    audit.py ─▶ audit.jsonl               │
  │ audio.py  Speaker ─▶ pw-play             │
  └──────────────────────────────────────────┘
@@ -84,6 +87,9 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 | `web/ops.py` | `WebOps`: `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`, their shortcuts and spoken sentences, and the addresses and thread ids recent searches returned (behind one lock, since the look-ups run side by side), forgotten with the conversation (`reset`); in the chat also `image_search` and `show_image`, with the picture ids (`i1`…) an image search or a read page's own picture gave. | Open a page, thread or picture no search returned, except an address the owner wrote, exactly, in the request (`Request.words`). Pass search, page or Reddit text on as trusted, or put outside text into a weather or time answer. |
 | `web/guard.py` | `public_client`: an httpx client over an httpcore pool whose every connection is resolved (within 5 s), checked to be a public address on port 80 or 443, and pinned to that address; `read_capped` for the 1 MB cap on service answers. | Follow a redirect itself, use a proxy from the environment, or send anything that names the owner. |
 | `web/page.py` | `PageReader`: one redirect hop at a time with each address checked, 15 s for the whole read (each read its own deadline, so reads side by side never stretch each other's), a 2 MB cap counted after inflating gzip (every member of it) or deflate itself, text types only, read in the header's charset, else a byte order mark's or the page's own `<meta>` one, else UTF-8, trafilatura's main-text extraction (its cross-page duplicate check off, so a page read again is read whole) and the page's own picture (`og:image`) at a full, checked address; `picture` fetches PNG, JPEG, WebP, GIF or BMP the same way, up to 8 MB. | Read past the cap or the deadline, or open another scheme, port or a URL with a password. |
+| `web/proxy.py` | `EgressProxy`: an HTTP proxy on 127.0.0.1, one for each browser session, the browser's only way out: `CONNECT` tunnels and plain-HTTP requests (sent on with `Connection: close`) only to hosts whose every address is public, on port 80 or 443, connected at the address checked (`guard.public_addresses`); 200 MB for a session, 48 connections at once, and the hosts it refused (`was_refused`). | Reach this PC, the home network or any other port, or read or change a tunnel's bytes. |
+| `web/browser.py` | `Browser`: one headless agent-browser session, started on first use: its throwaway folder in `$XDG_RUNTIME_DIR/jarvis/browser/` (an empty agent-browser config, the default-deny action policy, the profile and downloads), the proxy with Chrome forced through it (loopback too, no name resolved by Chrome, no WebRTC UDP, no QUIC), a minimal environment (no display, no sound server, no version check), commands sent as one `batch` each, what the page shows (`View`), and closing after `idle_close_s` or at exit, sweeping folders a stopped Jarvis left. | Open anything but a plain http or https address, run a page script, upload, download, set cookies, open a tab, type into a password field, or act on an element the page no longer shows as it did. |
+| `web/browserops.py` | `browser_open` (an address `WebOps.admit` allows, a link the page shows, or another part of the page), `browser_act` (`confirm`, never lower, `always_ask`, `outbound` when it types; `prepare` binds the element, its name and page before the question) and, in the chat, `browser_screenshot`; closing the browser when the conversation is forgotten. | Pass page text on as trusted, or open an address `web_read` would not. |
 | `web/searxng.py` | The client of the local SearXNG (`deploy/searxng/`): JSON results, broken and repeated links dropped; `images` for its image category (each picture once, on a standard port, with the size the engine reported). | Reach anything but the loopback URL in `research.searxng_url`. |
 | `web/openmeteo.py` | Open-Meteo's place lookup and forecast (hourly values only when an hour was asked about), taking only numbers, WMO codes, times of a fixed shape, a checked time zone and a two-letter country code. | Return a place name or any other free text from the answer. |
 | `web/arctic.py` | The Arctic Shift archive: posts by id, top-level comments by score. | Ask for an id or subreddit that is not plain letters and digits. |
@@ -306,7 +312,8 @@ falls under its catch-all entry, so a change anywhere still asks for review). Th
 - the Spotify OAuth flow and token files: `spotify/`, `secretfile.py`;
 - the units and the config that become systemd lines: `services.py`, `config.py`;
 - the system prompt: `prompts/core.md`;
-- the web tools: `web/`, above all `web/guard.py` and `web/page.py`;
+- the web tools: `web/`, above all `web/guard.py`, `web/page.py`, `web/proxy.py`, `web/browser.py` and
+  `web/browserops.py`;
 - the PC-operation tools: `pc/`, above all `pc/files.py`, `pc/processes.py` and `pc/shell.py`;
 - pictures: `pictures.py`, which decodes picture bytes anyone may have made, and `chat/clipboard.py`,
   which starts `wl-paste`.

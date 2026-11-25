@@ -45,6 +45,7 @@ from jarvis.spotify.auth import SCOPES, SpotifyAuthError, TokenStore, login, red
 from jarvis.sysinfo import Sampler
 from jarvis.toolswitch import WORDS as TOOL_WORDS
 from jarvis.toolswitch import ToolSetting, tool_settings, with_class
+from jarvis.web import browser
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -1068,13 +1069,18 @@ def _tool_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[
             "pw-dump"
         )  # who is playing: PC audio's source, and follow-ups shut over audio
     checks = [(shutil.which(t) is not None, f"tool {t}", f"install {t}") for t in needed]
-    if shutil.which("playerctl"):
-        return checks, []
-    note = (
-        "note tool playerctl missing: other media players can't be paused or skipped "
-        "(`pacman -S playerctl`)"
-    )
-    return checks, [note]
+    notes: list[str] = []
+    if not shutil.which("playerctl"):
+        notes.append(
+            "note tool playerctl missing: other media players can't be paused or skipped "
+            "(`pacman -S playerctl`)"
+        )
+    if (cfg.chat.browser or cfg.agent.browser) and not shutil.which(browser.PROGRAM):
+        notes.append(
+            f"note tool {browser.PROGRAM} missing: the headless browser tools are not offered "
+            "(see docs/configuration.md, `[browser]`)"
+        )
+    return checks, notes
 
 
 def _user_memlock_limit() -> str:

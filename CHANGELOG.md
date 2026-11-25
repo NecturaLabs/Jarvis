@@ -8,6 +8,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- A headless browser for pages `web_read` can't read or that must be used (a search box, a button), through
+  agent-browser when it is installed: `browser_open` opens a search result, an address you wrote or a link the
+  page shows, and reads it; `browser_screenshot` shows the chat a picture of it; `browser_act` clicks or types
+  there, and always asks first, even with questions turned off. It runs headless and muted with a throwaway
+  profile, every connection goes through a loopback proxy that reaches only public addresses, and it closes
+  when idle. On in the chat (`chat.browser`), off for speech (`agent.browser`); `[browser] idle_close_s`.
+
 - The chat's `/config` also sets Jarvis's speaking speed, whether it acts without asking first and whether it
   takes requests from PC audio. Changes there restart the voice service once, when the settings close, instead of
   at every Enter, and its Tools list never takes a tool below how it ships.
@@ -178,6 +185,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- The chat's default `memory_tokens` is now 6500 (was 7000): the browser tools' schemas take that room in the
+  default 24,576-token window. A larger `strata.context` leaves room for more.
 - The chat's default `memory_tokens` is now 7000 (was 7800): the new tools' and arguments' schemas take that room
   in the default 24,576-token window. A larger `strata.context` leaves room for more.
 

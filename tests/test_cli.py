@@ -2080,6 +2080,15 @@ def test_doctor_notes_a_missing_media_player_tool_without_failing(
     assert "pacman -S playerctl" in line
 
 
+def test_doctor_notes_a_missing_browser_without_failing(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _doctor_config(home / "models")
+    lines = _doctor_with_tools(monkeypatch, capsys, {"agent-browser"})
+    (line,) = [line for line in lines if "agent-browser" in line]
+    assert line.startswith("note tool agent-browser missing")
+
+
 @pytest.mark.parametrize(
     ("audio", "checked"),
     [

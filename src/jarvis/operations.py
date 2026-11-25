@@ -154,7 +154,9 @@ class Operation:
     shell command's output can hold anything the owner's user can read).
     `concurrent` lets the agent run the call beside the other `concurrent` calls of the same
     model message; only a read-only operation whose `run` is safe in several threads at once
-    may set it.
+    may set it. With `always_ask`, a call that needs a yes is asked about even while the owner
+    has consent bypassed (`boundaries.bypass_consent`): it can send the owner's words to whoever
+    wrote a page, so a page must not be able to make it happen unseen.
     """
 
     name: str
@@ -173,6 +175,7 @@ class Operation:
     hashed: frozenset[str] = frozenset()
     audit_text: bool = True
     concurrent: bool = False
+    always_ask: bool = False
 
     def __post_init__(self) -> None:
         """Refuse an operation that acts yet claims to run beside others.

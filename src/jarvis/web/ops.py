@@ -507,28 +507,40 @@ class WebOps:
             )
         return Result(f"Results for {query!r}:\n" + "\n".join(lines), Origin.WEB)
 
-    def web_read(self, args: dict[str, Any]) -> Result:
-        """Read a page a recent search returned, or one the owner wrote, and give its main text.
+    def admit(self, url: str) -> None:
+        """Allow `url` to be opened when a recent search returned it or the owner wrote it.
 
         An address the owner wrote counts only as written, in their own words of a request
         (`Request.words`): never one in a paste, a page, a file or PC audio, where anyone could
         have put an address that carries data off in its query. Once written it is remembered
-        like a search result, until the conversation is forgotten.
+        like a search result, until the conversation is forgotten. `web_read` and the browser
+        both open only what this allows.
+
+        Raises:
+            OperationError: the address came from no search and not from the owner.
+        """
+        if self._knows(self._urls, url):
+            return
+        if url not in _written(current_request()):
+            msg = (
+                "Only a page a recent web_search returned, or an address the owner wrote in "
+                "this conversation, can be opened; search first."
+            )
+            raise OperationError(msg)
+        # Known from now on, like a search result, so a follow-up may read it again.
+        self._remember(self._urls, url)
+
+    def web_read(self, args: dict[str, Any]) -> Result:
+        """Read a page a recent search returned, or one the owner wrote, and give its main text.
+
+        Which addresses may be read is `admit`'s rule.
 
         Raises:
             OperationError: the address came from no search and not from the owner, or the
                 page could not be read.
         """
         url = str(args["url"]).strip()
-        if not self._knows(self._urls, url):
-            if url not in _written(current_request()):
-                msg = (
-                    "Only a page a recent web_search returned, or an address the owner wrote in "
-                    "this conversation, can be read; search first."
-                )
-                raise OperationError(msg)
-            # Known from now on, like a search result, so a follow-up may read it again.
-            self._remember(self._urls, url)
+        self.admit(url)
         thread = _reddit_thread(url)
         if thread is not None:
             # Reddit refuses to serve pages to Jarvis; the archive has the thread.

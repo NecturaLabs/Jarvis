@@ -2393,6 +2393,69 @@ def test_with_consent_bypassed_pc_audio_runs_unasked() -> None:
     assert counter.runs == [{"op": "pause"}]
 
 
+def _always_asking(counter: Counter, cls: OpClass) -> Operation:
+    def run(args: dict[str, Any]) -> Result:
+        counter.runs.append({"op": "press", **args})
+        return Result("pressed")
+
+    return Operation(
+        "press",
+        "press",
+        {"type": "object", "properties": {}},
+        run,
+        default_class=cls,
+        always_ask=True,
+        spoken_summary=lambda _args: "press it",
+    )
+
+
+def test_with_consent_bypassed_an_always_asking_action_is_still_asked() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("press"), _say("Pressed.")])
+    agent, audit = _bypassing(model, [_always_asking(counter, OpClass.CONFIRM)])
+    asked: list[str] = []
+
+    agent.handle("press it", Hooks(confirm=lambda q: asked.append(q) or True))
+
+    assert asked == ["Should I press it?"]
+    assert counter.runs == [{"op": "press"}]
+    call = next(e for e in audit.events if e["event"] == "tool_call")
+    assert call["verdict"] == "confirm"
+    assert "consent" not in call
+
+
+def test_with_consent_bypassed_an_always_asking_action_declined_does_not_run() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("press"), _say("Okay.")])
+    agent, _ = _bypassing(model, [_always_asking(counter, OpClass.CONFIRM)])
+
+    agent.handle("press it", Hooks(confirm=lambda _q: False))
+
+    assert counter.runs == []
+
+
+def test_always_asking_raises_no_class_of_its_own() -> None:
+    # It only keeps a question that the policy asked for; a safe call still runs unasked.
+    counter = Counter()
+    model = ScriptedModel([_call("press"), _say("Pressed.")])
+    agent, _ = _bypassing(model, [_always_asking(counter, OpClass.SAFE)])
+
+    agent.handle("press it", Hooks(confirm=_never_asked))
+
+    assert counter.runs == [{"op": "press"}]
+
+
+def test_with_consent_bypassed_other_confirm_actions_beside_it_still_run_unasked() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("delete_all"), _say("Done.")])
+    ops = [_always_asking(counter, OpClass.CONFIRM), counter.op("delete_all", cls=OpClass.CONFIRM)]
+    agent, _ = _bypassing(model, ops)
+
+    agent.handle("delete it all", Hooks(confirm=_never_asked))
+
+    assert counter.runs == [{"op": "delete_all"}]
+
+
 def test_with_consent_bypassed_a_denied_action_is_still_refused() -> None:
     counter = Counter()
     model = ScriptedModel([_call("pause"), _say("I can't.")])

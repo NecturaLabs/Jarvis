@@ -30,6 +30,8 @@ thinking = "none"
 thinking_tokens = 192
 thinking_max = "high"
 thinking_raised_tokens = 768
+# Offer the headless browser tools by voice too (see [browser]).
+browser = false
 
 # The same for typed requests in `jarvis chat`, with room for longer written work. resume opens the
 # chat on its last conversation (/clear starts a new one).
@@ -39,12 +41,13 @@ max_tool_calls = 40
 max_seconds = 600.0
 reply_tokens = 2048
 tool_text_chars = 8000
-memory_tokens = 7000
+memory_tokens = 6500
 memory_idle_s = 0.0
 thinking = "none"
 thinking_tokens = 512
 thinking_max = "high"
 thinking_raised_tokens = 1024
+browser = true
 resume = true
 verbosity = "replies"
 toolbar = true
@@ -149,6 +152,12 @@ searxng_url = "http://127.0.0.1:8888"
 results = 5
 page_chars = 2800
 reddit_comments = 6
+
+# The headless browser (agent-browser, when it is on PATH): pages that need scripts, a search
+# box, a picture of the page. [chat] and [agent] each switch its tools on with `browser`. It has
+# its own throwaway profile, reaches only public addresses and closes after idle_close_s seconds.
+[browser]
+idle_close_s = 60.0
 
 # The folders Jarvis may read and write; ~ is your home. Keys, tokens, browser profiles and
 # Jarvis's own state are never read or written; deny adds more (patterns such as "diary*").

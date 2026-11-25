@@ -1763,7 +1763,7 @@ class Agent:
             untrusted_in_context=tainted,
             private_in_context=private and op.sends_words(args),
         )
-        decision, consent = self._consent(decision)
+        decision, consent = self._consent(decision, op)
         stopped = _REFUSALS.get(decision.verdict)
         if decision.verdict is Verdict.STRONG and hooks.confirm_key is None:
             stopped = _NO_KEY
@@ -1847,13 +1847,14 @@ class Agent:
             "Ask again in a few minutes.",
         )
 
-    def _consent(self, decision: Decision) -> tuple[Decision, dict[str, str]]:
+    def _consent(self, decision: Decision, op: Operation) -> tuple[Decision, dict[str, str]]:
         """Return the decision to act on, and the audit fields of a question that was bypassed.
 
-        With consent bypassed, a verdict that would ask for a spoken yes (`confirm`) runs. A
-        `strong` one still waits for the confirm key, and `deny` holds (#34, decision 3).
+        With consent bypassed, a verdict that would ask for a spoken yes (`confirm`) runs, unless
+        the operation always asks (`Operation.always_ask`). A `strong` one still waits for the
+        confirm key, and `deny` holds (#34, decision 3).
         """
-        if not self._bypass_consent or decision.verdict is not Verdict.CONFIRM:
+        if not self._bypass_consent or decision.verdict is not Verdict.CONFIRM or op.always_ask:
             return decision, {}
         bypassed = Decision(
             Verdict.RUN, f"{decision.reason}; not asked: consent is bypassed", decision.op_class

@@ -77,6 +77,7 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 | `thinking_tokens` | `192` | 32 to 8192 | The most the model thinks before each answer at `thinking`; Strata then closes the thinking and lets it answer. It comes on top of `reply_tokens`, so the reply keeps all its room, and the context keeps room for both. |
 | `thinking_max` | `high` | `none`, `low`, `medium`, `high`, and not below `thinking` | The most the model may raise its own effort to, for the rest of one request, when it judges the request needs careful thought (several steps, a name it may have misheard, a correction, a try that failed). It does so with the `think_harder` tool, which is offered only when this is above `thinking`: set it to the same as `thinking` to keep one effort. The effort never drops within a request, and each request starts at `thinking` again. Raising to `low` or `high` can cost the model one more read of its whole prompt on Qwen3.8 ([models.md](models.md#thinking)). The tool's class is `safe`; `think_harder = "deny"` under `[boundaries.classes]` also switches it off. |
 | `thinking_raised_tokens` | `768` | 32 to 8192 | The most the model thinks before each answer once it raised its effort: about 12 s at most for speech. A raised call never gets less than `thinking_tokens` when a request starts above `none`. The context keeps room for the larger of the two. |
+| `browser` | `false` | `true`, `false` | Offer the headless browser tools (`browser_open`, `browser_act`; see [`[browser]`](#browser-the-headless-browser)) to spoken requests and `jarvis ask`, when agent-browser is installed. Off by default: speech is for quick commands, and clicking or typing on a page always waits for your spoken yes. |
 
 A spoken reply that drew on outside text (a web page, a song name) is remembered as data, as in the chat: a
 follow-up such as "what was the second one?" has it, and while it is remembered an action the model chooses
@@ -86,7 +87,7 @@ needs your yes; a plain command (`pause`, `volume 40`) does not.
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `7000` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger), `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
+`memory_tokens` `6500` (what the default 24,576-token window holds beside the raised thinking's room and the browser tools; less when a thinking cap is larger), `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, `browser` `true` (the headless browser tools, `browser_screenshot` too, when agent-browser is installed), plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -468,6 +469,33 @@ with it) and restarts with Docker unless you stop it (`docker compose -f deploy/
 down`). The `.env` file is git-ignored. Reddit threads are found through SearXNG and read from the
 Arctic Shift archive, a free copy of public Reddit that can lag behind it by a little.
 
+## `[browser]`: the headless browser
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `idle_close_s` | `60.0` | 10 to 900 | Seconds after its last use that the browser closes, with its profile and anything a page saved. |
+
+For pages `web_read` can't read (built by scripts) or that must be used (a search box, a button), Jarvis
+drives a real Chrome through [agent-browser](https://github.com/vercel-labs/agent-browser) (Apache-2.0),
+when the `agent-browser` program is on `PATH` and has its browser (`agent-browser install`). `chat.browser`
+offers its tools in the chat (on by default) and `agent.browser` to speech and `jarvis ask` (off by
+default). Without the program they are not offered, and `jarvis doctor` notes it. The tools:
+
+- `browser_open` opens an address a search in the conversation returned or you wrote (the same rule as
+  `web_read`), follows a link the open page shows, or reads on in the page. It asks nothing.
+- `browser_screenshot` (the chat only) shows you one screen of the page. It asks nothing.
+- `browser_act` clicks something on the page, or types up to 200 characters into a text box (never a
+  password field) and presses Enter. It always asks first, naming the element, the site and the words, even
+  with `bypass_consent` on. `[boundaries.classes]` can switch it off (`deny`) or ask for the confirm key
+  (`strong`), never set it to run unasked.
+
+The browser runs headless and muted, opens no window, and uses a throwaway profile in
+`$XDG_RUNTIME_DIR/jarvis/browser/`: none of your browsers, cookies or logins. Every connection it makes goes
+through a proxy Jarvis runs on loopback, which reaches only public addresses on ports 80 and 443, so a
+page cannot reach this PC (Strata, SearXNG) or your home network. Downloads, uploads, page scripts run by
+Jarvis, cookies and other tabs are refused. It closes after `idle_close_s`, and when the conversation is
+forgotten, so it uses nothing between requests. [ADR 0016](adr/0016-headless-browser.md) has the details.
+
 ## `[files]`: the folders Jarvis may read and write
 
 | Key | Default | Allowed | What it does |
@@ -529,13 +557,14 @@ A table from operation name to a class: `safe` (runs), `confirm` (needs your spo
 (needs the confirm key, below; never a spoken yes, and not skipped by `bypass_consent`) or `deny`.
 A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` with an error, so a typo
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
-its shipped class, which is `safe` for every operation but `write_file` (`confirm`) and `stop_process`
+its shipped class, which is `safe` for every operation but `write_file` and `browser_act` (`confirm`) and `stop_process`
 (`strong`): `spotify_*`, `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`,
-`pc_stats`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`; set one to `deny` to switch it off: it is then
+`pc_stats`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`, `browser_open`,
+`browser_screenshot`; set one to `deny` to switch it off: it is then
 not offered to the model at all. `no_action`, `think_harder` and `stay_quiet` are how Jarvis answers, not tools, and
 cannot be switched off. `stop_process`
 may be set only to `strong` or `deny`: a program is stopped by your command and your key alone, so any
-other class stops `jarvis run`, `ask` and `chat` with an error. Whatever the class, side effects are raised to `confirm` while text from outside
+other class stops `jarvis run`, `ask` and `chat` with an error. `browser_act` may not be set to `safe`. Whatever the class, side effects are raised to `confirm` while text from outside
 your own speech is in the request, and so are the operations that send words off the PC while a file's text or a shell command's output is. Example:
 
 ```toml

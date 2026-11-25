@@ -1,5 +1,6 @@
 """Builds Jarvis from its config: model, operations, prompt, audit log and agent."""
 
+import shutil
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
@@ -38,6 +39,7 @@ from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
 from jarvis.sysinfo import Sampler
+from jarvis.web import browser, browserops
 from jarvis.web.arctic import ArcticShift
 from jarvis.web.guard import public_client
 from jarvis.web.openmeteo import OpenMeteo
@@ -284,6 +286,29 @@ def web_operations(config: Config, shown: PictureCache | None = None) -> list[Op
     return web_ops(config, shown).operations()
 
 
+def browser_ops(
+    config: Config,
+    online: WebOps,
+    channel: Channel,
+    *,
+    page_chars: int,
+    shown: PictureCache | None = None,
+) -> browserops.BrowserOps | None:
+    """Return the headless browser's operations, or None when the channel does not offer them.
+
+    A channel offers them when its `browser` key is on and agent-browser is installed. The
+    browser opens only what `online` would read (`WebOps.admit`), and starts on first use.
+    """
+    section = config.chat if channel == "chat" else config.agent
+    program = shutil.which(browser.PROGRAM) if section.browser else None
+    if program is None:
+        return None
+    session = browser.Browser(
+        program, paths.runtime_dir() / "browser", idle_close_s=config.browser.idle_close_s
+    )
+    return browserops.BrowserOps(session, online.admit, page_chars=page_chars, shown=shown)
+
+
 def files_boundary(config: Config, home: Path | None = None) -> Boundary:
     """Return where the file operations may read and write; Jarvis's own state is never in it."""
     return Boundary.of(config.files, home or Path.home(), protected=(paths.state_dir(),))
@@ -393,11 +418,14 @@ def channel_registry(
     )
     shipped = skills.shipped()
     guides = osskills.catalog()
-    online = web_ops(web, chat_pictures() if channel == "chat" else None)
+    shown = chat_pictures() if channel == "chat" else None
+    online = web_ops(web, shown)
+    browsing = browser_ops(config, online, channel, page_chars=pages, shown=shown)
     return Registry(
         [
             *spotify,
             *online.operations(),
+            *(browsing.operations() if browsing is not None else []),
             *pc_operations(config, limits),
             *calc.operations(config.format),
             *AboutOps(config, channel, limits, refused=files_boundary(config).secret).operations(),
@@ -423,12 +451,13 @@ def channel_registry(
             *([think] if (think := think_operation(limits)) is not None else []),
             no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
         ],
-        resets=(online.reset,),
+        resets=(online.reset, *((browsing.reset,) if browsing is not None else ())),
     )
 
 
-# Operations offered only when their files are installed, known to `boundaries.classes` either way.
-INSTALLED_ONLY = frozenset({"read_skill", "os_skill"})
+# Operations offered only when their files or programs are installed (and the browser switched on),
+# known to `boundaries.classes` either way.
+INSTALLED_ONLY = frozenset({"read_skill", "os_skill", *browserops.NAMES})
 # How Jarvis answers, not tools: never switched off.
 ALWAYS_OFFERED = frozenset({"no_action", "think_harder", "stay_quiet"})
 

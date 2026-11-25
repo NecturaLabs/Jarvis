@@ -27,6 +27,9 @@
 /src/jarvis/prompts/             @Nectura
 /src/jarvis/spotify/             @Nectura
 /src/jarvis/web/                 @Nectura
+/src/jarvis/web/proxy.py         @Nectura
+/src/jarvis/web/browser.py       @Nectura
+/src/jarvis/web/browserops.py    @Nectura
 /src/jarvis/pc/                  @Nectura
 /src/jarvis/pc/processes.py      @Nectura
 /src/jarvis/pictures.py          @Nectura
