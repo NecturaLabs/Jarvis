@@ -27,6 +27,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - `strata.effort_position` passes Strata's `effort_position` into its profile: with `end`, a request whose model
   raised its effort to `low` reuses the pinned prompt instead of reading it all again. Empty, the default, keeps
   the run config's own, until the model's answers with it are measured.
+- `jarvis doctor` checks `wpctl` (the PC's volume) and, with PC audio on, `pw-dump`; it notes a missing
+  `playerctl`, a Spotify login without a permission Jarvis now asks for, and a user manager whose limit on
+  locked memory keeps the model from being locked in RAM.
 - Look-ups the model asks for together run side by side: two pages, a search and the weather, or the time in
   two places take about as long as the slowest one. Each is still decided, asked about and audited one by
   one first; actions always run on their own, in order.

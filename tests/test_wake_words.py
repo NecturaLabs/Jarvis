@@ -476,6 +476,7 @@ def test_the_doctor_prints_a_wake_word_file_that_does_not_load_and_fails(
     _models(cfg.data_dir, "hey_jarvis", "yo_jarvis")
     _fake_loader(monkeypatch, yo_jarvis=ValueError("not a streaming model"))
     monkeypatch.setattr(audio, "installed_models", _voxtype_cannot_say)
+    monkeypatch.setattr(cli, "_user_memlock_limit", lambda: "")  # systemd is not asked here
 
     status = main(["doctor"])
 
