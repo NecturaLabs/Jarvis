@@ -73,6 +73,7 @@ if TYPE_CHECKING:
     from jarvis.memory import Conversation
     from jarvis.pictures import Picture, PictureCache
     from jarvis.sysinfo import Stats
+    from jarvis.toolswitch import ToolSetting
 
 log = logging.getLogger(__name__)
 
@@ -168,6 +169,8 @@ class Services:
     details: Callable[[], list[tuple[str, str]]] = list  # more for /status: (name, value)
     stats: Callable[[], Stats] | None = None  # the PC's load
     save_settings: Callable[[ChatConfig], None] | None = None
+    tools: Callable[[], list[ToolSetting]] | None = None  # every tool and its setting
+    next_tool_setting: Callable[[str], ToolSetting] | None = None  # moves one on, saves it
     history: InputHistory | None = None
     export_dir: Path = field(default_factory=Path.home)
     paste: Callable[[], Clip] | None = None  # reads the clipboard, for Ctrl+V
@@ -202,6 +205,7 @@ class _Setting:
     live: bool  # takes effect now, not the next time the chat opens
 
 
+TOOLS_ROW = "tools"  # the settings row that opens the list of tools
 SETTINGS = (
     _Setting("verbosity", "Verbosity", VERBOSITY, live=True),
     _Setting("toolbar", "Toolbar", (True, False), live=True),
@@ -355,6 +359,7 @@ class ChatApp(App[None]):
         self._name = name
         self._settings = settings or ChatConfig()
         self._services = services or Services()
+        self._tools_shown = False  # the settings panel lists the tools
         self._session_id = session_id
         self._poll_s = poll_s
         self._status_s = status_s
@@ -816,6 +821,9 @@ class ChatApp(App[None]):
         if self._question is not None:
             self._answer(yes=False)
             return
+        if self.query_one("#settings").display and self._tools_shown:
+            self._fill_settings(len(SETTINGS))  # back to the settings, on the Tools row
+            return
         if self.query_one("#settings").display:
             self._close_settings()
             return
@@ -1201,6 +1209,8 @@ class ChatApp(App[None]):
         self.query_one("#settings-list", OptionList).focus()
 
     def _fill_settings(self, highlighted: int = 0) -> None:
+        self._tools_shown = False
+        self.query_one("#settings").border_title = "Settings"
         rows = [
             (
                 setting.label,
@@ -1209,9 +1219,50 @@ class ChatApp(App[None]):
             )
             for setting in SETTINGS
         ]
+        ids = [s.key for s in SETTINGS]
+        if self._services.tools is not None:
+            rows.append(("Tools", "on, off, or asking first", ""))
+            ids.append(TOOLS_ROW)
         self.query_one("#settings-list", PointerList).show(
-            rows, ("", "bold", "bright_black"), [s.key for s in SETTINGS], highlighted
+            rows, ("", "bold", "bright_black"), ids, highlighted
         )
+
+    def _fill_tools(self, highlighted: int = 0) -> None:
+        """List every tool with its setting; Enter moves one on, Esc goes back to the settings."""
+        read = self._services.tools
+        if read is None:
+            return
+        try:
+            tools = read()
+        except Exception as exc:  # ruff: ignore[blind-except] - the window stays open
+            self.notify(f"Couldn't read the tools: {type(exc).__name__}", severity="warning")
+            return
+        self._tools_shown = True
+        self.query_one(
+            "#settings"
+        ).border_title = (
+            "Tools · Enter changes one · the voice service takes it now, this chat when reopened"
+        )
+        rows = [
+            (tool.name, tool.label, "" if tool.state is tool.shipped else "changed")
+            for tool in tools
+        ]
+        self.query_one("#settings-list", PointerList).show(
+            rows, ("", "bold", "bright_black"), [tool.name for tool in tools], highlighted
+        )
+
+    def _change_tool(self, name: str) -> None:
+        move = self._services.next_tool_setting
+        if move is None:
+            return
+        try:
+            now = move(name)
+        except Exception as exc:  # ruff: ignore[blind-except] - the setting stays as it was
+            self.notify(f"Couldn't change {name}: {exc}", severity="warning")
+            return
+        listed = self.query_one("#settings-list", PointerList)
+        self._fill_tools(listed.highlighted or 0)
+        self.notify(f"{now.name}: {now.label}")
 
     def _close_settings(self) -> None:
         self.query_one("#settings").display = False
@@ -1219,6 +1270,9 @@ class ChatApp(App[None]):
         self._input().focus()
 
     def _change_setting(self, key: str) -> None:
+        if key == TOOLS_ROW:
+            self._fill_tools()
+            return
         setting = next(s for s in SETTINGS if s.key == key)
         current = getattr(self._settings, key)
         values = setting.values
@@ -1407,7 +1461,9 @@ class ChatApp(App[None]):
                 self.action_complete()
                 self._input().focus()
             case "settings-list":
-                if event.option.id is not None:
+                if event.option.id is not None and self._tools_shown:
+                    self._change_tool(event.option.id)
+                elif event.option.id is not None:
                     self._change_setting(event.option.id)
             case _:
                 pass

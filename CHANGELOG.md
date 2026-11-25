@@ -8,6 +8,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Switch a tool on or off, or make it ask first, without editing the config: `jarvis tools` lists them all,
+  `jarvis tools NAME on|ask|key|off|default` sets one, and the chat's `/config` has a Tools list. A tool that is
+  off (`deny`) is no longer offered to the model at all, rather than offered and refused.
 - `strata.speed_projection`, on by default, keeps a control vector the model's run config loads, such as
   Strata's experimental speed projection, with which the model declines far fewer requests; off, Jarvis leaves it
   out. Jarvis never adds one itself, and `jarvis doctor` notes when the setting is on and none is loaded.

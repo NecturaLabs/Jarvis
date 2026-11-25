@@ -681,3 +681,40 @@ def test_a_media_command_that_timed_out_reaches_the_agent_as_uncertain(
 
     with pytest.raises(UncertainOutcomeError):
         app_module._playerctl(["-p", "vlc", "next"])  # pyright: ignore[reportPrivateUsage] - the wrapper itself
+
+
+def test_a_tool_switched_off_is_not_offered_to_the_model() -> None:
+    ensure_api_key(strata_key_file())
+    config = Config(
+        spotify=SpotifyConfig(client_id="id"),
+        boundaries=BoundariesConfig(classes={"reddit_search": "deny", "weather": "confirm"}),
+    )
+
+    offered = build(config).agent._registry.names()  # pyright: ignore[reportPrivateUsage] - what the model is given
+
+    assert "reddit_search" not in offered
+    assert "weather" in offered  # asking first still offers it
+    assert "web_search" in offered
+
+
+def test_how_jarvis_answers_cannot_be_switched_off() -> None:
+    ensure_api_key(strata_key_file())
+    config = Config(
+        spotify=SpotifyConfig(client_id="id"),
+        boundaries=BoundariesConfig(classes={"no_action": "deny"}),
+    )
+
+    with pytest.raises(SetupError, match="how Jarvis answers"):
+        build(config)
+
+
+def test_a_registry_without_some_operations_keeps_the_others_and_their_resets() -> None:
+    resets: list[bool] = []
+    keep = Operation("keep", "keep", {"type": "object", "properties": {}}, lambda _a: Result(""))
+    drop = Operation("drop", "drop", {"type": "object", "properties": {}}, lambda _a: Result(""))
+    registry = Registry([keep, drop], resets=(lambda: resets.append(True),)).without({"drop"})
+
+    registry.reset()
+
+    assert registry.names() == ["keep"]
+    assert resets == [True]

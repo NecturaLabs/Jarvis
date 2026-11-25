@@ -959,6 +959,46 @@ def test_config_changes_a_setting_and_saves_it() -> None:
     assert saved[1].toolbar is False
 
 
+def test_config_lists_the_tools_and_moves_one_on() -> None:
+    from jarvis.policy import OpClass  # ruff: ignore[import-outside-top-level] - only this test
+    from jarvis.toolswitch import ToolSetting  # ruff: ignore[import-outside-top-level] - only this test
+
+    tools = {
+        "reddit_search": ToolSetting(
+            "reddit_search", "Find Reddit threads", OpClass.SAFE, OpClass.SAFE, tuple(OpClass)
+        ),
+        "web_search": ToolSetting(
+            "web_search", "Search the web", OpClass.SAFE, OpClass.SAFE, tuple(OpClass)
+        ),
+    }
+    moved: list[str] = []
+
+    def move(name: str) -> ToolSetting:
+        moved.append(name)
+        old = tools[name]
+        tools[name] = ToolSetting(name, old.summary, old.following(), old.shipped, old.choices)
+        return tools[name]
+
+    services = Services(tools=lambda: list(tools.values()), next_tool_setting=move)
+    app = _app(session=FakeSession(), services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await pilot.press("end", "enter")  # the Tools row, last
+        await _until(pilot, lambda: "Tools" in str(app.query_one("#settings").border_title))
+        await pilot.press("enter")  # reddit_search, first
+        await _until(pilot, lambda: bool(moved))
+        await pilot.press("escape")
+        await _until(pilot, lambda: app.query_one("#settings").border_title == "Settings")
+        await pilot.press("escape")
+        await _until(pilot, lambda: app.query_one("#prompt").display)
+
+    _run(test, app)
+    assert moved == ["reddit_search"]
+    assert tools["reddit_search"].state is OpClass.CONFIRM
+
+
 def test_an_unknown_command_says_so() -> None:
     app = _app(session=FakeSession())
 
