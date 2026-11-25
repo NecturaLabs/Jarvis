@@ -311,7 +311,7 @@ the playlist ones: everything else works, and adding to a playlist says to run `
 | `transcribe_short_window` | `true` | true or false | Size Whisper's window to the clip (`context_window_optimization`); much faster for short commands. |
 | `vocabulary_hint` | `true` | true or false | Prime speech-to-text with Jarvis's name, its actions and your artist names. |
 | `hint_names` | `40` | 0 to 200 | Most artist names put in the hint (the hint also stops at 800 characters). |
-| `listen_to_pc` | `false` | true or false | Also take requests heard in PC audio. `jarvis pc-audio on`. |
+| `listen_to_pc` | `false` | true or false | Also take requests heard in PC audio. `jarvis pc-audio on`. The voice prompt tells the model either way whether it hears PC audio, whose (`pc_audio_apps`) and how such a request is treated; the chat never hears it and its prompt leaves it out. |
 | `pc_audio_apps` | `["discord"]` | list of app or process names | Whose audio to listen to: every stream they play is recorded and heard mixed. An empty list means all PC output. `--apps`, `--all-output`. |
 | `pc_audio_grant_s` | `600.0` | 0 to 86400 | After you say yes to a PC-audio request, how long further PC-audio requests run without asking. 0 asks every time. Time the PC spends asleep counts. |
 | `confirm_blocks_on_pc_speech` | `true` | true or false | A yes counts as no if speech was heard in PC audio while Jarvis waited for it. |

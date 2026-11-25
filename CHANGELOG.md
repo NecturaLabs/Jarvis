@@ -111,7 +111,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
-- A wake word heard in PC audio with no request after it is no longer dropped silently: the log now says why (no speech, too little speech, the loop busy, paused or still holding another one).
+- A wake word heard in PC audio with no request after it is no longer dropped silently: the log now says why
+  (no speech, too little speech, the loop busy, paused or still holding another one).
+- With PC audio on, Jarvis no longer tells you it cannot hear it: the voice prompt says whose audio it hears and
+  that a request from there is that person's, not yours. With it off, the prompt says Jarvis cannot hear it.
 - A follow-up on something Jarvis looked up no longer sends it searching all over again. Each remembered
   request names what it looked up (the searches and pages, as data when they came from outside), and a page read
   in the conversation is kept for 30 minutes, so reading it again needs no network. An address the owner

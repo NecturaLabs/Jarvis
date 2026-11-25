@@ -721,3 +721,49 @@ def test_a_registry_without_some_operations_keeps_the_others_and_their_resets() 
 
     assert registry.names() == ["keep"]
     assert resets == [True]
+
+
+def test_the_voice_prompt_says_pc_audio_cannot_be_heard_while_listening_is_off() -> None:
+    prompt = system_prompt(Config(), "voice")
+
+    assert "You do not hear the PC's own audio" in prompt
+    assert "jarvis pc-audio on" in prompt
+
+
+@pytest.mark.parametrize(
+    ("apps", "heard"),
+    [
+        (["discord"], "what discord plays"),
+        (["discord", "mpv"], "what discord and mpv play"),
+        ([], "everything the PC plays"),
+    ],
+)
+def test_the_voice_prompt_says_what_pc_audio_it_hears_and_how_its_requests_are_treated(
+    apps: list[str], heard: str
+) -> None:
+    config = Config.model_validate({"audio": {"listen_to_pc": True, "pc_audio_apps": apps}})
+
+    prompt = system_prompt(config, "voice")
+
+    assert "You do not hear the PC's own audio" not in prompt
+    assert f"You also hear {heard}" in prompt
+    assert "not from the owner" in prompt
+    assert "asks the owner before" not in prompt  # consent is bypassed by default
+
+
+def test_the_voice_prompt_says_pc_audio_requests_wait_for_a_yes_only_when_jarvis_asks() -> None:
+    config = Config.model_validate(
+        {"audio": {"listen_to_pc": True}, "boundaries": {"bypass_consent": False}}
+    )
+
+    assert "asks the owner before it changes anything" in system_prompt(config, "voice")
+
+
+def test_the_chat_prompt_leaves_pc_audio_to_the_voice_service() -> None:
+    # The chat never hears PC audio either way, and its prompt has no room to spare (the
+    # default context test above).
+    for listening in (False, True):
+        config = Config.model_validate({"audio": {"listen_to_pc": listening}})
+
+        assert "PC's own audio" not in system_prompt(config, "chat")
+        assert "You also hear" not in system_prompt(config, "chat")
