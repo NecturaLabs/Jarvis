@@ -3,6 +3,7 @@
 import contextlib
 import hashlib
 import json
+import shutil
 import signal
 import subprocess
 import threading
@@ -172,6 +173,12 @@ def _known(role: str, content: bytes) -> models.KnownModel:
 
 def _cannot_say(_engine: str) -> frozenset[str] | None:
     return None
+
+
+@pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse] - every doctor run asks systemd
+def user_manager_without_a_memlock_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`jarvis doctor` asks systemd for the user manager's lock limit; here it has no answer."""
+    monkeypatch.setattr(cli, "_user_memlock_limit", lambda: "")
 
 
 @pytest.fixture
@@ -2037,3 +2044,89 @@ def test_a_speech_test_compare_says_when_a_score_has_the_wrong_shape(
     assert main(["speech-test", "compare", str(odd), str(odd)]) == 2
 
     assert "could not be read" in capsys.readouterr().err
+
+
+# --- what setup leaves to the owner, said by the doctor ---------------------------------------
+
+
+def _doctor_with_tools(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], missing: set[str]
+) -> list[str]:
+    real = shutil.which
+
+    def which(name: str) -> str | None:
+        return None if name in missing else real(name)
+
+    monkeypatch.setattr(cli.shutil, "which", which)
+    cli.main(["doctor"])
+    return _doctor_lines(capsys)
+
+
+def test_doctor_checks_the_volume_tool(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _doctor_config(home / "models")
+    lines = _doctor_with_tools(monkeypatch, capsys, {"wpctl"})
+    assert any(line.startswith("FAIL tool wpctl") for line in lines)
+
+
+def test_doctor_notes_a_missing_media_player_tool_without_failing(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _doctor_config(home / "models")
+    lines = _doctor_with_tools(monkeypatch, capsys, {"playerctl"})
+    (line,) = [line for line in lines if "playerctl" in line]
+    assert line.startswith("note ")
+    assert "pacman -S playerctl" in line
+
+
+def test_doctor_checks_pw_dump_only_when_listening_to_pc_audio(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _doctor_config(home / "models")
+    assert not [
+        line for line in _doctor_with_tools(monkeypatch, capsys, {"pw-dump"}) if "pw-dump" in line
+    ]
+
+    config.save(
+        config.Config(data_dir=home / "models", audio=config.AudioConfig(listen_to_pc=True))
+    )
+    lines = _doctor_with_tools(monkeypatch, capsys, {"pw-dump"})
+    assert any(line.startswith("FAIL tool pw-dump") for line in lines)
+
+
+def test_doctor_notes_a_spotify_login_without_the_playlist_permissions(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _doctor_config(home / "models")
+    _login(9.5)
+    stored = json.loads(paths.spotify_token_file().read_text(encoding="utf-8"))
+    write_private_json(paths.spotify_token_file(), {**stored, "scope": "user-read-playback-state"})
+
+    cli.main(["doctor"])
+    notes = [
+        line for line in _doctor_lines(capsys) if line.startswith("note ") and "Spotify" in line
+    ]
+
+    assert len(notes) == 1
+    assert "jarvis spotify-login" in notes[0]
+
+
+@pytest.mark.parametrize(("limit", "noted"), [("8388608", True), ("infinity", False), ("", False)])
+def test_doctor_notes_when_the_model_cannot_be_locked_in_ram(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    limit: str,
+    *,
+    noted: bool,
+) -> None:
+    _doctor_config(home / "models")
+    monkeypatch.setattr(cli, "_user_memlock_limit", lambda: limit)
+
+    cli.main(["doctor"])
+    notes = [line for line in _doctor_lines(capsys) if "lock" in line and line.startswith("note ")]
+
+    assert bool(notes) is noted
+    if noted:
+        assert "keeping-the-model-in-ram" in notes[0]

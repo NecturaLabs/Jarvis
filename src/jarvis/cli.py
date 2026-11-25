@@ -32,7 +32,7 @@ from jarvis.policy import is_yes
 from jarvis.schedule import JobStore
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
 from jarvis.services import JARVIS_UNIT, STRATA_UNIT, reads_pictures
-from jarvis.spotify.auth import SpotifyAuthError, TokenStore, login, redirect_uri
+from jarvis.spotify.auth import SCOPES, SpotifyAuthError, TokenStore, login, redirect_uri
 from jarvis.sysinfo import Sampler
 
 if TYPE_CHECKING:
@@ -959,6 +959,64 @@ def _spotify_login(cfg: config.Config) -> tuple[bool, str, str]:
     return True, f"Spotify login ({days} days left{soon})", fix
 
 
+def _spotify_scope_notes(cfg: config.Config) -> list[str]:
+    """Note a stored Spotify login that lacks permissions Jarvis now asks for (all else works)."""
+    granted = TokenStore(cfg.spotify.client_id, spotify_token_file()).granted()
+    if granted is None:
+        return []
+    missing = sorted(set(SCOPES) - granted)
+    if not missing:
+        return []
+    note = (
+        f"note Spotify login lacks {', '.join(missing)}: run `jarvis spotify-login` once to "
+        "allow what needs them (adding to a playlist)"
+    )
+    return [note]
+
+
+def _tool_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[str]]:
+    """Return the checks for the programs Jarvis runs, and notes for the optional ones."""
+    needed = ["pw-record", "pw-play", "wpctl", "voxtype"]
+    if cfg.audio.listen_to_pc:
+        needed.append("pw-dump")
+    checks = [(shutil.which(t) is not None, f"tool {t}", f"install {t}") for t in needed]
+    if shutil.which("playerctl"):
+        return checks, []
+    note = (
+        "note tool playerctl missing: other media players can't be paused or skipped "
+        "(`pacman -S playerctl`)"
+    )
+    return checks, [note]
+
+
+def _user_memlock_limit() -> str:
+    """Return the hard limit on locked memory of this user's service manager, or "" if unknown."""
+    try:
+        done = subprocess.run(
+            ["systemctl", "show", f"user@{os.getuid()}.service", "-p", "LimitMEMLOCK", "--value"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except OSError, subprocess.TimeoutExpired:
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def _memlock_notes(cfg: config.Config) -> list[str]:
+    """Note that the model cannot be locked in RAM when the user manager's limit keeps it out."""
+    limit = _user_memlock_limit()
+    if not cfg.strata.keep_in_ram or limit in {"", "infinity"}:
+        return []
+    note = (
+        f"note the model can't be locked in RAM: your user services may lock {limit} bytes at "
+        "most (it still stays out of swap); see "
+        "docs/configuration.md#keeping-the-model-in-ram to raise it"
+    )
+    return [note]
+
+
 def cmd_doctor(_args: argparse.Namespace) -> int:
     """Print one line per check with its fix; never loads the model.
 
@@ -969,6 +1027,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     wake_checks, wake_notes = _wake_checks(cfg)
+    tool_checks, tool_notes = _tool_checks(cfg)
     files = [
         cfg.data_dir / VAD_MODEL,
         *voice_files(cfg.data_dir, cfg.audio.voice),
@@ -985,10 +1044,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         *_whisper_model(cfg),
         *_model_url(cfg),
         *_model_checks(cfg),
-        *(
-            (shutil.which(t) is not None, f"tool {t}", f"install {t}")
-            for t in ("pw-record", "pw-play", "voxtype")
-        ),
+        *tool_checks,
         *_source_checks(cfg),
         *_azure_checks(cfg),
         *_lock_checks(cfg),
@@ -1000,7 +1056,8 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     ]
     for ok, what, fix in checks:
         print(f"{'ok' if ok else 'FAIL':4} {what}" + ("" if ok else f"  -> {fix}"))
-    for line in [*wake_notes, *release_lines]:
+    notes = [*wake_notes, *tool_notes, *_spotify_scope_notes(cfg), *_memlock_notes(cfg)]
+    for line in [*notes, *release_lines]:
         print(line)
     failed = sum(not ok for ok, _, _ in checks)
     verified = sum(line.startswith("ok ") for line in release_lines)

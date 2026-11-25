@@ -111,6 +111,12 @@ microphone. The config file and every key are in [docs/configuration.md](docs/co
 [`config.example.toml`](config.example.toml) shows them all at their defaults. Your own config stays in
 `~/.config/jarvis/`, outside the repository.
 
+The model server keeps the model out of swap and asks to lock it in RAM (`strata.keep_in_ram`). On a stock
+systemd your user services may lock only 8 MiB, so the lock needs one root drop-in;
+[configuration](docs/configuration.md#keeping-the-model-in-ram) has it, and `jarvis doctor` notes when it is
+missing. `jarvis doctor` also checks every program Jarvis runs and notes a Spotify login that predates a
+permission Jarvis now asks for.
+
 The units start with your desktop session and stop with it. Jarvis keeps listening at the lock screen
 (`audio.listen_when_locked` turns that off), opens the microphone again after PipeWire restarts or the
 microphone is unplugged and plugged back, and listens afresh after a suspend. What each change does is in
