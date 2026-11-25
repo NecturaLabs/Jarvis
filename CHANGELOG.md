@@ -8,6 +8,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- The chat shows calls of one tool in a row as one step: "Write file "…/game.js" · 10 calls" with the newest
+  result, instead of a row for each. Every result is listed with every detail shown (ctrl+o); a failure, or a
+  call that asks first, still gets its own row. A step names what it works on (the file, page or search), not
+  its first argument.
 - `/effort` in the chat shows how hard the model thinks before it answers, and `/effort high` (or `none`,
   `low`, `medium`) sets it from the next request on, saved as `chat.thinking`. Each chat setting it or
   `/config` saves is now audited, and the chat's activity feed shows setting and tool changes.

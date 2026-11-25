@@ -27,6 +27,7 @@ from jarvis.chat.history import InputHistory
 from jarvis.chat.widgets import (
     ACCENT,
     CHEVRON,
+    Chain,
     Entry,
     PictureView,
     PointerList,
@@ -138,6 +139,8 @@ def _plain(renderable: object) -> str:
 def _words(widget: Widget) -> str:
     if isinstance(widget, Reply):
         return widget.text
+    if isinstance(widget, Chain):  # its lines, as far as the verbosity shows them
+        return "".join(_words(line) for line in widget.children if line.display)
     if isinstance(widget, Static):
         return _plain(widget.content)
     return ""
@@ -1289,6 +1292,67 @@ def test_thinking_effort_set_in_config_reaches_the_agent() -> None:
     assert session.thought == ["low"]
 
 
+def _write_call(mode: str, chars: int) -> list[dict[str, object]]:
+    own: dict[str, object] = {"session": SESSION, "via": "chat"}
+    args = {"content": {"sha256": "ab", "chars": chars}, "mode": mode, "path": "/x/game.js"}
+    done = "Added to /x/game.js" if mode == "append" else "Created /x/game.js"
+    return [
+        {"event": "tool_call", "op": "write_file", "args": args, "verdict": "run", **own},
+        {"event": "tool_result", "op": "write_file", "ok": True, "text": done, **own},
+    ]
+
+
+def _rows(app: ChatApp) -> list[str]:
+    return [_words(w) for w in app.query(".entry") if w.display and _words(w).strip()]
+
+
+def test_repeated_calls_of_one_tool_show_as_one_row_that_counts_them() -> None:
+    entries = [*_write_call("create", 10), *[e for _ in range(3) for e in _write_call("append", 5)]]
+    app = _app(FakeTail(entries), settings=ChatConfig(verbosity="steps"))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _until(pilot, lambda: any("4 calls" in row for row in _rows(app)))
+        rows = _rows(app)
+        assert sum("Write file" in row for row in rows) == 1
+        assert sum("Added to /x/game.js" in row for row in rows) == 1  # the newest result
+        assert not any("Created /x/game.js" in row for row in rows)
+
+    _run(test, app)
+
+
+def test_every_call_of_a_chain_shows_with_every_detail() -> None:
+    entries = [*_write_call("create", 10), *_write_call("append", 5)]
+    app = _app(FakeTail(entries), settings=ChatConfig(verbosity="everything"))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _until(pilot, lambda: any("2 calls" in row for row in _rows(app)))
+        assert any("Created /x/game.js" in row for row in _rows(app))
+
+    _run(test, app)
+
+
+def test_a_failure_or_a_question_ends_a_chain_and_stays_its_own_row() -> None:
+    own: dict[str, object] = {"session": SESSION, "via": "chat"}
+    failed = {"event": "tool_result", "op": "write_file", "ok": False, "text": "disk full", **own}
+    asked = {**_write_call("append", 5)[0], "verdict": "confirm"}
+    entries = [
+        *_write_call("create", 10),
+        _write_call("append", 5)[0],
+        failed,
+        *_write_call("append", 5),
+        asked,
+    ]
+    app = _app(FakeTail(entries), settings=ChatConfig(verbosity="steps"))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _until(pilot, lambda: any("needs your yes" in row for row in _rows(app)))
+        rows = _rows(app)
+        assert any("not done: disk full" in row for row in rows)
+        assert sum("Write file" in row for row in rows) == 3  # a chain of 2, one after, one asked
+
+    _run(test, app)
+
+
 def test_an_unknown_command_says_so() -> None:
     app = _app(session=FakeSession())
 
@@ -1413,7 +1477,7 @@ def test_steps_carry_their_level_as_a_class() -> None:
 
     async def test(pilot: Pilot[None]) -> None:
         await _until(pilot, lambda: _has(app, "4.6 s"))
-        levels = {w.shown.level for w in _transcript(app) if isinstance(w, Entry)}
+        levels = {w.shown.level for w in _transcript(app) if isinstance(w, Entry | Chain)}
         assert levels == {"steps", "everything"}
 
     _run(test, app)

@@ -35,7 +35,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import OptionList, Static
 
-from jarvis.activity import Shown, describe, full_text, working_label
+from jarvis.activity import Shown, call_target, describe, full_text, working_label
 from jarvis.agent import MAX_TRUSTED_PASTE, PICTURES_OFF, Declined, Hooks, NoReason
 from jarvis.chat import commands
 from jarvis.chat.clipboard import ClipboardError
@@ -57,6 +57,7 @@ from jarvis.chat.settings import (
 from jarvis.chat.widgets import (
     CHEVRON,
     STAR,
+    Chain,
     ChoiceList,
     Entry,
     Note,
@@ -330,6 +331,7 @@ class ChatApp(App[None]):
     }
     #welcome { height: auto; margin: 1 0 0 0; }
     .entry { height: auto; }
+    .chain { height: auto; }
     .entry.spaced { margin: 1 0 0 0; }
     .note { margin: 1 0 0 0; }
     .request { height: auto; margin: 1 0 0 0; padding: 0 2 0 0; }
@@ -449,6 +451,7 @@ class ChatApp(App[None]):
         self._settings = settings or ChatConfig()
         self._services = services or Services()
         self._tools_shown = False  # the settings panel lists the tools
+        self._chain: Chain | None = None  # the calls of one tool in a row, shown as one step
         self._pending: str | None = None  # a risky setting asked to be turned on, not yet confirmed
         self._changed_jarvis = False  # a setting the voice service reads changed in /config
         # Requests typed while one ran, waiting their turn: words, pictures, pastes.
@@ -594,7 +597,12 @@ class ChatApp(App[None]):
         return grid
 
     def _mount(self, widget: Widget) -> None:
-        """Add `widget` to the transcript; follow it down when the owner was at the bottom."""
+        """Add `widget` to the transcript; follow it down when the owner was at the bottom.
+
+        Anything shown but a detail ends the chain of calls before it (`_chained`).
+        """
+        if not (isinstance(widget, Entry) and widget.shown.detail):
+            self._chain = None
         transcript = self.query_one("#transcript", VerticalScroll)
         transcript.mount(widget)
         if self._stick:
@@ -644,6 +652,8 @@ class ChatApp(App[None]):
             shown = describe(entry)
             if shown is None:
                 continue
+            if self._chained(entry, shown):
+                continue
             if shown.kind in {"you", "pc"}:
                 pc = shown.kind == "pc"  # the request itself says "PC audio"
                 self._mount(
@@ -655,6 +665,35 @@ class ChatApp(App[None]):
                 self._exchanges.append(("jarvis", shown.text))
             else:
                 self._mount(Entry(shown))
+
+    def _chained(self, entry: dict[str, object], shown: Shown) -> bool:
+        """Fold a call into the chain of calls of its tool, or start one; True when it is shown.
+
+        Calls of one tool in a row, and their results, show as one step that counts them. A call
+        that asks first, a result that is not a success and anything else that is shown end the
+        chain and keep their own rows; a detail (shown only with every detail) leaves it open.
+        """
+        chain = self._chain
+        event, op = entry.get("event"), str(entry.get("op", ""))
+        session = entry.get("session")
+        if event == "tool_call" and shown.kind == "step":
+            target = call_target(entry.get("args"))
+            if chain is not None and chain.op == op and chain.session == session:
+                chain.add_call(target)
+            else:
+                chain = Chain(shown, op, target, session)
+                self._mount(chain)
+                self._chain = chain
+            return True
+        if (
+            event == "tool_result"
+            and shown.kind == "result"
+            and chain is not None
+            and (chain.op, chain.session) == (op, session)
+        ):
+            chain.add_result(shown)
+            return True
+        return False
 
     def _show_shown(self, entry: dict[str, object]) -> None:
         """Draw a picture this window's agent showed, if it is in the chat's picture folder."""
