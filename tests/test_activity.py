@@ -257,6 +257,14 @@ def test_a_reply_is_kept_whole_but_a_step_is_cut() -> None:
     assert len(_line({"event": "tool_failed", "op": "x", "error": "la " * 2000})) < 700
 
 
+def test_a_raised_thinking_effort_is_shown_with_the_effort() -> None:
+    shown = describe({"event": "thinking_raised", "effort": "high", "tokens": 768})
+
+    assert shown is not None
+    assert shown.text == "thinking harder: high effort for the rest of the request"
+    assert shown.level == "everything"
+
+
 def test_a_call_shows_the_gist_of_its_arguments_quietly() -> None:
     shown = describe(
         {"event": "tool_call", "op": "web_search", "args": {"query": "moonveil"}, "verdict": "run"}
@@ -294,6 +302,7 @@ def test_each_event_shows_from_its_verbosity_level(entry: dict[str, object], lev
         ({"event": "tool_call", "op": "spotify_play"}, "Talking to Spotify"),
         ({"event": "tool_call", "op": "brand_new_op"}, "Running Brand new op"),
         ({"event": "tool_call", "op": "time_now"}, "Checking the time"),
+        ({"event": "tool_call", "op": "think_harder"}, "Thinking harder"),
         ({"event": "model_call"}, "Thinking"),
         ({"event": "request", "text": "hi"}, None),
     ],

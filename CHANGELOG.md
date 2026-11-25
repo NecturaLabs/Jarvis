@@ -8,6 +8,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- The model thinks harder only when a request needs it. Each request still starts at `thinking` (`none` by
+  default). For one that needs careful thought (several steps, a name it may have misheard, a correction, a
+  try that failed), the model raises its own effort for the rest of that request with the new `think_harder`
+  tool, up to `thinking_max` (`high` by default) in `[agent]` and `[chat]`. After a raise each call thinks up
+  to `thinking_raised_tokens` (768 for speech, 1024 in the chat), and the effort never drops within the
+  request. Set `thinking_max` equal to `thinking` to keep one effort
+  ([ADR 0014](docs/adr/0014-model-raises-its-own-thinking.md)).
+
 - Parakeet, Cohere Transcribe and Qwen3-ASR (Voxtype's `gguf` engine) can transcribe requests:
   `audio.transcribe_engine` names the engine and `audio.transcribe_model` the full path to its `.gguf` file,
   which Jarvis writes into its own Voxtype config, with the architecture the file names for `gguf`.
@@ -64,6 +72,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- The chat's default `memory_tokens` is now 7800 (was 9100), so the default 24,576-token window keeps room
+  for the thinking the model may raise to.
 - Spotify names are matched by sound as well as spelling, whichever is closer, using espeak's phonemes. A
   name speech-to-text wrote as words that sound like it ("flocks days" for "Phlox Daze", "7" for "seven")
   now finds your artist or song, and an item of yours of the kind asked for that sounds closer to what was

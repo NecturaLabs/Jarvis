@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from jarvis import __version__, control, osskills, paths
-from jarvis.agent import Agent, Hooks
+from jarvis.agent import THINK_HARDER, Agent, Hooks
 from jarvis.app import (
     MAX_HINT_CHARS,
     PAGE_HEADROOM,
@@ -155,19 +155,20 @@ def test_the_default_context_holds_the_whole_remembered_conversation(
     assert config.research.page_chars + PAGE_HEADROOM <= limits.tool_text_chars
 
 
-def test_the_chat_memory_gives_way_when_thinking_is_turned_on(
+def test_the_chat_memory_gives_way_when_thinking_needs_more_room(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Thinking is off by default; turned on, its room comes out of the remembered conversation
-    # rather than squeezing the window, even with a full Omarchy catalog.
+    # The defaults keep room for the most the chat may think once raised; a bigger cap's room
+    # comes out of the remembered conversation rather than squeezing the window, even with a
+    # full Omarchy catalog.
     _full_catalog(tmp_path / "skills")
     monkeypatch.setattr("jarvis.osskills.ROOT", tmp_path / "skills")
     monkeypatch.setattr("jarvis.osskills.OWNER", os.getuid())
     budgets: list[int] = []
-    for thinking in ("none", "high"):
+    for cap in (Config().chat.thinking_raised_tokens, 4096):
         config = Config()
         config = config.model_copy(
-            update={"chat": config.chat.model_copy(update={"thinking": thinking})}
+            update={"chat": config.chat.model_copy(update={"thinking_raised_tokens": cap})}
         )
         spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
         limits = channel_limits(config, "chat")
@@ -309,6 +310,52 @@ def test_only_the_voice_offers_staying_quiet(tmp_path: Path) -> None:
     assert quiet.shortcuts == ()  # the model reads what the owner meant; no fixed phrasings
     assert quiet.run({}).quiet
     assert chat.get("stay_quiet") is None
+
+
+@pytest.mark.parametrize("channel", ["voice", "chat"])
+def test_both_channels_offer_thinking_harder_up_to_the_ceiling(
+    tmp_path: Path, channel: Channel
+) -> None:
+    config = Config()
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+
+    registry = channel_registry(
+        config, spotify.operations(), channel_limits(config, channel), channel
+    )
+
+    think = registry.get(THINK_HARDER)
+    assert think is not None
+    assert think.shortcuts == ()  # the model decides when a request needs it
+    assert not think.side_effect
+    assert think.parameters["properties"]["effort"]["enum"] == ["low", "medium", "high"]
+    assert think.run({"effort": "medium"}).effort == "medium"
+
+
+@pytest.mark.parametrize(
+    ("thinking", "ceiling", "offered"),
+    [
+        ("none", "none", None),
+        ("medium", "medium", None),
+        ("low", "medium", ["medium"]),
+        ("medium", "high", ["high"]),
+    ],
+)
+def test_thinking_harder_is_offered_only_above_where_thinking_starts(
+    tmp_path: Path, thinking: str, ceiling: str, offered: list[str] | None
+) -> None:
+    config = Config.model_validate({"agent": {"thinking": thinking, "thinking_max": ceiling}})
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+
+    registry = channel_registry(
+        config, spotify.operations(), channel_limits(config, "voice"), "voice"
+    )
+
+    think = registry.get("think_harder")
+    if offered is None:
+        assert think is None
+    else:
+        assert think is not None
+        assert think.parameters["properties"]["effort"]["enum"] == offered
 
 
 def test_outside_text_read_in_the_request_cannot_silence_the_reply() -> None:

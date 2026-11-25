@@ -313,6 +313,12 @@ def _simple(entry: dict[str, object]) -> _Line | None:
         "memory_cleared": ("detail", "the conversation was cleared", True, ""),
         "reply_limit": ("detail", "the reply reached its length limit", True, ""),
         "result_cleared": ("detail", "cleared an earlier result to make room", True, ""),
+        "thinking_raised": (
+            "detail",
+            f"thinking harder: {entry.get('effort', '?')} effort for the rest of the request",
+            True,
+            "",
+        ),
         "spoken_before_tool_call": ("detail", "spoke before a tool call", True, ""),
         "control": (
             "note",
@@ -425,6 +431,7 @@ _LABELS = {
     "read_skill": "Reading its notes",
     "os_skill": "Reading Omarchy's guide",
     "no_action": "Writing",
+    "think_harder": "Thinking harder",
 }
 
 
