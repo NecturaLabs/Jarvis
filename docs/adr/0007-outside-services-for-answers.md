@@ -35,7 +35,7 @@ What leaves the PC, and to whom:
 - **Open-Meteo** gets the home coordinates (or the home place name, looked up once per run) and any
   place the owner names.
 - **Arctic Shift** gets the ids of the Reddit threads a search found.
-- **Web pages**: Jarvis opens only a page a search in the same session returned, or (added 2026-11-26, #45)
+- **Web pages**: Jarvis opens only a page a search in the same session returned, or (added 2026-11-25, #45)
   an address the owner wrote in their own words of the request, exactly as written, through a client that
   reaches only public addresses on ports 80 and 443, checked at every connection and every redirect
   (`web/guard.py`).

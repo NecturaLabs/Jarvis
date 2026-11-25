@@ -86,7 +86,7 @@ raise to `low` costs no full read (`high` stays at the start). Jarvis passes it 
 ([configuration](configuration.md#strata-how-the-jarvis-strata-service-runs-the-model)). It is not the default: whether the model follows an
 effort written there as well as at the start is not measured. Measuring it means running the 27 requests below
 with `think_harder` raises at `"end"` against `"start"`, on a Strata that serves only that run; not run as of
-2026-11-26.
+2026-11-25.
 
 Measured on 2026-11-23, with a game running, through Jarvis's own agent, prompt and tool schemas (27
 spoken requests: Spotify, time and weather, sums, PC state, files, programs, reminders, research,

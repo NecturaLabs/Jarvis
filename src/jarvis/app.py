@@ -355,7 +355,7 @@ def channel_limits(config: Config, channel: Channel) -> Limits:
     """Return the limits of a channel: the chat's own, or the voice service's.
 
     Both remember a reply that drew on outside text, as data, so a follow-up ("what was the
-    second one?") has it and an action the model then chooses needs a yes (#44, 2026-11-26).
+    second one?") has it and an action the model then chooses needs a yes (#44, 2026-11-25).
     """
     section = config.chat if channel == "chat" else config.agent
     return Limits.of(section, config.strata.context, remember_outside=True)
