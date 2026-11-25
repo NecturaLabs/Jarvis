@@ -8,6 +8,24 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- The chat keeps every conversation in an archive (`~/.local/state/jarvis/chat-archive/`, 0600, the newest
+  `chat.archive_keep` = 50) with its full log of requests, steps, results and replies. `/resume` lists them and
+  `/resume 2` continues one, with what came from outside text still treated as data; `/rename` names the
+  current one, and `/forget all` deletes the archive.
+- `chat.response_format` says how the chat's replies are written: `concise` (the default), `normal` or
+  `verbose`. `/format verbose` and `/config` change it from the next request on; the voice keeps its own style.
+- The chat shows calls of one tool in a row as one step: "Write file "…/game.js" · 10 calls" with the newest
+  result, instead of a row for each. Every result is listed with every detail shown (ctrl+o); a failure, or a
+  call that asks first, still gets its own row. A step names what it works on (the file, page or search), not
+  its first argument.
+- `/effort` in the chat shows how hard the model thinks before it answers, and `/effort high` (or `none`,
+  `low`, `medium`) sets it from the next request on, saved as `chat.thinking`. Each chat setting it or
+  `/config` saves is now audited, and the chat's activity feed shows setting and tool changes.
+- The chat's `/config` is a settings screen: sections (Chat, Voice, Listening, Safety, Tools), every value a
+  setting takes with the one in force lit, when a change applies, and a line on what it does; ← and → step a
+  value. Acting without asking and taking requests from PC audio turn on only after a second Enter, once the
+  row says what that means, and are marked while they are on. The Tools list shows each tool's setting in
+  colour, how it ships when changed, and what it does.
 - `memory_detail` in `[agent]` and `[chat]` says what later requests keep of one: `condensed` (the request, the
   reply, what was done and what was looked up) or `full` (also its tool calls and their results). The chat keeps
   `full` by default, so a follow-up has the pages, files and outputs a request read instead of looking them up
@@ -126,6 +144,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 - A request the model answered while the conversation held outside text now keeps that mark itself: what the
   model wrote then may repeat that text, so actions still need a yes once the turn it came from is forgotten.
+- A voice-service restart that fails after `/config` is now shown in the chat, saying the old settings still
+  hold; it went to a hidden error stream before. A setting is audited only once it is saved, and acting without
+  asking turned on from the chat is recorded as `consent_changed`, as `jarvis consent` records it.
 - A tool call's arguments now count toward the context: a long file being written was counted as almost nothing,
   so the check that clears a long request's oldest results to fit the window, and the remembered conversation's
   size, came out too low.

@@ -3747,6 +3747,19 @@ def test_words_the_owner_adds_while_it_works_are_remembered_with_the_request() -
     assert any("will it rain" in r and "and the weekend" in r for r in remembered)
 
 
+def test_the_thinking_effort_can_change_between_requests() -> None:
+    model = ScriptedModel([_say("One."), _say("Two."), _say("Three.")])
+    agent, _ = _agent(model, [])
+
+    agent.handle("one", NO_CONFIRM)
+    agent.set_thinking(ChatConfig(thinking="medium", thinking_tokens=300))
+    agent.handle("two", NO_CONFIRM)
+    agent.set_thinking(ChatConfig(thinking="none"))
+    agent.handle("three", NO_CONFIRM)
+
+    assert model.thinking == [None, Thinking("medium", 300), None]
+
+
 # --- how much of a request later requests keep (memory_detail) ---------------------------------
 
 FULL = Limits(memory_detail="full")
@@ -3977,3 +3990,58 @@ def test_condensing_leaves_room_so_it_is_not_redone_at_every_request() -> None:
 
     # Leaving out one request's work would fit; down to three quarters, two go.
     assert [bool(turn.work) for turn in agent.memory.turns] == [False, False, True]
+
+
+def test_words_added_while_it_works_are_kept_once_when_its_work_is_kept() -> None:
+    given: list[str] = []
+    counter = Counter()
+
+    def steer() -> list[str]:
+        if counter.runs and not given:
+            given.append("and the weekend")
+            return list(given)
+        return []
+
+    replies = [_call("search", {"q": "weather"}), _say("Rain."), _say("Same as before.")]
+    model = ScriptedModel(replies)
+    agent, _ = _agent(
+        model, [counter.op("search", side_effect=False)], limits=Limits(memory_detail="full")
+    )
+
+    agent.handle("will it rain", Hooks(confirm=lambda _q: False, steer=steer))
+    agent.handle("do that again", NO_CONFIRM)
+
+    remembered = " ".join(str(m.get("content", "")) for m in model.seen[2][1:-1])
+    assert remembered.count("and the weekend") == 1
+
+
+def test_the_system_prompt_can_change_between_requests() -> None:
+    model = ScriptedModel([_say("One."), _say("Two.")])
+    agent, _ = _agent(model, [])
+
+    agent.handle("one", NO_CONFIRM)
+    agent.set_system("write at length")
+    agent.handle("two", NO_CONFIRM)
+
+    assert model.seen[0][0]["content"] == "system"
+    assert model.seen[1][0]["content"] == "write at length"
+
+
+def test_a_resumed_conversation_keeps_actions_behind_a_yes(tmp_path: Path) -> None:
+    saved = tmp_path / "earlier.json"
+    earlier, _ = _agent(
+        ScriptedModel([_call("search"), _say("Found it.")]),
+        [Counter().op("search", origin=Origin.WEB, side_effect=False)],
+    )
+    earlier.handle("search", NO_CONFIRM)
+    earlier.memory.save(saved)
+
+    asked: list[str] = []
+    counter = Counter()
+    model = ScriptedModel([_call("play"), _say("Playing.")])
+    agent, audit = _agent(model, [counter.op("play")])
+    assert agent.resume(saved)
+    agent.handle("play it", Hooks(confirm=lambda q: asked.append(q) is not None))
+
+    assert asked  # what the resumed conversation read may have steered it
+    assert "memory_resumed" in _events(audit)
