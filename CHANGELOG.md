@@ -98,6 +98,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `pc_media` binds a command to the players it is for before any question, and the question names them
+  ("pause firefox and spotify"); a skip not answered in time is reported as uncertain, so it is not sent twice;
+  a player that closes while it is listed is left out, and a player's own error words are not passed on.
+- Turning the PC's volume up when another program set it above 100 percent no longer lowers it.
+- A Spotify seek past the end of the track asks to jump to its end, at the time it really goes to; a playlist
+  whose id is not a Spotify id is not offered.
 - Look-ups approved in one message no longer run when Jarvis is stopped while a later one of them is asked about.
 - A request that used up its tool calls or its time now still says the answer the model gave on its last step,
   instead of "That needed too many steps".

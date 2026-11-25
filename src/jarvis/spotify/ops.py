@@ -179,6 +179,7 @@ _NAME_LIKENESS = 0.7  # how alike a said device or playlist name must be to a re
 _LEADING_ARTICLE = re.compile(r"^(?:the|my|our)\s+", re.IGNORECASE)
 MAX_SEEK_S = 6 * 3600  # the longest track or episode a position may point into
 _MS = 1000
+_PLAYLIST_ID = re.compile(r"[A-Za-z0-9]{1,64}")  # Spotify's base-62 ids
 _UP_NEXT = 5  # queued songs named by now_playing(more=true)
 
 
@@ -199,6 +200,8 @@ def _clock(seconds: int) -> str:
 
 
 def _seek_question(args: dict[str, Any]) -> str:
+    if args.get("to_end"):
+        return f"jump to the end of this track, at {_clock(int(args['position_ms']) // _MS)}"
     if "by_s" in args:
         by = int(args["by_s"])
         return f"skip ahead {by} seconds" if by >= 0 else f"go back {-by} seconds"
@@ -895,7 +898,10 @@ class SpotifyOps:
         duration = obj(state.get("item")).get("duration_ms")
         last = duration - _MS if isinstance(duration, int) and duration > _MS else None
         position = max(0, wanted if last is None else min(wanted, last))
-        return {**args, "position_ms": position}
+        prepared = {**args, "position_ms": position}
+        if last is not None and wanted > last:
+            prepared["to_end"] = True  # the question says where it really goes
+        return prepared
 
     def _seek(self, args: dict[str, Any]) -> Result:
         """Jump to the position `prepare` bound in what is playing."""
@@ -956,7 +962,9 @@ class SpotifyOps:
         mine = [
             p
             for p in self._api.my_playlists()
-            if p.get("collaborative") is True or obj(p.get("owner")).get("id") == me
+            if (p.get("collaborative") is True or obj(p.get("owner")).get("id") == me)
+            and isinstance(p.get("id"), str)
+            and _PLAYLIST_ID.fullmatch(p["id"])  # it goes into the request's path
         ]
         found = _named(said, mine, lambda p: str(p.get("name", "")))
         if found is None:

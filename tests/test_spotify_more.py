@@ -48,8 +48,8 @@ def _positions(fake: FakeSpotify) -> list[str]:
         ({"to_s": 95}, "95000", "jump to 1:35 in this track"),
         ({"by_s": 30}, "90000", "skip ahead 30 seconds"),
         ({"by_s": -90}, "0", "go back 90 seconds"),
-        ({"by_s": 600}, "199000", "skip ahead 600 seconds"),
-        ({"to_s": 900}, "199000", "jump to 15:00 in this track"),
+        ({"by_s": 600}, "199000", "jump to the end of this track, at 3:19"),
+        ({"to_s": 900}, "199000", "jump to the end of this track, at 3:19"),
     ],
 )
 def test_seeking_is_bound_to_its_position_before_any_question(
@@ -235,3 +235,56 @@ def test_a_refused_change_is_said_plainly(tmp_path: Path) -> None:
 
     with pytest.raises(Exception, match="nope"):
         _run(library, {"change": "add_to_playlist", "playlist": "road trip"})
+
+
+# --- a yes is for what was bound ---------------------------------------------------------------
+
+
+def test_a_confirmed_seek_goes_where_it_was_bound_though_the_track_moved_on(tmp_path: Path) -> None:
+    fake = FakeSpotify(state=_state(progress_s=60))
+    seek = find_op(build_ops(fake, tmp_path), "spotify_seek")
+    assert seek.prepare is not None
+    bound = seek.prepare(validate_args(seek, {"by_s": 30}))
+    fake.state = _state(progress_s=120)  # the track played on while the owner was asked
+
+    seek.run(bound)
+
+    assert _positions(fake) == ["90000"]
+
+
+def test_a_confirmed_move_goes_to_the_device_it_was_bound_to(tmp_path: Path) -> None:
+    fake = FakeSpotify(state=playing_state(), devices=[dict(PC), dict(KITCHEN)])
+    resume = find_op(build_ops(fake, tmp_path), "spotify_resume")
+    assert resume.prepare is not None
+    bound = resume.prepare(validate_args(resume, {"device": "kitchen speaker"}))
+    renamed = {**KITCHEN, "id": "d3"}  # another device now answers to the name
+    fake.devices = [dict(PC), renamed]
+
+    resume.run(bound)
+
+    assert fake.transfers == [{"device_ids": ["d2"], "play": True}]
+
+
+def test_a_confirmed_unlike_removes_the_song_it_was_bound_to(tmp_path: Path) -> None:
+    fake = FakeSpotify(state=playing_state())
+    library = find_op(build_ops(fake, tmp_path), "spotify_library")
+    assert library.prepare is not None
+    bound = library.prepare(validate_args(library, {"change": "unlike"}))
+    next_song = {**LOW_TIDE, "uri": "spotify:track:other", "name": "Other"}
+    fake.state = {**playing_state(), "item": next_song}  # the next song started meanwhile
+
+    library.run(bound)
+
+    (request,) = fake.calls("DELETE", "/me/library")
+    assert request.url.params["uris"] == "spotify:track:lowtide"
+
+
+@pytest.mark.parametrize("playlist_id", [None, "../me/player", ""])
+def test_a_playlist_with_an_odd_id_is_not_offered(tmp_path: Path, playlist_id: str | None) -> None:
+    odd = {**MINE, "id": playlist_id}
+    fake = FakeSpotify(state=playing_state(), playlists=[odd])
+    library = _with_scopes(fake, tmp_path, " ".join(SCOPES))
+
+    with pytest.raises(OperationError, match="None of your playlists"):
+        _run(library, {"change": "add_to_playlist", "playlist": "road trip"})
+    assert not [r for r in fake.requests if r.method == "POST"]

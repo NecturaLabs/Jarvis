@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from jarvis.operations import Operation, OperationError, Result
+from jarvis.operations import Operation, OperationError, Result, UncertainOutcomeError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -44,38 +44,76 @@ class MediaOps:
         """
         try:
             names = [line.strip() for line in self._playerctl(["-l"]).splitlines() if line.strip()]
+        except UncertainOutcomeError as exc:
+            msg = "the media players did not answer in time"
+            raise OperationError(msg) from exc
         except OperationError as exc:
             if _NO_PLAYERS in str(exc):
                 return []
             raise
-        statuses = [self._playerctl(["-p", name, "status"]).strip() for name in names]
-        # The status is the player's own word: only MPRIS's three are kept.
-        return [
-            (name, status if status in _STATUSES else "Unknown")
-            for name, status in zip(names, statuses, strict=True)
+        players: list[tuple[str, str]] = []
+        for name in names:
+            try:
+                status = self._playerctl(["-p", name, "status"]).strip()
+            except OperationError, UncertainOutcomeError:
+                continue  # closed since it was listed, or not answering: left out
+            # The status is the player's own word: only MPRIS's three are kept.
+            players.append((name, status if status in _STATUSES else "Unknown"))
+        return players
+
+    def _targets(self, action: str, *, everything: bool) -> list[str]:
+        """Return the players `action` is for: the first that fits, or every playing one."""
+        mine = [
+            (n, s) for n, s in self._players() if everything or n.split(".", 1)[0] not in _OWN_TOOLS
         ]
+        wanted = "Paused" if action == "play" else "Playing"
+        targets = [n for n, s in mine if s == wanted]
+        return targets if action == "pause" and everything else targets[:1]
+
+    def prepare(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Bind a command to the players it is for, before any question.
+
+        A yes is then for those players, named in the question, not for whatever plays when it
+        runs.
+        """
+        if args["action"] == "status":
+            return args
+        return {
+            **args,
+            "players": self._targets(args["action"], everything=bool(args.get("everything"))),
+        }
 
     def run(self, args: dict[str, Any]) -> Result:
-        """Say what plays, or play, pause or skip, and say the outcome."""
+        """Say what plays, or play, pause or skip, and say the outcome.
+
+        Raises:
+            OperationError: a player refused, or did not answer a play or pause in time.
+            UncertainOutcomeError: a skip was sent and not answered in time, so it may have run.
+        """
         action = str(args["action"])
-        players = self._players()
         if action == "status":
+            players = self._players()
             if not players:
                 said = "No media player is open."
             else:
                 said = "; ".join(f"{_said(n)} is {s.lower()}" for n, s in players) + "."
             return Result(said, spoken=said)
-        everything = bool(args.get("everything"))
-        mine = [(n, s) for n, s in players if everything or n.split(".", 1)[0] not in _OWN_TOOLS]
-        wanted = "Paused" if action == "play" else "Playing"
-        targets = [n for n, s in mine if s == wanted]
-        if action != "pause" or not everything:
-            targets = targets[:1]
+        prepared = args if "players" in args else self.prepare(args)
+        targets = [str(name) for name in prepared["players"]]
         if not targets:
             said = "Nothing is paused." if action == "play" else "Nothing is playing."
             return Result(said, spoken=said)
         for name in targets:
-            self._playerctl(["-p", name, action])
+            try:
+                self._playerctl(["-p", name, action])
+            except UncertainOutcomeError:
+                if action in {"next", "previous"}:
+                    raise  # a skip may have gone through: never sent twice
+                msg = f"{_said(name)} did not answer in time"
+                raise OperationError(msg) from None
+            except OperationError:
+                msg = f"{_said(name)} refused that"  # never the player's own words
+                raise OperationError(msg) from None
         names = " and ".join(dict.fromkeys(_said(name) for name in targets))
         said = {
             "play": f"Playing {names} again.",
@@ -84,6 +122,21 @@ class MediaOps:
             "previous": f"Went back in {names}.",
         }[action]
         return Result(said, spoken=said, acted=True)
+
+    @staticmethod
+    def summary(args: dict[str, Any]) -> str:
+        """The words of a question about the call, naming the players it is bound to."""
+        action = str(args["action"])
+        if action == "status":
+            return "say what plays"
+        bound = [str(name) for name in args.get("players", [])]
+        names = " and ".join(dict.fromkeys(_said(name) for name in bound)) or "no player"
+        return {
+            "play": f"play {names} again",
+            "pause": f"pause {names}",
+            "next": f"skip to the next track in {names}",
+            "previous": f"go back a track in {names}",
+        }[action]
 
     def operations(self) -> list[Operation]:
         """Return `pc_media`."""
@@ -102,8 +155,7 @@ class MediaOps:
                     "additionalProperties": False,
                 },
                 self.run,
-                spoken_summary=lambda a: (
-                    "say what plays" if a["action"] == "status" else f"{a['action']} the media"
-                ),
+                spoken_summary=self.summary,
+                prepare=self.prepare,
             )
         ]

@@ -139,3 +139,13 @@ def test_an_answer_wpctl_does_not_give_normally_is_refused() -> None:
 def test_the_operation_fits_the_registry() -> None:
     registry = Registry(VolumeOps(FakeWpctl()).operations())
     assert [schema["function"]["name"] for schema in registry.tool_schemas()] == ["pc_volume"]
+
+
+def test_turning_up_a_volume_above_the_usual_top_keeps_it_rather_than_lowering_it() -> None:
+    _, prepared = _run(FakeWpctl("Volume: 1.50\n"), {"delta": 10})
+    assert prepared["target"] == 150
+
+
+def test_turning_down_a_volume_above_the_usual_top_lowers_it_by_the_step() -> None:
+    _, prepared = _run(FakeWpctl("Volume: 1.50\n"), {"delta": -10})
+    assert prepared["target"] == 140

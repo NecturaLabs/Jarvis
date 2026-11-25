@@ -2179,6 +2179,18 @@ def test_wpctl_runs_with_a_fixed_argument_list_and_returns_its_output(
     assert seen == [["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"]]
 
 
+def test_a_media_command_not_answered_in_time_says_it_may_have_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd, 5.0)
+
+    monkeypatch.setattr(audio_module.subprocess, "run", run)
+
+    with pytest.raises(audio_module.ControlTimeoutError):
+        audio_module.playerctl(["-p", "vlc", "next"])
+
+
 @pytest.mark.parametrize(
     "outcome",
     [OSError("no wpctl"), subprocess.TimeoutExpired("wpctl", 5.0), "refused"],

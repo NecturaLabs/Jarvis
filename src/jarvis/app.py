@@ -10,7 +10,14 @@ from jarvis.about import AboutOps
 from jarvis.agent import Agent, Limits
 from jarvis.audit import AuditLog
 from jarvis.model import StrataModel
-from jarvis.operations import Operation, OperationError, Registry, Result, current_request
+from jarvis.operations import (
+    Operation,
+    OperationError,
+    Registry,
+    Result,
+    UncertainOutcomeError,
+    current_request,
+)
 from jarvis.paths import audit_file, spotify_token_file, strata_key_file  # re-exported for callers
 from jarvis.pc.apps import AppOps
 from jarvis.pc.files import Boundary, FileOps
@@ -298,12 +305,15 @@ def _playerctl(args: Sequence[str]) -> str:
     """Run `playerctl` for `pc_media`; a failure is said as an OperationError.
 
     Raises:
+        UncertainOutcomeError: playerctl did not answer in time, so the command may have run.
         OperationError: no player answered, or playerctl is missing.
     """
     from jarvis import audio  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which a typed request may never need
 
     try:
         return audio.playerctl(args)
+    except audio.ControlTimeoutError as exc:
+        raise UncertainOutcomeError(str(exc)) from exc
     except audio.AudioError as exc:
         raise OperationError(str(exc)) from exc
 

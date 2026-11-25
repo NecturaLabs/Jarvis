@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from jarvis import __version__, control, osskills, paths
+from jarvis import app as app_module
 from jarvis.agent import THINK_HARDER, Agent, Hooks
 from jarvis.app import (
     MAX_HINT_CHARS,
@@ -39,7 +40,14 @@ from jarvis.config import (
     SpotifyConfig,
     StrataConfig,
 )
-from jarvis.operations import Operation, OperationError, Registry, Result, request_scope
+from jarvis.operations import (
+    Operation,
+    OperationError,
+    Registry,
+    Result,
+    UncertainOutcomeError,
+    request_scope,
+)
 from jarvis.policy import Origin
 from jarvis.secretfile import ensure_api_key
 from jarvis.spotify.api import SpotifyApi
@@ -658,3 +666,18 @@ def test_a_reply_from_outside_text_is_remembered_as_data_and_a_follow_up_action_
     assert "steel kettle" in remembered
     assert len(asked) == 1
     assert runs == ["lookup"]
+
+
+def test_a_media_command_that_timed_out_reaches_the_agent_as_uncertain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jarvis import audio  # ruff: ignore[import-outside-top-level] - as app.py loads it
+
+    def timed_out(_args: object) -> str:
+        msg = "the media players did not answer in time"
+        raise audio.ControlTimeoutError(msg)
+
+    monkeypatch.setattr(audio, "playerctl", timed_out)
+
+    with pytest.raises(UncertainOutcomeError):
+        app_module._playerctl(["-p", "vlc", "next"])  # pyright: ignore[reportPrivateUsage] - the wrapper itself
