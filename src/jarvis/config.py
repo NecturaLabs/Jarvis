@@ -22,6 +22,8 @@ from jarvis.files import write_atomic
 
 SCHEMA_VERSION = 1
 
+MIN_SPEECH_SPEED = 0.5  # how slow Jarvis may speak: half the voice's own pace
+MAX_SPEECH_SPEED = 3.0  # how fast: three times it
 OpClassName = Literal["safe", "confirm", "strong", "deny"]
 
 type Effort = Literal["none", "low", "medium", "high"]
@@ -303,7 +305,7 @@ class AudioConfig(_Section):
     azure_keyword_model: str = ""  # the Azure custom keyword `.table` file
     azure_python: str = ""  # the Python with the Speech SDK; empty: <data_dir>/azure-wake/venv
     voice: str = "kokoro:bm_george"
-    speech_speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    speech_speed: float = Field(default=1.0, ge=MIN_SPEECH_SPEED, le=MAX_SPEECH_SPEED)
     # Rewrite espeak's phonemes into the symbols Kokoro was trained on; off until heard to help.
     kokoro_phoneme_map: bool = False
     transcribe_engine: str = ""

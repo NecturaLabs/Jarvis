@@ -8,6 +8,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `jarvis speed` shows how fast Jarvis speaks and `jarvis speed 1.5` sets it; `audio.speech_speed` now goes up to 3.0.
 - In `jarvis chat`, words typed while a request runs steer it: they join the request before the model's next
   call, instead of being refused with "esc stops it". `chat.while_working = "queue"` (or `/config`) runs them as
   the next request instead.

@@ -2204,3 +2204,37 @@ def test_tools_refuses_what_it_cannot_set(
     assert main(argv) == 2
     assert said in capsys.readouterr().err
     assert config.load().boundaries.classes == {}
+
+
+def test_speed_shows_and_sets_how_fast_jarvis_speaks(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config.save(config.Config())
+    restarts: list[bool] = []
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: restarts.append(True))
+
+    assert main(["speed"]) == 0
+    assert capsys.readouterr().out.strip() == "speech speed: 1"
+    assert main(["speed", "2.5"]) == 0
+    assert config.load().audio.speech_speed == pytest.approx(2.5)
+    assert capsys.readouterr().out.strip() == "speech speed: 2.5"
+    assert restarts == [True]
+
+
+@pytest.mark.parametrize("value", ["3.5", "0.2", "fast", "nan"])
+def test_speed_refuses_a_value_outside_its_range(
+    capsys: pytest.CaptureFixture[str], value: str
+) -> None:
+    config.save(config.Config())
+
+    with pytest.raises(SystemExit):
+        main(["speed", value])
+
+    assert "a speed from 0.5 to 3" in capsys.readouterr().err
+    assert config.load().audio.speech_speed == pytest.approx(1.0)
+
+
+def test_the_config_takes_a_speed_up_to_three() -> None:
+    assert config.AudioConfig(speech_speed=3.0).speech_speed == pytest.approx(3.0)
+    with pytest.raises(ValueError, match="less than or equal to 3"):
+        config.AudioConfig(speech_speed=3.1)

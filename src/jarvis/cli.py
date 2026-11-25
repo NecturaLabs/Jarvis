@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -184,6 +185,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("wake", "show or switch the wake word model (livekit or azure)"),
             ("consent", "show or set whether Jarvis asks before acting"),
             ("tools", "list the tools, or switch one on, off or to asking first"),
+            ("speed", "show or set how fast Jarvis speaks (1.0 is normal)"),
             ("pc-audio", "let Jarvis take requests from PC audio (Discord by default)"),
         ),
     ),
@@ -408,6 +410,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["bypass", "ask"],
         help="ask: ask for a yes before a risky action or one after outside text; bypass: act "
         "without asking (a strong action still waits for the confirm key)",
+    )
+    made["speed"].add_argument(
+        "value",
+        nargs="?",
+        type=_speech_speed,
+        help=f"{SPEEDS}; 1 is the voice's own pace",
     )
     tool = made["tools"]
     tool.add_argument("name", nargs="?", help="the tool, as `jarvis tools` lists it")
@@ -1541,6 +1549,39 @@ def cmd_consent(args: argparse.Namespace) -> int:
     return 0
 
 
+SPEEDS = f"{config.MIN_SPEECH_SPEED:g} to {config.MAX_SPEECH_SPEED:g}"
+
+
+def _speech_speed(text: str) -> float:
+    """Return a speaking speed from the command line.
+
+    Raises:
+        ArgumentTypeError: it is no number in the range, and says what it takes.
+    """
+    try:
+        value = float(text)
+    except ValueError:
+        value = math.nan
+    if not config.MIN_SPEECH_SPEED <= value <= config.MAX_SPEECH_SPEED:  # NaN fails it too
+        msg = (
+            f"a speed from {config.MIN_SPEECH_SPEED:g} to {config.MAX_SPEECH_SPEED:g}, such as 1.25"
+        )
+        raise argparse.ArgumentTypeError(msg)
+    return value
+
+
+def cmd_speed(args: argparse.Namespace) -> int:
+    """Show or set how fast Jarvis speaks; a change restarts the voice service."""
+    cfg = _load()
+    if args.value is not None:
+        audio = cfg.audio.model_copy(update={"speech_speed": args.value})
+        cfg = cfg.model_copy(update={"audio": audio})
+        config.save(cfg)
+        _restart_if_running()
+    print(f"speech speed: {cfg.audio.speech_speed:g}")
+    return 0
+
+
 def _tool_settings(cfg: config.Config) -> list[ToolSetting]:
     return tool_settings(cfg, spotify_operations(cfg))
 
@@ -1880,6 +1921,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "pc-audio": cmd_pc_audio,
     "consent": cmd_consent,
     "tools": cmd_tools,
+    "speed": cmd_speed,
     "wake": cmd_wake,
     "speech-test": cmd_speech_test,
 }
