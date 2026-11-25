@@ -198,6 +198,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- Speech keeps a short memory for quick commands: `agent.memory_idle_s` is now `300.0` (was `1800.0`), so the
+  conversation is forgotten after five idle minutes, and `agent.memory_tokens` is now `3000` (was `6000`). A
+  scheduled request shares speech's conversation and limits; `jarvis ask` remembers nothing between runs. The
+  chat's own memory is unchanged.
 - The chat's default `memory_tokens` is now 7000 (was 7800): the new tools' and arguments' schemas take that room
   in the default 24,576-token window. A larger `strata.context` leaves room for more.
 
