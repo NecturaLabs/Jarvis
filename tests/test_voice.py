@@ -539,6 +539,49 @@ def test_a_click_after_the_wake_word_in_pc_audio_is_not_a_request() -> None:
     assert agent.calls == []
 
 
+@pytest.mark.parametrize(
+    ("after_wake", "why"),
+    [
+        ([SILENCE] * 20, "no speech"),
+        ([SPEECH, *[SILENCE] * 5], "0.08 s of speech is too little"),
+    ],
+)
+def test_a_pc_wake_without_a_request_logs_why_it_was_dropped(
+    caplog: pytest.LogCaptureFixture, after_wake: list[NDArray[np.int16]], why: str
+) -> None:
+    caplog.set_level(logging.INFO, logger="jarvis.voice")
+    agent = Agent()
+    pc = PcAudio(SILENCE, WAKE, *after_wake, *[SILENCE] * 3)
+    mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
+
+    _run(_loop(agent, mic, Speaker(), pc=pc))
+
+    assert agent.calls == []
+    assert f"dropped a PC audio request: {why}" in caplog.messages
+
+
+def test_a_pc_wake_while_the_loop_is_busy_logs_why_it_was_ignored(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="jarvis.voice")
+    pc_done = threading.Event()
+    holder: list[VoiceLoop] = []
+
+    agent = Agent()
+    pc = PcAudio(
+        until(lambda: bool(holder) and holder[0].state is State.CAPTURE),
+        WAKE,
+        pc_done.set,
+    )
+    mic = Mic(WAKE, until(pc_done.is_set), SPEECH, SPEECH, *[SILENCE] * 5)
+    loop = _loop(agent, mic, Speaker(), pc=pc)
+    holder.append(loop)
+
+    _run(loop)
+
+    assert "ignored a wake word in PC audio: the loop was busy (capture)" in caplog.messages
+
+
 def test_a_failing_request_is_apologised_for_and_the_loop_keeps_listening() -> None:
     def reply(_text: str, _hooks: Hooks, _origin: Origin) -> str:
         if len(agent.calls) == 1:

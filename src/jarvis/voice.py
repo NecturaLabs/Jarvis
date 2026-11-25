@@ -1128,7 +1128,11 @@ class VoiceLoop:
             wake_at = self._clock()
             self._pc_wake_at = wake_at
             log.info("wake word in PC audio")
-            if state is not State.IDLE or self._too_soon(wake_at):
+            if state is not State.IDLE:
+                log.info("ignored a wake word in PC audio: the loop was busy (%s)", state.value)
+                pc.wake.reset()
+                continue
+            if self._too_soon(wake_at):
                 pc.wake.reset()
                 continue
             self._capture_pc(pc, frames, wake_at)
@@ -1171,16 +1175,19 @@ class VoiceLoop:
             # Ended by itself. A capture the tap cut short keeps the wake model as it is, so a
             # wake word still being heard on the PC is not lost (it marks the mic's request).
             pc.wake.reset()
-        if heard.samples is None or heard.speech_s < MIN_REQUEST_SPEECH_S:
-            return
         if self._requests != requests:
             log.info("dropped a PC audio request: the loop took another one meanwhile")
             return
         if self._paused():
             log.info("dropped a PC audio request: Jarvis was paused meanwhile")
             return
-        with contextlib.suppress(queue.Full):
+        if heard.samples is None or heard.speech_s < MIN_REQUEST_SPEECH_S:
+            log.info("dropped a PC audio request: %s", _no_request(heard))
+            return
+        try:
             self._pc_heard.put_nowait(_PcRequest(heard.samples, wake_at))
+        except queue.Full:
+            log.info("dropped a PC audio request: another one is still waiting")
 
     def _pc_tap(
         self, pc: PcListener, frames: Iterator[NDArray[np.int16]], requests: int
@@ -1230,6 +1237,7 @@ class VoiceLoop:
                 # A PC request heard before the pause, or queued as it came, is dropped.
                 with contextlib.suppress(queue.Empty):
                     self._pc_heard.get_nowait()
+                    log.info("dropped a PC audio request: Jarvis was paused meanwhile")
                 if should_stop():
                     return
                 log.info("resumed: listening for the wake word")
