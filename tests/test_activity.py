@@ -448,3 +448,11 @@ def test_due_and_missed_jobs_show_in_the_window(
 
     assert shown is not None
     assert (shown.kind, shown.text) == (kind, text)
+
+
+def test_a_calls_gist_is_its_target_when_it_has_one() -> None:
+    args = {"content": {"sha256": "ab", "chars": 9}, "mode": "append", "path": "/srv/x/game.js"}
+    shown = describe({"event": "tool_call", "op": "write_file", "args": args, "verdict": "run"})
+
+    assert shown is not None
+    assert shown.note == '"/srv/x/game.js"'

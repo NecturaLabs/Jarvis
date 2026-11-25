@@ -70,8 +70,12 @@ class Row:
 
     @property
     def dangerous(self) -> bool:
-        """Whether a risky setting is on now."""
-        return bool(self.risky) and self.value is True
+        """Whether a risky setting is on now: at any value but its first, which is off."""
+        return bool(self.risky) and bool(self.choices) and self.value != self.choices[0]
+
+    def turns_on(self, value: object) -> bool:
+        """Whether moving to `value` turns a risky setting on from off."""
+        return bool(self.risky) and not self.dangerous and value != self.choices[0]
 
     def step(self, by: int) -> object:
         """Return the value `by` places on from the one in force, round the choices."""

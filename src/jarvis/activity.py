@@ -211,17 +211,29 @@ def _request(entry: dict[str, object]) -> _Line:
 MAX_ARGUMENT_CHARS = 60
 
 
-def _arguments(value: object) -> str:
-    """Return the gist of a call's arguments: its first words, as `"words"`."""
+# Argument names that say what a call works on; the first one a call has is its target.
+_TARGET_KEYS = ("path", "url", "query", "q", "name", "post_id", "location")
+
+
+def call_target(value: object) -> str:
+    """Return what a call works on: a path, address or query, else its first words, else ""."""
     if not isinstance(value, dict):
         return ""
-    for item in cast("dict[object, object]", value).values():
+    args = cast("dict[object, object]", value)
+    named = [args.get(key) for key in _TARGET_KEYS]
+    for item in [*named, *args.values()]:
         if isinstance(item, str) and item.strip():
             words = _plain(item)
             if len(words) > MAX_ARGUMENT_CHARS:
                 words = words[: MAX_ARGUMENT_CHARS - 1] + "…"
-            return f'"{words}"'
+            return words
     return ""
+
+
+def _arguments(value: object) -> str:
+    """Return the gist of a call's arguments: what it works on, as `"words"`."""
+    target = call_target(value)
+    return f'"{target}"' if target else ""
 
 
 def _tool_call(entry: dict[str, object]) -> _Line:

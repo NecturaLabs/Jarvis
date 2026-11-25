@@ -31,10 +31,12 @@ from jarvis.app import (
     echoes_hint,
     spotify_operations,
     strata_model,
+    system_prompt,
     voice_busy,
 )
 from jarvis.audit import AuditLog
 from jarvis.chat import clipboard
+from jarvis.chat.archive import ChatArchive
 from jarvis.chat.history import InputHistory
 from jarvis.confirmkey import ConfirmKey
 from jarvis.files import write_atomic
@@ -609,8 +611,10 @@ def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
         ("mode", f"{mode} (/model switches)"),
         ("model", f"{services.model_name(served)}, {served.strata.context:,} tokens of context"),
         ("replies", f"up to {chat.reply_tokens:,} tokens, {chat.max_steps} model calls"),
+        ("memory", f"{chat.memory_detail}, up to {chat.memory_tokens:,} tokens"),
         ("config", str(paths.config_file())),
         ("conversation", str(chat_memory_file())),
+        ("archive", f"{chat_archive_dir()}, up to {cfg.chat.archive_keep} conversations"),
         ("audit log", str(paths.audit_file())),
     ]
 
@@ -647,6 +651,16 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "a video. Whatever they ask to be done always needs your yes.",
         "Jarvis will take requests from voices in the PC's audio, such as a call or a video; "
         "each of their actions still needs your yes.",
+    ),
+    _Shared(
+        "audio",
+        "pc_audio_recall_s",
+        "Recall PC audio (seconds)",
+        (0, 10, 30, 60),
+        "Listening",
+        "Keep the last seconds of PC audio in memory so Jarvis can hear what was just said "
+        "(needs PC audio on); 0 keeps none.",
+        "Jarvis will keep the last seconds of the PC's audio in memory.",
     ),
     _Shared(
         "boundaries",
@@ -716,6 +730,11 @@ def _apply_from_chat() -> None:
         raise RestartError(RESTART_FAILED)
 
 
+def chat_archive_dir() -> Path:
+    """Return where the chat keeps every conversation for /resume and reading back."""
+    return paths.state_dir() / "chat-archive"
+
+
 def _save_chat_settings(chat: config.ChatConfig) -> None:
     """Write the chat's settings into the config file as it is now on disk, and audit them."""
     current = config.load()
@@ -754,6 +773,9 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         details=lambda: _chat_details(cfg),
         stats=Sampler().sample,
         save_settings=_save_chat_settings,
+        system_prompt=lambda chat: system_prompt(
+            config.load().model_copy(update={"chat": chat}), "chat"
+        ),
         tools=lambda: _tool_settings(config.load()),
         next_tool_setting=_next_tool_setting,
         model_report=lambda: model_report(cfg),
@@ -762,6 +784,9 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         set_shared=_set_shared,
         apply=_apply_from_chat,
         history=InputHistory(paths.state_dir() / "chat-history", cfg.chat.history_size),
+        archive=ChatArchive(chat_archive_dir(), cfg.chat.archive_keep)
+        if cfg.chat.archive_keep
+        else None,
         export_dir=documents if documents.is_dir() else Path.home(),
         paste=clipboard.read,
         pictures=reads_pictures(cfg),

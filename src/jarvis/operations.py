@@ -80,9 +80,9 @@ class Request:
     came into the request so far (`"memory"` for outside text it remembers). `words` are the
     owner's own words of the request: none for one heard in PC audio or handed over with outside
     text behind it, and without the pastes that count as outside data; with the words the owner
-    typed into it while it ran (`steered`). `time_left` says how many seconds the request has
-    left before its time limit (`agent.max_seconds`), for an operation that waits as long as it
-    is asked (`pc_audio_listen`).
+    typed into it while it ran (`steered`). `time_left` says how many seconds the request has left
+    before its time limit (`agent.max_seconds`), for an operation that waits as long as it is asked
+    (`pc_audio_listen`).
     """
 
     foreign: bool

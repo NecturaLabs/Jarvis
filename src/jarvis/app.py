@@ -204,8 +204,9 @@ def system_prompt(config: Config, channel: Channel = "voice", *, coding: bool = 
     """Render the shipped prompt for a channel with the owner's persona, skills and addendum.
 
     The voice prompt asks for short spoken replies; the chat prompt for written Markdown that fits
-    the chat's reply budget. In coding mode the prompt gains its part on programming work, and
-    the owner's own instructions for it (`coding.prompt`).
+    the chat's reply budget, as brief or as full as `chat.response_format` says. In coding mode
+    the prompt gains its part on programming work, and the owner's own instructions for it
+    (`coding.prompt`).
     """
     prompts = files("jarvis").joinpath("prompts")
     core = prompts.joinpath("core.md").read_text(encoding="utf-8")
@@ -220,6 +221,9 @@ def system_prompt(config: Config, channel: Channel = "voice", *, coding: bool = 
         "tone": config.persona.tone,
         "words": str(words),
         "numbers": _number_rule(config.format.thousands_separator),
+        "format": prompts.joinpath(f"chat-{config.chat.response_format}.md")
+        .read_text(encoding="utf-8")
+        .rstrip("\n"),
         "pc_audio": _pc_audio_rule(config, channel),
     }
     text = core + "\n" + style
@@ -496,9 +500,10 @@ def channel_limits(config: Config, channel: Channel) -> Limits:
 
     Both remember a reply that drew on outside text, as data, so a follow-up ("what was the
     second one?") has it and an action the model then chooses needs a yes (#44, 2026-11-25).
+    How much of a request they keep is each section's `memory_detail`.
     """
     section = config.chat if channel == "chat" else config.agent
-    return Limits.of(section, config.strata.context, remember_outside=True)
+    return Limits.of(section, config.strata.context)
 
 
 def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offers; `coding` and `listening` are keyword-only

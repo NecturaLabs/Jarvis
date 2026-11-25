@@ -27,6 +27,7 @@ from jarvis.chat.history import InputHistory
 from jarvis.chat.widgets import (
     ACCENT,
     CHEVRON,
+    Chain,
     Entry,
     PictureView,
     PointerList,
@@ -128,6 +129,14 @@ class FakeSession:
     def set_thinking(self, section: ChatConfig) -> None:
         self.thought.append(section.thinking)
 
+    systems: list[str] = field(default_factory=list[str])
+
+    def set_system(self, prompt: str) -> None:
+        self.systems.append(prompt)
+
+    def resume(self, path: Path) -> bool:
+        return self.memory.load(path)
+
 
 def _plain(renderable: object) -> str:
     console = Console(width=200, record=True, color_system=None, file=io.StringIO())
@@ -138,6 +147,8 @@ def _plain(renderable: object) -> str:
 def _words(widget: Widget) -> str:
     if isinstance(widget, Reply):
         return widget.text
+    if isinstance(widget, Chain):  # its lines, as far as the verbosity shows them
+        return "".join(_words(line) for line in widget.children if line.display)
     if isinstance(widget, Static):
         return _plain(widget.content)
     return ""
@@ -1312,6 +1323,7 @@ def test_config_shows_sections_and_what_each_setting_does_and_left_steps_back() 
         assert "Chat" in text
         assert "How much of the work the transcript shows" in text
         assert "Thinking effort" in text
+        assert "Earlier requests keep" in text
         assert not app.query_one("#stage").display  # the screen takes the transcript's place
         await pilot.press("left")  # replies, back round to everything
         await _until(pilot, lambda: bool(saved))
@@ -1329,11 +1341,131 @@ def test_thinking_effort_set_in_config_reaches_the_agent() -> None:
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
-        await pilot.press("down", "down", "down", "enter")
+        await pilot.press("down", "down", "down", "down", "enter")  # past Replies to Thinking
         await _until(pilot, lambda: bool(session.thought))
 
     _run(test, app)
     assert session.thought == ["low"]
+
+
+def _write_call(mode: str, chars: int) -> list[dict[str, object]]:
+    own: dict[str, object] = {"session": SESSION, "via": "chat"}
+    args = {"content": {"sha256": "ab", "chars": chars}, "mode": mode, "path": "/x/game.js"}
+    done = "Added to /x/game.js" if mode == "append" else "Created /x/game.js"
+    return [
+        {"event": "tool_call", "op": "write_file", "args": args, "verdict": "run", **own},
+        {"event": "tool_result", "op": "write_file", "ok": True, "text": done, **own},
+    ]
+
+
+def _rows(app: ChatApp) -> list[str]:
+    return [_words(w) for w in app.query(".entry") if w.display and _words(w).strip()]
+
+
+def test_repeated_calls_of_one_tool_show_as_one_row_that_counts_them() -> None:
+    entries = [*_write_call("create", 10), *[e for _ in range(3) for e in _write_call("append", 5)]]
+    app = _app(FakeTail(entries), settings=ChatConfig(verbosity="steps"))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _until(pilot, lambda: any("4 calls" in row for row in _rows(app)))
+        rows = _rows(app)
+        assert sum("Write file" in row for row in rows) == 1
+        assert sum("Added to /x/game.js" in row for row in rows) == 1  # the newest result
+        assert not any("Created /x/game.js" in row for row in rows)
+
+    _run(test, app)
+
+
+def test_every_call_of_a_chain_shows_with_every_detail() -> None:
+    entries = [*_write_call("create", 10), *_write_call("append", 5)]
+    app = _app(FakeTail(entries), settings=ChatConfig(verbosity="everything"))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _until(pilot, lambda: any("2 calls" in row for row in _rows(app)))
+        assert any("Created /x/game.js" in row for row in _rows(app))
+
+    _run(test, app)
+
+
+def test_a_failure_or_a_question_ends_a_chain_and_stays_its_own_row() -> None:
+    own: dict[str, object] = {"session": SESSION, "via": "chat"}
+    failed = {"event": "tool_result", "op": "write_file", "ok": False, "text": "disk full", **own}
+    asked = {**_write_call("append", 5)[0], "verdict": "confirm"}
+    entries = [
+        *_write_call("create", 10),
+        _write_call("append", 5)[0],
+        failed,
+        *_write_call("append", 5),
+        asked,
+    ]
+    app = _app(FakeTail(entries), settings=ChatConfig(verbosity="steps"))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _until(pilot, lambda: any("needs your yes" in row for row in _rows(app)))
+        rows = _rows(app)
+        assert any("not done: disk full" in row for row in rows)
+        assert sum("Write file" in row for row in rows) == 3  # a chain of 2, one after, one asked
+
+    _run(test, app)
+
+
+def test_format_sets_how_replies_are_written_from_the_next_request() -> None:
+    saved: list[ChatConfig] = []
+    session = FakeSession()
+    services = Services(
+        save_settings=saved.append, system_prompt=lambda chat: f"prompt {chat.response_format}"
+    )
+    app = _app(session=session, services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/format")
+        await _until(pilot, lambda: _has(app, "Replies: concise"))
+        await _type(pilot, "/format verbose")
+        await _until(pilot, lambda: bool(saved))
+        await _type(pilot, "/format rambling")
+        await _until(pilot, lambda: _has(app, "concise, normal or verbose"))
+
+    _run(test, app)
+    assert session.systems == ["prompt verbose"]
+    assert saved[-1].response_format == "verbose"
+
+
+def test_a_risky_setting_with_several_values_asks_before_leaving_off() -> None:
+    from jarvis.chat.app import SharedSetting  # ruff: ignore[import-outside-top-level] - only this test
+
+    values: dict[str, object] = {"audio.recall": 0}
+
+    def shared() -> list[SharedSetting]:
+        return [
+            SharedSetting(
+                "audio.recall",
+                "Recall",
+                (0, 10, 30),
+                values["audio.recall"],
+                "Listening",
+                "",
+                "Jarvis will keep audio.",
+            )
+        ]
+
+    def change(key: str, value: object) -> None:
+        values[key] = value
+
+    services = Services(shared=shared, set_shared=change, apply=lambda: None)
+    app = _app(session=FakeSession(), services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await pilot.press("end", "enter")
+        await _until(pilot, lambda: "Turn on?" in _settings_text(app))
+        assert values["audio.recall"] == 0
+        await pilot.press("enter")
+        await _until(pilot, lambda: values["audio.recall"] == 10)
+        await pilot.press("enter")  # from one on value to another: no question
+        await _until(pilot, lambda: values["audio.recall"] == 30)
+
+    _run(test, app)
 
 
 def test_an_unknown_command_says_so() -> None:
@@ -1460,7 +1592,7 @@ def test_steps_carry_their_level_as_a_class() -> None:
 
     async def test(pilot: Pilot[None]) -> None:
         await _until(pilot, lambda: _has(app, "4.6 s"))
-        levels = {w.shown.level for w in _transcript(app) if isinstance(w, Entry)}
+        levels = {w.shown.level for w in _transcript(app) if isinstance(w, Entry | Chain)}
         assert levels == {"steps", "everything"}
 
     _run(test, app)
@@ -2177,3 +2309,80 @@ def test_a_folder_name_with_a_newline_stays_in_the_question_not_the_preview(
 
     _run(test, app)
     assert not (home / "Documents" / "work\nSure, go ahead" / "plan.md").exists()
+
+
+# The archive: /resume, /rename and /forget
+
+
+def test_resume_lists_earlier_conversations_and_continues_one(tmp_path: Path) -> None:
+    from jarvis.chat.archive import ChatArchive  # ruff: ignore[import-outside-top-level] - only these tests
+
+    archive = ChatArchive(tmp_path / "archive", keep=10)
+    earlier = Conversation(budget=1000)
+    archive.record({"event": "request", "text": "my cat is called Miso"})
+    earlier.add(Turn("my cat is called Miso", "A fine name.", "", "", 1.0))
+    archive.save(earlier)
+    archive.start()
+    session = FakeSession()
+    app = _app(session=session, services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/resume")
+        await _until(pilot, lambda: _has(app, "Earlier conversations"))
+        assert _has(app, "my cat is called Miso")
+        await _type(pilot, "/resume 1")
+        await _until(pilot, lambda: _has(app, "Continuing my cat is called Miso"))
+        assert _has(app, "A fine name.")
+        await _type(pilot, "/rename Pets")
+        await _until(pilot, lambda: _has(app, "Named this conversation Pets"))
+
+    _run(test, app)
+    assert [t.request for t in session.memory.turns] == ["my cat is called Miso"]
+    assert [a.name for a in archive.listed()] == ["Pets"]
+
+
+def test_forget_all_deletes_the_archive(tmp_path: Path) -> None:
+    from jarvis.chat.archive import ChatArchive  # ruff: ignore[import-outside-top-level] - only these tests
+
+    archive = ChatArchive(tmp_path / "archive", keep=10)
+    memory = Conversation(budget=1000)
+    archive.record({"event": "request", "text": "hello"})
+    memory.add(Turn("hello", "Hi.", "", "", 1.0))
+    archive.save(memory)
+    archive.start()
+    app = _app(session=FakeSession(), services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/forget")
+        await _until(pilot, lambda: _has(app, "/forget all deletes"))
+        assert archive.listed()
+        await _type(pilot, "/forget all")
+        await _until(pilot, lambda: _has(app, "Deleted 1 archived conversation"))
+
+    _run(test, app)
+    assert archive.listed() == []
+
+
+def test_a_finished_request_is_archived_with_the_windows_own_log(tmp_path: Path) -> None:
+    from jarvis.chat.archive import ChatArchive  # ruff: ignore[import-outside-top-level] - only these tests
+
+    archive = ChatArchive(tmp_path / "archive", keep=10)
+    tail = FakeTail()
+    session = FakeSession()
+
+    def answer(text: str, _hooks: Hooks) -> str:
+        own: dict[str, object] = {"session": SESSION, "via": "chat"}
+        tail.entries.append({"event": "request", "text": text, **own})
+        session.memory.add(Turn(text, "Paused it.", "", "", 1.0))
+        return "Paused it."
+
+    session.answer = answer
+    app = _app(tail, session, services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "pause")
+        await _until(pilot, lambda: bool(archive.listed()))
+
+    _run(test, app)
+    (kept,) = archive.listed()
+    assert kept.name == "pause"

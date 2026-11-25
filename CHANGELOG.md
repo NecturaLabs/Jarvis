@@ -18,6 +18,16 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   memory at a time, and Jarvis says first how long the load takes. Every switch is audited, and `jarvis
   doctor` checks the coding model's files. Settings: `[coding]`, `[coding.chat]` (laid over `[chat]`) and
   `[coding.voice]` (laid over `[agent]`).
+- The chat keeps every conversation in an archive (`~/.local/state/jarvis/chat-archive/`, 0600, the newest
+  `chat.archive_keep` = 50) with its full log of requests, steps, results and replies. `/resume` lists them and
+  `/resume 2` continues one, with what came from outside text still treated as data; `/rename` names the
+  current one, and `/forget all` deletes the archive.
+- `chat.response_format` says how the chat's replies are written: `concise` (the default), `normal` or
+  `verbose`. `/format verbose` and `/config` change it from the next request on; the voice keeps its own style.
+- The chat shows calls of one tool in a row as one step: "Write file "…/game.js" · 10 calls" with the newest
+  result, instead of a row for each. Every result is listed with every detail shown (ctrl+o); a failure, or a
+  call that asks first, still gets its own row. A step names what it works on (the file, page or search), not
+  its first argument.
 - `/effort` in the chat shows how hard the model thinks before it answers, and `/effort high` (or `none`,
   `low`, `medium`) sets it from the next request on, saved as `chat.thinking`. Each chat setting it or
   `/config` saves is now audited, and the chat's activity feed shows setting and tool changes.
@@ -26,6 +36,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   value. Acting without asking and taking requests from PC audio turn on only after a second Enter, once the
   row says what that means, and are marked while they are on. The Tools list shows each tool's setting in
   colour, how it ships when changed, and what it does.
+- `memory_detail` in `[agent]` and `[chat]` says what later requests keep of one: `condensed` (the request, the
+  reply, what was done and what was looked up) or `full` (also its tool calls and their results). The chat keeps
+  `full` by default, so a follow-up has the pages, files and outputs a request read instead of looking them up
+  again, and the model server reuses what it already read; speech, `jarvis ask` and scheduled requests stay
+  `condensed`. Outside text kept this way is still data and keeps actions behind a yes. When the conversation
+  outgrows `memory_tokens`, the oldest work goes first, then the oldest turns are summarized, and the chat says in
+  one line what it condensed; the context meter then shows what the next request starts from.
 - `pc_audio_listen`: with PC audio on, ask Jarvis what is being said or played there (a call, a video) and it
   listens for up to a minute and tells you. `audio.pc_audio_recall_s` (off by default) keeps the last seconds in
   memory, so it can also tell you what was just said. The audio reaches the disk only for the moment Voxtype
@@ -135,9 +152,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A request the model answered while the conversation held outside text now keeps that mark itself: what the
+  model wrote then may repeat that text, so actions still need a yes once the turn it came from is forgotten.
 - A voice-service restart that fails after `/config` is now shown in the chat, saying the old settings still
   hold; it went to a hidden error stream before. A setting is audited only once it is saved, and acting without
   asking turned on from the chat is recorded as `consent_changed`, as `jarvis consent` records it.
+- A tool call's arguments now count toward the context: a long file being written was counted as almost nothing,
+  so the check that clears a long request's oldest results to fit the window, and the remembered conversation's
+  size, came out too low.
 - A request you stop (Esc in the chat, or speaking over Jarvis) is no longer forgotten. It is remembered with
   what it looked up and a note that it was stopped, so the next request does not search all over again or lose
   the task, and the audit log's `reply` says `stopped`. A stop now takes effect while the model is still
@@ -220,6 +242,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 - The chat's default `memory_tokens` is now 6700 (was 7000): the `switch_model` tool's schema takes that
   room in the default 24,576-token window.
+- Speech keeps a short memory for quick commands: `agent.memory_idle_s` is now `300.0` (was `1800.0`), so the
+  conversation is forgotten after five idle minutes, and `agent.memory_tokens` is now `3000` (was `6000`). A
+  scheduled request shares speech's conversation and limits; `jarvis ask` remembers nothing between runs. The
+  chat's own memory is unchanged.
 - The chat's default `memory_tokens` is now 7000 (was 7800): the new tools' and arguments' schemas take that room
   in the default 24,576-token window. A larger `strata.context` leaves room for more.
 

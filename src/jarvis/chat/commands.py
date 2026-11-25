@@ -10,6 +10,7 @@ from dataclasses import dataclass
 VERBOSITY = ("replies", "steps", "everything")
 EFFORT_LEVELS = ("none", "low", "medium", "high")  # as `chat.thinking` takes them
 MODES = ("normal", "coding")  # as `jarvis model` takes them
+FORMATS = ("concise", "normal", "verbose")  # as `chat.response_format` takes them
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +46,15 @@ COMMANDS = (
         "[mode]",
         MODES,
     ),
+    Command(
+        "/format",
+        "how replies are written: concise, normal or verbose",
+        "[format]",
+        FORMATS,
+    ),
+    Command("/resume", "list earlier conversations, or continue one by its number", "[number]"),
+    Command("/rename", "name this conversation, as /resume lists it", "[name]"),
+    Command("/forget", "delete every archived conversation (/forget all)", "[all]", ("all",)),
     Command("/config", "the chat's settings"),
     Command("/status", "the voice service, the model and where things are kept"),
     Command("/copy", "copy the last reply"),

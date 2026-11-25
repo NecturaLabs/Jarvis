@@ -71,8 +71,9 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 | `max_seconds` | `90.0` | 10 to 3600 | Longest one request may take (180 s more when the model must load first). Time spent asking you and waiting for your yes or the confirm key does not count. Once an action has run, the model still gets at least 15 s to say how it went, and a request that runs out of time after one says what it did. |
 | `reply_tokens` | `400` | 64 to 8192 | Most tokens the model writes in one answer. The prompt asks for replies that fit; a reply the cap ends anyway is kept and says it was cut short. A tool call the cap cuts off (a long file being written) is not run: the model is told how much one answer holds and writes the text in parts, adding each to the file; a second cut call ends the request and says so. |
 | `tool_text_chars` | `3000` | 500 to 50000 | Most characters of one tool result the model reads. |
-| `memory_tokens` | `6000` | 0 to 200000 | Room the remembered conversation may take of the context window. When a reply makes it outgrow that, the model summarizes the oldest turns right after the reply, while it is spoken and on its own time (the latest two stay word for word); if that fails, the oldest are dropped. A request that finds it over its room (a plain command's turns, a saved conversation) is given the newest turns that fit, and the summary follows its reply. Jarvis uses less when the window cannot hold it beside the prompt, a reply and two tool results. |
-| `memory_idle_s` | `1800.0` | 0 or more | Forget the conversation after this long without a request (time the PC spends asleep counts); `0` never forgets. |
+| `memory_tokens` | `3000` | 0 to 200000 | Room the remembered conversation may take of the context window. When a reply makes it outgrow that, the oldest requests' tool calls and results (kept with `memory_detail = "full"`) are left out first, down to three quarters of the room, the latest request's only when it alone does not fit; when it still does not fit, the model summarizes the oldest turns right after the reply, while it is spoken and on its own time (the latest two stay word for word); if that fails, the oldest are dropped. A request that finds it over its room (a plain command's turns, a saved conversation) is given the newest turns that fit, and the summary follows its reply. Jarvis uses less when the window cannot hold it beside the prompt, a reply and two tool results. |
+| `memory_detail` | `condensed` | `condensed`, `full` | What later requests keep of one. `condensed`: the request, the reply, what was done and what was looked up. `full`: also its tool calls and their results, as the model read them, so a follow-up has the pages, files and outputs a request read without fetching them again, and the model server reuses what it already read of them. Outside text in them stays data and keeps actions behind a yes while it is remembered. A request in full detail takes more of `memory_tokens`; when it runs short, the oldest work goes first, and the chat says in one line what it condensed. |
+| `memory_idle_s` | `300.0` | 0 or more | Forget the conversation after this long without a request (time the PC spends asleep counts); `0` never forgets. Speech is short-term memory for quick commands: a follow-up ("louder", "the next one", "what was that song?") comes within a minute or two, and after five idle minutes an old exchange is likelier to steer the next command wrong than to help. `jarvis ask` remembers nothing between runs; a scheduled request shares speech's conversation and these limits. |
 | `thinking` | `none` | `none`, `low`, `medium`, `high` | How hard the model thinks before each answer at the start of a request (Strata's reasoning effort). `none` answers at once; on everyday requests thinking made answers slower and no more accurate ([models.md](models.md#thinking)). Thinking is never spoken or shown, and costs time: at about 65 tokens a second, the full cap below is about 3 s more before the first words of each model call. |
 | `thinking_tokens` | `192` | 32 to 8192 | The most the model thinks before each answer at `thinking`; Strata then closes the thinking and lets it answer. It comes on top of `reply_tokens`, so the reply keeps all its room, and the context keeps room for both. |
 | `thinking_max` | `high` | `none`, `low`, `medium`, `high`, and not below `thinking` | The most the model may raise its own effort to, for the rest of one request, when it judges the request needs careful thought (several steps, a name it may have misheard, a correction, a try that failed). It does so with the `think_harder` tool, which is offered only when this is above `thinking`: set it to the same as `thinking` to keep one effort. The effort never drops within a request, and each request starts at `thinking` again. Raising to `low` or `high` can cost the model one more read of its whole prompt on Qwen3.8 ([models.md](models.md#thinking)). The tool's class is `safe`; `think_harder = "deny"` under `[boundaries.classes]` also switches it off. |
@@ -80,13 +81,14 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 
 A spoken reply that drew on outside text (a web page, a song name) is remembered as data, as in the chat: a
 follow-up such as "what was the second one?" has it, and while it is remembered an action the model chooses
-needs your yes; a plain command (`pause`, `volume 40`) does not.
+needs your yes; a plain command (`pause`, `volume 40`) does not. A request the model answers while such text is
+remembered is marked the same way, so that holds after the turn that read it is forgotten.
 
 ## `[chat]`: the same for typed requests in `jarvis chat`
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `6700` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger), `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
+`memory_tokens` `6700` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger; with a larger `strata.context` a larger value has room for more of the earlier requests' work), `memory_detail` `full`, `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -94,16 +96,24 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 | `verbosity` | `replies` | `replies`, `steps`, `everything` | How much of Jarvis's work the chat shows: requests and replies only, plus each step and its result, or plus every model call and detail. Ctrl+O and `/verbosity` change it and save it here. |
 | `toolbar` | `true` | `true`, `false` | The line under the input with the PC's CPU, GPU, VRAM and RAM use, temperatures, and how full the model's context is. In a narrow window it leaves out the temperatures first, so it stays on one line. |
 | `while_working` | `steer` | `steer`, `queue` | What Enter does while a request runs. `steer`: the words join that request as yours, before the model's next call; words it ended before taking run next. `queue`: they wait and run as the next request. Words sent with a picture or a long paste are always queued. Esc still stops the request; queued words then run. `/config` changes it. |
+| `response_format` | `concise` | `concise`, `normal`, `verbose` | How the model writes chat replies: briefly, in a few sentences and without headings; as much as the request needs; or explained in full, with headings for a long answer. `/format` and `/config` change it, from the next request on. The voice keeps its own short spoken style. |
+| `archive_keep` | `50` | 0 to 1000 | Chat conversations kept in `~/.local/state/jarvis/chat-archive/` (0600) for `/resume` and reading back: each with its full log of requests, steps, results and replies. Older ones are deleted; `0` keeps none and turns `/resume` off. `/forget all` deletes them all. |
 | `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, with what was pasted into each, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
 
 `/config` in the chat opens the settings in sections, each setting with its values, when a change applies
 and a line on what it does; ↑↓ move, Enter or → takes the next value, ← the one before, Esc closes. Under
 Chat it changes `verbosity`, `toolbar`, `while_working` and `thinking` at once, and `reply_tokens`,
-`max_steps` and `resume` from the next time the chat opens, writing them here. Under Voice, Listening and
+`max_steps`, `memory_detail` and `resume` from the next time the chat opens, writing them here. Under Voice, Listening and
 Safety it sets `audio.speech_speed`, `audio.listen_to_pc` (off by default) and `boundaries.bypass_consent`,
 and under Tools each tool's setting; the voice service restarts once to take these when the screen closes.
 Acting without asking and taking requests from PC audio are turned on only by a second Enter, after the row
 says what that means, and are marked in red while they are on. A restart that fails is said in the chat.
+
+`/resume` lists the archived conversations, newest first (when, name, how many requests), and `/resume 2`
+continues the second: the model gets that conversation back as it was, so what came from outside text then
+still counts as data and still puts actions behind a yes. A conversation is named after its first request
+until `/rename NAME` names it; the name stays when it is resumed. In Listening, `/config` also sets
+`audio.pc_audio_recall_s` (0, 10, 30 or 60 seconds), asked about before it first leaves 0.
 
 `/effort` in the chat says how hard the model thinks before it answers, and how far it may raise that itself
 for a hard request. `/effort none`, `low`, `medium` or `high` sets `thinking` here, from the next request on;
