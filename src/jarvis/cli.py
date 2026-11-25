@@ -31,6 +31,7 @@ from jarvis.app import (
     echoes_hint,
     spotify_operations,
     strata_model,
+    system_prompt,
 )
 from jarvis.audit import AuditLog
 from jarvis.chat import clipboard
@@ -728,6 +729,9 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         details=lambda: _chat_details(cfg),
         stats=Sampler().sample,
         save_settings=_save_chat_settings,
+        system_prompt=lambda chat: system_prompt(
+            config.load().model_copy(update={"chat": chat}), "chat"
+        ),
         tools=lambda: _tool_settings(config.load()),
         next_tool_setting=_next_tool_setting,
         shared=_shared_settings,

@@ -39,7 +39,7 @@ from jarvis.activity import Shown, call_target, describe, full_text, working_lab
 from jarvis.agent import MAX_TRUSTED_PASTE, PICTURES_OFF, Declined, Hooks, NoReason
 from jarvis.chat import commands
 from jarvis.chat.clipboard import ClipboardError
-from jarvis.chat.commands import EFFORT_LEVELS, VERBOSITY
+from jarvis.chat.commands import EFFORT_LEVELS, FORMATS, VERBOSITY
 from jarvis.chat.settings import (
     NEXT_CHAT,
     NOW,
@@ -175,6 +175,10 @@ class Session(Protocol):
         """Think as `section` says (effort, caps, ceiling) from the next request on."""
         ...
 
+    def set_system(self, prompt: str) -> None:
+        """Give the model `prompt` as its instructions from the next request on."""
+        ...
+
     @property
     def memory(self) -> Conversation:
         """The remembered conversation."""
@@ -189,6 +193,7 @@ class Services:
     details: Callable[[], list[tuple[str, str]]] = list  # more for /status: (name, value)
     stats: Callable[[], Stats] | None = None  # the PC's load
     save_settings: Callable[[ChatConfig], None] | None = None
+    system_prompt: Callable[[ChatConfig], str] | None = None  # the model's instructions for them
     # Jarvis's own settings the chat may change too (the voice service restarts to take them).
     shared: Callable[[], list[SharedSetting]] | None = None
     set_shared: Callable[[str, object], None] | None = None
@@ -273,6 +278,14 @@ SETTINGS = (
         ("steer", "queue"),
         live=True,
         about="steer: words typed while a request runs join it. queue: they run as the next one.",
+    ),
+    _Setting(
+        "response_format",
+        "Replies",
+        FORMATS,
+        live=True,
+        about="How replies are written: brief, as much as the request needs, or explained in "
+        "full. Also /format.",
     ),
     _Setting(
         "thinking",
@@ -1223,6 +1236,7 @@ class ChatApp(App[None]):
             "/context": lambda _a: self._context_note(),
             "/verbosity": self._verbosity_command,
             "/effort": self._effort_command,
+            "/format": self._format_command,
             "/config": lambda _a: self._open_settings(),
             "/status": lambda _a: self._status_note(),
             "/copy": lambda _a: self._copy(),
@@ -1355,6 +1369,28 @@ class ChatApp(App[None]):
             return
         self._set_effort(level)
         self._note(f"{self._effort_line()} From the next request on.")
+
+    def _format_command(self, argument: str) -> None:
+        """Show how replies are written, or set it for the requests from now on."""
+        if not argument:
+            self._note(f"Replies: {self._settings.response_format}. /format sets it.")
+            return
+        chosen = argument.lower()
+        if chosen not in FORMATS:
+            self._note(f"No format {argument}; it is concise, normal or verbose.", "warn")
+            return
+        self._set_format(chosen)
+        self._note(f"Replies: {chosen}, from the next request on.")
+
+    def _set_format(self, chosen: str) -> None:
+        """Make `chosen` how replies are written: saved, and the model's from its next request."""
+        self._settings = ChatConfig.model_validate(
+            self._settings.model_dump() | {"response_format": chosen}
+        )
+        render = self._services.system_prompt
+        if self._session is not None and render is not None:
+            self._session.set_system(render(self._settings))
+        self._save_settings()
 
     def _effort_line(self) -> str:
         now, ceiling = self._settings.thinking, self._settings.thinking_max
@@ -1591,6 +1627,9 @@ class ChatApp(App[None]):
     def _change_setting(self, key: str, value: object) -> None:
         if key == "thinking":
             self._set_effort(str(value))
+            return
+        if key == "response_format":
+            self._set_format(str(value))
             return
         self._settings = self._settings.model_copy(update={key: value})
         if key == "verbosity":

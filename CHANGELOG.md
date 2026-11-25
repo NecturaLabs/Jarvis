@@ -8,6 +8,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `chat.response_format` says how the chat's replies are written: `concise` (the default), `normal` or
+  `verbose`. `/format verbose` and `/config` change it from the next request on; the voice keeps its own style.
 - The chat shows calls of one tool in a row as one step: "Write file "…/game.js" · 10 calls" with the newest
   result, instead of a row for each. Every result is listed with every detail shown (ctrl+o); a failure, or a
   call that asks first, still gets its own row. A step names what it works on (the file, page or search), not

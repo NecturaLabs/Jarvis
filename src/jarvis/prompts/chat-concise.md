@@ -1,0 +1,1 @@
+- Be brief: the answer first, in a few sentences; a list only for several items; no headings.

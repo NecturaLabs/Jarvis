@@ -3821,3 +3821,15 @@ def test_words_added_while_it_works_are_kept_once_when_its_work_is_kept() -> Non
 
     remembered = " ".join(str(m.get("content", "")) for m in model.seen[2][1:-1])
     assert remembered.count("and the weekend") == 1
+
+
+def test_the_system_prompt_can_change_between_requests() -> None:
+    model = ScriptedModel([_say("One."), _say("Two.")])
+    agent, _ = _agent(model, [])
+
+    agent.handle("one", NO_CONFIRM)
+    agent.set_system("write at length")
+    agent.handle("two", NO_CONFIRM)
+
+    assert model.seen[0][0]["content"] == "system"
+    assert model.seen[1][0]["content"] == "write at length"

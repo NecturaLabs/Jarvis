@@ -963,6 +963,12 @@ class Agent:
         room = limits.context_tokens - CONTEXT_MARGIN - self._fixed - limits.answer_tokens - work
         return max(0, min(limits.memory_tokens, room))
 
+    def set_system(self, prompt: str) -> None:
+        """Give the model `prompt` as its instructions from the next request on."""
+        self._system = prompt
+        self._fixed = tokens(prompt) + self._schemas
+        self._memory.budget = self._memory_budget()
+
     def set_thinking(self, section: AgentConfig) -> None:
         """Think as `section` says (its effort, caps and ceiling) from the next request on."""
         fresh = Limits.of(section, self._limits.context_tokens)

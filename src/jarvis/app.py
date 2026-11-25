@@ -167,7 +167,7 @@ def system_prompt(config: Config, channel: Channel = "voice") -> str:
     """Render the shipped prompt for a channel with the owner's persona, skills and addendum.
 
     The voice prompt asks for short spoken replies; the chat prompt for written Markdown that fits
-    the chat's reply budget.
+    the chat's reply budget, as brief or as full as `chat.response_format` says.
     """
     prompts = files("jarvis").joinpath("prompts")
     core = prompts.joinpath("core.md").read_text(encoding="utf-8")
@@ -182,6 +182,9 @@ def system_prompt(config: Config, channel: Channel = "voice") -> str:
         "tone": config.persona.tone,
         "words": str(words),
         "numbers": _number_rule(config.format.thousands_separator),
+        "format": prompts.joinpath(f"chat-{config.chat.response_format}.md")
+        .read_text(encoding="utf-8")
+        .rstrip("\n"),
     }
     text = core + "\n" + style
     for key, value in fill.items():

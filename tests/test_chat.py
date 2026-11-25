@@ -129,6 +129,11 @@ class FakeSession:
     def set_thinking(self, section: ChatConfig) -> None:
         self.thought.append(section.thinking)
 
+    systems: list[str] = field(default_factory=list[str])
+
+    def set_system(self, prompt: str) -> None:
+        self.systems.append(prompt)
+
 
 def _plain(renderable: object) -> str:
     console = Console(width=200, record=True, color_system=None, file=io.StringIO())
@@ -1286,7 +1291,7 @@ def test_thinking_effort_set_in_config_reaches_the_agent() -> None:
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
-        await pilot.press("down", "down", "down", "enter")
+        await pilot.press("down", "down", "down", "down", "enter")  # past Replies to Thinking
         await _until(pilot, lambda: bool(session.thought))
 
     _run(test, app)
@@ -1352,6 +1357,27 @@ def test_a_failure_or_a_question_ends_a_chain_and_stays_its_own_row() -> None:
         assert sum("Write file" in row for row in rows) == 3  # a chain of 2, one after, one asked
 
     _run(test, app)
+
+
+def test_format_sets_how_replies_are_written_from_the_next_request() -> None:
+    saved: list[ChatConfig] = []
+    session = FakeSession()
+    services = Services(
+        save_settings=saved.append, system_prompt=lambda chat: f"prompt {chat.response_format}"
+    )
+    app = _app(session=session, services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/format")
+        await _until(pilot, lambda: _has(app, "Replies: concise"))
+        await _type(pilot, "/format verbose")
+        await _until(pilot, lambda: bool(saved))
+        await _type(pilot, "/format rambling")
+        await _until(pilot, lambda: _has(app, "concise, normal or verbose"))
+
+    _run(test, app)
+    assert session.systems == ["prompt verbose"]
+    assert saved[-1].response_format == "verbose"
 
 
 def test_an_unknown_command_says_so() -> None:
