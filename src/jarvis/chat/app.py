@@ -1477,6 +1477,7 @@ class ChatApp(App[None]):
             hush=lambda: self._from_worker(self._drop_draft, work),
             preview=True,
             steer=lambda: self._take_steering(work),
+            condensed=lambda note: self._from_worker(self._note, note),
         )
         reply = ""
         rate: float | None = None

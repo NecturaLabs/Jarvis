@@ -27,6 +27,8 @@ MAX_SPEECH_SPEED = 3.0  # how fast: three times it
 OpClassName = Literal["safe", "confirm", "strong", "deny"]
 
 type Effort = Literal["none", "low", "medium", "high"]
+# What later requests keep of one: its request, reply, actions and look-ups, or also its work.
+type MemoryDetail = Literal["condensed", "full"]
 EFFORTS: tuple[Effort, ...] = ("none", "low", "medium", "high")  # least to most thinking
 
 
@@ -124,11 +126,13 @@ class AgentConfig(_Section):
 
     `reply_tokens` caps what the model writes in one go, so a reply is kept short by the model,
     never cut afterwards. `memory_tokens` is the room the remembered conversation may take of the
-    model's context; older turns are summarized to stay within it. `thinking` is how hard the
-    model thinks before each answer at the start of a request (`none` answers at once), and
-    `thinking_tokens` the most it may think then, on top of the reply's room. The model may raise
-    its own effort for the rest of a request, up to `thinking_max` (the same as `thinking`: never);
-    a raised call thinks up to `thinking_raised_tokens`.
+    model's context; older turns are summarized to stay within it. `memory_detail` is what later
+    requests keep of one: its request, reply, actions and look-ups (`condensed`), or also its tool
+    calls and their results (`full`, the oldest left out first when room runs short). `thinking` is
+    how hard the model thinks before each answer at the start of a request (`none` answers at once),
+    and `thinking_tokens` the most it may think then, on top of the reply's room. The model may
+    raise its own effort for the rest of a request, up to `thinking_max` (the same as `thinking`:
+    never); a raised call thinks up to `thinking_raised_tokens`.
     """
 
     max_steps: int = Field(default=8, ge=1, le=100)  # model calls in one request
@@ -138,6 +142,7 @@ class AgentConfig(_Section):
     tool_text_chars: int = Field(default=3000, ge=500, le=50000)  # of one tool result
     memory_tokens: int = Field(default=6000, ge=0, le=200000)
     memory_idle_s: float = Field(default=1800.0, ge=0)  # forget after this long unused; 0 never
+    memory_detail: MemoryDetail = "condensed"
     thinking: Effort = "none"
     thinking_tokens: int = Field(default=192, ge=32, le=8192)
     thinking_max: Effort = "high"
@@ -161,6 +166,7 @@ class ChatConfig(AgentConfig):
     tool_text_chars: int = Field(default=8000, ge=500, le=50000)
     memory_tokens: int = Field(default=7000, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
+    memory_detail: MemoryDetail = "full"
     thinking_tokens: int = Field(default=512, ge=32, le=8192)
     thinking_raised_tokens: int = Field(default=1024, ge=32, le=8192)
     resume: bool = True  # open the chat on the conversation it had last time

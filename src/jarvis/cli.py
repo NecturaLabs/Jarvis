@@ -581,6 +581,7 @@ def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
         ("jarvis", __version__),
         ("model", f"{services.model_name(cfg)}, {cfg.strata.context:,} tokens of context"),
         ("replies", f"up to {cfg.chat.reply_tokens:,} tokens, {cfg.chat.max_steps} model calls"),
+        ("memory", f"{cfg.chat.memory_detail}, up to {cfg.chat.memory_tokens:,} tokens"),
         ("config", str(paths.config_file())),
         ("conversation", str(chat_memory_file())),
         ("audit log", str(paths.audit_file())),

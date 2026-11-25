@@ -8,6 +8,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `memory_detail` in `[agent]` and `[chat]` says what later requests keep of one: `condensed` (the request, the
+  reply, what was done and what was looked up) or `full` (also its tool calls and their results). The chat keeps
+  `full` by default, so a follow-up has the pages, files and outputs a request read instead of looking them up
+  again, and the model server reuses what it already read; speech, `jarvis ask` and scheduled requests stay
+  `condensed`. Outside text kept this way is still data and keeps actions behind a yes. When the conversation
+  outgrows `memory_tokens`, the oldest work goes first, then the oldest turns are summarized, and the chat says in
+  one line what it condensed; the context meter then shows what the next request starts from.
 - The chat's `/config` also sets Jarvis's speaking speed, whether it acts without asking first and whether it
   takes requests from PC audio. Changes there restart the voice service once, when the settings close, instead of
   at every Enter, and its Tools list never takes a tool below how it ships.
@@ -112,6 +119,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A tool call's arguments now count toward the context: a long file being written was counted as almost nothing,
+  so the check that clears a long request's oldest results to fit the window, and the remembered conversation's
+  size, came out too low.
 - A request you stop (Esc in the chat, or speaking over Jarvis) is no longer forgotten. It is remembered with
   what it looked up and a note that it was stopped, so the next request does not search all over again or lose
   the task, and the audit log's `reply` says `stopped`. A stop now takes effect while the model is still

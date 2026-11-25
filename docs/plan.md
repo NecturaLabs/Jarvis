@@ -177,8 +177,10 @@ enforced in code before any tool runs.
   sentence is spoken while the rest is written, except a sentence claiming an action before any succeeded, and
   nothing more of a message once a tool call follows it; what was already passed on plays to its end
   ([ADR 0008](adr/0008-speak-while-writing-and-barge-in.md)).
-- Session memory: the conversation is token-budgeted (`agent.memory_tokens`, `chat.memory_tokens`) and
-  summarized by the model when it outgrows that room; speech forgets it after 30 min idle, the chat keeps it
+- Session memory: the conversation is token-budgeted (`agent.memory_tokens`, `chat.memory_tokens`). The chat
+  keeps earlier requests' tool calls and results too (`memory_detail = "full"`; speech keeps only each
+  request, reply, actions and look-ups, `condensed`); when it outgrows its room, the oldest work goes
+  first, then the model summarizes the oldest turns; speech forgets it after 30 min idle, the chat keeps it
   across sessions. Follow-up listening is built and on by default: the next request within `audio.follow_up_s`
   (6 s) of a spoken reply needs no wake word (never while Voxtype is dictating or in a meeting).
 - System prompt: `core.md` (shipped: identity, tools, limits) + persona/tone + owner addendum from setup + a
