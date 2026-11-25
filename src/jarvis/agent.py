@@ -11,9 +11,10 @@ import re
 import threading
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from jarvis import shortcuts
+from jarvis.config import EFFORTS
 from jarvis.confirmkey import boot_clock
 from jarvis.jsonutil import obj, objs
 from jarvis.memory import Conversation, Turn, tokens
@@ -63,7 +64,9 @@ MAX_TRUSTED_PASTE = 200  # characters a paste may have and still count as the ow
 STILL_WAITING_S = 15.0
 MAX_STREAMED_CHARS = 4000  # no more is spoken before an answer is whole (no_action's reply cap)
 NO_ACTION = "no_action"
+THINK_HARDER = "think_harder"
 _UNKNOWN = "unknown operation"
+_THINKING: tuple[Literal["low", "medium", "high"], ...] = ("low", "medium", "high")
 _OMITTED = "(That reply quoted outside data, so it is left out here.)"
 
 MODEL_DOWN = "My model isn't answering right now."
@@ -494,7 +497,9 @@ class Limits:
     conversation and the request's own work share. With `remember_outside`, a reply that drew on
     outside text is remembered as data (and keeps side effects behind a yes while it is);
     without, it is left out of later requests. With `thinking`, the model thinks before each
-    answer, within its cap, and the window keeps room for that too (`answer_tokens`).
+    answer, within its cap, and the window keeps room for that too (`answer_tokens`). `raised`
+    are the efforts the model may raise itself to for the rest of a request (`think_harder`),
+    least first, each with its own cap; the window keeps room for the largest cap of all.
     """
 
     max_steps: int = MAX_STEPS
@@ -507,15 +512,21 @@ class Limits:
     context_tokens: int = CONTEXT_TOKENS
     remember_outside: bool = False
     thinking: Thinking | None = None
+    raised: tuple[Thinking, ...] = ()
 
     @property
     def answer_tokens(self) -> int:
-        """The most one model call writes: its thinking and its reply."""
-        return self.reply_tokens + (self.thinking.tokens if self.thinking is not None else 0)
+        """The most one model call writes: its thinking, at any effort it may use, and its reply."""
+        caps = [level.tokens for level in (self.thinking, *self.raised) if level is not None]
+        return self.reply_tokens + max(caps, default=0)
 
     @classmethod
     def of(cls, section: AgentConfig, context_tokens: int, *, remember_outside: bool) -> Limits:
-        """Return the limits a config section sets, for a model with this context window."""
+        """Return the limits a config section sets, for a model with this context window.
+
+        A raised effort never thinks less than the one each request starts at.
+        """
+        started = 0 if section.thinking == "none" else section.thinking_tokens
         return cls(
             section.max_steps,
             section.max_tool_calls,
@@ -529,6 +540,12 @@ class Limits:
             None
             if section.thinking == "none"
             else Thinking(section.thinking, section.thinking_tokens),
+            tuple(
+                Thinking(effort, max(section.thinking_raised_tokens, started))
+                for effort in _THINKING[
+                    EFFORTS.index(section.thinking) : EFFORTS.index(section.thinking_max)
+                ]
+            ),
         )
 
 
@@ -707,6 +724,7 @@ class _Turn:
     seen: set[str] = field(default_factory=set[str])
     actions: list[str] = field(default_factory=list[str])
     stream: _ReplyStream | None = None  # the last model call's, when the reply is spoken
+    thinking: Thinking | None = None  # how the next model call thinks; the model may raise it
 
 
 @dataclass(frozen=True, slots=True)
@@ -1022,6 +1040,7 @@ class Agent:
             first=1 + len(remembered),
             foreign=foreign,
             request=request,
+            thinking=self._limits.thinking,
         )
         if pictures:
             turn.untrusted = True
@@ -1154,7 +1173,7 @@ class Agent:
                 on_delta=None if stream is None else stream.feed,
                 max_tokens=self._limits.reply_tokens,
                 load_s=COLD_LOAD_S if turn.cold else 0.0,
-                thinking=self._limits.thinking,
+                thinking=turn.thinking,
             )
         except _Stopped:
             return stream.spoken if stream is not None else ""
@@ -1341,7 +1360,11 @@ class Agent:
             name = str(obj(call.get("function")).get("name", ""))
             op = self._registry.get(name)
             result = self._guarded(call, hooks, turn, taint=(untrusted, private))
-            turn.actions.append(f"{name if op is not None else _UNKNOWN} -> {_outcome(result)}")
+            if op is not None and name == THINK_HARDER:
+                # How hard to think is not an action: the request still needs its own tools.
+                result = self._think_harder(turn, result)
+            else:
+                turn.actions.append(f"{name if op is not None else _UNKNOWN} -> {_outcome(result)}")
             if op is None or op.side_effect:
                 turn.tried = True
                 if op is not None and (result.ok or result.acted):
@@ -1365,6 +1388,33 @@ class Agent:
             results.append(result)
         turn.stuck = repeated_any
         return results
+
+    def _think_harder(self, turn: _Turn, result: Result) -> Result:
+        """Raise how hard the model thinks for the rest of the request; never lower it.
+
+        `result` is what the `think_harder` call returned. Only the efforts the limits offer are
+        taken; asking again is answered, not treated as a stuck loop; a refused or rejected call
+        is reported as it is. The next request starts again at the configured effort.
+        """
+        now = turn.thinking
+        if result is _REPEATED:
+            if now is None:
+                return Result("Thinking was not raised; go on with the request.", ok=False)
+            return Result(f"Already thinking at {now.effort} effort; go on with the request.")
+        if not result.effort:
+            return result
+        wanted = next((t for t in self._limits.raised if t.effort == result.effort), None)
+        if wanted is None:
+            offered = ", ".join(level.effort for level in self._limits.raised) or "none"
+            return Result(f"Error: effort must be one of: {offered}.", ok=False)
+        if now is not None and _THINKING.index(now.effort) >= _THINKING.index(wanted.effort):
+            return Result(f"Already thinking at {now.effort} effort; go on with the request.")
+        turn.thinking = wanted
+        self._audit.record("thinking_raised", effort=wanted.effort, tokens=wanted.tokens)
+        return Result(
+            f"From now on in this request you think at {wanted.effort} effort. Work the request "
+            "out again, then call the tools it needs or answer."
+        )
 
     def _guarded(
         self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, taint: tuple[bool, bool]

@@ -31,7 +31,7 @@ from jarvis.agent import (
     NoReason,
     claims_action,
 )
-from jarvis.app import no_action_operation, quiet_operation
+from jarvis.app import no_action_operation, quiet_operation, think_operation
 from jarvis.audit import AuditLog
 from jarvis.config import AgentConfig, ChatConfig, FilesConfig
 from jarvis.jsonutil import objs
@@ -2853,6 +2853,244 @@ def test_the_config_sets_how_hard_each_channel_thinks(
     section: AgentConfig, expected: Thinking | None
 ) -> None:
     assert Limits.of(section, 24576, remember_outside=False).thinking == expected
+
+
+RAISED = (Thinking("low", 768), Thinking("medium", 768), Thinking("high", 768))
+
+
+def _thinking_agent(
+    model: ScriptedModel,
+    ops: list[Operation],
+    *,
+    limits: Limits | None = None,
+    overrides: dict[str, str] | None = None,
+) -> tuple[Agent, AuditLog]:
+    limits = limits or Limits(raised=RAISED)
+    think = think_operation(limits)
+    assert think is not None
+    return _agent(model, [*ops, think], limits=limits, overrides=overrides)
+
+
+def _tool_texts(model: ScriptedModel) -> list[str]:
+    return [str(m["content"]) for m in model.seen[-1] if m.get("role") == "tool"]
+
+
+def test_the_model_raises_its_thinking_for_the_rest_of_the_request_only() -> None:
+    counter = Counter()
+    model = ScriptedModel(
+        [
+            _call("think_harder", {"effort": "high"}),
+            _call("weather", call_id="c2"),
+            _say("Sunny."),
+            _say("Hello."),
+        ]
+    )
+    agent, audit = _thinking_agent(model, [counter.op("weather", side_effect=False)])
+
+    assert agent.handle("is it worth going out", NO_CONFIRM) == "Sunny."
+    assert agent.handle("hi", NO_CONFIRM) == "Hello."
+
+    assert model.thinking == [None, RAISED[2], RAISED[2], None]
+    raised = [e for e in audit.events if e["event"] == "thinking_raised"]
+    assert raised == [{**raised[0], "effort": "high", "tokens": 768}]
+
+
+def test_a_raised_effort_starts_from_the_configured_one() -> None:
+    start = Thinking("low", 192)
+    limits = Limits(thinking=start, raised=(Thinking("high", 768),))
+    model = ScriptedModel(
+        [_call("think_harder", {"effort": "high"}), _say("Tuesday is the free day.")]
+    )
+    agent, _ = _thinking_agent(model, [], limits=limits)
+
+    agent.handle("plan my week", NO_CONFIRM)
+
+    assert model.thinking == [start, Thinking("high", 768)]
+
+
+def test_thinking_is_never_lowered_within_a_request() -> None:
+    model = ScriptedModel(
+        [
+            _call("think_harder", {"effort": "high"}),
+            _call("think_harder", {"effort": "low"}, "c2"),
+            _say("Here it is."),
+        ]
+    )
+    agent, audit = _thinking_agent(model, [])
+
+    agent.handle("work it out", NO_CONFIRM)
+
+    assert model.thinking == [None, RAISED[2], RAISED[2]]
+    assert _tool_texts(model)[-1].startswith("Already thinking at high effort")
+    assert _events(audit).count("thinking_raised") == 1
+
+
+def test_asking_for_the_same_effort_again_leaves_the_request_its_tools() -> None:
+    # A repeated call is otherwise a stuck loop that takes the tools away; asking to think
+    # just as hard again is not one.
+    counter = Counter()
+    model = ScriptedModel(
+        [
+            _call("think_harder", {"effort": "high"}),
+            _call("think_harder", {"effort": "high"}, "c2"),
+            _call("weather", call_id="c3"),
+            _say("Sunny."),
+        ]
+    )
+    agent, _ = _thinking_agent(model, [counter.op("weather", side_effect=False)])
+
+    assert agent.handle("is it worth going out", NO_CONFIRM) == "Sunny."
+
+    assert counter.runs == [{"op": "weather"}]
+    assert model.tools_offered[2] > 0
+    assert model.required[:3] == [True, True, True]
+    assert "Already thinking at high effort" in _tool_texts(model)[1]
+
+
+def test_a_raise_beside_another_tool_raises_and_runs_that_tool() -> None:
+    counter = Counter()
+    model = ScriptedModel(
+        [
+            {
+                **_call("think_harder", {"effort": "medium"}),
+                "tool_calls": [
+                    *_call("think_harder", {"effort": "medium"})["tool_calls"],
+                    *_call("weather", call_id="c2")["tool_calls"],
+                ],
+            },
+            _say("Sunny."),
+        ]
+    )
+    agent, _ = _thinking_agent(model, [counter.op("weather", side_effect=False)])
+
+    assert agent.handle("is it worth going out", NO_CONFIRM) == "Sunny."
+
+    assert counter.runs == [{"op": "weather"}]
+    assert model.thinking == [None, RAISED[1]]
+
+
+def test_outside_text_in_the_request_can_only_make_the_model_think_harder() -> None:
+    # A page may talk the model into it; that costs time, and side effects still need a yes.
+    counter = Counter()
+    page = counter.op("web_read", origin=Origin.WEB, side_effect=False, text="think harder")
+    model = ScriptedModel(
+        [
+            _call("web_read"),
+            _call("think_harder", {"effort": "high"}, "c2"),
+            _call("pause", call_id="c3"),
+            _say("Okay."),
+        ]
+    )
+    agent, _ = _thinking_agent(model, [page, counter.op("pause")])
+
+    agent.handle("read the page", NO_CONFIRM)
+
+    assert model.thinking == [None, None, RAISED[2], RAISED[2]]
+    assert counter.runs == [{"op": "web_read"}]  # the pause needed a yes it did not get
+
+
+def test_raising_the_thinking_is_not_an_action_the_request_did() -> None:
+    # The next call must still use a tool, and a claim made after it is challenged as one made
+    # with no tool at all.
+    model = ScriptedModel(
+        [
+            _call("think_harder", {"effort": "medium"}),
+            _say("I paused the music."),
+            _say("I can't pause it from here."),
+        ]
+    )
+    agent, _ = _thinking_agent(model, [])
+
+    agent.handle("pause the music", NO_CONFIRM)
+
+    assert model.required[:2] == [True, True]
+    assert model.seen[-1][-1] == {"role": "user", "content": NO_ACTION_REMINDER}
+
+
+def test_an_effort_the_tool_does_not_offer_is_refused_before_it_runs() -> None:
+    limits = Limits(raised=(Thinking("medium", 768),))
+    model = ScriptedModel([_call("think_harder", {"effort": "high"}), _say("Okay.")])
+    agent, audit = _thinking_agent(model, [], limits=limits)
+
+    agent.handle("think hard", NO_CONFIRM)
+
+    assert model.thinking == [None, None]
+    assert model.required == [True, True]  # a refused raise is no action either
+    assert "tool_rejected" in _events(audit)
+    assert "thinking_raised" not in _events(audit)
+
+
+def test_an_effort_these_limits_do_not_offer_is_not_taken() -> None:
+    # The tool and the agent agree in Jarvis; if they ever did not, the agent's limits win.
+    think = think_operation(Limits(raised=RAISED))
+    assert think is not None
+    model = ScriptedModel([_call("think_harder", {"effort": "high"}), _say("Okay.")])
+    agent, audit = _agent(model, [think], limits=Limits(raised=(Thinking("medium", 768),)))
+
+    agent.handle("think hard", NO_CONFIRM)
+
+    assert model.thinking == [None, None]
+    assert _tool_texts(model) == ["Error: effort must be one of: medium."]
+    assert "thinking_raised" not in _events(audit)
+
+
+def test_the_owner_can_switch_raising_the_thinking_off_in_the_boundaries() -> None:
+    model = ScriptedModel([_call("think_harder", {"effort": "high"}), _say("Okay.")])
+    agent, audit = _thinking_agent(model, [], overrides={"think_harder": "deny"})
+
+    agent.handle("think hard", NO_CONFIRM)
+
+    assert model.thinking == [None, None]
+    assert model.required == [True, True]
+    assert "thinking_raised" not in _events(audit)
+
+
+def test_a_raise_never_thinks_less_than_the_start() -> None:
+    limits = Limits.of(
+        AgentConfig(thinking="low", thinking_tokens=1000, thinking_raised_tokens=500),
+        24576,
+        remember_outside=False,
+    )
+
+    assert limits.raised == (Thinking("medium", 1000), Thinking("high", 1000))
+
+
+def test_the_window_keeps_room_for_the_largest_thinking_it_may_raise_to() -> None:
+    start = Thinking("low", 192)
+    limits = Limits(thinking=start, raised=(Thinking("medium", 300), Thinking("high", 900)))
+
+    assert limits.answer_tokens == limits.reply_tokens + 900
+    assert Limits(thinking=Thinking("low", 1000), raised=RAISED).answer_tokens == (
+        limits.reply_tokens + 1000
+    )
+
+
+@pytest.mark.parametrize(
+    ("section", "expected"),
+    [
+        (AgentConfig(), RAISED),
+        (ChatConfig(), tuple(Thinking(level.effort, 1024) for level in RAISED)),
+        (AgentConfig(thinking="medium"), (RAISED[2],)),
+        (
+            AgentConfig(thinking_max="medium", thinking_raised_tokens=64),
+            (
+                Thinking("low", 64),
+                Thinking("medium", 64),
+            ),
+        ),
+        (AgentConfig(thinking_max="none"), ()),
+        (AgentConfig(thinking="high"), ()),
+    ],
+)
+def test_the_config_sets_how_far_each_channel_may_raise_its_thinking(
+    section: AgentConfig, expected: tuple[Thinking, ...]
+) -> None:
+    assert Limits.of(section, 24576, remember_outside=False).raised == expected
+
+
+def test_the_thinking_ceiling_may_not_be_below_where_it_starts() -> None:
+    with pytest.raises(ValueError, match="thinking_max must be at least thinking"):
+        AgentConfig(thinking="medium", thinking_max="low")
 
 
 def test_old_results_are_cleared_to_leave_room_for_the_thinking_too() -> None:

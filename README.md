@@ -21,6 +21,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
 - **Reasoning:** one agent on a local model served by Strata, whichever Strata's run config names
   (Qwen3.8-Flash-Next on the reference PC; [docs/models.md](docs/models.md) compares the models measured).
   Plain commands such as "pause", "next song" or "volume 40" skip the model and answer in about 0.3 s.
+  The model answers without thinking first, and thinks harder, up to a ceiling you set, only for a request
+  that needs it ([thinking](docs/configuration.md)).
 - **Voice:** Kokoro by default (`kokoro:bm_george`); a Piper voice can be set instead. Jarvis replies by voice
   only, with no desktop notifications.
   Tell Jarvis to be quiet, in any words, and it stops without a word. Say the wake word while it speaks

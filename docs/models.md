@@ -65,10 +65,20 @@ the model loaded about 9 GiB stayed free, so it was not tried further.
 
 ### Thinking
 
-Jarvis asks for no thinking by default (`[agent]` and `[chat]` `thinking = "none"`). Set to `low`,
-`medium` or `high` (Strata's engine for the Qwen models takes all three), each model call thinks up to
-`thinking_tokens` (192 for speech, 512 in the chat) before it answers. Every request asks for the same
-effort, so the prompt start Strata keeps (`strata_prefix`) is the same from one request to the next.
+Each request starts with no thinking by default (`[agent]` and `[chat]` `thinking = "none"`). Set to
+`low`, `medium` or `high` (Strata's engine for the Qwen models takes all three), each model call thinks up
+to `thinking_tokens` (192 for speech, 512 in the chat) before it answers. When a request needs careful
+thought, the model raises its own effort for the rest of that request with `think_harder`, up to
+`thinking_max` (`high` by default), and each call after it thinks up to `thinking_raised_tokens` (768 for
+speech, 1024 in the chat); the next request starts at `thinking` again.
+
+Where the effort goes in the prompt is the model's chat template's choice. Qwen3.8-Flash-Next's (in its
+pack's `tokenizer/chat_template.jinja`, read on 2026-11-25) writes a sentence for `low` and for `high`
+(which it calls `xhigh`) at the very start of the system prompt, before the tools, and nothing for
+`medium`. So `none` and `medium` share the system prompt Strata keeps (`strata_prefix`), and differ only
+in the last tokens it reads; a call at `low` or `high` starts with other tokens, and Strata reads the whole
+prompt again (about 4.5 s for about 6,500 tokens) unless it still holds that one from an earlier call.
+How often it does was not measured; Strata's log (`prompt N tokens = R reused + …`) shows it per call.
 
 Measured on 2026-11-23, with a game running, through Jarvis's own agent, prompt and tool schemas (27
 spoken requests: Spotify, time and weather, sums, PC state, files, programs, reminders, research,
@@ -92,7 +102,8 @@ with the corrected check):
 | `medium`, 192 tokens | 81 of 81 | 2.9 s | 5.7 s | 9.5 s |
 | `medium`, 512 tokens | 81 of 81 | 3.1 s | 7.7 s | 21.4 s |
 
-Thinking made no request more accurate and every one slower, so it is off by default. What it changed was
+Thinking made no request more accurate and every one slower, so no request starts with it by default, and
+the model raises it only for one that needs it. What it changed was
 the route, not the answer: a thinking model sometimes asked for the time before setting a reminder, or
 searched once more after reading a page. These requests pick a tool and say what happened, which Qwen3.8 does
 right without thinking; harder written work in the chat may still gain from it, and `medium` with 192 tokens

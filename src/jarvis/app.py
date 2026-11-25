@@ -78,6 +78,40 @@ def quiet_operation() -> Operation:
     )
 
 
+def think_operation(limits: Limits) -> Operation | None:
+    """Return the model's way to think harder for the rest of a request, if it may.
+
+    It is offered only when the limits let the effort rise (`thinking_max` above `thinking`).
+    The agent raises the effort; the next request starts again at the configured one.
+    """
+    efforts = [level.effort for level in limits.raised]
+    if not efforts:
+        return None
+    return Operation(
+        "think_harder",  # the agent's THINK_HARDER
+        "Call this alone, without other tools in the same reply, when the request needs careful "
+        "thought to get right: several steps to plan, something to work out or compare, a name "
+        "or meaning you are unsure you understood (the owner correcting you included), or a try "
+        "in this request that failed. You then work the request out again, thinking first. "
+        "Never for a simple request: thinking makes the answer slower.",
+        {
+            "type": "object",
+            "properties": {
+                "effort": {
+                    "type": "string",
+                    "enum": efforts,
+                    "description": "How hard to think, least first; a higher effort is slower.",
+                }
+            },
+            "required": ["effort"],
+            "additionalProperties": False,
+        },
+        lambda args: Result("Thinking harder.", effort=str(args["effort"])),
+        side_effect=False,
+        spoken_summary=lambda args: f"think at {args.get('effort', 'a higher')} effort",
+    )
+
+
 def no_action_operation(max_reply_chars: int = MAX_REPLY_CHARS) -> Operation:
     """Return the explicit "nothing to do" choice the model makes for questions and chat.
 
@@ -338,6 +372,7 @@ def channel_registry(
                 else []
             ),
             *([quiet_operation()] if channel == "voice" else []),
+            *([think] if (think := think_operation(limits)) is not None else []),
             no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
         ],
         resets=(online.reset,),

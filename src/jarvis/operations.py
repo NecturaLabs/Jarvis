@@ -113,7 +113,8 @@ class Result:
     `acted` marks a result that is not `ok` although the operation did act: a command ran but
     exited non-zero, a program was asked to stop but is still running, a program started but its
     window did not show where asked. A reply may then say what was done. `quiet` ends the
-    request with nothing said: the owner asked for silence.
+    request with nothing said: the owner asked for silence. `effort` asks the agent to let the
+    model think that hard for the rest of the request (`think_harder`); the agent decides.
     """
 
     text: str
@@ -124,6 +125,7 @@ class Result:
     caption: str = ""
     acted: bool = False
     quiet: bool = False
+    effort: str = ""
 
 
 @dataclass(frozen=True, slots=True)
