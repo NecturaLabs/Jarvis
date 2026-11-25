@@ -69,6 +69,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Spotify's "Restriction violated" (shuffle, previous or a seek that what plays now does not allow) is said as
+  what it means, that Spotify does not allow that command here and nothing changed, instead of a raw 403.
+
 - `audio.transcribe_threads` reaches the GGUF engine too; before, only Whisper got it and the GGUF engine used
   its own default.
 

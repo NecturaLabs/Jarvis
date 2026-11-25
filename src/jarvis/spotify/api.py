@@ -51,6 +51,14 @@ _LIBRARY_PARTS: tuple[tuple[str, str, dict[str, Any], tuple[str, ...]], ...] = (
 _DETAIL_CHARS = 160
 _REASON = re.compile(r"[A-Z_]{1,40}")
 _NO_DEVICE = "NO_ACTIVE_DEVICE"
+# Spotify's 403 "Player command failed: Restriction violated": what plays now does not allow the
+# command (shuffle or previous in some contexts, a track the device cannot seek). Its reason is a
+# bare "UNKNOWN", so the message is the only sign.
+_RESTRICTED = "restriction violated"
+_RESTRICTED_SAID = (
+    "Spotify does not allow that command for what is playing now (the track, album, playlist or "
+    "device restricts it); nothing changed"
+)
 _QUOTA = "QUOTA_EXCEEDED"
 _GATEWAY_ERRORS = frozenset(
     {HTTPStatus.BAD_GATEWAY, HTTPStatus.SERVICE_UNAVAILABLE, HTTPStatus.GATEWAY_TIMEOUT}
@@ -290,6 +298,8 @@ class SpotifyApi:
             if no_device:
                 msg = "no active Spotify device"
                 raise NoDeviceError(msg, status=status, reason=reason)
+            if status == HTTPStatus.FORBIDDEN and _RESTRICTED in message.casefold():
+                raise SpotifyError(_RESTRICTED_SAID, status=status, reason=reason)
             if message:
                 msg = f"Spotify answered {status}: {message}"
                 raise SpotifyError(msg, origin=Origin.SPOTIFY, status=status, reason=reason)

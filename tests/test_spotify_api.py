@@ -737,3 +737,19 @@ def test_ensure_login_says_so_when_there_is_no_login(tmp_path: Path) -> None:
 
     with pytest.raises(SpotifyAuthError, match="jarvis spotify-login"):
         api.ensure_login()
+
+
+def test_a_restriction_on_what_plays_is_explained_not_passed_on_raw(tmp_path: Path) -> None:
+    """Shuffle or previous where the context forbids it answers 403 "Restriction violated"."""
+    wire = Wire()
+    wire.on("PUT", "/me/player/shuffle", _error(403, "Player command failed: Restriction violated"))
+    api, _, _ = _make(tmp_path, wire)
+
+    with pytest.raises(SpotifyError) as caught:
+        api.request("PUT", "/me/player/shuffle")
+
+    said = str(caught.value)
+    assert "403" not in said
+    assert "does not allow" in said
+    assert caught.value.origin is not Origin.SPOTIFY  # Jarvis's own words, not Spotify's text
+    assert caught.value.status == 403

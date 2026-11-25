@@ -1060,7 +1060,7 @@ def test_resuming_while_paused_with_a_refusal_keeps_the_error(tmp_path: Path) ->
     fake = FakeSpotify(state=playing_state(playing=False))
     fake.script("PUT", "/me/player/play", spotify_error(403, "UNKNOWN", "Restriction violated"))
 
-    with pytest.raises(SpotifyError, match="Restriction violated"):
+    with pytest.raises(SpotifyError, match="does not allow"):
         find_op(build_ops(fake, tmp_path), "spotify_resume").run({})
 
 
