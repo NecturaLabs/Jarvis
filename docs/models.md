@@ -80,6 +80,14 @@ in the last tokens it reads; a call at `low` or `high` starts with other tokens,
 prompt again (about 4.5 s for about 6,500 tokens) unless it still holds that one from an earlier call.
 How often it does was not measured; Strata's log (`prompt N tokens = R reused + …`) shows it per call.
 
+Strata can write the effort elsewhere: its run-config key `effort_position = "end"` puts a `low` or `medium`
+effort in a short system turn right before the answer, so the start of the prompt stays the pinned one and a
+raise to `low` costs no full read (`high` stays at the start). Jarvis passes it on as `strata.effort_position`
+([configuration](configuration.md#strata-how-the-jarvis-strata-service-runs-the-model)). It is not the default: whether the model follows an
+effort written there as well as at the start is not measured. Measuring it means running the 27 requests below
+with `think_harder` raises at `"end"` against `"start"`, on a Strata that serves only that run; not run as of
+2026-11-26.
+
 Measured on 2026-11-23, with a game running, through Jarvis's own agent, prompt and tool schemas (27
 spoken requests: Spotify, time and weather, sums, PC state, files, programs, reminders, research,
 follow-ups and a page with planted instructions; every tool a recording stub):

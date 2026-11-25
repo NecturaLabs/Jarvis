@@ -189,6 +189,8 @@ class StrataConfig(_Section):
     expert_vram_gib: float = Field(default=1.0, ge=0, le=64)
     idle_unload_s: int = Field(default=86400, ge=30, le=86400)  # stays loaded (#34, decision 2)
     reasoning_budget_tokens: int = Field(default=512, gt=0, le=8192)
+    # Where Strata writes a raised effort (`effort_position`); empty: the run config's own.
+    effort_position: Literal["", "start", "end"] = ""
     memory_max: str = Field(default="40G", pattern=r"^\d+[KMGT]?$")
     # Keep the model server's memory in RAM: its unit may lock memory and gets no swap. Off: the
     # kernel may swap the model out while the PC is short of memory and back in on the next
