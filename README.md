@@ -40,6 +40,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
   program ([Stopping a program](docs/configuration.md#stopping-a-program)).
   A shell command you say can run too, only if you turn it on (`[shell]`, off by default) and only after
   your confirm key, with time and memory limits and no sudo ([`[shell]`](docs/configuration.md)).
+  It can read, set, turn up or down and mute the PC's own volume, and play, pause or skip a video or
+  another media player (`playerctl` needed), leaving Spotify to its own tools unless you mean everything.
 - **Omarchy questions:** Jarvis answers questions about Omarchy (settings, themes, key bindings, crashes,
   building an app) from the guides Omarchy ships in `/usr/share/omarchy/default/agents/skills/`. It reads
   them as reference text and never runs a command they contain.
@@ -69,12 +71,13 @@ Jarvis is pre-1.0 software; see [Status](#status).
   while it talks and it stops and listens to your new request. See
   [the ADR](docs/adr/0008-speak-while-writing-and-barge-in.md).
 
-Not built yet: switching workspaces, the PC's own volume and running Omarchy's commands. The plan marks each
+Not built yet: switching workspaces and running Omarchy's commands. The plan marks each
 as planned.
 
 ## Requirements
 
-- Omarchy on Arch Linux with PipeWire (`pw-record` and `pw-play`; `pw-dump` too for PC audio) and systemd user services.
+- Omarchy on Arch Linux with PipeWire (`pw-record` and `pw-play`; `pw-dump` too for PC audio; `wpctl` for the
+  PC's volume) and systemd user services. `playerctl` (`pacman -S playerctl`) for other media players, if wanted.
 - Voxtype as the dictation backend, with the speech model you set in `audio.transcribe_model` downloaded (a
   Whisper model by default; `audio.transcribe_engine` picks another). Voxtype's GPU build
   (`sudo voxtype setup gpu --enable`) transcribes in less than half the time and spares the CPU while a game
@@ -155,7 +158,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 
 Jarvis is pre-1.0 and has no tagged releases yet. It was built and measured on one machine (Omarchy, an RX
 7900 XT and 64 GB of RAM); other hardware is untested. The configuration file has one schema version and no
-migrations, so a later version may ask you to edit it. Some PC operations (workspaces, the PC's own volume)
+migrations, so a later version may ask you to edit it. Some PC operations (workspaces, Omarchy's commands)
 are not built; [docs/roadmap.md](docs/roadmap.md) lists what is planned and
 [docs/plan.md](docs/plan.md) says what is built. Changes are in [CHANGELOG.md](CHANGELOG.md).
 

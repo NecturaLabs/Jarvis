@@ -2135,3 +2135,36 @@ def test_a_warmer_without_a_file_starts_nothing() -> None:
         raise AssertionError
 
     assert FileWarmer(None, unread).start() is None
+
+
+def test_wpctl_runs_with_a_fixed_argument_list_and_returns_its_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[list[str]] = []
+
+    def run(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "Volume: 0.25\n", "")
+
+    monkeypatch.setattr(audio_module.subprocess, "run", run)
+
+    assert audio_module.wpctl(["get-volume", "@DEFAULT_AUDIO_SINK@"]) == "Volume: 0.25\n"
+    assert seen == [["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"]]
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [OSError("no wpctl"), subprocess.TimeoutExpired("wpctl", 5.0), "refused"],
+)
+def test_a_wpctl_that_fails_raises_an_audio_error(
+    monkeypatch: pytest.MonkeyPatch, outcome: object
+) -> None:
+    def run(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return subprocess.CompletedProcess(cmd, 1, "", "no such node")
+
+    monkeypatch.setattr(audio_module.subprocess, "run", run)
+
+    with pytest.raises(audio_module.AudioError, match="sound server"):
+        audio_module.wpctl(["set-volume", "@DEFAULT_AUDIO_SINK@", "0.40"])

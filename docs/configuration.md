@@ -85,7 +85,7 @@ the chat keeps it (see below).
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `7800` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger), `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
+`memory_tokens` `7400` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger), `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|

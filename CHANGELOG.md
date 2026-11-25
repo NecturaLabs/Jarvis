@@ -8,6 +8,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `pc_volume`: the PC's own output volume, read, set, turned up or down or muted, in any words; it is every
+  program's sound, games and videos included. A change is bound to its start and end before any question.
+- `pc_media`: play, pause or skip a video in the browser, VLC or another MPRIS player, or say what plays,
+  through `playerctl` (`pacman -S playerctl`). Spotify keeps its own tools; "everything" pauses it too. Only a
+  player's plain name is said, never a title.
+
 - Reminders and scheduled requests can be set in seconds ("in 30 seconds"), up to an hour, for a one-off job;
   the smallest step was a minute. One due within two minutes is said as "in 30 seconds".
 
@@ -105,6 +111,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   for. A home set in `[weather]` is always the place it names.
 
 ### Changed
+
+- The chat's default `memory_tokens` is now 7400 (was 7800): the two new tools' schemas take that room in the
+  default 24,576-token window.
 
 - The chat's default `memory_tokens` is now 7800 (was 9100), so the default 24,576-token window keeps room
   for the thinking the model may raise to.

@@ -221,6 +221,45 @@ def source_found(objects: object, source: str) -> bool:
     )
 
 
+CONTROL_TIMEOUT_S = 5.0
+
+
+def _control(program: str, args: Sequence[str], who: str) -> str:
+    """Run `program` with a fixed argument list and return its output; `who` names it in errors.
+
+    Raises:
+        AudioError: the program is missing, timed out or failed.
+    """
+    try:
+        done = subprocess.run(
+            [program, *args], capture_output=True, text=True, timeout=CONTROL_TIMEOUT_S, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        msg = f"{who} did not answer ({type(exc).__name__})"
+        raise AudioError(msg) from exc
+    if done.returncode != 0:
+        msg = f"{who} refused that ({done.stderr.strip()[:200] or done.returncode})"
+        raise AudioError(msg)
+    return done.stdout
+
+
+def wpctl(args: Sequence[str]) -> str:
+    """Run PipeWire's `wpctl` with `pc_volume`'s arguments and return its output.
+
+    An `AudioError` says wpctl is missing, timed out or failed.
+    """
+    return _control("wpctl", args, "the sound server")
+
+
+def playerctl(args: Sequence[str]) -> str:
+    """Run `playerctl` (MPRIS media players) with `pc_media`'s arguments and return its output.
+
+    An `AudioError` says playerctl is missing, timed out or failed; its own words come back in
+    it, so "No players found" can be told apart.
+    """
+    return _control("playerctl", args, "the media players")
+
+
 def pw_dump() -> object:
     """Return PipeWire's object graph, or an empty one when it cannot be read."""
     try:
