@@ -68,6 +68,7 @@ class FakeAgentBrowser:
         self.page = page or Page()
         self.calls: list[tuple[list[str], list[list[str]], dict[str, str]]] = []
         self.fail: str | None = None  # a command name that fails
+        self.fail_after: str | None = None  # ... only once this command has run
         self.timeout = False
         self.on: dict[str, Callable[[list[str]], None]] = {}
 
@@ -84,7 +85,8 @@ class FakeAgentBrowser:
             return json.dumps({"success": True, "data": {"closed": True}})
         rows: list[dict[str, Any]] = []
         for command in commands:
-            if command[0] == self.fail:
+            ran = [c[0] for c in self.commands()]
+            if command[0] == self.fail and (self.fail_after is None or self.fail_after in ran):
                 rows.append({"command": command, "success": False, "error": "x", "result": None})
                 break
             result = self._result(command)
@@ -550,3 +552,42 @@ def test_no_screenshot_without_a_page(tmp_path: Path) -> None:
     with pytest.raises(BrowserError):
         made.screenshot(1)
     assert fake.calls == []
+
+
+@pytest.mark.parametrize("after", ["wait", "snapshot"])
+def test_a_click_that_happened_but_the_page_then_failed_is_uncertain(
+    tmp_path: Path, after: str
+) -> None:
+    # The click went through: saying it failed would invite doing it again.
+    fake = FakeAgentBrowser(Page(refs=dict(PAGE_REFS)))
+    made, _, _ = _browser(tmp_path, fake)
+    made.open("https://site.example/")
+    fake.fail = after
+    fake.fail_after = "click"
+
+    with pytest.raises(BrowserTimeoutError):
+        made.click(BUTTON, "https://site.example/")
+
+    assert ["click", "@e1"] in fake.commands()
+
+
+def test_typing_sent_then_an_error_page_is_uncertain(tmp_path: Path) -> None:
+    fake = FakeAgentBrowser(Page(refs=dict(PAGE_REFS)))
+    made, _, _ = _browser(tmp_path, fake)
+    made.open("https://site.example/")
+    fake.on["press"] = lambda _c: setattr(fake.page, "url", "chrome-error://chromewebdata/")
+
+    with pytest.raises(BrowserTimeoutError):
+        made.fill(BOX, "https://site.example/", "cats", submit=True)
+
+
+def test_a_click_refused_before_it_happened_is_a_plain_failure(tmp_path: Path) -> None:
+    fake = FakeAgentBrowser(Page(refs=dict(PAGE_REFS)))
+    made, _, _ = _browser(tmp_path, fake)
+    made.open("https://site.example/")
+    fake.fail = "click"
+
+    with pytest.raises(BrowserError) as raised:
+        made.click(BUTTON, "https://site.example/")
+
+    assert not isinstance(raised.value, BrowserTimeoutError)

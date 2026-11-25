@@ -64,7 +64,6 @@ ALLOWED_ACTIONS = (
     "press",
     "scroll",
     "wait",
-    "dialog",
     "close",
 )
 CHROME_ARGS = (
@@ -418,13 +417,28 @@ class Browser:
 
     _LOOK = (["get", "url"], ["get", "title"], ["get", "text", "body"], ["snapshot", "-i"])
 
-    def _act(self, commands: list[list[str]], what: str) -> View:
-        """Run commands, let the page settle, and return what it shows then."""
+    def _act(self, commands: list[list[str]], what: str, *, acting: bool = False) -> View:
+        """Run commands, let the page settle, and return what it shows then.
+
+        Raises:
+            BrowserTimeoutError: `acting` (a click, typing), the commands went through and the page
+                could not be read afterwards: the action happened, so it must not be retried as if
+                it had not.
+            BrowserError: the commands failed, or the page could not be read.
+        """
         batch = [*commands, ["wait", str(SETTLE_MS)], *(list(c) for c in self._LOOK)]
         try:
             rows = self._batch(batch)
-            self._done(rows, len(batch), what)
-            return self._read(rows)
+            done = rows[: len(commands)]
+            acted = len(done) == len(commands) and all(r.get("success") is True for r in done)
+            try:
+                self._done(rows, len(batch), what)
+                return self._read(rows)
+            except BrowserError as exc:
+                if acting and acted:
+                    msg = f"it was done, but the page couldn't be read afterwards ({exc})"
+                    raise BrowserTimeoutError(msg) from exc
+                raise
         finally:
             self._idle()
 
@@ -503,7 +517,7 @@ class Browser:
                 self._same(expect, url)
             finally:
                 self._idle()
-            return self._act([["click", f"@{expect.ref}"]], "click that")
+            return self._act([["click", f"@{expect.ref}"]], "click that", acting=True)
 
     def fill(self, expect: Element, url: str, text: str, *, submit: bool) -> View:
         """Type `text` into a field the owner agreed to, then press Enter if `submit`.
@@ -529,7 +543,7 @@ class Browser:
             commands = [["fill", f"@{expect.ref}", "--", text]]
             if submit:
                 commands.append(["press", "Enter"])
-            return self._act(commands, "type there")
+            return self._act(commands, "type there", acting=True)
 
     def screenshot(self, part: int) -> bytes:
         """Return a PNG of one screen of the current page: part 1 is its top.
