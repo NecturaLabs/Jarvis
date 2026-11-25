@@ -5,9 +5,9 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from jarvis import __version__, calc, osskills, paths, skills
+from jarvis import __version__, calc, modes, osskills, paths, skills
 from jarvis.about import AboutOps
-from jarvis.agent import Agent, Limits
+from jarvis.agent import SWITCH_MODEL, Agent, Limits, Setup
 from jarvis.audit import AuditLog
 from jarvis.model import StrataModel
 from jarvis.operations import (
@@ -123,6 +123,42 @@ def think_operation(limits: Limits) -> Operation | None:
     )
 
 
+def switch_operation(config: Config, *, coding: bool) -> Operation:
+    """Return the model's way to move a request to the other mode: coding, or back to normal.
+
+    The model decides what counts as programming work; the agent then makes the switch and has the
+    request answered again in the new mode. It changes what the PC runs, so it counts as an
+    action: a request steered by outside text needs the owner's yes for it.
+    """
+    to: modes.Mode = "normal" if coding else "coding"
+    if coding:
+        about = (
+            "Call this alone when the owner says the programming work is over or asks for the "
+            "usual model back, however they put it. Jarvis leaves coding mode and you answer "
+            "again there. Never while programming work is still asked for."
+        )
+    else:
+        about = (
+            "Call this alone, before any other tool, when the request is programming work: "
+            "writing, changing or fixing code, building a program, site, game or script, or "
+            "going on with a software project, however the owner puts it. Jarvis moves to "
+            f"coding mode ({modes.model_name(config, 'coding')}, more room to think and write) "
+            "and you work the request out again there. Never for anything else."
+        )
+    return Operation(
+        "switch_model",  # the agent's SWITCH_MODEL
+        about,
+        {
+            "type": "object",
+            "properties": {"mode": {"type": "string", "enum": [to]}},
+            "required": ["mode"],
+            "additionalProperties": False,
+        },
+        lambda args: Result(f"Switching to {args['mode']} mode.", mode=str(args["mode"])),
+        spoken_summary=lambda args: f"switch to {args.get('mode', 'the other')} mode",
+    )
+
+
 def no_action_operation(max_reply_chars: int = MAX_REPLY_CHARS) -> Operation:
     """Return the explicit "nothing to do" choice the model makes for questions and chat.
 
@@ -163,11 +199,12 @@ def _served_model(config: Config) -> str:
     return f"the {name} model" if name else "a local model"
 
 
-def system_prompt(config: Config, channel: Channel = "voice") -> str:
+def system_prompt(config: Config, channel: Channel = "voice", *, coding: bool = False) -> str:
     """Render the shipped prompt for a channel with the owner's persona, skills and addendum.
 
     The voice prompt asks for short spoken replies; the chat prompt for written Markdown that fits
-    the chat's reply budget.
+    the chat's reply budget. In coding mode the prompt gains its part on programming work, and
+    the owner's own instructions for it (`coding.prompt`).
     """
     prompts = files("jarvis").joinpath("prompts")
     core = prompts.joinpath("core.md").read_text(encoding="utf-8")
@@ -184,10 +221,17 @@ def system_prompt(config: Config, channel: Channel = "voice") -> str:
         "numbers": _number_rule(config.format.thousands_separator),
     }
     text = core + "\n" + style
+    if coding:
+        text += prompts.joinpath("coding.md").read_text(encoding="utf-8")
     for key, value in fill.items():
         text = text.replace("{" + key + "}", value)
     if config.persona.addendum.strip():
         text += f"\nThe owner's own instructions:\n{config.persona.addendum.strip()}\n"
+    if coding and config.coding.prompt.strip():
+        text += (
+            "\nThe owner's own instructions for programming work:\n"
+            f"{config.coding.prompt.strip()}\n"
+        )
     return text
 
 
@@ -253,13 +297,57 @@ def echoes_hint(transcript: str, hint: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class Jarvis:
-    """The assembled agent and what it needs."""
+    """The assembled agent and what it needs; `switcher` changes its mode, where it can."""
 
     agent: Agent
     model: StrataModel
     audit: AuditLog
     ops: SpotifyOps
     hint: Callable[[], str]
+    switcher: modes.Switcher | None = None
+
+
+class AgentModes:
+    """The modes as an agent uses them (`agent.Modes`): the state file, the switch, each setup."""
+
+    def __init__(self, switcher: modes.Switcher, make: Callable[[modes.Mode], Setup]) -> None:
+        """Follow and switch the mode through `switcher`; `make` builds a mode's setup, once."""
+        super().__init__()
+        self._switcher = switcher
+        self._make = make
+        self._made: dict[str, Setup] = {}
+
+    def current(self) -> str:
+        """Return the mode now, going back to normal first when coding mode idled too long."""
+        self._switcher.back_if_idle()
+        return modes.current()
+
+    def setup(self, mode: str) -> Setup:
+        """Return what the agent works with in `mode` (the normal mode's for an unknown one)."""
+        known: modes.Mode = "coding" if mode == "coding" else "normal"
+        if known not in self._made:
+            self._made[known] = self._make(known)
+        return self._made[known]
+
+    def switch(self, to: str, say: Callable[[str], None]) -> str:
+        """Switch to `to` for the model; return "" when done, else what to tell the owner."""
+        if to not in modes.MODES:
+            return f"There is no {to} mode."
+        return self._switcher.switch("coding" if to == "coding" else "normal", "model", say).error
+
+    @staticmethod
+    def used() -> None:
+        """Note a request answered in coding mode, so its idle time starts again."""
+        if modes.current() == "coding":
+            modes.mark_used()
+
+
+def voice_busy() -> bool:
+    """Whether the voice service is in the middle of a request (a switch would cut it)."""
+    from jarvis import control  # ruff: ignore[import-outside-top-level] - the socket client, kept out of programs that never ask
+
+    answer = control.send("status", timeout=1.0)
+    return answer is not None and answer.get("state") in {"listening", "thinking", "speaking"}
 
 
 def web_ops(config: Config, shown: PictureCache | None = None) -> WebOps:
@@ -373,18 +461,22 @@ def channel_limits(config: Config, channel: Channel) -> Limits:
     return Limits.of(section, config.strata.context, remember_outside=True)
 
 
-def channel_registry(
+def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offers, each part its own
     config: Config,
     spotify: list[Operation],
     limits: Limits,
     channel: Channel,
     voice_running: Callable[[], bool] = lambda: True,
+    *,
+    coding: bool = False,
 ) -> Registry:
     """Return every operation a channel's agent is offered, sized to its limits.
 
     A read page fills the chat's room for one result; spoken requests keep the configured length.
     Resetting the registry forgets what the web operations' searches returned. `voice_running`
-    says whether a voice service is there to say the reminders set here.
+    says whether a voice service is there to say the reminders set here. Where `auto` in
+    `[coding.chat]` or `[coding.voice]` lets the model switch modes itself, `switch_model` is
+    offered: into coding mode, or with `coding` (the registry of coding mode) back out of it.
     """
     room = limits.tool_text_chars - PAGE_HEADROOM
     pages = room if channel == "chat" else min(config.research.page_chars, room)
@@ -421,10 +513,20 @@ def channel_registry(
             ),
             *([quiet_operation()] if channel == "voice" else []),
             *([think] if (think := think_operation(limits)) is not None else []),
+            *(
+                [switch_operation(config, coding=coding)]
+                if switches_itself(config, channel)
+                else []
+            ),
             no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
         ],
         resets=(online.reset,),
     )
+
+
+def switches_itself(config: Config, channel: Channel) -> bool:
+    """Whether the model may switch modes itself on this channel (`auto` in `[coding.*]`)."""
+    return config.coding.chat.auto if channel == "chat" else config.coding.voice.auto
 
 
 # Operations offered only when their files are installed, known to `boundaries.classes` either way.
@@ -501,13 +603,21 @@ def strata_model(config: Config, key: str) -> StrataModel:
     )
 
 
-def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvis:
+def build(
+    config: Config,
+    *,
+    via: str | None = None,
+    session: str = "",
+    units: modes.Units | None = None,
+) -> Jarvis:
     """Assemble the agent from the config.
 
     `via` marks every audit event of this agent with where its requests come from ("chat",
     "ask"); the voice service leaves it out. The chat gets the chat's limits and written replies,
     and keeps its conversation across sessions when `chat.resume` is on. `session` marks the
-    agent's audit events too, so a window can tell its own from others'.
+    agent's audit events too, so a window can tell its own from others'. With `units` (the
+    model server's systemd unit) the agent follows the mode Jarvis is in and can switch it;
+    without, it stays in the normal mode.
 
     Raises:
         SetupError: the Spotify client ID or the Strata API key is missing, or
@@ -550,32 +660,61 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
         )
         raise SetupError(msg)
     channel: Channel = "chat" if via == "chat" else "voice"
-    limits = channel_limits(config, channel)
     elsewhere = via in {"chat", "ask"}  # the voice service says reminders; is one running?
-    registry = channel_registry(
-        config,
-        ops.operations(),
-        limits,
-        channel,
-        voice_running=voice_service_running if elsewhere else lambda: True,
-    ).without(switched_off(config))  # a tool switched off is not offered at all
+
+    def setup(mode: modes.Mode) -> Setup:
+        coding = mode == "coding"
+        cfg = modes.effective(config, mode)
+        limits = channel_limits(cfg, channel)
+        off: set[str] = {*switched_off(cfg), *(cfg.coding.tools_off if coding else ())}
+        if units is None:
+            off.add(SWITCH_MODEL)
+        registry = channel_registry(
+            cfg,
+            ops.operations(),
+            limits,
+            channel,
+            voice_running=voice_service_running if elsewhere else lambda: True,
+            coding=coding,
+        ).without(off)  # a tool switched off is not offered at all
+        prompt = system_prompt(cfg, channel, coding=coding)
+        return Setup(prompt, registry, limits, reads_pictures(cfg), strata_model(cfg, key))
+
+    normal = setup("normal")
     remembered = chat_memory_file() if channel == "chat" else None
     if remembered is not None and not config.chat.resume:
         remembered.unlink(missing_ok=True)
+    switcher = (
+        None
+        if units is None
+        else modes.Switcher(
+            config,
+            units,
+            lambda cfg: strata_model(cfg, key),
+            audit,
+            busy=voice_busy if elsewhere else lambda: False,
+        )
+    )
     agent = Agent(
         model,
-        registry,
-        system_prompt(config, channel),
+        normal.registry,
+        normal.system_prompt,
         audit,
         config.boundaries.classes,
         grant_s=config.audio.pc_audio_grant_s,
         names=(config.persona.name,),
-        limits=limits,
+        limits=normal.limits,
         memory_file=remembered,
-        pictures=reads_pictures(config),
+        pictures=normal.pictures,
         bypass_consent=config.boundaries.bypass_consent,
         actions=action_rate(config),
+        modes=None if switcher is None else AgentModes(switcher, setup),
     )
     return Jarvis(
-        agent, model, audit, ops, lambda: speech_hint(config, registry, ops.artist_names())
+        agent,
+        model,
+        audit,
+        ops,
+        lambda: speech_hint(config, normal.registry, ops.artist_names()),
+        switcher,
     )

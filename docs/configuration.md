@@ -86,7 +86,7 @@ needs your yes; a plain command (`pause`, `volume 40`) does not.
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `7000` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger), `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
+`memory_tokens` `6700` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger), `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -148,6 +148,7 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `home` | `~/.local/share/strata` | path | Strata's data folder (`STRATA_DATA_DIR`). `--strata-home`. |
 | `components_parent` | `~/.local/share` | path | The `XDG_DATA_HOME` Strata runs with. `--strata-components-parent`. |
 | `run_config` | unset | path | Strata's own run config for the model: the `strata-<model>.json` that `strata launch` writes in Strata's `install` folder. The model, its engine, its flags, its tokenizer, its name and its picture reader all come from it; Jarvis sets only the limits in this table. Once set, the Strata unit starts only if the model file it names exists, and `jarvis setup` refuses a run config naming a file that is gone (mount the drive, or run `strata launch` for the model again). A model whose drive is not mounted is still known by its path, so Jarvis says the file is missing at once and keeps pictures on for when it is back. A run config with its own `--host` or `--port` is refused: Jarvis serves on `127.0.0.1` at `port`. Unset, `jarvis setup` saves the config and stops there; `jarvis doctor` fails until it is set. `--run-config`. |
+| `coding_run_config` | unset | path | Strata's run config for coding mode's own model ([`[coding]`](#coding-coding-mode)); unset: coding mode keeps `run_config`. `--coding-run-config`. |
 | `port` | `8080` | 1024 to 65535 | Strata's port on `127.0.0.1`. |
 | `context` | `24576` | 2048 to 262144 | Context window in tokens (`--max-context`). With `vram_reserve_mib` set, the engine's VRAM stays at its limit and a larger context takes the room from expert slots on the card instead; without it, each 1,000 tokens more costs about 0.05 GiB of VRAM ([models.md](models.md#context-size)). It holds the prompt and the tool schemas (about 5,000 tokens together), the remembered conversation (`agent.memory_tokens` or `chat.memory_tokens`), one reply and the request's tool results; when a long request outgrows it, its oldest tool results are cleared down to their start. |
 | `expert_vram_gib` | `1.0` | 0 to 64 | Expert weights kept in VRAM, for an engine that takes a size: passed as `--expert-vram` or `--vram-experts-gb`, whichever the run config has; the planner keeps the other experts in RAM (Jarvis drops the run config's `--ram-experts-gb`). An engine whose expert cache fills the card (`--expert-cache auto`, Qwen3.8-Flash-Next) ignores it: limit that one with `vram_reserve_mib`. |
@@ -269,6 +270,62 @@ Then run `jarvis restart`. With `strata.speed_projection` on (the default), Jarv
 config loads; off, it leaves the vector out without touching the run config. Jarvis's own boundaries do not
 depend on the model declining anything: every action still passes the policy, its confirmation and the
 audit log in code. How the vector changes Jarvis's tool calls has not been measured.
+
+## `[coding]`: coding mode
+
+Jarvis is in one of two modes, `normal` or `coding` ([ADR 0017](adr/0017-coding-mode.md)). Coding mode is for
+programming work: more model calls, longer replies, more thinking, a larger context, a part on programming
+added to the prompt, and, when you set one, a model of its own.
+
+- **Switching.** `jarvis model` shows the mode, each mode's model and whether it is loaded; `jarvis model
+  coding` and `jarvis model normal` switch, and so does `/model` in the chat. Where `auto` is on, the model
+  switches by itself when a request is programming work, and back when you say that work is over
+  (`switch_model`; switch it off like any tool with `jarvis tools switch_model off`). After
+  `back_after_s` without a request in coding mode Jarvis goes back to normal.
+- **The model.** `strata.coding_run_config` names Strata's run config for the coding model, as
+  `strata.run_config` does for the usual one: run `strata launch` for it once, then `jarvis setup
+  --coding-run-config <its strata-<model>.json>`. Unset, coding mode keeps the usual model. With two
+  models, a switch restarts the model server: the first model is out of memory before the second loads, so
+  only one is ever in memory, and Jarvis says before it starts how long the load took the last time. A
+  switch is refused while the voice service is answering a request. `jarvis doctor` checks the coding
+  model's files too.
+- **Every switch is audited** (`mode_switched`: from, to, by the owner, the model or the idle time, the
+  model's name, whether the server restarted, the seconds).
+
+| Key | Default | What it does |
+|---|---|---|
+| `back_after_s` | `1800.0` | Back to normal after this long without a request in coding mode; `0` never |
+| `context` | `65536` | The model server's context in coding mode (`strata.context` in normal mode) |
+| `temperature` | unset | The sampling temperature in coding mode; unset: `model.temperature` |
+| `vram_reserve_mib`, `expert_vram_gib`, `memory_max` | unset | The same keys of `[strata]`, for coding mode only; unset (`0`, absent, `""`): `[strata]`'s |
+| `reasoning_budget_tokens` | `4096` | Strata's cap on thinking in coding mode |
+| `tools_off` | `[]` | Tools not offered in coding mode |
+| `write_roots` | `[]` | Folders Jarvis may also write in coding mode, besides `files.write_roots` |
+| `prompt` | `""` | Your own instructions for programming work, added to the prompt in coding mode |
+
+`[coding.chat]` is laid over `[chat]` and `[coding.voice]` over `[agent]` while Jarvis is in coding mode. Each
+holds only what coding changes; a key you take out keeps the channel's own value, and everything else
+(`chat.resume`, `chat.verbosity`, the voice's `memory_idle_s` and so on) is never touched.
+
+| Key | `[coding.chat]` | `[coding.voice]` |
+|---|---|---|
+| `max_steps` | `60` | `20` |
+| `max_tool_calls` | `120` | `40` |
+| `max_seconds` | `1800.0` | `300.0` |
+| `reply_tokens` | `8192` | `4096` |
+| `tool_text_chars` | `20000` | unset |
+| `memory_tokens` | `20000` | unset |
+| `thinking` | `medium` | `low` |
+| `thinking_tokens` | `1024` | `512` |
+| `thinking_max` | unset | unset |
+| `thinking_raised_tokens` | `4096` | `2048` |
+| `auto` | `true` | `false` |
+
+The chat's overlay is for long, written work. The voice's is small on purpose: a spoken, `jarvis ask` or
+scheduled request stays a quick command with its short memory, and only gets room to write a file. `auto` is
+off there because a model load in the middle of a spoken request is a long silence, and every spoken request
+after it would be answered by the coding model; set `coding.voice.auto = true` to let spoken requests switch
+too. `memory_tokens` is still held to what the context leaves, as in `[chat]`.
 
 ## `[spotify]`: your own Spotify developer app
 

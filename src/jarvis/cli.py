@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from jarvis import __version__, config, control, models, paths, services
+from jarvis import __version__, config, control, models, modes, paths, services
 from jarvis.activity import AuditTail
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.app import (
@@ -31,6 +31,7 @@ from jarvis.app import (
     echoes_hint,
     spotify_operations,
     strata_model,
+    voice_busy,
 )
 from jarvis.audit import AuditLog
 from jarvis.chat import clipboard
@@ -168,6 +169,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("confirm", "allow the action Jarvis is asking about (bind it to a key)"),
             ("chat", "type requests and watch what Jarvis does, live"),
             ("ask", "send one typed request, as if spoken"),
+            ("model", "show the model in use, or switch mode: normal or coding"),
         ),
     ),
     (
@@ -221,6 +223,12 @@ _DETAILS = {
         "key, and an operation set to deny is always refused."
     ),
     "wake": "With no argument and no option, shows the settings and the wake word files.",
+    "model": (
+        "With no argument, shows the mode Jarvis is in, each mode's model and whether it is "
+        "loaded. Coding mode gives programming work more room and, when setup was given a "
+        "coding run config, its own model: the model server then restarts, so only one model "
+        "is in memory at a time."
+    ),
     "tools": (
         "With no argument, lists every tool and its setting. A tool that is off is not offered "
         "to the model at all. The voice service restarts to take a change; an open chat takes "
@@ -335,6 +343,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Strata's run config for the model (the strata-<model>.json `strata launch` writes)",
     )
     setup.add_argument(
+        "--coding-run-config",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Strata's run config for coding mode's own model (an empty value unsets it)",
+    )
+    setup.add_argument(
         "--mic",
         default=None,
         metavar="NODE",
@@ -342,6 +357,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     setup.add_argument("--enable", action="store_true", help="enable and start the user units")
 
+    made["model"].add_argument(
+        "mode", nargs="?", choices=modes.MODES, metavar="MODE", help="normal or coding"
+    )
     made["spotify-login"].add_argument(
         "--no-browser",
         action="store_true",
@@ -465,6 +483,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
             "home": args.strata_home,
             "components_parent": args.strata_components_parent,
             "run_config": args.run_config,
+            "coding_run_config": args.coding_run_config,
         }.items()
         if value is not None
     }
@@ -492,8 +511,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
         )
         return 0
     try:
-        profile = services.write_strata_profile(updated)
-        units = services.write_units(updated, strata_key_file())
+        served = modes.effective(updated, modes.current())  # a setup in coding mode keeps it
+        services.strata_profile(modes.effective(updated, "coding"))  # refused now, not at a switch
+        profile = services.write_strata_profile(served)
+        units = services.write_units(served, strata_key_file())
     except config.ConfigError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
@@ -556,7 +577,7 @@ def _terminal_confirm(question: str) -> bool | Declined:
 def cmd_ask(args: argparse.Namespace) -> int:
     """Answer one typed request and print the reply."""
     try:
-        jarvis = build(_load(), via="ask")
+        jarvis = build(_load(), via="ask", units=StrataUnits())
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
@@ -578,10 +599,14 @@ def _chat_status(cfg: config.Config) -> str:
 
 def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
     """Return what /status adds to the services: versions, the model and where things live."""
+    mode = modes.current()
+    served = modes.effective(cfg, mode)
+    chat = served.chat
     return [
         ("jarvis", __version__),
-        ("model", f"{services.model_name(cfg)}, {cfg.strata.context:,} tokens of context"),
-        ("replies", f"up to {cfg.chat.reply_tokens:,} tokens, {cfg.chat.max_steps} model calls"),
+        ("mode", f"{mode} (/model switches)"),
+        ("model", f"{services.model_name(served)}, {served.strata.context:,} tokens of context"),
+        ("replies", f"up to {chat.reply_tokens:,} tokens, {chat.max_steps} model calls"),
         ("config", str(paths.config_file())),
         ("conversation", str(chat_memory_file())),
         ("audit log", str(paths.audit_file())),
@@ -718,7 +743,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
     agent = None
     unavailable = ""
     try:
-        agent = build(cfg, via="chat", session=session_id).agent
+        agent = build(cfg, via="chat", session=session_id, units=StrataUnits()).agent
     except SetupError as exc:
         unavailable = str(exc)
     documents = Path.home() / "Documents"
@@ -729,6 +754,8 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         save_settings=_save_chat_settings,
         tools=lambda: _tool_settings(config.load()),
         next_tool_setting=_next_tool_setting,
+        model_report=lambda: model_report(cfg),
+        switch_model=lambda to, say: switch_model(cfg, to, say, "chat"),
         shared=_shared_settings,
         set_shared=_set_shared,
         apply=_apply_from_chat,
@@ -849,7 +876,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     cfg = _load()
     try:
-        jarvis = build(cfg)
+        jarvis = build(cfg, units=StrataUnits())
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
@@ -927,11 +954,31 @@ def cmd_run(_args: argparse.Namespace) -> int:
         loop, mic, jarvis.model, jarvis.audit, keys=keys, prime=jarvis.agent.prime
     )
     handler.warm_at_start()  # the model loads now, so the first request does not wait for it
+    if jarvis.switcher is not None:
+        threading.Thread(
+            target=_back_when_idle,
+            args=(jarvis.switcher, loop, refresh_stop),
+            name="jarvis-mode-idle",
+            daemon=True,
+        ).start()
     speech_model.start()
     jarvis.audit.record("service_started", bypass_consent=cfg.boundaries.bypass_consent)
     return _run_until_stopped(
         loop, stop_requested, _serve_controls(handler, jarvis.audit), voxtype, wakes
     )
+
+
+MODE_CHECK_S = 60.0  # how often the voice service looks whether coding mode idled too long
+
+
+def _back_when_idle(switcher: modes.Switcher, loop: VoiceLoop, stop: threading.Event) -> None:
+    """Return to the normal mode once coding mode went unused too long, between requests.
+
+    The thread sleeps between looks, and a look reads one small file.
+    """
+    while not stop.wait(MODE_CHECK_S):
+        if str(loop.state) == "idle":
+            switcher.back_if_idle()
 
 
 def _run_until_stopped(
@@ -1022,6 +1069,27 @@ def _model_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
             (False, "VRAM left for games", "set strata.vram_reserve_mib (docs/models.md)")
         )
     return checks
+
+
+def _coding_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
+    """Return the model checks for coding mode's own run config, when one is set."""
+    if cfg.strata.coding_run_config == Path():
+        return []
+    try:
+        services.strata_profile(modes.effective(cfg, "coding"))
+    except config.ConfigError as exc:
+        usable = [(False, "coding mode: a profile the model server can run", str(exc))]
+    else:
+        usable = []
+    checks = _model_checks(modes.effective(cfg, "coding"))
+    fixed = "jarvis setup --coding-run-config <its strata-<model>.json>"
+    return [
+        *(
+            (ok, f"coding mode: {what}", fix.replace("jarvis setup", fixed))
+            for ok, what, fix in checks
+        ),
+        *usable,
+    ]
 
 
 def _speech_model_file(audio: config.AudioConfig) -> Path | None:
@@ -1204,6 +1272,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         *_whisper_model(cfg),
         *_model_url(cfg),
         *_model_checks(cfg),
+        *_coding_checks(cfg),
         *tool_checks,
         *_source_checks(cfg),
         *_azure_checks(cfg),
@@ -1369,6 +1438,79 @@ def _azure_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
 
 def _strata(cfg: config.Config) -> StrataModel:
     return strata_model(cfg, read_api_key(strata_key_file()) or "")
+
+
+class StrataUnits:
+    """The model server's unit, for a switch of modes (`modes.Units`)."""
+
+    @staticmethod
+    def active() -> bool:
+        """Return whether the model server runs."""
+        return _unit_state(STRATA_UNIT) in {"active", "activating", "reloading"}
+
+    @staticmethod
+    def restart() -> bool:
+        """Reload the units and restart the model server; return whether systemd took it."""
+        _systemctl("daemon-reload")
+        _reset_failed(STRATA_UNIT)
+        return _systemctl("restart", STRATA_UNIT) == 0
+
+
+def _switcher(cfg: config.Config, source: str) -> modes.Switcher:
+    """Return the switch of modes for a command or a window, audited as coming from `source`."""
+    audit = AuditLog(paths.audit_file(), tags={"via": source})
+    return modes.Switcher(cfg, StrataUnits(), _strata, audit, busy=voice_busy)
+
+
+def model_report(cfg: config.Config) -> list[str]:
+    """Return what `jarvis model` and the chat's /model show: the mode and each mode's model."""
+    state = modes.read_state()
+    running = _unit_state(STRATA_UNIT) == "active"
+    loaded = (_strata(cfg).status() if running else None) or "server not running"
+    lines = [f"mode: {state.mode} (model {loaded})"]
+    for mode in modes.MODES:
+        served = modes.effective(cfg, mode)
+        mark = "*" if mode == state.mode else " "
+        lines.append(
+            f"{mark} {mode}: {services.model_name(served)}, {served.strata.context:,} tokens of "
+            "context"
+        )
+    if not modes.own_model(cfg):
+        lines.append(
+            "coding mode has no model of its own (strata.coding_run_config is unset): it "
+            "changes the limits, the context and the prompt"
+        )
+    after = cfg.coding.back_after_s
+    if state.mode == "coding" and after:
+        lines.append(f"back to normal after {after / 60:.0f} minutes unused")
+    lines.append("switch with: model normal | model coding")
+    return lines
+
+
+def switch_model(cfg: config.Config, to: str, say: Callable[[str], None], source: str) -> str:
+    """Switch to mode `to` for the owner and return the line that says how it went."""
+    if to not in modes.MODES:
+        return f"No mode {to}: it is normal or coding."
+    wanted: modes.Mode = "coding" if to == "coding" else "normal"
+    done = _switcher(cfg, source).switch(wanted, "owner", say)
+    if done.error:
+        return done.error
+    name = modes.model_name(cfg, done.mode)
+    if not done.changed:
+        return f"Already in {done.mode} mode ({name})."
+    took = f", loaded in {done.seconds:.0f} s" if done.restarted else ""
+    return f"Now in {done.mode} mode: {name}{took}."
+
+
+def cmd_model(args: argparse.Namespace) -> int:
+    """Show the mode and the models, or switch between normal and coding mode."""
+    cfg = _load()
+    if args.mode is None:
+        print("\n".join(model_report(cfg)))
+        return 0
+    line = switch_model(cfg, args.mode, print, "cli")
+    print(line)
+    return 0 if line.startswith(("Now in", "Already in")) else 1
 
 
 # How a model server that cannot be reached is named to the owner.
@@ -1573,8 +1715,9 @@ def _refresh_strata() -> None:
         cfg = config.load()
         if cfg.strata.run_config == Path() or not (services.unit_dir() / STRATA_UNIT).is_file():
             return
-        services.write_strata_profile(cfg)
-        services.write_strata_unit(cfg, strata_key_file())
+        served = modes.effective(cfg, modes.current())
+        services.write_strata_profile(served)
+        services.write_strata_unit(served, strata_key_file())
     except (config.ConfigError, OSError) as exc:
         print(f"jarvis: the model server's settings were left as they were: {exc}")
         return
@@ -2051,6 +2194,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "tools": cmd_tools,
     "speed": cmd_speed,
     "wake": cmd_wake,
+    "model": cmd_model,
     "speech-test": cmd_speech_test,
 }
 

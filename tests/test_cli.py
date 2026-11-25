@@ -711,7 +711,9 @@ def test_chat_sends_typed_requests_to_an_agent_that_marks_its_audit_events(
     opened = _opened_chat(monkeypatch)
     built: list[tuple[str | None, str]] = []
 
-    def build(_config: object, *, via: str | None = None, session: str = "") -> object:
+    def build(
+        _config: object, *, via: str | None = None, session: str = "", **_kwargs: object
+    ) -> object:
         built.append((via, session))
 
         def handle(text: str, _hooks: Hooks) -> str:
@@ -900,9 +902,11 @@ def _cmd_run(
     )
     ops = SimpleNamespace(start_refresh=run.refresh.append)
     agent = SimpleNamespace(prime=run.primed.set)
-    jarvis = SimpleNamespace(agent=agent, model=model, ops=ops, hint=lambda: "", audit=run.audit)
+    jarvis = SimpleNamespace(
+        agent=agent, model=model, ops=ops, hint=lambda: "", audit=run.audit, switcher=None
+    )
 
-    def build(_cfg: config.Config) -> SimpleNamespace:
+    def build(_cfg: config.Config, **_kwargs: object) -> SimpleNamespace:
         return jarvis
 
     monkeypatch.setattr(cli, "build", build)

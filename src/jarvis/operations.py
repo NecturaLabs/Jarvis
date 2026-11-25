@@ -133,6 +133,7 @@ class Result:
     window did not show where asked. A reply may then say what was done. `quiet` ends the
     request with nothing said: the owner asked for silence. `effort` asks the agent to let the
     model think that hard for the rest of the request (`think_harder`); the agent decides.
+    `mode` asks the agent to go on in that mode, on that mode's model (`switch_model`).
     """
 
     text: str
@@ -144,6 +145,7 @@ class Result:
     acted: bool = False
     quiet: bool = False
     effort: str = ""
+    mode: str = ""
 
 
 @dataclass(frozen=True, slots=True)

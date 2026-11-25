@@ -1159,6 +1159,53 @@ def test_effort_refuses_a_level_it_does_not_know() -> None:
     assert session.thought == []
 
 
+def test_model_shows_the_mode_and_each_modes_model() -> None:
+    services = Services(
+        model_report=lambda: ["mode: normal", "* normal: flash", "  coding: flash-coder"],
+        switch_model=lambda _to, _say: "",
+    )
+    app = _app(session=FakeSession(), services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/model")
+        await _until(pilot, lambda: _has(app, "coding: flash-coder"))
+
+    _run(test, app)
+
+
+def test_model_switches_the_mode_and_says_what_is_loading() -> None:
+    asked: list[str] = []
+
+    def switch(to: str, say: Callable[[str], None]) -> str:
+        asked.append(to)
+        say("Switching to the coding model, flash-coder: about 20 seconds.")
+        return "Now in coding mode: flash-coder, loaded in 21 s."
+
+    services = Services(model_report=list, switch_model=switch)
+    app = _app(session=FakeSession(), services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/model coding")
+        await _until(pilot, lambda: _has(app, "Now in coding mode"))
+        assert _has(app, "about 20 seconds")
+
+    _run(test, app)
+    assert asked == ["coding"]
+
+
+def test_model_refuses_a_mode_it_does_not_know() -> None:
+    asked: list[str] = []
+    services = Services(model_report=list, switch_model=lambda to, _say: asked.append(to) or "")
+    app = _app(session=FakeSession(), services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/model turbo")
+        await _until(pilot, lambda: _has(app, "it is normal or coding"))
+
+    _run(test, app)
+    assert asked == []
+
+
 def test_a_voice_restart_that_fails_after_config_is_shown() -> None:
     from jarvis.chat.app import SharedSetting  # ruff: ignore[import-outside-top-level] - only this test
 

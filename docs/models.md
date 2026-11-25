@@ -44,6 +44,45 @@ run config that names a file that is gone. The reference machine for every numbe
 - **Qwen3.6-35B-A3B** was the model until 2026-11-23; its profile used to be built by Jarvis itself. Its
   latency and memory are below.
 
+### The coding model
+
+Coding mode ([configuration](configuration.md#coding-coding-mode)) serves the run config
+`strata.coding_run_config` names. The choice for the reference machine is **Qwen3.8-Flash-Next Coder**
+IQ1_M (ISTA-DASLab, Strata's `coder` family): Qwen3.8-Flash-Next with 256 of each layer's 512 experts
+kept, the ones code, tool use and pictures route to, stored at about 3.5 bits. Chosen on 2026-11-26 from
+what the sources below say; **not yet downloaded or measured on this PC**.
+
+Strata runs only the architectures its engines implement (`qwen4exp`, `qwen35moe`, Inkling's two and
+Hy4-Flash), so a general coding GGUF is not a candidate
+([`strata_control/models.py`](https://github.com/Niko1221/Strata/blob/main/terminal/strata_control/models.py),
+read 2026-11-26). All scores are the vendors' or quantisers' own; no independent coding leaderboard lists
+any of these models.
+
+| Candidate | Coding scores | RAM for experts | Why, or why not |
+|---|---|---|---|
+| **Coder IQ1_M** | SWE-bench Verified 79.20 against 82.80 for the full model, LiveCodeBench v6 87.43 against 87.43, both at the highest thinking effort ([ISTA-DASLab's card](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF), rebuilt 2026-10-17) | 23.4 GB | The only file here with SWE-bench Verified measured on the file itself; 12 GB less RAM than the usual model, the tight resource beside a game; same engine, chat template and tool calls as the usual model. Weaker outside code by its card's own words, which is why it is not the everyday model |
+| Qwen3.8-Flash-Next IQ2_XS (the usual model) | LiveCodeBench v6 83.43 ([ISTA-DASLab's card](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)); DeepSWE 1.1 39.8 against 55.8 for the full model on [Unsloth's chart](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) | 35.5 GB | Loses most on agentic coding at 2 bits |
+| Qwen3.8-Flash-Next IQ3_XXS, IQ3_S, Unsloth UD-IQ2_XS and up | LiveCodeBench v6 86.29 and 86.86 (ISTA); UD-IQ2_XS DeepSWE 58.4 on Unsloth's own chart | 42 to 50 GB | Closest to the full model, but leaves a 64 GB PC no room beside a game; worth measuring for use without one |
+| Qwen3.6-35B-A3B | SWE-bench Verified 73.4 ([Qwen's card](https://huggingface.co/Qwen/Qwen3.6-35B-A3B)) | 23 GB file | Apache-2.0 and already measured here, but behind on every coding score |
+| Inkling 2 Mini | SWE-bench Verified 79.2 ([its card](https://huggingface.co/thinkingmachines/Inkling-2-Mini)) | fits the card whole | Its card warns of reasoning loops when debugging and of destructive actions; its Strata engine is days old (measured above: too slow at 8 GiB) |
+| Hy4-Flash | No SWE-bench Verified or LiveCodeBench published | 64 GB asked | Does not fit this PC's RAM |
+
+- **Licence:** the Coder's card is tagged apache-2.0 but says its weights "inherit the license of the base
+  model", so treat it as the Qwen Community License 1.0, like the usual model (above). Jarvis ships none of
+  its files.
+- **Size:** a 58.4 GB download (Strata's `strata launch --plan`, 2026-11-26); Strata 0.2.20 pins the
+  rebuilt first shard (sha256 `bfa3644d…c211`, 29.6 GB).
+- **Known risks, to check when it is measured:** reports of reasoning loops and failed tool calls, most
+  from before the rebuild; no measurement anywhere of this model held to 8 GiB of VRAM; Strata issues
+  [#5949](https://github.com/Niko1221/Strata/issues/5949) (experts in pageable RAM stalling an AMD card
+  under memory pressure) and [#6392](https://github.com/Niko1221/Strata/issues/6392).
+- **Sampling and effort:** Qwen's card recommends temperature 1.0, top-p 0.95 and top-k 20 with thinking
+  on, and says lower thinking effort can cost more failed steps in long tool-using work. Jarvis sends its
+  own `model.temperature` (0.2) unless `coding.temperature` is set; which is better for Jarvis's tools is
+  not measured.
+- **To set it up:** `strata launch --family coder --model iq1_m` once (stop the server it starts), then
+  `jarvis setup --coding-run-config <the strata-<model>.json it wrote>` and `jarvis model coding`.
+
 ### Context size
 
 Measured on 2026-11-24 with Qwen3.8-Flash-Next and `strata.vram_reserve_mib = 12000`, the context kept on
@@ -134,7 +173,8 @@ Removing experts from the model (REAP pruning) was looked at on 2026-11-23 and n
 not time (each token still runs 10 experts), the pruned Flash-Next builds published are 61 to 82 GB (more
 than this 68 GB IQ2_XS pack, whose experts take 35.5 GiB of RAM), most are pruned on coding traffic, the
 best documented one invents answers more often (25% on its authors' own check, against 0% unpruned), and
-none comes as a Strata pack.
+none came as a Strata pack then. That holds for the everyday model; coding mode's own model is such a
+build, used for programming only ([the coding model](#the-coding-model)).
 
 ### Pictures
 

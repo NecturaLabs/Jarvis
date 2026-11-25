@@ -186,6 +186,9 @@ class Services:
 
     status: Callable[[], str] = lambda: ""  # the voice service and model, for the toolbar
     details: Callable[[], list[tuple[str, str]]] = list  # more for /status: (name, value)
+    model_report: Callable[[], list[str]] | None = None  # /model: the mode and the models
+    # /model <mode>: switches, passing on the line that says a model must load; returns how it went
+    switch_model: Callable[[str, Callable[[str], None]], str] | None = None
     stats: Callable[[], Stats] | None = None  # the PC's load
     save_settings: Callable[[ChatConfig], None] | None = None
     # Jarvis's own settings the chat may change too (the voice service restarts to take them).
@@ -1176,6 +1179,7 @@ class ChatApp(App[None]):
             "/context": lambda _a: self._context_note(),
             "/verbosity": self._verbosity_command,
             "/effort": self._effort_command,
+            "/model": self._model_command,
             "/config": lambda _a: self._open_settings(),
             "/status": lambda _a: self._status_note(),
             "/copy": lambda _a: self._copy(),
@@ -1308,6 +1312,39 @@ class ChatApp(App[None]):
             return
         self._set_effort(level)
         self._note(f"{self._effort_line()} From the next request on.")
+
+    def _model_command(self, argument: str) -> None:
+        """Show the mode and each mode's model, or switch between normal and coding mode.
+
+        A switch may restart the model server and load another model, so it runs like a request:
+        not beside one, and with its working line.
+        """
+        report, switch = self._services.model_report, self._services.switch_model
+        if report is None or switch is None:
+            self._note("This chat cannot switch the model.", "warn")
+            return
+        if not argument:
+            self._note("\n".join(report()))
+            return
+        mode = argument.lower()
+        if mode not in commands.MODES:
+            self._note(f"No mode {argument}; it is normal or coding.", "warn")
+            return
+        if not self._start(f"Switching to {mode} mode"):
+            return
+        work = self._work
+
+        def run() -> None:
+            try:
+                line = switch(mode, lambda said: self._from_worker(self._note, said))
+            except Exception as exc:  # ruff: ignore[blind-except] - shown in the window
+                self._from_worker(self._note, f"Couldn't switch: {type(exc).__name__}", "error")
+            else:
+                self._from_worker(self._note, line)
+            finally:
+                self._finish(work)
+
+        self.run_worker(run, thread=True, group="request")
 
     def _effort_line(self) -> str:
         now, ceiling = self._settings.thinking, self._settings.thinking_max

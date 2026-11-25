@@ -8,6 +8,16 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Coding mode, for programming work ([ADR 0017](docs/adr/0017-coding-mode.md)): more model calls, longer
+  replies, more thinking and a larger context, a part on programming in the prompt, and a model of its own
+  when `strata.coding_run_config` names one (`jarvis setup --coding-run-config`). `jarvis model` shows the mode
+  and each mode's model, `jarvis model coding` or `normal` switches, and so does `/model` in the chat. In the
+  chat the model moves a request that is programming work to coding mode by itself (`switch_model`,
+  `coding.chat.auto`), and back when you say the work is over; Jarvis also goes back after 30 minutes unused
+  (`coding.back_after_s`). With two models the model server restarts for a switch, so one model is in
+  memory at a time, and Jarvis says first how long the load takes. Every switch is audited, and `jarvis
+  doctor` checks the coding model's files. Settings: `[coding]`, `[coding.chat]` (laid over `[chat]`) and
+  `[coding.voice]` (laid over `[agent]`).
 - `/effort` in the chat shows how hard the model thinks before it answers, and `/effort high` (or `none`,
   `low`, `medium`) sets it from the next request on, saved as `chat.thinking`. Each chat setting it or
   `/config` saves is now audited, and the chat's activity feed shows setting and tool changes.
@@ -199,6 +209,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- The chat's default `memory_tokens` is now 6700 (was 7000): the `switch_model` tool's schema takes that
+  room in the default 24,576-token window.
 - The chat's default `memory_tokens` is now 7000 (was 7800): the new tools' and arguments' schemas take that room
   in the default 24,576-token window. A larger `strata.context` leaves room for more.
 

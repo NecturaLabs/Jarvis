@@ -136,6 +136,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis hush` | Stop Jarvis speaking now. |
 | `jarvis confirm` | Allow the one action Jarvis is waiting on with "Press the confirm key". Bind it to a key ([configuration](docs/configuration.md#the-confirm-key-jarvis-confirm)). |
 | `jarvis unload` | Free the model's memory now, for example before a game. |
+| `jarvis model` | Show the mode (normal or coding), each mode's model and whether it is loaded; `jarvis model coding` and `jarvis model normal` switch ([configuration](docs/configuration.md#coding-coding-mode)). |
 | `jarvis doctor` | Check every part without loading the model: one line per check (`ok`, `FAIL` with its fix, or `note`), then how many failed. |
 | `jarvis logs` | Follow the live log (Ctrl+C to leave). |
 | `jarvis help` | List the commands by group, each with what it does (the same as `jarvis --help`); `jarvis <command> --help` explains one command and its options, and a mistyped command gets a suggestion when one is close. |
