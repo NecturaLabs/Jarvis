@@ -513,6 +513,18 @@ def test_a_new_file_is_created_in_the_write_root(home: Path) -> None:
     assert "~/Documents/new/idea.md" in said
 
 
+def test_a_written_file_is_named_by_its_full_path_and_link_for_the_model(home: Path) -> None:
+    """A model told only "~/..." guessed the home folder wrong when it wrote the owner a link."""
+    op = _op(_ops(home), "write_file")
+    args = validate_args(op, {"path": "~/Documents/game.html", "content": "<p>hi</p>"})
+    result = op.run(op.prepare(args) if op.prepare else args)
+
+    created = home / "Documents" / "game.html"
+    assert str(created) in result.text
+    assert created.as_uri() in result.text
+    assert str(home) not in result.spoken  # said aloud, the short form is enough
+
+
 def test_create_never_overwrites(home: Path) -> None:
     with pytest.raises(OperationError, match="already exists"):
         _write(_ops(home), "~/Documents/todo.md", "gone")

@@ -1276,7 +1276,7 @@ def _agent_with_web(ops: ProcessOps, replies: list[dict[str, Any]]) -> tuple[Age
     audit = AuditLog(None)
     registry = Registry([*ops.operations(), _web_page(), no_action_operation()])
     # Outside text is remembered, as in the chat, so the remembered turns can hold it.
-    limits = Limits(remember_outside=True)
+    limits = Limits()
     return Agent(Script(replies), registry, "system", audit, {}, limits=limits), audit
 
 

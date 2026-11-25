@@ -859,7 +859,17 @@ TWO_SPRINGFIELDS = {
 }
 
 
-@pytest.mark.parametrize("said", ["Springfield (Illinois)", "Springfield, Illinois"])
+@pytest.mark.parametrize(
+    "said",
+    [
+        "Springfield (Illinois)",
+        "Springfield, Illinois",
+        "Springfield, Illinois, USA",  # a part that matches nothing leaves the others to choose
+        "Springfield (Illinois, USA)",
+        "Springfield (Illinois), USA",
+        "Springfield, Illinois (USA)",
+    ],
+)
 def test_a_place_said_with_its_state_or_country_is_looked_up_by_its_name(said: str) -> None:
     """The geocoder finds nothing for "Springfield (Illinois)"; the qualifier picks a match."""
     meteo, seen = _meteo(geo=TWO_SPRINGFIELDS)

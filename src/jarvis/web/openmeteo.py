@@ -28,7 +28,7 @@ GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_DAYS = 7
 _COUNTRY_CODE = re.compile(r"[A-Z]{2}")
 # "Name (qualifier)" or "Name, qualifier": the geocoder takes the name alone.
-_QUALIFIED = re.compile(r"(.+?)\s*(?:\(([^()]+)\)|,\s*([^,]+))")
+_QUALIFIER_SEP = re.compile(r"[,()]")  # between the name's qualifiers, in any mix of the two forms
 _CHOICES = 10  # matches asked for when a qualifier picks among them
 _CURRENT = "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation"
 _DAILY = "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
@@ -188,13 +188,11 @@ def _hours(hourly: dict[str, Any]) -> tuple[Hour, ...]:
     return tuple(found)
 
 
-def _qualified(name: str) -> tuple[str, str]:
-    """Split "Springfield (Illinois)" or "Springfield, Illinois" into the name and its qualifier."""
-    match = _QUALIFIED.fullmatch(name.strip())
-    if match is None:
-        return name, ""
-    qualifier = bare(match.group(2) or match.group(3))
-    return match.group(1), qualifier
+def _qualified(name: str) -> tuple[str, tuple[str, ...]]:
+    """Split "Springfield (Illinois)" or "Springfield, Illinois, USA": the name, its qualifiers."""
+    parts = _QUALIFIER_SEP.split(name.strip())
+    said, qualifiers = parts[0].strip(), tuple(q for part in parts[1:] if (q := bare(part)))
+    return (said, qualifiers) if said and qualifiers else (name, ())
 
 
 def _zone(name: object) -> str:
@@ -261,13 +259,15 @@ class OpenMeteo:
         )
         if not found:
             return None
-        fits = [
-            place
-            for place in found
-            if qualifier
-            in {bare(str(place.get(key) or "")) for key in ("country", "country_code", "admin1")}
-        ]
-        first = (fits or found)[0]
+
+        def matched(place: dict[str, object]) -> int:
+            known = {
+                bare(str(place.get(key) or "")) for key in ("country", "country_code", "admin1")
+            }
+            return sum(q in known for q in qualifier)
+
+        # The place most qualifiers name; with none named, the best known (the geocoder's first).
+        first = max(found, key=matched) if qualifier else found[0]
         country = str(first.get("country_code") or "")
         return Place(
             _number(first.get("latitude")),

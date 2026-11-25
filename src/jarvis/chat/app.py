@@ -297,6 +297,14 @@ SETTINGS = (
         about="How many steps one request may take before it stops and says so.",
     ),
     _Setting(
+        "memory_detail",
+        "Earlier requests keep",
+        ("full", "condensed"),
+        live=False,
+        about="full: their tool calls and results too, so a follow-up need not look again. "
+        "condensed: only each request, reply, what was done and looked up.",
+    ),
+    _Setting(
         "resume",
         "Resume the last conversation",
         (True, False),
@@ -1676,6 +1684,7 @@ class ChatApp(App[None]):
             hush=lambda: self._from_worker(self._drop_draft, work),
             preview=True,
             steer=lambda: self._take_steering(work),
+            condensed=lambda note: self._from_worker(self._note, note),
         )
         reply = ""
         rate: float | None = None

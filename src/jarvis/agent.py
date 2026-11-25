@@ -5,6 +5,7 @@ call the model writes (validation, policy, confirmation, audit) without waiting 
 """
 
 import contextvars
+import copy
 import hashlib
 import json
 import logging
@@ -16,10 +17,18 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 
 from jarvis import shortcuts
-from jarvis.config import EFFORTS
+from jarvis.config import EFFORTS, MemoryDetail
 from jarvis.confirmkey import boot_clock
 from jarvis.jsonutil import obj, objs
-from jarvis.memory import CHARS_PER_TOKEN, Conversation, Turn, tokens
+from jarvis.memory import (
+    CHARS_PER_TOKEN,
+    PRIVATE_ORIGINS,
+    SHED_TO,
+    Conversation,
+    Turn,
+    message_tokens,
+    tokens,
+)
 from jarvis.model import ModelMissingError, Thinking
 from jarvis.operations import (
     REMEMBERED,
@@ -80,7 +89,6 @@ MAX_ASKED = 160  # characters of one argument
 MAX_LOOKED = 900  # characters of them all
 _NOT_LOOK_UPS = frozenset({NO_ACTION, THINK_HARDER, "stay_quiet"})
 _THINKING: tuple[Literal["low", "medium", "high"], ...] = ("low", "medium", "high")
-_OMITTED = "(That reply quoted outside data, so it is left out here.)"
 
 MODEL_DOWN = "My model isn't answering right now."
 MODEL_MISSING = "My model's file is missing, so I can't answer. Is its drive mounted?"
@@ -194,9 +202,6 @@ _EDGES = "\"'\u201c\u201d\u2018)]"
 _ACTIONS_NOTE = re.compile(r"^\[actions taken:[^\]]*\]\s*", re.IGNORECASE)
 _REPLY_KEY = '{"reply":"'
 _REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
-# Results that may hold the owner's own data: the turn is marked private, so text that leaves the PC
-# waits for a yes. A shell command's output can be any file the owner's user can read.
-_PRIVATE_ORIGINS = frozenset({Origin.FILE, Origin.SHELL})
 _WRAPPED = re.compile(r'(?P<head><data origin="[a-z_]+">)(?P<body>.*)</data>', re.DOTALL)
 _HIGH_SURROGATE = re.compile(r"\\u[dD][89abAB][0-9a-fA-F]{2}")
 
@@ -486,7 +491,7 @@ def _printable(text: str) -> str:
 def _cost(message: Mapping[str, Any]) -> int:
     """Return the tokens a message takes in the model's context, its pictures included."""
     pictures = sum(1 for part in objs(message.get("content")) if part.get("type") == "image_url")
-    return tokens(_text(message)) + pictures * PICTURE_TOKENS
+    return message_tokens({**message, "content": _text(message)}) + pictures * PICTURE_TOKENS
 
 
 def _own_words(text: str, outside: Sequence[str]) -> str:
@@ -508,7 +513,7 @@ def _steered(turn: _Turn, steered_by: frozenset[str]) -> None:
         return
     turn.untrusted = True
     turn.outside = turn.outside or carried[0]
-    private = {origin.value for origin in _PRIVATE_ORIGINS}
+    private = {origin.value for origin in PRIVATE_ORIGINS}
     turn.private = turn.private or any(origin in private for origin in carried)
 
 
@@ -556,12 +561,14 @@ class Limits:
 
     `reply_tokens` caps each model call's answer, so replies are kept to length by the model, not
     cut afterwards; `context_tokens` is the model's whole window, which the prompt, the remembered
-    conversation and the request's own work share. With `remember_outside`, a reply that drew on
-    outside text is remembered as data (and keeps side effects behind a yes while it is);
-    without, it is left out of later requests. With `thinking`, the model thinks before each
-    answer, within its cap, and the window keeps room for that too (`answer_tokens`). `raised`
-    are the efforts the model may raise itself to for the rest of a request (`think_harder`),
-    least first, each with its own cap; the window keeps room for the largest cap of all.
+    conversation and the request's own work share. A reply that drew on outside text is remembered
+    as data, and keeps side effects behind a yes while it is. `memory_detail` says what later
+    requests keep of one: its request, reply, actions and look-ups (`condensed`), or also its tool
+    calls and their results (`full`), within `memory_tokens`. With `thinking`, the model thinks
+    before each answer, within its cap, and the window keeps room for that too (`answer_tokens`).
+    `raised` are the efforts the model may raise itself to for the rest of a request
+    (`think_harder`), least first, each with its own cap; the window keeps room for the largest cap
+    of all.
     """
 
     max_steps: int = MAX_STEPS
@@ -572,7 +579,7 @@ class Limits:
     memory_tokens: int = MEMORY_TOKENS
     memory_idle_s: float = MEMORY_IDLE_S
     context_tokens: int = CONTEXT_TOKENS
-    remember_outside: bool = False
+    memory_detail: MemoryDetail = "condensed"
     thinking: Thinking | None = None
     raised: tuple[Thinking, ...] = ()
 
@@ -583,7 +590,7 @@ class Limits:
         return self.reply_tokens + max(caps, default=0)
 
     @classmethod
-    def of(cls, section: AgentConfig, context_tokens: int, *, remember_outside: bool) -> Limits:
+    def of(cls, section: AgentConfig, context_tokens: int) -> Limits:
         """Return the limits a config section sets, for a model with this context window.
 
         A raised effort never thinks less than the one each request starts at.
@@ -598,7 +605,7 @@ class Limits:
             section.memory_tokens,
             section.memory_idle_s,
             context_tokens,
-            remember_outside,
+            section.memory_detail,
             None
             if section.thinking == "none"
             else Thinking(section.thinking, section.thinking_tokens),
@@ -680,7 +687,9 @@ class Hooks:
     the reply `handle` returns replaces it. With `preview` (a window), a question about an action
     that writes text also shows the start of that text, on the lines after the question.
     `steer` returns what the owner typed while the request runs (a window), taken once: it joins
-    the request as the owner's own words before the next model call.
+    the request as the owner's own words before the next model call. `condensed` gets one line
+    saying the remembered conversation was condensed to make room, after the reply (a window
+    shows it; a voice need not say it).
     """
 
     confirm: Callable[[str], bool | Declined]
@@ -694,6 +703,7 @@ class Hooks:
     quiet: Callable[[], None] = lambda: None
     preview: bool = False
     steer: Callable[[], list[str]] = list
+    condensed: Callable[[str], None] = lambda _note: None
 
 
 def _no_reason(answer: object) -> NoReason:
@@ -712,6 +722,38 @@ def _audited(op: Operation | None, args: Mapping[str, Any]) -> dict[str, Any]:
         else value
         for key, value in args.items()
     }
+
+
+def kept_work(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Return what the conversation keeps of a request's work: its messages after the request.
+
+    They end after the last call whose results all came back (a request stopped while a call
+    ran leaves no call without its result). A lone `no_action` call at the end is left out with
+    its result: its words are the reply the turn keeps anyway.
+    """
+    work = [copy.deepcopy(dict(message)) for message in messages]
+    end, waiting = 0, set[str]()
+    for index, message in enumerate(work):
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            waiting = {str(call.get("id", "")) for call in objs(message.get("tool_calls"))}
+        elif message.get("role") == "tool":
+            waiting.discard(str(message.get("tool_call_id", "")))
+        if not waiting:
+            end = index + 1
+    work = work[:end]
+    calls = [index for index, message in enumerate(work) if message.get("tool_calls")]
+    if calls and all(m.get("role") == "tool" for m in work[calls[-1] + 1 :]):
+        names = {
+            str(obj(c.get("function")).get("name")) for c in objs(work[calls[-1]]["tool_calls"])
+        }
+        if names == {NO_ACTION}:
+            del work[calls[-1] :]
+    return work
+
+
+def _requests(count: int, which: str) -> str:
+    """Return "the oldest request" or "the oldest 3 requests"."""
+    return f"{which} request" if count == 1 else f"{which} {count} requests"
 
 
 def _span(seconds: float) -> str:
@@ -923,9 +965,7 @@ class Agent:
 
     def set_thinking(self, section: AgentConfig) -> None:
         """Think as `section` says (its effort, caps and ceiling) from the next request on."""
-        fresh = Limits.of(
-            section, self._limits.context_tokens, remember_outside=self._limits.remember_outside
-        )
+        fresh = Limits.of(section, self._limits.context_tokens)
         self._limits = replace(self._limits, thinking=fresh.thinking, raised=fresh.raised)
         self._memory.budget = self._memory_budget()  # an answer's room includes its thinking
 
@@ -981,7 +1021,7 @@ class Agent:
         memory = self._memory
         transcript = [str(m["content"]) for m in memory.summary_messages()[:1]]
         for turn in folded:
-            request, reply = turn.messages()
+            request, reply = turn.messages(work=False)
             transcript.append(f"Owner: {request['content']}\nAssistant: {reply['content']}")
         words = SUMMARY_TOKENS * 2 // 3
         try:
@@ -1061,11 +1101,38 @@ class Agent:
         if not turn.answered or turn.foreign or hooks.cancelled():
             return
         memory = self._memory
-        if not memory.over_budget() or self.compact():
+        if not memory.over_budget():
             return
-        dropped = memory.drop_to_fit()
-        self._audit.record("memory_trimmed", turns=dropped)
+        before, done = memory.cost(), list[str]()
+        shed = memory.shed_work(int(memory.budget * SHED_TO))
+        if shed:
+            self._audit.record("memory_work_shed", turns=shed, tokens=memory.cost())
+            done.append(f"left out the tool calls and results of {_requests(shed, 'the oldest')}")
+        if memory.over_budget():
+            if self.compact():
+                done.append("summarized the oldest requests")
+            else:
+                dropped = memory.drop_to_fit()
+                self._audit.record("memory_trimmed", turns=dropped)
+                done.append(f"forgot {_requests(dropped, 'the oldest')}" if dropped else "")
         self._save_memory()
+        self._condensed(before, [what for what in done if what], hooks)
+
+    def _condensed(self, before: int, done: list[str], hooks: Hooks) -> None:
+        """Tell the owner in one line how the conversation was condensed, and show what is left.
+
+        The context meter shows the last model call's figure until the next call; once the
+        conversation is condensed it shows what the next request starts from instead, so it
+        falls when that line says why.
+        """
+        after = self._memory.cost()
+        if after >= before or not done:
+            return
+        self._last_used = 0
+        hooks.condensed(
+            f"Condensed the conversation to make room: {' and '.join(done)} "
+            f"({before:,} to {after:,} tokens)."
+        )
 
     def _save_memory(self) -> None:
         if self._memory_file is None:
@@ -1075,20 +1142,15 @@ class Agent:
         except OSError as exc:
             log.warning("the conversation could not be saved: %s", exc)
 
-    def _remember(self, text: str, reply: str, turn: _Turn, *, stopped: bool = False) -> None:
-        """Keep a finished or `stopped` request and its reply in the conversation.
+    def _remember(self, text: str, reply: str, turn: _Turn) -> None:
+        """Keep a finished or stopped request and its reply in the conversation.
 
-        Where outside replies are not kept, a reply drawn on outside text is left out, and so is
-        what was looked up (an address found on a page is that page's words); a stopped request
-        keeps only its note.
+        A reply drawn on outside text is kept as data, with what was looked up (an address
+        found on a page is that page's words). With `memory_detail` "full", the request's tool
+        calls and results are kept too, as the model last read them (`kept_work`).
         """
         outside = turn.outside
-        looked = _newest(turn.looked, MAX_LOOKED)
-        if outside and not self._limits.remember_outside:
-            reply = STOPPED if stopped else _OMITTED
-            outside = ""
-            looked = ""
-        private = turn.private and bool(outside)
+        work = self._limits.memory_detail == "full"
         self._memory.add(
             Turn(
                 text,
@@ -1096,8 +1158,9 @@ class Agent:
                 "; ".join(turn.actions),
                 outside,
                 self._clock(),
-                private=private,
-                looked=looked,
+                private=turn.private and bool(outside),
+                looked=_newest(turn.looked, MAX_LOOKED),
+                work=kept_work(turn.messages[turn.first + 1 :]) if work else [],
             )
         )
         self._save_memory()
@@ -1243,10 +1306,11 @@ class Agent:
         a follow-up need not look it all up again; a request heard in PC audio never is.
         """
         stopped = hooks.cancelled()
-        asked = "\n".join([asked, *(f"{STEERED} {words}" for words in turn.steered)])
+        if self._limits.memory_detail != "full":  # a full turn keeps them in its work already
+            asked = "\n".join([asked, *(f"{STEERED} {words}" for words in turn.steered)])
         if (reply or stopped) and not turn.foreign:
             said = f"{reply} {STOPPED}".strip() if stopped else reply
-            self._remember(asked, said, turn, stopped=stopped)
+            self._remember(asked, said, turn)
         seconds = round(self._clock() - turn.started, 2)
         flag = {"stopped": True} if stopped else {}
         self._audit.record("reply", text=reply, seconds=seconds, **flag)
@@ -1661,7 +1725,7 @@ class Agent:
                 turn.outside = result.origin.value
             if turn.request is not None:
                 turn.request.saw(result.origin.value)
-            turn.private = turn.private or result.origin in _PRIVATE_ORIGINS
+            turn.private = turn.private or result.origin in PRIVATE_ORIGINS
             body = _wrapped(result.origin.value, result.text, self._limits.tool_text_chars)
         turn.messages.append(
             {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": body}

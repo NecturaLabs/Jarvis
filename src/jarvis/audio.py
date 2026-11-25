@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Protocol, Self, cast, runtime_checkable
 import numpy as np
 import onnxruntime as ort
 
+from jarvis.confirmkey import boot_clock
 from jarvis.jsonutil import obj, objs
 
 log = logging.getLogger(__name__)
@@ -1449,9 +1450,12 @@ class FileWarmer:
         path: Path | None,
         read: Callable[[Path], float | None] = read_into_memory,
         *,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = boot_clock,
     ) -> None:
-        """Keep the file to read; without one, `start` does nothing."""
+        """Keep the file to read; without one, `start` does nothing.
+
+        `clock` counts time asleep too: a suspend may have pushed the file out of memory.
+        """
         super().__init__()
         self._path = path
         self._read = read

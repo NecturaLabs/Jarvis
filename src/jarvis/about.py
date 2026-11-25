@@ -36,6 +36,11 @@ _FLAG = re.compile(r"""^\s*["']?(?P<name>--[\w-]+)["']?,?\s*$""")
 _VARIABLE = re.compile(r"""^["']?(?P<name>\w+)=""")
 _SECRET_WORDS = frozenset({"key", "apikey", "token", "secret", "password", "passwd", "credentials"})
 _SECTION = re.compile(r"^\s*\[([^\]\n]+)\]\s*$", re.MULTILINE)
+# What a remembered request keeps, as `facts` says it.
+_DETAIL = {
+    "condensed": "condensed (each request, its reply, actions and look-ups)",
+    "full": "in full (with its tool calls and their results)",
+}
 
 
 def jarvis_files(config: Config) -> dict[str, Path]:
@@ -158,7 +163,7 @@ def facts(config: Config, channel: str, limits: Limits) -> str:
         (
             f"Limits here: {limits.max_steps} model calls and {limits.max_tool_calls} tool calls"
             f" per request, {limits.reply_tokens} tokens per reply, {limits.memory_tokens} tokens"
-            " of remembered conversation."
+            f" of remembered conversation, kept {_DETAIL[limits.memory_detail]}."
         ),
         (
             f"Config file: {paths.config_file()}. State (tokens, audit log; never read):"

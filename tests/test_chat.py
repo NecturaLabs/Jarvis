@@ -1268,6 +1268,7 @@ def test_config_shows_sections_and_what_each_setting_does_and_left_steps_back() 
         assert "Chat" in text
         assert "How much of the work the transcript shows" in text
         assert "Thinking effort" in text
+        assert "Earlier requests keep" in text
         assert not app.query_one("#stage").display  # the screen takes the transcript's place
         await pilot.press("left")  # replies, back round to everything
         await _until(pilot, lambda: bool(saved))
