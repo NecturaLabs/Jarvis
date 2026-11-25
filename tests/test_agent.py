@@ -18,6 +18,7 @@ from jarvis.agent import (
     MAX_SECONDS,
     MAX_STEPS,
     MAX_TOOL_TEXT,
+    MAX_TRUSTED_PASTE,
     MODEL_DOWN,
     MODEL_MISSING,
     NO_ACTION_REMINDER,
@@ -32,9 +33,9 @@ from jarvis.agent import (
     NoReason,
     claims_action,
 )
-from jarvis.app import no_action_operation, quiet_operation, think_operation
+from jarvis.app import channel_limits, no_action_operation, quiet_operation, think_operation
 from jarvis.audit import AuditLog
-from jarvis.config import AgentConfig, ChatConfig, FilesConfig
+from jarvis.config import AgentConfig, ChatConfig, Config, FilesConfig
 from jarvis.jsonutil import objs
 from jarvis.memory import tokens
 from jarvis.model import Delta, ModelError, ModelMissingError, Thinking
@@ -2268,6 +2269,69 @@ def test_a_scheduled_request_has_no_words_of_the_owners_own() -> None:
         agent.handle("read https://kettles.example/a", NO_CONFIRM, scheduled=scheduled)
 
     assert seen == ["", "read https://kettles.example/a"]
+
+
+def test_a_request_that_is_all_one_long_paste_has_no_words_of_the_owners_own() -> None:
+    seen: list[str] = []
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        seen.append(request.words)
+
+    paste = "read https://kettles.example/a " + "x" * MAX_TRUSTED_PASTE
+    look = Counter().op("look", then=note, side_effect=False)
+    agent, _ = _agent(ScriptedModel([_call("look"), _say("Done.")]), [look])
+
+    agent.handle(paste, NO_CONFIRM, pasted=[paste])
+
+    assert seen == [""]
+
+
+@pytest.mark.parametrize(
+    ("origin", "steered_by", "foreign", "outside"),
+    [
+        (Origin.OWNER_SPEECH, ("web",), False, {"web"}),
+        (Origin.PC_AUDIO, (), True, set[str]()),
+    ],
+)
+def test_a_job_that_adds_a_job_hands_on_where_it_came_from(
+    origin: Origin, steered_by: tuple[str, ...], *, foreign: bool, outside: set[str]
+) -> None:
+    # A scheduled request that schedules another: the new job must not come out cleaner.
+    seen: list[tuple[bool, set[str]]] = []
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        seen.append((request.foreign, set(request.outside)))
+
+    add = Counter().op("add", then=note, side_effect=False)
+    agent, _ = _agent(ScriptedModel([_call("add"), _say("Added.")]), [add])
+
+    agent.handle(
+        "(A request you scheduled earlier, due now.) add another",
+        NO_CONFIRM,
+        origin,
+        steered_by=steered_by,
+        scheduled=True,
+    )
+
+    assert seen == [(foreign, outside)]
+
+
+def test_a_plain_command_runs_unasked_on_the_voice_channel_after_outside_text() -> None:
+    counter = Counter()
+    pause = counter.op("pause", spoken="Paused.", shortcuts=(Shortcut("pause", lambda _g: {}),))
+    model = ScriptedModel([_call("search"), _say("Found it.")])
+    limits = channel_limits(Config(), "voice")
+    agent, _ = _agent(model, [counter.op("search", origin=Origin.WEB), pause], limits=limits)
+
+    agent.handle("search", NO_CONFIRM)
+    reply = agent.handle("pause", NO_CONFIRM)
+
+    assert reply == "Paused."
+    assert [r["op"] for r in counter.runs] == ["search", "pause"]
 
 
 # Pictures
