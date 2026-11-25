@@ -21,6 +21,8 @@ agent before merging.
   - `default_class`: `SAFE`, `CONFIRM`, `STRONG` or `DENY` (`src/jarvis/policy.py`); anything irreversible or that
     spends money is at least `CONFIRM`;
   - `side_effect=False` only for a pure read (it is then not raised to confirm by outside text);
+  - `concurrent=True` on a pure read that waits on the network, when its `run` is safe in several threads at
+    once (shared state behind a lock): calls of one model message to such reads then run side by side;
   - `outbound=True` when it sends words the model wrote to a service off this PC (a search, a place name), with
     `outbound_args` naming the arguments that carry them: while file text is in the conversation such a call needs
     a yes;

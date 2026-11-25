@@ -1,6 +1,7 @@
 """The client of the local SearXNG instance (`deploy/searxng/`); it never reaches another host."""
 
 import re
+import threading
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import TYPE_CHECKING
@@ -90,6 +91,7 @@ class Searxng:
         super().__init__()
         self._base = base_url.rstrip("/")
         self._http = http
+        self._lock = threading.Lock()
         self._factory = factory or (lambda: httpx.Client(timeout=TIMEOUT, trust_env=False))
 
     def _results(self, params: dict[str, str | int]) -> list[dict[str, object]]:
@@ -98,10 +100,12 @@ class Searxng:
         Raises:
             SearchUnavailableError: SearXNG is not running, timed out or answered an error.
         """
-        if self._http is None:
-            self._http = self._factory()
+        with self._lock:  # one client, however many look-ups start at once
+            if self._http is None:
+                self._http = self._factory()
+            http = self._http
         try:
-            response = self._http.get(
+            response = http.get(
                 f"{self._base}/search", params={**params, "format": "json", "safesearch": 1}
             )
         except httpx.HTTPError as exc:

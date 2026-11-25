@@ -7,6 +7,7 @@ weather or time answer carries no outside words (see `jarvis.web.ops`).
 import json
 import math
 import re
+import threading
 from dataclasses import dataclass
 from datetime import date as calendar_date
 from http import HTTPStatus
@@ -168,13 +169,16 @@ class OpenMeteo:
         """Use `http` (tests) or a client `factory` makes on first use (no socket while idle)."""
         super().__init__()
         self._http = http
+        self._lock = threading.Lock()
         self._factory = factory or httpx.Client
 
     def _get(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
-        if self._http is None:
-            self._http = self._factory()
+        with self._lock:  # one client, however many look-ups start at once
+            if self._http is None:
+                self._http = self._factory()
+            http = self._http
         try:
-            with self._http.stream("GET", url, params=params) as response:
+            with http.stream("GET", url, params=params) as response:
                 status = response.status_code
                 body = read_capped(response) if status == HTTPStatus.OK else b""
         except httpx.HTTPError as exc:

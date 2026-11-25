@@ -145,6 +145,9 @@ class Operation:
     `lowest_class` is as low as the owner's `boundaries.classes` may set it. With
     `audit_text=False` the audit log keeps a result's text only as a SHA-256 and a length (a
     shell command's output can hold anything the owner's user can read).
+    `concurrent` lets the agent run the call beside the other `concurrent` calls of the same
+    model message; only a read-only operation whose `run` is safe in several threads at once
+    may set it.
     """
 
     name: str
@@ -162,6 +165,17 @@ class Operation:
     preview: Callable[[dict[str, Any]], str] | None = None
     hashed: frozenset[str] = frozenset()
     audit_text: bool = True
+    concurrent: bool = False
+
+    def __post_init__(self) -> None:
+        """Refuse an operation that acts yet claims to run beside others.
+
+        Raises:
+            ValueError: `concurrent` is set on an operation with a side effect.
+        """
+        if self.concurrent and self.side_effect:
+            msg = f"{self.name}: only a read-only operation may run beside others"
+            raise ValueError(msg)
 
     def sends_words(self, args: Mapping[str, Any]) -> bool:
         """Whether this call sends words the model wrote off the PC.

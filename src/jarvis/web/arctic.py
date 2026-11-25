@@ -6,6 +6,7 @@ lag behind Reddit by a little. Every title, body and comment is someone else's t
 
 import json
 import re
+import threading
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
@@ -69,13 +70,16 @@ class ArcticShift:
         """Use `http` (tests) or a client `factory` makes on first use (no socket while idle)."""
         super().__init__()
         self._http = http
+        self._lock = threading.Lock()
         self._factory = factory or httpx.Client
 
     def _get(self, path: str, params: dict[str, Any]) -> list[dict[str, Any]]:
-        if self._http is None:
-            self._http = self._factory()
+        with self._lock:  # one client, however many look-ups start at once
+            if self._http is None:
+                self._http = self._factory()
+            http = self._http
         try:
-            with self._http.stream("GET", f"{API}{path}", params=params) as response:
+            with http.stream("GET", f"{API}{path}", params=params) as response:
                 status = response.status_code
                 body = read_capped(response) if status == HTTPStatus.OK else b""
         except httpx.HTTPError as exc:

@@ -10,6 +10,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 - `pc_volume`: the PC's own output volume, read, set, turned up or down or muted, in any words; it is every
   program's sound, games and videos included. A change is bound to its start and end before any question.
+- Look-ups the model asks for together run side by side: two pages, a search and the weather, or the time in
+  two places take about as long as the slowest one. Each is still decided, asked about and audited one by
+  one first; actions always run on their own, in order.
 - `pc_media`: play, pause or skip a video in the browser, VLC or another MPRIS player, or say what plays,
   through `playerctl` (`pacman -S playerctl`). Spotify keeps its own tools; "everything" pauses it too. Only a
   player's plain name is said, never a title.

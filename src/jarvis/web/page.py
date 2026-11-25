@@ -7,6 +7,7 @@ reached (the connection itself is checked again in `jarvis.web.guard`).
 import codecs
 import copy
 import re
+import threading
 import time
 import warnings
 import zlib
@@ -268,7 +269,7 @@ class PageReader:
         self._max_bytes = max_bytes
         self._max_picture_bytes = max_picture_bytes
         self._clock = clock
-        self._deadline = 0.0
+        self._lock = threading.Lock()
 
     def read(self, url: str) -> Page:
         """Return the page at `url`, following at most `MAX_REDIRECTS` redirects.
@@ -309,18 +310,14 @@ class PageReader:
             PageError: a refused address, a failed or slow answer, a type outside `kinds`, or
                 too many redirects.
         """
-        if self._http is None:
-            if self._factory is None:
-                msg = "no web client is set up"
-                raise PageError(msg)
-            self._http = self._factory()
         current = check_url(url)
-        self._deadline = self._clock() + READ_LIMIT_S
+        # Each read keeps its own deadline: two pages of one request may be read side by side.
+        deadline = self._clock() + READ_LIMIT_S
         accept = _ACCEPT_PICTURE if picture else _ACCEPT_PAGE
         for _ in range(MAX_REDIRECTS + 1):
-            self._in_time()
+            self._in_time(deadline)
             body, location, status = self._fetch(
-                self._http, current, accept, kinds, limit + 1 if picture else limit
+                current, accept, kinds, limit + 1 if picture else limit, deadline=deadline
             )
             if status in _REDIRECTS:
                 if not location:
@@ -335,8 +332,28 @@ class PageReader:
         msg = "the page redirected too many times"
         raise PageError(msg)
 
+    def _client(self) -> httpx.Client:
+        """Return the web client, made on first use (once, however many reads start at once).
+
+        Raises:
+            PageError: no client and no way to make one was given.
+        """
+        with self._lock:
+            if self._http is None:
+                if self._factory is None:
+                    msg = "no web client is set up"
+                    raise PageError(msg)
+                self._http = self._factory()
+            return self._http
+
     def _fetch(
-        self, http: httpx.Client, url: str, accept: str, kinds: frozenset[str], limit: int
+        self,
+        url: str,
+        accept: str,
+        kinds: frozenset[str],
+        limit: int,
+        *,
+        deadline: float,
     ) -> tuple[_Body, str, int]:
         """Return the body (capped at `limit`), any redirect target and the status.
 
@@ -346,8 +363,8 @@ class PageReader:
         """
         try:
             headers = {"Accept": accept, "Accept-Encoding": "gzip, deflate"}
-            with http.stream("GET", url, headers=headers) as resp:
-                return self._body(resp, kinds, limit)
+            with self._client().stream("GET", url, headers=headers) as resp:
+                return self._body(resp, kinds, limit, deadline=deadline)
         except httpx.ConnectError as exc:
             msg = "that site can't be reached from here"
             raise PageError(msg) from exc
@@ -358,18 +375,18 @@ class PageReader:
             msg = "the page couldn't be read"
             raise PageError(msg) from exc
 
-    def _in_time(self) -> None:
-        """Stop a read that has taken longer than `READ_LIMIT_S` in all.
+    def _in_time(self, deadline: float) -> None:
+        """Stop a read that has taken longer than `READ_LIMIT_S` in all (it ends at `deadline`).
 
         Raises:
             PageError: the time is up.
         """
-        if self._clock() > self._deadline:
+        if self._clock() > deadline:
             msg = "the page took too long to answer"
             raise PageError(msg)
 
     def _body(
-        self, resp: httpx.Response, kinds: frozenset[str], limit: int
+        self, resp: httpx.Response, kinds: frozenset[str], limit: int, *, deadline: float
     ) -> tuple[_Body, str, int]:
         """Read at most `limit` bytes of an answer of a type in `kinds`, or note its redirect.
 
@@ -402,6 +419,6 @@ class PageReader:
             size += len(chunk)
             if size >= limit:
                 break
-            self._in_time()
+            self._in_time(deadline)
         raw = b"".join(chunks)[:limit]
         return _Body(str(resp.url), raw, kind, resp.charset_encoding or ""), "", resp.status_code

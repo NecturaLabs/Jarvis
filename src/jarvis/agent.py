@@ -4,11 +4,13 @@ A request that is nothing but a plain command ("pause", "volume 40") takes the s
 call the model writes (validation, policy, confirmation, audit) without waiting for the model.
 """
 
+import contextvars
 import hashlib
 import json
 import logging
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
@@ -53,6 +55,7 @@ AFTER_ACTION_CALL_S = 15.0  # ...and at least this long once an action ran, to s
 PRIME_S = 60.0  # how long reading the prompt ahead of the first request may take
 PRIME_WORDS = "Hello."  # what stands in for a request then; the model's answer is dropped
 MAX_CALLS_PER_TURN = 12
+MAX_SIDE_BY_SIDE = 4  # read-only look-ups of one model message run at once, at most
 MAX_TOOL_TEXT = 3000  # a read page or Reddit thread, with its title line
 REPLY_TOKENS = 400
 MEMORY_TOKENS = 6000
@@ -736,6 +739,36 @@ class _Failed:
     result: Result
 
 
+@dataclass(frozen=True, slots=True)
+class _Ready:
+    """A call the policy allowed and the owner approved where asked: only its run is left."""
+
+    op: Operation
+    args: dict[str, Any]
+    digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class _Caught:
+    """What an operation run in a worker thread returned or raised, to report in order."""
+
+    outcome: Result | Exception
+
+    def get(self, _args: dict[str, Any]) -> Result:
+        """Return the result; what the run raised is raised again here, in the agent's thread."""
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+def _caught(run: Callable[[dict[str, Any]], Result], args: dict[str, Any]) -> _Caught:
+    """Run an operation in a worker thread and keep its outcome for the agent's own thread."""
+    try:
+        return _Caught(run(args))
+    except Exception as exc:  # ruff: ignore[blind-except] - raised again in the agent's thread
+        return _Caught(exc)
+
+
 _REFUSALS = {
     Verdict.DENY: Result(
         "Refused: the owner's boundaries do not allow this.",
@@ -1394,41 +1427,93 @@ class Agent:
         can have steered them is settled once, before the first one runs (and so is whether file
         text can be in what they send).
         """
-        untrusted, private = turn.untrusted, turn.private
+        taint = (turn.untrusted, turn.private)
         results: list[Result] = []
-        repeated_any = False
-        for call in calls:
-            name = str(obj(call.get("function")).get("name", ""))
-            op = self._registry.get(name)
-            result = self._guarded(call, hooks, turn, taint=(untrusted, private))
-            if op is not None and name == THINK_HARDER:
-                # How hard to think is not an action: the request still needs its own tools.
-                result = self._think_harder(turn, result)
-            else:
-                turn.actions.append(f"{name if op is not None else _UNKNOWN} -> {_outcome(result)}")
-            if op is None or op.side_effect:
-                turn.tried = True
-                if op is not None and (result.ok or result.acted):
-                    turn.succeeded = True
-                    if result.spoken:
-                        turn.done.append(result.spoken)
-            body = result.text[: self._limits.tool_text_chars]
-            if result.origin not in TRUSTED_ORIGINS:
-                turn.untrusted = True
-                # A process listing is remembered as such only when nothing else outside came in.
-                if turn.outside in {"", Origin.PROCESS.value}:
-                    turn.outside = result.origin.value
-                if turn.request is not None:
-                    turn.request.saw(result.origin.value)
-                turn.private = turn.private or result.origin in _PRIVATE_ORIGINS
-                body = _wrapped(result.origin.value, result.text, self._limits.tool_text_chars)
-            turn.messages.append(
-                {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": body}
+        for group in self._side_by_side(calls):
+            ran = self._run_group(group, hooks, turn, taint=taint)
+            results += (
+                self._record(call, result, turn) for call, result in zip(group, ran, strict=True)
             )
-            repeated_any = repeated_any or result is _REPEATED
-            results.append(result)
-        turn.stuck = repeated_any
+        turn.stuck = any(result is _REPEATED for result in results)
         return results
+
+    def _record(self, call: dict[str, Any], result: Result, turn: _Turn) -> Result:
+        """Note what one call did in the request, add its result to the conversation, return it."""
+        name = str(obj(call.get("function")).get("name", ""))
+        op = self._registry.get(name)
+        if op is not None and name == THINK_HARDER:
+            # How hard to think is not an action: the request still needs its own tools.
+            result = self._think_harder(turn, result)
+        else:
+            turn.actions.append(f"{name if op is not None else _UNKNOWN} -> {_outcome(result)}")
+        if op is None or op.side_effect:
+            turn.tried = True
+            if op is not None and (result.ok or result.acted):
+                turn.succeeded = True
+                if result.spoken:
+                    turn.done.append(result.spoken)
+        body = result.text[: self._limits.tool_text_chars]
+        if result.origin not in TRUSTED_ORIGINS:
+            turn.untrusted = True
+            # A process listing is remembered as such only when nothing else outside came in.
+            if turn.outside in {"", Origin.PROCESS.value}:
+                turn.outside = result.origin.value
+            if turn.request is not None:
+                turn.request.saw(result.origin.value)
+            turn.private = turn.private or result.origin in _PRIVATE_ORIGINS
+            body = _wrapped(result.origin.value, result.text, self._limits.tool_text_chars)
+        turn.messages.append(
+            {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": body}
+        )
+        return result
+
+    def _side_by_side(self, calls: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+        """Split one message's calls, in order, into the groups that run together.
+
+        Neighbouring calls of `concurrent` (read-only) operations form one group; every other
+        call is a group of its own, so an action never runs beside anything.
+        """
+        groups: list[list[dict[str, Any]]] = []
+        together = False
+        for call in calls:
+            op = self._registry.get(str(obj(call.get("function")).get("name", "")))
+            joins = op is not None and op.concurrent
+            if joins and together:
+                groups[-1].append(call)
+            else:
+                groups.append([call])
+            together = joins
+        return groups
+
+    def _run_group(
+        self, group: list[dict[str, Any]], hooks: Hooks, turn: _Turn, *, taint: tuple[bool, bool]
+    ) -> list[Result]:
+        """Run one group of calls and return their results in the order of the calls.
+
+        Every call of the group is decided (and asked about, where the policy says so) before any
+        of them runs; the allowed ones then run side by side, and their outcomes are audited in
+        the order of the calls, not the order they finished in.
+        """
+        if len(group) == 1:
+            return [self._guarded(group[0], hooks, turn, taint=taint)]
+        admitted = [self._admitted(call, hooks, turn, taint=taint) for call in group]
+        ready = {n: item for n, item in enumerate(admitted) if isinstance(item, _Ready)}
+        caught: dict[int, _Caught] = {}
+        if ready:
+            workers = min(len(ready), MAX_SIDE_BY_SIDE)
+            with ThreadPoolExecutor(workers, thread_name_prefix="jarvis-lookup") as pool:
+                # Each run gets its own copy of the request's context (`current_request`).
+                futures = {
+                    n: pool.submit(contextvars.copy_context().run, _caught, item.op.run, item.args)
+                    for n, item in ready.items()
+                }
+                caught = {n: future.result() for n, future in futures.items()}
+        return [
+            item
+            if isinstance(item, Result)
+            else self._finished(item, self._attempt(caught[n].get, item.op, item.args, item.digest))
+            for n, item in enumerate(admitted)
+        ]
 
     def _think_harder(self, turn: _Turn, result: Result) -> Result:
         """Raise how hard the model thinks for the rest of the request; never lower it.
@@ -1461,6 +1546,18 @@ class Agent:
         self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, taint: tuple[bool, bool]
     ) -> Result:
         """Run one call unless the request is over its limits or Jarvis is stopping."""
+        item = self._admitted(call, hooks, turn, taint=taint)
+        if isinstance(item, Result):
+            return item
+        return self._finished(item, self._run_counted(item.op, item.args, item.digest))
+
+    def _admitted(
+        self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, taint: tuple[bool, bool]
+    ) -> Result | _Ready:
+        """Decide one call, unless the request is over its limits or Jarvis is stopping.
+
+        Returns what to report for a call that may not run, or the call ready to run.
+        """
         turn.calls += 1
         if hooks.cancelled():
             return Result("Stopped: Jarvis is shutting down.", ok=False)
@@ -1469,7 +1566,7 @@ class Agent:
             return Result("Error: too many actions in one request, so this was not run.", ok=False)
         if self._clock() - turn.started > turn.limit_s:
             return Result("Error: the request ran out of time, so this was not run.", ok=False)
-        return self._run_call(call, hooks, turn, taint=taint)
+        return self._decided(call, hooks, turn, taint=taint)
 
     @staticmethod
     def _arguments(function: Mapping[str, Any]) -> object:
@@ -1520,10 +1617,14 @@ class Agent:
             return Result("Error: arguments were not valid JSON.", ok=False)
         return op, args
 
-    def _run_call(
+    def _decided(
         self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, taint: tuple[bool, bool]
-    ) -> Result:
-        """Run one call as the policy decides; `taint` is (outside text, file text) in context."""
+    ) -> Result | _Ready:
+        """Decide one call as the policy says; `taint` is (outside text, file text) in context.
+
+        Returns what to report for a call that may not run (refused, declined, failed to
+        prepare), or the call ready to run, with its arguments bound and audited.
+        """
         untrusted, private = taint
         parsed = self._parse_call(call)
         if isinstance(parsed, Result):
@@ -1568,9 +1669,13 @@ class Agent:
             return stopped
         if not self._allowed(decision.verdict, op, args, digest, (hooks, turn)):
             return _DECLINED
-        result = self._run_counted(op, args, digest)
-        if isinstance(result, _Failed):
-            return result.result
+        return _Ready(op, args, digest)
+
+    def _finished(self, item: _Ready, outcome: Result | _Failed) -> Result:
+        """Audit what a call that ran returned, and give the result to report for it."""
+        if isinstance(outcome, _Failed):
+            return outcome.result
+        result, op, digest = outcome, item.op, item.digest
         shown: dict[str, object] = (
             {"picture": result.picture, "caption": result.caption} if result.picture else {}
         )

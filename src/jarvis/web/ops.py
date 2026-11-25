@@ -16,6 +16,7 @@ When the conversation is forgotten (`reset`), so is what its searches returned.
 """
 
 import re
+import threading
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, tzinfo
@@ -211,12 +212,15 @@ class WebOps:
         self._shown = shown
         self._images: dict[str, ImageHit] = {}
         self._image_number = 0
+        # Look-ups of one request may run side by side; this guards what they remember.
+        self._lock = threading.Lock()
 
     def reset(self) -> None:
         """Forget every address, post and picture earlier searches returned."""
-        self._urls.clear()
-        self._posts.clear()
-        self._images.clear()
+        with self._lock:
+            self._urls.clear()
+            self._posts.clear()
+            self._images.clear()
 
     # --- time -------------------------------------------------------------------------------
 
@@ -410,7 +414,7 @@ class WebOps:
             OperationError: the address came from no search, or the page could not be read.
         """
         url = str(args["url"]).strip()
-        if url not in self._urls:
+        if not self._knows(self._urls, url):
             msg = "Only a page a recent web_search returned can be read; search first."
             raise OperationError(msg)
         thread = _reddit_thread(url)
@@ -437,11 +441,12 @@ class WebOps:
 
     def _remember_image(self, found: ImageHit) -> str:
         """Return the id a picture is shown by; the oldest are forgotten past `REMEMBERED`."""
-        self._image_number += 1
-        image_id = f"i{self._image_number}"
-        self._images[image_id] = found
-        while len(self._images) > REMEMBERED:
-            del self._images[next(iter(self._images))]
+        with self._lock:
+            self._image_number += 1
+            image_id = f"i{self._image_number}"
+            self._images[image_id] = found
+            while len(self._images) > REMEMBERED:
+                del self._images[next(iter(self._images))]
         return image_id
 
     def image_search(self, args: dict[str, Any]) -> Result:
@@ -474,7 +479,8 @@ class WebOps:
                 read or kept.
         """
         image_id = str(args["image_id"]).strip().lower()
-        found = self._images.get(image_id)
+        with self._lock:
+            found = self._images.get(image_id)
         if found is None or self._shown is None:
             msg = (
                 "Only a picture a recent image_search or web_read returned can be shown; "
@@ -556,7 +562,7 @@ class WebOps:
             OperationError: the thread came from no search, or the archive failed or lacks it.
         """
         post_id = str(args["post_id"]).strip().lower()
-        if post_id not in self._posts:
+        if not self._knows(self._posts, post_id):
             msg = "Only a thread a recent reddit_search returned can be read; search first."
             raise OperationError(msg)
         try:
@@ -577,11 +583,15 @@ class WebOps:
             parts.append("No comments archived.")
         return Result(cut_inert("\n".join(parts), self._research.page_chars), Origin.WEB)
 
-    @staticmethod
-    def _remember(seen: deque[str], item: str) -> None:
-        if item in seen:
-            seen.remove(item)
-        seen.append(item)
+    def _remember(self, seen: deque[str], item: str) -> None:
+        with self._lock:
+            if item in seen:
+                seen.remove(item)
+            seen.append(item)
+
+    def _knows(self, seen: deque[str], item: str) -> bool:
+        with self._lock:
+            return item in seen
 
     # --- the operations ---------------------------------------------------------------------
 
@@ -606,6 +616,7 @@ class WebOps:
                 },
                 self.time,
                 side_effect=False,
+                concurrent=True,
                 outbound=True,
                 outbound_args=_PLACE_ARG,
                 spoken_summary=lambda _a: "tell you the time",
@@ -628,6 +639,7 @@ class WebOps:
                 },
                 self.weather,
                 side_effect=False,
+                concurrent=True,
                 outbound=True,
                 outbound_args=_PLACE_ARG,
                 spoken_summary=lambda _a: "check the weather",
@@ -649,6 +661,7 @@ class WebOps:
                 },
                 self.web_search,
                 side_effect=False,
+                concurrent=True,
                 outbound=True,
                 spoken_summary=lambda a: f"search the web for {str(a.get('query', ''))[:60]}",
             ),
@@ -663,6 +676,7 @@ class WebOps:
                 },
                 self.web_read,
                 side_effect=False,
+                concurrent=True,
                 spoken_summary=lambda a: f"read {urlsplit(str(a.get('url', ''))).hostname}",
             ),
             Operation(
@@ -685,6 +699,7 @@ class WebOps:
                 },
                 self.reddit_search,
                 side_effect=False,
+                concurrent=True,
                 outbound=True,
                 spoken_summary=lambda a: f"search Reddit for {str(a.get('query', ''))[:60]}",
             ),
@@ -699,6 +714,7 @@ class WebOps:
                 },
                 self.reddit_read,
                 side_effect=False,
+                concurrent=True,
                 spoken_summary=lambda _a: "read that Reddit thread",
             ),
             *(self._picture_operations() if self._shown is not None else []),
@@ -722,6 +738,7 @@ class WebOps:
                 },
                 self.image_search,
                 side_effect=False,
+                concurrent=True,
                 outbound=True,
                 spoken_summary=lambda a: f"search for pictures of {str(a.get('query', ''))[:60]}",
             ),
