@@ -1004,6 +1004,24 @@ def _user_memlock_limit() -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
+def _projection_notes(cfg: config.Config) -> list[str]:
+    """Note that `strata.speed_projection` is on while the model loads no control vector."""
+    if not cfg.strata.speed_projection or cfg.strata.run_config == Path():
+        return []
+    try:
+        loads = services.read_run_config(cfg).loads_projection
+    except services.StrataSetupError:
+        return []  # the run config's own check says what is wrong with it
+    if loads:
+        return []
+    note = (
+        "note strata.speed_projection is on, but the run config loads no control vector, so "
+        "the model declines as it was trained to; see "
+        "docs/configuration.md#the-speed-projection"
+    )
+    return [note]
+
+
 def _memlock_notes(cfg: config.Config) -> list[str]:
     """Note that the model cannot be locked in RAM when the user manager's limit keeps it out."""
     limit = _user_memlock_limit()
@@ -1056,7 +1074,13 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     ]
     for ok, what, fix in checks:
         print(f"{'ok' if ok else 'FAIL':4} {what}" + ("" if ok else f"  -> {fix}"))
-    notes = [*wake_notes, *tool_notes, *_spotify_scope_notes(cfg), *_memlock_notes(cfg)]
+    notes = [
+        *wake_notes,
+        *tool_notes,
+        *_spotify_scope_notes(cfg),
+        *_memlock_notes(cfg),
+        *_projection_notes(cfg),
+    ]
     for line in [*notes, *release_lines]:
         print(line)
     failed = sum(not ok for ok, _, _ in checks)

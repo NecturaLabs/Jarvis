@@ -144,6 +144,7 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `effort_position` | `""` | `""`, `start`, `end` | Where Strata writes a request's thinking effort, as its `effort_position` in the profile; empty keeps the run config's own (Strata's default is `start`). With `end`, a `low` or `medium` effort goes into a short turn before the answer, so a request whose model raised its effort (`think_harder`) reuses the pinned prompt instead of reading it all again; `high` stays at the start. How well the model follows an effort written there is not measured yet ([models.md](models.md#thinking)), so it is not the default. |
 | `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` of the Strata unit. `MemoryMax` is derived from it, 10% above (44G for 40G; a size that does not divide evenly is rounded up and written in bytes), so there is no second key. Past `MemoryHigh` the kernel throttles the unit and reclaims its memory; past `MemoryMax` it kills the unit. The size depends on the model: Qwen3.8-Flash-Next IQ2_XS needs `44G` ([models.md](models.md)). |
 | `keep_in_ram` | `true` | `true` or `false` | Keep the model server's memory in RAM: its unit gets `MemorySwapMax=0`, so the kernel never swaps it out, and `LimitMEMLOCK=infinity`, so the engine can lock its model as it asks to. Off, a PC short of memory swaps part of the model out between requests and back in on the next one; while it does, the graphics driver pauses the GPU ([Keeping the model in RAM](#keeping-the-model-in-ram)). Turn it off only with swap on a disk and a game that needs that memory more than Jarvis needs a quick answer. |
+| `speed_projection` | `true` | `true` or `false` | Keep a control vector the run config loads, such as Strata's experimental speed projection, which makes the model decline far fewer requests ([The speed projection](#the-speed-projection)). Off, Jarvis's profile leaves the control-vector options out, so the model declines as it was trained to. Jarvis never adds a vector itself. |
 | `vram_reserve_mib` | `0` (unset) | 0, or 100 to 65536 | VRAM in MiB the engine leaves free for other programs, passed as `--vram-reserve-mib`. `0` passes nothing, so Strata's own default (700) applies. For an engine whose expert cache fills the card (`--expert-cache auto`) it is the VRAM limit and must be set: `jarvis setup` refuses such a run config without it, and `jarvis doctor` fails "VRAM left for games". On a 20 GB card, 12000 holds Qwen3.8-Flash-Next at about 8 GiB ([models.md](models.md)). A card with at most about 8 GB of VRAM cannot start with a reserve (Strata's tuner never tries one there). |
 | `kv_resident` | `0` (all in VRAM) | 0, or 20480 to 262144 | Context cells kept in VRAM, passed as `--kv-resident`. Set, the whole context also lives in pinned RAM and only this many cells stay on the card, so `context` can grow past them without more VRAM; the VRAM saved goes to expert slots. Pinned RAM counts against `memory_max`. A `context` of this many cells or fewer is not streamed. Reading past the cells on the card is slower; measure before raising `context` far. |
 | `learn_experts` | `true` | `true` or `false` | For an engine whose run config starts from a routing profile (`--expert-profile`): the engine saves which experts Jarvis's requests use to `~/.local/state/jarvis/strata-expert-profile-<model>.bin` (one file per model, so one model's profile never starts another) (when it stops, and every 10 minutes between requests) and starts from that file next time, so those experts are on the card from the first request. Nothing is deleted from the model. `jarvis setup` starts the file once from a copy of the run config's own profile and never overwrites what the engine learned; `jarvis doctor` fails when it is missing or empty. A routing profile the run config names by a relative path is refused. |
@@ -234,6 +235,28 @@ LimitMEMLOCK=8M:infinity
 
 then `systemctl daemon-reload`, and log out and in. The swap setting alone already keeps the model from
 being swapped; the lock is what Strata's own start-up text asks a systemd service for.
+
+### The speed projection
+
+Strata ships a control vector for Qwen3.8-Flash-Next, its "experimental speed projection" (in its
+control component's `data/experimental-speed-projection/`, with a README). Strata's own README says what it
+does: the engine removes one direction from the model's activations, and the model then declines far fewer
+requests (1 of 50 against 50 of 50 on its authors' test). That takes away a safety behaviour of the model.
+It also shifts the model's answers slightly on ordinary text, and costs 0.2 to 0.4% per token. Strata's
+setup leaves it off.
+
+To load it, add its options to the model's run config, either in `args` or in `user_args`, which Strata keeps
+when its setup runs again. Take the values from the JSON file beside the vector:
+
+```json
+"user_args": ["--control-vector", "/path/to/Qwen3.8-Flash-Next-experimental-speed-projection.gguf",
+              "--control-vector-layer-range", "4", "44", "--cvec-mode", "project", "--cvec-dir", "per-layer"]
+```
+
+Then run `jarvis restart`. With `strata.speed_projection` on (the default), Jarvis keeps whatever vector the run
+config loads; off, it leaves the vector out without touching the run config. Jarvis's own boundaries do not
+depend on the model declining anything: every action still passes the policy, its confirmation and the
+audit log in code. How the vector changes Jarvis's tool calls has not been measured.
 
 ## `[spotify]`: your own Spotify developer app
 

@@ -2130,3 +2130,27 @@ def test_doctor_notes_when_the_model_cannot_be_locked_in_ram(
     assert bool(notes) is noted
     if noted:
         assert "keeping-the-model-in-ram" in notes[0]
+
+
+def _projection_config(tmp_path: Path, *, on: bool, loads: bool) -> config.Config:
+    run = engine_run_config(tmp_path)
+    if loads:
+        data = json.loads(run.read_text(encoding="utf-8"))
+        data["user_args"] = ["--control-vector", str(tmp_path / "v.gguf"), "--cvec-mode", "project"]
+        run.write_text(json.dumps(data), encoding="utf-8")
+    strata = config.StrataConfig(run_config=run, speed_projection=on)
+    return config.Config(strata=strata)
+
+
+@pytest.mark.parametrize(
+    ("on", "loads", "noted"), [(True, False, True), (True, True, False), (False, False, False)]
+)
+def test_doctor_notes_a_speed_projection_that_is_on_with_no_vector_loaded(
+    tmp_path: Path, *, on: bool, loads: bool, noted: bool
+) -> None:
+    cfg = _projection_config(tmp_path, on=on, loads=loads)
+
+    notes = cli._projection_notes(cfg)  # pyright: ignore[reportPrivateUsage] - the note itself
+
+    assert bool(notes) is noted
+    assert all("speed_projection" in note for note in notes)

@@ -196,6 +196,9 @@ class StrataConfig(_Section):
     # kernel may swap the model out while the PC is short of memory and back in on the next
     # request, pausing the GPU each time, for little room: quantized weights barely compress.
     keep_in_ram: bool = True
+    # Keep a control vector the run config loads (Strata's experimental speed projection, which
+    # lowers how often the model declines). Off: Jarvis's profile leaves those options out.
+    speed_projection: bool = True
     # VRAM in MiB the engine leaves free for other programs (`--vram-reserve-mib`); 0 passes
     # nothing, so Strata's own default (700) applies.
     vram_reserve_mib: VramReserve = 0

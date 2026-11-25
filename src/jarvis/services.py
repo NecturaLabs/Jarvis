@@ -215,6 +215,17 @@ class RunConfig:
         return None if not value or value.startswith("--") else value
 
     @property
+    def user_args(self) -> tuple[str, ...]:
+        """The engine options set by hand, which Strata applies on top of `args` at every start."""
+        raw = self.data.get("user_args")
+        return tuple(str(a) for a in cast("list[object]", raw)) if isinstance(raw, list) else ()
+
+    @property
+    def loads_projection(self) -> bool:
+        """Whether the engine loads a control vector, such as Strata's speed projection."""
+        return bool(set(PROJECTION_FLAGS) & {*self.args, *self.user_args})
+
+    @property
     def model(self) -> Path:
         """The model file the engine loads (`--native`)."""
         native = self.value_of("--native")
@@ -347,6 +358,29 @@ def _without(args: list[str], flag: str) -> list[str]:
     return [*args[:at], *args[at + (2 if valued else 1) :]]
 
 
+# The control-vector options Strata keeps together (its `USER_KEPT_FLAGS`): the experimental speed
+# projection, which Strata ships for some models, is loaded through them.
+PROJECTION_FLAGS = (
+    "--control-vector",
+    "--control-vector-scaled",
+    "--control-vector-layer-range",
+    "--cvec-mode",
+    "--cvec-dir",
+)
+
+
+def _without_projection(args: list[str] | tuple[str, ...]) -> list[str]:
+    """Return `args` without the control-vector options and every value after each."""
+    kept: list[str] = []
+    dropping = False
+    for arg in args:
+        if arg.startswith("--"):
+            dropping = arg in PROJECTION_FLAGS
+        if not dropping:
+            kept.append(arg)
+    return kept
+
+
 def _tuned_args(config: Config, run: RunConfig) -> list[str]:
     """Return the run config's arguments with Jarvis's context and VRAM limits.
 
@@ -382,6 +416,8 @@ def _tuned_args(config: Config, run: RunConfig) -> list[str]:
         args = _with(_with(args, "--expert-profile", learned), "--expert-profile-save", learned)
     if not s.pictures or run.picture_reader is None:
         args = _without(args, "--vision")
+    if not s.speed_projection:
+        args = _without_projection(args)
     return args
 
 
@@ -436,6 +472,8 @@ def strata_profile(config: Config) -> dict[str, object]:
     }
     if s.effort_position:
         profile["effort_position"] = s.effort_position
+    if not s.speed_projection and run.user_args:
+        profile["user_args"] = _without_projection(run.user_args)
     vision = _vision(config, run)
     if vision is not None:
         profile["vision"] = vision

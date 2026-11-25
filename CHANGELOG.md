@@ -8,6 +8,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `strata.speed_projection`, on by default, keeps a control vector the model's run config loads, such as
+  Strata's experimental speed projection, with which the model declines far fewer requests; off, Jarvis leaves it
+  out. Jarvis never adds one itself, and `jarvis doctor` notes when the setting is on and none is loaded.
 - Jarvis reads a web address you write in the request ("what does https://… say?") without searching for it first.
   Only an address in your own words counts, exactly as written: never one in a long paste, a page, a file, PC audio
   or a scheduled request that outside text steered, and every address is still checked to be public.
