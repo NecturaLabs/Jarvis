@@ -34,8 +34,8 @@ words before anyone asked, so it is off by default and bounded when on. Option 1
   hears PC audio. `jarvis ask` is offered the operation, so `jarvis tools` and `boundaries.classes` know it,
   but every listen there is refused: it has no voice service hearing.
 - **Where the frames come from.** `VoiceLoop._heard` passes each frame the PC watcher reads to `PcHearing`
-  while it wants one (a listen runs, or a recall is set). A pause, and the end of the stream, drop what is held;
-  a listen ends at a pause even while no frame comes (it checks every 0.2 s), and at a suspend, so audio from
+  while it wants one (a listen runs, or a recall is set). A pause drops what is held, and the end of the
+  stream the recall (a listen that runs goes on with the next stream's frames); a listen ends at a pause even while no frame comes (it checks every 0.2 s), and at a suspend, so audio from
   both sides of a sleep is never joined. Nothing is taken while Jarvis speaks, so its own voice is never heard
   back when all output is listened to.
 - **What is kept.** In memory: the frames of the listen that runs, and with `audio.pc_audio_recall_s` (0 by

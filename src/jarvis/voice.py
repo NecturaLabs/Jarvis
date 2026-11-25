@@ -176,6 +176,7 @@ class _Hearing(Protocol):
     def wants(self) -> bool: ...
     def feed(self, frame: NDArray[np.int16]) -> None: ...
     def forget(self) -> None: ...
+    def forget_recall(self) -> None: ...
 
 
 class _Vad(Protocol):
@@ -1113,9 +1114,9 @@ class VoiceLoop:
         """Pass on each PC frame, handing it to `hearing` too unless paused or Jarvis speaks.
 
         Jarvis's own voice plays through the PC (all of it, when every output is listened to),
-        so nothing is heard while it speaks. A pause, and the end of the stream, drop whatever
-        `hearing` holds, so a call's last words are not kept once it is over. A plain loop, so
-        closing this leaves `frames` open.
+        so nothing is heard while it speaks. A pause drops whatever `hearing` holds, and the end
+        of the stream its recall, so a call's last words are not kept once it is over. A plain
+        loop, so closing this leaves `frames` open.
         """
         paused = False
         try:
@@ -1130,7 +1131,7 @@ class VoiceLoop:
                         hearing.feed(frame)
                 yield frame
         finally:
-            hearing.forget()
+            hearing.forget_recall()  # a listen that runs goes on with the next stream's frames
 
     def _watch_session(
         self, pc: PcListener, frames: Iterator[NDArray[np.int16]], should_stop: Callable[[], bool]

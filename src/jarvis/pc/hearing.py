@@ -104,6 +104,11 @@ class PcHearing:
                 self._heard = None
                 self._changed.notify_all()
 
+    def forget_recall(self) -> None:
+        """Drop the recalled frames only (the stream ended); a listen that runs carries on."""
+        with self._changed:
+            self._recent.clear()
+
     def stop(self) -> None:
         """End a listen that runs and every one after (Jarvis is stopping)."""
         with self._changed:
@@ -195,7 +200,7 @@ class HearingOps:
         else:
             frames = hearing.listen(seconds)
         if frames is None:
-            msg = "listening stopped: Jarvis was paused or is stopping"
+            msg = "listening stopped: Jarvis was paused or is stopping, or the PC slept"
             raise OperationError(msg)
         if not frames:
             return Result(f"{NOTHING_PLAYED} ({self._heard}).")

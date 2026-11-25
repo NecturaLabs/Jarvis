@@ -20,6 +20,7 @@ from jarvis.config import AudioConfig, Config, ModelConfig
 from jarvis.confirmkey import MIN_PRESS_S, NOTHING_WAITING, STRAY_HOLD_S, ConfirmKey
 from jarvis.model import Delta, StrataModel
 from jarvis.operations import Operation, Registry, Result
+from jarvis.pc.hearing import PcHearing
 from jarvis.policy import OpClass, Origin
 from jarvis.schedule import Due, Job
 from jarvis.voice import PcListener, State, VoiceLoop
@@ -213,12 +214,16 @@ class Hearing:
     wants: bool = True
     fed: list[int] = field(default_factory=list[int])
     forgot_after: list[int] = field(default_factory=list[int])  # frames fed before each forget
+    recall_dropped_after: list[int] = field(default_factory=list[int])
 
     def feed(self, frame: NDArray[np.int16]) -> None:
         self.fed.append(int(frame[0]))
 
     def forget(self) -> None:
         self.forgot_after.append(len(self.fed))
+
+    def forget_recall(self) -> None:
+        self.recall_dropped_after.append(len(self.fed))
 
 
 type Reply = Callable[[str, Hooks, Origin], str]
@@ -274,7 +279,7 @@ def _loop(
     asleep_s: Callable[[], float] = lambda: 0.0,
     after_sleep: Callable[[], None] = lambda: None,
     due: Callable[[], Sequence[Due]] = tuple,
-    hearing: Hearing | None = None,
+    hearing: Hearing | PcHearing | None = None,
 ) -> VoiceLoop:
     listener = None if pc is None else PcListener(pc, pc_wake or Wake(), Vad(), hearing)
     return VoiceLoop(
@@ -656,14 +661,32 @@ class EndingPcAudio:
         pass
 
 
-def test_the_end_of_a_pc_stream_drops_what_pc_audio_listen_holds() -> None:
+def test_the_end_of_a_pc_stream_drops_the_recall_but_not_a_listen_that_runs() -> None:
     hearing = Hearing()
     pc = EndingPcAudio(SPEECH, SPEECH)
     mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
 
     _run(_loop(Agent(), mic, Speaker(), pc=pc, hearing=hearing))
 
-    assert hearing.forgot_after[:1] == [2]
+    assert hearing.recall_dropped_after[:1] == [2]
+    assert hearing.forgot_after == []
+
+
+def test_a_listen_running_when_the_pc_stream_ends_keeps_what_it_heard() -> None:
+    hearing = PcHearing(10, grace_s=0)
+    result: list[list[NDArray[np.int16]] | None] = []
+    listener = threading.Thread(target=lambda: result.append(hearing.listen(1.0)), daemon=True)
+    listener.start()
+    until(lambda: hearing.wants and listener.is_alive())()
+    pc = EndingPcAudio(SPEECH, SPEECH, SPEECH)
+    mic = Mic(Idle(lambda: pc.ended.is_set() and not listener.is_alive()), *[SILENCE] * 3)
+
+    _run(_loop(Agent(), mic, Speaker(), pc=pc, hearing=hearing))
+
+    listener.join(WAIT_S)
+    frames = result[0]
+    assert frames is not None
+    assert len(frames) == 3  # the stream's frames, not None for a pause
 
 
 def test_a_failing_request_is_apologised_for_and_the_loop_keeps_listening() -> None:
