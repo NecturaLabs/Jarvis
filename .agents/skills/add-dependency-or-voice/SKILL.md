@@ -14,14 +14,16 @@ outright; `ruff.toml` bans the usual SDKs.
 1. Check its licence (package metadata and its LICENSE file) is compatible with GPL-3.0-or-later. Not compatible or
    unclear: stop and ask the maintainer.
 2. `uv add <name>==<version>` (or `--dev`); commit `pyproject.toml` and `uv.lock` together. Every source must be PyPI.
-3. Run `uv run python tools/check_licences.py` (licences and lock sources) and `uv run pip-audit --strict`; both pass.
+3. Run `tools/check.sh`: its "dependency licences and sources" and "known vulnerabilities" steps must pass (the
+   second audits the locked requirements, as CI does, and needs the network).
 4. Add a row to the dependency table in `docs/models.md` with the version and licence, and say what it pulls in.
 
 ## Model file or voice
 
 1. Check the weights' licence on the model card; record where you checked.
 2. Pin it in `src/jarvis/models.py` with its sha256 and licence, so `jarvis doctor` verifies it.
-3. Never commit the file (`.gitignore` refuses `*.onnx`, `*.wav`); downloads go outside the repository.
+3. Never commit the file (`.gitignore` refuses `*.onnx`, `*.gguf`, `ggml-*.bin` and `*.wav`); downloads go outside
+   the repository.
 4. Add or update its section in `docs/models.md`: where it goes under `data_dir`, its cost and its licence.
 
 Done when: `tools/check.sh` passes, `uv run reuse lint` is clean and the docs row names the licence.

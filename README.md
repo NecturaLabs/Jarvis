@@ -69,12 +69,16 @@ Jarvis is pre-1.0 software; see [Status](#status).
   while it talks and it stops and listens to your new request. See
   [the ADR](docs/adr/0008-speak-while-writing-and-barge-in.md).
 
-Not built yet: PC operations other than Spotify and files. The plan marks each as planned.
+Not built yet: switching workspaces, the PC's own volume and running Omarchy's commands. The plan marks each
+as planned.
 
 ## Requirements
 
 - Omarchy on Arch Linux with PipeWire (`pw-record` and `pw-play`; `pw-dump` too for PC audio) and systemd user services.
-- Voxtype as the dictation backend, with the Whisper model you set in `audio.transcribe_model` downloaded.
+- Voxtype as the dictation backend, with the speech model you set in `audio.transcribe_model` downloaded (a
+  Whisper model by default; `audio.transcribe_engine` picks another). Voxtype's GPU build
+  (`sudo voxtype setup gpu --enable`) transcribes in less than half the time and spares the CPU while a game
+  runs ([docs/models.md](docs/models.md#speech-to-text-voxtype)).
 - Python 3.14 and uv.
 - Strata and a model it runs, set up with `strata launch` (which writes the run config Jarvis serves).
   Built and measured on an RX 7900 XT with 64 GB of RAM; what each measured model holds in RAM and VRAM is
@@ -126,6 +130,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis help` | List the commands by group, each with what it does (the same as `jarvis --help`); `jarvis <command> --help` explains one command and its options, and a mistyped command gets a suggestion when one is close. |
 | `jarvis ask <text>` | Send one typed request as if spoken; a question is answered `y` or `n` on the terminal, and `--yes` answers yes to confirmations. |
 | `jarvis chat` | Open a Textual window where you type requests and watch what Jarvis does, live. |
+| `jarvis consent [ask\|bypass]` | Show or set whether Jarvis asks for a yes before a risky action or one after outside text; a `strong` action still waits for the confirm key either way. |
 | `jarvis wake [livekit\|azure]` | Show or switch the wake word model; `--model FILE` names the Azure `.table` file; `--words hey_jarvis,yo_jarvis` picks the LiveKit models that listen. |
 | `jarvis pc-audio [on\|off]` | Show or set listening to PC audio; `--apps discord,firefox` names the apps, `--all-output` listens to everything the PC plays. |
 | `jarvis run` | Run the voice loop in the foreground. This is what `jarvis.service` runs. |
@@ -150,8 +155,8 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 
 Jarvis is pre-1.0 and has no tagged releases yet. It was built and measured on one machine (Omarchy, an RX
 7900 XT and 64 GB of RAM); other hardware is untested. The configuration file has one schema version and no
-migrations, so a later version may ask you to edit it. PC operations other than Spotify and files are
-not built; [docs/roadmap.md](docs/roadmap.md) lists what is planned and
+migrations, so a later version may ask you to edit it. Some PC operations (workspaces, the PC's own volume)
+are not built; [docs/roadmap.md](docs/roadmap.md) lists what is planned and
 [docs/plan.md](docs/plan.md) says what is built. Changes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Licence
@@ -175,7 +180,8 @@ uv run pytest -q -m "not local"   # unit tests
 ```
 
 Tests marked `local` need real hardware and services and never run in CI (`uv run pytest -m local`).
-`tools/check.sh` runs everything CI runs, in one command; `tools/install-hooks.sh` adds an opt-in pre-commit check.
+`tools/check.sh` runs everything CI runs, in one command; `tools/install-hooks.sh` adds opt-in git hooks (lint,
+tests, the commit subject and a private-details check).
 
 ## Project layout
 
@@ -187,7 +193,7 @@ tests/               pytest; tests/conftest.py keeps every test off the network,
 tools/               the checks CI runs (tools/README.md lists them)
 docs/                configuration, models, architecture, plan, decisions (map: docs/README.md)
 .github/             CI, issue forms, the pull request template, labels
-.claude/ .codex/    agents and recipes for coding agents (see below);
+.claude/ .codex/    agents and recipes for coding agents (see below)
 .agents/            the recipes again, for Codex and other harnesses
 ```
 

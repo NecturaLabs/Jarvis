@@ -11,6 +11,8 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
 - Install the environment: `uv sync`
 - Everything CI runs, in one command, before calling work done: `tools/check.sh` (lint, tests without `local`,
   `reuse lint`, the licence, docs and advisories checks). It lints **tracked** files only, so `git add` new files first.
+  Exit 1 is a failure; exit 3 means a check could not run (no `actionlint`, or PyPI unreachable): report that
+  check as not run, never as passed.
 - Lint only (Ruff with every rule, `ruff format --check`, pyright strict, shell and editorconfig):
   `uv run .lint/check.sh`
 - Tests: `uv run pytest -q -m "not local"`; `tests/conftest.py` cuts audio, network and your home folder for each test.
@@ -52,6 +54,8 @@ These hold on the maintainer's machine; elsewhere, use your own folders and keep
   need the real mic or speakers are `local` and are run with the owner.
 - Open nothing on the owner's screen: run windows and terminals hidden; only if that is impossible, on
   workspace 1. Stop only processes you started, by their recorded PID.
+- The installed Jarvis runs from the main checkout's `.venv`: keep that checkout on `dev` and do topic work in a
+  git worktree under .claude/worktrees.
 - Downloaded tools, voices and model files go where the maintainer's own environment rules say, never
   under `~/.local/share`; Strata's model stays where its run config (`strata.run_config`) points.
 
@@ -62,7 +66,8 @@ These hold on the maintainer's machine; elsewhere, use your own folders and keep
   pull request text and changed docs get `jarvis-slop-check`.
 - Docs and `CHANGELOG.md` change in the same commit as the behaviour; `docs/README.md` says which docs are kept true.
 - Recipes: the `add-operation` skill for anything Jarvis can do, `add-dependency-or-voice` before adding a package,
-  model or voice, `run-silent` before starting Jarvis. Skills live in `.claude/skills/` with a byte-identical copy in
+  model or voice, `run-silent` before any `jarvis` command other than `--help`, `doctor` or `status` (it lists
+  which ones act on the owner's setup). Skills live in `.claude/skills/` with a byte-identical copy in
   `.agents/skills/`, and agents in `.claude/agents/` with a Codex copy in `.codex/agents/`; change both together.
 
 ## Git
