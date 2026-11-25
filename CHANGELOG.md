@@ -8,6 +8,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `/effort` in the chat shows how hard the model thinks before it answers, and `/effort high` (or `none`,
+  `low`, `medium`) sets it from the next request on, saved as `chat.thinking`. Each chat setting it or
+  `/config` saves is now audited, and the chat's activity feed shows setting and tool changes.
 - The chat's `/config` also sets Jarvis's speaking speed, whether it acts without asking first and whether it
   takes requests from PC audio. Changes there restart the voice service once, when the settings close, instead of
   at every Enter, and its Tools list never takes a tool below how it ships.
@@ -112,6 +115,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A voice-service restart that fails after `/config` is now shown in the chat, saying the old settings still
+  hold; it went to a hidden error stream before. A setting is audited only once it is saved, and acting without
+  asking turned on from the chat is recorded as `consent_changed`, as `jarvis consent` records it.
 - A request you stop (Esc in the chat, or speaking over Jarvis) is no longer forgotten. It is remembered with
   what it looked up and a note that it was stopped, so the next request does not search all over again or lose
   the task, and the audit log's `reply` says `stopped`. A stop now takes effect while the model is still

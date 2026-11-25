@@ -156,6 +156,10 @@ class Session(Protocol):
         """Return how full the model's context is."""
         ...
 
+    def set_thinking(self, section: ChatConfig) -> None:
+        """Think as `section` says (effort, caps, ceiling) from the next request on."""
+        ...
+
     @property
     def memory(self) -> Conversation:
         """The remembered conversation."""
@@ -1099,6 +1103,7 @@ class ChatApp(App[None]):
             "/compact": lambda _a: self._compact(),
             "/context": lambda _a: self._context_note(),
             "/verbosity": self._verbosity_command,
+            "/effort": self._effort_command,
             "/config": lambda _a: self._open_settings(),
             "/status": lambda _a: self._status_note(),
             "/copy": lambda _a: self._copy(),
@@ -1220,6 +1225,40 @@ class ChatApp(App[None]):
             level = self._settings.verbosity
             self._note(f"Showing {VERBOSITY_ABOUT[level]} ({level}). ctrl+o changes it.")
 
+    def _effort_command(self, argument: str) -> None:
+        """Show how hard the model thinks, or set it for the requests from now on."""
+        if not argument:
+            self._note(self._effort_line())
+            return
+        level = argument.lower()
+        if level not in commands.EFFORT_LEVELS:
+            self._note(f"No effort {argument}; it is none, low, medium or high.", "warn")
+            return
+        self._set_effort(level)
+        self._note(f"{self._effort_line()} From the next request on.")
+
+    def _effort_line(self) -> str:
+        now, ceiling = self._settings.thinking, self._settings.thinking_max
+        if ceiling == now:
+            return f"Thinking effort: {now}."
+        return f"Thinking effort: {now}; the model may raise it up to {ceiling} for a hard request."
+
+    def _set_effort(self, level: str) -> None:
+        """Make `level` the chat's thinking effort: saved, and the agent's from its next request.
+
+        A ceiling below it is raised to it, as the config requires.
+        """
+        efforts = commands.EFFORT_LEVELS
+        ceiling = self._settings.thinking_max
+        if efforts.index(ceiling) < efforts.index(level):
+            ceiling = level
+        self._settings = ChatConfig.model_validate(
+            self._settings.model_dump() | {"thinking": level, "thinking_max": ceiling}
+        )
+        if self._session is not None:
+            self._session.set_thinking(self._settings)
+        self._save_settings()
+
     def _status_note(self) -> None:
         grid = Table.grid(padding=(0, 2))
         grid.add_column(no_wrap=True, style="bright_black")
@@ -1334,10 +1373,17 @@ class ChatApp(App[None]):
         if self._changed_jarvis and apply is not None:
             self._changed_jarvis = False
             self.notify("Restarting the voice service to take the changes")
-            self.run_worker(apply, thread=True, group="apply")  # never blocks the window
+            self.run_worker(lambda: self._apply(apply), thread=True, group="apply")
         self.query_one("#settings").display = False
         self.query_one("#prompt").display = True
         self._input().focus()
+
+    def _apply(self, apply: Callable[[], None]) -> None:
+        """Restart the voice service on a worker, never blocking the window; say if it failed."""
+        try:
+            apply()
+        except Exception as exc:  # ruff: ignore[blind-except] - shown in the window, never raised
+            self._from_worker(self._note, f"Settings saved, but {exc}", "warn")
 
     def _shared(self) -> list[SharedSetting]:
         read = self._services.shared

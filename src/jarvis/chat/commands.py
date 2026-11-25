@@ -8,6 +8,7 @@ with what was typed comes first, then one that holds the letters in order ("/cmp
 from dataclasses import dataclass
 
 VERBOSITY = ("replies", "steps", "everything")
+EFFORT_LEVELS = ("none", "low", "medium", "high")  # as `chat.thinking` takes them
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +31,12 @@ COMMANDS = (
         "how much of the work to show: replies, steps or everything (also ctrl+o)",
         "[level]",
         VERBOSITY,
+    ),
+    Command(
+        "/effort",
+        "how hard the model thinks before it answers: none, low, medium or high",
+        "[level]",
+        EFFORT_LEVELS,
     ),
     Command("/config", "the chat's settings"),
     Command("/status", "the voice service, the model and where things are kept"),

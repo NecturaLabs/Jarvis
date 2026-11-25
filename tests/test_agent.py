@@ -3665,3 +3665,16 @@ def test_words_the_owner_adds_while_it_works_are_remembered_with_the_request() -
 
     remembered = [str(m["content"]) for m in model.seen[2] if m["role"] == "user"]
     assert any("will it rain" in r and "and the weekend" in r for r in remembered)
+
+
+def test_the_thinking_effort_can_change_between_requests() -> None:
+    model = ScriptedModel([_say("One."), _say("Two."), _say("Three.")])
+    agent, _ = _agent(model, [])
+
+    agent.handle("one", NO_CONFIRM)
+    agent.set_thinking(ChatConfig(thinking="medium", thinking_tokens=300))
+    agent.handle("two", NO_CONFIRM)
+    agent.set_thinking(ChatConfig(thinking="none"))
+    agent.handle("three", NO_CONFIRM)
+
+    assert model.thinking == [None, Thinking("medium", 300), None]

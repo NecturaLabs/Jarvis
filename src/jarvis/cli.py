@@ -623,21 +623,34 @@ def _set_shared(key: str, value: object) -> None:
     section = getattr(cfg, section_name)
     was = getattr(section, name)
     changed = cfg.model_copy(update={section_name: section.model_copy(update={name: value})})
-    AuditLog(paths.audit_file()).record(
-        "setting_changed", setting=key, was=was, to=value, source="chat"
-    )
     config.save(config.Config.model_validate(changed.model_dump()))
+    audit = AuditLog(paths.audit_file())
+    if key == "boundaries.bypass_consent":  # recorded as `jarvis consent` records it
+        audit.record("consent_changed", bypass_consent=value, source="chat")
+    else:
+        audit.record("setting_changed", setting=key, was=was, to=value, source="chat")
 
 
 def _apply_from_chat() -> None:
-    """Restart the voice service so it takes what the chat's settings changed."""
-    _restart_if_running()
+    """Restart the voice service so it takes what the chat's settings changed.
+
+    Raises:
+        RestartError: the restart failed, so the voice service runs on the old settings.
+    """
+    if not _restart_if_running():
+        raise RestartError(RESTART_FAILED)
 
 
 def _save_chat_settings(chat: config.ChatConfig) -> None:
-    """Write the chat's settings into the config file as it is now on disk."""
+    """Write the chat's settings into the config file as it is now on disk, and audit them."""
     current = config.load()
     config.save(current.model_copy(update={"chat": chat}))
+    was, now = current.chat.model_dump(), chat.model_dump()
+    audit = AuditLog(paths.audit_file())
+    for key in sorted(k for k in now if now[k] != was.get(k)):
+        audit.record(
+            "setting_changed", setting=f"chat.{key}", was=was.get(key), to=now[key], source="chat"
+        )
 
 
 def _screenshot_folders(home: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
@@ -1564,17 +1577,26 @@ def _pc_audio_summary(audio: config.AudioConfig) -> str:
     return f"on ({apps}; a yes lasts {audio.pc_audio_grant_s / 60:g} min)"
 
 
-def _restart_if_running() -> None:
-    if _unit_state(JARVIS_UNIT) == "active":
-        # A restart counts against the start limit (5 in 15 min): clear it first, so a few
-        # config changes in a row do not leave the voice service stopped.
-        _systemctl("reset-failed", JARVIS_UNIT)
-        if _systemctl("restart", JARVIS_UNIT) != 0:
-            print(
-                "jarvis: the voice service did not restart, so it still runs on the old "
-                "settings; see `jarvis logs`",
-                file=sys.stderr,
-            )
+RESTART_FAILED = (
+    "the voice service did not restart, so it still runs on the old settings; see `jarvis logs`"
+)
+
+
+class RestartError(RuntimeError):
+    """The voice service did not restart after a change, so it runs on the old settings."""
+
+
+def _restart_if_running() -> bool:
+    """Restart the voice service if it runs; return False when that restart failed."""
+    if _unit_state(JARVIS_UNIT) != "active":
+        return True
+    # A restart counts against the start limit (5 in 15 min): clear it first, so a few
+    # config changes in a row do not leave the voice service stopped.
+    _systemctl("reset-failed", JARVIS_UNIT)
+    if _systemctl("restart", JARVIS_UNIT) != 0:
+        print(f"jarvis: {RESTART_FAILED}", file=sys.stderr)
+        return False
+    return True
 
 
 CONSENT_SAID = {
@@ -1656,10 +1678,10 @@ def set_tool(
         raise config.ConfigError(msg)
     changed = with_class(cfg, found, found.shipped if cls is None else cls)
     now = next(s for s in _tool_settings(changed) if s.name == name)
+    config.save(changed)
     AuditLog(paths.audit_file()).record(
         "tool_class_changed", op=name, was=found.state.value, to=now.state.value, source=source
     )
-    config.save(changed)
     if restart:
         _restart_if_running()
     return now

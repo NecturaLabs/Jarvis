@@ -123,6 +123,11 @@ class FakeSession:
     def context_use(self) -> ContextUse:
         return self.use
 
+    thought: list[str] = field(default_factory=list[str])
+
+    def set_thinking(self, section: ChatConfig) -> None:
+        self.thought.append(section.thinking)
+
 
 def _plain(renderable: object) -> str:
     console = Console(width=200, record=True, color_system=None, file=io.StringIO())
@@ -1096,6 +1101,83 @@ def test_config_changes_jarvis_settings_and_restarts_the_voice_service_once_on_c
         assert applied == []  # nothing restarts while the panel is open
         await pilot.press("escape")
         await _until(pilot, lambda: applied == [True])
+
+    _run(test, app)
+
+
+def test_effort_shows_how_hard_the_model_thinks() -> None:
+    app = _app(session=FakeSession(), settings=ChatConfig(thinking="low"))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/effort")
+        await _until(pilot, lambda: _has(app, "Thinking effort: low"))
+        assert _has(app, "up to high")  # how far the model may raise it itself
+
+    _run(test, app)
+
+
+def test_effort_sets_how_hard_the_model_thinks_from_the_next_request() -> None:
+    saved: list[ChatConfig] = []
+    session = FakeSession()
+    app = _app(session=session, services=Services(save_settings=saved.append))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/effort medium")
+        await _until(pilot, lambda: bool(saved))
+        await _until(pilot, lambda: _has(app, "Thinking effort: medium"))
+
+    _run(test, app)
+    assert session.thought == ["medium"]
+    assert saved[-1].thinking == "medium"
+
+
+def test_effort_above_the_ceiling_raises_the_ceiling_too() -> None:
+    saved: list[ChatConfig] = []
+    settings = ChatConfig(thinking="none", thinking_max="low")
+    app = _app(
+        session=FakeSession(), settings=settings, services=Services(save_settings=saved.append)
+    )
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/effort high")
+        await _until(pilot, lambda: bool(saved))
+
+    _run(test, app)
+    assert (saved[-1].thinking, saved[-1].thinking_max) == ("high", "high")
+    ChatConfig.model_validate(saved[-1].model_dump())  # still a valid section
+
+
+def test_effort_refuses_a_level_it_does_not_know() -> None:
+    session = FakeSession()
+    app = _app(session=session)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/effort extreme")
+        await _until(pilot, lambda: _has(app, "none, low, medium or high"))
+
+    _run(test, app)
+    assert session.thought == []
+
+
+def test_a_voice_restart_that_fails_after_config_is_shown() -> None:
+    from jarvis.chat.app import SharedSetting  # ruff: ignore[import-outside-top-level] - only this test
+
+    def failed() -> None:
+        raise RuntimeError(
+            "the voice service did not restart, so it still runs on the old settings"
+        )
+
+    def shared() -> list[SharedSetting]:
+        return [SharedSetting("audio.speech_speed", "Speaking speed", (1, 2), 1)]
+
+    services = Services(shared=shared, set_shared=lambda _k, _v: None, apply=failed)
+    app = _app(session=FakeSession(), services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await pilot.press("end", "enter", "escape")
+        await _until(pilot, lambda: _has(app, "still runs on the old settings"))
 
     _run(test, app)
 

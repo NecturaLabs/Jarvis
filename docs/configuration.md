@@ -99,6 +99,11 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 `/config` in the chat changes `verbosity`, `toolbar`, `resume`, `reply_tokens` and `max_steps` and writes
 them here; the last three apply the next time the chat opens.
 
+`/effort` in the chat says how hard the model thinks before it answers, and how far it may raise that itself
+for a hard request. `/effort none`, `low`, `medium` or `high` sets `thinking` here, from the next request on;
+when `thinking_max` is lower, it is raised to the same level. Every chat setting saved here is written to the
+audit log as `setting_changed`, after the save.
+
 The chat remembers replies that drew on outside text, as data. While one is remembered, an action with a side
 effect that the model chooses needs your yes; a plain command (`pause`, `volume 40`) does not, since the
 model plays no part in it.

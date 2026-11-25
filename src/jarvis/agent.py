@@ -11,7 +11,7 @@ import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -920,6 +920,14 @@ class Agent:
         work = 2 * tokens("x" * limits.tool_text_chars)
         room = limits.context_tokens - CONTEXT_MARGIN - self._fixed - limits.answer_tokens - work
         return max(0, min(limits.memory_tokens, room))
+
+    def set_thinking(self, section: AgentConfig) -> None:
+        """Think as `section` says (its effort, caps and ceiling) from the next request on."""
+        fresh = Limits.of(
+            section, self._limits.context_tokens, remember_outside=self._limits.remember_outside
+        )
+        self._limits = replace(self._limits, thinking=fresh.thinking, raised=fresh.raised)
+        self._memory.budget = self._memory_budget()  # an answer's room includes its thinking
 
     @property
     def memory(self) -> Conversation:
