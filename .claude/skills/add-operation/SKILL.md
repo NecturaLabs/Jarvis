@@ -21,6 +21,13 @@ agent before merging.
   - `default_class`: `SAFE`, `CONFIRM`, `STRONG` or `DENY` (`src/jarvis/policy.py`); anything irreversible or that
     spends money is at least `CONFIRM`;
   - `side_effect=False` only for a pure read (it is then not raised to confirm by outside text);
+  - `outbound=True` when it sends words the model wrote to a service off this PC (a search, a place name), with
+    `outbound_args` naming the arguments that carry them: while file text is in the conversation such a call needs
+    a yes;
+  - `hashed` for arguments the audit log must keep only as a SHA-256 and a length, and `audit_text=False` when a
+    result can hold anything the owner can read (a shell command's output);
+  - `lowest_class` when the owner's `boundaries.classes` must not set it below a floor, and `preview` when a
+    confirmed call writes text the question should show the start of;
   - `spoken_summary`: the words of the confirmation question, naming the exact target;
   - `prepare` when the call acts on "whatever is current" (the current song, the active device): it binds the exact
     target before the question, so the yes is for that target and not for what is current later.
@@ -29,6 +36,10 @@ agent before merging.
 - No shortcuts: a new operation gets no `shortcuts=` phrasing, keyword list or pattern over the owner's words
   ([ADR 0013](../../../docs/adr/0013-free-speech-no-new-shortcuts.md)). The owner says it in any words, so the
   description must tell the model when to use it; the shortcuts ADR 0004 already has stay as they are.
+
+Every tool's schema is in every request, and published tests find models pick less well as the list grows (#31
+measures it for Jarvis). Before adding one, check whether an argument on an existing operation of the same area
+does the job.
 
 Done when: the operation is in the registry `src/jarvis/app.py` builds, so the model's tool schemas carry it; the
 tests below show it.

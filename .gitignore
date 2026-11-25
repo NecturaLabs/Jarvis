@@ -25,6 +25,8 @@ htmlcov/
 *.wav
 set.jsonl
 *.onnx
+*.gguf
+ggml-*.bin
 *.npz
 *.pem
 *.key
