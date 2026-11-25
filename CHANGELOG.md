@@ -69,6 +69,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `tools/idle_check.py` no longer reports "ok: idle" for the GPU when it could not see the process's GPU use
+  (Strata's ROCm engine publishes no per-process engine time): the verdict says it was not measured, and
+  each card's whole busy share over the window is shown beside it.
+
 - A place said with its state or country, "Springfield (Illinois)" or "Lisbon, Portugal", is found for the time
   and the weather: the geocoder takes only a name and found nothing for the whole phrase, so the name is
   looked up alone and the qualifier picks among the matches.

@@ -10,7 +10,11 @@ and every descendant of it, and reports per root:
   percentage of one core. A process that exits and is waited for by something outside the tree
   (re-parented to systemd) is lost; use the unit's cgroup if that matters;
 - GPU: the `drm-engine-<name>: <n> ns` counters in /proc/<pid>/fdinfo/* (amdgpu and i915 publish
-  them), as a busy percentage per engine, counting each DRM client once (`drm-client-id`);
+  them), as a busy percentage per engine, counting each DRM client once (`drm-client-id`). A
+  ROCm compute client (Strata's engine, through /dev/kfd) publishes none, so its GPU use is not
+  measured and the verdict says so. Beside it, each card's own `gpu_busy_percent` in
+  /sys/class/drm is read once a second and averaged: the whole card's, every program's, so it is
+  shown and never fails the check;
 - RSS: VmRSS in /proc/<pid>/status summed over the tree at the start and at the end (pages shared
   between processes count once per process, so a growing total is what matters, not its size).
 
@@ -35,6 +39,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 PROC = Path("/proc")
+DRM = Path("/sys/class/drm")
+_CARD = re.compile(r"card[0-9]+")  # a card, not one of its connectors (card1-DP-1)
 _KIB_PER_MIB = 1024
 DEFAULT_MAX_CPU_PERCENT = 5.0
 DEFAULT_MAX_RSS_GROWTH_MIB = 50.0
@@ -89,14 +95,15 @@ class Snapshot:
 class Host:
     """What the measurement reads and waits on, replaceable in tests.
 
-    `proc` is the /proc to read, `clock` and `sleep` stand in for real time, and `clk_tck` is the
-    kernel's clock ticks per second (None: this system's).
+    `proc` is the /proc to read, `clock` and `sleep` stand in for real time, `clk_tck` is the
+    kernel's clock ticks per second (None: this system's), and `drm` holds the graphics cards.
     """
 
     proc: Path = PROC
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     clk_tck: int | None = None
+    drm: Path = DRM
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +124,7 @@ class Result:
     seconds: float = 0.0
     cpu_percent: float = 0.0
     gpu_percent: dict[str, float] = field(default_factory=dict[str, float])
+    card_percent: dict[str, float] = field(default_factory=dict[str, float])
     rss_start_mib: float = 0.0
     rss_end_mib: float = 0.0
     problems: list[str] = field(default_factory=list[str])
@@ -285,6 +293,44 @@ def _judge(result: Result, limits: Limits) -> None:
 _REAL_HOST = Host()
 
 
+def _card_files(drm: Path) -> dict[str, Path]:
+    """Return each graphics card's `gpu_busy_percent` file by card name (connectors left out)."""
+    try:
+        cards = sorted(drm.iterdir())
+    except OSError:
+        return {}
+    return {
+        card.name: card / "device" / "gpu_busy_percent"
+        for card in cards
+        if _CARD.fullmatch(card.name) and (card / "device" / "gpu_busy_percent").is_file()
+    }
+
+
+def _wait_sampling_cards(host: Host, seconds: float) -> dict[str, float]:
+    """Wait `seconds`; with graphics cards present, read their busy share once a second meanwhile.
+
+    The share is the whole card's, every program's (a game, the desktop); it is reported beside
+    the processes' own engine time, which a compute client (ROCm through /dev/kfd) never
+    publishes. Without a card the wait is one sleep.
+    """
+    files = _card_files(host.drm)
+    if not files:
+        host.sleep(seconds)
+        return {}
+    readings: dict[str, list[int]] = {name: [] for name in files}
+    left = seconds
+    while left > 0:
+        step = min(1.0, left)
+        host.sleep(step)
+        left -= step
+        for name, path in files.items():
+            try:
+                readings[name].append(int(path.read_text(encoding="utf-8").strip()))
+            except OSError, ValueError:
+                continue
+    return {name: sum(seen) / len(seen) for name, seen in readings.items() if seen}
+
+
 def measure(
     roots: Sequence[Root],
     seconds: float,
@@ -295,10 +341,10 @@ def measure(
     proc, clock = host.proc, host.clock
     ticks_per_second = host.clk_tck if host.clk_tck is not None else os.sysconf("SC_CLK_TCK")
     starts = {root: snapshot(proc, root.pid, clock) for root in roots}
-    host.sleep(seconds)
+    cards = _wait_sampling_cards(host, seconds)
     results: list[Result] = []
     for root in roots:
-        result = Result(root=root)
+        result = Result(root=root, card_percent=dict(cards))
         results.append(result)
         start = starts[root]
         end = snapshot(proc, root.pid, clock) if start is not None else None
@@ -366,12 +412,22 @@ def format_result(result: Result, limits: Limits) -> str:
             f"  processes: {result.processes} (with descendants), over {result.seconds:.1f} s",
             f"  cpu: {result.cpu_percent:.1f} % of one core (limit {limits.max_cpu_percent:g} %)",
             f"  gpu: {gpu} (limit {limits.max_gpu_percent:g} % per engine)",
+            *(
+                f"  card: {name} {percent:.1f} % busy on average (the whole card, every program;"
+                " never a failure)"
+                for name, percent in result.card_percent.items()
+            ),
             (
                 f"  rss: {result.rss_start_mib:.1f} MiB -> {result.rss_end_mib:.1f} MiB"
                 f" ({growth:+.1f} MiB, limit +{limits.max_rss_growth_mib:g} MiB)"
             ),
         ]
-    lines += [f"  FAIL: {problem}" for problem in result.problems] or ["  ok: idle"]
+    verdict = (
+        "  ok: idle"
+        if result.gpu_percent or result.seconds <= 0
+        else "  ok: idle on CPU and memory; its GPU use was not measured (no engine time published)"
+    )
+    lines += [f"  FAIL: {problem}" for problem in result.problems] or [verdict]
     return "\n".join(lines)
 
 
@@ -442,13 +498,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(
+def main(  # ruff: ignore[too-many-arguments] - what it reads and waits on, keyword-only for tests
     argv: Sequence[str] | None = None,
     *,
     proc: Path = PROC,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     run: Run = subprocess.run,
+    drm: Path = DRM,
 ) -> int:
     """Run the check and return the exit status: 0 idle, 1 not idle, 2 cannot measure."""
     parser = build_parser()
@@ -463,7 +520,7 @@ def main(
         return 2
     roots += [Root(f"pid {pid}", pid) for pid in args.pid]
     limits = Limits(args.max_cpu_percent, args.max_rss_growth_mib, args.max_gpu_percent)
-    results = measure(roots, args.seconds, limits, Host(proc, clock, sleep))
+    results = measure(roots, args.seconds, limits, Host(proc, clock, sleep, drm=drm))
     for result in results:
         print(format_result(result, limits))
     return 1 if any(result.problems for result in results) else 0
