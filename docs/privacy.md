@@ -10,7 +10,7 @@ it. It is a plain statement of what the code does, not legal terms; the code win
 | Config | `~/.config/jarvis/config.toml` | Your settings, including your Spotify app's client ID (there is no client secret). |
 | Strata API key | `~/.local/state/jarvis/strata.env`, mode 0600 | A random key that only Jarvis and its Strata service use. |
 | Spotify tokens | `~/.local/state/jarvis/spotify-token.json`, mode 0600 | The access and refresh tokens from `jarvis spotify-login`. |
-| Audit log | `~/.local/state/jarvis/audit.jsonl`, mode 0600 in a 0700 folder | Every request as transcribed or typed (a paste in the chat included), the model's tool calls, each policy decision and each result (with the start of each page or file Jarvis read, its own configuration files included, and of the programs and window titles `find_processes` listed). What `write_file` puts in a file is not in it: only its length and SHA-256. With PC audio on, it also holds what other people said in it. At 5 MiB it moves to `audit.jsonl.1` and a new one starts; the five older logs are kept (`.1` the newest, `.5` the oldest) and the one before them is deleted, so at most about 30 MiB. |
+| Audit log | `~/.local/state/jarvis/audit.jsonl`, mode 0600 in a 0700 folder | Every request as transcribed or typed (a paste in the chat included), the model's tool calls, each policy decision and each result (with the start of each page or file Jarvis read, its own configuration files included, and of the programs and window titles `find_processes` listed). What `write_file` puts in a file is not in it: only its length and SHA-256. With PC audio on, it also holds what other people said in it to wake Jarvis; what `pc_audio_listen` heard for you is in its tool result only as a length and SHA-256, but the reply Jarvis gives about it is recorded as written, like every reply. At 5 MiB it moves to `audit.jsonl.1` and a new one starts; the five older logs are kept (`.1` the newest, `.5` the oldest) and the one before them is deleted, so at most about 30 MiB. |
 | Reminders and scheduled requests | `~/.local/state/jarvis/schedule.json`, mode 0600, with `schedule.json.lock` beside it | The words of each reminder and scheduled request as the model wrote them from your request (at most 50, 200 characters each), with when it is due and how it repeats. A one-off job is removed once it is said or done, a repeating one when you cancel it. The audit log also holds the words, in the `schedule_add` call that set the job, and records each job coming due or missed by its number only. |
 | Action count | `~/.local/state/jarvis/actions.json`, mode 0600 | The times of the side-effecting actions of the last 10 minutes (`boundaries.actions_window_s`), shared by the voice service and the chat to cap how many run. No names or words. |
 | Chat input history | `~/.local/state/jarvis/chat-history`, mode 0600 | The last `chat.history_size` (1000) lines you sent in the chat, for ↑, with the text you pasted into each kept beside it so a long paste brought back still counts as pasted. |
@@ -19,8 +19,13 @@ it. It is a plain statement of what the code does, not legal terms; the code win
 | Speech test set | The folder `jarvis speech-test` was given (`speech-test` in the data folder by default), mode 0700, files 0600 | Only when you run `jarvis speech-test record`: each request you said as a WAV file, with the card, the words you confirmed or typed and its sound levels (`set.jsonl`). `score --out` writes what was heard to the file you name, mode 0600. Nothing is sent anywhere; delete the folder to remove it. |
 
 Audio is held in memory. Each request is written to a private temporary file for Voxtype to transcribe and
-deleted straight after. Jarvis keeps no recordings unless you set `JARVIS_DEBUG_AUDIO_DIR`, which saves each
-request there (mode 0600) for debugging.
+deleted straight after. With PC audio on, what `pc_audio_listen` hears for you (up to a minute) is held in
+memory until it is transcribed, and written to such a temporary file only while Voxtype transcribes it. With
+`audio.pc_audio_recall_s` set (0, off, by default), the last that many seconds of PC audio (60 at most) are
+also held in memory while a stream plays, each frame dropped as a newer one comes, so Jarvis can tell you what
+was just said. Nothing is held while Jarvis is paused or speaks, and a pause or the end of the stream drops it
+([ADR 0015](adr/0015-listen-to-pc-audio.md)). Jarvis keeps no recordings unless you set
+`JARVIS_DEBUG_AUDIO_DIR`, which saves each request there (mode 0600) for debugging.
 
 The model runs in the `jarvis-strata` service on `127.0.0.1`; your requests never leave the PC to reach it.
 With the Azure wake word on, the audio Jarvis listens to goes to a helper process on the PC that runs

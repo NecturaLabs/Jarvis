@@ -42,8 +42,9 @@ FILE_VERSION = 1
 _ROLES = frozenset({"assistant", "tool", "user"})
 _WRAPPED_ORIGIN = re.compile(r'<data origin="([a-z_]{1,32})">')
 # Results that may hold the owner's own data: the turn is marked private, so text that leaves the PC
-# waits for a yes. A shell command's output can be any file the owner's user can read.
-PRIVATE_ORIGINS = frozenset({Origin.FILE, Origin.SHELL})
+# waits for a yes. A shell command's output can be any file the owner's user can read, and PC audio
+# heard for the owner (`pc_audio_listen`) what people said in a call.
+PRIVATE_ORIGINS = frozenset({Origin.FILE, Origin.SHELL, Origin.PC_AUDIO})
 
 
 def tokens(text: str) -> int:

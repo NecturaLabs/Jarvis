@@ -111,8 +111,8 @@ says what that means, and are marked in red while they are on. A restart that fa
 `/resume` lists the archived conversations, newest first (when, name, how many requests), and `/resume 2`
 continues the second: the model gets that conversation back as it was, so what came from outside text then
 still counts as data and still puts actions behind a yes. A conversation is named after its first request
-until `/rename NAME` names it; the name stays when it is resumed. In Listening, `/config` also shows
-`audio.pc_audio_recall_s` in a build that has it, asked about before it first leaves 0.
+until `/rename NAME` names it; the name stays when it is resumed. In Listening, `/config` also sets
+`audio.pc_audio_recall_s` (0, 10, 30 or 60 seconds), asked about before it first leaves 0.
 
 `/effort` in the chat says how hard the model thinks before it answers, and how far it may raise that itself
 for a hard request. `/effort none`, `low`, `medium` or `high` sets `thinking` here, from the next request on;
@@ -331,11 +331,12 @@ the playlist ones: everything else works, and adding to a playlist says to run `
 | `transcribe_short_window` | `true` | true or false | Size Whisper's window to the clip (`context_window_optimization`); much faster for short commands. |
 | `vocabulary_hint` | `true` | true or false | Prime speech-to-text with Jarvis's name, its actions and your artist names. |
 | `hint_names` | `40` | 0 to 200 | Most artist names put in the hint (the hint also stops at 800 characters). |
-| `listen_to_pc` | `false` | true or false | Also take requests heard in PC audio. `jarvis pc-audio on`. |
+| `listen_to_pc` | `false` | true or false | Also take requests heard in PC audio. `jarvis pc-audio on`. The voice prompt tells the model either way whether it hears PC audio, whose (`pc_audio_apps`) and how such a request is treated; the chat never hears it and its prompt leaves it out. On, the voice service also has `pc_audio_listen` (`safe`): asked what is said or played there, it listens (see `pc_audio_recall_s`) and gets the words as PC-audio data, so with `bypass_consent` off a later action or a search waits for your yes, as after a file's text; a stopped program or a shell command after them is refused whatever it is set to. Only your own request can use it, and only the voice service hears: in `jarvis ask` every listen is refused. |
 | `pc_audio_apps` | `["discord"]` | list of app or process names | Whose audio to listen to: every stream they play is recorded and heard mixed. An empty list means all PC output. `--apps`, `--all-output`. |
 | `pc_audio_grant_s` | `600.0` | 0 to 86400 | After you say yes to a PC-audio request, how long further PC-audio requests run without asking. 0 asks every time. Time the PC spends asleep counts. |
 | `confirm_blocks_on_pc_speech` | `true` | true or false | A yes counts as no if speech was heard in PC audio while Jarvis waited for it. |
 | `pc_audio_cooldown_s` | `5.0` | 0 to 600 | Pause after a PC-audio request during which another is ignored. |
+| `pc_audio_recall_s` | `0.0` | 0, or 3 to 60 | With `listen_to_pc` on, how many of the last seconds of PC audio Jarvis keeps in memory, so that `pc_audio_listen` can tell you what was just said. 0 keeps none: it then listens only from when you ask, for 3 to 60 seconds. Nothing is kept while Jarvis is paused or speaks, and a pause or the end of the stream drops it; it reaches the disk only while Voxtype transcribes it ([privacy](privacy.md)). |
 
 See [the PC-audio ADR](adr/0003-pc-audio-is-not-the-owner.md) for why the last four exist.
 
@@ -551,7 +552,7 @@ A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` wit
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
 its shipped class, which is `safe` for every operation but `write_file` (`confirm`) and `stop_process`
 (`strong`): `spotify_*`, `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`,
-`pc_stats`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`; set one to `deny` to switch it off: it is then
+`pc_stats`, `pc_volume`, `pc_media`, `pc_audio_listen`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`; set one to `deny` to switch it off: it is then
 not offered to the model at all. `no_action`, `think_harder` and `stay_quiet` are how Jarvis answers, not tools, and
 cannot be switched off. `stop_process`
 may be set only to `strong` or `deny`: a program is stopped by your command and your key alone, so any
