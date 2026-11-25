@@ -13,7 +13,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   at every Enter, and its Tools list never takes a tool below how it ships.
 - `jarvis speed` shows how fast Jarvis speaks and `jarvis speed 1.5` sets it; `audio.speech_speed` now goes up to 3.0.
 - In `jarvis chat`, words typed while a request runs steer it: they join the request before the model's next
-  call, instead of being refused with "esc stops it". `chat.while_working = "queue"` (or `/config`) runs them as
+  call, instead of being refused with "esc stops it". They are your own words like the request's (a web address
+  in them can be read) and are remembered with it. `chat.while_working = "queue"` (or `/config`) runs them as
   the next request instead.
 - Switch a tool on or off, or make it ask first, without editing the config: `jarvis tools` lists them all,
   `jarvis tools NAME on|ask|key|off|default` sets one, and the chat's `/config` has a Tools list. A tool that is

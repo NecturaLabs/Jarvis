@@ -790,6 +790,7 @@ class _Turn:
     seen: set[str] = field(default_factory=set[str])
     actions: list[str] = field(default_factory=list[str])
     looked: list[str] = field(default_factory=list[str])  # each look-up and what it asked for
+    steered: list[str] = field(default_factory=list[str])  # the owner's words typed in meanwhile
     stream: _ReplyStream | None = None  # the last model call's, when the reply is spoken
     thinking: Thinking | None = None  # how the next model call thinks; the model may raise it
 
@@ -1234,6 +1235,7 @@ class Agent:
         a follow-up need not look it all up again; a request heard in PC audio never is.
         """
         stopped = hooks.cancelled()
+        asked = "\n".join([asked, *(f"{STEERED} {words}" for words in turn.steered)])
         if (reply or stopped) and not turn.foreign:
             said = f"{reply} {STOPPED}".strip() if stopped else reply
             self._remember(asked, said, turn, stopped=stopped)
@@ -1344,6 +1346,9 @@ class Agent:
                 continue
             self._audit.record("steered", text=words[:MAX_AUDIT_TEXT])
             turn.messages.append({"role": "user", "content": f"{STEERED} {words}"})
+            turn.steered.append(words)
+            if turn.request is not None and not turn.foreign:
+                turn.request.added(words)  # typed by the owner: an address in them is theirs
             turn.stuck = False  # new words: the model may act on them, not only answer
 
     def _step(self, turn: _Turn, hooks: Hooks, step: int) -> str | None:

@@ -3617,3 +3617,51 @@ def test_words_the_owner_adds_while_it_works_join_the_request_before_the_next_ca
     assert [e["text"] for e in audit.events if e["event"] == "steered"] == [
         "also check the weekend"
     ]
+
+
+def test_words_the_owner_adds_while_it_works_count_as_their_own_words() -> None:
+    seen: list[str] = []
+    given: list[str] = []
+
+    def run(_args: dict[str, Any]) -> Result:
+        request = current_request()
+        seen.append("<none>" if request is None else request.words)
+        return Result("ok")
+
+    def steer() -> list[str]:
+        if seen and not given:
+            given.append("read https://a.example/x too")
+            return list(given)
+        return []
+
+    schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+    peek = Operation("peek", "peek", schema, run, side_effect=False)
+    model = ScriptedModel(
+        [_call("peek", {"q": "a"}, "c1"), _call("peek", {"q": "b"}, "c2"), _say("Done.")]
+    )
+    agent, _ = _agent(model, [peek])
+
+    agent.handle("look it up", Hooks(confirm=lambda _q: False, steer=steer))
+
+    assert seen == ["look it up", "look it up\nread https://a.example/x too"]
+
+
+def test_words_the_owner_adds_while_it_works_are_remembered_with_the_request() -> None:
+    given: list[str] = []
+    counter = Counter()
+
+    def steer() -> list[str]:
+        if counter.runs and not given:
+            given.append("and the weekend")
+            return list(given)
+        return []
+
+    replies = [_call("search", {"q": "weather"}), _say("Rain."), _say("Same as before.")]
+    model = ScriptedModel(replies)
+    agent, _ = _agent(model, [counter.op("search", side_effect=False)])
+
+    agent.handle("will it rain", Hooks(confirm=lambda _q: False, steer=steer))
+    agent.handle("do that again", NO_CONFIRM)
+
+    remembered = [str(m["content"]) for m in model.seen[2] if m["role"] == "user"]
+    assert any("will it rain" in r and "and the weekend" in r for r in remembered)
