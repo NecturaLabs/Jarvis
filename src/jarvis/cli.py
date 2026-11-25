@@ -623,6 +623,22 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Jarvis will take requests from voices in the PC's audio, such as a call or a video; "
         "each of their actions still needs your yes.",
     ),
+    *(
+        ()
+        if "pc_audio_recall_s" not in config.AudioConfig.model_fields  # not in this build yet
+        else (
+            _Shared(
+                "audio",
+                "pc_audio_recall_s",
+                "Recall PC audio (seconds)",
+                (0, 10, 30, 60),
+                "Listening",
+                "Keep the last seconds of PC audio in memory so Jarvis can hear what was just "
+                "said (needs PC audio on); 0 keeps none.",
+                "Jarvis will keep the last seconds of the PC's audio in memory.",
+            ),
+        )
+    ),
     _Shared(
         "boundaries",
         "bypass_consent",

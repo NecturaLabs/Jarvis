@@ -1380,6 +1380,44 @@ def test_format_sets_how_replies_are_written_from_the_next_request() -> None:
     assert saved[-1].response_format == "verbose"
 
 
+def test_a_risky_setting_with_several_values_asks_before_leaving_off() -> None:
+    from jarvis.chat.app import SharedSetting  # ruff: ignore[import-outside-top-level] - only this test
+
+    values: dict[str, object] = {"audio.recall": 0}
+
+    def shared() -> list[SharedSetting]:
+        return [
+            SharedSetting(
+                "audio.recall",
+                "Recall",
+                (0, 10, 30),
+                values["audio.recall"],
+                "Listening",
+                "",
+                "Jarvis will keep audio.",
+            )
+        ]
+
+    def change(key: str, value: object) -> None:
+        values[key] = value
+
+    services = Services(shared=shared, set_shared=change, apply=lambda: None)
+    app = _app(session=FakeSession(), services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await pilot.press("end", "enter")
+        await _until(pilot, lambda: "Turn on?" in _settings_text(app))
+        assert values["audio.recall"] == 0
+        await pilot.press("enter")
+        await _until(pilot, lambda: values["audio.recall"] == 10)
+        await pilot.press("enter")  # from one on value to another: no question
+        await _until(pilot, lambda: values["audio.recall"] == 30)
+
+    _run(test, app)
+
+
 def test_an_unknown_command_says_so() -> None:
     app = _app(session=FakeSession())
 

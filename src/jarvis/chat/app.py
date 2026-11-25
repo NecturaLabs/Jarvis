@@ -1602,7 +1602,7 @@ class ChatApp(App[None]):
         if row is None:
             return
         following = row.step(by)
-        if row.risky and following is True and self._pending != key:
+        if row.turns_on(following) and self._pending != key:
             self._pending = key
             self._fill_settings(key)
             return
