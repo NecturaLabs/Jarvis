@@ -377,15 +377,18 @@ def test_outside_text_read_in_the_request_cannot_silence_the_reply() -> None:
             quiet.run({})
 
 
-@pytest.mark.parametrize(("foreign", "remembered"), [(False, True), (True, False)])
+@pytest.mark.parametrize(
+    ("foreign", "remembered"),
+    [(False, "memory"), (False, "memory-process"), (True, "")],
+)
 def test_quiet_holds_after_remembered_outside_text_and_for_pc_audio(
-    *, foreign: bool, remembered: bool
+    *, foreign: bool, remembered: str
 ) -> None:
     # Outside text from earlier turns stays in memory, and the owner must still be able to ask
     # for quiet; a request heard in PC audio that asks for it only makes Jarvis say nothing.
     with request_scope(foreign=foreign) as request:
         if remembered:
-            request.saw("memory")
+            request.saw(remembered)
         assert quiet_operation().run({}).quiet
 
 

@@ -39,6 +39,7 @@ from jarvis.jsonutil import objs
 from jarvis.memory import tokens
 from jarvis.model import Delta, ModelError, ModelMissingError, Thinking
 from jarvis.operations import (
+    REMEMBERED_LISTING,
     Operation,
     OperationError,
     Registry,
@@ -2228,6 +2229,45 @@ def test_a_summary_made_for_a_plain_command_marks_the_request_as_holding_memory(
 
     assert "memory_summarized" in _events(audit)
     assert seen == [{"memory"}]
+
+
+def test_a_remembered_process_listing_alone_still_marks_the_request() -> None:
+    # Window titles are other programs' words: a job added after a listing must carry that, or it
+    # later runs as the owner's own. Stopping a listed program stays allowed (processes.py).
+    counter = Counter()
+    seen: list[set[str]] = []
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        seen.append(set(request.outside))
+
+    find = counter.op("find", origin=Origin.PROCESS, text="1234 orbit", side_effect=False)
+    look = counter.op("look", then=note, side_effect=False)
+    model = ScriptedModel([_call("find"), _say("Orbit runs."), _call("look"), _say("Done.")])
+    agent, _ = _agent(model, [find, look], limits=Limits(remember_outside=True))
+    agent.handle("is orbit running", NO_CONFIRM)
+
+    agent.handle("look later", NO_CONFIRM)
+
+    assert seen == [{REMEMBERED_LISTING}]
+
+
+def test_a_scheduled_request_has_no_words_of_the_owners_own() -> None:
+    # Its text is what the model wrote when the job was added: an address in it was not typed.
+    seen: list[str] = []
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        seen.append(request.words)
+
+    for scheduled in (True, False):
+        look = Counter().op("look", then=note, side_effect=False)
+        agent, _ = _agent(ScriptedModel([_call("look"), _say("Done.")]), [look])
+        agent.handle("read https://kettles.example/a", NO_CONFIRM, scheduled=scheduled)
+
+    assert seen == ["", "read https://kettles.example/a"]
 
 
 # Pictures

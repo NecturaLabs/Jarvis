@@ -215,6 +215,7 @@ class Agent:
     calls: list[tuple[str, Origin]] = field(default_factory=list[tuple[str, Origin]])
     called: threading.Event = field(default_factory=threading.Event)
     steered: list[frozenset[str]] = field(default_factory=list[frozenset[str]])
+    scheduled: list[bool] = field(default_factory=list[bool])
 
     def handle(
         self,
@@ -223,10 +224,12 @@ class Agent:
         origin: Origin = Origin.OWNER_SPEECH,
         *,
         steered_by: Collection[str] = (),
+        scheduled: bool = False,
     ) -> str:
         """Answer like the real agent: the reply goes to `hooks.speak` unless cancelled."""
         self.calls.append((text, origin))
         self.steered.append(frozenset(steered_by))
+        self.scheduled.append(scheduled)
         self.called.set()
         reply = self.reply(text, hooks, origin)
         if hooks.speak is not None and reply and not hooks.cancelled():
@@ -3324,12 +3327,16 @@ def test_a_due_request_goes_to_the_agent_as_the_owners_and_its_reply_is_spoken()
 
 def test_a_due_request_added_beside_outside_text_runs_with_that_text_counted() -> None:
     agent = Agent()
+    audit = AuditLog(None)
     job = replace(_job(2, "do", "pause the music"), outside=("web",))
 
-    _run(_loop(agent, Mic(SILENCE), Speaker(), due=DueJobs([Due(job, 1.0)])))
+    _run(_loop(agent, Mic(SILENCE), Speaker(), audit=audit, due=DueJobs([Due(job, 1.0)])))
 
     assert agent.calls[0][1] is Origin.OWNER_SPEECH
     assert agent.steered == [frozenset({"web"})]
+    assert agent.scheduled == [True]  # its words are the model's, not the owner's own
+    due = next(e for e in audit.events if e["event"] == "schedule_due")
+    assert (due["foreign"], due["outside"]) == (False, ["web"])
 
 
 def test_a_due_request_first_heard_in_pc_audio_runs_as_pc_audio() -> None:

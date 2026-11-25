@@ -106,8 +106,10 @@ class Agent:
         origin: Origin = Origin.OWNER_SPEECH,
         *,
         steered_by: Collection[str] = (),
+        scheduled: bool = False,
     ) -> str:
         assert not steered_by  # a request heard now carries nothing from before
+        assert not scheduled
         self.calls.append((text, origin))
         self.done.set()
         if hooks.speak is not None:

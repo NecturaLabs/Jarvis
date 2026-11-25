@@ -22,6 +22,7 @@ from jarvis.agent import Agent, Hooks, Limits
 from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
 from jarvis.operations import (
+    REMEMBERED_LISTING,
     ArgumentError,
     Operation,
     OperationError,
@@ -907,12 +908,15 @@ def test_stop_refuses_a_request_that_holds_outside_text(proc: FakeProc, origin: 
             _bind(ops, 4242)
 
 
-def test_the_process_listing_itself_does_not_count_as_outside_text(proc: FakeProc) -> None:
+@pytest.mark.parametrize("origin", ["process", REMEMBERED_LISTING])
+def test_the_process_listing_itself_does_not_count_as_outside_text(
+    proc: FakeProc, origin: str
+) -> None:
     proc.add(4242, "orbit")
     ops = _ops(proc)
 
     with request_scope(foreign=False) as request:
-        request.saw("process")
+        request.saw(origin)
         _find(ops, "orbit")
         assert _bind(ops, 4242)["pid"] == 4242
 

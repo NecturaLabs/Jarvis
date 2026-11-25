@@ -497,6 +497,15 @@ def _origins(value: object) -> tuple[str, ...]:
     return tuple(sorted({o for o in texts if isinstance(o, str) and 0 < len(o) <= MAX_ORIGIN}))
 
 
+def _words_of(jobs: Iterable[Job]) -> Origin:
+    """Return the origin of the jobs' words, untrusted when outside text could have steered them.
+
+    A job written beside outside text or for PC audio has the model's words, so they reach a later
+    request as data, not instructions.
+    """
+    return Origin.MODEL if any(job.foreign or job.outside for job in jobs) else Origin.TOOL_STATUS
+
+
 _TEXT = {"type": "string", "minLength": 1, "maxLength": MAX_TEXT}
 
 
@@ -558,7 +567,7 @@ class ScheduleOps:
             f"{job.text!r}, {self._when(job)}"
             for job in jobs
         ]
-        return Result("\n".join(lines), Origin.TOOL_STATUS)
+        return Result("\n".join(lines), _words_of(jobs))
 
     def cancel(self, args: dict[str, Any]) -> Result:
         """Cancel one job by its number, or every job.
@@ -578,9 +587,11 @@ class ScheduleOps:
             return Result(sentence, Origin.TOOL_STATUS, ok=False, spoken=sentence)
         if len(gone) == 1:
             sentence = f"Cancelled: {gone[0].text}."
+            origin = _words_of(gone)
         else:
             sentence = f"Cancelled all {len(gone)}."
-        return Result(sentence, Origin.TOOL_STATUS, spoken=sentence)
+            origin = Origin.TOOL_STATUS
+        return Result(sentence, origin, spoken=sentence)
 
     @staticmethod
     def add_summary(args: dict[str, Any]) -> str:

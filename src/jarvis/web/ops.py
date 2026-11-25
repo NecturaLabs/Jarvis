@@ -204,7 +204,11 @@ def _hour_result(
     if not today:
         msg = "The forecast didn't include that hour."
         raise OperationError(msg)
-    day = date.fromisoformat(today)
+    try:
+        day = date.fromisoformat(today)
+    except ValueError as exc:  # the service's own clock, malformed
+        msg = "The forecast didn't include that hour."
+        raise OperationError(msg) from exc
     passed = bool(forecast.local_now) and int(forecast.local_now[11:13]) > hour
     tomorrow = when == "tomorrow" or (when == "now" and passed)
     if tomorrow:

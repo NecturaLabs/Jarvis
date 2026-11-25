@@ -184,6 +184,7 @@ class _Responder(Protocol):
         origin: Origin = Origin.OWNER_SPEECH,
         *,
         steered_by: Collection[str] = (),
+        scheduled: bool = False,
     ) -> str: ...
 
 
@@ -972,10 +973,18 @@ class VoiceLoop:
             time.perf_counter() - started,
         )
 
-    def _think(self, text: str, origin: Origin, steered_by: Collection[str] = ()) -> float:
+    def _think(
+        self,
+        text: str,
+        origin: Origin,
+        steered_by: Collection[str] = (),
+        *,
+        scheduled: bool = False,
+    ) -> float:
         """Hand `text` to the agent and speak its reply; return the seconds the agent took.
 
-        `steered_by` is what outside text could have steered it before (`Agent.handle`).
+        `steered_by` is what outside text could have steered it before, and `scheduled` says it
+        is a job's (`Agent.handle`).
         """
         self.state = State.THINK
         started = time.perf_counter()
@@ -996,6 +1005,7 @@ class VoiceLoop:
                 ),
                 origin,
                 steered_by=steered_by,
+                scheduled=scheduled,
             )
             if not reply.strip() and self._first_words is None:
                 self._said_nothing = True
@@ -1045,7 +1055,13 @@ class VoiceLoop:
         done, only audited as missed.
         """
         job = due.job
-        fields = {"id": job.id, "action": job.action, "late_s": round(due.late_s)}
+        fields = {
+            "id": job.id,
+            "action": job.action,
+            "late_s": round(due.late_s),
+            "foreign": job.foreign,  # where it was asked for, so the audit shows why it asks
+            "outside": list(job.outside),
+        }
         if due.missed:
             log.info("job %d is %.0f s late: not done", job.id, due.late_s)
             if self._audit is not None:
@@ -1060,7 +1076,7 @@ class VoiceLoop:
             self._say(reminder_words(due))
             return
         origin = Origin.PC_AUDIO if job.foreign else Origin.OWNER_SPEECH
-        self._think(scheduled_request(job), origin, job.outside)
+        self._think(scheduled_request(job), origin, job.outside, scheduled=True)
 
     def _watch_pc(self, should_stop: Callable[[], bool]) -> None:
         """Listen to PC audio for the wake word, restarting after a failure, until stopped."""

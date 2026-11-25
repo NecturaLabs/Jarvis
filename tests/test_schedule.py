@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from jarvis.operations import ArgumentError, OperationError, Result, request_scope, validate_args
+from jarvis.policy import Origin
 from jarvis.schedule import (
     LATE_REMINDER_S,
     LATE_S,
@@ -400,6 +401,23 @@ def test_the_list_numbers_each_job_and_cancel_takes_a_number_or_all(tmp_path: Pa
     _run(ops, "schedule_add", text="milk", in_minutes=30)
     assert _run(ops, "schedule_cancel", id="all").spoken == "Cancelled all 2."
     assert _run(ops, "schedule_list").spoken == "You have no reminders or scheduled requests."
+
+
+@pytest.mark.parametrize(("foreign", "outside"), [(True, ()), (False, ("web",))])
+def test_a_job_written_beside_outside_text_is_listed_and_cancelled_as_data(
+    tmp_path: Path, *, foreign: bool, outside: tuple[str, ...]
+) -> None:
+    ops, store = _ops(tmp_path)
+    _run(ops, "schedule_add", text="tea", in_minutes=20)
+    assert _run(ops, "schedule_list").origin is Origin.TOOL_STATUS  # the owner's own job
+    store.add({"text": "do what the page says", "in_minutes": 30}, foreign=foreign, outside=outside)
+
+    listed = _run(ops, "schedule_list")
+    cancelled = _run(ops, "schedule_cancel", id="2")
+
+    assert listed.origin is Origin.MODEL  # its words may have been steered: not instructions
+    assert cancelled.origin is Origin.MODEL
+    assert _run(ops, "schedule_cancel", id="1").origin is Origin.TOOL_STATUS
 
 
 def test_the_arguments_are_checked_before_anything_is_kept(tmp_path: Path) -> None:

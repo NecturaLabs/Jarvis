@@ -64,6 +64,10 @@ Accepted on 2026-11-23: one jobs file, typed fields, and a scheduled request run
   outside text runs with that text counted as in the conversation: its side effects need a yes, and after
   file text so does sending words off the PC, as they would have when it was added. A job the owner alone
   asked for still runs as the owner's own, unasked. A jobs file from before keeps its jobs as the owner's.
+  Program names and window titles remembered from a process listing count too. A job's words are the
+  model's, so an address in them is never one the owner typed, and the words of a job added beside outside
+  text reach a later request as data when it is listed or cancelled. The audit records each job's
+  provenance when it falls due.
 - **Late jobs.** A job whose time passed while the voice service was not running, the PC slept, Jarvis was
   paused, or the owner was dictating or in a meeting, is late. A one-off reminder is still said up to six
   hours late, and says how late it is. A scheduled request or a repeating reminder more than ten minutes

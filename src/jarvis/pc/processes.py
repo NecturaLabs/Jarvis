@@ -24,7 +24,13 @@ from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any, Protocol
 
-from jarvis.operations import Operation, OperationError, Result, current_request
+from jarvis.operations import (
+    REMEMBERED_LISTING,
+    Operation,
+    OperationError,
+    Result,
+    current_request,
+)
 from jarvis.pc import hyprland
 from jarvis.pc.hyprland import HYPR_TIMEOUT_S
 from jarvis.policy import OpClass, Origin
@@ -567,7 +573,7 @@ class ProcessOps:
         if request.foreign:
             msg = "a request heard in PC audio cannot stop a process; only the owner can"
             raise OperationError(msg)
-        outside = request.outside - {Origin.PROCESS.value}
+        outside = request.outside - {Origin.PROCESS.value, REMEMBERED_LISTING}
         if outside:
             msg = (
                 "a process is stopped only on the owner's own words, and this request also holds "

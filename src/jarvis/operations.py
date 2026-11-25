@@ -66,6 +66,10 @@ class OperationError(Exception):
         self.origin = origin
 
 
+REMEMBERED = "memory"  # the origin of outside text a request remembers from earlier turns
+REMEMBERED_LISTING = "memory-process"  # ... when all of it was process listings
+
+
 @dataclass(frozen=True, eq=False, slots=True)
 class Request:
     """The request the agent is handling, while it handles it.

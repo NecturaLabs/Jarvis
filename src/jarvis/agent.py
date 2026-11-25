@@ -22,6 +22,8 @@ from jarvis.jsonutil import obj, objs
 from jarvis.memory import Conversation, Turn, tokens
 from jarvis.model import ModelMissingError, Thinking
 from jarvis.operations import (
+    REMEMBERED,
+    REMEMBERED_LISTING,
     ArgumentError,
     OperationError,
     Result,
@@ -1089,6 +1091,7 @@ class Agent:
         pasted: Sequence[str] = (),
         *,
         steered_by: Collection[str] = (),
+        scheduled: bool = False,
     ) -> str:
         """Answer one spoken request and return the reply.
 
@@ -1113,13 +1116,16 @@ class Agent:
         `steered_by` names the origins of outside text that could have steered the request before
         it was handed over: a request scheduled while web text was in the conversation runs as
         if that text still were, so its side effects need a yes (and, after file text, so does
-        sending words off the PC), as they would have when it was asked for.
+        sending words off the PC), as they would have when it was asked for. A `scheduled`
+        request's words are the model's, written when the job was added, so none count as the
+        owner's own (`Request.words`): an address in them is not one the owner typed.
 
         Operations run inside the request's scope (`request_scope`), so one can tell this
         request from the next and a request heard in PC audio from the owner's.
         """
         foreign = origin not in TRUSTED_ORIGINS
-        own = "" if foreign or steered_by else _own_words(text, self._outside_pastes(text, pasted))
+        handed_over = foreign or bool(steered_by) or scheduled
+        own = "" if handed_over else _own_words(text, self._outside_pastes(text, pasted))
         with request_scope(foreign=foreign, words=own) as request:
             for seen in sorted(steered_by):
                 request.saw(seen)
@@ -1164,8 +1170,8 @@ class Agent:
         )
         self._expire(started)
         remembered = [] if foreign else self._remembered(plain=hit is not None)
-        if remembered and self._memory.holds_outside_text_but(Origin.PROCESS.value):
-            request.saw("memory")
+        if remembered:
+            self._note_remembered(request)
         turn = _Turn(
             [
                 {"role": "system", "content": self._system},
@@ -1196,8 +1202,8 @@ class Agent:
                 remembered = self._remembered(plain=False)
                 turn.messages[1 : turn.first] = remembered
                 turn.first = 1 + len(remembered)
-                if remembered and self._memory.holds_outside_text_but(Origin.PROCESS.value):
-                    request.saw("memory")  # a summary of outside text counts, whatever its origin
+                if remembered:
+                    self._note_remembered(request)
             # A plain command is the owner's own words; what the model chooses may have been
             # steered by outside text it remembers, so that needs a yes for side effects.
             turn.untrusted = turn.untrusted or (
@@ -1211,6 +1217,17 @@ class Agent:
         self._audit.record("reply", text=reply, seconds=round(self._clock() - started, 2))
         self._fit_memory(turn, hooks)
         return reply
+
+    def _note_remembered(self, request: Request) -> None:
+        """Note in `request` the outside text the conversation it is given holds.
+
+        Process listings alone are noted apart (`REMEMBERED_LISTING`), so a program listed earlier
+        can still be stopped; a summary of outside text counts in full, whatever its origin.
+        """
+        if self._memory.holds_outside_text_but(Origin.PROCESS.value):
+            request.saw(REMEMBERED)
+        elif self._memory.holds_outside_text:
+            request.saw(REMEMBERED_LISTING)
 
     def _outside_pastes(self, text: str, pasted: Sequence[str]) -> list[str]:
         """Return the pastes that count as outside data; one no longer in `text` makes it all.
