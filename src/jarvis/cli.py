@@ -629,6 +629,7 @@ def _transcribers(
             short_window=audio.transcribe_short_window,
             engine=engine,
             model=model,
+            backend=audio.transcribe_backend,
         ),
     )
     # Only Whisper reads `--initial-prompt`; another engine would ignore the hint.

@@ -875,6 +875,33 @@ def test_the_gguf_engine_gets_the_thread_count_too(threads: int, tmp_path: Path)
     assert settings["whisper"]["threads"] == threads
 
 
+@pytest.mark.parametrize("backend", ["cpu", "vulkan"])
+def test_the_gguf_engine_is_told_where_to_run(backend: str, tmp_path: Path) -> None:
+    # On Voxtype's GPU build, "cpu" keeps speech-to-text off a graphics card a game fills.
+    model = _gguf(tmp_path / "q.gguf", "qwen3_asr")
+
+    settings = tomllib.loads(
+        voxtype_settings(8, short_window=True, engine="gguf", model=str(model), backend=backend)
+    )
+
+    assert settings["gguf"]["gguf_backend"] == backend
+
+
+def test_no_backend_leaves_the_choice_to_voxtype(tmp_path: Path) -> None:
+    model = _gguf(tmp_path / "q.gguf", "qwen3_asr")
+
+    settings = tomllib.loads(
+        voxtype_settings(8, short_window=True, engine="gguf", model=str(model), backend="")
+    )
+
+    assert "gguf_backend" not in settings["gguf"]
+
+
+def test_another_engine_is_not_given_the_gguf_backend() -> None:
+    settings = tomllib.loads(voxtype_settings(8, short_window=True, backend="cpu"))
+    assert "gguf" not in settings
+
+
 @pytest.mark.parametrize("content", [b"", b"not a gguf file", b"GGUF\x03\x00"])
 def test_a_file_that_is_no_gguf_checkpoint_names_no_architecture(
     content: bytes, tmp_path: Path

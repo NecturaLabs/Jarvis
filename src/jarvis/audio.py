@@ -1321,7 +1321,9 @@ def model_in_settings(engine: str, model: str) -> bool:
     return engine in FILE_ENGINES and model.startswith("/")
 
 
-def voxtype_settings(threads: int, *, short_window: bool, engine: str = "", model: str = "") -> str:
+def voxtype_settings(
+    threads: int, *, short_window: bool, engine: str = "", model: str = "", backend: str = ""
+) -> str:
     """Return Jarvis's own Voxtype config (TOML), read in place of the owner's for its runs.
 
     Whisper pads every clip to 30 s, so a two-second request costs as much as a long one;
@@ -1333,7 +1335,10 @@ def voxtype_settings(threads: int, *, short_window: bool, engine: str = "", mode
     `failed-audio` folder after one of Jarvis's runs. A model file for an engine in
     `FILE_ENGINES` goes in that engine's own section, which is where Voxtype reads it; the
     GGUF engine is also told the file's architecture, which it refuses to guess. A model path
-    that is not UTF-8 text cannot go in the file, and raises ValueError.
+    that is not UTF-8 text cannot go in the file, and raises ValueError. `backend` is where
+    the GGUF engine runs (its `gguf_backend`): on Voxtype's GPU build, "cpu" keeps it off the
+    graphics card (measured 2026-11-25: no VRAM instead of about 3 GB per request, 7 to 8
+    CPU-seconds instead of 0.35, the same transcript).
     """
     text = (
         "[audio]\n"
@@ -1355,6 +1360,10 @@ def voxtype_settings(threads: int, *, short_window: bool, engine: str = "", mode
             )
         if engine == "gguf":
             text += f"threads = {int(threads)}\n"
+    if engine == "gguf" and backend:
+        if not model_in_settings(engine, model):
+            text += "\n[gguf]\n"
+        text += f"gguf_backend = {_toml_string(backend)}\n"
     return text
 
 

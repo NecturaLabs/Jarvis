@@ -10,6 +10,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 - `pc_volume`: the PC's own output volume, read, set, turned up or down or muted, in any words; it is every
   program's sound, games and videos included. A change is bound to its start and end before any question.
+- `audio.transcribe_backend` says where the GGUF speech-to-text engine runs (Voxtype's `gguf_backend`): `cpu` keeps it
+  off the graphics card on Voxtype's GPU build, for a game that needs all of its memory. Empty, the default, leaves
+  it to Voxtype.
 - The weather at an hour of today or tomorrow ("will it rain at five?"): `weather` takes an `hour` on the place's
   own clock, said on yours (`clock.twelve_hour`); an hour already past today means tomorrow's unless today is said.
   Only the hours' columns are added to what Open-Meteo is asked; nothing new is sent.

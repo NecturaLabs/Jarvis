@@ -301,6 +301,8 @@ class AudioConfig(_Section):
     transcribe_engine: str = ""
     transcribe_model: str = "small.en"  # measured faster and more accurate than base.en here
     transcribe_threads: int = Field(default=8, ge=1, le=256)
+    # Where the gguf engine runs (Voxtype's `gguf_backend`); empty: Voxtype's own choice.
+    transcribe_backend: Literal["", "auto", "cpu", "cpu_accel", "vulkan"] = ""
     transcribe_short_window: bool = True  # size Whisper's window to the clip: ~5x faster
     vocabulary_hint: bool = True
     hint_names: int = Field(default=40, ge=0, le=200)
