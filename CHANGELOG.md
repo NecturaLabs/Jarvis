@@ -66,6 +66,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `audio.transcribe_threads` reaches the GGUF engine too; before, only Whisper got it and the GGUF engine used
+  its own default.
+
 - A step that may only answer (after a repeated call, or a request's last step) no longer makes Strata read
   the whole prompt again. It kept the tool list out of the request, which changed the prompt Strata had
   pinned; now the tools stay and the model is made to answer through `no_action`. A call to any other tool

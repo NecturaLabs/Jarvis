@@ -1287,7 +1287,9 @@ def voxtype_settings(threads: int, *, short_window: bool, engine: str = "", mode
 
     Whisper pads every clip to 30 s, so a two-second request costs as much as a long one;
     `short_window` (Voxtype's `context_window_optimization`) sizes the window to the clip, about
-    five times faster for a spoken command. Whisper.cpp also uses only 4 threads unless told.
+    five times faster for a spoken command. Whisper.cpp also uses only 4 threads unless told; the
+    GGUF engine is told the same count (measured 2026-11-25 on its CPU build: 2 threads took 10 to
+    13 s for a request its default took 6.7 s for).
     `keep_failed_recordings` off means Voxtype never leaves the owner's voice in its
     `failed-audio` folder after one of Jarvis's runs. A model file for an engine in
     `FILE_ENGINES` goes in that engine's own section, which is where Voxtype reads it; the
@@ -1312,6 +1314,8 @@ def voxtype_settings(threads: int, *, short_window: bool, engine: str = "", mode
                 "could not read the architecture of %r; Voxtype refuses a GGUF file without one",
                 model,
             )
+        if engine == "gguf":
+            text += f"threads = {int(threads)}\n"
     return text
 
 

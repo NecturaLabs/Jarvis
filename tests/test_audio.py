@@ -859,7 +859,20 @@ def test_the_gguf_engine_is_told_the_architecture_its_file_names(tmp_path: Path)
         voxtype_settings(8, short_window=True, engine="gguf", model=str(model))
     )
 
-    assert settings["gguf"] == {"model": str(model), "architecture": "qwen3_asr"}
+    assert settings["gguf"] == {"model": str(model), "architecture": "qwen3_asr", "threads": 8}
+
+
+@pytest.mark.parametrize("threads", [2, 12])
+def test_the_gguf_engine_gets_the_thread_count_too(threads: int, tmp_path: Path) -> None:
+    """`audio.transcribe_threads` reached only Whisper; the GGUF engine took its own default."""
+    model = _gguf(tmp_path / "q.gguf", "qwen3_asr")
+
+    settings = tomllib.loads(
+        voxtype_settings(threads, short_window=True, engine="gguf", model=str(model))
+    )
+
+    assert settings["gguf"]["threads"] == threads
+    assert settings["whisper"]["threads"] == threads
 
 
 @pytest.mark.parametrize("content", [b"", b"not a gguf file", b"GGUF\x03\x00"])
@@ -948,7 +961,7 @@ def test_an_unreadable_gguf_checkpoint_is_logged(
             voxtype_settings(8, short_window=True, engine="gguf", model=str(model))
         )
 
-    assert settings["gguf"] == {"model": str(model)}
+    assert settings["gguf"] == {"model": str(model), "threads": 8}  # no architecture guessed
     assert any(str(model) in r.getMessage() for r in caplog.records)
 
 
