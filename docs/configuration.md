@@ -78,8 +78,9 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 | `thinking_max` | `high` | `none`, `low`, `medium`, `high`, and not below `thinking` | The most the model may raise its own effort to, for the rest of one request, when it judges the request needs careful thought (several steps, a name it may have misheard, a correction, a try that failed). It does so with the `think_harder` tool, which is offered only when this is above `thinking`: set it to the same as `thinking` to keep one effort. The effort never drops within a request, and each request starts at `thinking` again. Raising to `low` or `high` can cost the model one more read of its whole prompt on Qwen3.8 ([models.md](models.md#thinking)). The tool's class is `safe`; `think_harder = "deny"` under `[boundaries.classes]` also switches it off. |
 | `thinking_raised_tokens` | `768` | 32 to 8192 | The most the model thinks before each answer once it raised its effort: about 12 s at most for speech. A raised call never gets less than `thinking_tokens` when a request starts above `none`. The context keeps room for the larger of the two. |
 
-A spoken reply that drew on outside text (a web page, a song name) is left out of later requests, as before;
-the chat keeps it (see below).
+A spoken reply that drew on outside text (a web page, a song name) is remembered as data, as in the chat: a
+follow-up such as "what was the second one?" has it, and while it is remembered an action the model chooses
+needs your yes; a plain command (`pause`, `volume 40`) does not. Until 2026-11-26 the voice left such a reply out.
 
 ## `[chat]`: the same for typed requests in `jarvis chat`
 

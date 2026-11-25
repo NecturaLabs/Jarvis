@@ -40,6 +40,7 @@ from jarvis.config import (
     StrataConfig,
 )
 from jarvis.operations import Operation, OperationError, Registry, Result, request_scope
+from jarvis.policy import Origin
 from jarvis.secretfile import ensure_api_key
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
@@ -615,3 +616,45 @@ def test_jarvis_files_the_owner_denied_are_not_read_by_read_jarvis_file(tmp_path
 
     with pytest.raises(OperationError, match="kept private"):
         read.run({"file": "strata_run_config"})
+
+
+@pytest.mark.parametrize("channel", ["voice", "chat"])
+def test_a_reply_from_outside_text_is_remembered_as_data_and_a_follow_up_action_asks(
+    channel: Channel,
+) -> None:
+    # "What was the second one?" needs the answer; it comes back as data, so acting on it asks.
+    runs: list[str] = []
+    asked: list[str] = []
+
+    def op(name: str, origin: Origin, *, side_effect: bool) -> Operation:
+        def run(_args: dict[str, Any]) -> Result:
+            runs.append(name)
+            return Result(f"{name}: two kettles", origin)
+
+        return Operation(
+            name, name, {"type": "object", "properties": {}}, run, side_effect=side_effect
+        )
+
+    model = _Model(
+        [
+            _tool("lookup", {}),
+            {"role": "assistant", "content": "The second was the steel kettle."},
+            _tool("act", {}),
+            {"role": "assistant", "content": "Done."},
+        ]
+    )
+    limits = channel_limits(Config(), channel)
+    ops = [
+        op("lookup", Origin.WEB, side_effect=False),
+        op("act", Origin.TOOL_STATUS, side_effect=True),
+    ]
+    agent = Agent(model, Registry(ops), "system", AuditLog(None), {}, limits=limits)
+
+    agent.handle("look up kettles", Hooks(confirm=lambda _q: False))
+    agent.handle("order the second one", Hooks(confirm=lambda q: asked.append(q) is None and False))
+
+    remembered = " ".join(str(m["content"]) for m in model.seen[2])
+    assert '<data origin="web">' in remembered
+    assert "steel kettle" in remembered
+    assert len(asked) == 1
+    assert runs == ["lookup"]

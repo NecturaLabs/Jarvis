@@ -87,6 +87,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Speech remembers a reply that drew on outside text (a search, a page, a song name) as data, as the chat does,
+  so "what was the second one?" has the answer to go on. While it is remembered, an action the model chooses
+  asks first; a plain command does not. It was left out of later requests before.
 - A scheduled request keeps where its request came from. One first heard in PC audio runs as PC audio when it is due,
   and one added while outside text (a web page, a file, a remembered answer) was in the conversation runs with that
   text counted, so its actions need a yes as they would have then. Requests the owner alone asked for still run
