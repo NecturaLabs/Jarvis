@@ -27,8 +27,10 @@ from jarvis.audit import AuditLog
 from jarvis.chat.app import ChatApp
 from jarvis.cli import main
 from jarvis.confirmkey import ConfirmKey
+from jarvis.pc.hearing import Listening
 from jarvis.secretfile import write_private_json
 from jarvis.services import strata_profile_file
+from jarvis.voice import PcListener
 
 if TYPE_CHECKING:
     import argparse
@@ -855,6 +857,7 @@ class _Run:
     primed: threading.Event = field(default_factory=threading.Event)
     loops: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
     audit: AuditLog = field(default_factory=lambda: AuditLog(None))
+    listening: list[Listening | None] = field(default_factory=list[Listening | None])
 
     def part(self, *args: object, **kwargs: object) -> _Part:
         made = _Part(*args, **kwargs)
@@ -902,7 +905,8 @@ def _cmd_run(
     agent = SimpleNamespace(prime=run.primed.set)
     jarvis = SimpleNamespace(agent=agent, model=model, ops=ops, hint=lambda: "", audit=run.audit)
 
-    def build(_cfg: config.Config) -> SimpleNamespace:
+    def build(_cfg: config.Config, *, listening: Listening | None = None) -> SimpleNamespace:
+        run.listening.append(listening)
         return jarvis
 
     monkeypatch.setattr(cli, "build", build)
@@ -918,6 +922,37 @@ def _cmd_run(
 
     monkeypatch.setattr(voice_module, "VoiceLoop", Loop)
     return run, main(["run"])
+
+
+def test_the_run_hears_pc_audio_for_pc_audio_listen_through_the_pc_watcher_only_when_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def body(run: _Run, should_stop: Callable[[], bool]) -> None:
+        del should_stop
+        run.handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    on = config.Config(audio=config.AudioConfig(listen_to_pc=True, pc_audio_recall_s=10))
+    run, code = _cmd_run(monkeypatch, body, on)
+
+    assert code == 0
+    (listening,) = run.listening
+    assert listening is not None
+    assert listening.hearing.recall_s == 10
+    pc = run.loops[0]["pc"]
+    assert isinstance(pc, PcListener)
+    assert pc.hearing is listening.hearing
+    stopped = threading.Event()
+    for _ in range(500):  # the stopper thread ends every listen
+        if listening.hearing.listen(0) is None:
+            stopped.set()
+            break
+        threading.Event().wait(0.01)
+    assert stopped.is_set()
+
+    off, code = _cmd_run(monkeypatch, body, config.Config())
+
+    assert code == 0
+    assert off.listening == [None]
 
 
 def test_a_stop_signal_only_raises_the_flag_and_the_stopper_ends_everything(

@@ -171,6 +171,13 @@ def _with_lead(
     return itertools.chain(lead, frames), keyword_tail(lead)
 
 
+class _Hearing(Protocol):
+    @property
+    def wants(self) -> bool: ...
+    def feed(self, frame: NDArray[np.int16]) -> None: ...
+    def forget(self) -> None: ...
+
+
 class _Vad(Protocol):
     def speech_probability(self, frame: NDArray[np.int16]) -> float: ...
     def reset(self) -> None: ...
@@ -211,6 +218,7 @@ class PcListener:
     audio: _PcAudio
     wake: _Wake
     vad: _Vad
+    hearing: _Hearing | None = None  # what `pc_audio_listen` hears, fed every frame read
 
 
 @dataclass(frozen=True, slots=True)
@@ -1095,8 +1103,30 @@ class VoiceLoop:
         with contextlib.closing(pc.audio.sessions()) as sessions:
             for session in sessions:
                 with contextlib.closing(session):
-                    if self._watch_session(pc, session, should_stop):
+                    frames = session if pc.hearing is None else self._heard(pc.hearing, session)
+                    if self._watch_session(pc, frames, should_stop):
                         return
+
+    def _heard(
+        self, hearing: _Hearing, frames: Iterator[NDArray[np.int16]]
+    ) -> Iterator[NDArray[np.int16]]:
+        """Pass on each PC frame, handing it to `hearing` too unless paused or Jarvis speaks.
+
+        Jarvis's own voice plays through the PC (all of it, when every output is listened to),
+        so nothing is heard while it speaks. A pause drops whatever `hearing` holds. A plain
+        loop, so closing this leaves `frames` open.
+        """
+        paused = False
+        for frame in frames:
+            if self._paused():
+                if not paused:
+                    hearing.forget()
+                    paused = True
+            else:
+                paused = False
+                if hearing.wants and not self._speaker.busy:
+                    hearing.feed(frame)
+            yield frame
 
     def _watch_session(
         self, pc: PcListener, frames: Iterator[NDArray[np.int16]], should_stop: Callable[[], bool]

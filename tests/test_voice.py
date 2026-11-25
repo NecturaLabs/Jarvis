@@ -206,6 +206,21 @@ class Speaker:
         self.during_chime()
 
 
+@dataclass
+class Hearing:
+    """Takes every PC frame it is fed; `wants` as `pc_audio_listen`'s while one listens."""
+
+    wants: bool = True
+    fed: list[int] = field(default_factory=list[int])
+    forgotten: int = 0
+
+    def feed(self, frame: NDArray[np.int16]) -> None:
+        self.fed.append(int(frame[0]))
+
+    def forget(self) -> None:
+        self.forgotten += 1
+
+
 type Reply = Callable[[str, Hooks, Origin], str]
 
 
@@ -259,8 +274,9 @@ def _loop(
     asleep_s: Callable[[], float] = lambda: 0.0,
     after_sleep: Callable[[], None] = lambda: None,
     due: Callable[[], Sequence[Due]] = tuple,
+    hearing: Hearing | None = None,
 ) -> VoiceLoop:
-    listener = None if pc is None else PcListener(pc, pc_wake or Wake(), Vad())
+    listener = None if pc is None else PcListener(pc, pc_wake or Wake(), Vad(), hearing)
     return VoiceLoop(
         agent,
         mic,
@@ -580,6 +596,40 @@ def test_a_pc_wake_while_the_loop_is_busy_logs_why_it_was_ignored(
     _run(loop)
 
     assert "ignored a wake word in PC audio: the loop was busy (capture)" in caplog.messages
+
+
+def test_every_pc_frame_the_watcher_reads_is_heard_for_pc_audio_listen() -> None:
+    hearing = Hearing()
+    pc = PcAudio(SILENCE, WAKE, SPEECH, SPEECH, *[SILENCE] * 5)
+    agent = Agent()
+    mic = Mic(Idle(lambda: pc.ended.is_set() and agent.called.is_set()), *[SILENCE] * 3)
+
+    _run(_loop(agent, mic, Speaker(), pc=pc, hearing=hearing))
+
+    # The frames a PC request was captured from are heard too.
+    assert hearing.fed[:9] == [0, 2, 1, 1, 0, 0, 0, 0, 0]
+
+
+def test_no_pc_frame_is_heard_while_nothing_listens_or_jarvis_speaks() -> None:
+    for hearing, speaker in [(Hearing(wants=False), Speaker()), (Hearing(), Speaker(busy=True))]:
+        pc = PcAudio(SILENCE, SPEECH, *[SILENCE] * 3)
+        mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
+
+        _run(_loop(Agent(), mic, speaker, pc=pc, hearing=hearing))
+
+        assert hearing.fed == []
+
+
+def test_a_pause_drops_what_pc_audio_listen_holds_and_hears_nothing_meanwhile() -> None:
+    hearing = Hearing()
+    paused = threading.Event()
+    pc = PcAudio(SPEECH, paused.set, SPEECH, SPEECH, paused.clear, WAKE, *[SILENCE] * 2)
+    mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
+
+    _run(_loop(Agent(), mic, Speaker(), pc=pc, hearing=hearing, paused=paused.is_set))
+
+    assert hearing.forgotten == 1  # once for the pause, not once a frame
+    assert hearing.fed[:2] == [1, 2]
 
 
 def test_a_failing_request_is_apologised_for_and_the_loop_keeps_listening() -> None:

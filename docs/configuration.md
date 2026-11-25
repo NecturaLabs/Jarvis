@@ -311,11 +311,12 @@ the playlist ones: everything else works, and adding to a playlist says to run `
 | `transcribe_short_window` | `true` | true or false | Size Whisper's window to the clip (`context_window_optimization`); much faster for short commands. |
 | `vocabulary_hint` | `true` | true or false | Prime speech-to-text with Jarvis's name, its actions and your artist names. |
 | `hint_names` | `40` | 0 to 200 | Most artist names put in the hint (the hint also stops at 800 characters). |
-| `listen_to_pc` | `false` | true or false | Also take requests heard in PC audio. `jarvis pc-audio on`. The voice prompt tells the model either way whether it hears PC audio, whose (`pc_audio_apps`) and how such a request is treated; the chat never hears it and its prompt leaves it out. |
+| `listen_to_pc` | `false` | true or false | Also take requests heard in PC audio. `jarvis pc-audio on`. The voice prompt tells the model either way whether it hears PC audio, whose (`pc_audio_apps`) and how such a request is treated; the chat never hears it and its prompt leaves it out. On, the voice service also has `pc_audio_listen` (`safe`): asked what is said or played there, it listens (see `pc_audio_recall_s`) and gets the words as PC-audio data, so a later action or a search waits for your yes as after a file's text. Only your own request can use it. |
 | `pc_audio_apps` | `["discord"]` | list of app or process names | Whose audio to listen to: every stream they play is recorded and heard mixed. An empty list means all PC output. `--apps`, `--all-output`. |
 | `pc_audio_grant_s` | `600.0` | 0 to 86400 | After you say yes to a PC-audio request, how long further PC-audio requests run without asking. 0 asks every time. Time the PC spends asleep counts. |
 | `confirm_blocks_on_pc_speech` | `true` | true or false | A yes counts as no if speech was heard in PC audio while Jarvis waited for it. |
 | `pc_audio_cooldown_s` | `5.0` | 0 to 600 | Pause after a PC-audio request during which another is ignored. |
+| `pc_audio_recall_s` | `0.0` | 0, or 3 to 60 | With `listen_to_pc` on, how many of the last seconds of PC audio Jarvis keeps in memory, so that `pc_audio_listen` can tell you what was just said. 0 keeps none: it then listens only from when you ask, for 3 to 60 seconds. Nothing is kept while Jarvis is paused or speaks, a pause drops it, and it never reaches the disk ([privacy](privacy.md)). |
 
 See [the PC-audio ADR](adr/0003-pc-audio-is-not-the-owner.md) for why the last four exist.
 

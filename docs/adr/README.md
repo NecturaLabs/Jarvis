@@ -19,3 +19,4 @@ edited once accepted; a later decision supersedes it with a new record that link
 | [0012](0012-lower-wake-score-while-speaking.md) | Hold the wake word to a lower score while Jarvis speaks | accepted |
 | [0013](0013-free-speech-no-new-shortcuts.md) | Understand free speech with typed tools; add no new shortcuts | accepted |
 | [0014](0014-model-raises-its-own-thinking.md) | Let the model raise its own thinking within a request | accepted |
+| [0015](0015-listen-to-pc-audio.md) | Listen to PC audio for the owner through the wake-word watcher's frames, kept in memory only | accepted |

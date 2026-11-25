@@ -641,6 +641,24 @@ def test_after_a_file_is_read_a_search_needs_a_yes() -> None:
     assert len(asked) == 1
 
 
+def test_after_pc_audio_is_listened_to_a_search_needs_a_yes() -> None:
+    # What someone said in a call is theirs: it leaves the PC only with the owner's yes.
+    counter = Counter()
+    asked: list[str] = []
+    ops = [
+        counter.op("listen", origin=Origin.PC_AUDIO, side_effect=False),
+        counter.op("search", side_effect=False, outbound=True),
+    ]
+    model = ScriptedModel([_call("listen"), _call("search", call_id="c2"), _say("Done.")])
+    agent, _ = _agent(model, ops)
+
+    agent.handle("what are they saying", Hooks(confirm=lambda q: asked.append(q) or False))
+
+    assert [r["op"] for r in counter.runs] == ["listen"]
+    assert len(asked) == 1
+    assert model.seen[1][-1]["content"].startswith('<data origin="pc_audio">')
+
+
 def test_a_search_after_only_web_text_runs_without_a_yes() -> None:
     counter = Counter()
     asked: list[str] = []

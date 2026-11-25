@@ -192,8 +192,9 @@ _ACTIONS_NOTE = re.compile(r"^\[actions taken:[^\]]*\]\s*", re.IGNORECASE)
 _REPLY_KEY = '{"reply":"'
 _REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
 # Results that may hold the owner's own data: the turn is marked private, so text that leaves the PC
-# waits for a yes. A shell command's output can be any file the owner's user can read.
-_PRIVATE_ORIGINS = frozenset({Origin.FILE, Origin.SHELL})
+# waits for a yes. A shell command's output can be any file the owner's user can read, and PC audio
+# heard for the owner (`pc_audio_listen`) what people said in a call.
+_PRIVATE_ORIGINS = frozenset({Origin.FILE, Origin.SHELL, Origin.PC_AUDIO})
 _WRAPPED = re.compile(r'(?P<head><data origin="[a-z_]+">)(?P<body>.*)</data>', re.DOTALL)
 _HIGH_SURROGATE = re.compile(r"\\u[dD][89abAB][0-9a-fA-F]{2}")
 

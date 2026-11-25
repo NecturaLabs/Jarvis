@@ -24,6 +24,7 @@ SCHEMA_VERSION = 1
 
 MIN_SPEECH_SPEED = 0.5  # how slow Jarvis may speak: half the voice's own pace
 MAX_SPEECH_SPEED = 3.0  # how fast: three times it
+MIN_PC_RECALL_S = 3.0  # the shortest PC audio listen, and recall kept (`pc_audio_listen`)
 OpClassName = Literal["safe", "confirm", "strong", "deny"]
 
 type Effort = Literal["none", "low", "medium", "high"]
@@ -321,11 +322,19 @@ class AudioConfig(_Section):
     pc_audio_grant_s: float = Field(default=600.0, ge=0, le=86400)
     confirm_blocks_on_pc_speech: bool = True
     pc_audio_cooldown_s: float = Field(default=5.0, ge=0, le=600)
+    pc_audio_recall_s: float = Field(default=0.0, ge=0, le=60)  # 0, or 3 to 60: RAM only
 
     @model_validator(mode="after")
     def _wake_words_are_distinct(self) -> Self:
         if len(set(self.wake_words)) != len(self.wake_words):
             msg = "wake_words must not name a model twice"
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _recall_is_off_or_long_enough(self) -> Self:
+        if 0 < self.pc_audio_recall_s < MIN_PC_RECALL_S:
+            msg = f"pc_audio_recall_s must be 0 (off) or {MIN_PC_RECALL_S:g} to 60"
             raise ValueError(msg)
         return self
 

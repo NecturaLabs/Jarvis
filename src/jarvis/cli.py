@@ -36,7 +36,9 @@ from jarvis.chat import clipboard
 from jarvis.chat.history import InputHistory
 from jarvis.confirmkey import ConfirmKey
 from jarvis.files import write_atomic
+from jarvis.operations import OperationError
 from jarvis.paths import spotify_token_file, strata_key_file
+from jarvis.pc.hearing import Listening, PcHearing
 from jarvis.policy import OpClass, is_yes
 from jarvis.schedule import JobStore
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
@@ -694,6 +696,28 @@ def cmd_chat(_args: argparse.Namespace) -> int:
 type _Transcriber = Callable[[NDArray[np.int16]], str]
 
 
+def _pc_listening(cfg: config.Config, answer: _Transcriber) -> Listening | None:
+    """Return how the voice service hears PC audio for `pc_audio_listen`; None while it is off.
+
+    It reads with the unhinted speech-to-text: the vocabulary hint names the owner's tools and
+    music, which another person's words in a call need not hold.
+    """
+    if not cfg.audio.listen_to_pc:
+        return None
+    import numpy as np  # ruff: ignore[import-outside-top-level] - loaded only by the voice service
+
+    from jarvis.audio import AudioError  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
+
+    def heard(frames: Sequence[NDArray[np.int16]]) -> str:
+        try:
+            return answer(np.concatenate(frames))
+        except AudioError as exc:
+            msg = f"speech-to-text failed: {exc}"
+            raise OperationError(msg) from exc
+
+    return Listening(PcHearing(cfg.audio.pc_audio_recall_s), heard)
+
+
 def _transcribers(
     cfg: config.Config, hint: Callable[[], str], settings_file: str = "voxtype.toml"
 ) -> tuple[_Transcriber, _Transcriber]:
@@ -770,7 +794,7 @@ def _serve_controls(handler: control.Controls, audit: AuditLog) -> control.Contr
     return controls
 
 
-def cmd_run(_args: argparse.Namespace) -> int:
+def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] - the voice service's parts, wired together here
     """Run the voice loop until stopped."""
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
         MIC_STALL_S,
@@ -787,8 +811,12 @@ def cmd_run(_args: argparse.Namespace) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     cfg = _load()
+    # The hint is the agent's, built after the transcribers that `pc_audio_listen` needs; it is
+    # first asked for once a request is heard.
+    request, answer = _transcribers(cfg, lambda: jarvis.hint())  # ruff: ignore[unnecessary-lambda] - `jarvis` is built below
+    listening = _pc_listening(cfg, answer)
     try:
-        jarvis = build(cfg)
+        jarvis = build(cfg, listening=listening)
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
@@ -810,6 +838,8 @@ def cmd_run(_args: argparse.Namespace) -> int:
         mic.stop()
         if pc_audio is not None:
             pc_audio.stop()
+        if listening is not None:
+            listening.hearing.stop()
 
     threading.Thread(target=stopper, name="jarvis-stopper", daemon=True).start()
     signal.signal(signal.SIGTERM, stop)
@@ -817,7 +847,6 @@ def cmd_run(_args: argparse.Namespace) -> int:
     # Off the request path: the Spotify login and library (for the hint and matching) are kept
     # warm, so the first request does not wait for them.
     jarvis.ops.start_refresh(refresh_stop)
-    request, answer = _transcribers(cfg, jarvis.hint)
     speech_model = FileWarmer(_speech_model_file(cfg.audio))
     mic.start()
     wakes = [wake_word(cfg), *([wake_word(cfg)] if pc_audio is not None else [])]
@@ -847,6 +876,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
             pc_audio,
             wakes[-1],
             Vad(cfg.data_dir / VAD_MODEL),
+            None if listening is None else listening.hearing,
         ),
         transcribe_answer=answer,
         names=(cfg.persona.name,),

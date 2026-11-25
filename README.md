@@ -68,7 +68,9 @@ Jarvis is pre-1.0 software; see [Status](#status).
   [docs/privacy.md](docs/privacy.md).
 - **Listening to PC audio (off by default):** Jarvis can also take requests heard in what the PC plays, such as
   a Discord call. That speech is treated as someone else's, so you are asked to confirm before it changes
-  anything. See [the ADR](docs/adr/0003-pc-audio-is-not-the-owner.md).
+  anything. See [the ADR](docs/adr/0003-pc-audio-is-not-the-owner.md). Ask it what is being said there and it
+  listens for up to a minute and tells you; with `audio.pc_audio_recall_s` set it can also tell you what was
+  just said. The audio stays in memory only ([ADR 0015](docs/adr/0015-listen-to-pc-audio.md)).
 - **Talking:** Jarvis starts speaking as soon as the first sentence of its reply is written. Say "Hey Jarvis"
   while it talks and it stops and listens to your new request. See
   [the ADR](docs/adr/0008-speak-while-writing-and-barge-in.md).
