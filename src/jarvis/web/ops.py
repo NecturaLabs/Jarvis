@@ -260,6 +260,7 @@ class WebOps:
         self._clock = clock
         self._local_zone = local_zone
         self._home: Place | None = None
+        self._finding_home = threading.Lock()  # weather look-ups run side by side: geocode once
         self._urls: deque[str] = deque(maxlen=REMEMBERED)
         self._posts: deque[str] = deque(maxlen=REMEMBERED)
         self._shown = shown
@@ -405,9 +406,11 @@ class WebOps:
             return cfg.coordinates[0], cfg.coordinates[1], name
         if not cfg.place:
             raise OperationError(NO_HOME)
-        if self._home is None:
-            self._home = self._find(cfg.place, regions=False)
-        return self._home.latitude, self._home.longitude, name
+        with self._finding_home:
+            if self._home is None:
+                self._home = self._find(cfg.place, regions=False)
+            home = self._home
+        return home.latitude, home.longitude, name
 
     def weather(self, args: dict[str, Any]) -> Result:
         """Report the weather now, today, tomorrow or for the week, at home or in a named place.

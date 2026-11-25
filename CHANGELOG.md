@@ -25,7 +25,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   Adding to a playlist needs two new permissions: run `jarvis spotify-login` once; until then only that part
   says so.
 - `strata.effort_position` passes Strata's `effort_position` into its profile: with `end`, a request whose model
-  raised its effort to `low` reuses the pinned prompt instead of reading it all again. Empty, the default, keeps
+  raised its effort to `low` or `medium` reuses the pinned prompt instead of reading it all again. Empty, the default, keeps
   the run config's own, until the model's answers with it are measured.
 - `jarvis doctor` checks `wpctl` (the PC's volume) and, with PC audio on, `pw-dump`; it notes a missing
   `playerctl`, a Spotify login without a permission Jarvis now asks for, and a user manager whose limit on

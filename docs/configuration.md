@@ -216,7 +216,8 @@ default on many desktop distributions) moving it out frees about 2 % of what it 
 makes real room, and then the cost is the pause plus a disk read. With the setting on, the rest of the PC
 swaps a little sooner instead, and `jarvis unload` still frees all of the model's memory before a heavy
 game. With no swap the unit's memory limits matter more: past `strata.memory_max` the kernel slows the
-server down rather than swapping it, so keep that limit above the model's own size, as the default is.
+server down rather than swapping it, and past `MemoryMax`, 10% higher, it stops the server, so keep that
+limit above the model's own size, as the default is.
 Turn the setting off when the PC swaps to a disk and a game needs the room more than Jarvis needs a quick
 answer.
 

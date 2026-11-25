@@ -2,9 +2,10 @@
 
 import io
 import json
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -455,6 +456,29 @@ def test_a_home_place_name_is_looked_up_once() -> None:
         "api.open-meteo.com",
         "api.open-meteo.com",
     ]
+
+
+class SlowGeocode(Net):
+    """Answers like `Net`, the place look-up slowly, so two weather calls overlap in it."""
+
+    @override
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host == "geocoding-api.open-meteo.com":
+            threading.Event().wait(0.2)
+        return super().handle(request)
+
+
+def test_two_weather_calls_at_once_look_the_home_up_once() -> None:
+    net = SlowGeocode()
+    ops = _ops(net, Config(weather=WeatherConfig(place="Tokyo")))
+    calls = [threading.Thread(target=_run, args=(ops, "weather")) for _ in range(2)]
+
+    for call in calls:
+        call.start()
+    for call in calls:
+        call.join(5.0)
+
+    assert net.hosts().count("geocoding-api.open-meteo.com") == 1
 
 
 def test_no_home_and_no_place_asks_for_one() -> None:
