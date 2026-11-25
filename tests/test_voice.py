@@ -689,6 +689,77 @@ def test_a_listen_running_when_the_pc_stream_ends_keeps_what_it_heard() -> None:
     assert len(frames) == 3  # the stream's frames, not None for a pause
 
 
+def test_a_pc_capture_cut_short_by_a_pause_logs_why_it_was_dropped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="jarvis.voice")
+    paused = threading.Event()
+    agent = Agent()
+    pc = PcAudio(WAKE, SPEECH, SPEECH, paused.set, *[SILENCE] * 5)
+    mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
+
+    _run(_loop(agent, mic, Speaker(), pc=pc, paused=paused.is_set))
+
+    assert agent.calls == []
+    assert "dropped a PC audio request: Jarvis was paused meanwhile" in caplog.messages
+
+
+def test_a_pc_request_found_with_another_still_waiting_logs_why_it_was_dropped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Only the watcher queues, and only while the queue is empty, so this is the guard's own test.
+    caplog.set_level(logging.INFO, logger="jarvis.voice")
+    pc = PcAudio()
+    loop = _loop(Agent(), Mic(), Speaker(), pc=pc)
+    waiting = loop._pc_heard  # pyright: ignore[reportPrivateUsage] - the one-place queue
+    waiting.put_nowait(voice._PcRequest(np.concatenate([SPEECH] * 3), 1.0))  # pyright: ignore[reportPrivateUsage]
+    listener = PcListener(pc, Wake(), Vad())
+
+    loop._capture_pc(listener, iter([SPEECH, SPEECH, *[SILENCE] * 5]), 2.0)  # pyright: ignore[reportPrivateUsage]
+
+    assert waiting.qsize() == 1
+    assert "dropped a PC audio request: another one is still waiting" in caplog.messages
+
+
+def test_a_pc_request_queued_as_jarvis_pauses_is_dropped_with_a_log_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="jarvis.voice")
+    agent = Agent()
+    holder: list[VoiceLoop] = []
+
+    def queued() -> bool:
+        return bool(holder) and not holder[0]._pc_heard.empty()  # pyright: ignore[reportPrivateUsage] - the request is waiting
+
+    def pause() -> None:
+        until(queued)()
+        mic.pause()  # before the loop's next frame, so it never takes the request
+
+    def resume_soon() -> None:
+        threading.Thread(target=mic.resume, daemon=True).start()
+
+    script = Capture(SILENCE, pause, resume_soon, *[SILENCE] * 5)
+    mic = PausableMic(script)
+    pc = PcAudio(WAKE, SPEECH, SPEECH, *[SILENCE] * 5)
+    loop = VoiceLoop(
+        agent,
+        mic,
+        Wake(),
+        Vad(),
+        Speaker(),
+        CFG,
+        lambda _samples: "pause the music",
+        pc=PcListener(pc, Wake(), Vad()),
+        paused=lambda: mic.paused,
+    )
+    holder.append(loop)
+
+    _run(loop)
+
+    assert agent.calls == []
+    assert "dropped a PC audio request: Jarvis was paused meanwhile" in caplog.messages
+
+
 def test_a_failing_request_is_apologised_for_and_the_loop_keeps_listening() -> None:
     def reply(_text: str, _hooks: Hooks, _origin: Origin) -> str:
         if len(agent.calls) == 1:

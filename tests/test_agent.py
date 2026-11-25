@@ -659,6 +659,27 @@ def test_after_pc_audio_is_listened_to_a_search_needs_a_yes() -> None:
     assert model.seen[1][-1]["content"].startswith('<data origin="pc_audio">')
 
 
+def test_an_operation_is_told_how_much_of_the_requests_time_is_left() -> None:
+    clock = Clock()
+    seen: list[float] = []
+    counter = Counter()
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        seen.append(request.time_left())
+
+    ops = [counter.op("wait", side_effect=False, then=note)]
+    model = ScriptedModel(
+        [_call("wait"), _say("Done.")], during=lambda: setattr(clock, "now", clock.now + 30)
+    )
+    agent, _ = _agent(model, ops, clock=clock, limits=Limits(max_seconds=90.0))
+
+    agent.handle("wait for it", Hooks(confirm=lambda _q: False))
+
+    assert seen == [60.0]
+
+
 def test_a_search_after_only_web_text_runs_without_a_yes() -> None:
     counter = Counter()
     asked: list[str] = []

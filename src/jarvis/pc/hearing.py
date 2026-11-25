@@ -11,6 +11,7 @@ to disk. What was said comes back as `Origin.PC_AUDIO` data, never instructions 
 from __future__ import annotations
 
 import collections
+import logging
 import math
 import threading
 import time
@@ -20,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 from jarvis.config import MIN_PC_RECALL_S
 from jarvis.operations import Operation, OperationError, Result, current_request
 from jarvis.policy import OpClass, Origin
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -35,6 +38,9 @@ MAX_LISTEN_S = 60
 GRACE_S = 2.0  # how much longer than asked a listen waits for frames that come late
 CHECK_S = 0.2  # how often a listen checks for a pause or a sleep while frames do not come
 SLEPT_S = 2.0  # the boot clock ahead of the steady one by this much: the PC slept
+# Of a request's time (`agent.max_seconds`), what a listen leaves for its transcription and the
+# reply after it.
+RESERVE_S = 15.0
 NOTHING_PLAYED = "Nothing played in PC audio then"
 NOTHING_SAID = "No speech was heard in PC audio then"
 PC_AUDIO_ONLY_FOR_OWNER = "only the owner can ask to listen to PC audio, not a request heard there"
@@ -195,7 +201,18 @@ class HearingOps:
             raise OperationError(msg)
         hearing = self._listening.hearing
         seconds = int(args["seconds"])
-        if args.get("when", "next") == "last":
+        last = args.get("when", "next") == "last"
+        room = request.time_left() - RESERVE_S  # a listen ends with the request's time to spare
+        if room < (0 if last else MIN_LISTEN_S):
+            msg = (
+                "too little of this request's time is left to listen to PC audio; answer with"
+                " what you have, and say the owner can ask again"
+            )
+            raise OperationError(msg)
+        if not last and seconds > room:
+            log.info("listening for %d s, not %d: the request's time runs out", int(room), seconds)
+            seconds = int(room)
+        if last:
             frames: list[Frame] | None = hearing.recall(seconds)
         else:
             frames = hearing.listen(seconds)
@@ -220,7 +237,7 @@ class HearingOps:
         description = (
             f"Hear {self._heard} for the owner, as text: someone in a call, a video. Use it when"
             " the owner asks what is being said or played there. `seconds`: how long to listen"
-            " from now"
+            " from now (shortened to fit the request's time)"
         )
         if recall_s:
             description += f"; with when=last, up to the {recall_s} seconds before it instead"

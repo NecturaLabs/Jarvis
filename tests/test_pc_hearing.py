@@ -24,6 +24,7 @@ from jarvis.pc.hearing import (
     NOTHING_PLAYED,
     NOTHING_SAID,
     PC_AUDIO_ONLY_FOR_OWNER,
+    RESERVE_S,
     HearingOps,
     Listening,
     PcHearing,
@@ -317,3 +318,33 @@ def test_the_config_takes_recall_off_or_from_three_seconds() -> None:
         AudioConfig(pc_audio_recall_s=1)
     with pytest.raises(ValueError, match="pc_audio_recall_s"):
         AudioConfig(pc_audio_recall_s=61)
+
+
+def test_a_listen_is_shortened_to_end_with_the_requests_time_to_spare() -> None:
+    hearing = PcHearing(0)
+    transcriber = Transcriber()
+    op = _op(hearing, transcriber)
+    feeder = _feed_while_listening(hearing, 200)
+
+    with request_scope(foreign=False, time_left=lambda: RESERVE_S + 5):
+        result = op.run(validate_args(op, {"seconds": MAX_LISTEN_S}))
+
+    feeder.join(WAIT_S)
+    assert result.origin is Origin.PC_AUDIO
+    assert transcriber.heard == [63]  # 5 s of 80 ms frames, not a minute
+
+
+@pytest.mark.parametrize(("when", "left"), [("next", RESERVE_S + 2), ("last", RESERVE_S - 1)])
+def test_a_listen_with_too_little_of_the_requests_time_left_is_refused(
+    when: str, left: float
+) -> None:
+    transcriber = Transcriber()
+    op = _op(PcHearing(10, clock=Clock()), transcriber)
+
+    with (
+        request_scope(foreign=False, time_left=lambda: left),
+        pytest.raises(OperationError, match="too little of this request's time"),
+    ):
+        op.run(validate_args(op, {"seconds": 3, "when": when}))
+
+    assert transcriber.heard == []

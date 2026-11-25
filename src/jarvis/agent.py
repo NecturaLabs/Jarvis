@@ -1127,7 +1127,10 @@ class Agent:
         foreign = origin not in TRUSTED_ORIGINS
         handed_over = foreign or bool(steered_by) or scheduled
         own = "" if handed_over else _own_words(text, self._outside_pastes(text, pasted))
-        with request_scope(foreign=foreign, words=own) as request:
+        ends = self._clock() + self._limits.max_seconds
+        with request_scope(
+            foreign=foreign, words=own, time_left=lambda: ends - self._clock()
+        ) as request:
             for seen in sorted(steered_by):
                 request.saw(seen)
             source = (origin, request, frozenset(steered_by))

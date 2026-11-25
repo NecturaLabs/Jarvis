@@ -53,6 +53,11 @@ words before anyone asked, so it is off by default and bounded when on. Option 1
   search that would send words off the PC behind a yes too, as a file's text does. With
   `boundaries.bypass_consent` on (the default), those questions are skipped as for every other outside text;
   a `strong` action still needs the key, and `stop_process` and `pc_shell` refuse a request holding it.
+- **The request's time.** `agent.max_seconds` is checked only before each call, so a listen keeps within it
+  itself: the agent gives every request its time left (`Request.time_left`), and a listen of the next seconds
+  is shortened to end `RESERVE_S` (15 s, for its transcription and the reply) before the limit. A listen with
+  under 3 seconds of that room, or a recall with no room left, is refused with a message telling the model to
+  answer with what it has.
 - **Who may ask.** Only the owner: a request heard in PC audio, or one outside any request, is refused before
   anything is heard.
 - **The prompt.** With listening on, the voice prompt says whose audio Jarvis hears, that a request from there is
@@ -63,10 +68,9 @@ words before anyone asked, so it is off by default and bounded when on. Option 1
 - **Good:** the owner can ask what is said on a call or in a video, at no idle cost, with nothing kept on disk.
   While Jarvis asks first, what was heard cannot steer an action or leave the PC without the owner's yes.
 - **Bad:** a listen holds the request for as long as it listens (up to 62 seconds), then for its
-  transcription. `agent.max_seconds` is checked only before a call starts, so a listen begun late in a request
-  can carry it past that time by as much. With `bypass_consent` on, text from a call can steer an action that
-  is not `strong` with no question, as web or file text can. With no recall, a question about what was just said can only be answered from now on.
-  Speech while Jarvis talks is not heard, in a call too. A listen hears only the apps in `pc_audio_apps`.
+  transcription. With `bypass_consent` on, text from a call can steer an action that is not `strong` with no
+  question, as web or file text can. With no recall, a question about what was just said can only be answered
+  from now on. Speech while Jarvis talks is not heard, in a call too. A listen hears only the apps in `pc_audio_apps`.
 
 ## Related
 
