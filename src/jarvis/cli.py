@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -587,11 +588,50 @@ def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
     ]
 
 
-# Jarvis's own settings the chat's /config shows beside its own: (section, key, label, choices).
-SHARED_SETTINGS: tuple[tuple[str, str, str, tuple[object, ...]], ...] = (
-    ("audio", "speech_speed", "Speaking speed", (0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0)),
-    ("boundaries", "bypass_consent", "Act without asking first", (False, True)),
-    ("audio", "listen_to_pc", "Take requests from PC audio", (False, True)),
+@dataclass(frozen=True, slots=True)
+class _Shared:
+    """One of Jarvis's own settings the chat's /config shows beside its own."""
+
+    section: str  # the config section it is in
+    key: str
+    label: str
+    values: tuple[object, ...]
+    heading: str  # the heading /config shows it under
+    about: str
+    risky: str = ""  # what turning it on means, said before it is turned on
+
+
+SHARED_SETTINGS: tuple[_Shared, ...] = (
+    _Shared(
+        "audio",
+        "speech_speed",
+        "Speaking speed",
+        (0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0),
+        "Voice",
+        "How fast Jarvis speaks its replies; 1.0 is the voice's own pace.",
+    ),
+    _Shared(
+        "audio",
+        "listen_to_pc",
+        "Take requests from PC audio",
+        (False, True),
+        "Listening",
+        "Jarvis also hears requests spoken in the PC's own audio, such as someone in a call or "
+        "a video. Whatever they ask to be done always needs your yes.",
+        "Jarvis will take requests from voices in the PC's audio, such as a call or a video; "
+        "each of their actions still needs your yes.",
+    ),
+    _Shared(
+        "boundaries",
+        "bypass_consent",
+        "Act without asking first",
+        (False, True),
+        "Safety",
+        "On: Jarvis acts without asking for your yes, even after reading a web page or a file. "
+        "A tool that needs the confirm key still waits for it, and a tool that is off stays off.",
+        "Jarvis will act without asking you first, even when a web page or a file could have "
+        "steered it.",
+    ),
 )
 
 
@@ -601,8 +641,16 @@ def _shared_settings() -> list[SharedSetting]:
 
     cfg = config.load()
     return [
-        SharedSetting(f"{section}.{key}", label, values, getattr(getattr(cfg, section), key))
-        for section, key, label, values in SHARED_SETTINGS
+        SharedSetting(
+            f"{item.section}.{item.key}",
+            item.label,
+            item.values,
+            getattr(getattr(cfg, item.section), item.key),
+            item.heading,
+            item.about,
+            item.risky,
+        )
+        for item in SHARED_SETTINGS
     ]
 
 
@@ -614,11 +662,11 @@ def _set_shared(key: str, value: object) -> None:
     Raises:
         ConfigError: no shared setting has that key, or the value is not one of its choices.
     """
-    found = next((s for s in SHARED_SETTINGS if f"{s[0]}.{s[1]}" == key), None)
-    if found is None or value not in found[3]:
+    found = next((s for s in SHARED_SETTINGS if f"{s.section}.{s.key}" == key), None)
+    if found is None or value not in found.values:
         msg = f"the chat cannot set {key} to {value!r}"
         raise config.ConfigError(msg)
-    section_name, name = found[0], found[1]
+    section_name, name = found.section, found.key
     cfg = config.load()
     section = getattr(cfg, section_name)
     was = getattr(section, name)

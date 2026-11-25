@@ -39,7 +39,21 @@ from jarvis.activity import Shown, describe, full_text, working_label
 from jarvis.agent import MAX_TRUSTED_PASTE, PICTURES_OFF, Declined, Hooks, NoReason
 from jarvis.chat import commands
 from jarvis.chat.clipboard import ClipboardError
-from jarvis.chat.commands import VERBOSITY
+from jarvis.chat.commands import EFFORT_LEVELS, VERBOSITY
+from jarvis.chat.settings import (
+    NEXT_CHAT,
+    NOW,
+    ON_CLOSE,
+    SETTINGS_HINT,
+    SETTINGS_LEGEND,
+    TOOLS_HINT,
+    TOOLS_LEGEND,
+    Row,
+    Section,
+    SettingsList,
+    ToolsList,
+    tools_summary,
+)
 from jarvis.chat.widgets import (
     CHEVRON,
     STAR,
@@ -192,12 +206,19 @@ class Services:
 
 @dataclass(frozen=True, slots=True)
 class SharedSetting:
-    """One of Jarvis's own settings shown in `/config`: its key, label, choices and value now."""
+    """One of Jarvis's own settings shown in `/config`: its key, label, choices and value now.
+
+    `section` is the heading it goes under and `about` what it does. A `risky` one says what
+    turning it on means; it is asked about before it is turned on and marked while it is on.
+    """
 
     key: str
     label: str
     values: tuple[object, ...]
     value: object
+    section: str = "Voice"
+    about: str = ""
+    risky: str = ""
 
 
 @dataclass(slots=True)
@@ -224,31 +245,70 @@ class _Setting:
     label: str
     values: tuple[object, ...]
     live: bool  # takes effect now, not the next time the chat opens
+    about: str
 
 
 TOOLS_ROW = "tools"  # the settings row that opens the list of tools
 SHARED_ROW = "jarvis:"  # the start of a row's id for one of Jarvis's own settings
 SETTINGS = (
-    _Setting("verbosity", "Verbosity", VERBOSITY, live=True),
-    _Setting("toolbar", "Toolbar", (True, False), live=True),
-    _Setting("while_working", "Enter while working", ("steer", "queue"), live=True),
-    _Setting("resume", "Resume the last conversation", (True, False), live=False),
-    _Setting("reply_tokens", "Longest reply (tokens)", (1024, 2048, 4096), live=False),
-    _Setting("max_steps", "Model calls per request", (15, 30, 60), live=False),
+    _Setting(
+        "verbosity",
+        "Verbosity",
+        VERBOSITY,
+        live=True,
+        about="How much of the work the transcript shows: replies, each step, or everything. "
+        "Also ctrl+o.",
+    ),
+    _Setting(
+        "toolbar",
+        "Toolbar",
+        (True, False),
+        live=True,
+        about="The line under the input with the PC's load and how full the model's context is.",
+    ),
+    _Setting(
+        "while_working",
+        "Enter while working",
+        ("steer", "queue"),
+        live=True,
+        about="steer: words typed while a request runs join it. queue: they run as the next one.",
+    ),
+    _Setting(
+        "thinking",
+        "Thinking effort",
+        EFFORT_LEVELS,
+        live=True,
+        about="How hard the model thinks before it answers; it may raise this itself for a hard "
+        "request. Also /effort.",
+    ),
+    _Setting(
+        "reply_tokens",
+        "Longest reply (tokens)",
+        (1024, 2048, 4096),
+        live=False,
+        about="The most the model writes in one answer. A longer file is written in parts.",
+    ),
+    _Setting(
+        "max_steps",
+        "Model calls per request",
+        (15, 30, 60),
+        live=False,
+        about="How many steps one request may take before it stops and says so.",
+    ),
+    _Setting(
+        "resume",
+        "Resume the last conversation",
+        (True, False),
+        live=False,
+        about="Open the chat on the conversation it had last time.",
+    ),
 )
+SECTIONS = ("Chat", "Voice", "Listening", "Safety")  # the shared settings' headings, in order
 
 
 def _joined(*parts: str) -> str:
     """Return the parts that say something, between dots."""
     return " · ".join(part for part in parts if part)
-
-
-def _shown_value(value: object) -> str:
-    if value is True:
-        return "on"
-    if value is False:
-        return "off"
-    return str(value)
 
 
 class ChatApp(App[None]):
@@ -314,9 +374,15 @@ class ChatApp(App[None]):
         height: auto; margin: 1 1 0 1; padding: 0 1;
         border: round ansi_yellow; border-title-color: ansi_yellow;
     }
-    #settings { border: round ansi_bright_black; border-title-color: ansi_default; }
+    #settings {
+        height: 1fr; border: round ansi_bright_black; border-title-color: ansi_default;
+        border-title-style: bold;
+    }
+    #settings-list, #tools-list { height: 1fr; border: none; padding: 0; background: ansi_default; }
+    #settings-list > .option-list--option-disabled { color: ansi_default; }
+    .panel-legend { height: auto; color: ansi_bright_black; }
     #question-text { height: auto; margin: 0 0 1 0; }
-    #choices, #settings-list { height: auto; border: none; padding: 0; background: ansi_default; }
+    #choices { height: auto; border: none; padding: 0; background: ansi_default; }
     .panel-hint { height: auto; margin: 1 0 0 0; color: ansi_bright_black; }
     #prompt { height: auto; margin: 1 1 0 1; padding: 0 1; border: round ansi_bright_black; }
     #caret { width: 2; padding: 0; color: ansi_bright_black; text-style: bold; }
@@ -383,6 +449,7 @@ class ChatApp(App[None]):
         self._settings = settings or ChatConfig()
         self._services = services or Services()
         self._tools_shown = False  # the settings panel lists the tools
+        self._pending: str | None = None  # a risky setting asked to be turned on, not yet confirmed
         self._changed_jarvis = False  # a setting the voice service reads changed in /config
         # Requests typed while one ran, waiting their turn: words, pictures, pastes.
         self._queued: list[tuple[str, list[Picture], list[str]]] = []
@@ -421,10 +488,11 @@ class ChatApp(App[None]):
             yield ChoiceList(id="choices")
             yield Static("1: yes · 2, n, esc or enter: no", classes="panel-hint")
         with Vertical(id="settings"):
-            yield PointerList(id="settings-list")
+            yield SettingsList(id="settings-list")
+            yield ToolsList(id="tools-list")
+            yield Static("", id="settings-hint", classes="panel-hint", markup=False)
             yield Static(
-                "enter changes · esc closes · * applies the next time the chat opens",
-                classes="panel-hint",
+                SETTINGS_LEGEND, id="settings-legend", classes="panel-legend", markup=False
             )
         with Horizontal(id="prompt"):
             yield Static(CHEVRON, id="caret")
@@ -847,8 +915,12 @@ class ChatApp(App[None]):
         if self._question is not None:
             self._answer(yes=False)
             return
+        if self.query_one("#settings").display and self._pending is not None:
+            key, self._pending = self._pending, None  # the risky setting stays off
+            self._fill_settings(key)
+            return
         if self.query_one("#settings").display and self._tools_shown:
-            self._fill_settings(len(SETTINGS))  # back to the settings, on the Tools row
+            self._fill_settings(TOOLS_ROW)  # back to the settings, on the Tools row
             return
         if self.query_one("#settings").display:
             self._close_settings()
@@ -1303,56 +1375,90 @@ class ChatApp(App[None]):
     # Settings
 
     def _open_settings(self) -> None:
+        """Open the settings screen in the transcript's place, on its first setting."""
+        self._pending = None
         self._fill_settings()
+        self.query_one("#stage").display = False
         self.query_one("#settings").display = True
         self.query_one("#prompt").display = False
-        self.query_one("#settings-list", OptionList).focus()
+        self.query_one("#settings-list", SettingsList).focus()
 
-    def _fill_settings(self, highlighted: int = 0) -> None:
-        self._tools_shown = False
-        self.query_one("#settings").border_title = "Settings"
-        rows = [
-            (
+    def _sections(self) -> list[Section]:
+        """Return the settings, by heading: the chat's own, then Jarvis's, then the tools."""
+        chat = tuple(
+            Row(
+                setting.key,
                 setting.label,
-                _shown_value(getattr(self._settings, setting.key)),
-                "" if setting.live else "*",
+                setting.about,
+                setting.values,
+                getattr(self._settings, setting.key),
+                NOW if setting.live else NEXT_CHAT,
             )
             for setting in SETTINGS
-        ]
-        ids = [s.key for s in SETTINGS]
-        for shared in self._shared():
-            rows.append((shared.label, _shown_value(shared.value), "voice too"))
-            ids.append(f"{SHARED_ROW}{shared.key}")
-        if self._services.tools is not None:
-            rows.append(("Tools", "on, off, or asking first", "voice too"))
-            ids.append(TOOLS_ROW)
-        self.query_one("#settings-list", PointerList).show(
-            rows, ("", "bold", "bright_black"), ids, highlighted
         )
+        sections = [Section("Chat", chat)]
+        shared = self._shared()
+        for title in SECTIONS:
+            rows = tuple(
+                Row(
+                    f"{SHARED_ROW}{item.key}",
+                    item.label,
+                    item.about,
+                    item.values,
+                    item.value,
+                    ON_CLOSE,
+                    risky=item.risky,
+                )
+                for item in shared
+                if item.section == title
+            )
+            if title == "Chat":
+                sections[0] = Section("Chat", chat + rows)
+            elif rows:
+                sections.append(Section(title, rows))
+        tools = self._read_tools(quiet=True)
+        if tools is not None:
+            about = "Switch each tool on or off, make it ask first, or need the confirm key."
+            row = Row(TOOLS_ROW, "Tools", about, (), None, ON_CLOSE, summary=tools_summary(tools))
+            sections.append(Section("Tools", (row,)))
+        return sections
 
-    def _fill_tools(self, highlighted: int = 0) -> None:
-        """List every tool with its setting; Enter moves one on, Esc goes back to the settings."""
+    def _fill_settings(self, highlighted: str | None = None) -> None:
+        self._tools_shown = False
+        self.query_one("#settings").border_title = "Settings"
+        self.query_one("#settings-hint", Static).update(SETTINGS_HINT)
+        self.query_one("#settings-legend", Static).update(SETTINGS_LEGEND)
+        listed = self.query_one("#settings-list", SettingsList)
+        self.query_one("#tools-list").display = False
+        listed.display = True
+        listed.show(self._sections(), highlighted, self._pending)
+        listed.focus()
+
+    def _read_tools(self, *, quiet: bool = False) -> list[ToolSetting] | None:
         read = self._services.tools
         if read is None:
-            return
+            return None
         try:
-            tools = read()
+            return read()
         except Exception as exc:  # ruff: ignore[blind-except] - the window stays open
-            self.notify(f"Couldn't read the tools: {type(exc).__name__}", severity="warning")
+            if not quiet:
+                self.notify(f"Couldn't read the tools: {type(exc).__name__}", severity="warning")
+            return None
+
+    def _fill_tools(self, highlighted: str | None = None) -> None:
+        """List every tool with its setting; Enter moves one on, Esc goes back to the settings."""
+        tools = self._read_tools()
+        if tools is None:
             return
         self._tools_shown = True
-        self.query_one(
-            "#settings"
-        ).border_title = (
-            "Tools · Enter changes one · voice takes it when you close this, the chat when reopened"
-        )
-        rows = [
-            (tool.name, tool.label, "" if tool.state is tool.shipped else "changed")
-            for tool in tools
-        ]
-        self.query_one("#settings-list", PointerList).show(
-            rows, ("", "bold", "bright_black"), [tool.name for tool in tools], highlighted
-        )
+        self.query_one("#settings").border_title = "Settings: Tools"
+        self.query_one("#settings-hint", Static).update(TOOLS_HINT)
+        self.query_one("#settings-legend", Static).update(TOOLS_LEGEND)
+        self.query_one("#settings-list").display = False
+        listed = self.query_one("#tools-list", ToolsList)
+        listed.display = True
+        listed.show(tools, highlighted)
+        listed.focus()
 
     def _change_tool(self, name: str) -> None:
         move = self._services.next_tool_setting
@@ -1364,8 +1470,7 @@ class ChatApp(App[None]):
             self.notify(f"Couldn't change {name}: {exc}", severity="warning")
             return
         self._changed_jarvis = True
-        listed = self.query_one("#settings-list", PointerList)
-        self._fill_tools(listed.highlighted or 0)
+        self._fill_tools(name)
         self.notify(f"{now.name}: {now.label}")
 
     def _close_settings(self) -> None:
@@ -1374,9 +1479,12 @@ class ChatApp(App[None]):
             self._changed_jarvis = False
             self.notify("Restarting the voice service to take the changes")
             self.run_worker(lambda: self._apply(apply), thread=True, group="apply")
+        self._pending = None
         self.query_one("#settings").display = False
+        self.query_one("#stage").display = True
         self.query_one("#prompt").display = True
         self._input().focus()
+        self.call_after_refresh(self._follow_down)
 
     def _apply(self, apply: Callable[[], None]) -> None:
         """Restart the voice service on a worker, never blocking the window; say if it failed."""
@@ -1397,47 +1505,53 @@ class ChatApp(App[None]):
             )
             return []
 
-    def _change_shared(self, key: str) -> None:
-        found = next((s for s in self._shared() if s.key == key), None)
-        change = self._services.set_shared
-        if found is None or change is None:
+    def _step_setting(self, key: str, by: int) -> None:
+        """Move one setting's value `by` places (1 on, -1 back); Enter on Tools opens them.
+
+        A risky setting is turned on only by a second Enter or → once the row has said what
+        it means; any other key, or Esc, leaves it off.
+        """
+        if key == TOOLS_ROW:
+            self._fill_tools()
             return
-        values = found.values
-        following = (
-            values[(values.index(found.value) + 1) % len(values)]
-            if found.value in values
-            else values[0]
-        )
+        listed = self.query_one("#settings-list", SettingsList)
+        row = next((r for r in listed.rows if r.id == key), None)
+        if row is None:
+            return
+        following = row.step(by)
+        if row.risky and following is True and self._pending != key:
+            self._pending = key
+            self._fill_settings(key)
+            return
+        self._pending = None
+        if key.startswith(SHARED_ROW):
+            self._change_shared(key.removeprefix(SHARED_ROW), following)
+        else:
+            self._change_setting(key, following)
+        self._fill_settings(key)
+
+    def _change_shared(self, key: str, value: object) -> None:
+        change = self._services.set_shared
+        if change is None:
+            return
         try:
-            change(key, following)
+            change(key, value)
         except Exception as exc:  # ruff: ignore[blind-except] - the setting stays as it was
             self.notify(f"Couldn't change it: {exc}", severity="warning")
             return
         self._changed_jarvis = True
-        listed = self.query_one("#settings-list", PointerList)
-        self._fill_settings(listed.highlighted or 0)
 
-    def _change_setting(self, key: str) -> None:
-        if key == TOOLS_ROW:
-            self._fill_tools()
+    def _change_setting(self, key: str, value: object) -> None:
+        if key == "thinking":
+            self._set_effort(str(value))
             return
-        if key.startswith(SHARED_ROW):
-            self._change_shared(key.removeprefix(SHARED_ROW))
-            return
-        setting = next(s for s in SETTINGS if s.key == key)
-        current = getattr(self._settings, key)
-        values = setting.values
-        following = (
-            values[(values.index(current) + 1) % len(values)] if current in values else values[0]
-        )
-        self._settings = self._settings.model_copy(update={key: following})
+        self._settings = self._settings.model_copy(update={key: value})
         if key == "verbosity":
             self._apply_verbosity()
         if key == "toolbar":
-            self.query_one("#toolbar").display = bool(following)
+            self.query_one("#toolbar").display = bool(value)
             self._refresh_stats()
         self._save_settings()
-        self._fill_settings(SETTINGS.index(setting))
 
     def _save_settings(self) -> None:
         save = self._services.save_settings
@@ -1627,12 +1741,23 @@ class ChatApp(App[None]):
                 self.action_complete()
                 self._input().focus()
             case "settings-list":
-                if event.option.id is not None and self._tools_shown:
+                if event.option.id is not None:
+                    self._step_setting(event.option.id, 1)
+            case "tools-list":
+                if event.option.id is not None:
                     self._change_tool(event.option.id)
-                elif event.option.id is not None:
-                    self._change_setting(event.option.id)
             case _:
                 pass
+
+    def on_settings_list_stepped(self, event: SettingsList.Stepped) -> None:
+        """← → or space on a setting."""
+        self._step_setting(event.row_id, event.by)
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        """Moving off a risky setting that asked to be turned on leaves it off."""
+        if event.option_list.id == "settings-list" and self._pending not in {None, event.option.id}:
+            key, self._pending = self._pending, None
+            self._fill_settings(event.option.id or key)
 
     def action_yes(self) -> None:
         """1: answer the open question yes."""

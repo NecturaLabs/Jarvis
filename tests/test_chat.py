@@ -1182,6 +1182,113 @@ def test_a_voice_restart_that_fails_after_config_is_shown() -> None:
     _run(test, app)
 
 
+def _risky_services(values: dict[str, object]) -> Services:
+    from jarvis.chat.app import SharedSetting  # ruff: ignore[import-outside-top-level] - only these tests
+
+    def shared() -> list[SharedSetting]:
+        return [
+            SharedSetting(
+                "boundaries.bypass_consent",
+                "Act without asking first",
+                (False, True),
+                values["boundaries.bypass_consent"],
+                "Safety",
+                "Acts without a yes.",
+                "Jarvis will act without asking you first.",
+            )
+        ]
+
+    def change(key: str, value: object) -> None:
+        values[key] = value
+
+    return Services(shared=shared, set_shared=change, apply=lambda: None)
+
+
+def _settings_text(app: ChatApp) -> str:
+    listed = app.query_one("#settings-list", OptionList)
+    return "\n".join(
+        _plain(listed.get_option_at_index(index).prompt) for index in range(listed.option_count)
+    )
+
+
+def test_a_risky_setting_is_turned_on_only_after_it_says_what_that_means() -> None:
+    values: dict[str, object] = {"boundaries.bypass_consent": False}
+    app = _app(session=FakeSession(), services=_risky_services(values))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await pilot.press("end", "enter")
+        await _until(pilot, lambda: "Turn on?" in _settings_text(app))
+        assert values["boundaries.bypass_consent"] is False
+        assert "act without asking you first" in _settings_text(app)
+        await pilot.press("enter")
+        await _until(pilot, lambda: values["boundaries.bypass_consent"] is True)
+        assert "⚠ on" in _settings_text(app)  # marked while it is on
+        await pilot.press("enter")  # turning it off asks nothing
+        await _until(pilot, lambda: values["boundaries.bypass_consent"] is False)
+
+    _run(test, app)
+
+
+def test_esc_or_moving_away_leaves_a_risky_setting_off() -> None:
+    values: dict[str, object] = {"boundaries.bypass_consent": False}
+    app = _app(session=FakeSession(), services=_risky_services(values))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await pilot.press("end", "right")
+        await _until(pilot, lambda: "Turn on?" in _settings_text(app))
+        await pilot.press("escape")
+        await _until(pilot, lambda: "Turn on?" not in _settings_text(app))
+        assert app.query_one("#settings").display  # Esc took back the question, not the screen
+        await pilot.press("enter")
+        await _until(pilot, lambda: "Turn on?" in _settings_text(app))
+        await pilot.press("up")
+        await _until(pilot, lambda: "Turn on?" not in _settings_text(app))
+        await pilot.press("down", "enter")
+        await _until(pilot, lambda: "Turn on?" in _settings_text(app))
+
+    _run(test, app)
+    assert values["boundaries.bypass_consent"] is False
+
+
+def test_config_shows_sections_and_what_each_setting_does_and_left_steps_back() -> None:
+    saved: list[ChatConfig] = []
+    app = _app(session=FakeSession(), services=Services(save_settings=saved.append))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        text = _settings_text(app)
+        assert "Chat" in text
+        assert "How much of the work the transcript shows" in text
+        assert "Thinking effort" in text
+        assert not app.query_one("#stage").display  # the screen takes the transcript's place
+        await pilot.press("left")  # replies, back round to everything
+        await _until(pilot, lambda: bool(saved))
+        await pilot.press("escape")
+        await _until(pilot, lambda: app.query_one("#stage").display)
+
+    _run(test, app)
+    assert saved[0].verbosity == "everything"
+
+
+def test_thinking_effort_set_in_config_reaches_the_agent() -> None:
+    session = FakeSession()
+    app = _app(session=session, services=Services(save_settings=lambda _c: None))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await pilot.press("down", "down", "down", "enter")
+        await _until(pilot, lambda: bool(session.thought))
+
+    _run(test, app)
+    assert session.thought == ["low"]
+
+
 def test_an_unknown_command_says_so() -> None:
     app = _app(session=FakeSession())
 

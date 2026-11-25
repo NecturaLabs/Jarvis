@@ -96,8 +96,14 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 | `while_working` | `steer` | `steer`, `queue` | What Enter does while a request runs. `steer`: the words join that request as yours, before the model's next call; words it ended before taking run next. `queue`: they wait and run as the next request. Words sent with a picture or a long paste are always queued. Esc still stops the request; queued words then run. `/config` changes it. |
 | `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, with what was pasted into each, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
 
-`/config` in the chat changes `verbosity`, `toolbar`, `resume`, `reply_tokens` and `max_steps` and writes
-them here; the last three apply the next time the chat opens.
+`/config` in the chat opens the settings in sections, each setting with its values, when a change applies
+and a line on what it does; ↑↓ move, Enter or → takes the next value, ← the one before, Esc closes. Under
+Chat it changes `verbosity`, `toolbar`, `while_working` and `thinking` at once, and `reply_tokens`,
+`max_steps` and `resume` from the next time the chat opens, writing them here. Under Voice, Listening and
+Safety it sets `audio.speech_speed`, `audio.listen_to_pc` (off by default) and `boundaries.bypass_consent`,
+and under Tools each tool's setting; the voice service restarts once to take these when the screen closes.
+Acting without asking and taking requests from PC audio are turned on only by a second Enter, after the row
+says what that means, and are marked in red while they are on. A restart that fails is said in the chat.
 
 `/effort` in the chat says how hard the model thinks before it answers, and how far it may raise that itself
 for a hard request. `/effort none`, `low`, `medium` or `high` sets `thinking` here, from the next request on;

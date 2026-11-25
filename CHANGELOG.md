@@ -11,6 +11,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - `/effort` in the chat shows how hard the model thinks before it answers, and `/effort high` (or `none`,
   `low`, `medium`) sets it from the next request on, saved as `chat.thinking`. Each chat setting it or
   `/config` saves is now audited, and the chat's activity feed shows setting and tool changes.
+- The chat's `/config` is a settings screen: sections (Chat, Voice, Listening, Safety, Tools), every value a
+  setting takes with the one in force lit, when a change applies, and a line on what it does; ← and → step a
+  value. Acting without asking and taking requests from PC audio turn on only after a second Enter, once the
+  row says what that means, and are marked while they are on. The Tools list shows each tool's setting in
+  colour, how it ships when changed, and what it does.
 - The chat's `/config` also sets Jarvis's speaking speed, whether it acts without asking first and whether it
   takes requests from PC audio. Changes there restart the voice service once, when the settings close, instead of
   at every Enter, and its Tools list never takes a tool below how it ships.
