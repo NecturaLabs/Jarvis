@@ -19,7 +19,7 @@ from jarvis import shortcuts
 from jarvis.config import EFFORTS
 from jarvis.confirmkey import boot_clock
 from jarvis.jsonutil import obj, objs
-from jarvis.memory import Conversation, Turn, tokens
+from jarvis.memory import CHARS_PER_TOKEN, Conversation, Turn, tokens
 from jarvis.model import ModelMissingError, Thinking
 from jarvis.operations import (
     REMEMBERED,
@@ -101,8 +101,11 @@ LAST_STEP_REMINDER = (
     "owner now from what you found, and say plainly what you could not find."
 )
 CUT_SHORT = "(That is as far as one reply goes; ask me to go on.)"
+CALL_TOO_LONG = "What I was writing was too long for one answer, so I stopped there."
 UNDONE = "Sorry, I didn't manage to do that."
 NO_ANSWER = "Sorry, I couldn't find an answer to that."
+# What a request stopped before its answer leaves in the conversation, after what it did.
+STOPPED = "(The owner stopped the request here.)"
 WORDS_REMINDER = (
     "System check: your last answer had no words. Answer the owner now, in words, from what the "
     "tools returned; if they did not answer it, say so plainly."
@@ -379,6 +382,8 @@ class _ReplyStream:
         """
         if self._hooks.cancelled():
             raise _Stopped
+        if delta.thinking:
+            return
         if delta.call is None:
             if self._source in {"", "text"}:
                 self._source = "text"
@@ -772,6 +777,7 @@ class _Turn:
     private: bool = False  # the owner's own data (a file, a command's output) is in it
     nudged: bool = False
     wordless: bool = False  # the model answered without words once, and was asked again
+    call_cut: bool = False  # the length cap cut off a call once, and the model was told
     stuck: bool = False
     cold: bool = False  # the model must load first: the next model call may wait for that too
     answered: bool = False  # a model call returned: the model is in and working
@@ -784,6 +790,7 @@ class _Turn:
     seen: set[str] = field(default_factory=set[str])
     actions: list[str] = field(default_factory=list[str])
     looked: list[str] = field(default_factory=list[str])  # each look-up and what it asked for
+    steered: list[str] = field(default_factory=list[str])  # the owner's words typed in meanwhile
     stream: _ReplyStream | None = None  # the last model call's, when the reply is spoken
     thinking: Thinking | None = None  # how the next model call thinks; the model may raise it
 
@@ -1060,12 +1067,17 @@ class Agent:
         except OSError as exc:
             log.warning("the conversation could not be saved: %s", exc)
 
-    def _remember(self, text: str, reply: str, turn: _Turn) -> None:
-        """Keep a finished request and its reply in the conversation."""
+    def _remember(self, text: str, reply: str, turn: _Turn, *, stopped: bool = False) -> None:
+        """Keep a finished or `stopped` request and its reply in the conversation.
+
+        Where outside replies are not kept, a reply drawn on outside text is left out, and so is
+        what was looked up (an address found on a page is that page's words); a stopped request
+        keeps only its note.
+        """
         outside = turn.outside
         looked = _newest(turn.looked, MAX_LOOKED)
         if outside and not self._limits.remember_outside:
-            reply = _OMITTED
+            reply = STOPPED if stopped else _OMITTED
             outside = ""
             looked = ""
         private = turn.private and bool(outside)
@@ -1212,11 +1224,24 @@ class Agent:
             turn.private = turn.private or (bool(remembered) and self._memory.holds_private_text)
             reply = self._converse(hooks, turn)
         self._deliver(reply, hooks, turn)
-        if reply and not foreign:
-            self._remember(_with_pictures(words if outside else text, pictures), reply, turn)
-        self._audit.record("reply", text=reply, seconds=round(self._clock() - started, 2))
+        self._close(_with_pictures(words if outside else text, pictures), reply, hooks, turn)
         self._fit_memory(turn, hooks)
         return reply
+
+    def _close(self, asked: str, reply: str, hooks: Hooks, turn: _Turn) -> None:
+        """Remember a request and audit its reply.
+
+        A stopped request is kept too, with what it looked up and a note that it was stopped, so
+        a follow-up need not look it all up again; a request heard in PC audio never is.
+        """
+        stopped = hooks.cancelled()
+        asked = "\n".join([asked, *(f"{STEERED} {words}" for words in turn.steered)])
+        if (reply or stopped) and not turn.foreign:
+            said = f"{reply} {STOPPED}".strip() if stopped else reply
+            self._remember(asked, said, turn, stopped=stopped)
+        seconds = round(self._clock() - turn.started, 2)
+        flag = {"stopped": True} if stopped else {}
+        self._audit.record("reply", text=reply, seconds=seconds, **flag)
 
     def _note_remembered(self, request: Request) -> None:
         """Note in `request` the outside text the conversation it is given holds.
@@ -1321,6 +1346,9 @@ class Agent:
                 continue
             self._audit.record("steered", text=words[:MAX_AUDIT_TEXT])
             turn.messages.append({"role": "user", "content": f"{STEERED} {words}"})
+            turn.steered.append(words)
+            if turn.request is not None and not turn.foreign:
+                turn.request.added(words)  # typed by the owner: an address in them is theirs
             turn.stuck = False  # new words: the model may act on them, not only answer
 
     def _step(self, turn: _Turn, hooks: Hooks, step: int) -> str | None:
@@ -1374,6 +1402,8 @@ class Agent:
             if salvaged is not None:
                 self._cut(stream)
                 return self._final(turn, f"{salvaged} {CUT_SHORT}")
+            if calls and not self._whole(calls[-1]):
+                return self._cut_call(turn, hooks, message, calls)
         if not calls:
             text = _ACTIONS_NOTE.sub("", _text(message).strip())
             if cut and text:
@@ -1436,6 +1466,59 @@ class Agent:
             words = (partial_reply(arguments) or "").strip()
             return words or None
         return None  # whole: the reply call runs as usual
+
+    @classmethod
+    def _whole(cls, call: dict[str, Any]) -> bool:
+        """Whether a call's arguments arrived whole, as JSON the call can be read from."""
+        try:
+            cls._arguments(obj(call.get("function")))
+        except ValueError, RecursionError:
+            return False
+        return True
+
+    def _cut_call(
+        self, turn: _Turn, hooks: Hooks, message: Mapping[str, Any], calls: list[dict[str, Any]]
+    ) -> str | None:
+        """Answer a message whose last call the length cap cut off; return the reply, or None.
+
+        The cut call never runs, since its arguments never arrived whole. The calls before it
+        run as usual. The model is told how much one answer holds and to send long text in
+        parts; the cut text is not kept, so it is not read again with every later call. A second
+        cut call in the request ends it with `CALL_TOO_LONG`.
+        """
+        self._cut(turn.stream)
+        name = str(obj(calls[-1].get("function")).get("name", ""))
+        self._audit.record("call_cut", op=name[:MAX_AUDIT_TEXT])
+        if turn.call_cut:
+            return CALL_TOO_LONG
+        turn.call_cut = True
+        whole = calls[:-1]
+        cut = {**calls[-1], "function": {"name": name, "arguments": "{}"}}
+        turn.messages.append(
+            {"role": "assistant", "content": _text(message), "tool_calls": [*whole, cut]}
+        )
+        results = self._run_calls(whole, hooks, turn) if whole else []
+        self._record(cut, Result(self._cut_note(name), ok=False), turn)
+        if any(result.quiet for result in results):
+            hooks.hush()
+            hooks.quiet()
+            return ""
+        return None
+
+    def _cut_note(self, name: str) -> str:
+        """Return what the model is told about a call of `name` cut off at the length cap."""
+        chars = int(self._limits.reply_tokens * CHARS_PER_TOKEN) // 100 * 100
+        note = (
+            f"Error: this call was cut off at the length limit of one answer (about {chars} "
+            "characters), so it was not run. Send long text in parts, each in its own call and "
+            f"at most about {chars // 2} characters"
+        )
+        op = self._registry.get(name)
+        properties = obj(op.parameters.get("properties")) if op is not None else {}
+        for key, schema in properties.items():
+            if "append" in (obj(schema).get("enum") or []):
+                return f"{note}: the first part as usual, then each next one with {key} append."
+        return f"{note}."
 
     def _make_room(self, turn: _Turn) -> None:
         """Clear the oldest tool results of this request until the next call fits the window.

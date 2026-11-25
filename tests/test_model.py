@@ -960,7 +960,7 @@ def test_thinking_asks_for_its_effort_and_cap_and_keeps_the_replys_room() -> Non
     assert "chat_template_kwargs" not in body
 
 
-def test_streamed_thinking_is_neither_passed_on_nor_part_of_the_answer() -> None:
+def test_streamed_thinking_is_passed_on_without_its_words_and_is_not_part_of_the_answer() -> None:
     events = (
         _chunk({"reasoning_content": "The owner wants the music paused."}),
         _chunk({"content": "Paused it."}),
@@ -973,6 +973,7 @@ def test_streamed_thinking_is_neither_passed_on_nor_part_of_the_answer() -> None
         MESSAGES, TOOLS, on_delta=pieces.append, thinking=Thinking("low", 192)
     )
 
-    assert pieces == [Delta(text="Paused it.")]
+    # Each piece of thinking is passed on, without its words, so a stop takes effect at once.
+    assert pieces == [Delta(thinking=True), Delta(text="Paused it.")]
     assert reply["content"] == "Paused it."
     assert "reasoning_content" not in reply

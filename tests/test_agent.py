@@ -12,6 +12,7 @@ import pytest
 
 from jarvis import agent as agent_module
 from jarvis.agent import (
+    CALL_TOO_LONG,
     FAILED_REMINDER,
     LOOKED_REMINDER,
     MAX_CALLS_PER_TURN,
@@ -22,6 +23,7 @@ from jarvis.agent import (
     MODEL_MISSING,
     NO_ACTION_REMINDER,
     PICTURES_OFF,
+    STOPPED,
     TOO_LONG,
     TOO_MANY_STEPS,
     UNDONE,
@@ -1126,6 +1128,122 @@ def test_a_cancelled_request_is_not_followed_by_a_summary() -> None:
     assert agent.memory.over_budget()  # it would have been summarized, had it not been stopped
     assert len(model.seen) == 8
     assert "memory_summarized" not in _events(audit)
+
+
+def test_a_request_stopped_after_a_look_up_is_remembered_with_what_it_looked_up() -> None:
+    stopping: list[bool] = []
+    model = ScriptedModel([_call("search", {"q": "who is the band"}), _say("unused"), _say("Hi.")])
+    search = Counter().op(
+        "search", origin=Origin.WEB, side_effect=False, then=lambda: stopping.append(True)
+    )
+    agent, audit = _agent(model, [search], limits=Limits(remember_outside=True))
+
+    reply = agent.handle(
+        "who is the band", Hooks(confirm=lambda _q: False, cancelled=lambda: bool(stopping))
+    )
+    stopping.clear()
+    agent.handle("and then", NO_CONFIRM)
+
+    assert not reply
+    remembered = model.seen[1][2]["content"]
+    assert "[looked up: search who is the band]" in remembered
+    assert STOPPED in remembered
+    (answered,) = [e for e in audit.events if e["event"] == "reply" and not e["text"]]
+    assert answered["stopped"] is True
+
+
+def test_a_request_stopped_before_any_look_up_is_still_remembered() -> None:
+    stopping = [True]
+    model = ScriptedModel([_say("Hi.")])
+    agent, _ = _agent(model, [], limits=Limits(remember_outside=False))
+
+    agent.handle("tell me a story", Hooks(confirm=lambda _q: False, cancelled=lambda: stopping[0]))
+    stopping[0] = False
+    agent.handle("why did you stop", NO_CONFIRM)
+
+    asked = [m["content"] for m in model.seen[0]]
+    assert "tell me a story" in asked
+    assert any(STOPPED in str(content) for content in asked)
+
+
+def test_a_thinking_piece_before_a_reply_call_leaves_the_reply_streamed() -> None:
+    drafts: list[str] = []
+
+    class Thinker(ScriptedModel):
+        @override
+        def chat(
+            self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any
+        ) -> dict[str, Any]:
+            on_delta = kwargs["on_delta"]
+            on_delta(Delta(thinking=True))
+            return super().chat(messages, tools, **kwargs)
+
+    model = Thinker([_call("no_action", {"reply": "Hello there. How are you?"})])
+    agent, _ = _agent(model, [])
+
+    hooks = Hooks(confirm=lambda _q: False, draft=drafts.append)
+    assert agent.handle("hi", hooks) == "Hello there. How are you?"
+    assert drafts[0] == "Hello there."
+
+
+def _cut_write(text: str = "<html>a game that goes on") -> dict[str, Any]:
+    """A write call the length cap cut off: its arguments end mid-string."""
+    message = _call("write", {})
+    message["tool_calls"][0]["function"]["arguments"] = '{"path": "~/game.html", "q": "' + text
+    message["finish_reason"] = "length"
+    return message
+
+
+def _writer(counter: Counter) -> Operation:
+    write = counter.op("write")
+    props = {
+        "path": {"type": "string"},
+        "q": {"type": "string"},
+        "mode": {"type": "string", "enum": ["create", "replace", "append"]},
+    }
+    return replace(write, parameters={"type": "object", "properties": props})
+
+
+def test_a_call_the_length_cap_cut_off_is_not_run_and_the_model_is_told_to_write_in_parts() -> None:
+    counter = Counter()
+    model = ScriptedModel(
+        [_cut_write(), _call("write", {"path": "~/game.html", "q": "part"}), _say("Written.")]
+    )
+    agent, audit = _agent(model, [_writer(counter)], limits=Limits(reply_tokens=2048))
+
+    assert agent.handle("build a game", NO_CONFIRM) == "Written."
+    assert counter.runs == [{"op": "write", "path": "~/game.html", "q": "part"}]
+    told = model.seen[1][-1]
+    assert told["role"] == "tool"
+    assert "cut off" in told["content"]
+    assert "append" in told["content"]
+    assert "6100 characters" in told["content"]  # 2048 tokens of about 3 characters each
+    kept = model.seen[1][-2]["tool_calls"][0]["function"]["arguments"]
+    assert kept == "{}"  # the cut text is not sent back with every later call
+    assert "call_cut" in _events(audit)
+
+
+def test_a_cut_call_of_a_tool_without_parts_is_told_only_to_send_less() -> None:
+    model = ScriptedModel([_cut_write(), _say("Too long, sorry.")])
+    agent, _ = _agent(model, [Counter().op("write")])
+
+    agent.handle("build a game", NO_CONFIRM)
+
+    told = model.seen[1][-1]["content"]
+    assert "cut off" in told
+    assert "append" not in told
+
+
+def test_a_second_cut_call_ends_the_request_with_a_clear_reply() -> None:
+    counter = Counter()
+    model = ScriptedModel([_cut_write(), _cut_write("again"), _say("unused")])
+    agent, _ = _agent(model, [_writer(counter)])
+
+    reply = agent.handle("build a game", NO_CONFIRM)
+
+    assert reply == CALL_TOO_LONG
+    assert counter.runs == []
+    assert len(model.seen) == 2
 
 
 def test_the_latest_turns_are_never_folded_into_the_summary() -> None:
@@ -3499,3 +3617,51 @@ def test_words_the_owner_adds_while_it_works_join_the_request_before_the_next_ca
     assert [e["text"] for e in audit.events if e["event"] == "steered"] == [
         "also check the weekend"
     ]
+
+
+def test_words_the_owner_adds_while_it_works_count_as_their_own_words() -> None:
+    seen: list[str] = []
+    given: list[str] = []
+
+    def run(_args: dict[str, Any]) -> Result:
+        request = current_request()
+        seen.append("<none>" if request is None else request.words)
+        return Result("ok")
+
+    def steer() -> list[str]:
+        if seen and not given:
+            given.append("read https://a.example/x too")
+            return list(given)
+        return []
+
+    schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+    peek = Operation("peek", "peek", schema, run, side_effect=False)
+    model = ScriptedModel(
+        [_call("peek", {"q": "a"}, "c1"), _call("peek", {"q": "b"}, "c2"), _say("Done.")]
+    )
+    agent, _ = _agent(model, [peek])
+
+    agent.handle("look it up", Hooks(confirm=lambda _q: False, steer=steer))
+
+    assert seen == ["look it up", "look it up\nread https://a.example/x too"]
+
+
+def test_words_the_owner_adds_while_it_works_are_remembered_with_the_request() -> None:
+    given: list[str] = []
+    counter = Counter()
+
+    def steer() -> list[str]:
+        if counter.runs and not given:
+            given.append("and the weekend")
+            return list(given)
+        return []
+
+    replies = [_call("search", {"q": "weather"}), _say("Rain."), _say("Same as before.")]
+    model = ScriptedModel(replies)
+    agent, _ = _agent(model, [counter.op("search", side_effect=False)])
+
+    agent.handle("will it rain", Hooks(confirm=lambda _q: False, steer=steer))
+    agent.handle("do that again", NO_CONFIRM)
+
+    remembered = [str(m["content"]) for m in model.seen[2] if m["role"] == "user"]
+    assert any("will it rain" in r and "and the weekend" in r for r in remembered)

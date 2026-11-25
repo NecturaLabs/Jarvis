@@ -13,7 +13,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   at every Enter, and its Tools list never takes a tool below how it ships.
 - `jarvis speed` shows how fast Jarvis speaks and `jarvis speed 1.5` sets it; `audio.speech_speed` now goes up to 3.0.
 - In `jarvis chat`, words typed while a request runs steer it: they join the request before the model's next
-  call, instead of being refused with "esc stops it". `chat.while_working = "queue"` (or `/config`) runs them as
+  call, instead of being refused with "esc stops it". They are your own words like the request's (a web address
+  in them can be read) and are remembered with it. `chat.while_working = "queue"` (or `/config`) runs them as
   the next request instead.
 - Switch a tool on or off, or make it ask first, without editing the config: `jarvis tools` lists them all,
   `jarvis tools NAME on|ask|key|off|default` sets one, and the chat's `/config` has a Tools list. A tool that is
@@ -111,6 +112,15 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A request you stop (Esc in the chat, or speaking over Jarvis) is no longer forgotten. It is remembered with
+  what it looked up and a note that it was stopped, so the next request does not search all over again or lose
+  the task, and the audit log's `reply` says `stopped`. A stop now takes effect while the model is still
+  thinking, not only once it starts to answer. In the chat, a request that ends without words says so instead
+  of showing nothing.
+- A long file is no longer lost to the reply cap. A call the cap cuts off is not run: the model is told how much
+  one answer holds and writes the text in parts, adding each to the file, and the cut text no longer fills the
+  context. A second cut call ends the request with a reply that says so, instead of retrying until the steps
+  run out.
 - A follow-up on something Jarvis looked up no longer sends it searching all over again. Each remembered
   request names what it looked up (the searches and pages, as data when they came from outside), and a page read
   in the conversation is kept for 30 minutes, so reading it again needs no network. An address the owner
