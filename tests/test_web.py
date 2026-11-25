@@ -866,6 +866,8 @@ TWO_SPRINGFIELDS = {
         "Springfield, Illinois",
         "Springfield, Illinois, USA",  # a part that matches nothing leaves the others to choose
         "Springfield (Illinois, USA)",
+        "Springfield (Illinois), USA",
+        "Springfield, Illinois (USA)",
     ],
 )
 def test_a_place_said_with_its_state_or_country_is_looked_up_by_its_name(said: str) -> None:

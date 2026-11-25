@@ -121,6 +121,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - Where the system cannot tell whether the speech model is in memory, a wake word no longer reads all of it
   again within 5 minutes of the last whole read.
 - `jarvis doctor` notes a lock limit on the model's memory only when the model is larger than it.
+- After writing a file, the model is told its full path and link, so a link it gives the owner points to the
+  right home folder instead of a guessed one.
 - `pc_media` binds a command to the players it is for before any question, and the question names them
   ("pause firefox and spotify"); a skip not answered in time is reported as uncertain, so it is not sent twice;
   a player that closes while it is listed is left out, and a player's own error words are not passed on.

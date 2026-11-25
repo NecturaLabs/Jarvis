@@ -28,7 +28,7 @@ GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_DAYS = 7
 _COUNTRY_CODE = re.compile(r"[A-Z]{2}")
 # "Name (qualifier)" or "Name, qualifier": the geocoder takes the name alone.
-_QUALIFIED = re.compile(r"([^,()]+?)\s*(?:\(([^()]+)\)|,\s*(.+))")
+_QUALIFIER_SEP = re.compile(r"[,()]")  # between the name's qualifiers, in any mix of the two forms
 _CHOICES = 10  # matches asked for when a qualifier picks among them
 _CURRENT = "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation"
 _DAILY = "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
@@ -190,11 +190,9 @@ def _hours(hourly: dict[str, Any]) -> tuple[Hour, ...]:
 
 def _qualified(name: str) -> tuple[str, tuple[str, ...]]:
     """Split "Springfield (Illinois)" or "Springfield, Illinois, USA": the name, its qualifiers."""
-    match = _QUALIFIED.fullmatch(name.strip())
-    if match is None:
-        return name, ()
-    parts = (match.group(2) or match.group(3)).split(",")
-    return match.group(1), tuple(q for part in parts if (q := bare(part)))
+    parts = _QUALIFIER_SEP.split(name.strip())
+    said, qualifiers = parts[0].strip(), tuple(q for part in parts[1:] if (q := bare(part)))
+    return (said, qualifiers) if said and qualifiers else (name, ())
 
 
 def _zone(name: object) -> str:
