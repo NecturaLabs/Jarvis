@@ -45,7 +45,7 @@ SCOPES = (
     "user-library-modify",
     "playlist-read-private",
     "playlist-read-collaborative",
-    "playlist-modify-private",  # add the song playing to a playlist (2026-11-26)
+    "playlist-modify-private",  # add the song playing to a playlist (2026-11-25)
     "playlist-modify-public",
     "user-top-read",
     "user-follow-read",

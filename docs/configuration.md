@@ -80,7 +80,7 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 
 A spoken reply that drew on outside text (a web page, a song name) is remembered as data, as in the chat: a
 follow-up such as "what was the second one?" has it, and while it is remembered an action the model chooses
-needs your yes; a plain command (`pause`, `volume 40`) does not. Until 2026-11-26 the voice left such a reply out.
+needs your yes; a plain command (`pause`, `volume 40`) does not. Until 2026-11-25 the voice left such a reply out.
 
 ## `[chat]`: the same for typed requests in `jarvis chat`
 
@@ -249,8 +249,8 @@ being swapped; the lock is what Strata's own start-up text asks a systemd servic
 
 The login (`jarvis spotify-login`) asks Spotify for: reading and controlling playback, reading what plays and
 what played recently, reading and changing your library (Liked Songs), reading your playlists and changing
-them (`playlist-modify-private`, `playlist-modify-public`, added 2026-11-26 so the song playing can go into one of
-your playlists), and reading your top items and the artists you follow. A login from before 2026-11-26 lacks
+them (`playlist-modify-private`, `playlist-modify-public`, added 2026-11-25 so the song playing can go into one of
+your playlists), and reading your top items and the artists you follow. A login from before 2026-11-25 lacks
 the playlist ones: everything else works, and adding to a playlist says to run `jarvis spotify-login` once.
 
 ## `[audio]`: microphone, wake word, speech and voice
