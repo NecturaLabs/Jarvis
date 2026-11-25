@@ -36,7 +36,7 @@ from jarvis.ratelimit import ActionRate
 from jarvis.sentences import sentence_end
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Collection, Mapping, Sequence
     from pathlib import Path
 
     from jarvis.audit import AuditLog
@@ -453,6 +453,20 @@ def _cost(message: Mapping[str, Any]) -> int:
     """Return the tokens a message takes in the model's context, its pictures included."""
     pictures = sum(1 for part in objs(message.get("content")) if part.get("type") == "image_url")
     return tokens(_text(message)) + pictures * PICTURE_TOKENS
+
+
+def _steered(turn: _Turn, steered_by: frozenset[str]) -> None:
+    """Count the outside text a request was handed over with as in its conversation from the start.
+
+    Any origin counts, "memory" too (outside text the conversation remembered then).
+    """
+    carried = sorted(steered_by)
+    if not carried:
+        return
+    turn.untrusted = True
+    turn.outside = turn.outside or carried[0]
+    private = {origin.value for origin in _PRIVATE_ORIGINS}
+    turn.private = turn.private or any(origin in private for origin in carried)
 
 
 def _wrap_pastes(text: str, pastes: Sequence[str]) -> str:
@@ -1016,13 +1030,15 @@ class Agent:
         )
         self._save_memory()
 
-    def handle(
+    def handle(  # ruff: ignore[too-many-arguments] - a request's words and where each part came from
         self,
         text: str,
         hooks: Hooks,
         origin: Origin = Origin.OWNER_SPEECH,
         pictures: Sequence[Picture] = (),
         pasted: Sequence[str] = (),
+        *,
+        steered_by: Collection[str] = (),
     ) -> str:
         """Answer one spoken request and return the reply.
 
@@ -1044,20 +1060,28 @@ class Agent:
         data like a picture: wrapped as such, here and in the conversation, so side effects need
         a yes. Shorter ones, and any with consent bypassed, stay the owner's own words.
 
+        `steered_by` names the origins of outside text that could have steered the request before
+        it was handed over: a request scheduled while web text was in the conversation runs as
+        if that text still were, so its side effects need a yes (and, after file text, so does
+        sending words off the PC), as they would have when it was asked for.
+
         Operations run inside the request's scope (`request_scope`), so one can tell this
         request from the next and a request heard in PC audio from the owner's.
         """
         with request_scope(foreign=origin not in TRUSTED_ORIGINS) as request:
-            return self._answer(text, hooks, (origin, request), (pictures, pasted))
+            for seen in sorted(steered_by):
+                request.saw(seen)
+            source = (origin, request, frozenset(steered_by))
+            return self._answer(text, hooks, source, (pictures, pasted))
 
     def _answer(
         self,
         text: str,
         hooks: Hooks,
-        source: tuple[Origin, Request],
+        source: tuple[Origin, Request, frozenset[str]],
         shared: tuple[Sequence[Picture], Sequence[str]],
     ) -> str:
-        origin, request = source
+        origin, request = source[0], source[1]
         pictures, pasted = shared
         started = self._clock()
         foreign = origin not in TRUSTED_ORIGINS
@@ -1112,6 +1136,7 @@ class Agent:
             turn.untrusted = True
             turn.outside = turn.outside or Origin.PASTE.value
             request.saw(Origin.PASTE.value)
+        _steered(turn, source[2])
         reply = self._shortcut(hit, hooks, turn) if hit is not None else None
         if reply is None:
             if hit is not None and remembered and self._memory.over_budget():

@@ -28,13 +28,13 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from jarvis.files import write_atomic
 from jarvis.jsonutil import obj, objs
-from jarvis.operations import ArgumentError, Operation, OperationError, Result
+from jarvis.operations import ArgumentError, Operation, OperationError, Result, current_request
 from jarvis.policy import Origin
 from jarvis.secretfile import read_private
 from jarvis.web.ops import spoken_time
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
+    from collections.abc import Callable, Generator, Iterable
     from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -68,6 +68,9 @@ class Job:
 
     `at` is the time of day ("07:30") it repeats at, `days` the weekdays (0 is Monday) for
     `weekdays`, `weekends` and `weekly`, and `every` the minutes between two of an `every` job.
+    `foreign` says the request that added it was heard in PC audio, and `outside` holds the
+    origins of the outside text that request had seen (`operations.Request`): a scheduled
+    request runs with both, so what could steer it then still counts when it is due.
     """
 
     id: int
@@ -78,6 +81,8 @@ class Job:
     days: tuple[int, ...]
     every: int
     next: float
+    foreign: bool = False
+    outside: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +208,9 @@ def _when_of(args: dict[str, Any]) -> _When:
         every,
         None if seconds is None else int(seconds),
     )
+
+
+MAX_ORIGIN = 32  # characters of one outside origin a job keeps ("web", "file", "memory")
 
 
 def plan(args: dict[str, Any], now: float, ident: int) -> Job:
@@ -374,9 +382,12 @@ class JobStore:
         with self._locked() as (_free, jobs):
             return sorted(jobs, key=lambda job: job.next)
 
-    def add(self, args: dict[str, Any]) -> Job:
+    def add(
+        self, args: dict[str, Any], *, foreign: bool = False, outside: Iterable[str] = ()
+    ) -> Job:
         """Add the job `schedule_add`'s arguments describe and return it.
 
+        `foreign` and `outside` are where the request that adds it came from (`Job`).
         `plan` raises `ArgumentError` when they do not describe a time to come.
 
         Raises:
@@ -386,7 +397,11 @@ class JobStore:
             if len(jobs) >= MAX_JOBS:
                 msg = f"there are {MAX_JOBS} reminders and scheduled requests already"
                 raise OperationError(msg)
-            job = plan(args, self._clock(), free)
+            job = replace(
+                plan(args, self._clock(), free),
+                foreign=foreign,
+                outside=_origins(list(outside)),
+            )
             self._write(free + 1, [*jobs, job])
             return job
 
@@ -468,7 +483,18 @@ def _job(item: dict[str, Any]) -> Job:
         days,
         every,
         float(item["next"]),
+        # A file from before jobs kept these reads as the owner's own request, as it ran then.
+        foreign=item.get("foreign") is True,
+        outside=_origins(item.get("outside")),
     )
+
+
+def _origins(value: object) -> tuple[str, ...]:
+    """Return the outside origins a job's entry holds: short texts, each once, sorted."""
+    if not isinstance(value, list):
+        return ()
+    texts = cast("list[object]", value)
+    return tuple(sorted({o for o in texts if isinstance(o, str) and 0 < len(o) <= MAX_ORIGIN}))
 
 
 _TEXT = {"type": "string", "minLength": 1, "maxLength": MAX_TEXT}
@@ -502,12 +528,20 @@ class ScheduleOps:
             OperationError: the arguments describe no time to come (the model is told why, to
                 fix them), or there are `MAX_JOBS` already.
         """
+        request = current_request()
         try:
-            job = self._store.add(args)
+            job = (
+                self._store.add(args)
+                if request is None
+                else self._store.add(args, foreign=request.foreign, outside=request.outside)
+            )
         except ArgumentError as exc:
             raise OperationError(str(exc)) from exc
         what = "remind you" if job.action == "remind" else "do that"
         sentence = f"Okay, I'll {what} {self._when(job)}."
+        if job.action == "do" and (job.foreign or job.outside):
+            # It runs as it was asked for: its actions will need a yes (ADR 0011).
+            sentence += " I'll check with you before it acts."
         if not self._voice_running():
             sentence += " Jarvis's voice service isn't running now; start it, or it won't be said."
         text = f"Added job {job.id} ({job.action}): {job.text!r}, {self._when(job)}."

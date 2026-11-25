@@ -3,7 +3,7 @@
 import logging
 import stat
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, cast, override
 
 import httpx
@@ -25,7 +25,7 @@ from jarvis.schedule import Due, Job
 from jarvis.voice import PcListener, State, VoiceLoop
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+    from collections.abc import Callable, Collection, Generator, Iterable, Iterator, Sequence
     from pathlib import Path
 
     from numpy.typing import NDArray
@@ -214,10 +214,19 @@ class Agent:
     reply: Reply = lambda _text, _hooks, _origin: "Done."
     calls: list[tuple[str, Origin]] = field(default_factory=list[tuple[str, Origin]])
     called: threading.Event = field(default_factory=threading.Event)
+    steered: list[frozenset[str]] = field(default_factory=list[frozenset[str]])
 
-    def handle(self, text: str, hooks: Hooks, origin: Origin = Origin.OWNER_SPEECH) -> str:
+    def handle(
+        self,
+        text: str,
+        hooks: Hooks,
+        origin: Origin = Origin.OWNER_SPEECH,
+        *,
+        steered_by: Collection[str] = (),
+    ) -> str:
         """Answer like the real agent: the reply goes to `hooks.speak` unless cancelled."""
         self.calls.append((text, origin))
+        self.steered.append(frozenset(steered_by))
         self.called.set()
         reply = self.reply(text, hooks, origin)
         if hooks.speak is not None and reply and not hooks.cancelled():
@@ -3311,6 +3320,33 @@ def test_a_due_request_goes_to_the_agent_as_the_owners_and_its_reply_is_spoken()
     assert origin is Origin.OWNER_SPEECH
     assert speaker.said == ["Paused."]
     assert speaker.chimes == 0
+
+
+def test_a_due_request_added_beside_outside_text_runs_with_that_text_counted() -> None:
+    agent = Agent()
+    job = replace(_job(2, "do", "pause the music"), outside=("web",))
+
+    _run(_loop(agent, Mic(SILENCE), Speaker(), due=DueJobs([Due(job, 1.0)])))
+
+    assert agent.calls[0][1] is Origin.OWNER_SPEECH
+    assert agent.steered == [frozenset({"web"})]
+
+
+def test_a_due_request_first_heard_in_pc_audio_runs_as_pc_audio() -> None:
+    agent = Agent()
+    job = replace(_job(2, "do", "pause the music"), foreign=True)
+
+    _run(_loop(agent, Mic(SILENCE), Speaker(), due=DueJobs([Due(job, 1.0)])))
+
+    assert agent.calls[0][1] is Origin.PC_AUDIO
+
+
+def test_a_due_request_the_owner_alone_asked_for_runs_as_theirs() -> None:
+    agent = Agent()
+
+    _run(_loop(agent, Mic(SILENCE), Speaker(), due=DueJobs([Due(_job(2, "do", "x"), 1.0)])))
+
+    assert agent.steered == [frozenset()]
 
 
 def test_a_job_that_came_too_late_is_not_done_but_audited_as_missed() -> None:

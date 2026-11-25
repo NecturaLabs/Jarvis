@@ -84,6 +84,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A scheduled request keeps where its request came from. One first heard in PC audio runs as PC audio when it is due,
+  and one added while outside text (a web page, a file, a remembered answer) was in the conversation runs with that
+  text counted, so its actions need a yes as they would have then. Requests the owner alone asked for still run
+  unasked ([ADR 0011](docs/adr/0011-reminders-and-scheduled-requests.md)).
 - `tools/idle_check.py` no longer reports "ok: idle" for the GPU when it could not see the process's GPU use
   (Strata's ROCm engine publishes no per-process engine time): the verdict says it was not measured, and
   each card's whole busy share over the window is shown beside it.

@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from jarvis.operations import ArgumentError, OperationError, Result, validate_args
+from jarvis.operations import ArgumentError, OperationError, Result, request_scope, validate_args
 from jarvis.schedule import (
     LATE_REMINDER_S,
     LATE_S,
@@ -484,3 +484,115 @@ def test_a_day_beside_a_repeat_that_sets_its_own_days_is_ignored(
     _run(ops, "schedule_add", text="stretch", at="07:30", day="weekday", repeat=repeat)
 
     assert [job.repeat for job in store.jobs()] == [repeat]
+
+
+# --- where a job's words came from ----------------------------------------------------------
+
+
+def test_a_job_added_beside_outside_text_keeps_where_that_text_came_from(tmp_path: Path) -> None:
+    ops, _ = _ops(tmp_path)
+
+    with request_scope(foreign=False) as request:
+        request.saw("web")
+        request.saw("file")
+        _run(ops, "schedule_add", text="pause the music", action="do", in_minutes=5)
+
+    (job,) = JobStore(tmp_path / "state" / "schedule.json").jobs()
+    assert job.outside == ("file", "web")
+    assert not job.foreign
+
+
+@pytest.mark.parametrize(("foreign", "seen"), [(False, "web"), (True, "")])
+def test_adding_a_request_that_will_ask_first_says_so(
+    tmp_path: Path, foreign: bool, seen: str
+) -> None:
+    ops, _ = _ops(tmp_path)
+
+    with request_scope(foreign=foreign) as request:
+        if seen:
+            request.saw(seen)
+        done = _run(ops, "schedule_add", text="pause the music", action="do", in_minutes=5)
+        reminder = _run(ops, "schedule_add", text="stretch", in_minutes=5)
+
+    assert done.spoken.endswith(" I'll check with you before it acts.")
+    assert not reminder.spoken.endswith("acts.")
+
+
+def test_a_job_added_from_pc_audio_is_marked_so(tmp_path: Path) -> None:
+    ops, store = _ops(tmp_path)
+
+    with request_scope(foreign=True):
+        _run(ops, "schedule_add", text="pause the music", action="do", in_minutes=5)
+
+    (job,) = store.jobs()
+    assert job.foreign
+    assert job.outside == ()
+
+
+def test_a_job_the_owner_alone_asked_for_carries_nothing(tmp_path: Path) -> None:
+    ops, store = _ops(tmp_path)
+
+    with request_scope(foreign=False):
+        _run(ops, "schedule_add", text="stretch", in_minutes=5)
+
+    (job,) = store.jobs()
+    assert (job.foreign, job.outside) == (False, ())
+
+
+def test_a_jobs_file_written_before_jobs_kept_their_origin_still_loads(tmp_path: Path) -> None:
+    path = tmp_path / "state" / "schedule.json"
+    path.parent.mkdir(mode=0o700)
+    old: dict[str, Any] = {
+        "version": 1,
+        "next_id": 2,
+        "jobs": [
+            {
+                "id": 1,
+                "action": "do",
+                "text": "pause the music",
+                "repeat": "none",
+                "at": "",
+                "days": [],
+                "every": 0,
+                "next": 2_000_000_000.0,
+            }
+        ],
+    }
+    path.write_text(json.dumps(old), encoding="utf-8")
+    path.chmod(0o600)  # as the store wrote it
+
+    (job,) = JobStore(path).jobs()
+
+    assert (job.text, job.foreign, job.outside) == ("pause the music", False, ())
+
+
+@pytest.mark.parametrize(
+    ("foreign", "outside", "read"),
+    [
+        ("yes", [], (False, ())),
+        (True, ["web", 3, "x" * 100], (True, ("web",))),
+        (1, None, (False, ())),
+    ],
+)
+def test_odd_origin_fields_read_back_safely(
+    tmp_path: Path, foreign: object, outside: object, read: tuple[bool, tuple[str, ...]]
+) -> None:
+    # Only an exact `true` marks a job as heard in PC audio; an outside origin is any short text.
+    path = tmp_path / "state" / "schedule.json"
+    path.parent.mkdir(mode=0o700)
+    job: dict[str, Any] = {
+        "id": 1,
+        "action": "do",
+        "text": "t",
+        "repeat": "none",
+        "at": "",
+        "days": [],
+        "every": 0,
+    }
+    job |= {"next": 2_000_000_000.0, "foreign": foreign, "outside": outside}
+    path.write_text(json.dumps({"version": 1, "next_id": 2, "jobs": [job]}), encoding="utf-8")
+    path.chmod(0o600)
+
+    (loaded,) = JobStore(path).jobs()
+
+    assert (loaded.foreign, loaded.outside) == read

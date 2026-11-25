@@ -3198,3 +3198,48 @@ def test_a_model_that_cannot_be_primed_is_left_to_the_first_request() -> None:
 
     assert not agent.prime()
     assert not _events(audit)
+
+
+# --- a request handed over with outside text behind it (a scheduled request) ------------------
+
+
+def test_a_request_steered_by_outside_text_earlier_needs_a_yes_to_act() -> None:
+    # A request scheduled while web text was in the conversation runs later as if that text were
+    # still there: its action is asked about, as it would have been then.
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_call("pause"), _say("Paused.")])
+    agent, audit = _agent(model, [counter.op("pause", summary=lambda _a: "pause the music")])
+
+    agent.handle(
+        "pause the music", Hooks(confirm=lambda q: asked.append(q) is None), steered_by={"web"}
+    )
+
+    assert asked == ["Should I pause the music?"]
+    assert counter.runs == [{"op": "pause"}]
+    call = next(e for e in audit.events if e["event"] == "tool_call")
+    assert call["verdict"] == "confirm"
+
+
+def test_a_request_steered_by_file_text_earlier_needs_a_yes_to_send_words_off_the_pc() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_call("search", {"q": "x"}), _say("Found.")])
+    search = counter.op("search", side_effect=False, outbound=True)
+    agent, _ = _agent(model, [search])
+
+    agent.handle(
+        "look it up", Hooks(confirm=lambda q: asked.append(q) is None), steered_by={"file"}
+    )
+
+    assert len(asked) == 1
+
+
+def test_a_request_nothing_steered_acts_without_a_question() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("pause"), _say("Paused.")])
+    agent, _ = _agent(model, [counter.op("pause")])
+
+    agent.handle("pause the music", NO_CONFIRM, steered_by=())
+
+    assert counter.runs == [{"op": "pause"}]
