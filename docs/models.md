@@ -191,6 +191,33 @@ with the reply as written, with the empty think block written back into it, and 
 help: the cache is reused only between calls within one request. llama.cpp gets reuse on such hybrid models from
 saved checkpoints of the recurrent state (`--ctx-checkpoints`), so the fix belongs in the engine.
 
+### Warm-up
+
+What Jarvis gets ready ahead of a request, so the request does not wait for it:
+
+- **The model** loads when `jarvis run` starts and on `jarvis resume`, and at the wake word when it is not in
+  memory (after `jarvis unload` or the idle unload).
+- **The prompt.** A model just loaded has read nothing, so the first request would read the whole system
+  prompt and tool list: about 6,000 tokens, 2.0 to 4.3 s in Strata's log over four starts (2026-11-23 to
+  2026-11-25). After a load at start or on resume, Jarvis sends one call that starts like a request's first
+  (the same prompt, tools and thinking effort), asks for one token and drops it. Strata keeps what it read
+  (`strata_prefix`), so the first request reads only its own words. The audit log records the call as
+  `prompt_primed`, with the seconds it took. A load at the wake word is not followed by one: the request
+  that started it reads the prompt itself. This is the only time Jarvis generates without a request, once
+  per load; health checks still never generate.
+- **The speech model.** Voxtype loads its model anew for every request, and with the file out of the
+  system's file cache that load waits for the disk. Jarvis reads the file (the one `audio.transcribe_model`
+  names, or the Whisper model Voxtype downloaded) into the cache when it starts and at each wake word, on a
+  thread of its own while the request is being said. It first looks at 64 places in the file without
+  waiting for the disk, so a file already in memory costs nothing (0.06 ms). Measured on 2026-11-25 on the
+  reference machine, with a 2.2 GB Qwen3-ASR file on a SATA SSD and a 4.6 s request: transcription took 4.2 s
+  with the file out of the cache and 0.6 to 0.7 s after the read. The read took 3.9 s, about as long as a
+  request takes to say (median 3.3 s). On a day with little free memory the file was out of the cache for
+  most requests (median transcription 5.5 s). The file is read 1 MiB at a time: read 2 MiB or more at a
+  time, only half of it was still in the cache afterwards (Linux 7.2, ext4).
+- **The voice** is loaded at start. Its first sentence is about 0.06 s slower than later ones, so nothing
+  more is done for it.
+
 ## Speech to text: Voxtype
 
 Jarvis writes each request to a private temporary WAV file and runs `voxtype transcribe`, never the Voxtype
@@ -219,6 +246,11 @@ daemon and never your Voxtype config or recordings. Each run is
   alone got 7 right, `small.en` alone 2; p = 0.18), most of it rare names spelled as in the hint, and it repeated
   hint words four times; without the hint `small.en` heard better (9 against 1; p = 0.02). A hint of artist names
   only, without the actions, scored the same: 52/60 for `base.en` and 49/60 for `small.en`.
+- **GPU build:** Voxtype's Vulkan build (`sudo voxtype setup gpu --enable`, a choice for the whole PC that
+  Jarvis leaves to you) transcribed the same 4.6 s request with Qwen3-ASR 1.7B in 0.74 s against 1.77 s on
+  the CPU build, with 0.35 s of CPU time against 7.8 s (2026-11-25, RX 7900 XT, model file in the cache, same
+  transcript). It held about 3 GB of VRAM, only while it ran. A worker that keeps the model loaded would
+  answer in 0.1 s but hold that VRAM all the time, and Voxtype's file transcription has no such mode.
 - **Hint:** when `audio.vocabulary_hint` is on, `--initial-prompt` carries Jarvis's name, its actions and up to
   `audio.hint_names` of your artist names, shortened, `Jarvis. play, pause, next. Glass Harbor, Night Circuit.`
   It always ends with a full stop: without it Whisper re-decoded short clips and took 1.8 s. A transcript that

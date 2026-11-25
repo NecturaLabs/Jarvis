@@ -1315,6 +1315,100 @@ def voxtype_settings(threads: int, *, short_window: bool, engine: str = "", mode
     return text
 
 
+# A file larger than this is not read ahead: no speech model is, and a wrong path may be.
+MAX_WARM_BYTES = 8 << 30
+# Measured on Linux 7.2 with ext4 (2026-11-25): read 2 MiB or more at a time, only half of a 2 GB
+# file was still in the cache afterwards; read 1 MiB or less at a time, all of it was.
+_WARM_CHUNK = 1 << 20
+_CACHE_SAMPLES = 64
+
+
+def _in_memory(fd: int, size: int) -> bool:
+    """Whether a file's data is in the system's file cache, judged from samples spread over it."""
+    sample = bytearray(1)
+    for number in range(_CACHE_SAMPLES):
+        try:
+            os.preadv(fd, [sample], size * number // _CACHE_SAMPLES, os.RWF_NOWAIT)
+        except OSError:  # BlockingIOError: that part is on the disk; any other: it cannot be told
+            return False
+    return True
+
+
+def read_into_memory(path: Path, clock: Callable[[], float] = time.monotonic) -> float | None:
+    """Read a file into the system's file cache; return the seconds it took, None when not read.
+
+    The program that opens the file next then finds it in memory instead of waiting for the
+    disk. Nothing is read when it is there already (so this costs nothing then), when it is not a
+    regular file (a named pipe would block), is empty or larger than `MAX_WARM_BYTES`, or cannot
+    be opened or read.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError, ValueError:  # ValueError: a NUL in the path
+        return None
+    try:
+        return _read_ahead(fd, clock)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _read_ahead(fd: int, clock: Callable[[], float]) -> float | None:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_WARM_BYTES:
+        return None
+    if _in_memory(fd, info.st_size):
+        return None
+    began = clock()
+    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_SEQUENTIAL)
+    chunk = bytearray(_WARM_CHUNK)
+    while os.readv(fd, [chunk]):
+        pass
+    return clock() - began
+
+
+class FileWarmer:
+    """Reads one file into memory on a thread of its own, one read at a time.
+
+    Voxtype loads the speech model anew for every request. With the file out of the file cache
+    that load waits for the disk; started at the wake word, the read is over, or nearly, by the
+    time the request has been said.
+    """
+
+    def __init__(
+        self, path: Path | None, read: Callable[[Path], float | None] = read_into_memory
+    ) -> None:
+        """Keep the file to read; without one, `start` does nothing."""
+        super().__init__()
+        self._path = path
+        self._read = read
+        self._reading = threading.Lock()
+
+    def start(self) -> threading.Thread | None:
+        """Start a read unless one is under way; return its thread, None when none started."""
+        path = self._path
+        if path is None or not self._reading.acquire(blocking=False):
+            return None
+        thread = threading.Thread(
+            target=self._run, args=(path,), name="jarvis-speech-warm", daemon=True
+        )
+        try:
+            thread.start()
+        except RuntimeError:  # no more threads: the request loads the model itself
+            self._reading.release()
+            return None
+        return thread
+
+    def _run(self, path: Path) -> None:
+        try:
+            seconds = self._read(path)
+        finally:
+            self._reading.release()
+        if seconds is not None:
+            log.info("read the speech model into memory in %.1f s", seconds)
+
+
 def voxtype_command(
     wav: Path, engine: str = "", model: str = "", prompt: str = "", settings: Path | None = None
 ) -> list[str]:

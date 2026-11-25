@@ -36,7 +36,7 @@ from jarvis.audit import AuditLog
 from jarvis.config import AgentConfig, ChatConfig, FilesConfig
 from jarvis.jsonutil import objs
 from jarvis.memory import tokens
-from jarvis.model import Delta, ModelMissingError, Thinking
+from jarvis.model import Delta, ModelError, ModelMissingError, Thinking
 from jarvis.operations import (
     Operation,
     OperationError,
@@ -3111,3 +3111,39 @@ def test_old_results_are_cleared_to_leave_room_for_the_thinking_too() -> None:
     for seen in model.seen:
         estimate = sum(len(str(m.get("content") or "")) / 3 + 8 for m in seen)
         assert estimate + limits.answer_tokens <= limits.context_tokens
+
+
+def test_priming_reads_what_a_request_starts_with_and_leaves_no_trace() -> None:
+    counter = Counter()
+    model = ScriptedModel([_say("H"), _call("pause"), _say("Paused.")])
+    agent, audit = _agent(model, [counter.op("pause")])
+
+    assert agent.prime()
+
+    assert not agent.memory.turns
+    assert not counter.runs
+    assert _events(audit) == ["prompt_primed"]
+    agent.handle("pause", NO_CONFIRM)
+    primed, first = model.seen[0], model.seen[1]
+    assert primed[0] == first[0]  # the same prompt, so the request finds it read
+    assert [message["role"] for message in primed] == ["system", "user"]
+    assert model.tools_offered[0] == model.tools_offered[1] > 0
+    assert model.max_tokens[0] == 1
+    assert not model.streamed[0]
+
+
+def test_priming_thinks_at_the_effort_a_request_starts_with_for_one_token() -> None:
+    model = ScriptedModel([_say("")])
+    agent, _ = _agent(model, [], limits=Limits(thinking=Thinking("high", 192)))
+
+    agent.prime()
+
+    assert model.thinking == [Thinking("high", 1)]
+
+
+def test_a_model_that_cannot_be_primed_is_left_to_the_first_request() -> None:
+    model = ScriptedModel([], error=ModelError("the model server is down"))
+    agent, audit = _agent(model, [])
+
+    assert not agent.prime()
+    assert not _events(audit)

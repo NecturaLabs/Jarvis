@@ -1207,3 +1207,79 @@ def test_a_wake_word_heard_as_a_pause_came_loads_nothing() -> None:
     controls.prewarm()
 
     assert model.loads == 0
+
+
+def test_the_model_reads_its_prompt_once_loaded_at_start_and_on_resume() -> None:
+    primed: list[None] = []
+    later = Later()
+    controls = control.Controls(
+        Loop(), Mic(), Model("loaded"), prime=lambda: primed.append(None), background=later
+    )
+
+    controls.warm_at_start()
+    later.run()
+    assert len(primed) == 1
+    controls("pause")
+    controls("resume")
+    later.run()
+
+    assert len(primed) == 2
+
+
+@pytest.mark.parametrize("state", ["unloaded", None])
+def test_a_model_not_in_after_the_load_was_asked_for_reads_no_prompt_yet(state: str | None) -> None:
+    """A load still under way on the server, or a server that stopped answering."""
+    primed: list[None] = []
+    later = Later()
+    controls = control.Controls(
+        Loop(), Mic(), Model(state), prime=lambda: primed.append(None), background=later
+    )
+
+    controls.warm_at_start()
+    later.run()
+
+    assert not primed
+
+
+def test_a_load_that_failed_or_a_pause_meanwhile_reads_no_prompt() -> None:
+    primed: list[None] = []
+    later = Later()
+    failed = Model("loaded")
+
+    def no_load(*, keep_going: Callable[[], bool] = lambda: True) -> bool:
+        assert keep_going()  # still wanted: it is the load that fails
+        return False
+
+    failed.warm = no_load
+    controls = control.Controls(
+        Loop(), Mic(), failed, prime=lambda: primed.append(None), background=later
+    )
+    controls.warm_at_start()
+    later.run()
+    assert not primed
+
+    paused = Model("loaded")
+    controls = control.Controls(
+        Loop(), Mic(), paused, prime=lambda: primed.append(None), background=later
+    )
+
+    def warm(*, keep_going: Callable[[], bool] = lambda: True) -> bool:
+        controls("pause")  # the owner pauses while the model loads
+        return not keep_going()  # the server finished a load nobody wants any more
+
+    paused.warm = warm
+    controls.warm_at_start()
+    later.run()
+
+    assert not primed
+
+
+def test_a_wake_word_s_load_reads_no_prompt_ahead_of_the_request_it_starts() -> None:
+    primed: list[None] = []
+    model = Model("unloaded")
+    controls = control.Controls(Loop(), Mic(), model, prime=lambda: primed.append(None))
+
+    controls.prewarm()
+
+    assert model.loads == 1
+    assert not primed

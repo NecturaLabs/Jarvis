@@ -240,7 +240,8 @@ Threads in the `jarvis run` process:
 | `jarvis-barge-in` | `VoiceLoop._watch_speech`: while Jarvis speaks, reads the mic for the wake word. Only with `audio.barge_in`. |
 | `jarvis-azure-wake` | `AzureWake._read`: reads the Azure helper's `ready` and `wake` lines. Only with `audio.wake_engine = "azure"`. |
 | `jarvis-stopper` | Waits for SIGTERM or SIGINT, then stops the speaker, mic and PC capture. |
-| `jarvis-model-warm` | Loads the model at start, off the request path. |
+| `jarvis-control-work` | `Controls`' slow work, off the request path: the model load at start and on resume (then one read of the prompt, `Agent.prime`), the unload after a pause, the check after a suspend. |
+| `jarvis-speech-warm` | `FileWarmer`: reads the speech model's file into the file cache at start and at each wake word; ends once read. |
 | `jarvis-spotify-refresh` | Keeps the Spotify login and library fresh. |
 | Short-lived | A model prewarm on each wake, the chime, the "waking up" lines (`jarvis-waking` and a timer). |
 

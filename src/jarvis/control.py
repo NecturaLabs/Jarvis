@@ -153,16 +153,20 @@ class Controls:
         audit: _Audit | None = None,
         *,
         keys: _Key | None = None,
+        prime: Callable[[], object] = lambda: None,
         background: Callable[[Callable[[], object]], None] = _in_background,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         """Act on `loop`, `mic` and `model`; slow work (unloading, loading) goes to `background`.
 
-        `keys` is the confirm key `confirm` presses; it audits each press itself.
+        `keys` is the confirm key `confirm` presses; it audits each press itself. `prime` has
+        the model read its prompt once it is loaded at start or on resume (`Agent.prime`), so the
+        first request does not wait for that.
         """
         super().__init__()
         self._keys = keys
+        self._prime = prime
         self._loop = loop
         self._mic = mic
         self._model = model
@@ -268,8 +272,11 @@ class Controls:
             return resume == self._pauses and not self._mic.paused
 
         with self._model_turn:
-            if wanted():
-                self._model.warm(keep_going=wanted)
+            if not (wanted() and self._model.warm(keep_going=wanted)):
+                return
+            # A load still under way on the server is left alone: the first request reads then.
+            if wanted() and self._model.is_loaded():
+                self._prime()
 
     def _resume(self) -> dict[str, Any]:
         with self._commands:

@@ -55,7 +55,8 @@ SUBPROCESS_FILES = {
 
 # Files that may build a path with a `voxtype` component other than the config directory.
 VOXTYPE_PATH_FILES = {
-    "cli.py": "`jarvis doctor` reads (never writes) Voxtype's downloaded model in its data dir",
+    "cli.py": "`jarvis doctor` and the read-ahead at the wake word read (never write) Voxtype's "
+    "downloaded model in its data dir",
 }
 
 # Hosts a string literal may point at; everything else is a hosted service Jarvis must not call.

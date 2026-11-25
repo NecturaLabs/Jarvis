@@ -688,6 +688,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
         MIC_STALL_S,
         AppAudio,
+        FileWarmer,
         Microphone,
         PausableMic,
         Vad,
@@ -704,7 +705,6 @@ def cmd_run(_args: argparse.Namespace) -> int:
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
-    data = cfg.data_dir
     mic = PausableMic(Microphone(cfg.audio.source, stall_s=MIC_STALL_S))
     speaker = _speaker(cfg)
     pc_audio = AppAudio(cfg.audio.pc_audio_apps) if cfg.audio.listen_to_pc else None
@@ -731,6 +731,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
     # warm, so the first request does not wait for them.
     jarvis.ops.start_refresh(refresh_stop)
     request, answer = _transcribers(cfg, jarvis.hint)
+    speech_model = FileWarmer(_speech_model_file(cfg.audio))
     mic.start()
     wakes = [wake_word(cfg), *([wake_word(cfg)] if pc_audio is not None else [])]
 
@@ -738,6 +739,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         handler.after_sleep()  # made below, once the loop it controls exists
 
     def prewarm() -> None:
+        speech_model.start()  # read from the disk while the request is still being said
         handler.prewarm()  # made below, as above
 
     keys = ConfirmKey(audit=jarvis.audit)  # pressed through the socket, waited on by the loop
@@ -747,7 +749,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         jarvis.agent,
         mic,
         wakes[0],
-        Vad(data / VAD_MODEL),
+        Vad(cfg.data_dir / VAD_MODEL),
         speaker,
         cfg.audio,
         request,
@@ -757,7 +759,7 @@ def cmd_run(_args: argparse.Namespace) -> int:
         else PcListener(
             pc_audio,
             wakes[-1],
-            Vad(data / VAD_MODEL),
+            Vad(cfg.data_dir / VAD_MODEL),
         ),
         transcribe_answer=answer,
         names=(cfg.persona.name,),
@@ -773,8 +775,11 @@ def cmd_run(_args: argparse.Namespace) -> int:
         keys=keys,
         due=JobStore(paths.schedule_file()).take_due,
     )
-    handler = control.Controls(loop, mic, jarvis.model, jarvis.audit, keys=keys)
+    handler = control.Controls(
+        loop, mic, jarvis.model, jarvis.audit, keys=keys, prime=jarvis.agent.prime
+    )
     handler.warm_at_start()  # the model loads now, so the first request does not wait for it
+    speech_model.start()
     jarvis.audit.record("service_started", bypass_consent=cfg.boundaries.bypass_consent)
     return _run_until_stopped(
         loop, stop_requested, _serve_controls(handler, jarvis.audit), voxtype, wakes
@@ -871,6 +876,24 @@ def _model_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
     return checks
 
 
+def _speech_model_file(audio: config.AudioConfig) -> Path | None:
+    """Return the file Voxtype reads the speech model from, or None when Jarvis cannot tell.
+
+    A Parakeet, Cohere or GGUF model is the file the config names. A Whisper model is that too, or
+    the file Voxtype downloaded for its name into its data folder, which Jarvis reads and never
+    writes. Other engines keep their models in their own forms.
+    """
+    from jarvis.audio import FILE_ENGINES  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
+
+    engine, model = audio.transcribe_engine, audio.transcribe_model
+    whisper = engine in {"", "whisper"}
+    if not model or not (whisper or engine in FILE_ENGINES):
+        return None
+    if model.startswith("/"):
+        return Path(model)
+    return paths.xdg_data_home() / "voxtype" / "models" / f"ggml-{model}.bin" if whisper else None
+
+
 def _whisper_model(cfg: config.Config) -> list[tuple[bool, str, str]]:
     """Return the check that the speech model Jarvis asks Voxtype for is there.
 
@@ -892,12 +915,8 @@ def _whisper_model(cfg: config.Config) -> list[tuple[bool, str, str]]:
         found = name in installed
         said = "installed" if found else "not installed"
         return [(found, f"speech model {name} (Voxtype reports it {said})", fix)]
-    model = (
-        Path(name)
-        if name.startswith("/")
-        else paths.xdg_data_home() / "voxtype" / "models" / f"ggml-{name}.bin"
-    )
-    return [(model.is_file(), f"speech model {model}", fix)]
+    model = _speech_model_file(audio)
+    return [(model is not None and model.is_file(), f"speech model {model}", fix)]
 
 
 def _model_url(cfg: config.Config) -> list[tuple[bool, str, str]]:
