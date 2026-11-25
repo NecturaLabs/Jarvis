@@ -206,9 +206,14 @@ class Browser:
         run: Runner = run_program,
         proxy: Callable[[], EgressProxy] = EgressProxy,
         timer: Callable[[float, Callable[[], None]], threading.Timer] | None = None,
+        origin: str = "",
     ) -> None:
-        """Drive `program` (agent-browser's full path), keeping its throwaway files under `root`."""
+        """Drive `program` (agent-browser's full path), keeping its throwaway files under `root`.
+
+        With `origin` (`http://127.0.0.1:<port>`, a preview's), only addresses there are opened.
+        """
         super().__init__()
+        self._origin = origin
         self._program = program
         self._root = root
         self._idle_s = idle_close_s
@@ -400,8 +405,9 @@ class Browser:
             msg = "that site can't be reached from here"
             raise BrowserError(msg)
         proxy = self._proxy
-        host = urlsplit(address).hostname or ""
-        if proxy is not None and proxy.was_refused(host):
+        parts = urlsplit(address)
+        port = _port(parts.port, parts.scheme)
+        if proxy is not None and proxy.was_refused(parts.hostname or "", port):
             msg = "that address is not a public web address, so it isn't opened"
             raise BrowserError(msg)
         result = snapshot.get("result")
@@ -423,17 +429,31 @@ class Browser:
             self._idle()
 
     def open(self, url: str) -> View:
-        """Open a plain http or https address and return what the page shows.
+        """Open a plain http or https address (a preview's own) and return what the page shows.
 
-        Raises:
-            BrowserError: the address is not one Jarvis opens, or the page could not be opened.
+        A `BrowserError` says the address is not one this session opens, or the page could not be
+        opened.
         """
-        try:
-            address = check_url(url)
-        except PageError as exc:
-            raise BrowserError(str(exc)) from exc
+        address = self._checked(url)
         with self._lock:
             return self._act([["open", address]], "open that page")
+
+    def _checked(self, url: str) -> str:
+        """Return `url` when this session may open it: a plain web address, or the preview's.
+
+        Raises:
+            BrowserError: it may not be opened here.
+        """
+        if self._origin:
+            parts = urlsplit(url)
+            if parts.scheme != "http" or f"http://{parts.netloc}" != self._origin:
+                msg = "a preview opens only the project it serves"
+                raise BrowserError(msg)
+            return url
+        try:
+            return check_url(url)
+        except PageError as exc:
+            raise BrowserError(str(exc)) from exc
 
     def link(self, ref: str) -> str:
         """Return the full address a link on the current page points to.
@@ -457,10 +477,7 @@ class Browser:
             if not href:
                 msg = "that link points nowhere"
                 raise BrowserError(msg)
-            try:
-                return check_url(urljoin(view.url, href))
-            except PageError as exc:
-                raise BrowserError(str(exc)) from exc
+            return self._checked(urljoin(view.url, href))
 
     def _same(self, expect: Element, url: str) -> None:
         """Check that the page is still at `url` and shows `expect` under its reference.
@@ -547,6 +564,13 @@ class Browser:
             finally:
                 path.unlink(missing_ok=True)
             return data
+
+
+def _port(port: int | None, scheme: str) -> int:
+    """Return an address's port, the scheme's own when it names none."""
+    if port is not None:
+        return port
+    return 443 if scheme == "https" else 80
 
 
 def _rows(out: str) -> list[dict[str, Any]]:

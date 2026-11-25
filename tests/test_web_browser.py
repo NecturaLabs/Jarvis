@@ -39,8 +39,8 @@ class FakeProxy:
     def stop(self) -> None:
         self.stopped = True
 
-    def was_refused(self, host: str) -> bool:
-        return host in self._refused
+    def was_refused(self, host: str, port: int) -> bool:
+        return f"{host}:{port}" in self._refused
 
 
 class Page:
@@ -309,7 +309,7 @@ def test_an_error_page_is_said_as_unreachable(tmp_path: Path) -> None:
 
 def test_a_page_the_proxy_refused_is_not_passed_off_as_its_text(tmp_path: Path) -> None:
     fake = FakeAgentBrowser(Page(text="'10.0.0.1' is not a public internet address"))
-    made, _, _ = _browser(tmp_path, fake, FakeProxy(refused=("10.0.0.1",)))
+    made, _, _ = _browser(tmp_path, fake, FakeProxy(refused=("10.0.0.1:80",)))
 
     with pytest.raises(BrowserError, match="not a public web address"):
         made.open("http://10.0.0.1/")

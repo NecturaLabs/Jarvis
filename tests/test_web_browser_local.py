@@ -18,7 +18,10 @@ from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
 
+from jarvis.config import FilesConfig
+from jarvis.pc.files import Boundary
 from jarvis.web.browser import Browser, BrowserError
+from jarvis.web.preview import FolderServer, preview_browser
 from jarvis.web.proxy import EgressProxy
 
 if TYPE_CHECKING:
@@ -142,4 +145,39 @@ def test_page_scripts_frames_and_redirects_reach_nothing_on_this_pc(
     assert [hit for hit in server.hits if hit.startswith("/leak")] == []
     assert "reached" not in view.text
     assert "candidate" not in view.text
+    assert list((tmp_path / "browser").iterdir()) == []
+
+
+def test_a_preview_reaches_its_own_project_and_nothing_else(tmp_path: Path, server: Server) -> None:
+    program = shutil.which("agent-browser")
+    assert program is not None
+    site = tmp_path / "me" / "Documents" / "site"
+    site.mkdir(parents=True)
+    leak = f"http://127.0.0.1:{server.port}/leak-preview"
+    (site / "index.html").write_text(
+        f"""<html><body><h1>Built</h1><p id=r>waiting</p><script>
+const r = document.getElementById('r');
+fetch('{leak}').then(() => r.textContent = 'reached').catch(() => r.textContent = 'blocked');
+fetch('https://example.com/').then(() => r.textContent += ' internet')
+  .catch(() => r.textContent += ' offline');
+</script></body></html>""",
+        encoding="utf-8",
+    )
+    folder = FolderServer(
+        site, Boundary.of(FilesConfig(write_roots=["~/Documents"]), tmp_path / "me")
+    )
+    origin = folder.start()
+    browser = preview_browser(folder, program, tmp_path / "browser", idle_close_s=30)
+    try:
+        browser.open(f"{origin}/")
+        time.sleep(3)  # the page's scripts try their connections
+        view = browser.open(f"{origin}/")
+    finally:
+        browser.close()
+        folder.stop()
+
+    assert "Built" in view.text
+    assert [hit for hit in server.hits if hit.startswith("/leak")] == []
+    assert "reached" not in view.text
+    assert "internet" not in view.text
     assert list((tmp_path / "browser").iterdir()) == []

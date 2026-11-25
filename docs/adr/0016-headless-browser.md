@@ -74,7 +74,7 @@ quick commands.
   definitions take about 470 tokens of the chat's context. The chat's default `memory_tokens` went from 7000
   to 6500 so that the default context still holds the whole remembered conversation.
 
-### Previews of the owner's own builds (agreed with coding mode, to be built)
+### Previews of the owner's own builds (agreed with coding mode)
 
 Coding mode (planned) will want to open what it built. That never goes through `file://`, which would let
 page scripts read other files, and never through this web session. A preview is a separate session whose
@@ -82,7 +82,8 @@ proxy allows exactly one loopback port and refuses everything else, the public i
 that port is a read-only file server Jarvis starts over one project folder, which coding mode hands over as
 a resolved path inside the file write roots (`app.files_boundary`). It serves regular files under that
 folder only, follows no symbolic link out, and stops with the session. Its text, errors and screenshots are
-web text too.
+web text too. Built: `web/preview.py` (`FolderServer`, `preview_browser`), `EgressProxy(local_port=…)` and
+`Browser(origin=…)`; the operation that asks for a preview comes with coding mode.
 
 ### Consequences
 

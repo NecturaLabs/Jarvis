@@ -152,9 +152,10 @@ def test_a_plain_request_to_this_pc_or_the_network_is_refused(
 def test_a_refused_host_is_remembered_for_the_browser_to_tell_apart(proxy: EgressProxy) -> None:
     _ask(proxy, b"CONNECT inside.example:443 HTTP/1.1\r\n\r\n")
 
-    assert proxy.was_refused("inside.example")
-    assert proxy.was_refused("INSIDE.example")
-    assert not proxy.was_refused("site.example")
+    assert proxy.was_refused("inside.example", 443)
+    assert proxy.was_refused("INSIDE.example", 443)
+    assert not proxy.was_refused("inside.example", 80)
+    assert not proxy.was_refused("site.example", 443)
 
 
 @pytest.mark.parametrize(

@@ -14,6 +14,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   there, and always asks first, even with questions turned off. It runs headless and muted with a throwaway
   profile, every connection goes through a loopback proxy that reaches only public addresses, and it closes
   when idle. On in the chat (`chat.browser`), off for speech (`agent.browser`); `[browser] idle_close_s`.
+  A preview session for the owner's own builds (one project folder, served read-only on loopback, with a
+  proxy that reaches that port alone) is ready for coding mode to use.
 
 - `pc_audio_listen`: with PC audio on, ask Jarvis what is being said or played there (a call, a video) and it
   listens for up to a minute and tells you. `audio.pc_audio_recall_s` (off by default) keeps the last seconds in

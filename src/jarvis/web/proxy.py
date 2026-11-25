@@ -31,9 +31,12 @@ if TYPE_CHECKING:
 
     from jarvis.web.guard import Resolver
 
+LOOPBACK = "127.0.0.1"
 MAX_HEAD = 16 * 1024  # a request line and its headers
 MAX_BYTES = 200_000_000  # every byte of one browser session, both ways
-REFUSED_KEPT = 64  # host names last refused, so a page refused at its own address is told apart
+REFUSED_KEPT = (
+    64  # hosts and ports last refused, so a page refused at its own address is told apart
+)
 MAX_CONNECTIONS = 48  # at once; Chrome opens about six per site
 HEAD_TIMEOUT_S = 10.0
 CONNECT_TIMEOUT_S = 5.0
@@ -121,7 +124,11 @@ class _Budget:
 
 
 class EgressProxy:
-    """An HTTP proxy on 127.0.0.1 that reaches only public addresses on ports 80 and 443."""
+    """An HTTP proxy on 127.0.0.1 that reaches only public addresses on ports 80 and 443.
+
+    With `local_port` it is a preview's proxy instead: it reaches `127.0.0.1` on that one port (a
+    server Jarvis started over the owner's own project) and nothing else, not the internet either.
+    """
 
     def __init__(
         self,
@@ -130,9 +137,11 @@ class EgressProxy:
         connect: Connector = _connect,
         max_bytes: int = MAX_BYTES,
         max_connections: int = MAX_CONNECTIONS,
+        local_port: int | None = None,
     ) -> None:
         """Resolve with `resolve` and connect with `connect` (both real by default; for tests)."""
         super().__init__()
+        self._local_port = local_port
         self._resolve = resolve
         self._connect = connect
         self._budget = _Budget(max_bytes)
@@ -141,7 +150,7 @@ class EgressProxy:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._refused = 0
-        self._refused_hosts: deque[str] = deque(maxlen=REFUSED_KEPT)
+        self._refused_hosts: deque[tuple[str, int]] = deque(maxlen=REFUSED_KEPT)
 
     @property
     def refused(self) -> int:
@@ -149,10 +158,10 @@ class EgressProxy:
         with self._lock:
             return self._refused
 
-    def was_refused(self, host: str) -> bool:
-        """Return whether a connection to `host` was refused lately (a private address, a port)."""
+    def was_refused(self, host: str, port: int) -> bool:
+        """Return whether a connection to `host` on `port` was refused lately."""
         with self._lock:
-            return host.lower() in self._refused_hosts
+            return (host.lower(), port) in self._refused_hosts
 
     @property
     def port(self) -> int:
@@ -277,10 +286,10 @@ class EgressProxy:
             RefusedError: no address answered.
         """
         try:
-            addresses = public_addresses(host, port, self._resolve)
+            addresses = self._allowed(host, port)
         except BlockedDestinationError:
             with self._lock:
-                self._refused_hosts.append(host.lower())
+                self._refused_hosts.append((host.lower(), port))
             raise
         for address in addresses:
             try:
@@ -289,6 +298,19 @@ class EgressProxy:
                 continue
         msg = f"{host!r} did not answer"
         raise RefusedError(msg)
+
+    def _allowed(self, host: str, port: int) -> list[str]:
+        """Return the addresses `host` may be reached at: public ones, or a preview's one port.
+
+        Raises:
+            BlockedDestinationError: anything else.
+        """
+        if self._local_port is None:
+            return public_addresses(host, port, self._resolve)
+        if host == LOOPBACK and port == self._local_port:
+            return [LOOPBACK]
+        msg = f"a preview reaches only {LOOPBACK}:{self._local_port}"
+        raise BlockedDestinationError(msg)
 
     def _relay(self, client: socket.socket, upstream: socket.socket) -> None:
         """Move bytes both ways until either side closes, goes quiet or the budget runs out."""
