@@ -121,6 +121,12 @@ pc_audio_cooldown_s = 5.0
 # A wake word's own score needed, by model name, in place of wake_threshold (e.g. jarvis = 0.85).
 [audio.wake_thresholds]
 
+# How Jarvis sings (the sing tool): "speech" with the Kokoro voice on the CPU, "soulx" with SoulX-Singer
+# on the GPU (tools/get_singer.py installs it), or "auto": soulx when installed, else speech.
+[sing]
+engine = "auto"
+device = 0
+
 # Who Jarvis is and how it speaks; addendum is added to the system prompt.
 [persona]
 name = "Jarvis"

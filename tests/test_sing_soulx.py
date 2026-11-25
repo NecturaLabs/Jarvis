@@ -5,6 +5,7 @@ The program is never run here: a stand-in runner reads what Jarvis wrote and wri
 """
 
 import json
+import struct
 import wave
 from pathlib import Path
 
@@ -62,8 +63,9 @@ def _files(tmp_path: Path) -> soulx.Files:
 class Runner:
     """Stands in for `audiocpp_cli`: keeps what it was given and writes a song, or fails."""
 
-    def __init__(self, *, exit_code: int = 0, timeout: bool = False) -> None:
+    def __init__(self, *, exit_code: int = 0, timeout: bool = False, writes: bytes = b"") -> None:
         super().__init__()
+        self.writes = writes  # what it writes instead of a song, when set
         self.exit_code = exit_code
         self.timeout = timeout
         self.commands: list[list[str]] = []
@@ -85,7 +87,9 @@ class Runner:
         self.target = json.loads(Path(options["target_metadata_file"]).read_text(encoding="utf-8"))
         with wave.open(cmd[cmd.index("--voice-ref") + 1], "rb") as ref:
             self.reference_seconds = ref.getnframes() / ref.getframerate()
-        if self.exit_code == 0:
+        if self.writes:
+            Path(cmd[cmd.index("--out") + 1]).write_bytes(self.writes)
+        elif self.exit_code == 0:
             with wave.open(cmd[cmd.index("--out") + 1], "wb") as out:
                 out.setnchannels(1)
                 out.setsampwidth(2)
@@ -119,7 +123,26 @@ def test_soulx_sings_in_the_voice_of_the_same_song_sung_by_the_speaking_voice(
     assert not list((tmp_path / "run" / "jarvis").iterdir())  # nothing is left behind
 
 
-@pytest.mark.parametrize("runner", [Runner(exit_code=1), Runner(timeout=True)])
+def _float_wav() -> bytes:
+    """A WAV of 32-bit float samples (format 3), which is not what Jarvis reads."""
+    data = np.zeros(100, dtype=np.float32).tobytes()
+    fmt = struct.pack("<HHIIHH", 3, 1, soulx.RATE, soulx.RATE * 4, 4, 32)
+    body = b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+    body += b"data" + struct.pack("<I", len(data)) + data
+    return b"RIFF" + struct.pack("<I", len(body)) + body
+
+
+@pytest.mark.parametrize(
+    "runner",
+    [
+        Runner(exit_code=1),
+        Runner(timeout=True),
+        Runner(writes=b"not a sound file"),
+        Runner(writes=_float_wav()),
+        Runner(writes=_float_wav()[:30]),
+    ],
+    ids=["exit", "timeout", "garbage", "float", "cut-off"],
+)
 def test_a_failed_or_stuck_soulx_sings_with_the_speaking_voice_instead(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: Runner
 ) -> None:

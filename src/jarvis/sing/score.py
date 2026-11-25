@@ -106,7 +106,7 @@ def pitch(text: str) -> int:
     Raises:
         ScoreError: it is neither, or it lies outside C2 to C6.
     """
-    if text.isdigit():
+    if text.isascii() and text.isdigit():
         midi = int(text)
     elif match := _PITCH.fullmatch(text):
         letter, accidental, octave = match.groups()

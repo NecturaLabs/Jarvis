@@ -432,6 +432,10 @@ def channel_registry(
 
 # Operations offered only when their files are installed, known to `boundaries.classes` either way.
 INSTALLED_ONLY = frozenset({"read_skill", "os_skill"})
+# Tools whose result is a sound, and the voice-channel callers that cannot play one (`jarvis ask`
+# prints its reply): they are not offered there, so nothing is made only to be thrown away.
+MAKES_SOUND = frozenset({"sing"})
+SOUNDLESS = frozenset({"ask", "speech-test"})
 # How Jarvis answers, not tools: never switched off.
 ALWAYS_OFFERED = frozenset({"no_action", "think_harder", "stay_quiet"})
 
@@ -561,7 +565,7 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
         limits,
         channel,
         voice_running=voice_service_running if elsewhere else lambda: True,
-    ).without(switched_off(config))  # a tool switched off is not offered at all
+    ).without(switched_off(config) | (MAKES_SOUND if via in SOUNDLESS else set()))
     remembered = chat_memory_file() if channel == "chat" else None
     if remembered is not None and not config.chat.resume:
         remembered.unlink(missing_ok=True)

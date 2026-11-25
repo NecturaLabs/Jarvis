@@ -11,6 +11,7 @@ fails or runs too long, the speaking-voice song made for the reference is sung i
 
 import json
 import logging
+import struct
 import tempfile
 import wave
 from dataclasses import dataclass
@@ -39,9 +40,11 @@ BINARY = "audiocpp_cli"  # in FOLDER/audiocpp, beside the libraries it loads
 MODEL = "soulx-singer-q8_0.gguf"
 RATE = 24000
 EDGE_S = 0.2  # silence before and after the song in both clips, a rest of SoulX's own
-TIMEOUT_S = 60.0  # a song of at most 30 s takes about 2 s on the reference GPU
+TIMEOUT_S = 20.0  # a song of at most 30 s takes about 3 s on the reference GPU
 SEED = 2026
 MAX_ERROR_CHARS = 400
+MIN_RATE, MAX_RATE = 8000, 192000
+MAX_SONG_S = 40.0  # the 30 s cap, its edges of silence and room
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,18 +121,35 @@ def _write_wav(path: Path, pcm: NDArray[np.int16]) -> None:
         out.writeframes(np.concatenate([edge, pcm, edge]).tobytes())
 
 
+def _samples(sung: wave.Wave_read) -> tuple[NDArray[np.int16], int]:
+    """Return an open WAV's samples and rate, at most MAX_SONG_S of them.
+
+    Raises:
+        ValueError: it is not mono 16-bit sound at a usable rate.
+    """
+    if sung.getnchannels() != 1 or sung.getsampwidth() != 2:  # ruff: ignore[magic-value-comparison] - mono, 16-bit
+        msg = "the singer wrote something other than mono 16-bit sound"
+        raise ValueError(msg)
+    rate = sung.getframerate()
+    if not MIN_RATE <= rate <= MAX_RATE:
+        msg = f"the singer wrote sound at {rate} Hz"
+        raise ValueError(msg)
+    frames = min(sung.getnframes(), int(MAX_SONG_S * rate))
+    return np.frombuffer(sung.readframes(frames), dtype=np.int16).copy(), rate
+
+
 def _read_wav(path: Path) -> tuple[NDArray[np.int16], int]:
     """Return a mono 16-bit WAV's samples and rate.
 
     Raises:
-        ValueError: it is not one.
+        ValueError: it is not one (another format, a damaged or cut-off file, no sound).
     """
-    with wave.open(str(path), "rb") as sung:
-        if sung.getnchannels() != 1 or sung.getsampwidth() != 2:  # ruff: ignore[magic-value-comparison] - mono, 16-bit
-            msg = "the singer wrote something other than mono 16-bit sound"
-            raise ValueError(msg)
-        rate = sung.getframerate()
-        pcm = np.frombuffer(sung.readframes(sung.getnframes()), dtype=np.int16).copy()
+    try:
+        with wave.open(str(path), "rb") as sung:
+            pcm, rate = _samples(sung)
+    except (wave.Error, EOFError, struct.error) as exc:
+        msg = f"the singer wrote a sound file that cannot be read: {exc}"
+        raise ValueError(msg) from exc
     if pcm.size == 0:
         msg = "the singer wrote no sound"
         raise ValueError(msg)

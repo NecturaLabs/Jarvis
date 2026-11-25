@@ -41,7 +41,7 @@ def test_pitches_are_note_names_with_an_octave_or_midi_numbers(name: str, midi: 
     assert pitch(name) == midi
 
 
-@pytest.mark.parametrize("name", ["B1", "C#6", "100", "H4", "C", "do"])
+@pytest.mark.parametrize("name", ["B1", "C#6", "100", "H4", "C", "do", "\u00b2"])
 def test_a_pitch_outside_the_range_or_not_a_note_is_refused(name: str) -> None:
     with pytest.raises(ScoreError):
         pitch(name)

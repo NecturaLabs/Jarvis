@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
-from jarvis.sing.score import Kind, Note, Score, hertz
+from jarvis.sing.score import HIGHEST, LOWEST, Kind, Note, Score, hertz
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -429,7 +429,13 @@ def octave_shift(score: Score, voice_midi: float | None) -> int:
         return 0
     pitches = sorted(n.midi for n in score.notes if n.midi)
     middle = pitches[len(pitches) // 2]
-    return 12 * round((voice_midi + SINGING_ABOVE_SPEECH - middle) / 12)
+    shift = 12 * round((voice_midi + SINGING_ABOVE_SPEECH - middle) / 12)
+    # Never past the range a score may be written in: a wide song moves less, or not at all.
+    while shift < 0 and pitches[0] + shift < LOWEST:
+        shift += 12
+    while shift > 0 and pitches[-1] + shift > HIGHEST:
+        shift -= 12
+    return shift
 
 
 class PsolaSinger:

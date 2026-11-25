@@ -156,6 +156,8 @@ def test_the_song_is_moved_by_whole_octaves_towards_the_voice() -> None:
     assert octave_shift(score, 47.0) == -24
     assert octave_shift(score, 66.0) == 0
     assert octave_shift(score, None) == 0
+    wide = parse("la C2 1, la C5 1, la C6 1")  # three octaves: there is no room to move it down
+    assert octave_shift(wide, 40.0) == 0
 
 
 @pytest.mark.parametrize(
