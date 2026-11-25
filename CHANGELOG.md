@@ -69,6 +69,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A place said with its state or country, "Springfield (Illinois)" or "Lisbon, Portugal", is found for the time
+  and the weather: the geocoder takes only a name and found nothing for the whole phrase, so the name is
+  looked up alone and the qualifier picks among the matches.
+
 - Spotify's "Restriction violated" (shuffle, previous or a seek that what plays now does not allow) is said as
   what it means, that Spotify does not allow that command here and nothing changed, instead of a raw 403.
 

@@ -816,6 +816,35 @@ def test_a_place_is_found_with_its_zone_and_country_code() -> None:
     assert seen[0].url.params["name"] == "Berlin"
 
 
+TWO_SPRINGFIELDS = {
+    "results": [
+        {**GEO["results"][0], "name": "Springfield", "admin1": "Missouri", "latitude": 37.2},
+        {**GEO["results"][0], "name": "Springfield", "admin1": "Illinois", "latitude": 39.8},
+    ]
+}
+
+
+@pytest.mark.parametrize("said", ["Springfield (Illinois)", "Springfield, Illinois"])
+def test_a_place_said_with_its_state_or_country_is_looked_up_by_its_name(said: str) -> None:
+    """The geocoder finds nothing for "Springfield (Illinois)"; the qualifier picks a match."""
+    meteo, seen = _meteo(geo=TWO_SPRINGFIELDS)
+
+    place = meteo.find(said)
+
+    assert place is not None
+    assert place.latitude == pytest.approx(39.8)
+    assert seen[0].url.params["name"] == "Springfield"
+
+
+def test_a_qualifier_that_matches_nothing_takes_the_best_known_place() -> None:
+    meteo, _ = _meteo(geo=TWO_SPRINGFIELDS)
+
+    place = meteo.find("Springfield (Atlantis)")
+
+    assert place is not None
+    assert place.latitude == pytest.approx(37.2)
+
+
 def test_an_unknown_place_is_none() -> None:
     meteo, _ = _meteo(geo={})
     assert meteo.find("Nowhere") is None

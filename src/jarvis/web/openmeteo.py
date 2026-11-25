@@ -17,6 +17,7 @@ import httpx
 
 from jarvis.jsonutil import obj, objs
 from jarvis.web.guard import read_capped
+from jarvis.web.zones import bare
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -25,6 +26,9 @@ FORECAST = "https://api.open-meteo.com/v1/forecast"
 GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_DAYS = 7
 _COUNTRY_CODE = re.compile(r"[A-Z]{2}")
+# "Name (qualifier)" or "Name, qualifier": the geocoder takes the name alone.
+_QUALIFIED = re.compile(r"(.+?)\s*(?:\(([^()]+)\)|,\s*([^,]+))")
+_CHOICES = 10  # matches asked for when a qualifier picks among them
 _CURRENT = "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation"
 _DAILY = "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
 
@@ -133,6 +137,15 @@ def _condition(code: object) -> str:
     return CONDITIONS.get(int(_number(code)), "unsettled")
 
 
+def _qualified(name: str) -> tuple[str, str]:
+    """Split "Springfield (Illinois)" or "Springfield, Illinois" into the name and its qualifier."""
+    match = _QUALIFIED.fullmatch(name.strip())
+    if match is None:
+        return name, ""
+    qualifier = bare(match.group(2) or match.group(3))
+    return match.group(1), qualifier
+
+
 def _zone(name: object) -> str:
     text = str(name or "")
     try:
@@ -182,16 +195,25 @@ class OpenMeteo:
     def find(self, name: str) -> Place | None:
         """Return the best-known place called `name` (the most populous match), or None.
 
+        A name said with its state or country ("Springfield (Illinois)", "Springfield,
+        Illinois") is looked up by the name alone, which is all the geocoder takes, and the
+        qualifier picks among the matches; when none fits it, the best-known one is taken.
         A failing service raises `WeatherUnavailableError`.
         """
+        said, qualifier = _qualified(name)
+        params = {"name": said, "count": _CHOICES if qualifier else 1}
         found = objs(
-            self._get(GEOCODE, {"name": name, "count": 1, "language": "en", "format": "json"}).get(
-                "results"
-            )
+            self._get(GEOCODE, {**params, "language": "en", "format": "json"}).get("results")
         )
         if not found:
             return None
-        first = found[0]
+        fits = [
+            place
+            for place in found
+            if qualifier
+            in {bare(str(place.get(key) or "")) for key in ("country", "country_code", "admin1")}
+        ]
+        first = (fits or found)[0]
         country = str(first.get("country_code") or "")
         return Place(
             _number(first.get("latitude")),
