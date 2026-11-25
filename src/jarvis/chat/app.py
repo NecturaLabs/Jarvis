@@ -169,6 +169,10 @@ class Services:
     details: Callable[[], list[tuple[str, str]]] = list  # more for /status: (name, value)
     stats: Callable[[], Stats] | None = None  # the PC's load
     save_settings: Callable[[ChatConfig], None] | None = None
+    # Jarvis's own settings the chat may change too (the voice service restarts to take them).
+    shared: Callable[[], list[SharedSetting]] | None = None
+    set_shared: Callable[[str, object], None] | None = None
+    apply: Callable[[], None] | None = None  # restarts the voice service after changes, once
     tools: Callable[[], list[ToolSetting]] | None = None  # every tool and its setting
     next_tool_setting: Callable[[str], ToolSetting] | None = None  # moves one on, saves it
     history: InputHistory | None = None
@@ -179,6 +183,16 @@ class Services:
     home: Path = field(default_factory=Path.home)  # what `~/` means in a pasted path
     shown: PictureCache | None = None  # where the pictures Jarvis shows are kept
     twelve_hour: bool = True  # "done 7:37 PM" under a reply, or "done 19:37"
+
+
+@dataclass(frozen=True, slots=True)
+class SharedSetting:
+    """One of Jarvis's own settings shown in `/config`: its key, label, choices and value now."""
+
+    key: str
+    label: str
+    values: tuple[object, ...]
+    value: object
 
 
 @dataclass(slots=True)
@@ -208,6 +222,7 @@ class _Setting:
 
 
 TOOLS_ROW = "tools"  # the settings row that opens the list of tools
+SHARED_ROW = "jarvis:"  # the start of a row's id for one of Jarvis's own settings
 SETTINGS = (
     _Setting("verbosity", "Verbosity", VERBOSITY, live=True),
     _Setting("toolbar", "Toolbar", (True, False), live=True),
@@ -363,6 +378,7 @@ class ChatApp(App[None]):
         self._settings = settings or ChatConfig()
         self._services = services or Services()
         self._tools_shown = False  # the settings panel lists the tools
+        self._changed_jarvis = False  # a setting the voice service reads changed in /config
         # Requests typed while one ran, waiting their turn: words, pictures, pastes.
         self._queued: list[tuple[str, list[Picture], list[str]]] = []
         self._session_id = session_id
@@ -1264,8 +1280,11 @@ class ChatApp(App[None]):
             for setting in SETTINGS
         ]
         ids = [s.key for s in SETTINGS]
+        for shared in self._shared():
+            rows.append((shared.label, _shown_value(shared.value), "voice too"))
+            ids.append(f"{SHARED_ROW}{shared.key}")
         if self._services.tools is not None:
-            rows.append(("Tools", "on, off, or asking first", ""))
+            rows.append(("Tools", "on, off, or asking first", "voice too"))
             ids.append(TOOLS_ROW)
         self.query_one("#settings-list", PointerList).show(
             rows, ("", "bold", "bright_black"), ids, highlighted
@@ -1285,7 +1304,7 @@ class ChatApp(App[None]):
         self.query_one(
             "#settings"
         ).border_title = (
-            "Tools · Enter changes one · the voice service takes it now, this chat when reopened"
+            "Tools · Enter changes one · voice takes it when you close this, the chat when reopened"
         )
         rows = [
             (tool.name, tool.label, "" if tool.state is tool.shipped else "changed")
@@ -1304,18 +1323,59 @@ class ChatApp(App[None]):
         except Exception as exc:  # ruff: ignore[blind-except] - the setting stays as it was
             self.notify(f"Couldn't change {name}: {exc}", severity="warning")
             return
+        self._changed_jarvis = True
         listed = self.query_one("#settings-list", PointerList)
         self._fill_tools(listed.highlighted or 0)
         self.notify(f"{now.name}: {now.label}")
 
     def _close_settings(self) -> None:
+        apply = self._services.apply
+        if self._changed_jarvis and apply is not None:
+            self._changed_jarvis = False
+            self.notify("Restarting the voice service to take the changes")
+            self.run_worker(apply, thread=True, group="apply")  # never blocks the window
         self.query_one("#settings").display = False
         self.query_one("#prompt").display = True
         self._input().focus()
 
+    def _shared(self) -> list[SharedSetting]:
+        read = self._services.shared
+        if read is None:
+            return []
+        try:
+            return read()
+        except Exception as exc:  # ruff: ignore[blind-except] - the window stays open
+            self.notify(
+                f"Couldn't read Jarvis's settings: {type(exc).__name__}", severity="warning"
+            )
+            return []
+
+    def _change_shared(self, key: str) -> None:
+        found = next((s for s in self._shared() if s.key == key), None)
+        change = self._services.set_shared
+        if found is None or change is None:
+            return
+        values = found.values
+        following = (
+            values[(values.index(found.value) + 1) % len(values)]
+            if found.value in values
+            else values[0]
+        )
+        try:
+            change(key, following)
+        except Exception as exc:  # ruff: ignore[blind-except] - the setting stays as it was
+            self.notify(f"Couldn't change it: {exc}", severity="warning")
+            return
+        self._changed_jarvis = True
+        listed = self.query_one("#settings-list", PointerList)
+        self._fill_settings(listed.highlighted or 0)
+
     def _change_setting(self, key: str) -> None:
         if key == TOOLS_ROW:
             self._fill_tools()
+            return
+        if key.startswith(SHARED_ROW):
+            self._change_shared(key.removeprefix(SHARED_ROW))
             return
         setting = next(s for s in SETTINGS if s.key == key)
         current = getattr(self._settings, key)

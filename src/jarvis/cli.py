@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from jarvis.audio import FallbackWake, Speaker, VoxtypeWatch, WakeWord
+    from jarvis.chat.app import SharedSetting
     from jarvis.model import StrataModel
     from jarvis.voice import VoiceLoop
 
@@ -586,6 +587,53 @@ def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
     ]
 
 
+# Jarvis's own settings the chat's /config shows beside its own: (section, key, label, choices).
+SHARED_SETTINGS: tuple[tuple[str, str, str, tuple[object, ...]], ...] = (
+    ("audio", "speech_speed", "Speaking speed", (0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0)),
+    ("boundaries", "bypass_consent", "Act without asking first", (False, True)),
+    ("audio", "listen_to_pc", "Take requests from PC audio", (False, True)),
+)
+
+
+def _shared_settings() -> list[SharedSetting]:
+    """Return the shared settings with their values in the config on disk."""
+    from jarvis.chat.app import SharedSetting
+
+    cfg = config.load()
+    return [
+        SharedSetting(f"{section}.{key}", label, values, getattr(getattr(cfg, section), key))
+        for section, key, label, values in SHARED_SETTINGS
+    ]
+
+
+def _set_shared(key: str, value: object) -> None:
+    """Write one shared setting from the chat into the config on disk and audit it.
+
+    The voice service is restarted once, when the chat's settings close (`_apply_from_chat`).
+
+    Raises:
+        ConfigError: no shared setting has that key, or the value is not one of its choices.
+    """
+    found = next((s for s in SHARED_SETTINGS if f"{s[0]}.{s[1]}" == key), None)
+    if found is None or value not in found[3]:
+        msg = f"the chat cannot set {key} to {value!r}"
+        raise config.ConfigError(msg)
+    section_name, name = found[0], found[1]
+    cfg = config.load()
+    section = getattr(cfg, section_name)
+    was = getattr(section, name)
+    changed = cfg.model_copy(update={section_name: section.model_copy(update={name: value})})
+    AuditLog(paths.audit_file()).record(
+        "setting_changed", setting=key, was=was, to=value, source="chat"
+    )
+    config.save(config.Config.model_validate(changed.model_dump()))
+
+
+def _apply_from_chat() -> None:
+    """Restart the voice service so it takes what the chat's settings changed."""
+    _restart_if_running()
+
+
 def _save_chat_settings(chat: config.ChatConfig) -> None:
     """Write the chat's settings into the config file as it is now on disk."""
     current = config.load()
@@ -620,6 +668,9 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         save_settings=_save_chat_settings,
         tools=lambda: _tool_settings(config.load()),
         next_tool_setting=_next_tool_setting,
+        shared=_shared_settings,
+        set_shared=_set_shared,
+        apply=_apply_from_chat,
         history=InputHistory(paths.state_dir() / "chat-history", cfg.chat.history_size),
         export_dir=documents if documents.is_dir() else Path.home(),
         paste=clipboard.read,
@@ -1524,7 +1575,12 @@ def _restart_if_running() -> None:
         # A restart counts against the start limit (5 in 15 min): clear it first, so a few
         # config changes in a row do not leave the voice service stopped.
         _systemctl("reset-failed", JARVIS_UNIT)
-        _systemctl("restart", JARVIS_UNIT)
+        if _systemctl("restart", JARVIS_UNIT) != 0:
+            print(
+                "jarvis: the voice service did not restart, so it still runs on the old "
+                "settings; see `jarvis logs`",
+                file=sys.stderr,
+            )
 
 
 CONSENT_SAID = {
@@ -1586,8 +1642,13 @@ def _tool_settings(cfg: config.Config) -> list[ToolSetting]:
     return tool_settings(cfg, spotify_operations(cfg))
 
 
-def set_tool(name: str, cls: OpClass | None) -> ToolSetting:
+def set_tool(
+    name: str, cls: OpClass | None, *, source: str = "cli", restart: bool = True
+) -> ToolSetting:
     """Set one tool's class in the config on disk (None: as shipped), audit it, restart voice.
+
+    `source` says where the change came from in the audit log; the chat passes `restart=False`
+    and restarts the voice service once, when its settings close.
 
     Returns the tool's new setting.
 
@@ -1600,10 +1661,13 @@ def set_tool(name: str, cls: OpClass | None) -> ToolSetting:
         msg = f"no tool is called {name!r}; `jarvis tools` lists them"
         raise config.ConfigError(msg)
     changed = with_class(cfg, found, found.shipped if cls is None else cls)
-    config.save(changed)
     now = next(s for s in _tool_settings(changed) if s.name == name)
-    AuditLog(paths.audit_file()).record("tool_class_changed", op=name, to=now.state.value)
-    _restart_if_running()
+    AuditLog(paths.audit_file()).record(
+        "tool_class_changed", op=name, was=found.state.value, to=now.state.value, source=source
+    )
+    config.save(changed)
+    if restart:
+        _restart_if_running()
     return now
 
 
@@ -1617,7 +1681,7 @@ def _next_tool_setting(name: str) -> ToolSetting:
     if found is None:
         msg = f"no tool is called {name!r}"
         raise config.ConfigError(msg)
-    return set_tool(name, found.following())
+    return set_tool(name, found.following(), source="chat", restart=False)
 
 
 def cmd_tools(args: argparse.Namespace) -> int:

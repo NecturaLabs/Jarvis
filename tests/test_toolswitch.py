@@ -73,3 +73,14 @@ def test_the_next_setting_cycles_through_what_the_tool_allows() -> None:
 
     assert seen == ["asks first", "needs the confirm key", "off", "on"]
     assert _setting(config, "stop_process").following() is OpClass.DENY
+
+
+def test_cycling_never_takes_a_tool_below_its_shipped_class() -> None:
+    config = _config()
+    seen: list[str] = []
+    for _ in range(3):
+        setting = _setting(config, "write_file")
+        config = with_class(config, setting, setting.following())
+        seen.append(_setting(config, "write_file").label)
+
+    assert seen == ["needs the confirm key", "off", "asks first"]

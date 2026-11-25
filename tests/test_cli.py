@@ -2163,7 +2163,9 @@ def test_tools_lists_every_tool_with_its_setting(capsys: pytest.CaptureFixture[s
 
     out = capsys.readouterr().out
     assert any(line.split()[:2] == ["web_search", "on"] for line in out.splitlines())
-    assert "stop_process           needs the confirm key" in out or "needs the confirm key" in out
+    assert any(
+        line.split()[:4] == ["stop_process", "needs", "the", "confirm"] for line in out.splitlines()
+    )
 
 
 def test_tools_sets_one_saves_audits_and_restarts_the_voice_service(
@@ -2180,9 +2182,9 @@ def test_tools_sets_one_saves_audits_and_restarts_the_voice_service(
     assert config.load().boundaries.classes == {}
 
     events = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
-    assert [(e["event"], e["op"], e["to"]) for e in events] == [
-        ("tool_class_changed", "reddit_search", "deny"),
-        ("tool_class_changed", "reddit_search", "safe"),
+    assert [(e["event"], e["op"], e["was"], e["to"], e["source"]) for e in events] == [
+        ("tool_class_changed", "reddit_search", "safe", "deny", "cli"),
+        ("tool_class_changed", "reddit_search", "deny", "safe", "cli"),
     ]
     assert len(restarts) == 2
 
@@ -2238,3 +2240,64 @@ def test_the_config_takes_a_speed_up_to_three() -> None:
     assert config.AudioConfig(speech_speed=3.0).speech_speed == pytest.approx(3.0)
     with pytest.raises(ValueError, match="less than or equal to 3"):
         config.AudioConfig(speech_speed=3.1)
+
+
+def test_a_tool_changed_from_the_chat_is_audited_as_such_and_restarts_nothing_yet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config.save(config.Config(spotify=config.SpotifyConfig(client_id="id")))
+    restarts: list[bool] = []
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: restarts.append(True))
+
+    now = cli._next_tool_setting("write_file")  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    assert now.label == "needs the confirm key"  # shipped as asks first: never lowered from here
+    (event,) = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
+    assert (event["was"], event["to"], event["source"]) == ("confirm", "strong", "chat")
+    assert restarts == []
+
+
+def test_the_chat_sets_jarvis_settings_and_audits_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    config.save(config.Config())
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: None)
+
+    cli._set_shared("audio.speech_speed", 1.5)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    cli._set_shared("boundaries.bypass_consent", False)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    loaded = config.load()
+    assert loaded.audio.speech_speed == pytest.approx(1.5)
+    assert loaded.boundaries.bypass_consent is False
+    events = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
+    assert [(e["setting"], e["to"], e["source"]) for e in events] == [
+        ("audio.speech_speed", 1.5, "chat"),
+        ("boundaries.bypass_consent", False, "chat"),
+    ]
+    shown = {s.key: s.value for s in cli._shared_settings()}  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    assert shown["audio.speech_speed"] == pytest.approx(1.5)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"), [("audio.voice", "x"), ("audio.speech_speed", 9.0), ("strata.port", 1)]
+)
+def test_the_chat_cannot_set_what_it_does_not_offer(key: str, value: object) -> None:
+    config.save(config.Config())
+
+    with pytest.raises(config.ConfigError, match="cannot set"):
+        cli._set_shared(key, value)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+
+def test_a_restart_that_fails_says_the_old_settings_still_hold(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def unit_state(_unit: str) -> str:
+        return "active"
+
+    def systemctl(*args: str) -> int:
+        return 1 if args[0] == "restart" else 0
+
+    monkeypatch.setattr(cli, "_unit_state", unit_state)
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+
+    cli._restart_if_running()  # pyright: ignore[reportPrivateUsage] - the step itself
+
+    assert "still runs on the old settings" in capsys.readouterr().err

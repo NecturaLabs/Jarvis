@@ -547,8 +547,15 @@ reddit_search = "deny"
 
 Without editing the file: `jarvis tools` lists every tool with its setting, and `jarvis tools NAME on|ask|key|off`
 sets one (`default` puts it back as shipped); in `jarvis chat`, `/config` has a Tools list where Enter moves a tool
-on to its next setting. Either way the change is audited (`tool_class_changed`) and the voice service restarts
-to take it; an open chat takes it the next time it opens.
+on to its next setting, from as shipped to stricter and back, never below how it ships (that takes `jarvis tools
+NAME on`). Either way the change is audited (`tool_class_changed`, with the old setting and where it was made).
+The command restarts the voice service at once; the chat restarts it once, when its settings close. An open chat
+takes the change the next time it opens.
+
+`/config` in the chat also sets the speaking speed (`audio.speech_speed`), whether Jarvis acts without asking
+first (`boundaries.bypass_consent`) and whether it takes requests from PC audio (`audio.listen_to_pc`), marked
+"voice too": each change is saved and audited (`setting_changed`), and the voice service takes them when the
+settings close.
 
 ## The confirm key (`jarvis confirm`)
 

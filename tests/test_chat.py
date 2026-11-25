@@ -1055,6 +1055,40 @@ def test_config_lists_the_tools_and_moves_one_on() -> None:
     assert tools["reddit_search"].state is OpClass.CONFIRM
 
 
+def test_config_changes_jarvis_settings_and_restarts_the_voice_service_once_on_close() -> None:
+    from jarvis.chat.app import SharedSetting  # ruff: ignore[import-outside-top-level] - only this test
+
+    values: dict[str, object] = {"audio.speech_speed": 1}
+    applied: list[bool] = []
+
+    def shared() -> list[SharedSetting]:
+        speeds = (1, 2, 3)
+        return [
+            SharedSetting(
+                "audio.speech_speed", "Speaking speed", speeds, values["audio.speech_speed"]
+            )
+        ]
+
+    def change(key: str, value: object) -> None:
+        values[key] = value
+
+    services = Services(shared=shared, set_shared=change, apply=lambda: applied.append(True))
+    app = _app(session=FakeSession(), services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await pilot.press("end", "enter")  # Speaking speed, the last row here
+        await _until(pilot, lambda: values["audio.speech_speed"] == 2)
+        await pilot.press("enter")
+        await _until(pilot, lambda: values["audio.speech_speed"] == 3)
+        assert applied == []  # nothing restarts while the panel is open
+        await pilot.press("escape")
+        await _until(pilot, lambda: applied == [True])
+
+    _run(test, app)
+
+
 def test_an_unknown_command_says_so() -> None:
     app = _app(session=FakeSession())
 

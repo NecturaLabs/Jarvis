@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from jarvis.config import Config
     from jarvis.operations import Operation
 
+_RANK = {OpClass.SAFE: 0, OpClass.CONFIRM: 1, OpClass.STRONG: 2, OpClass.DENY: 3}
 LABELS = {
     OpClass.SAFE: "on",
     OpClass.CONFIRM: "asks first",
@@ -46,9 +47,14 @@ class ToolSetting:
         return LABELS[self.state]
 
     def following(self) -> OpClass:
-        """Return the next class it allows after the one it has, for a menu that cycles."""
-        at = self.choices.index(self.state) if self.state in self.choices else -1
-        return self.choices[(at + 1) % len(self.choices)]
+        """Return the next class for a menu that cycles: from as shipped, stricter, then back.
+
+        A menu never takes a tool below its shipped class (`write_file` from asking first to
+        on): that takes `jarvis tools NAME on`, said on purpose.
+        """
+        ring = [c for c in self.choices if _RANK[c] >= _RANK[self.shipped]]
+        at = ring.index(self.state) if self.state in ring else -1
+        return ring[(at + 1) % len(ring)]
 
 
 def _summary(op: Operation) -> str:
