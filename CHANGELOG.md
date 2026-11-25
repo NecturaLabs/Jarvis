@@ -19,6 +19,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - The weather at an hour of today or tomorrow ("will it rain at five?"): `weather` takes an `hour` on the place's
   own clock, said on yours (`clock.twelve_hour`); an hour already past today means tomorrow's unless today is said.
   Only the hours' columns are added to what Open-Meteo is asked; nothing new is sent.
+- Spotify: jump within what plays or restart it (`spotify_seek`), move playback to another device by its name
+  (`spotify_resume`'s `device`), hear what is queued next and which devices there are (`spotify_now_playing`'s
+  `more`), and unlike the song playing or add it to one of your playlists (`spotify_library`, which asks first).
+  Adding to a playlist needs two new permissions: run `jarvis spotify-login` once; until then only that part
+  says so.
 - Look-ups the model asks for together run side by side: two pages, a search and the weather, or the time in
   two places take about as long as the slowest one. Each is still decided, asked about and audited one by
   one first; actions always run on their own, in order.
@@ -131,8 +136,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
-- The chat's default `memory_tokens` is now 7400 (was 7800): the two new tools' schemas take that room in the
-  default 24,576-token window.
+- The chat's default `memory_tokens` is now 7000 (was 7800): the new tools' and arguments' schemas take that room
+  in the default 24,576-token window. A larger `strata.context` leaves room for more.
 
 - The chat's default `memory_tokens` is now 7800 (was 9100), so the default 24,576-token window keeps room
   for the thinking the model may raise to.

@@ -27,8 +27,10 @@ Jarvis is pre-1.0 software; see [Status](#status).
   only, with no desktop notifications.
   Tell Jarvis to be quiet, in any words, and it stops without a word. Say the wake word while it speaks
   to stop it and ask something else.
-- **Spotify:** play a track, album, artist, playlist or your liked songs; pause, resume, next, previous; set or
-  change the volume; shuffle; repeat; queue songs; like the current song; say what is playing. When Spotify is
+- **Spotify:** play a track, album, artist, playlist or your liked songs; pause, resume, next, previous; jump
+  within a song or restart it; move playback to another device; set or change the volume; shuffle; repeat; queue
+  songs; like or unlike the current song, or add it to one of your playlists (after a yes); say what is playing,
+  what is queued next and which devices there are. When Spotify is
   closed, Jarvis says so and asks whether to open it, and where; it never opens a program unasked.
 - **Your PC:** ask how the PC is doing, in any words, for its CPU, graphics card, VRAM, memory,
   temperatures and disks. Jarvis can list and read your files (your home folder by default, hidden ones

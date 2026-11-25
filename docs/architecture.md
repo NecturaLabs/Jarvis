@@ -70,7 +70,7 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 
 | Module | Owns | Must not |
 |---|---|---|
-| `spotify/ops.py` | `SpotifyOps`: the twelve `spotify_*` operations, name matching (by spelling and by sound, `likeness`; a close hit gives way only to an item of the owner's that is more alike still), device handling, the library cache and its refresh thread (every `library_refresh_s`; a minute after a refresh that failed or in which no part of the library loaded). | Call Spotify except through `spotify/api.py`. Tell the model a Spotify-written string as trusted. |
+| `spotify/ops.py` | `SpotifyOps`: the fourteen `spotify_*` operations (`spotify_seek` bound to its position, `spotify_resume` to a named device, and `spotify_library`, `confirm`, to the song playing and one of the owner's own or collaborative playlists, all before the question), name matching (by spelling and by sound, `likeness`; a close hit gives way only to an item of the owner's that is more alike still), device handling, the library cache and its refresh thread (every `library_refresh_s`; a minute after a refresh that failed or in which no part of the library loaded). | Call Spotify except through `spotify/api.py`. Tell the model a Spotify-written string as trusted. |
 | `spotify/api.py` | The Web API client: playback, search, library, devices; retries, rate limits. | Replay a request whose outcome is unknown (`UncertainOutcomeError`). |
 | `spotify/auth.py` | The PKCE login, the loopback-only callback, and `TokenStore` (file-locked refresh). | Use a client secret, or listen on anything but `127.0.0.1`. |
 | `spotify/errors.py` | `SpotifyError` and friends, with the origin of their words. | Mark Spotify's own text as trusted. |

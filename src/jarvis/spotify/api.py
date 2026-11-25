@@ -123,6 +123,7 @@ class SpotifyApi:
         """
         super().__init__()
         self._tokens = tokens
+        self._my_id = ""
         self._http = http or httpx.Client(
             base_url=API, timeout=httpx.Timeout(10.0, connect=5.0), trust_env=False
         )
@@ -312,6 +313,17 @@ class SpotifyApi:
         except ValueError:
             return None
 
+    def granted(self, *scopes: str) -> bool | None:
+        """Whether the stored login was granted every one of `scopes`; None when not known."""
+        have = self._tokens.granted()
+        return None if have is None else set(scopes) <= have
+
+    def my_id(self) -> str:
+        """Return the owner's Spotify user id (asked once, then kept)."""
+        if not self._my_id:
+            self._my_id = str(obj(self.request("GET", "/me")).get("id") or "")
+        return self._my_id
+
     def devices(self) -> list[Device]:
         """Return the owner's Spotify Connect devices."""
         data = obj(self.request("GET", "/me/player/devices"))
@@ -343,6 +355,10 @@ class SpotifyApi:
         data = obj(self.request("GET", "/me/player/queue"))
         current = obj(data.get("currently_playing"))
         return ([current] if current else []) + objs(data.get("queue"))
+
+    def queued(self) -> list[dict[str, Any]]:
+        """Return what is queued after what is playing (Spotify caps the list)."""
+        return objs(obj(self.request("GET", "/me/player/queue")).get("queue"))
 
     def search_page(self, query: str, kind: str, *, offset: int = 0) -> SearchPage:
         """Return one page of items of one kind (track, album, artist, playlist).

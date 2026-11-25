@@ -86,7 +86,7 @@ needs your yes; a plain command (`pause`, `volume 40`) does not. Until 2026-11-2
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `7400` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger), `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
+`memory_tokens` `7000` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger), `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -245,6 +245,12 @@ being swapped; the lock is what Strata's own start-up text asks a systemd servic
 | `queue_max` | `20` | 1 to 100 | Most songs one queue request may add. |
 | `search_pages` | `8` | 1 to 20 | Search result pages read while looking for a match. |
 | `library_refresh_s` | `21600` | 60 or more | How often the playlist and liked-songs cache is refreshed in the background. |
+
+The login (`jarvis spotify-login`) asks Spotify for: reading and controlling playback, reading what plays and
+what played recently, reading and changing your library (Liked Songs), reading your playlists and changing
+them (`playlist-modify-private`, `playlist-modify-public`, added 2026-11-26 so the song playing can go into one of
+your playlists), and reading your top items and the artists you follow. A login from before 2026-11-26 lacks
+the playlist ones: everything else works, and adding to a playlist says to run `jarvis spotify-login` once.
 
 ## `[audio]`: microphone, wake word, speech and voice
 
