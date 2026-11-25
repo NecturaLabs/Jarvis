@@ -621,6 +621,31 @@ def test_a_page_from_the_search_is_read() -> None:
     assert net.hosts()[-1] == "kettles.example"
 
 
+def test_a_page_read_again_in_the_conversation_comes_from_what_was_read() -> None:
+    net = Net()
+    ops = _ops(net)
+    _run(ops, "web_search", query="kettle")
+
+    first = _run(ops, "web_read", url="https://kettles.example/descale")
+    again = _run(ops, "web_read", url="https://kettles.example/descale")
+
+    assert again.text == first.text
+    assert net.hosts().count("kettles.example") == 1  # the follow-up needed no network
+
+
+def test_a_forgotten_conversation_reads_the_page_again() -> None:
+    net = Net()
+    ops = _ops(net)
+    _run(ops, "web_search", query="kettle")
+    _run(ops, "web_read", url="https://kettles.example/descale")
+
+    ops.reset()
+    _run(ops, "web_search", query="kettle")
+    _run(ops, "web_read", url="https://kettles.example/descale")
+
+    assert net.hosts().count("kettles.example") == 2
+
+
 def test_an_address_no_search_returned_is_never_fetched() -> None:
     net = Net()
     ops = _ops(net)

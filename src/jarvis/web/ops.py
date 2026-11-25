@@ -17,7 +17,8 @@ When the conversation is forgotten (`reset`), so is what its searches returned.
 
 import re
 import threading
-from collections import deque
+import time
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any
@@ -30,7 +31,7 @@ from jarvis.policy import Origin
 from jarvis.shortcuts import Shortcut
 from jarvis.web.arctic import SUBREDDIT, ArcticShift, Post, RedditUnavailableError
 from jarvis.web.openmeteo import Day, Forecast, OpenMeteo, Place, WeatherUnavailableError
-from jarvis.web.page import PageError, PageReader
+from jarvis.web.page import Page, PageError, PageReader
 from jarvis.web.regions import also_meant, find_region, kind_of
 from jarvis.web.searxng import Hit, ImageHit, SearchUnavailableError, Searxng
 from jarvis.web.zones import Zone, clocks, find_country
@@ -42,6 +43,8 @@ if TYPE_CHECKING:
     from jarvis.pictures import PictureCache
 
 REMEMBERED = 60
+PAGES_KEPT = 8  # pages read in a conversation kept for a follow-up
+PAGE_KEPT_S = 1800.0  # and for at most this long, so a changing page is read again
 NOON = 12
 WORTH_SAYING = 2  # degrees between the temperature and how it feels
 MAX_PLACE = 80
@@ -260,6 +263,8 @@ class WebOps:
         self._clock = clock
         self._local_zone = local_zone
         self._home: Place | None = None
+        # Pages read in this conversation, so a follow-up that reads one again needs no network.
+        self._read: OrderedDict[str, tuple[float, Page]] = OrderedDict()
         self._finding_home = threading.Lock()  # weather look-ups run side by side: geocode once
         self._urls: deque[str] = deque(maxlen=REMEMBERED)
         self._posts: deque[str] = deque(maxlen=REMEMBERED)
@@ -275,6 +280,25 @@ class WebOps:
             self._urls.clear()
             self._posts.clear()
             self._images.clear()
+            self._read.clear()
+
+    def _page(self, url: str) -> Page:
+        """Return the page at `url`, read again only if this conversation has not read it lately.
+
+        A `PageError` from the reader says the page could not be read.
+        """
+        now = time.monotonic()
+        with self._lock:
+            kept = self._read.get(url)
+            if kept is not None and now - kept[0] <= PAGE_KEPT_S:
+                self._read.move_to_end(url)
+                return kept[1]
+        page = self._pages.read(url)
+        with self._lock:
+            self._read[url] = (now, page)
+            while len(self._read) > PAGES_KEPT:
+                self._read.popitem(last=False)
+        return page
 
     # --- time -------------------------------------------------------------------------------
 
@@ -495,7 +519,7 @@ class WebOps:
             self._remember(self._posts, thread[0])
             return self.reddit_read({"post_id": thread[0]})
         try:
-            page = self._pages.read(url)
+            page = self._page(url)
         except PageError as exc:
             msg = f"Couldn't read that page: {exc}."
             raise OperationError(msg) from exc

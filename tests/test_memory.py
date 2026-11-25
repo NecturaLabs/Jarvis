@@ -109,6 +109,20 @@ def test_a_saved_conversation_reads_back_and_is_private(tmp_path: Path) -> None:
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+def test_what_a_turn_looked_up_is_saved_and_read_back(tmp_path: Path) -> None:
+    path = tmp_path / "conversation.json"
+    conversation = Conversation(budget=1000)
+    conversation.add(
+        Turn("kettle", "citric acid", "web_search -> ok", "web", 1.0, looked="web_search kettle")
+    )
+    conversation.save(path)
+
+    loaded = Conversation(budget=1000)
+
+    assert loaded.load(path)
+    assert loaded.turns[0].looked == "web_search kettle"
+
+
 def test_a_loaded_conversation_is_not_forgotten_for_the_time_between_sessions(
     tmp_path: Path,
 ) -> None:

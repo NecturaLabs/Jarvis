@@ -59,14 +59,17 @@ class Turn:
     outside: str = ""
     at: float = 0.0
     private: bool = False
+    looked: str = ""  # what the look-ups asked for: queries, pages, places
 
     def messages(self) -> list[dict[str, Any]]:
-        """Return the turn as the user and assistant messages the model reads."""
-        reply = (
-            f'<data origin="{self.outside}">{_inert(self.reply)}</data>'
-            if self.outside
-            else self.reply
-        )
+        """Return the turn as the user and assistant messages the model reads.
+
+        What was looked up goes with the reply, inside its data when the reply drew on outside
+        text (a page's address is that page's words), so a follow-up can read the same page again
+        rather than search for it.
+        """
+        said = f"[looked up: {self.looked}] {self.reply}" if self.looked else self.reply
+        reply = f'<data origin="{self.outside}">{_inert(said)}</data>' if self.outside else said
         done = self.actions or NO_ACTIONS
         return [
             {"role": "user", "content": self.request},
@@ -264,6 +267,7 @@ def _read(path: Path) -> tuple[list[Turn], str, tuple[bool, bool], float] | None
             _origin(t.get("outside", "")),
             float(t.get("at", 0.0)),
             private=t.get("private") is True,
+            looked=str(t.get("looked", "")),
         )
         for t in objs(data.get("turns"))
     ]
