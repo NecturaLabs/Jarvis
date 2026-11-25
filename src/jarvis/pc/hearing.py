@@ -33,6 +33,8 @@ FRAME_S = 0.08  # one frame of the watcher's (`jarvis.audio.FRAME` at 16 kHz)
 MIN_LISTEN_S = int(MIN_PC_RECALL_S)  # the shortest listen, and the shortest recall kept
 MAX_LISTEN_S = 60
 GRACE_S = 2.0  # how much longer than asked a listen waits for frames that come late
+CHECK_S = 0.2  # how often a listen checks for a pause or a sleep while frames do not come
+SLEPT_S = 2.0  # the boot clock ahead of the steady one by this much: the PC slept
 NOTHING_PLAYED = "Nothing played in PC audio then"
 NOTHING_SAID = "No speech was heard in PC audio then"
 PC_AUDIO_ONLY_FOR_OWNER = "only the owner can ask to listen to PC audio, not a request heard there"
@@ -55,13 +57,21 @@ class PcHearing:
         recall_s: float,
         clock: Callable[[], float] = _boot_clock,
         grace_s: float = GRACE_S,
+        *,
+        paused: Callable[[], bool] = lambda: False,
+        steady: Callable[[], float] = time.monotonic,
     ) -> None:
         """Keep the last `recall_s` seconds (none below `MIN_LISTEN_S`) and time them by `clock`.
 
-        A listen waits `grace_s` longer than asked for frames that come late.
+        A listen waits `grace_s` longer than asked for frames that come late, and ends as soon
+        as `paused` says Jarvis is paused, even while no frame comes. `clock` counts a suspend
+        and `steady` does not: a listen across a suspend ends, so audio from both sides of it
+        is never joined.
         """
         super().__init__()
         self._grace_s = grace_s
+        self._paused = paused
+        self._steady = steady
         self.recall_s = min(float(MAX_LISTEN_S), recall_s) if recall_s >= MIN_LISTEN_S else 0.0
         self._clock = clock
         self._recent: collections.deque[tuple[float, Frame]] = collections.deque(
@@ -101,29 +111,40 @@ class PcHearing:
             self.forget()
 
     def recall(self, seconds: float) -> list[Frame]:
-        """Return the frames of the last `seconds` (at most `recall_s`), oldest first."""
+        """Return the frames of the last `seconds` (at most `recall_s`), oldest first.
+
+        Frames older than `recall_s` (from before a gap or a sleep) are dropped here.
+        """
         with self._changed:
-            since = self._clock() - self.recall_s - FRAME_S  # older ones came before a gap
-            fresh = [frame for at, frame in self._recent if at > since]
+            since = self._clock() - self.recall_s - FRAME_S
+            while self._recent and self._recent[0][0] <= since:
+                self._recent.popleft()
+            fresh = [frame for _at, frame in self._recent]
         return fresh[-math.ceil(min(seconds, self.recall_s) / FRAME_S) :] if fresh else []
 
     def listen(self, seconds: float) -> list[Frame] | None:
         """Wait for the next `seconds` of PC audio and return its frames.
 
-        Gives up the grace time after the time asked with what came (none while no stream plays).
-        None when Jarvis was paused or stopped meanwhile.
+        Waits the time asked and the grace time at most, then returns what came: none when no
+        stream played meanwhile, after the whole wait. None when Jarvis was paused, stopped or
+        the PC slept meanwhile.
         """
         wanted = math.ceil(seconds / FRAME_S)
         heard: list[Frame] = []
+        started, steady = self._clock(), self._steady()
         with self._changed:
             if self._stopped:
                 return None
             self._heard, self._wanted = heard, wanted
             try:
-                self._changed.wait_for(
-                    lambda: self._heard is not heard or len(heard) >= wanted,
-                    timeout=seconds + self._grace_s,
-                )
+                while self._heard is heard and len(heard) < wanted:
+                    waited = self._steady() - steady
+                    if self._clock() - started - waited > SLEPT_S or self._paused():
+                        return None
+                    left = seconds + self._grace_s - waited
+                    if left <= 0:
+                        break
+                    self._changed.wait(min(left, CHECK_S))
                 return heard if self._heard is heard else None
             finally:
                 if self._heard is heard:

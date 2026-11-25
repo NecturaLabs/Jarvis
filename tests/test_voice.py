@@ -212,13 +212,13 @@ class Hearing:
 
     wants: bool = True
     fed: list[int] = field(default_factory=list[int])
-    forgotten: int = 0
+    forgot_after: list[int] = field(default_factory=list[int])  # frames fed before each forget
 
     def feed(self, frame: NDArray[np.int16]) -> None:
         self.fed.append(int(frame[0]))
 
     def forget(self) -> None:
-        self.forgotten += 1
+        self.forgot_after.append(len(self.fed))
 
 
 type Reply = Callable[[str, Hooks, Origin], str]
@@ -259,7 +259,7 @@ def _loop(
     *,
     heard: str = "pause the music",
     answer: Callable[[NDArray[np.int16]], str] = lambda _s: "yes",
-    pc: PcAudio | None = None,
+    pc: PcAudio | EndingPcAudio | None = None,
     cfg: AudioConfig = CFG,
     clock: Clock | None = None,
     pc_wake: Wake | None = None,
@@ -628,8 +628,42 @@ def test_a_pause_drops_what_pc_audio_listen_holds_and_hears_nothing_meanwhile() 
 
     _run(_loop(Agent(), mic, Speaker(), pc=pc, hearing=hearing, paused=paused.is_set))
 
-    assert hearing.forgotten == 1  # once for the pause, not once a frame
+    assert hearing.forgot_after[0] == 1  # once for the pause, not once a frame
+    assert hearing.forgot_after.count(1) == 1
     assert hearing.fed[:2] == [1, 2]
+
+
+class EndingPcAudio:
+    """PC audio whose one stream plays a script and ends, as a call that is over."""
+
+    def __init__(self, *frames: NDArray[np.int16]) -> None:
+        super().__init__()
+        self._frames = frames
+        self.ended = threading.Event()
+
+    def sessions(self) -> Generator[Generator[NDArray[np.int16]]]:
+        yield self._session()
+        self.ended.set()
+        pause = threading.Event()
+        while True:
+            pause.wait(0.002)
+            yield from ()
+
+    def _session(self) -> Generator[NDArray[np.int16]]:
+        yield from self._frames
+
+    def drain(self) -> None:
+        pass
+
+
+def test_the_end_of_a_pc_stream_drops_what_pc_audio_listen_holds() -> None:
+    hearing = Hearing()
+    pc = EndingPcAudio(SPEECH, SPEECH)
+    mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
+
+    _run(_loop(Agent(), mic, Speaker(), pc=pc, hearing=hearing))
+
+    assert hearing.forgot_after[:1] == [2]
 
 
 def test_a_failing_request_is_apologised_for_and_the_loop_keeps_listening() -> None:
@@ -865,7 +899,10 @@ def test_the_pc_watcher_survives_an_error_and_keeps_listening() -> None:
     assert agent.calls == [("pause the music", Origin.PC_AUDIO)]
 
 
-def test_a_pc_capture_is_dropped_when_the_loop_takes_another_request_meanwhile() -> None:
+def test_a_pc_capture_is_dropped_when_the_loop_takes_another_request_meanwhile(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="jarvis.voice")
     clock = Clock()
     pc_woke = threading.Event()
     pc_done = threading.Event()
@@ -888,6 +925,7 @@ def test_a_pc_capture_is_dropped_when_the_loop_takes_another_request_meanwhile()
     _run(loop)
 
     assert agent.calls == [("pause the music", Origin.OWNER_SPEECH)]
+    assert "dropped a PC audio request: the loop took another one meanwhile" in caplog.messages
 
 
 def test_no_reply_is_spoken_once_jarvis_is_stopping() -> None:

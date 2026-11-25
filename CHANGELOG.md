@@ -10,8 +10,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 - `pc_audio_listen`: with PC audio on, ask Jarvis what is being said or played there (a call, a video) and it
   listens for up to a minute and tells you. `audio.pc_audio_recall_s` (off by default) keeps the last seconds in
-  memory, so it can also tell you what was just said. The audio stays in memory, the words are someone else's
-  data, and a search or action after them waits for your yes.
+  memory, so it can also tell you what was just said. The audio reaches the disk only for the moment Voxtype
+  transcribes it, the words are someone else's data, and when Jarvis asks first (`bypass_consent` off) a search
+  or action after them waits for your yes.
 - The chat's `/config` also sets Jarvis's speaking speed, whether it acts without asking first and whether it
   takes requests from PC audio. Changes there restart the voice service once, when the settings close, instead of
   at every Enter, and its Tools list never takes a tool below how it ships.

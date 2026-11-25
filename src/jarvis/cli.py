@@ -696,26 +696,30 @@ def cmd_chat(_args: argparse.Namespace) -> int:
 type _Transcriber = Callable[[NDArray[np.int16]], str]
 
 
-def _pc_listening(cfg: config.Config, answer: _Transcriber) -> Listening | None:
+def _pc_listening(
+    cfg: config.Config, answer: _Transcriber, *, paused: Callable[[], bool]
+) -> Listening | None:
     """Return how the voice service hears PC audio for `pc_audio_listen`; None while it is off.
 
     It reads with the unhinted speech-to-text: the vocabulary hint names the owner's tools and
-    music, which another person's words in a call need not hold.
+    music, which another person's words in a call need not hold. A say-nothing hallucination
+    (`is_phantom`) counts as no speech. A listen ends once `paused` is true.
     """
     if not cfg.audio.listen_to_pc:
         return None
     import numpy as np  # ruff: ignore[import-outside-top-level] - loaded only by the voice service
 
-    from jarvis.audio import AudioError  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
+    from jarvis.audio import AudioError, is_phantom  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     def heard(frames: Sequence[NDArray[np.int16]]) -> str:
         try:
-            return answer(np.concatenate(frames))
+            text = answer(np.concatenate(frames))
         except AudioError as exc:
             msg = f"speech-to-text failed: {exc}"
             raise OperationError(msg) from exc
+        return "" if is_phantom(text) else text
 
-    return Listening(PcHearing(cfg.audio.pc_audio_recall_s), heard)
+    return Listening(PcHearing(cfg.audio.pc_audio_recall_s, paused=paused), heard)
 
 
 def _transcribers(
@@ -814,13 +818,13 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
     # The hint is the agent's, built after the transcribers that `pc_audio_listen` needs; it is
     # first asked for once a request is heard.
     request, answer = _transcribers(cfg, lambda: jarvis.hint())  # ruff: ignore[unnecessary-lambda] - `jarvis` is built below
-    listening = _pc_listening(cfg, answer)
+    mic = PausableMic(Microphone(cfg.audio.source, stall_s=MIC_STALL_S))
+    listening = _pc_listening(cfg, answer, paused=lambda: mic.paused)
     try:
         jarvis = build(cfg, listening=listening)
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
-    mic = PausableMic(Microphone(cfg.audio.source, stall_s=MIC_STALL_S))
     speaker = _speaker(cfg)
     pc_audio = AppAudio(cfg.audio.pc_audio_apps) if cfg.audio.listen_to_pc else None
     stop_requested = threading.Event()

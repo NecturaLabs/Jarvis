@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -275,12 +276,38 @@ def test_without_the_voice_service_every_listen_is_refused() -> None:
 
 
 def test_a_pause_while_listening_is_said() -> None:
-    hearing = PcHearing(0)
-    hearing.stop()
-    op = _op(hearing)
+    paused = threading.Event()
+    paused.set()
+    op = _op(PcHearing(0, paused=paused.is_set))
 
     with request_scope(foreign=False), pytest.raises(OperationError, match="paused"):
         op.run(validate_args(op, {"seconds": 3}))
+
+
+def test_a_pause_ends_a_listen_while_no_pc_frame_comes() -> None:
+    paused = threading.Event()
+    hearing = PcHearing(0, paused=paused.is_set)
+    threading.Timer(0.05, paused.set).start()
+    started = time.monotonic()
+
+    frames = hearing.listen(MAX_LISTEN_S)
+
+    assert frames is None
+    assert time.monotonic() - started < WAIT_S  # within a check, not after a minute
+
+
+def test_a_listen_across_a_suspend_ends_without_joining_both_sides() -> None:
+    boot = Clock()
+    hearing = PcHearing(0, clock=boot, steady=lambda: 0.0)
+    feeder = _feed_while_listening(hearing, 5)
+
+    def sleep() -> None:
+        feeder.join(WAIT_S)
+        boot.now += 600  # the boot clock counts the suspend, the steady one does not
+
+    threading.Thread(target=sleep, daemon=True).start()
+
+    assert hearing.listen(MAX_LISTEN_S) is None
 
 
 def test_the_config_takes_recall_off_or_from_three_seconds() -> None:

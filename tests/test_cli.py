@@ -27,6 +27,7 @@ from jarvis.audit import AuditLog
 from jarvis.chat.app import ChatApp
 from jarvis.cli import main
 from jarvis.confirmkey import ConfirmKey
+from jarvis.operations import OperationError
 from jarvis.pc.hearing import Listening
 from jarvis.secretfile import write_private_json
 from jarvis.services import strata_profile_file
@@ -35,6 +36,8 @@ from jarvis.voice import PcListener
 if TYPE_CHECKING:
     import argparse
     from pathlib import Path
+
+    from numpy.typing import NDArray
 
 
 real_systemctl = cli._systemctl  # pyright: ignore[reportPrivateUsage] - the `home` fixture replaces it in `cli`
@@ -2340,3 +2343,34 @@ def test_a_restart_that_fails_says_the_old_settings_still_hold(
     cli._restart_if_running()  # pyright: ignore[reportPrivateUsage] - the step itself
 
     assert "still runs on the old settings" in capsys.readouterr().err
+
+
+def test_pc_audio_listen_reads_with_the_unhinted_transcriber_and_says_its_failures() -> None:
+    pc_listening = cli._pc_listening  # pyright: ignore[reportPrivateUsage] - the voice service's wiring
+    on = config.Config(audio=config.AudioConfig(listen_to_pc=True))
+    heard: list[int] = []
+
+    def answer(samples: NDArray[np.int16]) -> str:
+        heard.append(len(samples))
+        return "they said hello"
+
+    listening = pc_listening(on, answer, paused=lambda: False)
+    assert listening is not None
+    frames = [np.ones(audio_module.FRAME, dtype=np.int16)] * 3
+
+    assert listening.transcribe(frames) == "they said hello"
+    assert heard == [3 * audio_module.FRAME]
+    assert pc_listening(config.Config(), answer, paused=lambda: False) is None
+
+    phantom = pc_listening(on, lambda _s: "Thank you for watching!", paused=lambda: False)
+    assert phantom is not None
+    assert not phantom.transcribe(frames)
+
+    def broken(_samples: NDArray[np.int16]) -> str:
+        msg = "voxtype exited 1"
+        raise audio_module.AudioError(msg)
+
+    failing = pc_listening(on, broken, paused=lambda: False)
+    assert failing is not None
+    with pytest.raises(OperationError, match="speech-to-text failed"):
+        failing.transcribe(frames)

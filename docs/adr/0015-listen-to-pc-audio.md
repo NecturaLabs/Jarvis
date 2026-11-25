@@ -12,7 +12,7 @@ Before this, the model said it could not hear PC audio at all.
 
 Speech-to-text stays local, through the Voxtype command the voice already runs (`voxtype transcribe`, product
 rule). Jarvis runs beside games, so listening must add no CPU work while idle. What other people say on a call is
-theirs: it must be held no longer than a request needs, and only in memory.
+theirs: it must be held no longer than a request needs, and in memory.
 
 ## Considered options
 
@@ -31,21 +31,28 @@ words before anyone asked, so it is off by default and bounded when on. Option 1
 - **The operation.** `pc_audio_listen` (`src/jarvis/pc/hearing.py`) hears the next `seconds` (3 to 60) of PC
   audio, or with `when=last` the seconds before the request, and returns what was said. It is `safe` and
   read-only, offered only on the voice channel and only while `audio.listen_to_pc` is on. The chat never
-  hears PC audio. `jarvis ask` is offered the operation, but every listen there is refused: it has no voice
-  service hearing.
+  hears PC audio. `jarvis ask` is offered the operation, so `jarvis tools` and `boundaries.classes` know it,
+  but every listen there is refused: it has no voice service hearing.
 - **Where the frames come from.** `VoiceLoop._heard` passes each frame the PC watcher reads to `PcHearing`
-  while it wants one (a listen runs, or a recall is set). A pause drops what is held and ends a listen. Nothing
-  is taken while Jarvis speaks, so its own voice is never heard back when all output is listened to.
-- **What is kept.** Only RAM: the frames of the listen that runs, and with `audio.pc_audio_recall_s` (0 by
+  while it wants one (a listen runs, or a recall is set). A pause, and the end of the stream, drop what is held;
+  a listen ends at a pause even while no frame comes (it checks every 0.2 s), and at a suspend, so audio from
+  both sides of a sleep is never joined. Nothing is taken while Jarvis speaks, so its own voice is never heard
+  back when all output is listened to.
+- **What is kept.** In memory: the frames of the listen that runs, and with `audio.pc_audio_recall_s` (0 by
   default, else 3 to 60) the last that many seconds, overwritten as they go and timed by the boot clock, so audio
-  from before a sleep is dropped. Nothing is written to disk, and the audit log keeps the transcript only as a
-  SHA-256 and a length (`audit_text=False`).
+  from before a sleep is dropped. The one place it reaches the disk is the private temporary WAV that
+  `voxtype transcribe` reads, deleted straight after, as for every request. The audit log keeps the tool
+  result only as a SHA-256 and a length (`audit_text=False`); the reply that follows is audited as written,
+  like every reply, and may repeat what was heard. A say-nothing hallucination (`is_phantom`) counts as no
+  speech.
 - **Speech-to-text.** The unhinted transcriber the voice uses for a yes or no (`voxtype transcribe` with Jarvis's
   own settings). The vocabulary hint names the owner's tools and music, which another person's words need not
   hold.
 - **Provenance.** The transcript is `Origin.PC_AUDIO` data, never instructions. As an untrusted origin it puts a
   later side effect behind the owner's yes, and as a private one (`_PRIVATE_ORIGINS` in `agent.py`) it puts a
-  search that would send words off the PC behind a yes too, as a file's text does.
+  search that would send words off the PC behind a yes too, as a file's text does. With
+  `boundaries.bypass_consent` on (the default), those questions are skipped as for every other outside text;
+  a `strong` action still needs the key, and `stop_process` and `pc_shell` refuse a request holding it.
 - **Who may ask.** Only the owner: a request heard in PC audio, or one outside any request, is refused before
   anything is heard.
 - **The prompt.** With listening on, the voice prompt says whose audio Jarvis hears, that a request from there is
@@ -54,9 +61,11 @@ words before anyone asked, so it is off by default and bounded when on. Option 1
 ### Consequences
 
 - **Good:** the owner can ask what is said on a call or in a video, at no idle cost, with nothing kept on disk.
-  What was heard cannot steer an action or leave the PC without the owner's yes.
-- **Bad:** a listen holds the request for as long as it listens (up to a minute) within the request's time
-  (`agent.max_seconds`). With no recall, a question about what was just said can only be answered from now on.
+  While Jarvis asks first, what was heard cannot steer an action or leave the PC without the owner's yes.
+- **Bad:** a listen holds the request for as long as it listens (up to 62 seconds), then for its
+  transcription. `agent.max_seconds` is checked only before a call starts, so a listen begun late in a request
+  can carry it past that time by as much. With `bypass_consent` on, text from a call can steer an action that
+  is not `strong` with no question, as web or file text can. With no recall, a question about what was just said can only be answered from now on.
   Speech while Jarvis talks is not heard, in a call too. A listen hears only the apps in `pc_audio_apps`.
 
 ## Related
