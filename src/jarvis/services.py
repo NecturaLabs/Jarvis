@@ -221,11 +221,6 @@ class RunConfig:
         return tuple(str(a) for a in cast("list[object]", raw)) if isinstance(raw, list) else ()
 
     @property
-    def loads_projection(self) -> bool:
-        """Whether the engine loads a control vector, such as Strata's speed projection."""
-        return bool(set(PROJECTION_FLAGS) & {*self.args, *self.user_args})
-
-    @property
     def model(self) -> Path:
         """The model file the engine loads (`--native`)."""
         native = self.value_of("--native")

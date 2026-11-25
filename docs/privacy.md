@@ -50,8 +50,8 @@ Questions that need the outside world ([ADR 0007](adr/0007-outside-services-for-
   or account, to the public search engines in SearXNG's default set (in a test on 2026-11-21 only Google's
   answered; others were rate-limited). They see the search and your public IP address.
 - **Web pages**: Jarvis opens only a page a search in the same conversation returned, or an address you wrote
-  yourself in the request, exactly as written (never one in a long paste, a page or a file), and only on a
-  public address. The site sees your IP address and a generic user agent.
+  yourself in a request of the conversation, exactly as written (never one in a long paste, a page or a file),
+  and only on a public address. The site sees your IP address and a generic user agent.
 - **Pictures in the chat**: a picture search goes through SearXNG like a web search. A picture Jarvis shows
   is fetched from the site that holds it, which sees your IP address, and only when an image search or a
   read page in the same conversation offered it. The chat keeps the newest 50 shown pictures, 0600, in

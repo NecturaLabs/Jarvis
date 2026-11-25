@@ -4,7 +4,7 @@ import hashlib
 import json
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, Any, cast, override
 
@@ -1239,6 +1239,48 @@ def test_a_remembered_request_says_what_it_looked_up_so_a_follow_up_can_go_back(
         '<data origin="web">[looked up: search descale a kettle; read '
         "https://kettles.example/descale] Use citric acid.</data>"
     ) in remembered
+
+
+def test_what_was_looked_up_keeps_its_words_and_whole_addresses_only() -> None:
+    long_url = "https://kettles.example/" + "a" * 150
+    replies = [
+        _call("search", {"q": "descale a kettle", "count": 5, "fresh": True}, "c1"),
+        _call("read", {"q": long_url}, "c2"),
+        _say("Use citric acid."),
+        _call("no_action"),
+        _say("Ten minutes."),
+    ]
+    model = ScriptedModel(replies)
+    search = Counter().op("search", origin=Origin.WEB, side_effect=False)
+    props = {"q": {"type": "string"}, "count": {"type": "integer"}, "fresh": {"type": "boolean"}}
+    ops = [
+        replace(search, parameters={"type": "object", "properties": props}),
+        Counter().op("read", origin=Origin.WEB, side_effect=False),
+    ]
+    agent, _ = _agent(model, ops, limits=Limits(remember_outside=True))
+
+    agent.handle("how do I descale a kettle", NO_CONFIRM)
+    agent.handle("how long does it take", NO_CONFIRM)
+
+    remembered = model.seen[3][2]["content"]
+    assert "[looked up: search descale a kettle]" in remembered  # no "5", no "True"
+    assert "kettles.example/aaa" not in remembered  # an address too long is left out, not cut
+
+
+def test_what_was_looked_up_keeps_the_newest_look_ups() -> None:
+    searches = [_call("search", {"q": f"topic {n}"}, f"c{n}") for n in range(8)]
+    replies = [*searches, _say("Done."), _call("no_action"), _say("Hi.")]
+    model = ScriptedModel(replies)
+    ops = [Counter().op("search", origin=Origin.WEB, side_effect=False)]
+    limits = Limits(remember_outside=True, max_steps=20, max_tool_calls=20)
+    agent, _ = _agent(model, ops, limits=limits)
+
+    agent.handle("look these up", NO_CONFIRM)
+    agent.handle("and then", NO_CONFIRM)
+
+    remembered = model.seen[-1][2]["content"]
+    assert "search topic 7" in remembered
+    assert "search topic 0" not in remembered
 
 
 def test_what_was_looked_up_is_not_kept_when_outside_replies_are_not() -> None:

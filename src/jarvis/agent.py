@@ -265,8 +265,18 @@ def _asked(function: Mapping[str, Any]) -> str:
         args = obj(json.loads(raw) if isinstance(raw, str) else raw)
     except ValueError, RecursionError:
         return ""
-    values = [str(v) for v in args.values() if isinstance(v, str | int | float) and str(v)]
-    return ", ".join(v[:MAX_ASKED] for v in values)
+    # Words only: a count or a yes-or-no says nothing a follow-up needs, and a value too long is
+    # left out whole, since an address cut short leads nowhere.
+    values = [v for v in args.values() if isinstance(v, str) and 0 < len(v) <= MAX_ASKED]
+    return ", ".join(values)
+
+
+def _newest(looked: list[str], limit: int) -> str:
+    """Join the look-ups, dropping the oldest whole until the rest fit in `limit` characters."""
+    kept = list(looked)
+    while kept and len("; ".join(kept)) > limit:
+        kept.pop(0)
+    return "; ".join(kept)
 
 
 def _outcome(result: Result) -> str:
@@ -1051,7 +1061,7 @@ class Agent:
     def _remember(self, text: str, reply: str, turn: _Turn) -> None:
         """Keep a finished request and its reply in the conversation."""
         outside = turn.outside
-        looked = "; ".join(turn.looked)[:MAX_LOOKED]
+        looked = _newest(turn.looked, MAX_LOOKED)
         if outside and not self._limits.remember_outside:
             reply = _OMITTED
             outside = ""
@@ -1526,8 +1536,9 @@ class Agent:
             turn.actions.append(f"{name if op is not None else _UNKNOWN} -> {_outcome(result)}")
         if op is not None and not op.side_effect and result.ok and name not in _NOT_LOOK_UPS:
             asked = _asked(obj(call.get("function")))
-            if asked and len(turn.looked) < MAX_LOOK_UPS_KEPT:
+            if asked:
                 turn.looked.append(f"{name} {asked}")
+                del turn.looked[:-MAX_LOOK_UPS_KEPT]  # the newest are what a follow-up asks about
         if op is None or op.side_effect:
             turn.tried = True
             if op is not None and (result.ok or result.acted):

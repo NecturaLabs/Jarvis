@@ -31,7 +31,7 @@ from jarvis.policy import Origin
 from jarvis.shortcuts import match
 from jarvis.web.arctic import ArcticShift
 from jarvis.web.openmeteo import GEOCODE, OpenMeteo
-from jarvis.web.ops import NO_HOME, Clients, WebOps, spoken_date, spoken_time
+from jarvis.web.ops import NO_HOME, PAGE_KEPT_S, Clients, WebOps, spoken_date, spoken_time
 from jarvis.web.page import PageReader
 from jarvis.web.searxng import Searxng
 
@@ -191,8 +191,10 @@ def _ops(
     config: Config | None = None,
     shown: PictureCache | None = None,
     now: datetime = NOW,
+    uptime: list[float] | None = None,
 ) -> WebOps:
     client = httpx.Client(transport=httpx.MockTransport(net.handle))
+    seconds = uptime if uptime is not None else [0.0]
     return WebOps(
         config or Config(weather=WeatherConfig(coordinates=[52.52, 13.41], place="Berlin")),
         Clients(
@@ -204,6 +206,7 @@ def _ops(
         clock=lambda: now,
         local_zone=BERLIN,
         shown=shown,
+        uptime=lambda: seconds[0],
     )
 
 
@@ -644,6 +647,60 @@ def test_a_forgotten_conversation_reads_the_page_again() -> None:
     _run(ops, "web_read", url="https://kettles.example/descale")
 
     assert net.hosts().count("kettles.example") == 2
+
+
+def test_a_page_kept_longer_than_its_time_is_read_again() -> None:
+    net = Net()
+    uptime = [100.0]
+    ops = _ops(net, uptime=uptime)
+    _run(ops, "web_search", query="kettle")
+    _run(ops, "web_read", url="https://kettles.example/descale")
+
+    uptime[0] += PAGE_KEPT_S + 1  # this clock counts a suspend, so a night asleep is old too
+    _run(ops, "web_read", url="https://kettles.example/descale")
+
+    assert net.hosts().count("kettles.example") == 2
+
+
+class ForgetsMeanwhile(Net):
+    """A network during whose page read the conversation is forgotten, once."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ops: WebOps | None = None
+
+    @override
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host == "kettles.example" and self.ops is not None:
+            self.ops.reset()
+            self.ops = None
+        return super().handle(request)
+
+
+def test_a_page_that_arrives_after_the_conversation_was_forgotten_is_not_kept() -> None:
+    net = ForgetsMeanwhile()
+    ops = _ops(net)
+    net.ops = ops
+    _run(ops, "web_search", query="kettle")
+    _run(ops, "web_read", url="https://kettles.example/descale")
+
+    _run(ops, "web_search", query="kettle")
+    _run(ops, "web_read", url="https://kettles.example/descale")
+
+    assert net.hosts().count("kettles.example") == 2
+
+
+def test_an_address_the_owner_wrote_can_be_read_again_in_a_follow_up() -> None:
+    net = Net()
+    ops = _ops(net)
+    with request_scope(foreign=False, words="read https://kettles.example/descale"):
+        _run(ops, "web_read", url="https://kettles.example/descale")
+
+    with request_scope(foreign=False, words="what did it say about vinegar?"):
+        again = _run(ops, "web_read", url="https://kettles.example/descale")
+
+    assert "citric acid" in again.text
+    assert net.hosts() == ["kettles.example"]
 
 
 def test_an_address_no_search_returned_is_never_fetched() -> None:

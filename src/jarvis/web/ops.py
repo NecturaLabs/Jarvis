@@ -17,7 +17,6 @@ When the conversation is forgotten (`reset`), so is what its searches returned.
 
 import re
 import threading
-import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
@@ -25,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from jarvis.confirmkey import boot_clock
 from jarvis.operations import Operation, OperationError, Request, Result, current_request, cut_inert
 from jarvis.pictures import SHOWN_SIDE, PictureError, prepare
 from jarvis.policy import Origin
@@ -240,13 +240,15 @@ class Clients:
 class WebOps:
     """The operations, with the clients they use and what recent searches returned."""
 
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-arguments] - the clients, and clocks for tests
         self,
         config: Config,
         clients: Clients,
+        *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         local_zone: tzinfo | None = None,
         shown: PictureCache | None = None,
+        uptime: Callable[[], float] = boot_clock,
     ) -> None:
         """Use the clients given; `clock` and `local_zone` are for tests (default: this PC's).
 
@@ -261,6 +263,7 @@ class WebOps:
         self._reddit = clients.reddit
         self._pages = clients.pages
         self._clock = clock
+        self._uptime = uptime
         self._local_zone = local_zone
         self._home: Place | None = None
         # Pages read in this conversation, so a follow-up that reads one again needs no network.
@@ -273,6 +276,7 @@ class WebOps:
         self._image_number = 0
         # Look-ups of one request may run side by side; this guards what they remember.
         self._lock = threading.Lock()
+        self._conversation = 0  # counts forgettings, so a page read meanwhile is not kept
 
     def reset(self) -> None:
         """Forget every address, post and picture earlier searches returned."""
@@ -281,20 +285,24 @@ class WebOps:
             self._posts.clear()
             self._images.clear()
             self._read.clear()
+            self._conversation += 1
 
     def _page(self, url: str) -> Page:
         """Return the page at `url`, read again only if this conversation has not read it lately.
 
         A `PageError` from the reader says the page could not be read.
         """
-        now = time.monotonic()
+        now = self._uptime()
         with self._lock:
             kept = self._read.get(url)
             if kept is not None and now - kept[0] <= PAGE_KEPT_S:
                 self._read.move_to_end(url)
                 return kept[1]
+            conversation = self._conversation
         page = self._pages.read(url)
         with self._lock:
+            if conversation != self._conversation:
+                return page  # the conversation was forgotten while the page was read
             self._read[url] = (now, page)
             while len(self._read) > PAGES_KEPT:
                 self._read.popitem(last=False)
@@ -498,21 +506,25 @@ class WebOps:
     def web_read(self, args: dict[str, Any]) -> Result:
         """Read a page a recent search returned, or one the owner wrote, and give its main text.
 
-        An address the owner wrote counts only as written, in their own words of this request
+        An address the owner wrote counts only as written, in their own words of a request
         (`Request.words`): never one in a paste, a page, a file or PC audio, where anyone could
-        have put an address that carries data off in its query.
+        have put an address that carries data off in its query. Once written it is remembered
+        like a search result, until the conversation is forgotten.
 
         Raises:
             OperationError: the address came from no search and not from the owner, or the
                 page could not be read.
         """
         url = str(args["url"]).strip()
-        if not self._knows(self._urls, url) and url not in _written(current_request()):
-            msg = (
-                "Only a page a recent web_search returned, or an address the owner wrote in "
-                "this request, can be read; search first."
-            )
-            raise OperationError(msg)
+        if not self._knows(self._urls, url):
+            if url not in _written(current_request()):
+                msg = (
+                    "Only a page a recent web_search returned, or an address the owner wrote in "
+                    "this conversation, can be read; search first."
+                )
+                raise OperationError(msg)
+            # Known from now on, like a search result, so a follow-up may read it again.
+            self._remember(self._urls, url)
         thread = _reddit_thread(url)
         if thread is not None:
             # Reddit refuses to serve pages to Jarvis; the archive has the thread.

@@ -799,7 +799,20 @@ def test_turned_off_the_projection_is_left_out_whole(tmp_path: Path, *, user_arg
     assert "--vision" in _strings(profile["args"])  # nothing else goes
 
 
-def test_the_run_config_says_whether_it_loads_a_projection(tmp_path: Path) -> None:
-    assert not services.read_run_config(_config(tmp_path)).loads_projection
-    assert services.read_run_config(_with_projection(tmp_path)).loads_projection
-    assert services.read_run_config(_with_projection(tmp_path, user_args=True)).loads_projection
+def test_a_scaled_vector_in_both_option_lists_is_left_out_whole_when_off(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, speed_projection=False)
+    (tmp_path / "v.gguf").write_bytes(b"GGUF")
+    path = cfg.strata.run_config
+    data = json.loads(path.read_text(encoding="utf-8"))
+    scaled = ["--control-vector-scaled", str(tmp_path / "v.gguf"), "-0.5"]
+    data["args"] = [*data["args"], *scaled]
+    data["user_args"] = ["--threads", "8", *scaled, "--cvec-mode", "project"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    profile = services.strata_profile(cfg)
+
+    assert _strings(profile["user_args"]) == ["--threads", "8"]
+    every = _strings(profile["args"])
+    assert "--control-vector-scaled" not in every
+    assert not {str(tmp_path / "v.gguf"), "-0.5"} & set(every)
+    assert "--vision" in every
