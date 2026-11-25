@@ -111,6 +111,15 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A request you stop (Esc in the chat, or speaking over Jarvis) is no longer forgotten. It is remembered with
+  what it looked up and a note that it was stopped, so the next request does not search all over again or lose
+  the task, and the audit log's `reply` says `stopped`. A stop now takes effect while the model is still
+  thinking, not only once it starts to answer. In the chat, a request that ends without words says so instead
+  of showing nothing.
+- A long file is no longer lost to the reply cap. A call the cap cuts off is not run: the model is told how much
+  one answer holds and writes the text in parts, adding each to the file, and the cut text no longer fills the
+  context. A second cut call ends the request with a reply that says so, instead of retrying until the steps
+  run out.
 - A follow-up on something Jarvis looked up no longer sends it searching all over again. Each remembered
   request names what it looked up (the searches and pages, as data when they came from outside), and a page read
   in the conversation is kept for 30 minutes, so reading it again needs no network. An address the owner
