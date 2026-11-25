@@ -86,8 +86,8 @@ RAN_OUT = "Then I ran out of time."
 ACTED_THEN_TOO_LONG = "I made a change, then ran out of time before I could finish."
 TOO_MANY_STEPS = "That needed too many steps, so I stopped."
 LAST_STEP_REMINDER = (
-    "That was the last step this request may take, so no more tools. Answer the owner now from "
-    "what you found, and say plainly what you could not find."
+    "That was the last step this request may take, so no more look-ups or actions. Answer the "
+    "owner now from what you found, and say plainly what you could not find."
 )
 CUT_SHORT = "(That is as far as one reply goes; ask me to go on.)"
 UNDONE = "Sorry, I didn't manage to do that."
@@ -1127,18 +1127,22 @@ class Agent:
         if hooks.speak is None and hooks.draft is None:
             return None
         op = self._registry.get(NO_ACTION)
-        allowed = op is not None and (
-            decide(op, NO_ACTION, self._overrides, untrusted_in_context=True).verdict is Verdict.RUN
-        )
         reply = obj(obj(op.parameters.get("properties")).get("reply")) if op else {}
         cap = reply.get("maxLength")
         return _ReplyStream(
             hooks.speak,
             hooks,
             may_claim=turn.succeeded,
-            reply_allowed=allowed,
+            reply_allowed=self._reply_allowed(),
             before_first=turn.cues.settle,
             max_chars=cap if isinstance(cap, int) else MAX_STREAMED_CHARS,
+        )
+
+    def _reply_allowed(self) -> bool:
+        """Whether `no_action`, the call that carries a reply, runs even with outside text in."""
+        op = self._registry.get(NO_ACTION)
+        return op is not None and (
+            decide(op, NO_ACTION, self._overrides, untrusted_in_context=True).verdict is Verdict.RUN
         )
 
     def _shortcut(self, hit: shortcuts.Matched, hooks: Hooks, turn: _Turn) -> str | None:
@@ -1184,9 +1188,15 @@ class Agent:
     def _step(self, turn: _Turn, hooks: Hooks, step: int) -> str | None:
         """Run one model call and its tool calls; return the final reply, or None to go on.
 
-        After a repeated call the model is offered no tools, so it must answer from what was done.
+        After a repeated call, and on the last step, the model may only answer: it is made to call
+        `no_action`, whose `reply` is the answer, with the tool list kept so the server reuses the
+        prompt it pinned (dropping the tools changes the prompt and costs seconds to read it
+        again). Any other call it returns then is not run. Where `no_action` is refused, it is
+        offered no tools instead.
         """
-        tools = [] if turn.stuck or turn.last else self._registry.tool_schemas()
+        only_answer = turn.stuck or turn.last
+        forced = only_answer and self._reply_allowed()
+        tools = [] if only_answer and not forced else self._registry.tool_schemas()
         self._make_room(turn)
         stream = turn.stream = self._stream(turn, hooks)
         began = self._clock()
@@ -1194,7 +1204,7 @@ class Agent:
             message = self._model.chat(
                 turn.messages,
                 tools,
-                require_tool=not turn.actions,
+                require_tool=NO_ACTION if forced else not only_answer and not turn.actions,
                 timeout_s=max(
                     AFTER_ACTION_CALL_S if turn.succeeded else MIN_CALL_S,
                     turn.limit_s - (began - turn.started),
@@ -1216,7 +1226,9 @@ class Agent:
         turn.answered = True
         self._note_usage(message)
         self._audit.record("model_call", step=step, seconds=round(self._clock() - began, 2))
-        calls = [] if turn.stuck or turn.last else self._unique(objs(message.get("tool_calls")))
+        calls = self._unique(objs(message.get("tool_calls")))
+        if only_answer:
+            calls = [c for c in calls if str(obj(c.get("function")).get("name")) == NO_ACTION][:1]
         cut = message.get("finish_reason") == "length"
         if cut:
             self._audit.record("reply_limit", tokens=self._limits.reply_tokens)

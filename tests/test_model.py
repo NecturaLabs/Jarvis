@@ -43,8 +43,17 @@ def _answering(message: object, seen: list[httpx.Request] | None = None) -> http
     return httpx.MockTransport(handle)
 
 
-@pytest.mark.parametrize(("require", "choice"), [(True, "required"), (False, "auto")])
-def test_chat_sends_the_key_the_tools_and_the_tool_choice(require: bool, choice: str) -> None:
+@pytest.mark.parametrize(
+    ("require", "choice"),
+    [
+        (True, "required"),
+        (False, "auto"),
+        ("no_action", {"type": "function", "function": {"name": "no_action"}}),
+    ],
+)
+def test_chat_sends_the_key_the_tools_and_the_tool_choice(
+    require: bool | str, choice: object
+) -> None:
     seen: list[httpx.Request] = []
     model = _model(_answering({"role": "assistant", "content": "hello"}, seen))
 

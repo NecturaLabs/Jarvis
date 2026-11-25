@@ -94,7 +94,7 @@ def stream_pieces(message: dict[str, Any], size: int) -> list[Delta]:
 class ScriptedModel:
     replies: list[dict[str, Any]]
     seen: list[list[dict[str, Any]]] = field(default_factory=list[list[dict[str, Any]]])
-    required: list[bool] = field(default_factory=list[bool])
+    required: list[bool | str] = field(default_factory=list[bool | str])
     tools_offered: list[int] = field(default_factory=list[int])
     loaded: bool | None = True
     error: Exception | None = None
@@ -112,7 +112,7 @@ class ScriptedModel:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         *,
-        require_tool: bool = False,
+        require_tool: bool | str = False,
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
@@ -794,7 +794,9 @@ def test_repeat_in_a_later_step_is_not_run_and_ends_with_a_spoken_summary() -> N
     assert len(counter.runs) == 1
     assert "tool_repeated" in _events(audit)
     assert reply == "Skipped one track."
-    assert model.tools_offered[-1] == 0
+    # The tools stay in the prompt, so the server reuses the pinned prompt; only a reply may come.
+    assert model.tools_offered[-1] == model.tools_offered[0] > 0
+    assert model.required[-1] == "no_action"
 
 
 def _pc_agent(model: ScriptedModel, ops: list[Operation], clock: Clock) -> Agent:
@@ -1580,9 +1582,58 @@ def test_the_last_step_answers_from_what_was_found_instead_of_giving_up() -> Non
     reply = agent.handle("which wand", NO_CONFIRM)
 
     assert reply == "The Fairy Wand is the usual pick at level 40."
-    assert model.tools_offered[-1] == 0  # the last call may only answer
+    assert model.tools_offered[-1] == model.tools_offered[0] > 0  # the pinned prompt is kept
+    assert model.required[-1] == "no_action"  # the last call may only answer
     assert "answer" in model.seen[-1][-1]["content"].lower()
     assert len(counter.runs) == 2
+
+
+def test_the_last_step_answers_through_the_reply_call_it_is_given() -> None:
+    counter = Counter()
+    replies = [
+        _call("search", {"q": "a"}, "c1"),
+        _call("search", {"q": "b"}, "c2"),
+        _call("no_action", {"reply": "The Fairy Wand is the usual pick."}, "c3"),
+    ]
+    model = ScriptedModel(replies)
+    agent, _ = _agent(model, [counter.op("search")], limits=Limits(max_steps=3))
+
+    assert agent.handle("which wand", NO_CONFIRM) == "The Fairy Wand is the usual pick."
+    assert len(counter.runs) == 2
+
+
+def test_the_last_step_runs_no_other_tool_even_when_the_server_returns_one() -> None:
+    counter = Counter()
+    replies = [
+        _call("search", {"q": "a"}, "c1"),
+        _call("search", {"q": "b"}, "c2"),
+        _call("search", {"q": "c"}, "c3"),
+    ]
+    model = ScriptedModel(replies)
+    agent, _ = _agent(model, [counter.op("search")], limits=Limits(max_steps=3))
+
+    assert agent.handle("which wand", NO_CONFIRM) == TOO_MANY_STEPS
+    assert [run["q"] for run in counter.runs] == ["a", "b"]
+
+
+def test_the_last_step_offers_no_tools_when_the_reply_call_is_refused() -> None:
+    counter = Counter()
+    replies = [
+        _call("search", {"q": "a"}, "c1"),
+        _call("search", {"q": "b"}, "c2"),
+        _say("Here is what I found."),
+    ]
+    model = ScriptedModel(replies)
+    agent, _ = _agent(
+        model,
+        [counter.op("search")],
+        overrides={"no_action": "deny"},
+        limits=Limits(max_steps=3),
+    )
+
+    assert agent.handle("which wand", NO_CONFIRM) == "Here is what I found."
+    assert model.tools_offered[-1] == 0
+    assert model.required[-1] is False
 
 
 def test_a_strong_operation_is_refused_even_when_the_owner_would_say_yes() -> None:

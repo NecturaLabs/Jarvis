@@ -66,6 +66,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A step that may only answer (after a repeated call, or a request's last step) no longer makes Strata read
+  the whole prompt again. It kept the tool list out of the request, which changed the prompt Strata had
+  pinned; now the tools stay and the model is made to answer through `no_action`. A call to any other tool
+  on that step is still not run ([docs/models.md](docs/models.md#warm-up)).
+
 - The audit log could grow past `max_bytes` when several writers ran at once on a busy PC: a writer that
   had just rotated a full log reopened the new one and wrote without checking its size, though others may
   have filled it meanwhile. The size is now checked again after each rotation. No event was ever lost.

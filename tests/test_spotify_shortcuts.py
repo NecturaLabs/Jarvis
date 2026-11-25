@@ -52,7 +52,7 @@ class ScriptedModel:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],  # ruff: ignore[unused-method-argument] - the model's own signature
         *,
-        require_tool: bool = False,  # ruff: ignore[unused-method-argument] - the model's own signature
+        require_tool: bool | str = False,  # ruff: ignore[unused-method-argument] - the model's own signature
         timeout_s: float | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
         on_delta: object = None,  # ruff: ignore[unused-method-argument] - the model's own signature
         max_tokens: int | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
@@ -490,7 +490,7 @@ class ForbiddenModel:
         messages: list[dict[str, Any]],  # ruff: ignore[unused-method-argument] - the model's own signature
         tools: list[dict[str, Any]],  # ruff: ignore[unused-method-argument] - the model's own signature
         *,
-        require_tool: bool = False,  # ruff: ignore[unused-method-argument] - the model's own signature
+        require_tool: bool | str = False,  # ruff: ignore[unused-method-argument] - the model's own signature
         timeout_s: float | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature
         on_delta: object = None,  # ruff: ignore[unused-method-argument] - the model's own signature
         max_tokens: int | None = None,  # ruff: ignore[unused-method-argument] - the model's own signature

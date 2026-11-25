@@ -97,7 +97,7 @@ class TimedModel:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         *,
-        require_tool: bool = False,
+        require_tool: bool | str = False,
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,

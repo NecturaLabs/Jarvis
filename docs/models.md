@@ -205,6 +205,12 @@ What Jarvis gets ready ahead of a request, so the request does not wait for it:
   `prompt_primed`, with the seconds it took. A load at the wake word is not followed by one: the request
   that started it reads the prompt itself. This is the only time Jarvis generates without a request, once
   per load; health checks still never generate.
+- **The prompt on a step that may only answer.** After a repeated call, and on a request's last step, the
+  model is made to call `no_action`, whose `reply` carries the answer, and the tool list stays in the
+  request. Until 2026-11-25 such a step was sent with no tools, and Strata writes the tool list into the
+  prompt, so that prompt no longer matched the one it had pinned and was read again: one such call in its
+  log read 2,946 tokens. Any other call the model returns on that step is not run, and where `no_action`
+  is refused the step is still sent without tools.
 - **The speech model.** Voxtype loads its model anew for every request, and with the file out of the
   system's file cache that load waits for the disk. Jarvis reads the file (the one `audio.transcribe_model`
   names, or the Whisper model Voxtype downloaded) into the cache when it starts and at each wake word, on a
