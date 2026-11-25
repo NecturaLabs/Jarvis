@@ -21,7 +21,7 @@ from jarvis.agent import Agent, ContextUse, Declined, Hooks, NoReason
 from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
 from jarvis.chat import commands
-from jarvis.chat.app import ChatApp, Services
+from jarvis.chat.app import NO_REPLY, ChatApp, Services
 from jarvis.chat.clipboard import Clip, ClipboardError
 from jarvis.chat.history import InputHistory
 from jarvis.chat.widgets import (
@@ -560,6 +560,17 @@ def test_esc_stops_the_request() -> None:
 
     _run(test, app)
     assert seen == [True]
+
+
+def test_a_request_that_ends_without_words_says_so() -> None:
+    app = _app(session=FakeSession(lambda _text, _hooks: ""))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "hush")
+        await _until(pilot, lambda: _has(app, NO_REPLY))
+        assert not _has(app, "Stopped.")
+
+    _run(test, app)
 
 
 def test_words_typed_while_a_request_works_steer_it() -> None:

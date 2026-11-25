@@ -8,6 +8,18 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `memory_detail` in `[agent]` and `[chat]` says what later requests keep of one: `condensed` (the request, the
+  reply, what was done and what was looked up) or `full` (also its tool calls and their results). The chat keeps
+  `full` by default, so a follow-up has the pages, files and outputs a request read instead of looking them up
+  again, and the model server reuses what it already read; speech, `jarvis ask` and scheduled requests stay
+  `condensed`. Outside text kept this way is still data and keeps actions behind a yes. When the conversation
+  outgrows `memory_tokens`, the oldest work goes first, then the oldest turns are summarized, and the chat says in
+  one line what it condensed; the context meter then shows what the next request starts from.
+- `pc_audio_listen`: with PC audio on, ask Jarvis what is being said or played there (a call, a video) and it
+  listens for up to a minute and tells you. `audio.pc_audio_recall_s` (off by default) keeps the last seconds in
+  memory, so it can also tell you what was just said. The audio reaches the disk only for the moment Voxtype
+  transcribes it, the words are someone else's data, and when Jarvis asks first (`bypass_consent` off) a search
+  or action after them waits for your yes.
 - Jarvis sings: ask in any words and the model writes the song as notes (words, pitches and lengths), which
   the new `sing` tool checks (at most 30 seconds and 64 notes) before Jarvis sings it by voice, spoken over,
   hushed and paused like a reply. It sings with the Kokoro voice moved to each note (Praat, through the new
@@ -18,7 +30,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   at every Enter, and its Tools list never takes a tool below how it ships.
 - `jarvis speed` shows how fast Jarvis speaks and `jarvis speed 1.5` sets it; `audio.speech_speed` now goes up to 3.0.
 - In `jarvis chat`, words typed while a request runs steer it: they join the request before the model's next
-  call, instead of being refused with "esc stops it". `chat.while_working = "queue"` (or `/config`) runs them as
+  call, instead of being refused with "esc stops it". They are your own words like the request's (a web address
+  in them can be read) and are remembered with it. `chat.while_working = "queue"` (or `/config`) runs them as
   the next request instead.
 - Switch a tool on or off, or make it ask first, without editing the config: `jarvis tools` lists them all,
   `jarvis tools NAME on|ask|key|off|default` sets one, and the chat's `/config` has a Tools list. A tool that is
@@ -116,6 +129,24 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A request the model answered while the conversation held outside text now keeps that mark itself: what the
+  model wrote then may repeat that text, so actions still need a yes once the turn it came from is forgotten.
+- A tool call's arguments now count toward the context: a long file being written was counted as almost nothing,
+  so the check that clears a long request's oldest results to fit the window, and the remembered conversation's
+  size, came out too low.
+- A request you stop (Esc in the chat, or speaking over Jarvis) is no longer forgotten. It is remembered with
+  what it looked up and a note that it was stopped, so the next request does not search all over again or lose
+  the task, and the audit log's `reply` says `stopped`. A stop now takes effect while the model is still
+  thinking, not only once it starts to answer. In the chat, a request that ends without words says so instead
+  of showing nothing.
+- A long file is no longer lost to the reply cap. A call the cap cuts off is not run: the model is told how much
+  one answer holds and writes the text in parts, adding each to the file, and the cut text no longer fills the
+  context. A second cut call ends the request with a reply that says so, instead of retrying until the steps
+  run out.
+- A wake word heard in PC audio with no request after it is no longer dropped silently: the log now says why
+  (no speech, too little speech, the loop busy, paused or still holding another one).
+- With PC audio on, Jarvis no longer tells you it cannot hear it: the voice prompt says whose audio it hears and
+  that a request from there is that person's, not yours. With it off, the prompt says Jarvis cannot hear it.
 - A follow-up on something Jarvis looked up no longer sends it searching all over again. Each remembered
   request names what it looked up (the searches and pages, as data when they came from outside), and a page read
   in the conversation is kept for 30 minutes, so reading it again needs no network. An address the owner
@@ -126,6 +157,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - Where the system cannot tell whether the speech model is in memory, a wake word no longer reads all of it
   again within 5 minutes of the last whole read.
 - `jarvis doctor` notes a lock limit on the model's memory only when the model is larger than it.
+- After writing a file, the model is told its full path and link, so a link it gives the owner points to the
+  right home folder instead of a guessed one.
 - `pc_media` binds a command to the players it is for before any question, and the question names them
   ("pause firefox and spotify"); a skip not answered in time is reported as uncertain, so it is not sent twice;
   a player that closes while it is listed is left out, and a player's own error words are not passed on.
@@ -150,7 +183,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   publishes counters.
 - A place said with its state or country, "Springfield (Illinois)" or "Lisbon, Portugal", is found for the time
   and the weather: the geocoder takes only a name and found nothing for the whole phrase, so the name is
-  looked up alone and the qualifier picks among the matches.
+  looked up alone and the qualifier picks among the matches; with several ("Springfield, Illinois, USA") the
+  place most of them name wins.
 - Spotify's "Restriction violated" (shuffle, previous or a seek that what plays now does not allow) is said as
   what it means, that Spotify does not allow that command here and nothing changed, instead of a raw 403.
 
@@ -180,6 +214,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- Speech keeps a short memory for quick commands: `agent.memory_idle_s` is now `300.0` (was `1800.0`), so the
+  conversation is forgotten after five idle minutes, and `agent.memory_tokens` is now `3000` (was `6000`). A
+  scheduled request shares speech's conversation and limits; `jarvis ask` remembers nothing between runs. The
+  chat's own memory is unchanged.
 - The chat's default `memory_tokens` is now 7000 (was 7800): the new tools' and arguments' schemas take that room
   in the default 24,576-token window. A larger `strata.context` leaves room for more.
 

@@ -69,10 +69,11 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 | `max_steps` | `8` | 1 to 100 | Most model calls in one request; the last one may only answer, from what the others found. |
 | `max_tool_calls` | `12` | 1 to 200 | Most tool calls in one request. The reply call (`no_action`) is the answer and is not counted. |
 | `max_seconds` | `90.0` | 10 to 3600 | Longest one request may take (180 s more when the model must load first). Time spent asking you and waiting for your yes or the confirm key does not count. Once an action has run, the model still gets at least 15 s to say how it went, and a request that runs out of time after one says what it did. |
-| `reply_tokens` | `400` | 64 to 8192 | Most tokens the model writes in one answer. The prompt asks for replies that fit; a reply the cap ends anyway is kept and says it was cut short. |
+| `reply_tokens` | `400` | 64 to 8192 | Most tokens the model writes in one answer. The prompt asks for replies that fit; a reply the cap ends anyway is kept and says it was cut short. A tool call the cap cuts off (a long file being written) is not run: the model is told how much one answer holds and writes the text in parts, adding each to the file; a second cut call ends the request and says so. |
 | `tool_text_chars` | `3000` | 500 to 50000 | Most characters of one tool result the model reads. |
-| `memory_tokens` | `6000` | 0 to 200000 | Room the remembered conversation may take of the context window. When a reply makes it outgrow that, the model summarizes the oldest turns right after the reply, while it is spoken and on its own time (the latest two stay word for word); if that fails, the oldest are dropped. A request that finds it over its room (a plain command's turns, a saved conversation) is given the newest turns that fit, and the summary follows its reply. Jarvis uses less when the window cannot hold it beside the prompt, a reply and two tool results. |
-| `memory_idle_s` | `1800.0` | 0 or more | Forget the conversation after this long without a request (time the PC spends asleep counts); `0` never forgets. |
+| `memory_tokens` | `3000` | 0 to 200000 | Room the remembered conversation may take of the context window. When a reply makes it outgrow that, the oldest requests' tool calls and results (kept with `memory_detail = "full"`) are left out first, down to three quarters of the room, the latest request's only when it alone does not fit; when it still does not fit, the model summarizes the oldest turns right after the reply, while it is spoken and on its own time (the latest two stay word for word); if that fails, the oldest are dropped. A request that finds it over its room (a plain command's turns, a saved conversation) is given the newest turns that fit, and the summary follows its reply. Jarvis uses less when the window cannot hold it beside the prompt, a reply and two tool results. |
+| `memory_detail` | `condensed` | `condensed`, `full` | What later requests keep of one. `condensed`: the request, the reply, what was done and what was looked up. `full`: also its tool calls and their results, as the model read them, so a follow-up has the pages, files and outputs a request read without fetching them again, and the model server reuses what it already read of them. Outside text in them stays data and keeps actions behind a yes while it is remembered. A request in full detail takes more of `memory_tokens`; when it runs short, the oldest work goes first, and the chat says in one line what it condensed. |
+| `memory_idle_s` | `300.0` | 0 or more | Forget the conversation after this long without a request (time the PC spends asleep counts); `0` never forgets. Speech is short-term memory for quick commands: a follow-up ("louder", "the next one", "what was that song?") comes within a minute or two, and after five idle minutes an old exchange is likelier to steer the next command wrong than to help. `jarvis ask` remembers nothing between runs; a scheduled request shares speech's conversation and these limits. |
 | `thinking` | `none` | `none`, `low`, `medium`, `high` | How hard the model thinks before each answer at the start of a request (Strata's reasoning effort). `none` answers at once; on everyday requests thinking made answers slower and no more accurate ([models.md](models.md#thinking)). Thinking is never spoken or shown, and costs time: at about 65 tokens a second, the full cap below is about 3 s more before the first words of each model call. |
 | `thinking_tokens` | `192` | 32 to 8192 | The most the model thinks before each answer at `thinking`; Strata then closes the thinking and lets it answer. It comes on top of `reply_tokens`, so the reply keeps all its room, and the context keeps room for both. |
 | `thinking_max` | `high` | `none`, `low`, `medium`, `high`, and not below `thinking` | The most the model may raise its own effort to, for the rest of one request, when it judges the request needs careful thought (several steps, a name it may have misheard, a correction, a try that failed). It does so with the `think_harder` tool, which is offered only when this is above `thinking`: set it to the same as `thinking` to keep one effort. The effort never drops within a request, and each request starts at `thinking` again. Raising to `low` or `high` can cost the model one more read of its whole prompt on Qwen3.8 ([models.md](models.md#thinking)). The tool's class is `safe`; `think_harder = "deny"` under `[boundaries.classes]` also switches it off. |
@@ -80,13 +81,14 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 
 A spoken reply that drew on outside text (a web page, a song name) is remembered as data, as in the chat: a
 follow-up such as "what was the second one?" has it, and while it is remembered an action the model chooses
-needs your yes; a plain command (`pause`, `volume 40`) does not.
+needs your yes; a plain command (`pause`, `volume 40`) does not. A request the model answers while such text is
+remembered is marked the same way, so that holds after the turn that read it is forgotten.
 
 ## `[chat]`: the same for typed requests in `jarvis chat`
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `7000` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger), `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
+`memory_tokens` `7000` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger; with a larger `strata.context` a larger value has room for more of the earlier requests' work), `memory_detail` `full`, `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -311,11 +313,12 @@ the playlist ones: everything else works, and adding to a playlist says to run `
 | `transcribe_short_window` | `true` | true or false | Size Whisper's window to the clip (`context_window_optimization`); much faster for short commands. |
 | `vocabulary_hint` | `true` | true or false | Prime speech-to-text with Jarvis's name, its actions and your artist names. |
 | `hint_names` | `40` | 0 to 200 | Most artist names put in the hint (the hint also stops at 800 characters). |
-| `listen_to_pc` | `false` | true or false | Also take requests heard in PC audio. `jarvis pc-audio on`. |
+| `listen_to_pc` | `false` | true or false | Also take requests heard in PC audio. `jarvis pc-audio on`. The voice prompt tells the model either way whether it hears PC audio, whose (`pc_audio_apps`) and how such a request is treated; the chat never hears it and its prompt leaves it out. On, the voice service also has `pc_audio_listen` (`safe`): asked what is said or played there, it listens (see `pc_audio_recall_s`) and gets the words as PC-audio data, so with `bypass_consent` off a later action or a search waits for your yes, as after a file's text; a stopped program or a shell command after them is refused whatever it is set to. Only your own request can use it, and only the voice service hears: in `jarvis ask` every listen is refused. |
 | `pc_audio_apps` | `["discord"]` | list of app or process names | Whose audio to listen to: every stream they play is recorded and heard mixed. An empty list means all PC output. `--apps`, `--all-output`. |
 | `pc_audio_grant_s` | `600.0` | 0 to 86400 | After you say yes to a PC-audio request, how long further PC-audio requests run without asking. 0 asks every time. Time the PC spends asleep counts. |
 | `confirm_blocks_on_pc_speech` | `true` | true or false | A yes counts as no if speech was heard in PC audio while Jarvis waited for it. |
 | `pc_audio_cooldown_s` | `5.0` | 0 to 600 | Pause after a PC-audio request during which another is ignored. |
+| `pc_audio_recall_s` | `0.0` | 0, or 3 to 60 | With `listen_to_pc` on, how many of the last seconds of PC audio Jarvis keeps in memory, so that `pc_audio_listen` can tell you what was just said. 0 keeps none: it then listens only from when you ask, for 3 to 60 seconds. Nothing is kept while Jarvis is paused or speaks, and a pause or the end of the stream drops it; it reaches the disk only while Voxtype transcribes it ([privacy](privacy.md)). |
 
 See [the PC-audio ADR](adr/0003-pc-audio-is-not-the-owner.md) for why the last four exist.
 
@@ -548,7 +551,7 @@ A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` wit
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
 its shipped class, which is `safe` for every operation but `write_file` (`confirm`) and `stop_process`
 (`strong`): `spotify_*`, `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`,
-`pc_stats`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`, `sing`; set one to `deny` to switch it off: it is then
+`pc_stats`, `pc_volume`, `pc_media`, `pc_audio_listen`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`, `sing`; set one to `deny` to switch it off: it is then
 not offered to the model at all. `no_action`, `think_harder` and `stay_quiet` are how Jarvis answers, not tools, and
 cannot be switched off. `stop_process`
 may be set only to `strong` or `deny`: a program is stopped by your command and your key alone, so any

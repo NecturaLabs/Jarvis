@@ -739,7 +739,9 @@ class FileOps:
             os.close(folder)
         done = {"replace": "Replaced", "append": "Added to"}.get(mode, "Created")
         sentence = f"{done} {shown} ({len(content)} characters)."
-        return Result(sentence, spoken=sentence)
+        # The full path and its link for the model, which otherwise guesses what "~" is.
+        where = f" Its full path is {path}; as a link: {path.as_uri()}"
+        return Result(sentence + where, spoken=sentence)
 
     # --- the operations -----------------------------------------------------------------------
 

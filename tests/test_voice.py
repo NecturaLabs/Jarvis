@@ -20,6 +20,7 @@ from jarvis.config import AudioConfig, Config, ModelConfig
 from jarvis.confirmkey import MIN_PRESS_S, NOTHING_WAITING, STRAY_HOLD_S, ConfirmKey
 from jarvis.model import Delta, StrataModel
 from jarvis.operations import Operation, Registry, Result, Sound
+from jarvis.pc.hearing import PcHearing
 from jarvis.policy import OpClass, Origin
 from jarvis.schedule import Due, Job
 from jarvis.voice import PcListener, State, VoiceLoop
@@ -213,6 +214,25 @@ class Speaker:
         self.during_chime()
 
 
+@dataclass
+class Hearing:
+    """Takes every PC frame it is fed; `wants` as `pc_audio_listen`'s while one listens."""
+
+    wants: bool = True
+    fed: list[int] = field(default_factory=list[int])
+    forgot_after: list[int] = field(default_factory=list[int])  # frames fed before each forget
+    recall_dropped_after: list[int] = field(default_factory=list[int])
+
+    def feed(self, frame: NDArray[np.int16]) -> None:
+        self.fed.append(int(frame[0]))
+
+    def forget(self) -> None:
+        self.forgot_after.append(len(self.fed))
+
+    def forget_recall(self) -> None:
+        self.recall_dropped_after.append(len(self.fed))
+
+
 type Reply = Callable[[str, Hooks, Origin], str]
 
 
@@ -251,7 +271,7 @@ def _loop(
     *,
     heard: str = "pause the music",
     answer: Callable[[NDArray[np.int16]], str] = lambda _s: "yes",
-    pc: PcAudio | None = None,
+    pc: PcAudio | EndingPcAudio | None = None,
     cfg: AudioConfig = CFG,
     clock: Clock | None = None,
     pc_wake: Wake | None = None,
@@ -266,8 +286,9 @@ def _loop(
     asleep_s: Callable[[], float] = lambda: 0.0,
     after_sleep: Callable[[], None] = lambda: None,
     due: Callable[[], Sequence[Due]] = tuple,
+    hearing: Hearing | PcHearing | None = None,
 ) -> VoiceLoop:
-    listener = None if pc is None else PcListener(pc, pc_wake or Wake(), Vad())
+    listener = None if pc is None else PcListener(pc, pc_wake or Wake(), Vad(), hearing)
     return VoiceLoop(
         agent,
         mic,
@@ -546,6 +567,206 @@ def test_a_click_after_the_wake_word_in_pc_audio_is_not_a_request() -> None:
     assert agent.calls == []
 
 
+@pytest.mark.parametrize(
+    ("after_wake", "why"),
+    [
+        ([SILENCE] * 20, "no speech"),
+        ([SPEECH, *[SILENCE] * 5], "0.08 s of speech is too little"),
+    ],
+)
+def test_a_pc_wake_without_a_request_logs_why_it_was_dropped(
+    caplog: pytest.LogCaptureFixture, after_wake: list[NDArray[np.int16]], why: str
+) -> None:
+    caplog.set_level(logging.INFO, logger="jarvis.voice")
+    agent = Agent()
+    pc = PcAudio(SILENCE, WAKE, *after_wake, *[SILENCE] * 3)
+    mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
+
+    _run(_loop(agent, mic, Speaker(), pc=pc))
+
+    assert agent.calls == []
+    assert f"dropped a PC audio request: {why}" in caplog.messages
+
+
+def test_a_pc_wake_while_the_loop_is_busy_logs_why_it_was_ignored(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="jarvis.voice")
+    pc_done = threading.Event()
+    holder: list[VoiceLoop] = []
+
+    agent = Agent()
+    pc = PcAudio(
+        until(lambda: bool(holder) and holder[0].state is State.CAPTURE),
+        WAKE,
+        pc_done.set,
+    )
+    mic = Mic(WAKE, until(pc_done.is_set), SPEECH, SPEECH, *[SILENCE] * 5)
+    loop = _loop(agent, mic, Speaker(), pc=pc)
+    holder.append(loop)
+
+    _run(loop)
+
+    assert "ignored a wake word in PC audio: the loop was busy (capture)" in caplog.messages
+
+
+def test_every_pc_frame_the_watcher_reads_is_heard_for_pc_audio_listen() -> None:
+    hearing = Hearing()
+    pc = PcAudio(SILENCE, WAKE, SPEECH, SPEECH, *[SILENCE] * 5)
+    agent = Agent()
+    mic = Mic(Idle(lambda: pc.ended.is_set() and agent.called.is_set()), *[SILENCE] * 3)
+
+    _run(_loop(agent, mic, Speaker(), pc=pc, hearing=hearing))
+
+    # The frames a PC request was captured from are heard too.
+    assert hearing.fed[:9] == [0, 2, 1, 1, 0, 0, 0, 0, 0]
+
+
+def test_no_pc_frame_is_heard_while_nothing_listens_or_jarvis_speaks() -> None:
+    for hearing, speaker in [(Hearing(wants=False), Speaker()), (Hearing(), Speaker(busy=True))]:
+        pc = PcAudio(SILENCE, SPEECH, *[SILENCE] * 3)
+        mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
+
+        _run(_loop(Agent(), mic, speaker, pc=pc, hearing=hearing))
+
+        assert hearing.fed == []
+
+
+def test_a_pause_drops_what_pc_audio_listen_holds_and_hears_nothing_meanwhile() -> None:
+    hearing = Hearing()
+    paused = threading.Event()
+    pc = PcAudio(SPEECH, paused.set, SPEECH, SPEECH, paused.clear, WAKE, *[SILENCE] * 2)
+    mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
+
+    _run(_loop(Agent(), mic, Speaker(), pc=pc, hearing=hearing, paused=paused.is_set))
+
+    assert hearing.forgot_after[0] == 1  # once for the pause, not once a frame
+    assert hearing.forgot_after.count(1) == 1
+    assert hearing.fed[:2] == [1, 2]
+
+
+class EndingPcAudio:
+    """PC audio whose one stream plays a script and ends, as a call that is over."""
+
+    def __init__(self, *frames: NDArray[np.int16]) -> None:
+        super().__init__()
+        self._frames = frames
+        self.ended = threading.Event()
+
+    def sessions(self) -> Generator[Generator[NDArray[np.int16]]]:
+        yield self._session()
+        self.ended.set()
+        pause = threading.Event()
+        while True:
+            pause.wait(0.002)
+            yield from ()
+
+    def _session(self) -> Generator[NDArray[np.int16]]:
+        yield from self._frames
+
+    def drain(self) -> None:
+        pass
+
+
+def test_the_end_of_a_pc_stream_drops_the_recall_but_not_a_listen_that_runs() -> None:
+    hearing = Hearing()
+    pc = EndingPcAudio(SPEECH, SPEECH)
+    mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
+
+    _run(_loop(Agent(), mic, Speaker(), pc=pc, hearing=hearing))
+
+    assert hearing.recall_dropped_after[:1] == [2]
+    assert hearing.forgot_after == []
+
+
+def test_a_listen_running_when_the_pc_stream_ends_keeps_what_it_heard() -> None:
+    hearing = PcHearing(10, grace_s=0)
+    result: list[list[NDArray[np.int16]] | None] = []
+    listener = threading.Thread(target=lambda: result.append(hearing.listen(1.0)), daemon=True)
+    listener.start()
+    until(lambda: hearing.wants and listener.is_alive())()
+    pc = EndingPcAudio(SPEECH, SPEECH, SPEECH)
+    mic = Mic(Idle(lambda: pc.ended.is_set() and not listener.is_alive()), *[SILENCE] * 3)
+
+    _run(_loop(Agent(), mic, Speaker(), pc=pc, hearing=hearing))
+
+    listener.join(WAIT_S)
+    frames = result[0]
+    assert frames is not None
+    assert len(frames) == 3  # the stream's frames, not None for a pause
+
+
+def test_a_pc_capture_cut_short_by_a_pause_logs_why_it_was_dropped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="jarvis.voice")
+    paused = threading.Event()
+    agent = Agent()
+    pc = PcAudio(WAKE, SPEECH, SPEECH, paused.set, *[SILENCE] * 5)
+    mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
+
+    _run(_loop(agent, mic, Speaker(), pc=pc, paused=paused.is_set))
+
+    assert agent.calls == []
+    assert "dropped a PC audio request: Jarvis was paused meanwhile" in caplog.messages
+
+
+def test_a_pc_request_found_with_another_still_waiting_logs_why_it_was_dropped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Only the watcher queues, and only while the queue is empty, so this is the guard's own test.
+    caplog.set_level(logging.INFO, logger="jarvis.voice")
+    pc = PcAudio()
+    loop = _loop(Agent(), Mic(), Speaker(), pc=pc)
+    waiting = loop._pc_heard  # pyright: ignore[reportPrivateUsage] - the one-place queue
+    waiting.put_nowait(voice._PcRequest(np.concatenate([SPEECH] * 3), 1.0))  # pyright: ignore[reportPrivateUsage]
+    listener = PcListener(pc, Wake(), Vad())
+
+    loop._capture_pc(listener, iter([SPEECH, SPEECH, *[SILENCE] * 5]), 2.0)  # pyright: ignore[reportPrivateUsage]
+
+    assert waiting.qsize() == 1
+    assert "dropped a PC audio request: another one is still waiting" in caplog.messages
+
+
+def test_a_pc_request_queued_as_jarvis_pauses_is_dropped_with_a_log_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="jarvis.voice")
+    agent = Agent()
+    holder: list[VoiceLoop] = []
+
+    def queued() -> bool:
+        return bool(holder) and not holder[0]._pc_heard.empty()  # pyright: ignore[reportPrivateUsage] - the request is waiting
+
+    def pause() -> None:
+        until(queued)()
+        mic.pause()  # before the loop's next frame, so it never takes the request
+
+    def resume_soon() -> None:
+        threading.Thread(target=mic.resume, daemon=True).start()
+
+    script = Capture(SILENCE, pause, resume_soon, *[SILENCE] * 5)
+    mic = PausableMic(script)
+    pc = PcAudio(WAKE, SPEECH, SPEECH, *[SILENCE] * 5)
+    loop = VoiceLoop(
+        agent,
+        mic,
+        Wake(),
+        Vad(),
+        Speaker(),
+        CFG,
+        lambda _samples: "pause the music",
+        pc=PcListener(pc, Wake(), Vad()),
+        paused=lambda: mic.paused,
+    )
+    holder.append(loop)
+
+    _run(loop)
+
+    assert agent.calls == []
+    assert "dropped a PC audio request: Jarvis was paused meanwhile" in caplog.messages
+
+
 def test_a_failing_request_is_apologised_for_and_the_loop_keeps_listening() -> None:
     def reply(_text: str, _hooks: Hooks, _origin: Origin) -> str:
         if len(agent.calls) == 1:
@@ -779,7 +1000,10 @@ def test_the_pc_watcher_survives_an_error_and_keeps_listening() -> None:
     assert agent.calls == [("pause the music", Origin.PC_AUDIO)]
 
 
-def test_a_pc_capture_is_dropped_when_the_loop_takes_another_request_meanwhile() -> None:
+def test_a_pc_capture_is_dropped_when_the_loop_takes_another_request_meanwhile(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="jarvis.voice")
     clock = Clock()
     pc_woke = threading.Event()
     pc_done = threading.Event()
@@ -802,6 +1026,7 @@ def test_a_pc_capture_is_dropped_when_the_loop_takes_another_request_meanwhile()
     _run(loop)
 
     assert agent.calls == [("pause the music", Origin.OWNER_SPEECH)]
+    assert "dropped a PC audio request: the loop took another one meanwhile" in caplog.messages
 
 
 def test_no_reply_is_spoken_once_jarvis_is_stopping() -> None:

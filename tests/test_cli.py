@@ -27,12 +27,17 @@ from jarvis.audit import AuditLog
 from jarvis.chat.app import ChatApp
 from jarvis.cli import main
 from jarvis.confirmkey import ConfirmKey
+from jarvis.operations import OperationError
+from jarvis.pc.hearing import Listening
 from jarvis.secretfile import write_private_json
 from jarvis.services import strata_profile_file
+from jarvis.voice import PcListener
 
 if TYPE_CHECKING:
     import argparse
     from pathlib import Path
+
+    from numpy.typing import NDArray
 
 
 real_systemctl = cli._systemctl  # pyright: ignore[reportPrivateUsage] - the `home` fixture replaces it in `cli`
@@ -866,6 +871,7 @@ class _Run:
     primed: threading.Event = field(default_factory=threading.Event)
     loops: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
     audit: AuditLog = field(default_factory=lambda: AuditLog(None))
+    listening: list[Listening | None] = field(default_factory=list[Listening | None])
 
     def part(self, *args: object, **kwargs: object) -> _Part:
         made = _Part(*args, **kwargs)
@@ -913,7 +919,8 @@ def _cmd_run(
     agent = SimpleNamespace(prime=run.primed.set)
     jarvis = SimpleNamespace(agent=agent, model=model, ops=ops, hint=lambda: "", audit=run.audit)
 
-    def build(_cfg: config.Config) -> SimpleNamespace:
+    def build(_cfg: config.Config, *, listening: Listening | None = None) -> SimpleNamespace:
+        run.listening.append(listening)
         return jarvis
 
     monkeypatch.setattr(cli, "build", build)
@@ -929,6 +936,37 @@ def _cmd_run(
 
     monkeypatch.setattr(voice_module, "VoiceLoop", Loop)
     return run, main(["run"])
+
+
+def test_the_run_hears_pc_audio_for_pc_audio_listen_through_the_pc_watcher_only_when_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def body(run: _Run, should_stop: Callable[[], bool]) -> None:
+        del should_stop
+        run.handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    on = config.Config(audio=config.AudioConfig(listen_to_pc=True, pc_audio_recall_s=10))
+    run, code = _cmd_run(monkeypatch, body, on)
+
+    assert code == 0
+    (listening,) = run.listening
+    assert listening is not None
+    assert listening.hearing.recall_s == 10
+    pc = run.loops[0]["pc"]
+    assert isinstance(pc, PcListener)
+    assert pc.hearing is listening.hearing
+    stopped = threading.Event()
+    for _ in range(500):  # the stopper thread ends every listen
+        if listening.hearing.listen(0) is None:
+            stopped.set()
+            break
+        threading.Event().wait(0.01)
+    assert stopped.is_set()
+
+    off, code = _cmd_run(monkeypatch, body, config.Config())
+
+    assert code == 0
+    assert off.listening == [None]
 
 
 def test_a_stop_signal_only_raises_the_flag_and_the_stopper_ends_everything(
@@ -2316,3 +2354,34 @@ def test_a_restart_that_fails_says_the_old_settings_still_hold(
     cli._restart_if_running()  # pyright: ignore[reportPrivateUsage] - the step itself
 
     assert "still runs on the old settings" in capsys.readouterr().err
+
+
+def test_pc_audio_listen_reads_with_the_unhinted_transcriber_and_says_its_failures() -> None:
+    pc_listening = cli._pc_listening  # pyright: ignore[reportPrivateUsage] - the voice service's wiring
+    on = config.Config(audio=config.AudioConfig(listen_to_pc=True))
+    heard: list[int] = []
+
+    def answer(samples: NDArray[np.int16]) -> str:
+        heard.append(len(samples))
+        return "they said hello"
+
+    listening = pc_listening(on, answer, paused=lambda: False)
+    assert listening is not None
+    frames = [np.ones(audio_module.FRAME, dtype=np.int16)] * 3
+
+    assert listening.transcribe(frames) == "they said hello"
+    assert heard == [3 * audio_module.FRAME]
+    assert pc_listening(config.Config(), answer, paused=lambda: False) is None
+
+    phantom = pc_listening(on, lambda _s: "Thank you for watching!", paused=lambda: False)
+    assert phantom is not None
+    assert not phantom.transcribe(frames)
+
+    def broken(_samples: NDArray[np.int16]) -> str:
+        msg = "voxtype exited 1"
+        raise audio_module.AudioError(msg)
+
+    failing = pc_listening(on, broken, paused=lambda: False)
+    assert failing is not None
+    with pytest.raises(OperationError, match="speech-to-text failed"):
+        failing.transcribe(frames)

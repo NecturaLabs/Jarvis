@@ -84,6 +84,7 @@ STATS_S = 2.0
 TICK_S = 0.12
 ARM_S = 0.4  # a choice made sooner than this after a question appears was meant for something else
 STILL_WORKING = "I'm still working on the last request; esc stops it."
+NO_REPLY = "The request ended without a reply."
 QUIT_WINDOW_S = 2.0  # a second Ctrl+C this soon after the first leaves
 MAX_ENTRIES = 600  # transcript widgets kept; older ones are removed
 RESUMED_TURNS = 12  # remembered turns shown when the window opens on an earlier conversation
@@ -1476,6 +1477,7 @@ class ChatApp(App[None]):
             hush=lambda: self._from_worker(self._drop_draft, work),
             preview=True,
             steer=lambda: self._take_steering(work),
+            condensed=lambda note: self._from_worker(self._note, note),
         )
         reply = ""
         rate: float | None = None
@@ -1523,6 +1525,8 @@ class ChatApp(App[None]):
             self._exchanges.append(("jarvis", reply))
         elif stopped:
             self._note("Stopped.")
+        else:
+            self._note(NO_REPLY)  # a request never ends with nothing on the screen
         self._draw_toolbar()
 
     def _idle(self) -> None:

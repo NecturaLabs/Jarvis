@@ -172,6 +172,14 @@ def _with_lead(
     return itertools.chain(lead, frames), keyword_tail(lead)
 
 
+class _Hearing(Protocol):
+    @property
+    def wants(self) -> bool: ...
+    def feed(self, frame: NDArray[np.int16]) -> None: ...
+    def forget(self) -> None: ...
+    def forget_recall(self) -> None: ...
+
+
 class _Vad(Protocol):
     def speech_probability(self, frame: NDArray[np.int16]) -> float: ...
     def reset(self) -> None: ...
@@ -213,6 +221,7 @@ class PcListener:
     audio: _PcAudio
     wake: _Wake
     vad: _Vad
+    hearing: _Hearing | None = None  # what `pc_audio_listen` hears, fed every frame read
 
 
 @dataclass(frozen=True, slots=True)
@@ -1113,8 +1122,34 @@ class VoiceLoop:
         with contextlib.closing(pc.audio.sessions()) as sessions:
             for session in sessions:
                 with contextlib.closing(session):
-                    if self._watch_session(pc, session, should_stop):
+                    frames = session if pc.hearing is None else self._heard(pc.hearing, session)
+                    if self._watch_session(pc, frames, should_stop):
                         return
+
+    def _heard(
+        self, hearing: _Hearing, frames: Iterator[NDArray[np.int16]]
+    ) -> Iterator[NDArray[np.int16]]:
+        """Pass on each PC frame, handing it to `hearing` too unless paused or Jarvis speaks.
+
+        Jarvis's own voice plays through the PC (all of it, when every output is listened to),
+        so nothing is heard while it speaks. A pause drops whatever `hearing` holds, and the end
+        of the stream its recall, so a call's last words are not kept once it is over. A plain
+        loop, so closing this leaves `frames` open.
+        """
+        paused = False
+        try:
+            for frame in frames:
+                if self._paused():
+                    if not paused:
+                        hearing.forget()
+                        paused = True
+                else:
+                    paused = False
+                    if hearing.wants and not self._speaker.busy:
+                        hearing.feed(frame)
+                yield frame
+        finally:
+            hearing.forget_recall()  # a listen that runs goes on with the next stream's frames
 
     def _watch_session(
         self, pc: PcListener, frames: Iterator[NDArray[np.int16]], should_stop: Callable[[], bool]
@@ -1146,7 +1181,11 @@ class VoiceLoop:
             wake_at = self._clock()
             self._pc_wake_at = wake_at
             log.info("wake word in PC audio")
-            if state is not State.IDLE or self._too_soon(wake_at):
+            if state is not State.IDLE:
+                log.info("ignored a wake word in PC audio: the loop was busy (%s)", state.value)
+                pc.wake.reset()
+                continue
+            if self._too_soon(wake_at):
                 pc.wake.reset()
                 continue
             self._capture_pc(pc, frames, wake_at)
@@ -1189,16 +1228,19 @@ class VoiceLoop:
             # Ended by itself. A capture the tap cut short keeps the wake model as it is, so a
             # wake word still being heard on the PC is not lost (it marks the mic's request).
             pc.wake.reset()
-        if heard.samples is None or heard.speech_s < MIN_REQUEST_SPEECH_S:
-            return
         if self._requests != requests:
             log.info("dropped a PC audio request: the loop took another one meanwhile")
             return
         if self._paused():
             log.info("dropped a PC audio request: Jarvis was paused meanwhile")
             return
-        with contextlib.suppress(queue.Full):
+        if heard.samples is None or heard.speech_s < MIN_REQUEST_SPEECH_S:
+            log.info("dropped a PC audio request: %s", _no_request(heard))
+            return
+        try:
             self._pc_heard.put_nowait(_PcRequest(heard.samples, wake_at))
+        except queue.Full:
+            log.info("dropped a PC audio request: another one is still waiting")
 
     def _pc_tap(
         self, pc: PcListener, frames: Iterator[NDArray[np.int16]], requests: int
@@ -1248,6 +1290,7 @@ class VoiceLoop:
                 # A PC request heard before the pause, or queued as it came, is dropped.
                 with contextlib.suppress(queue.Empty):
                     self._pc_heard.get_nowait()
+                    log.info("dropped a PC audio request: Jarvis was paused meanwhile")
                 if should_stop():
                     return
                 log.info("resumed: listening for the wake word")
