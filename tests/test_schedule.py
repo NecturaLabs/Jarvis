@@ -459,7 +459,7 @@ def test_the_question_about_a_scheduled_request_holds_all_of_its_words() -> None
     [
         ({"text": "tea", "at": "09:00", "day": "someday"}, "day must be"),
         ({"text": "tea", "at": "08:00", "day": "today"}, "already passed"),
-        ({"text": "tea", "in_minutes": 5, "at": "09:00"}, "not both"),
+        ({"text": "tea", "in_minutes": 5, "at": "09:00"}, "only one of"),
         ({"text": "tea"}, "say when"),
     ],
 )

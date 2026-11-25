@@ -820,7 +820,7 @@ class SpotifyOps:
             return result
         queued = [_names(item) for item in self._api.queued()[:_UP_NEXT]]
         devices = [
-            f"{device.name} (playing here)" if device.is_active else device.name
+            f"{device.name} (playing now)" if device.is_active else device.name
             for device in self._api.devices()
         ]
         extra = f" Up next: {'; '.join(queued) or 'nothing queued'}."

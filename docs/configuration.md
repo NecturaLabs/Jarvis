@@ -80,7 +80,7 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 
 A spoken reply that drew on outside text (a web page, a song name) is remembered as data, as in the chat: a
 follow-up such as "what was the second one?" has it, and while it is remembered an action the model chooses
-needs your yes; a plain command (`pause`, `volume 40`) does not. Until 2026-11-25 the voice left such a reply out.
+needs your yes; a plain command (`pause`, `volume 40`) does not.
 
 ## `[chat]`: the same for typed requests in `jarvis chat`
 
@@ -282,7 +282,7 @@ the playlist ones: everything else works, and adding to a playlist says to run `
 | `transcribe_engine` | empty | text | Voxtype `--engine`. Empty means Voxtype's own. Jarvis supports `whisper`, `parakeet`, `cohere` and `gguf` (Qwen3-ASR and other checkpoints Voxtype runs natively). |
 | `transcribe_model` | `small.en` | text | Voxtype `--model`: a model name or a full path to a model file. Empty means Voxtype's own. For `parakeet`, `cohere` and `gguf`, a full path to a `.gguf` file goes in Jarvis's own Voxtype config instead, in the section Voxtype reads it from; the `gguf` engine is also told the architecture the file names. The vocabulary hint goes only to Whisper, the one engine that reads it. The model must already be downloaded; `jarvis doctor` checks Whisper models and model files. Voxtype's CPU build runs every engine on the CPU; its GPU build is chosen system-wide (`voxtype setup gpu`). |
 | `transcribe_threads` | `8` | 1 to 256 | CPU threads for speech-to-text, written to Jarvis's own Voxtype settings file for Whisper and for the GGUF engine (`transcribe_engine = "gguf"`). Fewer threads leave more of the CPU to a game but transcribe more slowly; Voxtype's GPU build needs few either way. |
-| `transcribe_backend` | `""` | `""`, `auto`, `cpu`, `cpu_accel`, `vulkan` | Where the GGUF engine runs, written as its `gguf_backend`; empty leaves it to Voxtype (its GPU build uses the graphics card). `cpu` keeps speech-to-text off the card on the GPU build, for a game that fills it: measured here, no VRAM instead of about 3 GB for each request, but 7 to 8 CPU-seconds instead of 0.35 and about a second longer, with the same transcript. Other engines ignore it. |
+| `transcribe_backend` | `""` | `""`, `auto`, `cpu`, `cpu_accel`, `vulkan` | Where the GGUF engine runs, written as its `gguf_backend`; empty leaves it to Voxtype (its GPU build uses the graphics card). `cpu` keeps speech-to-text off the card on the GPU build, for a game that fills it: measured on the reference machine, no VRAM instead of about 3 GB for each request, but 7 to 8 CPU-seconds instead of 0.35 and about a second longer, with the same transcript. Other engines ignore it. |
 | `transcribe_short_window` | `true` | true or false | Size Whisper's window to the clip (`context_window_optimization`); much faster for short commands. |
 | `vocabulary_hint` | `true` | true or false | Prime speech-to-text with Jarvis's name, its actions and your artist names. |
 | `hint_names` | `40` | 0 to 200 | Most artist names put in the hint (the hint also stops at 800 characters). |

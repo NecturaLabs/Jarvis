@@ -80,7 +80,7 @@ def test_nothing_to_pause_changes_nothing() -> None:
     result = _run(fake, {"action": "pause"})
 
     assert fake.sent == []
-    assert result.spoken == "Nothing else is playing."
+    assert result.spoken == "Nothing is playing."
     assert not result.acted
 
 

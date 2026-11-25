@@ -34,7 +34,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   two places take about as long as the slowest one. Each is still decided, asked about and audited one by
   one first; actions always run on their own, in order.
 - `pc_media`: play, pause or skip a video in the browser, VLC or another MPRIS player, or say what plays,
-  through `playerctl` (`pacman -S playerctl`). Spotify keeps its own tools; "everything" pauses it too. Only a
+  through `playerctl` (`pacman -S playerctl`). Spotify keeps its own tools; `everything` pauses it too. Only a
   player's plain name is said, never a title.
 
 - Reminders and scheduled requests can be set in seconds ("in 30 seconds"), up to an hour, for a one-off job;
@@ -98,6 +98,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Clearer words: `pc_media` says "Nothing is playing." when no player plays, the Spotify device list marks
+  the active device "(playing now)", and a reminder given two times says to give only one.
 - Speech remembers a reply that drew on outside text (a search, a page, a song name) as data, as the chat does,
   so "what was the second one?" has the answer to go on. While it is remembered, an action the model chooses
   asks first; a plain command does not. It was left out of later requests before.

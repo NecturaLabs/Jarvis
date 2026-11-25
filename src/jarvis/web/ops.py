@@ -708,7 +708,7 @@ class WebOps:
                             "minimum": 0,
                             "maximum": 23,
                             "description": "An hour of the day, 0 to 23 on the place's clock, for "
-                            "the weather then; leave when out for the next such hour",
+                            "the weather then; leave `when` out for the next such hour",
                         },
                         "place": _PLACE,
                     },

@@ -134,7 +134,7 @@ def test_now_playing_can_also_say_what_is_queued_and_the_devices(tmp_path: Path)
     assert "Up next: Song 0 by Glass Harbor; Song 1" in result.text
     assert "Song 4" in result.text
     assert "Song 5" not in result.text
-    assert "Devices: pc (playing here), Kitchen speaker." in result.text
+    assert "Devices: pc (playing now), Kitchen speaker." in result.text
     assert result.origin is Origin.SPOTIFY
 
 

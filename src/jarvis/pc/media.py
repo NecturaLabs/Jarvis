@@ -72,7 +72,7 @@ class MediaOps:
         if action != "pause" or not everything:
             targets = targets[:1]
         if not targets:
-            said = "Nothing else is paused." if action == "play" else "Nothing else is playing."
+            said = "Nothing is paused." if action == "play" else "Nothing is playing."
             return Result(said, spoken=said)
         for name in targets:
             self._playerctl(["-p", name, action])
@@ -91,7 +91,7 @@ class MediaOps:
             Operation(
                 "pc_media",
                 "Play, pause or skip in other media players (a video in the browser, VLC), or "
-                "say what plays. Spotify has its own tools; everything true also pauses it.",
+                "say what plays. Spotify has its own tools; everything: true also pauses Spotify.",
                 {
                     "type": "object",
                     "properties": {
