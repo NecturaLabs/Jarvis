@@ -145,6 +145,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - A voice-service restart that fails after `/config` is now shown in the chat, saying the old settings still
   hold; it went to a hidden error stream before. A setting is audited only once it is saved, and acting without
   asking turned on from the chat is recorded as `consent_changed`, as `jarvis consent` records it.
+- A request the model answered while the conversation held outside text now keeps that mark itself: what the
+  model wrote then may repeat that text, so actions still need a yes once the turn it came from is forgotten.
 - A tool call's arguments now count toward the context: a long file being written was counted as almost nothing,
   so the check that clears a long request's oldest results to fit the window, and the remembered conversation's
   size, came out too low.
@@ -228,6 +230,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- Speech keeps a short memory for quick commands: `agent.memory_idle_s` is now `300.0` (was `1800.0`), so the
+  conversation is forgotten after five idle minutes, and `agent.memory_tokens` is now `3000` (was `6000`). A
+  scheduled request shares speech's conversation and limits; `jarvis ask` remembers nothing between runs. The
+  chat's own memory is unchanged.
 - The chat's default `memory_tokens` is now 7000 (was 7800): the new tools' and arguments' schemas take that room
   in the default 24,576-token window. A larger `strata.context` leaves room for more.
 

@@ -24,8 +24,10 @@ from jarvis.memory import (
     CHARS_PER_TOKEN,
     PRIVATE_ORIGINS,
     SHED_TO,
+    STEERED,
     Conversation,
     Turn,
+    answered_calls,
     message_tokens,
     tokens,
 )
@@ -69,8 +71,8 @@ MAX_CALLS_PER_TURN = 12
 MAX_SIDE_BY_SIDE = 4  # read-only look-ups of one model message run at once, at most
 MAX_TOOL_TEXT = 3000  # a read page or Reddit thread, with its title line
 REPLY_TOKENS = 400
-MEMORY_TOKENS = 6000
-MEMORY_IDLE_S = 1800.0
+MEMORY_TOKENS = 3000  # speech's short-term memory, as `[agent]` sets it
+MEMORY_IDLE_S = 300.0
 CONTEXT_TOKENS = 24576
 CONTEXT_MARGIN = 512  # tokens kept free of the estimate, for the template and estimate error
 SUMMARY_TOKENS = 700
@@ -82,7 +84,6 @@ MAX_STREAMED_CHARS = 4000  # no more is spoken before an answer is whole (no_act
 NO_ACTION = "no_action"
 THINK_HARDER = "think_harder"
 _UNKNOWN = "unknown operation"
-STEERED = "(The owner adds, while you work on this request:)"
 # What a remembered turn keeps of its look-ups, so a follow-up can go back to the same page.
 MAX_LOOK_UPS_KEPT = 6
 MAX_ASKED = 160  # characters of one argument
@@ -731,16 +732,7 @@ def kept_work(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     ran leaves no call without its result). A lone `no_action` call at the end is left out with
     its result: its words are the reply the turn keeps anyway.
     """
-    work = [copy.deepcopy(dict(message)) for message in messages]
-    end, waiting = 0, set[str]()
-    for index, message in enumerate(work):
-        if message.get("role") == "assistant" and message.get("tool_calls"):
-            waiting = {str(call.get("id", "")) for call in objs(message.get("tool_calls"))}
-        elif message.get("role") == "tool":
-            waiting.discard(str(message.get("tool_call_id", "")))
-        if not waiting:
-            end = index + 1
-    work = work[:end]
+    work = answered_calls([copy.deepcopy(dict(message)) for message in messages])
     calls = [index for index, message in enumerate(work) if message.get("tool_calls")]
     if calls and all(m.get("role") == "tool" for m in work[calls[-1] + 1 :]):
         names = {
@@ -1136,9 +1128,12 @@ class Agent:
             if self.compact():
                 done.append("summarized the oldest requests")
             else:
+                summarized = bool(memory.summary)
                 dropped = memory.drop_to_fit()
                 self._audit.record("memory_trimmed", turns=dropped)
                 done.append(f"forgot {_requests(dropped, 'the oldest')}" if dropped else "")
+                if summarized and not memory.summary:
+                    done.append("forgot the summary of older requests")
         self._save_memory()
         self._condensed(before, [what for what in done if what], hooks)
 
@@ -1166,15 +1161,22 @@ class Agent:
         except OSError as exc:
             log.warning("the conversation could not be saved: %s", exc)
 
-    def _remember(self, text: str, reply: str, turn: _Turn) -> None:
-        """Keep a finished or stopped request and its reply in the conversation.
+    def _remember(self, text: str, reply: str, turn: _Turn, work: list[dict[str, Any]]) -> None:
+        """Keep a finished or stopped request, its reply and its kept `work` in the conversation.
 
         A reply drawn on outside text is kept as data, with what was looked up (an address
-        found on a page is that page's words). With `memory_detail` "full", the request's tool
-        calls and results are kept too, as the model last read them (`kept_work`).
+        found on a page is that page's words). A request the model answered while the
+        conversation held outside text is marked as drawing on it too (`REMEMBERED`, or
+        `process` for listings alone), as is its file text: what the model wrote then may repeat
+        that text, and the mark stays after the turn it came from is forgotten.
         """
         outside = turn.outside
-        work = self._limits.memory_detail == "full"
+        memory = self._memory
+        if turn.answered and outside in {"", Origin.PROCESS.value}:
+            if memory.holds_outside_text_but(Origin.PROCESS.value):
+                outside = REMEMBERED
+            elif memory.holds_outside_text:
+                outside = Origin.PROCESS.value
         self._memory.add(
             Turn(
                 text,
@@ -1184,7 +1186,7 @@ class Agent:
                 self._clock(),
                 private=turn.private and bool(outside),
                 looked=_newest(turn.looked, MAX_LOOKED),
-                work=kept_work(turn.messages[turn.first + 1 :]) if work else [],
+                work=work,
             )
         )
         self._save_memory()
@@ -1333,11 +1335,15 @@ class Agent:
         a follow-up need not look it all up again; a request heard in PC audio never is.
         """
         stopped = hooks.cancelled()
-        if self._limits.memory_detail != "full":  # a full turn keeps them in its work already
-            asked = "\n".join([asked, *(f"{STEERED} {words}" for words in turn.steered)])
+        full = self._limits.memory_detail == "full"
+        work = kept_work(turn.messages[turn.first + 1 :]) if full else []
+        # Typed words the kept work holds stay there, so the request reads as the model read it.
+        held = {str(m["content"]) for m in work if m.get("role") == "user"}
+        steered = [line for words in turn.steered if (line := f"{STEERED} {words}") not in held]
+        asked = "\n".join([asked, *steered])
         if (reply or stopped) and not turn.foreign:
             said = f"{reply} {STOPPED}".strip() if stopped else reply
-            self._remember(asked, said, turn)
+            self._remember(asked, said, turn, work)
         seconds = round(self._clock() - turn.started, 2)
         flag = {"stopped": True} if stopped else {}
         self._audit.record("reply", text=reply, seconds=seconds, **flag)

@@ -141,8 +141,10 @@ class AgentConfig(_Section):
     max_seconds: float = Field(default=90.0, ge=10, le=3600)
     reply_tokens: int = Field(default=400, ge=64, le=8192)
     tool_text_chars: int = Field(default=3000, ge=500, le=50000)  # of one tool result
-    memory_tokens: int = Field(default=6000, ge=0, le=200000)
-    memory_idle_s: float = Field(default=1800.0, ge=0)  # forget after this long unused; 0 never
+    # Speech is short-term memory for quick commands: a follow-up comes within a minute or two,
+    # and after five idle minutes an old exchange is likelier to mislead the next command.
+    memory_tokens: int = Field(default=3000, ge=0, le=200000)
+    memory_idle_s: float = Field(default=300.0, ge=0)  # forget after this long unused; 0 never
     memory_detail: MemoryDetail = "condensed"
     thinking: Effort = "none"
     thinking_tokens: int = Field(default=192, ge=32, le=8192)

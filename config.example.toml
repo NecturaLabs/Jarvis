@@ -15,7 +15,9 @@ temperature = 0.2
 # How much one spoken request may do, and how much of the talk Jarvis remembers. reply_tokens caps
 # each answer the model writes; memory_tokens is the room the conversation may take of the model's
 # context (older turns are summarized to stay within it); memory_idle_s forgets it after that long
-# without a request (0: never). thinking is how hard the model thinks at the start of each request;
+# without a request (0: never). Speech keeps a short memory for quick commands: five idle minutes
+# forget it. memory_detail is what later requests keep of one: "condensed" (its request, reply,
+# actions and look-ups) or "full" (also its tool calls and results; the chat's default). thinking is how hard the model thinks at the start of each request;
 # it may raise that itself for the rest of a request, up to thinking_max (set it equal to thinking
 # to never raise). After a raise it thinks up to thinking_raised_tokens per call ([chat] too).
 [agent]
@@ -24,8 +26,9 @@ max_tool_calls = 12
 max_seconds = 90.0
 reply_tokens = 400
 tool_text_chars = 3000
-memory_tokens = 6000
-memory_idle_s = 1800.0
+memory_tokens = 3000
+memory_idle_s = 300.0
+memory_detail = "condensed"
 thinking = "none"
 thinking_tokens = 192
 thinking_max = "high"
@@ -41,6 +44,7 @@ reply_tokens = 2048
 tool_text_chars = 8000
 memory_tokens = 7000
 memory_idle_s = 0.0
+memory_detail = "full"
 thinking = "none"
 thinking_tokens = 512
 thinking_max = "high"
