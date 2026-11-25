@@ -43,7 +43,8 @@ Accepted on 2026-11-23: one jobs file, typed fields, and a scheduled request run
   write systemd units for words the model wrote, run a second Jarvis process that cannot speak through the
   voice service, and leave units behind when Jarvis is removed. The voice service looks at the file at most
   once a second and only when it changed, so it costs nothing while idle.
-- **Typed fields.** `schedule_add` takes `in_minutes` (up to a week), or `at` (HH:MM) with `day` (today,
+- **Typed fields.** `schedule_add` takes `in_seconds` (up to an hour, a one-off job only; added
+  2026-11-25 for timers under a minute), `in_minutes` (up to a week), or `at` (HH:MM) with `day` (today,
   tomorrow or a weekday), and `repeat` (`none`, `daily`, `weekdays`, `weekends`, `weekly`, or `every`
   with `every_minutes`, 5 to 1440). The schema bounds every value; a cron line would need its own parser to
   be bounded, and a small local model writes typed fields more reliably. At most 50 jobs, 200 characters

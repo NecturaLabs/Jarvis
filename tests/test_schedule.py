@@ -65,6 +65,11 @@ def test_a_reminder_in_some_minutes_is_due_then() -> None:
     assert _plan(in_minutes=20).next == FRIDAY_10 + 20 * 60
 
 
+def test_a_reminder_in_some_seconds_is_due_then() -> None:
+    """A timer shorter than a minute ("in 30 seconds") could not be set in whole minutes."""
+    assert _plan(in_seconds=30).next == FRIDAY_10 + 30
+
+
 @pytest.mark.parametrize(
     ("at", "day", "expected"),
     [
@@ -97,6 +102,10 @@ def test_a_reminder_at_a_time_of_day_is_due_at_its_next_one(
         {"repeat": "daily"},  # a daily job needs its time of day
         {"repeat": "every"},  # ... and an every job its minutes
         {"in_minutes": 5, "every_minutes": 30},  # minutes between, without repeat every
+        {"in_seconds": 30, "in_minutes": 1},  # said twice
+        {"in_seconds": 30, "at": "10:30"},  # said twice
+        {"in_seconds": 30, "at": "07:30", "repeat": "daily"},  # seconds are for a one-off job
+        {"in_seconds": 30, "repeat": "every", "every_minutes": 30},
     ],
 )
 def test_a_time_that_cannot_be_a_time_to_come_is_refused(args: dict[str, Any]) -> None:
@@ -154,6 +163,9 @@ def test_an_every_job_skips_the_times_it_missed() -> None:
     ("args", "said"),
     [
         ({"in_minutes": 20}, "today at 10:20 AM"),
+        ({"in_seconds": 30}, "in 30 seconds"),
+        ({"in_seconds": 1}, "in 1 second"),
+        ({"in_seconds": 90}, "in 90 seconds"),
         ({"at": "09:00"}, "tomorrow at 9:00 AM"),
         ({"at": "08:00", "day": "wednesday"}, "on Wednesday at 8:00 AM"),
         ({"at": "07:30", "repeat": "daily"}, "every day at 7:30 AM"),

@@ -8,6 +8,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Reminders and scheduled requests can be set in seconds ("in 30 seconds"), up to an hour, for a one-off job;
+  the smallest step was a minute. One due within two minutes is said as "in 30 seconds".
+
 - The model thinks harder only when a request needs it. Each request still starts at `thinking` (`none` by
   default). For one that needs careful thought (several steps, a name it may have misheard, a correction, a
   try that failed), the model raises its own effort for the rest of that request with the new `think_harder`

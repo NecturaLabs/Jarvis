@@ -43,6 +43,8 @@ FILE_VERSION = 1
 MAX_JOBS = 50
 MAX_TEXT = 200
 MAX_IN_MINUTES = 7 * 24 * 60  # a week ahead
+MAX_IN_SECONDS = 3600  # past an hour, minutes say it
+_IN_SECONDS_UNDER = 120  # a one-off job due sooner than this is said in seconds
 MIN_EVERY_MINUTES = 5
 MAX_EVERY_MINUTES = 24 * 60
 LATE_S = 10 * 60.0  # later than this, a request or a repeating reminder is not done
@@ -171,19 +173,21 @@ class _When:
     clock: str
     day: str
     every: int
+    seconds: int | None = None
 
 
 def _when_of(args: dict[str, Any]) -> _When:
     """Return the time arguments of `schedule_add`.
 
     Raises:
-        ArgumentError: `at` is not a time of day, `day` not a day, or both `in_minutes` and `at`
-            are given.
+        ArgumentError: `at` is not a time of day, `day` not a day, or more than one of
+            `in_seconds`, `in_minutes` and `at` is given.
     """
     minutes = args.get("in_minutes")
+    seconds = args.get("in_seconds")
     clock = _clock_of(str(args["at"])) if args.get("at") else ""
-    if minutes is not None and clock:
-        msg = "give either in_minutes or at, not both"
+    if sum(given is not None for given in (minutes, seconds, clock or None)) > 1:
+        msg = "give one of in_seconds, in_minutes and at, not both"
         raise ArgumentError(msg)
     every = int(args.get("every_minutes") or 0)
     day = str(args.get("day", "")).strip().casefold()
@@ -192,7 +196,13 @@ def _when_of(args: dict[str, Any]) -> _When:
     if day and day not in {"today", "tomorrow", *DAY_NAMES}:
         msg = "day must be today, tomorrow or a weekday's name"
         raise ArgumentError(msg)
-    return _When(None if minutes is None else int(minutes), clock, day, every)
+    return _When(
+        None if minutes is None else int(minutes),
+        clock,
+        day,
+        every,
+        None if seconds is None else int(seconds),
+    )
 
 
 def plan(args: dict[str, Any], now: float, ident: int) -> Job:
@@ -208,6 +218,11 @@ def plan(args: dict[str, Any], now: float, ident: int) -> Job:
     if (repeat == "every") != bool(when.every):
         msg = "repeat every goes with every_minutes, and every_minutes only with it"
         raise ArgumentError(msg)
+    if when.seconds is not None:
+        if repeat != "none":
+            msg = "in_seconds is for a one-off job; a repeating one takes in_minutes or at"
+            raise ArgumentError(msg)
+        return Job(ident, action, text, repeat, "", (), 0, now + float(when.seconds))
     if repeat == "every":
         first = now + 60.0 * (when.minutes if when.minutes is not None else when.every)
         if when.clock:
@@ -234,7 +249,7 @@ def _once_at(when: _When, now: float) -> float:
         ArgumentError: no time was given, or it has passed today.
     """
     if not when.clock:
-        msg = "say when: in_minutes, or at a time of day"
+        msg = "say when: in_seconds, in_minutes, or at a time of day"
         raise ArgumentError(msg)
     today = _local(now)
     if when.day == "today":
@@ -285,6 +300,9 @@ def spoken_when(job: Job, now: float, *, twelve_hour: bool) -> str:
     repeating = _repeating(job, now, clock)
     if repeating is not None:
         return repeating
+    seconds = round(job.next - now)
+    if 0 < seconds < _IN_SECONDS_UNDER:
+        return f"in {seconds} second{'' if seconds == 1 else 's'}"
     return _on_day(moment, now, clock)
 
 
@@ -542,12 +560,13 @@ class ScheduleOps:
             Operation(
                 "schedule_add",
                 "Set a reminder (remind: said then) or a request (do: done then). When:"
-                " in_minutes, or at HH:MM with day; repeat, every_minutes for every.",
+                " in_seconds or in_minutes, or at HH:MM with day; repeat, every_minutes for every.",
                 {
                     "type": "object",
                     "properties": {
                         "text": _TEXT,
                         "action": {"type": "string", "enum": list(ACTIONS)},
+                        "in_seconds": {"type": "integer", "minimum": 1, "maximum": MAX_IN_SECONDS},
                         "in_minutes": {"type": "integer", "minimum": 1, "maximum": MAX_IN_MINUTES},
                         "at": {"type": "string", "maxLength": 5},
                         "day": {"type": "string", "maxLength": 9},
