@@ -18,6 +18,7 @@ from jarvis.agent import (
     MAX_SECONDS,
     MAX_STEPS,
     MAX_TOOL_TEXT,
+    MAX_TRUSTED_PASTE,
     MODEL_DOWN,
     MODEL_MISSING,
     NO_ACTION_REMINDER,
@@ -32,9 +33,9 @@ from jarvis.agent import (
     NoReason,
     claims_action,
 )
-from jarvis.app import no_action_operation, quiet_operation, think_operation
+from jarvis.app import channel_limits, no_action_operation, quiet_operation, think_operation
 from jarvis.audit import AuditLog
-from jarvis.config import AgentConfig, ChatConfig, FilesConfig
+from jarvis.config import AgentConfig, ChatConfig, Config, FilesConfig
 from jarvis.jsonutil import objs
 from jarvis.memory import tokens
 from jarvis.model import Delta, ModelError, ModelMissingError, Thinking
@@ -639,6 +640,45 @@ def test_after_a_file_is_read_a_search_needs_a_yes() -> None:
 
     assert [r["op"] for r in counter.runs] == ["read"]
     assert len(asked) == 1
+
+
+def test_after_pc_audio_is_listened_to_a_search_needs_a_yes() -> None:
+    # What someone said in a call is theirs: it leaves the PC only with the owner's yes.
+    counter = Counter()
+    asked: list[str] = []
+    ops = [
+        counter.op("listen", origin=Origin.PC_AUDIO, side_effect=False),
+        counter.op("search", side_effect=False, outbound=True),
+    ]
+    model = ScriptedModel([_call("listen"), _call("search", call_id="c2"), _say("Done.")])
+    agent, _ = _agent(model, ops)
+
+    agent.handle("what are they saying", Hooks(confirm=lambda q: asked.append(q) or False))
+
+    assert [r["op"] for r in counter.runs] == ["listen"]
+    assert len(asked) == 1
+    assert model.seen[1][-1]["content"].startswith('<data origin="pc_audio">')
+
+
+def test_an_operation_is_told_how_much_of_the_requests_time_is_left() -> None:
+    clock = Clock()
+    seen: list[float] = []
+    counter = Counter()
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        seen.append(request.time_left())
+
+    ops = [counter.op("wait", side_effect=False, then=note)]
+    model = ScriptedModel(
+        [_call("wait"), _say("Done.")], during=lambda: setattr(clock, "now", clock.now + 30)
+    )
+    agent, _ = _agent(model, ops, clock=clock, limits=Limits(max_seconds=90.0))
+
+    agent.handle("wait for it", Hooks(confirm=lambda _q: False))
+
+    assert seen == [60.0]
 
 
 def test_a_search_after_only_web_text_runs_without_a_yes() -> None:
@@ -2268,6 +2308,69 @@ def test_a_scheduled_request_has_no_words_of_the_owners_own() -> None:
         agent.handle("read https://kettles.example/a", NO_CONFIRM, scheduled=scheduled)
 
     assert seen == ["", "read https://kettles.example/a"]
+
+
+def test_a_request_that_is_all_one_long_paste_has_no_words_of_the_owners_own() -> None:
+    seen: list[str] = []
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        seen.append(request.words)
+
+    paste = "read https://kettles.example/a " + "x" * MAX_TRUSTED_PASTE
+    look = Counter().op("look", then=note, side_effect=False)
+    agent, _ = _agent(ScriptedModel([_call("look"), _say("Done.")]), [look])
+
+    agent.handle(paste, NO_CONFIRM, pasted=[paste])
+
+    assert seen == [""]
+
+
+@pytest.mark.parametrize(
+    ("origin", "steered_by", "foreign", "outside"),
+    [
+        (Origin.OWNER_SPEECH, ("web",), False, {"web"}),
+        (Origin.PC_AUDIO, (), True, set[str]()),
+    ],
+)
+def test_a_job_that_adds_a_job_hands_on_where_it_came_from(
+    origin: Origin, steered_by: tuple[str, ...], *, foreign: bool, outside: set[str]
+) -> None:
+    # A scheduled request that schedules another: the new job must not come out cleaner.
+    seen: list[tuple[bool, set[str]]] = []
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        seen.append((request.foreign, set(request.outside)))
+
+    add = Counter().op("add", then=note, side_effect=False)
+    agent, _ = _agent(ScriptedModel([_call("add"), _say("Added.")]), [add])
+
+    agent.handle(
+        "(A request you scheduled earlier, due now.) add another",
+        NO_CONFIRM,
+        origin,
+        steered_by=steered_by,
+        scheduled=True,
+    )
+
+    assert seen == [(foreign, outside)]
+
+
+def test_a_plain_command_runs_unasked_on_the_voice_channel_after_outside_text() -> None:
+    counter = Counter()
+    pause = counter.op("pause", spoken="Paused.", shortcuts=(Shortcut("pause", lambda _g: {}),))
+    model = ScriptedModel([_call("search"), _say("Found it.")])
+    limits = channel_limits(Config(), "voice")
+    agent, _ = _agent(model, [counter.op("search", origin=Origin.WEB), pause], limits=limits)
+
+    agent.handle("search", NO_CONFIRM)
+    reply = agent.handle("pause", NO_CONFIRM)
+
+    assert reply == "Paused."
+    assert [r["op"] for r in counter.runs] == ["search", "pause"]
 
 
 # Pictures

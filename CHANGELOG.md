@@ -15,6 +15,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   profile, every connection goes through a loopback proxy that reaches only public addresses, and it closes
   when idle. On in the chat (`chat.browser`), off for speech (`agent.browser`); `[browser] idle_close_s`.
 
+- `pc_audio_listen`: with PC audio on, ask Jarvis what is being said or played there (a call, a video) and it
+  listens for up to a minute and tells you. `audio.pc_audio_recall_s` (off by default) keeps the last seconds in
+  memory, so it can also tell you what was just said. The audio reaches the disk only for the moment Voxtype
+  transcribes it, the words are someone else's data, and when Jarvis asks first (`bypass_consent` off) a search
+  or action after them waits for your yes.
 - The chat's `/config` also sets Jarvis's speaking speed, whether it acts without asking first and whether it
   takes requests from PC audio. Changes there restart the voice service once, when the settings close, instead of
   at every Enter, and its Tools list never takes a tool below how it ships.
@@ -118,6 +123,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A wake word heard in PC audio with no request after it is no longer dropped silently: the log now says why
+  (no speech, too little speech, the loop busy, paused or still holding another one).
+- With PC audio on, Jarvis no longer tells you it cannot hear it: the voice prompt says whose audio it hears and
+  that a request from there is that person's, not yours. With it off, the prompt says Jarvis cannot hear it.
 - A follow-up on something Jarvis looked up no longer sends it searching all over again. Each remembered
   request names what it looked up (the searches and pages, as data when they came from outside), and a page read
   in the conversation is kept for 30 minutes, so reading it again needs no network. An address the owner

@@ -723,6 +723,74 @@ def test_a_registry_without_some_operations_keeps_the_others_and_their_resets() 
     assert resets == [True]
 
 
+def test_the_voice_prompt_says_pc_audio_cannot_be_heard_while_listening_is_off() -> None:
+    prompt = system_prompt(Config(), "voice")
+
+    assert "You do not hear the PC's own audio" in prompt
+    assert "jarvis pc-audio on" in prompt
+    assert "pc_audio_listen" not in prompt
+
+
+@pytest.mark.parametrize(
+    ("apps", "heard"),
+    [
+        (["discord"], "what discord plays"),
+        (["discord", "mpv"], "what discord and mpv play"),
+        ([], "everything the PC plays"),
+    ],
+)
+def test_the_voice_prompt_says_what_pc_audio_it_hears_and_how_its_requests_are_treated(
+    apps: list[str], heard: str
+) -> None:
+    config = Config.model_validate({"audio": {"listen_to_pc": True, "pc_audio_apps": apps}})
+
+    prompt = system_prompt(config, "voice")
+
+    assert "You do not hear the PC's own audio" not in prompt
+    assert f"You also hear {heard}" in prompt
+    assert "not from the owner" in prompt
+    assert "pc_audio_listen" in prompt
+    assert "asks the owner before" not in prompt  # consent is bypassed by default
+
+
+def test_the_voice_prompt_says_pc_audio_requests_wait_for_a_yes_only_when_jarvis_asks() -> None:
+    config = Config.model_validate(
+        {"audio": {"listen_to_pc": True}, "boundaries": {"bypass_consent": False}}
+    )
+
+    assert "asks the owner before it changes anything" in system_prompt(config, "voice")
+
+
+def test_the_chat_prompt_leaves_pc_audio_to_the_voice_service() -> None:
+    # The chat never hears PC audio either way, and its prompt has no room to spare (the
+    # default context test above).
+    for listening in (False, True):
+        config = Config.model_validate({"audio": {"listen_to_pc": listening}})
+
+        assert "PC's own audio" not in system_prompt(config, "chat")
+        assert "You also hear" not in system_prompt(config, "chat")
+
+
+def test_pc_audio_listen_is_offered_by_voice_only_while_pc_audio_is_on() -> None:
+    on = Config.model_validate({"audio": {"listen_to_pc": True}})
+    cases: list[tuple[Config, Channel, bool]] = [
+        (Config(), "voice", False),
+        (on, "voice", True),
+        (on, "chat", False),
+    ]
+
+    for config, channel, offered in cases:
+        registry = channel_registry(config, [], channel_limits(config, channel), channel)
+        assert (registry.get("pc_audio_listen") is not None) is offered, (channel, offered)
+
+
+def test_a_setting_for_pc_audio_listen_is_known_while_pc_audio_is_off() -> None:
+    # Set while PC audio was on, it must not stop Jarvis from starting once it is off.
+    config = Config.model_validate({"boundaries": {"classes": {"pc_audio_listen": "deny"}}})
+
+    assert unknown_overrides(config, []) == []
+
+
 # The headless browser (ADR 0016): offered per channel, only when agent-browser is installed.
 
 
