@@ -35,6 +35,7 @@ from jarvis.app import (
 )
 from jarvis.audit import AuditLog
 from jarvis.chat import clipboard
+from jarvis.chat.archive import ChatArchive
 from jarvis.chat.history import InputHistory
 from jarvis.confirmkey import ConfirmKey
 from jarvis.files import write_atomic
@@ -586,6 +587,7 @@ def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
         ("memory", f"{cfg.chat.memory_detail}, up to {cfg.chat.memory_tokens:,} tokens"),
         ("config", str(paths.config_file())),
         ("conversation", str(chat_memory_file())),
+        ("archive", f"{chat_archive_dir()}, up to {cfg.chat.archive_keep} conversations"),
         ("audit log", str(paths.audit_file())),
     ]
 
@@ -707,6 +709,11 @@ def _apply_from_chat() -> None:
         raise RestartError(RESTART_FAILED)
 
 
+def chat_archive_dir() -> Path:
+    """Return where the chat keeps every conversation for /resume and reading back."""
+    return paths.state_dir() / "chat-archive"
+
+
 def _save_chat_settings(chat: config.ChatConfig) -> None:
     """Write the chat's settings into the config file as it is now on disk, and audit them."""
     current = config.load()
@@ -754,6 +761,9 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         set_shared=_set_shared,
         apply=_apply_from_chat,
         history=InputHistory(paths.state_dir() / "chat-history", cfg.chat.history_size),
+        archive=ChatArchive(chat_archive_dir(), cfg.chat.archive_keep)
+        if cfg.chat.archive_keep
+        else None,
         export_dir=documents if documents.is_dir() else Path.home(),
         paste=clipboard.read,
         pictures=reads_pictures(cfg),

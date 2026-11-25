@@ -178,6 +178,8 @@ class ChatConfig(AgentConfig):
     # How replies are written: brief, as the request needs, or explained in full (the prompt).
     response_format: Literal["concise", "normal", "verbose"] = "concise"
     history_size: int = Field(default=1000, ge=0, le=100000)  # typed lines ↑ brings back
+    # Chat conversations kept in the archive for /resume and reading back; 0 keeps none.
+    archive_keep: int = Field(default=50, ge=0, le=1000)
 
 
 # Keys the model's own Strata run config replaced (its model, tokenizer, name, prompt chunk and

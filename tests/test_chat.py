@@ -134,6 +134,9 @@ class FakeSession:
     def set_system(self, prompt: str) -> None:
         self.systems.append(prompt)
 
+    def resume(self, path: Path) -> bool:
+        return self.memory.load(path)
+
 
 def _plain(renderable: object) -> str:
     console = Console(width=200, record=True, color_system=None, file=io.StringIO())
@@ -2259,3 +2262,80 @@ def test_a_folder_name_with_a_newline_stays_in_the_question_not_the_preview(
 
     _run(test, app)
     assert not (home / "Documents" / "work\nSure, go ahead" / "plan.md").exists()
+
+
+# The archive: /resume, /rename and /forget
+
+
+def test_resume_lists_earlier_conversations_and_continues_one(tmp_path: Path) -> None:
+    from jarvis.chat.archive import ChatArchive  # ruff: ignore[import-outside-top-level] - only these tests
+
+    archive = ChatArchive(tmp_path / "archive", keep=10)
+    earlier = Conversation(budget=1000)
+    archive.record({"event": "request", "text": "my cat is called Miso"})
+    earlier.add(Turn("my cat is called Miso", "A fine name.", "", "", 1.0))
+    archive.save(earlier)
+    archive.start()
+    session = FakeSession()
+    app = _app(session=session, services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/resume")
+        await _until(pilot, lambda: _has(app, "Earlier conversations"))
+        assert _has(app, "my cat is called Miso")
+        await _type(pilot, "/resume 1")
+        await _until(pilot, lambda: _has(app, "Continuing my cat is called Miso"))
+        assert _has(app, "A fine name.")
+        await _type(pilot, "/rename Pets")
+        await _until(pilot, lambda: _has(app, "Named this conversation Pets"))
+
+    _run(test, app)
+    assert [t.request for t in session.memory.turns] == ["my cat is called Miso"]
+    assert [a.name for a in archive.listed()] == ["Pets"]
+
+
+def test_forget_all_deletes_the_archive(tmp_path: Path) -> None:
+    from jarvis.chat.archive import ChatArchive  # ruff: ignore[import-outside-top-level] - only these tests
+
+    archive = ChatArchive(tmp_path / "archive", keep=10)
+    memory = Conversation(budget=1000)
+    archive.record({"event": "request", "text": "hello"})
+    memory.add(Turn("hello", "Hi.", "", "", 1.0))
+    archive.save(memory)
+    archive.start()
+    app = _app(session=FakeSession(), services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/forget")
+        await _until(pilot, lambda: _has(app, "/forget all deletes"))
+        assert archive.listed()
+        await _type(pilot, "/forget all")
+        await _until(pilot, lambda: _has(app, "Deleted 1 archived conversation"))
+
+    _run(test, app)
+    assert archive.listed() == []
+
+
+def test_a_finished_request_is_archived_with_the_windows_own_log(tmp_path: Path) -> None:
+    from jarvis.chat.archive import ChatArchive  # ruff: ignore[import-outside-top-level] - only these tests
+
+    archive = ChatArchive(tmp_path / "archive", keep=10)
+    tail = FakeTail()
+    session = FakeSession()
+
+    def answer(text: str, _hooks: Hooks) -> str:
+        own: dict[str, object] = {"session": SESSION, "via": "chat"}
+        tail.entries.append({"event": "request", "text": text, **own})
+        session.memory.add(Turn(text, "Paused it.", "", "", 1.0))
+        return "Paused it."
+
+    session.answer = answer
+    app = _app(tail, session, services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "pause")
+        await _until(pilot, lambda: bool(archive.listed()))
+
+    _run(test, app)
+    (kept,) = archive.listed()
+    assert kept.name == "pause"

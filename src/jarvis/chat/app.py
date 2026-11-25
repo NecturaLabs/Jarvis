@@ -83,6 +83,7 @@ if TYPE_CHECKING:
     from textual.widget import Widget
 
     from jarvis.agent import ContextUse
+    from jarvis.chat.archive import Archived, ChatArchive
     from jarvis.chat.clipboard import Clip
     from jarvis.chat.history import InputHistory
     from jarvis.memory import Conversation
@@ -100,6 +101,8 @@ TICK_S = 0.12
 ARM_S = 0.4  # a choice made sooner than this after a question appears was meant for something else
 STILL_WORKING = "I'm still working on the last request; esc stops it."
 NO_REPLY = "The request ended without a reply."
+MAX_RESUME_LISTED = 15
+RESUME_HINT = "/resume NUMBER continues one; /rename names this one; /forget all deletes them."
 QUIT_WINDOW_S = 2.0  # a second Ctrl+C this soon after the first leaves
 MAX_ENTRIES = 600  # transcript widgets kept; older ones are removed
 RESUMED_TURNS = 12  # remembered turns shown when the window opens on an earlier conversation
@@ -179,6 +182,10 @@ class Session(Protocol):
         """Give the model `prompt` as its instructions from the next request on."""
         ...
 
+    def resume(self, path: Path) -> bool:
+        """Continue the conversation saved in `path`; return whether it was read."""
+        ...
+
     @property
     def memory(self) -> Conversation:
         """The remembered conversation."""
@@ -201,6 +208,7 @@ class Services:
     tools: Callable[[], list[ToolSetting]] | None = None  # every tool and its setting
     next_tool_setting: Callable[[str], ToolSetting] | None = None  # moves one on, saves it
     history: InputHistory | None = None
+    archive: ChatArchive | None = None  # every conversation, for /resume and reading back
     export_dir: Path = field(default_factory=Path.home)
     paste: Callable[[], Clip] | None = None  # reads the clipboard, for Ctrl+V
     pictures: bool = False  # the model can see pictures
@@ -563,6 +571,7 @@ class ChatApp(App[None]):
             question.answered.set()
         if work is not None:
             work.stop.set()
+        self._archive_now()
         self._tail.close()
 
     # The transcript
@@ -666,6 +675,8 @@ class ChatApp(App[None]):
             own = bool(self._session_id) and entry.get("session") == self._session_id
             if own:
                 self._follow(entry)
+                if self._services.archive is not None:
+                    self._services.archive.record(entry)
                 if entry.get("event") in {"request", "reply"}:
                     continue  # shown as it was sent, and as it was written
                 if entry.get("event") == "tool_result" and entry.get("picture"):
@@ -1237,6 +1248,9 @@ class ChatApp(App[None]):
             "/verbosity": self._verbosity_command,
             "/effort": self._effort_command,
             "/format": self._format_command,
+            "/resume": self._resume_command,
+            "/rename": self._rename_command,
+            "/forget": self._forget_command,
             "/config": lambda _a: self._open_settings(),
             "/status": lambda _a: self._status_note(),
             "/copy": lambda _a: self._copy(),
@@ -1280,6 +1294,9 @@ class ChatApp(App[None]):
         if self._work is not None:
             self._note("Wait for the request to finish, or press esc to stop it.", "warn")
             return
+        self._archive_now()
+        if self._services.archive is not None:
+            self._services.archive.start()
         if self._session is not None:
             self._session.forget()
         transcript = self.query_one("#transcript", VerticalScroll)
@@ -1369,6 +1386,89 @@ class ChatApp(App[None]):
             return
         self._set_effort(level)
         self._note(f"{self._effort_line()} From the next request on.")
+
+    def _archive_now(self) -> None:
+        """Write the conversation into the archive as it is now."""
+        archive = self._services.archive
+        if archive is not None and self._session is not None:
+            archive.save(self._session.memory)
+
+    def _resume_command(self, argument: str) -> None:
+        """List the archived conversations, or continue the one numbered `argument`."""
+        archive = self._services.archive
+        if archive is None or self._session is None:
+            self._note("The archive is off (chat.archive_keep is 0).", "warn")
+            return
+        if self._work is not None:
+            self._note("Wait for the request to finish, or press esc to stop it.", "warn")
+            return
+        self._archive_now()
+        kept = [a for a in archive.listed() if a.id != archive.current]
+        if not argument:
+            self._note(
+                self._panel("Earlier conversations", self._archived_table(kept), RESUME_HINT)
+            )
+            return
+        chosen = next((a for a in kept if argument in {a.id, a.name}), None)
+        if chosen is None and argument.isdigit() and 0 < int(argument) <= len(kept):
+            chosen = kept[int(argument) - 1]
+        if chosen is None:
+            self._note(f"No earlier conversation {argument}; /resume lists them.", "warn")
+            return
+        if not archive.resume(chosen.id, self._session.resume):
+            self._note("That conversation could not be read.", "warn")
+            return
+        transcript = self.query_one("#transcript", VerticalScroll)
+        for child in list(transcript.children)[1:]:
+            child.remove()
+        self._exchanges = []
+        self._show_remembered()
+        self._note(f"Continuing {archive.name}.")
+        self._draw_toolbar()
+
+    @staticmethod
+    def _archived_table(kept: list[Archived]) -> RenderableType:
+        if not kept:
+            return Text(
+                "None yet: a conversation is kept once it has a request.", style="bright_black"
+            )
+        grid = Table.grid(padding=(0, 2))
+        for _ in range(4):
+            grid.add_column(no_wrap=True)
+        for number, item in enumerate(kept[:MAX_RESUME_LISTED], start=1):
+            grid.add_row(
+                Text(str(number), style="bold"),
+                Text(f"{item.updated.astimezone():%b %d %H:%M}", style="bright_black"),
+                Text(item.name, style="bold" if item.named else ""),
+                Text(
+                    f"{item.requests} request{'' if item.requests == 1 else 's'}",
+                    style="bright_black",
+                ),
+            )
+        return grid
+
+    def _rename_command(self, argument: str) -> None:
+        archive = self._services.archive
+        if archive is None:
+            self._note("The archive is off (chat.archive_keep is 0).", "warn")
+            return
+        if not argument:
+            self._note(f"This conversation: {archive.name}. /rename NAME names it.")
+            return
+        archive.rename(argument)
+        self._archive_now()
+        self._note(f"Named this conversation {archive.name}.")
+
+    def _forget_command(self, argument: str) -> None:
+        archive = self._services.archive
+        if archive is None:
+            self._note("The archive is off (chat.archive_keep is 0).", "warn")
+            return
+        if argument != "all":
+            self._note("/forget all deletes every archived conversation, this one's file too.")
+            return
+        gone = archive.forget()
+        self._note(f"Deleted {gone} archived conversation{'' if gone == 1 else 's'}.")
 
     def _format_command(self, argument: str) -> None:
         """Show how replies are written, or set it for the requests from now on."""
@@ -1773,6 +1873,7 @@ class ChatApp(App[None]):
             self._note("Stopped.")
         else:
             self._note(NO_REPLY)  # a request never ends with nothing on the screen
+        self._archive_now()
         self._draw_toolbar()
 
     def _idle(self) -> None:

@@ -8,6 +8,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- The chat keeps every conversation in an archive (`~/.local/state/jarvis/chat-archive/`, 0600, the newest
+  `chat.archive_keep` = 50) with its full log of requests, steps, results and replies. `/resume` lists them and
+  `/resume 2` continues one, with what came from outside text still treated as data; `/rename` names the
+  current one, and `/forget all` deletes the archive.
 - `chat.response_format` says how the chat's replies are written: `concise` (the default), `normal` or
   `verbose`. `/format verbose` and `/config` change it from the next request on; the voice keeps its own style.
 - The chat shows calls of one tool in a row as one step: "Write file "…/game.js" · 10 calls" with the newest

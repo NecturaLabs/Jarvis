@@ -3833,3 +3833,23 @@ def test_the_system_prompt_can_change_between_requests() -> None:
 
     assert model.seen[0][0]["content"] == "system"
     assert model.seen[1][0]["content"] == "write at length"
+
+
+def test_a_resumed_conversation_keeps_actions_behind_a_yes(tmp_path: Path) -> None:
+    saved = tmp_path / "earlier.json"
+    earlier, _ = _agent(
+        ScriptedModel([_call("search"), _say("Found it.")]),
+        [Counter().op("search", origin=Origin.WEB, side_effect=False)],
+    )
+    earlier.handle("search", NO_CONFIRM)
+    earlier.memory.save(saved)
+
+    asked: list[str] = []
+    counter = Counter()
+    model = ScriptedModel([_call("play"), _say("Playing.")])
+    agent, audit = _agent(model, [counter.op("play")])
+    assert agent.resume(saved)
+    agent.handle("play it", Hooks(confirm=lambda q: asked.append(q) is not None))
+
+    assert asked  # what the resumed conversation read may have steered it
+    assert "memory_resumed" in _events(audit)

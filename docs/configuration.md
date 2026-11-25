@@ -96,6 +96,7 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 | `toolbar` | `true` | `true`, `false` | The line under the input with the PC's CPU, GPU, VRAM and RAM use, temperatures, and how full the model's context is. In a narrow window it leaves out the temperatures first, so it stays on one line. |
 | `while_working` | `steer` | `steer`, `queue` | What Enter does while a request runs. `steer`: the words join that request as yours, before the model's next call; words it ended before taking run next. `queue`: they wait and run as the next request. Words sent with a picture or a long paste are always queued. Esc still stops the request; queued words then run. `/config` changes it. |
 | `response_format` | `concise` | `concise`, `normal`, `verbose` | How the model writes chat replies: briefly, in a few sentences and without headings; as much as the request needs; or explained in full, with headings for a long answer. `/format` and `/config` change it, from the next request on. The voice keeps its own short spoken style. |
+| `archive_keep` | `50` | 0 to 1000 | Chat conversations kept in `~/.local/state/jarvis/chat-archive/` (0600) for `/resume` and reading back: each with its full log of requests, steps, results and replies. Older ones are deleted; `0` keeps none and turns `/resume` off. `/forget all` deletes them all. |
 | `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, with what was pasted into each, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
 
 `/config` in the chat opens the settings in sections, each setting with its values, when a change applies
@@ -106,6 +107,12 @@ Safety it sets `audio.speech_speed`, `audio.listen_to_pc` (off by default) and `
 and under Tools each tool's setting; the voice service restarts once to take these when the screen closes.
 Acting without asking and taking requests from PC audio are turned on only by a second Enter, after the row
 says what that means, and are marked in red while they are on. A restart that fails is said in the chat.
+
+`/resume` lists the archived conversations, newest first (when, name, how many requests), and `/resume 2`
+continues the second: the model gets that conversation back as it was, so what came from outside text then
+still counts as data and still puts actions behind a yes. A conversation is named after its first request
+until `/rename NAME` names it; the name stays when it is resumed. In Listening, `/config` also shows
+`audio.pc_audio_recall_s` in a build that has it, asked about before it first leaves 0.
 
 `/effort` in the chat says how hard the model thinks before it answers, and how far it may raise that itself
 for a hard request. `/effort none`, `low`, `medium` or `high` sets `thinking` here, from the next request on;
