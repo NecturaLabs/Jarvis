@@ -61,6 +61,21 @@ def test_the_strata_unit_for_a_normal_config(tmp_path: Path) -> None:
     assert text.endswith("WantedBy=graphical-session.target\n")
 
 
+def test_the_strata_unit_may_swap_unless_told_to_keep_the_model_in_ram(tmp_path: Path) -> None:
+    key = tmp_path / "state" / "jarvis" / "strata.env"
+    kept = _config(tmp_path, keep_in_ram=True)
+
+    plain = _lines(services.strata_unit(_config(tmp_path), key))
+    in_ram = _lines(services.strata_unit(kept, key))
+
+    asked = ["LimitMEMLOCK=infinity", "MemorySwapMax=0"]
+    assert not [line for line in plain if line.startswith(("LimitMEMLOCK", "MemorySwapMax"))]
+    assert [line for line in in_ram if line in asked] == asked
+    assert [line for line in in_ram if line not in asked] == plain  # nothing else changes
+    assert in_ram.index("MemorySwapMax=0") < in_ram.index("[Install]")  # in [Service]
+    assert in_ram.index("[Service]") < in_ram.index("LimitMEMLOCK=infinity")
+
+
 def test_a_strata_program_that_is_not_an_absolute_path_never_reaches_the_unit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

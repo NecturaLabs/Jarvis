@@ -124,6 +124,14 @@ SystemCallArchitectures=native
 """
 # A game beside the units wins the processor: the weight is half the default (100).
 _CPU_WEIGHT = 50
+# `strata.keep_in_ram`: the unit's memory is never swapped, and the engine may lock its model in RAM
+# (it asks for that limit itself). A user unit gets a limit only up to its user manager's hard
+# one, 8 MiB unless that was raised (docs/configuration.md), and starts with that; the swap
+# setting holds either way.
+_KEEP_IN_RAM = """\
+LimitMEMLOCK=infinity
+MemorySwapMax=0
+"""
 # A unit that fails five times in 15 minutes stays `failed` (`jarvis start` resets it) instead of
 # restarting for ever; for Strata every round would read the model again.
 _START_LIMIT = """\
@@ -491,6 +499,7 @@ def strata_unit(config: Config, key_file: Path) -> str:
     )
     memory = _path(s.memory_max, "memory_max")
     limit = memory_limit(memory)
+    in_ram = _KEEP_IN_RAM if s.keep_in_ram else ""
     return f"""[Unit]
 Description=Strata model server for Jarvis
 PartOf=graphical-session.target
@@ -510,7 +519,7 @@ RestartSteps=5
 RestartMaxDelaySec=120
 MemoryHigh={memory}
 MemoryMax={limit}
-CPUWeight={_CPU_WEIGHT}
+{in_ram}CPUWeight={_CPU_WEIGHT}
 TimeoutStopSec=45
 {_HARDENING}{_HARDENING_STRATA}
 [Install]
