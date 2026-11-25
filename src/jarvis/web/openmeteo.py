@@ -32,6 +32,9 @@ _QUALIFIED = re.compile(r"(.+?)\s*(?:\(([^()]+)\)|,\s*([^,]+))")
 _CHOICES = 10  # matches asked for when a qualifier picks among them
 _CURRENT = "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation"
 _DAILY = "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+_HOURLY = "temperature_2m,precipitation_probability,weather_code"
+_HOUR = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:00")
+_MINUTE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
 
 # WMO weather interpretation codes, as Open-Meteo documents them, in plain spoken words.
 CONDITIONS: dict[int, str] = {
@@ -108,13 +111,29 @@ class Day:
 
 
 @dataclass(frozen=True, slots=True)
+class Hour:
+    """One hour of the forecast (`time` is ISO to the hour, in the place's own time zone)."""
+
+    time: str
+    condition: str
+    temperature: float
+    rain_chance: int
+
+
+@dataclass(frozen=True, slots=True)
 class Forecast:
-    """Now and the next days, with the units the numbers are in."""
+    """Now and the next days, with the units the numbers are in.
+
+    `hours` is filled only when they were asked for; `local_now` is the place's own clock
+    ("2026-11-21T15:00"), empty when the service did not give it.
+    """
 
     now: Now
     days: tuple[Day, ...]
     temperature_unit: str
     wind_unit: str
+    hours: tuple[Hour, ...] = ()
+    local_now: str = ""
 
 
 def _number(value: object) -> float:
@@ -136,6 +155,37 @@ def _is_date(text: str) -> bool:
 
 def _condition(code: object) -> str:
     return CONDITIONS.get(int(_number(code)), "unsettled")
+
+
+def _hours(hourly: dict[str, Any]) -> tuple[Hour, ...]:
+    """Read the hourly columns; an hour with a time that is not one, or no number, is left out.
+
+    Raises:
+        WeatherUnavailableError: the answer has no hourly columns.
+    """
+    columns: list[list[object]] = []
+    for key in ("time", "weather_code", "temperature_2m", "precipitation_probability"):
+        column: object = hourly.get(key)
+        if not isinstance(column, list):
+            msg = "the forecast had no hours"
+            raise WeatherUnavailableError(msg)
+        columns.append(cast("list[object]", column))
+    found: list[Hour] = []
+    for time, code, temperature, chance in zip(*columns, strict=False):
+        if not isinstance(time, str) or not _HOUR.fullmatch(time):
+            continue
+        try:
+            found.append(
+                Hour(
+                    time,
+                    _condition(code),
+                    _number(temperature),
+                    int(_number(chance)) if chance is not None else 0,
+                )
+            )
+        except WeatherUnavailableError:
+            continue
+    return tuple(found)
 
 
 def _qualified(name: str) -> tuple[str, str]:
@@ -238,26 +288,32 @@ class OpenMeteo:
         return _zone(data.get("timezone"))
 
     def forecast(
-        self, latitude: float, longitude: float, *, temperature_unit: str, wind_unit: str
+        self,
+        latitude: float,
+        longitude: float,
+        *,
+        temperature_unit: str,
+        wind_unit: str,
+        hours: bool = False,
     ) -> Forecast:
-        """Return the weather now and for the next `FORECAST_DAYS` days.
+        """Return the weather now and for the next `FORECAST_DAYS` days, by the hour if `hours`.
 
         Raises:
             WeatherUnavailableError: the service failed or the answer is incomplete.
         """
-        data = self._get(
-            FORECAST,
-            {
-                "latitude": latitude,
-                "longitude": longitude,
-                "current": _CURRENT,
-                "daily": _DAILY,
-                "timezone": "auto",
-                "forecast_days": FORECAST_DAYS,
-                "temperature_unit": temperature_unit,
-                "wind_speed_unit": wind_unit,
-            },
-        )
+        params: dict[str, Any] = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "current": _CURRENT,
+            "daily": _DAILY,
+            "timezone": "auto",
+            "forecast_days": FORECAST_DAYS,
+            "temperature_unit": temperature_unit,
+            "wind_speed_unit": wind_unit,
+        }
+        if hours:
+            params["hourly"] = _HOURLY
+        data = self._get(FORECAST, params)
         current = obj(data.get("current"))
         daily = obj(data.get("daily"))
         now = Now(
@@ -293,4 +349,12 @@ class OpenMeteo:
                     int(_number(chance)) if chance is not None else 0,
                 )
             )
-        return Forecast(now, tuple(days), temperature_unit, wind_unit)
+        local_now = current.get("time")
+        return Forecast(
+            now,
+            tuple(days),
+            temperature_unit,
+            wind_unit,
+            _hours(obj(data.get("hourly"))) if hours else (),
+            local_now if isinstance(local_now, str) and _MINUTE.fullmatch(local_now) else "",
+        )

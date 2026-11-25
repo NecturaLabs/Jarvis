@@ -885,6 +885,30 @@ def test_an_unknown_place_is_none() -> None:
     assert meteo.find("Nowhere") is None
 
 
+def test_hours_are_asked_for_only_when_wanted_and_a_broken_hour_is_left_out() -> None:
+    hourly = {
+        "time": ["2026-11-21T00:00", "not a time", "2026-11-21T02:00"],
+        "weather_code": [0, 0, 3],
+        "temperature_2m": [1.0, 2.0, None],
+        "precipitation_probability": [5, 5, None],
+    }
+    meteo, seen = _meteo(forecast={**FORECAST_ANSWER, "hourly": hourly})
+
+    plain = meteo.forecast(52.5, 13.4, temperature_unit="celsius", wind_unit="kmh")
+    assert plain.hours == ()
+    assert "hourly" not in seen[-1].url.params
+
+    by_hour = meteo.forecast(52.5, 13.4, temperature_unit="celsius", wind_unit="kmh", hours=True)
+    assert [hour.time for hour in by_hour.hours] == ["2026-11-21T00:00"]
+    assert by_hour.hours[0].condition == "clear"
+
+
+def test_an_answer_without_hours_when_they_were_asked_for_is_unusable() -> None:
+    meteo, _ = _meteo()
+    with pytest.raises(WeatherUnavailableError, match="no hours"):
+        meteo.forecast(52.5, 13.4, temperature_unit="celsius", wind_unit="kmh", hours=True)
+
+
 def test_a_made_up_zone_or_country_is_not_passed_on() -> None:
     bad = {"results": [{**GEO["results"][0], "timezone": "Mars/Base"}]}
     meteo, _ = _meteo(geo=bad)

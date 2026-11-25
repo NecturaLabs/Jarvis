@@ -19,7 +19,7 @@ import re
 import threading
 from collections import deque
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -169,6 +169,45 @@ def _weather_result(forecast: Forecast, when: str, where: str) -> Result:
         return Result(text, spoken=spoken)
     lines = [_day_line(day, f"{date.fromisoformat(day.date):%A}", sign) for day in forecast.days]
     return Result(f"Weather in {where} this week. " + "; ".join(lines) + ".")
+
+
+def _hour_result(
+    forecast: Forecast, asked: tuple[str, int], where: str, *, twelve_hour: bool
+) -> Result:
+    """Word the forecast for one hour of today or tomorrow (`asked` is `when` and the hour).
+
+    With `when` left at "now", the hour is the next one of that number: today's if it has not
+    passed at the place, else tomorrow's.
+
+    Raises:
+        OperationError: the forecast lacks that hour.
+    """
+    when, hour = asked
+    today = forecast.local_now[:10] or (forecast.days[0].date if forecast.days else "")
+    if not today:
+        msg = "The forecast didn't include that hour."
+        raise OperationError(msg)
+    day = date.fromisoformat(today)
+    passed = bool(forecast.local_now) and int(forecast.local_now[11:13]) > hour
+    tomorrow = when == "tomorrow" or (when == "now" and passed)
+    if tomorrow:
+        day += timedelta(days=1)
+    found = next((h for h in forecast.hours if h.time == f"{day.isoformat()}T{hour:02d}:00"), None)
+    if found is None:
+        msg = "The forecast didn't include that hour."
+        raise OperationError(msg)
+    label = "Tomorrow" if tomorrow else "Today"
+    sign = _UNIT_SIGNS.get(forecast.temperature_unit, "degrees")
+    clock = spoken_time(datetime(day.year, day.month, day.day, hour), twelve_hour=twelve_hour)  # ruff: ignore[call-datetime-without-tzinfo] - only its hour is said
+    text = (
+        f"Weather in {where}. {label} at {hour:02d}:00: {found.condition}, "
+        f"{_round(found.temperature)} {sign}, {found.rain_chance}% chance of rain."
+    )
+    spoken = (
+        f"{label} at {clock} looks like {found.condition}, {_round(found.temperature)} degrees, "
+        f"with a {found.rain_chance} percent chance of rain."
+    )
+    return Result(text, spoken=spoken)
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,6 +403,10 @@ class WebOps:
         """
         place = str(args.get("place", "")).strip()
         when = str(args.get("when", "now"))
+        hour = args.get("hour")
+        if hour is not None and when == "week":
+            msg = "An hour goes with today or tomorrow, not the whole week."
+            raise OperationError(msg)
         if place:
             found = self._find(place)
             latitude, longitude = found.latitude, found.longitude
@@ -376,9 +419,13 @@ class WebOps:
                 longitude,
                 temperature_unit=self._weather_config.temperature_unit,
                 wind_unit=self._weather_config.wind_unit,
+                hours=hour is not None,
             )
         except WeatherUnavailableError as exc:
             raise OperationError(str(exc)) from exc
+        if hour is not None:
+            twelve = self._clock_config.twelve_hour
+            return _hour_result(forecast, (when, int(hour)), where, twelve_hour=twelve)
         return _weather_result(forecast, when, where)
 
     # --- web --------------------------------------------------------------------------------
@@ -624,7 +671,8 @@ class WebOps:
             ),
             Operation(
                 "weather",
-                "The weather now, today, tomorrow or this week, at home or in a named place.",
+                "The weather now, today, tomorrow or this week, or at an hour of today or "
+                "tomorrow, at home or in a named place.",
                 {
                     "type": "object",
                     "properties": {
@@ -632,6 +680,13 @@ class WebOps:
                             "type": "string",
                             "enum": ["now", "today", "tomorrow", "week"],
                             "default": "now",
+                        },
+                        "hour": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 23,
+                            "description": "An hour of the day, 0 to 23 on the place's clock, for "
+                            "the weather then; leave when out for the next such hour",
                         },
                         "place": _PLACE,
                     },

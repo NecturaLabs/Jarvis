@@ -45,8 +45,11 @@ GEO = {
         }
     ]
 }
+# Two days of hours in the place's own time: at hour n of a day it is n degrees.
+HOURS = [f"2026-11-{day}T{hour:02d}:00" for day in (21, 22) for hour in range(24)]
 FORECAST = {
     "current": {
+        "time": "2026-11-21T15:00",
         "temperature_2m": 4.4,
         "apparent_temperature": 0.2,
         "weather_code": 1,
@@ -59,6 +62,12 @@ FORECAST = {
         "temperature_2m_max": [6.3, 4.7, 3.0],
         "temperature_2m_min": [0.6, 1.9, -0.3],
         "precipitation_probability_max": [53, 50, 0],
+    },
+    "hourly": {
+        "time": HOURS,
+        "temperature_2m": [float(n % 24) for n in range(48)],
+        "precipitation_probability": list(range(48)),
+        "weather_code": [61 if n % 24 == 17 else 3 for n in range(48)],
     },
 }
 SEARCH = {
@@ -467,6 +476,56 @@ def test_today_tomorrow_and_the_week() -> None:
     week = _run(ops, "weather", when="week")
     assert "Saturday: light showers" in week.text
     assert "Monday: clear" in week.text
+
+
+def test_an_hour_still_to_come_today_is_answered_for_today() -> None:
+    net = Net()
+
+    result = _run(_ops(net), "weather", hour=17)
+
+    assert result.spoken == (
+        "Today at 5:00 PM looks like light rain, 17 degrees, with a 17 percent chance of rain."
+    )
+    assert "Today at 17:00: light rain, 17" in result.text
+    hourly = net.seen[0].url.params["hourly"]
+    assert hourly == "temperature_2m,precipitation_probability,weather_code"
+
+
+def test_an_hour_already_past_means_tomorrow_unless_today_is_said() -> None:
+    ops = _ops(Net())
+
+    assert _run(ops, "weather", hour=9).spoken == (
+        "Tomorrow at 9:00 AM looks like overcast, 9 degrees, with a 33 percent chance of rain."
+    )
+    assert _run(ops, "weather", hour=9, when="today").spoken.startswith("Today at 9:00 AM")
+    assert _run(ops, "weather", hour=9, when="tomorrow").spoken.startswith("Tomorrow at 9:00 AM")
+
+
+def test_the_hour_is_said_on_the_owners_clock() -> None:
+    config = Config(
+        weather=WeatherConfig(coordinates=[52.52, 13.41], place="Berlin"),
+        clock=ClockConfig(twelve_hour=False),
+    )
+    assert _run(_ops(Net(), config), "weather", hour=17).spoken.startswith("Today at 17:00 ")
+
+
+def test_an_hour_goes_with_today_or_tomorrow_only() -> None:
+    with pytest.raises(OperationError, match="today or tomorrow"):
+        _run(_ops(Net()), "weather", hour=17, when="week")
+
+
+def test_without_an_hour_no_hours_are_asked_for() -> None:
+    net = Net()
+
+    _run(_ops(net), "weather", when="today")
+
+    assert "hourly" not in net.seen[0].url.params
+
+
+@pytest.mark.parametrize("hour", [-1, 24, 3.5, "five"])
+def test_an_hour_off_the_clock_is_refused(hour: object) -> None:
+    with pytest.raises(ArgumentError):
+        validate_args(_op(_ops(Net()), "weather"), {"hour": hour})
 
 
 def test_weather_somewhere_else_names_its_country() -> None:

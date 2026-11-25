@@ -10,6 +10,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 - `pc_volume`: the PC's own output volume, read, set, turned up or down or muted, in any words; it is every
   program's sound, games and videos included. A change is bound to its start and end before any question.
+- The weather at an hour of today or tomorrow ("will it rain at five?"): `weather` takes an `hour` on the place's
+  own clock, said on yours (`clock.twelve_hour`); an hour already past today means tomorrow's unless today is said.
+  Only the hours' columns are added to what Open-Meteo is asked; nothing new is sent.
 - Look-ups the model asks for together run side by side: two pages, a search and the weather, or the time in
   two places take about as long as the slowest one. Each is still decided, asked about and audited one by
   one first; actions always run on their own, in order.
