@@ -82,8 +82,8 @@ as planned.
   PC's volume) and systemd user services. `playerctl` (`pacman -S playerctl`) for other media players, if wanted.
 - Voxtype as the dictation backend, with the speech model you set in `audio.transcribe_model` downloaded (a
   Whisper model by default; `audio.transcribe_engine` picks another). Voxtype's GPU build
-  (`sudo voxtype setup gpu --enable`) transcribes in less than half the time and spares the CPU while a game
-  runs ([docs/models.md](docs/models.md#speech-to-text-voxtype)).
+  (`sudo voxtype setup gpu --enable`) transcribed a 4.6 s request in 0.74 s against 1.77 s on the CPU build
+  on the reference machine, and spares the CPU while a game runs ([docs/models.md](docs/models.md#speech-to-text-voxtype)).
 - Python 3.14 and uv.
 - Strata and a model it runs, set up with `strata launch` (which writes the run config Jarvis serves).
   Built and measured on an RX 7900 XT with 64 GB of RAM; what each measured model holds in RAM and VRAM is

@@ -10,7 +10,14 @@ from jarvis.about import AboutOps
 from jarvis.agent import Agent, Limits
 from jarvis.audit import AuditLog
 from jarvis.model import StrataModel
-from jarvis.operations import Operation, OperationError, Registry, Result, current_request
+from jarvis.operations import (
+    Operation,
+    OperationError,
+    Registry,
+    Result,
+    UncertainOutcomeError,
+    current_request,
+)
 from jarvis.paths import audit_file, spotify_token_file, strata_key_file  # re-exported for callers
 from jarvis.pc.apps import AppOps
 from jarvis.pc.files import Boundary, FileOps
@@ -298,12 +305,15 @@ def _playerctl(args: Sequence[str]) -> str:
     """Run `playerctl` for `pc_media`; a failure is said as an OperationError.
 
     Raises:
+        UncertainOutcomeError: playerctl did not answer in time, so the command may have run.
         OperationError: no player answered, or playerctl is missing.
     """
     from jarvis import audio  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which a typed request may never need
 
     try:
         return audio.playerctl(args)
+    except audio.ControlTimeoutError as exc:
+        raise UncertainOutcomeError(str(exc)) from exc
     except audio.AudioError as exc:
         raise OperationError(str(exc)) from exc
 
@@ -417,6 +427,19 @@ def channel_registry(
 
 # Operations offered only when their files are installed, known to `boundaries.classes` either way.
 INSTALLED_ONLY = frozenset({"read_skill", "os_skill"})
+# How Jarvis answers, not tools: never switched off.
+ALWAYS_OFFERED = frozenset({"no_action", "think_harder", "stay_quiet"})
+
+
+def switched_off(config: Config) -> set[str]:
+    """Return the operations `boundaries.classes` sets to `deny`: they are not even offered."""
+    return {name for name, cls in config.boundaries.classes.items() if cls == OpClass.DENY.value}
+
+
+def spotify_operations(config: Config) -> list[Operation]:
+    """Return the Spotify operations, without reaching Spotify (for listing what there is)."""
+    tokens = TokenStore(config.spotify.client_id, spotify_token_file())
+    return SpotifyOps(SpotifyApi(tokens), config.spotify).operations()
 
 
 def unknown_overrides(config: Config, spotify: list[Operation]) -> list[str]:
@@ -518,6 +541,12 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
         )
         msg = f"boundaries.classes sets {', '.join(low)} below what it allows; {allowed}"
         raise SetupError(msg)
+    if core := sorted(switched_off(config) & ALWAYS_OFFERED):
+        msg = (
+            f"boundaries.classes switches off {', '.join(core)}, which is how Jarvis answers, "
+            "not a tool; remove it"
+        )
+        raise SetupError(msg)
     channel: Channel = "chat" if via == "chat" else "voice"
     limits = channel_limits(config, channel)
     elsewhere = via in {"chat", "ask"}  # the voice service says reminders; is one running?
@@ -527,7 +556,7 @@ def build(config: Config, *, via: str | None = None, session: str = "") -> Jarvi
         limits,
         channel,
         voice_running=voice_service_running if elsewhere else lambda: True,
-    )
+    ).without(switched_off(config))  # a tool switched off is not offered at all
     remembered = chat_memory_file() if channel == "chat" else None
     if remembered is not None and not config.chat.resume:
         remembered.unlink(missing_ok=True)

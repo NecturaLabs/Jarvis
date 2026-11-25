@@ -24,7 +24,17 @@ from typing import TYPE_CHECKING, Any
 
 import bar_status
 import pytest
-from bar_status import FACES, HINT, NOT_RUNNING, REQUEST, control_status, render, show, socket_path
+from bar_status import (
+    ACTIVE,
+    FACES,
+    HINT,
+    NOT_RUNNING,
+    REQUEST,
+    control_status,
+    render,
+    show,
+    socket_path,
+)
 
 from jarvis import app, cli, control
 
@@ -571,9 +581,12 @@ def test_the_script_exits_zero_with_a_state_when_the_runtime_folder_is_odd(
     assert socket_path() == f"/run/user/{os.getuid()}/jarvis/control.sock"
     done = run_script()
     assert done.returncode == 0
-    (shown,) = json.loads(done.stdout)["class"]
-    faces = {name.replace(" ", "-") for name in FACES}
+    # A busy Jarvis (listening, thinking, speaking) adds the one highlighted class after its state.
+    shown, *highlight = json.loads(done.stdout)["class"]
+    faces = {name.replace(" ", "-"): face for name, face in FACES.items()}
     assert shown in {*faces, "not-running", "timeout", "failed", "malformed"}
+    busy = shown in faces and faces[shown].active
+    assert highlight == ([ACTIVE] if busy else [])
 
 
 def test_the_script_never_starts_jarvis(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

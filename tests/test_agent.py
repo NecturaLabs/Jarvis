@@ -15,6 +15,7 @@ from jarvis.agent import (
     FAILED_REMINDER,
     LOOKED_REMINDER,
     MAX_CALLS_PER_TURN,
+    MAX_SECONDS,
     MAX_STEPS,
     MAX_TOOL_TEXT,
     MODEL_DOWN,
@@ -1215,6 +1216,51 @@ def test_with_remember_outside_a_reply_from_outside_data_is_kept_as_data() -> No
     assert "&lt;b&gt;hi&lt;/b&gt;" in remembered
 
 
+def test_a_remembered_request_says_what_it_looked_up_so_a_follow_up_can_go_back() -> None:
+    replies = [
+        _call("search", {"q": "descale a kettle"}, "c1"),
+        _call("read", {"url": "https://kettles.example/descale"}, "c2"),
+        _say("Use citric acid."),
+        _call("no_action"),
+        _say("Ten minutes."),
+    ]
+    model = ScriptedModel(replies)
+    ops = [
+        Counter().op("search", origin=Origin.WEB, side_effect=False),
+        Counter().op("read", origin=Origin.WEB, side_effect=False, outbound_args=("url",)),
+    ]
+    agent, _ = _agent(model, ops, limits=Limits(remember_outside=True))
+
+    agent.handle("how do I descale a kettle", NO_CONFIRM)
+    agent.handle("how long does it take", NO_CONFIRM)
+
+    remembered = model.seen[3][2]["content"]
+    assert (
+        '<data origin="web">[looked up: search descale a kettle; read '
+        "https://kettles.example/descale] Use citric acid.</data>"
+    ) in remembered
+
+
+def test_what_was_looked_up_is_not_kept_when_outside_replies_are_not() -> None:
+    replies = [
+        _call("search", {"q": "kettle"}, "c1"),
+        _say("Found it."),
+        _call("no_action"),
+        _say("Hi."),
+    ]
+    model = ScriptedModel(replies)
+    agent, _ = _agent(
+        model,
+        [Counter().op("search", origin=Origin.WEB, side_effect=False)],
+        limits=Limits(remember_outside=False),
+    )
+
+    agent.handle("search", NO_CONFIRM)
+    agent.handle("hello", NO_CONFIRM)
+
+    assert "looked up" not in model.seen[2][2]["content"]
+
+
 def test_remembered_outside_data_puts_side_effects_the_model_chooses_behind_a_yes() -> None:
     counter = Counter()
     asked: list[str] = []
@@ -1600,6 +1646,61 @@ def test_the_last_step_answers_through_the_reply_call_it_is_given() -> None:
 
     assert agent.handle("which wand", NO_CONFIRM) == "The Fairy Wand is the usual pick."
     assert len(counter.runs) == 2
+
+
+def test_the_reply_call_still_answers_once_the_action_budget_is_spent() -> None:
+    # The reply carries no action, so the cap on actions does not refuse it.
+    counter = Counter()
+    replies = [
+        _call("search", {"q": "a"}, "c1"),
+        _call("search", {"q": "b"}, "c2"),
+        _call("no_action", {"reply": "The Fairy Wand is the usual pick."}, "c3"),
+    ]
+    model = ScriptedModel(replies)
+    limits = Limits(max_steps=3, max_tool_calls=2)
+    agent, audit = _agent(model, [counter.op("search")], limits=limits)
+
+    assert agent.handle("which wand", NO_CONFIRM) == "The Fairy Wand is the usual pick."
+    assert len(counter.runs) == 2
+    assert not [e for e in audit.events if e["event"] == "tool_budget"]
+
+
+def test_the_reply_call_still_answers_when_the_time_ran_out_while_it_was_written() -> None:
+    counter = Counter()
+    clock = Clock()
+    calls = [0]
+
+    def written() -> None:
+        calls[0] += 1
+        if calls[0] == 3:  # the last call takes the request past its time
+            clock.now += MAX_SECONDS + 1
+
+    replies = [
+        _call("search", {"q": "a"}, "c1"),
+        _call("search", {"q": "b"}, "c2"),
+        _call("no_action", {"reply": "The Fairy Wand is the usual pick."}, "c3"),
+    ]
+    model = ScriptedModel(replies, during=written)
+    agent, _ = _agent(model, [counter.op("search")], clock=clock, limits=Limits(max_steps=3))
+
+    assert agent.handle("which wand", NO_CONFIRM) == "The Fairy Wand is the usual pick."
+
+
+def test_an_action_past_the_budget_is_still_refused() -> None:
+    counter = Counter()
+    replies = [
+        _call("search", {"q": "a"}, "c1"),
+        _call("search", {"q": "b"}, "c2"),
+        _call("search", {"q": "c"}, "c3"),
+        _say("Two searches were all I could do."),
+    ]
+    model = ScriptedModel(replies)
+    agent, audit = _agent(model, [counter.op("search")], limits=Limits(max_tool_calls=2))
+
+    agent.handle("which wand", NO_CONFIRM)
+
+    assert len(counter.runs) == 2
+    assert [e for e in audit.events if e["event"] == "tool_budget"]
 
 
 def test_the_last_step_runs_no_other_tool_even_when_the_server_returns_one() -> None:

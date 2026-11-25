@@ -2,9 +2,10 @@
 
 import io
 import json
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -457,6 +458,29 @@ def test_a_home_place_name_is_looked_up_once() -> None:
     ]
 
 
+class SlowGeocode(Net):
+    """Answers like `Net`, the place look-up slowly, so two weather calls overlap in it."""
+
+    @override
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host == "geocoding-api.open-meteo.com":
+            threading.Event().wait(0.2)
+        return super().handle(request)
+
+
+def test_two_weather_calls_at_once_look_the_home_up_once() -> None:
+    net = SlowGeocode()
+    ops = _ops(net, Config(weather=WeatherConfig(place="Tokyo")))
+    calls = [threading.Thread(target=_run, args=(ops, "weather")) for _ in range(2)]
+
+    for call in calls:
+        call.start()
+    for call in calls:
+        call.join(5.0)
+
+    assert net.hosts().count("geocoding-api.open-meteo.com") == 1
+
+
 def test_no_home_and_no_place_asks_for_one() -> None:
     net = Net()
     with pytest.raises(OperationError) as caught:
@@ -595,6 +619,31 @@ def test_a_page_from_the_search_is_read() -> None:
     assert result.origin is Origin.WEB
     assert "citric acid" in result.text
     assert net.hosts()[-1] == "kettles.example"
+
+
+def test_a_page_read_again_in_the_conversation_comes_from_what_was_read() -> None:
+    net = Net()
+    ops = _ops(net)
+    _run(ops, "web_search", query="kettle")
+
+    first = _run(ops, "web_read", url="https://kettles.example/descale")
+    again = _run(ops, "web_read", url="https://kettles.example/descale")
+
+    assert again.text == first.text
+    assert net.hosts().count("kettles.example") == 1  # the follow-up needed no network
+
+
+def test_a_forgotten_conversation_reads_the_page_again() -> None:
+    net = Net()
+    ops = _ops(net)
+    _run(ops, "web_search", query="kettle")
+    _run(ops, "web_read", url="https://kettles.example/descale")
+
+    ops.reset()
+    _run(ops, "web_search", query="kettle")
+    _run(ops, "web_read", url="https://kettles.example/descale")
+
+    assert net.hosts().count("kettles.example") == 2
 
 
 def test_an_address_no_search_returned_is_never_fetched() -> None:
@@ -873,6 +922,15 @@ def test_only_a_call_that_carries_the_models_words_sends_them(
     op = next(op for op in _ops(Net()).operations() if op.name == name)
 
     assert op.sends_words(args) is sends
+
+
+def test_the_look_ups_that_may_run_side_by_side_are_the_read_only_ones(tmp_path: Path) -> None:
+    ops = _ops(Net(), shown=_shown(tmp_path)).operations()
+    side_by_side = {op.name for op in ops if op.concurrent}
+
+    # `show_image` puts a picture on the screen, one at a time, so it runs on its own.
+    assert side_by_side == {op.name for op in ops} - {"show_image"}
+    assert not any(op.side_effect for op in ops if op.concurrent)
 
 
 # --- pictures -------------------------------------------------------------------------------------

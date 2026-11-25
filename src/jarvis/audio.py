@@ -70,6 +70,10 @@ class AudioError(Exception):
     """The microphone, transcriber or speaker failed."""
 
 
+class ControlTimeoutError(AudioError):
+    """A sound or media command was sent and did not answer in time: it may have taken effect."""
+
+
 def pw_record_command(
     target: str = "", *, capture_output: bool = False, pinned: bool = False
 ) -> list[str]:
@@ -228,13 +232,17 @@ def _control(program: str, args: Sequence[str], who: str) -> str:
     """Run `program` with a fixed argument list and return its output; `who` names it in errors.
 
     Raises:
-        AudioError: the program is missing, timed out or failed.
+        ControlTimeoutError: the program did not answer in time; it may have done what it was told.
+        AudioError: the program is missing or failed.
     """
     try:
         done = subprocess.run(
             [program, *args], capture_output=True, text=True, timeout=CONTROL_TIMEOUT_S, check=False
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        msg = f"{who} did not answer in time"
+        raise ControlTimeoutError(msg) from exc
+    except OSError as exc:
         msg = f"{who} did not answer ({type(exc).__name__})"
         raise AudioError(msg) from exc
     if done.returncode != 0:

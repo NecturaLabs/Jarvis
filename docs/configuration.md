@@ -67,7 +67,7 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
 | `max_steps` | `8` | 1 to 100 | Most model calls in one request; the last one may only answer, from what the others found. |
-| `max_tool_calls` | `12` | 1 to 200 | Most tool calls in one request. |
+| `max_tool_calls` | `12` | 1 to 200 | Most tool calls in one request. The reply call (`no_action`) is the answer and is not counted. |
 | `max_seconds` | `90.0` | 10 to 3600 | Longest one request may take (180 s more when the model must load first). Time spent asking you and waiting for your yes or the confirm key does not count. Once an action has run, the model still gets at least 15 s to say how it went, and a request that runs out of time after one says what it did. |
 | `reply_tokens` | `400` | 64 to 8192 | Most tokens the model writes in one answer. The prompt asks for replies that fit; a reply the cap ends anyway is kept and says it was cut short. |
 | `tool_text_chars` | `3000` | 500 to 50000 | Most characters of one tool result the model reads. |
@@ -80,7 +80,7 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 
 A spoken reply that drew on outside text (a web page, a song name) is remembered as data, as in the chat: a
 follow-up such as "what was the second one?" has it, and while it is remembered an action the model chooses
-needs your yes; a plain command (`pause`, `volume 40`) does not. Until 2026-11-25 the voice left such a reply out.
+needs your yes; a plain command (`pause`, `volume 40`) does not.
 
 ## `[chat]`: the same for typed requests in `jarvis chat`
 
@@ -144,6 +144,7 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `effort_position` | `""` | `""`, `start`, `end` | Where Strata writes a request's thinking effort, as its `effort_position` in the profile; empty keeps the run config's own (Strata's default is `start`). With `end`, a `low` or `medium` effort goes into a short turn before the answer, so a request whose model raised its effort (`think_harder`) reuses the pinned prompt instead of reading it all again; `high` stays at the start. How well the model follows an effort written there is not measured yet ([models.md](models.md#thinking)), so it is not the default. |
 | `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` of the Strata unit. `MemoryMax` is derived from it, 10% above (44G for 40G; a size that does not divide evenly is rounded up and written in bytes), so there is no second key. Past `MemoryHigh` the kernel throttles the unit and reclaims its memory; past `MemoryMax` it kills the unit. The size depends on the model: Qwen3.8-Flash-Next IQ2_XS needs `44G` ([models.md](models.md)). |
 | `keep_in_ram` | `true` | `true` or `false` | Keep the model server's memory in RAM: its unit gets `MemorySwapMax=0`, so the kernel never swaps it out, and `LimitMEMLOCK=infinity`, so the engine can lock its model as it asks to. Off, a PC short of memory swaps part of the model out between requests and back in on the next one; while it does, the graphics driver pauses the GPU ([Keeping the model in RAM](#keeping-the-model-in-ram)). Turn it off only with swap on a disk and a game that needs that memory more than Jarvis needs a quick answer. |
+| `speed_projection` | `true` | `true` or `false` | Keep a control vector the run config loads, such as Strata's experimental speed projection, which makes the model decline far fewer requests ([The speed projection](#the-speed-projection)). Off, Jarvis's profile leaves the control-vector options out, so the model declines as it was trained to. Jarvis never adds a vector itself. |
 | `vram_reserve_mib` | `0` (unset) | 0, or 100 to 65536 | VRAM in MiB the engine leaves free for other programs, passed as `--vram-reserve-mib`. `0` passes nothing, so Strata's own default (700) applies. For an engine whose expert cache fills the card (`--expert-cache auto`) it is the VRAM limit and must be set: `jarvis setup` refuses such a run config without it, and `jarvis doctor` fails "VRAM left for games". On a 20 GB card, 12000 holds Qwen3.8-Flash-Next at about 8 GiB ([models.md](models.md)). A card with at most about 8 GB of VRAM cannot start with a reserve (Strata's tuner never tries one there). |
 | `kv_resident` | `0` (all in VRAM) | 0, or 20480 to 262144 | Context cells kept in VRAM, passed as `--kv-resident`. Set, the whole context also lives in pinned RAM and only this many cells stay on the card, so `context` can grow past them without more VRAM; the VRAM saved goes to expert slots. Pinned RAM counts against `memory_max`. A `context` of this many cells or fewer is not streamed. Reading past the cells on the card is slower; measure before raising `context` far. |
 | `learn_experts` | `true` | `true` or `false` | For an engine whose run config starts from a routing profile (`--expert-profile`): the engine saves which experts Jarvis's requests use to `~/.local/state/jarvis/strata-expert-profile-<model>.bin` (one file per model, so one model's profile never starts another) (when it stops, and every 10 minutes between requests) and starts from that file next time, so those experts are on the card from the first request. Nothing is deleted from the model. `jarvis setup` starts the file once from a copy of the run config's own profile and never overwrites what the engine learned; `jarvis doctor` fails when it is missing or empty. A routing profile the run config names by a relative path is refused. |
@@ -216,7 +217,8 @@ default on many desktop distributions) moving it out frees about 2 % of what it 
 makes real room, and then the cost is the pause plus a disk read. With the setting on, the rest of the PC
 swaps a little sooner instead, and `jarvis unload` still frees all of the model's memory before a heavy
 game. With no swap the unit's memory limits matter more: past `strata.memory_max` the kernel slows the
-server down rather than swapping it, so keep that limit above the model's own size, as the default is.
+server down rather than swapping it, and past `MemoryMax`, 10% higher, it stops the server, so keep that
+limit above the model's own size, as the default is.
 Turn the setting off when the PC swaps to a disk and a game needs the room more than Jarvis needs a quick
 answer.
 
@@ -233,6 +235,28 @@ LimitMEMLOCK=8M:infinity
 
 then `systemctl daemon-reload`, and log out and in. The swap setting alone already keeps the model from
 being swapped; the lock is what Strata's own start-up text asks a systemd service for.
+
+### The speed projection
+
+Strata ships a control vector for Qwen3.8-Flash-Next, its "experimental speed projection" (in its
+control component's `data/experimental-speed-projection/`, with a README). Strata's own README says what it
+does: the engine removes one direction from the model's activations, and the model then declines far fewer
+requests (1 of 50 against 50 of 50 on its authors' test). That takes away a safety behaviour of the model.
+It also shifts the model's answers slightly on ordinary text, and costs 0.2 to 0.4% per token. Strata's
+setup leaves it off.
+
+To load it, add its options to the model's run config, either in `args` or in `user_args`, which Strata keeps
+when its setup runs again. Take the values from the JSON file beside the vector:
+
+```json
+"user_args": ["--control-vector", "/path/to/Qwen3.8-Flash-Next-experimental-speed-projection.gguf",
+              "--control-vector-layer-range", "4", "44", "--cvec-mode", "project", "--cvec-dir", "per-layer"]
+```
+
+Then run `jarvis restart`. With `strata.speed_projection` on (the default), Jarvis keeps whatever vector the run
+config loads; off, it leaves the vector out without touching the run config. Jarvis's own boundaries do not
+depend on the model declining anything: every action still passes the policy, its confirmation and the
+audit log in code. How the vector changes Jarvis's tool calls has not been measured.
 
 ## `[spotify]`: your own Spotify developer app
 
@@ -282,7 +306,7 @@ the playlist ones: everything else works, and adding to a playlist says to run `
 | `transcribe_engine` | empty | text | Voxtype `--engine`. Empty means Voxtype's own. Jarvis supports `whisper`, `parakeet`, `cohere` and `gguf` (Qwen3-ASR and other checkpoints Voxtype runs natively). |
 | `transcribe_model` | `small.en` | text | Voxtype `--model`: a model name or a full path to a model file. Empty means Voxtype's own. For `parakeet`, `cohere` and `gguf`, a full path to a `.gguf` file goes in Jarvis's own Voxtype config instead, in the section Voxtype reads it from; the `gguf` engine is also told the architecture the file names. The vocabulary hint goes only to Whisper, the one engine that reads it. The model must already be downloaded; `jarvis doctor` checks Whisper models and model files. Voxtype's CPU build runs every engine on the CPU; its GPU build is chosen system-wide (`voxtype setup gpu`). |
 | `transcribe_threads` | `8` | 1 to 256 | CPU threads for speech-to-text, written to Jarvis's own Voxtype settings file for Whisper and for the GGUF engine (`transcribe_engine = "gguf"`). Fewer threads leave more of the CPU to a game but transcribe more slowly; Voxtype's GPU build needs few either way. |
-| `transcribe_backend` | `""` | `""`, `auto`, `cpu`, `cpu_accel`, `vulkan` | Where the GGUF engine runs, written as its `gguf_backend`; empty leaves it to Voxtype (its GPU build uses the graphics card). `cpu` keeps speech-to-text off the card on the GPU build, for a game that fills it: measured here, no VRAM instead of about 3 GB for each request, but 7 to 8 CPU-seconds instead of 0.35 and about a second longer, with the same transcript. Other engines ignore it. |
+| `transcribe_backend` | `""` | `""`, `auto`, `cpu`, `cpu_accel`, `vulkan` | Where the GGUF engine runs, written as its `gguf_backend`; empty leaves it to Voxtype (its GPU build uses the graphics card). `cpu` keeps speech-to-text off the card on the GPU build, for a game that fills it: measured on the reference machine, no VRAM instead of about 3 GB for each request, but 7 to 8 CPU-seconds instead of 0.35 and about a second longer, with the same transcript. Other engines ignore it. |
 | `transcribe_short_window` | `true` | true or false | Size Whisper's window to the clip (`context_window_optimization`); much faster for short commands. |
 | `vocabulary_hint` | `true` | true or false | Prime speech-to-text with Jarvis's name, its actions and your artist names. |
 | `hint_names` | `40` | 0 to 200 | Most artist names put in the hint (the hint also stops at 800 characters). |
@@ -506,7 +530,9 @@ A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` wit
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
 its shipped class, which is `safe` for every operation but `write_file` (`confirm`) and `stop_process`
 (`strong`): `spotify_*`, `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`,
-`pc_stats`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`; set one to `deny` to switch it off. `stop_process`
+`pc_stats`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`; set one to `deny` to switch it off: it is then
+not offered to the model at all. `no_action`, `think_harder` and `stay_quiet` are how Jarvis answers, not tools, and
+cannot be switched off. `stop_process`
 may be set only to `strong` or `deny`: a program is stopped by your command and your key alone, so any
 other class stops `jarvis run`, `ask` and `chat` with an error. Whatever the class, side effects are raised to `confirm` while text from outside
 your own speech is in the request, and so are the operations that send words off the PC while a file's text or a shell command's output is. Example:
@@ -517,6 +543,11 @@ spotify_like = "confirm"
 spotify_queue = "deny"
 reddit_search = "deny"
 ```
+
+Without editing the file: `jarvis tools` lists every tool with its setting, and `jarvis tools NAME on|ask|key|off`
+sets one (`default` puts it back as shipped); in `jarvis chat`, `/config` has a Tools list where Enter moves a tool
+on to its next setting. Either way the change is audited (`tool_class_changed`) and the voice service restarts
+to take it; an open chat takes it the next time it opens.
 
 ## The confirm key (`jarvis confirm`)
 

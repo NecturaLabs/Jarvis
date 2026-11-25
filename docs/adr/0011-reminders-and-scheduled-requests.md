@@ -56,8 +56,8 @@ Accepted on 2026-11-23: one jobs file, typed fields, and a scheduled request run
   PC, which is when they are wanted. Setting one already goes through the policy: when outside text (a web
   page, a file, PC audio) is in the conversation, `schedule_add` needs a yes, and the question reads out the
   whole request, so a page cannot schedule one the owner did not hear.
-- **A job keeps where its request came from** (amended 2026-11-25, #43, on the owner's instruction to build
-  the audit's findings). The yes when a job is added is not always asked (`boundaries.bypass_consent`), and
+- **A job keeps where its request came from** (amended 2026-11-25, #43). The
+  yes when a job is added is not always asked (`boundaries.bypass_consent`), and
   a yes then is not a yes to every action the job takes later. So each job records whether its request was
   heard in PC audio (`foreign`) and the origins of the outside text that request had seen (`outside`: web,
   file, memory and so on). When it falls due, a request from PC audio runs as PC audio, and one added beside

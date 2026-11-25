@@ -745,3 +745,61 @@ def test_a_fixed_expert_cache_needs_no_reserve(tmp_path: Path) -> None:
     args = _args(services.strata_profile(cfg))
 
     assert args[args.index("--expert-cache") + 1] == "2000"
+
+
+_VECTOR = [
+    "--control-vector", "/strata/data/vector.gguf", "--control-vector-layer-range", "4", "44",
+    "--cvec-mode", "project", "--cvec-dir", "per-layer",
+]  # fmt: skip
+
+
+def _strings(value: object) -> list[str]:
+    """Return a profile's argument list as strings, or fail the test."""
+    assert isinstance(value, list)
+    return [str(item) for item in cast("list[object]", value)]
+
+
+def _with_projection(tmp_path: Path, *, user_args: bool = False, on: bool = True) -> Config:
+    """A config whose run config loads Strata's speed-projection vector, by hand or as user_args."""
+    cfg = _config(tmp_path, speed_projection=on)
+    (tmp_path / "vector.gguf").write_bytes(b"GGUF")
+    vector = [str(tmp_path / "vector.gguf") if a == _VECTOR[1] else a for a in _VECTOR]
+    path = cfg.strata.run_config
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if user_args:
+        data["user_args"] = vector
+    else:
+        data["args"] = [*data["args"], *vector]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return cfg
+
+
+def test_the_speed_projection_is_on_by_default() -> None:
+    assert StrataConfig().speed_projection is True
+
+
+@pytest.mark.parametrize("user_args", [False, True])
+def test_a_projection_the_run_config_loads_is_kept(tmp_path: Path, *, user_args: bool) -> None:
+    profile = services.strata_profile(_with_projection(tmp_path, user_args=user_args))
+
+    kept = _strings(profile["user_args"] if user_args else profile["args"])
+    wanted = [_VECTOR[0], str(tmp_path / "vector.gguf"), *_VECTOR[2:]]
+    at = kept.index(_VECTOR[0])
+    assert kept[at : at + len(wanted)] == wanted  # whole and in order
+
+
+@pytest.mark.parametrize("user_args", [False, True])
+def test_turned_off_the_projection_is_left_out_whole(tmp_path: Path, *, user_args: bool) -> None:
+    profile = services.strata_profile(_with_projection(tmp_path, user_args=user_args, on=False))
+
+    every = {*_strings(profile["args"]), *_strings(profile.get("user_args", []))}
+    flags = {"--control-vector", "--control-vector-layer-range", "--cvec-mode", "--cvec-dir"}
+    assert not flags & every
+    assert not {str(tmp_path / "vector.gguf"), "4", "44", "project", "per-layer"} & every
+    assert "--vision" in _strings(profile["args"])  # nothing else goes
+
+
+def test_the_run_config_says_whether_it_loads_a_projection(tmp_path: Path) -> None:
+    assert not services.read_run_config(_config(tmp_path)).loads_projection
+    assert services.read_run_config(_with_projection(tmp_path)).loads_projection
+    assert services.read_run_config(_with_projection(tmp_path, user_args=True)).loads_projection

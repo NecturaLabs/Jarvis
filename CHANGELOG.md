@@ -8,6 +8,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Switch a tool on or off, or make it ask first, without editing the config: `jarvis tools` lists them all,
+  `jarvis tools NAME on|ask|key|off|default` sets one, and the chat's `/config` has a Tools list. A tool that is
+  off (`deny`) is no longer offered to the model at all, rather than offered and refused.
+- `strata.speed_projection`, on by default, keeps a control vector the model's run config loads, such as
+  Strata's experimental speed projection, with which the model declines far fewer requests; off, Jarvis leaves it
+  out. Jarvis never adds one itself, and `jarvis doctor` notes when the setting is on and none is loaded.
 - Jarvis reads a web address you write in the request ("what does https://… say?") without searching for it first.
   Only an address in your own words counts, exactly as written: never one in a long paste, a page, a file, PC audio
   or a scheduled request that outside text steered, and every address is still checked to be public.
@@ -25,7 +31,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   Adding to a playlist needs two new permissions: run `jarvis spotify-login` once; until then only that part
   says so.
 - `strata.effort_position` passes Strata's `effort_position` into its profile: with `end`, a request whose model
-  raised its effort to `low` reuses the pinned prompt instead of reading it all again. Empty, the default, keeps
+  raised its effort to `low` or `medium` reuses the pinned prompt instead of reading it all again. Empty, the default, keeps
   the run config's own, until the model's answers with it are measured.
 - `jarvis doctor` checks `wpctl` (the PC's volume) and, with PC audio on, `pw-dump`; it notes a missing
   `playerctl`, a Spotify login without a permission Jarvis now asks for, and a user manager whose limit on
@@ -34,7 +40,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   two places take about as long as the slowest one. Each is still decided, asked about and audited one by
   one first; actions always run on their own, in order.
 - `pc_media`: play, pause or skip a video in the browser, VLC or another MPRIS player, or say what plays,
-  through `playerctl` (`pacman -S playerctl`). Spotify keeps its own tools; "everything" pauses it too. Only a
+  through `playerctl` (`pacman -S playerctl`). Spotify keeps its own tools; `everything` pauses it too. Only a
   player's plain name is said, never a title.
 
 - Reminders and scheduled requests can be set in seconds ("in 30 seconds"), up to an hour, for a one-off job;
@@ -98,6 +104,20 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A follow-up on something Jarvis looked up no longer sends it searching all over again. Each remembered
+  request names what it looked up (the searches and pages, as data when they came from outside), and a page read
+  in the conversation is kept for 30 minutes, so reading it again needs no network.
+- `pc_media` binds a command to the players it is for before any question, and the question names them
+  ("pause firefox and spotify"); a skip not answered in time is reported as uncertain, so it is not sent twice;
+  a player that closes while it is listed is left out, and a player's own error words are not passed on.
+- Turning the PC's volume up when another program set it above 100 percent no longer lowers it.
+- A Spotify seek past the end of the track asks to jump to its end, at the time it really goes to; a playlist
+  whose id is not a Spotify id is not offered.
+- Look-ups approved in one message no longer run when Jarvis is stopped while a later one of them is asked about.
+- A request that used up its tool calls or its time now still says the answer the model gave on its last step,
+  instead of "That needed too many steps".
+- Clearer words: `pc_media` says "Nothing is playing." when no player plays, the Spotify device list marks
+  the active device "(playing now)", and a reminder given two times says to give only one.
 - Speech remembers a reply that drew on outside text (a search, a page, a song name) as data, as the chat does,
   so "what was the second one?" has the answer to go on. While it is remembered, an action the model chooses
   asks first; a plain command does not. It was left out of later requests before.

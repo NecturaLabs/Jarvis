@@ -71,6 +71,11 @@ MAX_STREAMED_CHARS = 4000  # no more is spoken before an answer is whole (no_act
 NO_ACTION = "no_action"
 THINK_HARDER = "think_harder"
 _UNKNOWN = "unknown operation"
+# What a remembered turn keeps of its look-ups, so a follow-up can go back to the same page.
+MAX_LOOK_UPS_KEPT = 6
+MAX_ASKED = 160  # characters of one argument
+MAX_LOOKED = 900  # characters of them all
+_NOT_LOOK_UPS = frozenset({NO_ACTION, THINK_HARDER, "stay_quiet"})
 _THINKING: tuple[Literal["low", "medium", "high"], ...] = ("low", "medium", "high")
 _OMITTED = "(That reply quoted outside data, so it is left out here.)"
 
@@ -250,6 +255,17 @@ def _out_of_time(turn: _Turn) -> str:
     if turn.done:
         return f"{turn.done[-1]} {RAN_OUT}"
     return ACTED_THEN_TOO_LONG
+
+
+def _asked(function: Mapping[str, Any]) -> str:
+    """Return what a look-up asked for, its argument values in short ("kettle descaling")."""
+    raw = function.get("arguments")
+    try:
+        args = obj(json.loads(raw) if isinstance(raw, str) else raw)
+    except ValueError, RecursionError:
+        return ""
+    values = [str(v) for v in args.values() if isinstance(v, str | int | float) and str(v)]
+    return ", ".join(v[:MAX_ASKED] for v in values)
 
 
 def _outcome(result: Result) -> str:
@@ -751,6 +767,7 @@ class _Turn:
     calls: int = 0
     seen: set[str] = field(default_factory=set[str])
     actions: list[str] = field(default_factory=list[str])
+    looked: list[str] = field(default_factory=list[str])  # each look-up and what it asked for
     stream: _ReplyStream | None = None  # the last model call's, when the reply is spoken
     thinking: Thinking | None = None  # how the next model call thinks; the model may raise it
 
@@ -1030,12 +1047,22 @@ class Agent:
     def _remember(self, text: str, reply: str, turn: _Turn) -> None:
         """Keep a finished request and its reply in the conversation."""
         outside = turn.outside
+        looked = "; ".join(turn.looked)[:MAX_LOOKED]
         if outside and not self._limits.remember_outside:
             reply = _OMITTED
             outside = ""
+            looked = ""
         private = turn.private and bool(outside)
         self._memory.add(
-            Turn(text, reply, "; ".join(turn.actions), outside, self._clock(), private=private)
+            Turn(
+                text,
+                reply,
+                "; ".join(turn.actions),
+                outside,
+                self._clock(),
+                private=private,
+                looked=looked,
+            )
         )
         self._save_memory()
 
@@ -1482,6 +1509,10 @@ class Agent:
             result = self._think_harder(turn, result)
         else:
             turn.actions.append(f"{name if op is not None else _UNKNOWN} -> {_outcome(result)}")
+        if op is not None and not op.side_effect and result.ok and name not in _NOT_LOOK_UPS:
+            asked = _asked(obj(call.get("function")))
+            if asked and len(turn.looked) < MAX_LOOK_UPS_KEPT:
+                turn.looked.append(f"{name} {asked}")
         if op is None or op.side_effect:
             turn.tried = True
             if op is not None and (result.ok or result.acted):
@@ -1535,6 +1566,12 @@ class Agent:
         admitted = [self._admitted(call, hooks, turn, taint=taint) for call in group]
         ready = {n: item for n, item in enumerate(admitted) if isinstance(item, _Ready)}
         caught: dict[int, _Caught] = {}
+        if ready and hooks.cancelled():  # stopped while a later call of the group was asked about
+            stopped = Result("Stopped: Jarvis is shutting down.", ok=False)
+            return [
+                item if isinstance(item, Result) else self._finished(item, stopped)
+                for item in admitted
+            ]
         if ready:
             workers = min(len(ready), MAX_SIDE_BY_SIDE)
             with ThreadPoolExecutor(workers, thread_name_prefix="jarvis-lookup") as pool:
@@ -1592,11 +1629,15 @@ class Agent:
     ) -> Result | _Ready:
         """Decide one call, unless the request is over its limits or Jarvis is stopping.
 
-        Returns what to report for a call that may not run, or the call ready to run.
+        Returns what to report for a call that may not run, or the call ready to run. The reply
+        call is the answer, not an action: the cap on actions and the time do not refuse it, or a
+        request that used them up would end with no answer, though the policy still decides it.
         """
-        turn.calls += 1
         if hooks.cancelled():
             return Result("Stopped: Jarvis is shutting down.", ok=False)
+        if str(obj(call.get("function")).get("name")) == NO_ACTION:
+            return self._decided(call, hooks, turn, taint=taint)
+        turn.calls += 1
         if turn.calls > self._limits.max_tool_calls:
             self._audit.record("tool_budget", limit=self._limits.max_tool_calls)
             return Result("Error: too many actions in one request, so this was not run.", ok=False)

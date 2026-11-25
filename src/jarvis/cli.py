@@ -21,19 +21,29 @@ from urllib.parse import urlsplit
 from jarvis import __version__, config, control, models, paths, services
 from jarvis.activity import AuditTail
 from jarvis.agent import Declined, Hooks, NoReason
-from jarvis.app import SetupError, build, chat_memory_file, chat_pictures, echoes_hint, strata_model
+from jarvis.app import (
+    SetupError,
+    build,
+    chat_memory_file,
+    chat_pictures,
+    echoes_hint,
+    spotify_operations,
+    strata_model,
+)
 from jarvis.audit import AuditLog
 from jarvis.chat import clipboard
 from jarvis.chat.history import InputHistory
 from jarvis.confirmkey import ConfirmKey
 from jarvis.files import write_atomic
 from jarvis.paths import spotify_token_file, strata_key_file
-from jarvis.policy import is_yes
+from jarvis.policy import OpClass, is_yes
 from jarvis.schedule import JobStore
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
 from jarvis.services import JARVIS_UNIT, STRATA_UNIT, reads_pictures
 from jarvis.spotify.auth import SCOPES, SpotifyAuthError, TokenStore, login, redirect_uri
 from jarvis.sysinfo import Sampler
+from jarvis.toolswitch import WORDS as TOOL_WORDS
+from jarvis.toolswitch import ToolSetting, tool_settings, with_class
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -173,6 +183,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("wake", "show or switch the wake word model (livekit or azure)"),
             ("consent", "show or set whether Jarvis asks before acting"),
+            ("tools", "list the tools, or switch one on, off or to asking first"),
             ("pc-audio", "let Jarvis take requests from PC audio (Discord by default)"),
         ),
     ),
@@ -206,6 +217,11 @@ _DETAILS = {
         "key, and an operation set to deny is always refused."
     ),
     "wake": "With no argument and no option, shows the settings and the wake word files.",
+    "tools": (
+        "With no argument, lists every tool and its setting. A tool that is off is not offered "
+        "to the model at all. The voice service restarts to take a change; an open chat takes "
+        "it the next time it opens."
+    ),
     "speech-test": (
         "record shows one card at a time and saves what you say, through Jarvis's own "
         "microphone and voice detection, with the words you confirm or type. score "
@@ -392,6 +408,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["bypass", "ask"],
         help="ask: ask for a yes before a risky action or one after outside text; bypass: act "
         "without asking (a strong action still waits for the confirm key)",
+    )
+    tool = made["tools"]
+    tool.add_argument("name", nargs="?", help="the tool, as `jarvis tools` lists it")
+    tool.add_argument(
+        "setting",
+        nargs="?",
+        choices=[*TOOL_WORDS, "default"],
+        help="on: runs; ask: asks first; key: needs the confirm key; off: not offered; "
+        "default: as Jarvis ships it",
     )
     pc = made["pc-audio"]
     pc.add_argument("state", nargs="?", choices=["on", "off"], help="turn listening on or off")
@@ -585,6 +610,8 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         details=lambda: _chat_details(cfg),
         stats=Sampler().sample,
         save_settings=_save_chat_settings,
+        tools=lambda: _tool_settings(config.load()),
+        next_tool_setting=_next_tool_setting,
         history=InputHistory(paths.state_dir() / "chat-history", cfg.chat.history_size),
         export_dir=documents if documents.is_dir() else Path.home(),
         paste=clipboard.read,
@@ -1004,6 +1031,24 @@ def _user_memlock_limit() -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
+def _projection_notes(cfg: config.Config) -> list[str]:
+    """Note that `strata.speed_projection` is on while the model loads no control vector."""
+    if not cfg.strata.speed_projection or cfg.strata.run_config == Path():
+        return []
+    try:
+        loads = services.read_run_config(cfg).loads_projection
+    except services.StrataSetupError:
+        return []  # the run config's own check says what is wrong with it
+    if loads:
+        return []
+    note = (
+        "note strata.speed_projection is on, but the run config loads no control vector, so "
+        "the model declines as it was trained to; see "
+        "docs/configuration.md#the-speed-projection"
+    )
+    return [note]
+
+
 def _memlock_notes(cfg: config.Config) -> list[str]:
     """Note that the model cannot be locked in RAM when the user manager's limit keeps it out."""
     limit = _user_memlock_limit()
@@ -1056,7 +1101,13 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     ]
     for ok, what, fix in checks:
         print(f"{'ok' if ok else 'FAIL':4} {what}" + ("" if ok else f"  -> {fix}"))
-    notes = [*wake_notes, *tool_notes, *_spotify_scope_notes(cfg), *_memlock_notes(cfg)]
+    notes = [
+        *wake_notes,
+        *tool_notes,
+        *_spotify_scope_notes(cfg),
+        *_memlock_notes(cfg),
+        *_projection_notes(cfg),
+    ]
     for line in [*notes, *release_lines]:
         print(line)
     failed = sum(not ok for ok, _, _ in checks)
@@ -1490,6 +1541,70 @@ def cmd_consent(args: argparse.Namespace) -> int:
     return 0
 
 
+def _tool_settings(cfg: config.Config) -> list[ToolSetting]:
+    return tool_settings(cfg, spotify_operations(cfg))
+
+
+def set_tool(name: str, cls: OpClass | None) -> ToolSetting:
+    """Set one tool's class in the config on disk (None: as shipped), audit it, restart voice.
+
+    Returns the tool's new setting.
+
+    Raises:
+        ConfigError: no tool has that name, or it does not allow that class.
+    """
+    cfg = config.load()
+    found = next((s for s in _tool_settings(cfg) if s.name == name), None)
+    if found is None:
+        msg = f"no tool is called {name!r}; `jarvis tools` lists them"
+        raise config.ConfigError(msg)
+    changed = with_class(cfg, found, found.shipped if cls is None else cls)
+    config.save(changed)
+    now = next(s for s in _tool_settings(changed) if s.name == name)
+    AuditLog(paths.audit_file()).record("tool_class_changed", op=name, to=now.state.value)
+    _restart_if_running()
+    return now
+
+
+def _next_tool_setting(name: str) -> ToolSetting:
+    """Move one tool on to its next setting (on, asks first, needs the key, off), for the chat.
+
+    Raises:
+        ConfigError: as `set_tool`.
+    """
+    found = next((s for s in _tool_settings(config.load()) if s.name == name), None)
+    if found is None:
+        msg = f"no tool is called {name!r}"
+        raise config.ConfigError(msg)
+    return set_tool(name, found.following())
+
+
+def cmd_tools(args: argparse.Namespace) -> int:
+    """List the tools and their settings, or set one."""
+    cfg = _load()
+    if args.name is not None and args.setting is None:
+        print("say how to set it: on, ask, key, off or default", file=sys.stderr)
+        return 2
+    if args.name is not None:
+        try:
+            now = set_tool(
+                args.name, None if args.setting == "default" else TOOL_WORDS[args.setting]
+            )
+        except config.ConfigError as exc:
+            print(f"jarvis: {exc}", file=sys.stderr)
+            return 2
+        print(f"{now.name}: {now.label}")
+        return 0
+    rows = _tool_settings(cfg)
+    width = max(len(s.name) for s in rows)
+    label = max(len(s.label) for s in rows)
+    for s in rows:
+        mark = "" if s.state is s.shipped else " *"
+        print(f"{s.name:<{width}}  {s.label + mark:<{label + 2}}  {s.summary}")
+    print("* set in your config; `jarvis tools NAME default` puts it back")
+    return 0
+
+
 def cmd_pc_audio(args: argparse.Namespace) -> int:
     """Show or set whether Jarvis takes requests heard in PC audio, and from which apps."""
     cfg = _load()
@@ -1764,6 +1879,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "unload": cmd_unload,
     "pc-audio": cmd_pc_audio,
     "consent": cmd_consent,
+    "tools": cmd_tools,
     "wake": cmd_wake,
     "speech-test": cmd_speech_test,
 }

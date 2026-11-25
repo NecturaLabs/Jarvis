@@ -290,6 +290,12 @@ class Registry:
         """Return the operation or None."""
         return self._ops.get(name)
 
+    def without(self, names: Iterable[str]) -> Registry:
+        """Return the same registry without the named operations, which are then not offered."""
+        dropped = set(names)
+        kept = [op for name, op in self._ops.items() if name not in dropped]
+        return Registry(kept, resets=self._resets)
+
     def tool_schemas(self) -> list[dict[str, Any]]:
         """Return every operation as an OpenAI tool."""
         return [op.tool_schema() for op in self._ops.values()]

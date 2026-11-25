@@ -192,7 +192,7 @@ def _when_of(args: dict[str, Any]) -> _When:
     seconds = args.get("in_seconds")
     clock = _clock_of(str(args["at"])) if args.get("at") else ""
     if sum(given is not None for given in (minutes, seconds, clock or None)) > 1:
-        msg = "give one of in_seconds, in_minutes and at, not both"
+        msg = "give only one of in_seconds, in_minutes and at"
         raise ArgumentError(msg)
     every = int(args.get("every_minutes") or 0)
     day = str(args.get("day", "")).strip().casefold()

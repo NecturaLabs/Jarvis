@@ -2130,3 +2130,77 @@ def test_doctor_notes_when_the_model_cannot_be_locked_in_ram(
     assert bool(notes) is noted
     if noted:
         assert "keeping-the-model-in-ram" in notes[0]
+
+
+def _projection_config(tmp_path: Path, *, on: bool, loads: bool) -> config.Config:
+    run = engine_run_config(tmp_path)
+    if loads:
+        data = json.loads(run.read_text(encoding="utf-8"))
+        data["user_args"] = ["--control-vector", str(tmp_path / "v.gguf"), "--cvec-mode", "project"]
+        run.write_text(json.dumps(data), encoding="utf-8")
+    strata = config.StrataConfig(run_config=run, speed_projection=on)
+    return config.Config(strata=strata)
+
+
+@pytest.mark.parametrize(
+    ("on", "loads", "noted"), [(True, False, True), (True, True, False), (False, False, False)]
+)
+def test_doctor_notes_a_speed_projection_that_is_on_with_no_vector_loaded(
+    tmp_path: Path, *, on: bool, loads: bool, noted: bool
+) -> None:
+    cfg = _projection_config(tmp_path, on=on, loads=loads)
+
+    notes = cli._projection_notes(cfg)  # pyright: ignore[reportPrivateUsage] - the note itself
+
+    assert bool(notes) is noted
+    assert all("speed_projection" in note for note in notes)
+
+
+def test_tools_lists_every_tool_with_its_setting(capsys: pytest.CaptureFixture[str]) -> None:
+    config.save(config.Config(spotify=config.SpotifyConfig(client_id="id")))
+
+    assert main(["tools"]) == 0
+
+    out = capsys.readouterr().out
+    assert any(line.split()[:2] == ["web_search", "on"] for line in out.splitlines())
+    assert "stop_process           needs the confirm key" in out or "needs the confirm key" in out
+
+
+def test_tools_sets_one_saves_audits_and_restarts_the_voice_service(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config.save(config.Config(spotify=config.SpotifyConfig(client_id="id")))
+    restarts: list[bool] = []
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: restarts.append(True))
+
+    assert main(["tools", "reddit_search", "off"]) == 0
+    assert capsys.readouterr().out.strip() == "reddit_search: off"
+    assert config.load().boundaries.classes == {"reddit_search": "deny"}
+    assert main(["tools", "reddit_search", "default"]) == 0
+    assert config.load().boundaries.classes == {}
+
+    events = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
+    assert [(e["event"], e["op"], e["to"]) for e in events] == [
+        ("tool_class_changed", "reddit_search", "deny"),
+        ("tool_class_changed", "reddit_search", "safe"),
+    ]
+    assert len(restarts) == 2
+
+
+@pytest.mark.parametrize(
+    ("argv", "said"),
+    [
+        (["tools", "no_such_tool", "off"], "no tool is called"),
+        (["tools", "stop_process", "on"], "stop_process can only be"),
+        (["tools", "web_search"], "say how to set it"),
+    ],
+)
+def test_tools_refuses_what_it_cannot_set(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], argv: list[str], said: str
+) -> None:
+    config.save(config.Config(spotify=config.SpotifyConfig(client_id="id")))
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: None)
+
+    assert main(argv) == 2
+    assert said in capsys.readouterr().err
+    assert config.load().boundaries.classes == {}

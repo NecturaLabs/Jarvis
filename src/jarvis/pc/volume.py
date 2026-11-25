@@ -67,7 +67,10 @@ class VolumeOps:
         if self._way(args) != "delta":
             return args
         current, _ = self._read()
-        return {**args, "current": current, "target": _clamp(current + int(args["delta"]))}
+        # Above the usual top (another program set it), turning up keeps it rather than lowering it.
+        top = max(MAX_PERCENT, current)
+        target = max(0, min(current + int(args["delta"]), top))
+        return {**args, "current": current, "target": target}
 
     def run(self, args: dict[str, Any]) -> Result:
         """Read, set, change or mute the output volume and say the outcome."""

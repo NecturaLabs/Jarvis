@@ -31,6 +31,9 @@ MAX_BYTES = 2_000_000
 # (about 0.7 s at 20,000 elements, 3 s at 60,000), and it runs outside the read deadline, so a
 # page with more is read from its start only.
 MAX_ELEMENTS = 20_000
+# The first import of trafilatura changes the warning filters for a moment; two reads at once must
+# not, or the filter one sets can be left in place for good.
+_IMPORTING = threading.Lock()
 MAX_PICTURE_BYTES = 8_000_000
 _TEXT_TYPES = frozenset({"text/html", "application/xhtml+xml", "text/plain"})
 _PICTURE_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"})
@@ -219,7 +222,7 @@ def _without_hidden_and_excess(tree: _Element) -> None:
 
 def _extract(html: str, url: str) -> tuple[str, str, str]:
     """Return the page's title, main text and picture (trafilatura, imported on first use)."""
-    with warnings.catch_warnings():
+    with _IMPORTING, warnings.catch_warnings():
         # urllib3, which trafilatura imports for its own downloads (unused here), warns that
         # optional SOCKS proxy support is not installed.
         warnings.filterwarnings("ignore", message="SOCKS support in urllib3")
