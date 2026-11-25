@@ -1592,11 +1592,15 @@ class Agent:
     ) -> Result | _Ready:
         """Decide one call, unless the request is over its limits or Jarvis is stopping.
 
-        Returns what to report for a call that may not run, or the call ready to run.
+        Returns what to report for a call that may not run, or the call ready to run. The reply
+        call is the answer, not an action: the cap on actions and the time do not refuse it, or a
+        request that used them up would end with no answer, though the policy still decides it.
         """
-        turn.calls += 1
         if hooks.cancelled():
             return Result("Stopped: Jarvis is shutting down.", ok=False)
+        if str(obj(call.get("function")).get("name")) == NO_ACTION:
+            return self._decided(call, hooks, turn, taint=taint)
+        turn.calls += 1
         if turn.calls > self._limits.max_tool_calls:
             self._audit.record("tool_budget", limit=self._limits.max_tool_calls)
             return Result("Error: too many actions in one request, so this was not run.", ok=False)
