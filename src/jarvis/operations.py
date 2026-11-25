@@ -80,13 +80,16 @@ class Request:
     came into the request so far (`"memory"` for outside text it remembers). `words` are the
     owner's own words of the request: none for one heard in PC audio or handed over with outside
     text behind it, and without the pastes that count as outside data; with the words the owner
-    typed into it while it ran (`steered`).
+    typed into it while it ran (`steered`). `time_left` says how many seconds the request has
+    left before its time limit (`agent.max_seconds`), for an operation that waits as long as it
+    is asked (`pc_audio_listen`).
     """
 
     foreign: bool
     outside: set[str] = field(default_factory=set[str])
     typed: str = ""
     steered: list[str] = field(default_factory=list[str])
+    time_left: Callable[[], float] = field(default=lambda: math.inf)
 
     @property
     def words(self) -> str:
@@ -111,9 +114,11 @@ def current_request() -> Request | None:
 
 
 @contextmanager
-def request_scope(*, foreign: bool, words: str = "") -> Generator[Request]:
+def request_scope(
+    *, foreign: bool, words: str = "", time_left: Callable[[], float] = lambda: math.inf
+) -> Generator[Request]:
     """Mark everything run inside as part of one new request; `words` are the owner's own."""
-    request = Request(foreign, typed=words)
+    request = Request(foreign, typed=words, time_left=time_left)
     token = _CURRENT.set(request)
     try:
         yield request

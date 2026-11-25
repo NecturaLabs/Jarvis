@@ -197,8 +197,9 @@ _ACTIONS_NOTE = re.compile(r"^\[actions taken:[^\]]*\]\s*", re.IGNORECASE)
 _REPLY_KEY = '{"reply":"'
 _REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
 # Results that may hold the owner's own data: the turn is marked private, so text that leaves the PC
-# waits for a yes. A shell command's output can be any file the owner's user can read.
-_PRIVATE_ORIGINS = frozenset({Origin.FILE, Origin.SHELL})
+# waits for a yes. A shell command's output can be any file the owner's user can read, and PC audio
+# heard for the owner (`pc_audio_listen`) what people said in a call.
+_PRIVATE_ORIGINS = frozenset({Origin.FILE, Origin.SHELL, Origin.PC_AUDIO})
 _WRAPPED = re.compile(r'(?P<head><data origin="[a-z_]+">)(?P<body>.*)</data>', re.DOTALL)
 _HIGH_SURROGATE = re.compile(r"\\u[dD][89abAB][0-9a-fA-F]{2}")
 
@@ -1227,7 +1228,10 @@ class Agent:
         handed_over = foreign or bool(steered_by) or scheduled
         own = "" if handed_over else _own_words(text, self._outside_pastes(text, pasted))
         self._switched = False
-        with request_scope(foreign=foreign, words=own) as request:
+        ends = self._clock() + self._limits.max_seconds
+        with request_scope(
+            foreign=foreign, words=own, time_left=lambda: ends - self._clock()
+        ) as request:
             for seen in sorted(steered_by):
                 request.saw(seen)
             source = (origin, request, frozenset(steered_by))
