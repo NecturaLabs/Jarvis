@@ -13,6 +13,7 @@ it. It is a plain statement of what the code does, not legal terms; the code win
 | Audit log | `~/.local/state/jarvis/audit.jsonl`, mode 0600 in a 0700 folder | Every request as transcribed or typed (a paste in the chat included), the model's tool calls, each policy decision and each result (with the start of each page or file Jarvis read, its own configuration files included, and of the programs and window titles `find_processes` listed). What `write_file` puts in a file is not in it: only its length and SHA-256. With PC audio on, it also holds what other people said in it. At 5 MiB it moves to `audit.jsonl.1` and a new one starts; the five older logs are kept (`.1` the newest, `.5` the oldest) and the one before them is deleted, so at most about 30 MiB. |
 | Reminders and scheduled requests | `~/.local/state/jarvis/schedule.json`, mode 0600, with `schedule.json.lock` beside it | The words of each reminder and scheduled request as the model wrote them from your request (at most 50, 200 characters each), with when it is due and how it repeats. A one-off job is removed once it is said or done, a repeating one when you cancel it. The audit log also holds the words, in the `schedule_add` call that set the job, and records each job coming due or missed by its number only. |
 | Action count | `~/.local/state/jarvis/actions.json`, mode 0600 | The times of the side-effecting actions of the last 10 minutes (`boundaries.actions_window_s`), shared by the voice service and the chat to cap how many run. No names or words. |
+| Chat conversation | `~/.local/state/jarvis/chat-conversation.json`, mode 0600 | What the chat remembers between sessions (`chat.resume`): each request and reply, what was done and looked up, a summary of older turns, and with `chat.memory_detail = "full"` (the default) each request's tool calls and results as the model read them: whole pages, file text, command output and text written to files, within `chat.memory_tokens`. `/clear` empties it. Speech keeps its conversation in memory only. |
 | Chat input history | `~/.local/state/jarvis/chat-history`, mode 0600 | The last `chat.history_size` (1000) lines you sent in the chat, for ↑, with the text you pasted into each kept beside it so a long paste brought back still counts as pasted. |
 | Service log | The systemd journal (`jarvis logs`) and `~/.local/state/jarvis/strata.log` | What Jarvis heard, the answers to its questions and any errors; for each request, its sound levels as numbers (`levels:`), never the sound. |
 | Speech test set | The folder `jarvis speech-test` was given (`speech-test` in the data folder by default), mode 0700, files 0600 | Only when you run `jarvis speech-test record`: each request you said as a WAV file, with the card, the words you confirmed or typed and its sound levels (`set.jsonl`). `score --out` writes what was heard to the file you name, mode 0600. Nothing is sent anywhere; delete the folder to remove it. |
@@ -71,7 +72,8 @@ from ever running.
 
 ## Removing it
 
-- Delete `~/.local/state/jarvis/` to remove the audit log, the Strata log, the tokens and the key.
+- Delete `~/.local/state/jarvis/` to remove the audit log, the Strata log, the saved chat conversation, the
+  tokens and the key.
 - The service log is in the systemd journal, which keeps and drops it by its own limits (`journald.conf`, see
   `man journald.conf`). There is no way to remove only Jarvis's lines from it.
 - Remove Jarvis's access to your Spotify account on Spotify's account page, under apps.

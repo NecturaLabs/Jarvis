@@ -81,7 +81,8 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 
 A spoken reply that drew on outside text (a web page, a song name) is remembered as data, as in the chat: a
 follow-up such as "what was the second one?" has it, and while it is remembered an action the model chooses
-needs your yes; a plain command (`pause`, `volume 40`) does not.
+needs your yes; a plain command (`pause`, `volume 40`) does not. A request the model answers while such text is
+remembered is marked the same way, so that holds after the turn that read it is forgotten.
 
 ## `[chat]`: the same for typed requests in `jarvis chat`
 

@@ -119,6 +119,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A request the model answered while the conversation held outside text now keeps that mark itself: what the
+  model wrote then may repeat that text, so actions still need a yes once the turn it came from is forgotten.
 - A tool call's arguments now count toward the context: a long file being written was counted as almost nothing,
   so the check that clears a long request's oldest results to fit the window, and the remembered conversation's
   size, came out too low.

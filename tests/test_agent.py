@@ -56,7 +56,7 @@ from jarvis.ratelimit import ActionRate
 from jarvis.shortcuts import Shortcut
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from pathlib import Path
     from typing import Self
 
@@ -3816,3 +3816,61 @@ def test_speech_keeps_a_short_memory_and_the_chat_keeps_its_own() -> None:
     )
     assert (chat.memory_idle_s, chat.memory_detail) == (0.0, "full")
     assert chat.memory_tokens > speech.memory_tokens
+
+
+def test_a_request_answered_while_outside_text_was_remembered_keeps_that_mark() -> None:
+    model = ScriptedModel([_call("search"), _say("Found it."), _say("It is a band.")])
+    ops = [Counter().op("search", origin=Origin.WEB, side_effect=False)]
+    agent, _ = _agent(model, ops, limits=FULL)
+    agent.handle("find inkwell", NO_CONFIRM)
+    agent.handle("so what is it", NO_CONFIRM)
+
+    del agent.memory.turns[0]  # the turn that read the page is forgotten
+
+    assert agent.memory.turns[0].outside == "memory"
+    assert agent.memory.holds_outside_text_but(Origin.PROCESS.value)
+    assert agent.memory.messages()[-1]["content"].endswith("</data>")
+
+
+def test_in_full_detail_remembered_file_text_puts_a_search_behind_a_yes() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_call("read"), _say("Read it."), _call("search"), _say("Searched.")])
+    agent, _ = _agent(model, _file_and_search(counter), limits=FULL)
+
+    agent.handle("read my notes", NO_CONFIRM)
+    agent.handle("search for that", Hooks(confirm=lambda q: asked.append(q) or False))
+
+    assert len(asked) == 1
+    assert [r["op"] for r in counter.runs] == ["read"]
+
+
+def test_in_full_detail_typed_words_are_kept_once_and_the_follow_up_starts_the_same() -> None:
+    typed: Iterator[list[str]] = iter([[], ["the blue one"]])
+    model = ScriptedModel([_call("search"), _say("Found the blue one."), _say("Yes.")])
+    agent, _ = _agent(model, [Counter().op("search", side_effect=False)], limits=FULL)
+
+    agent.handle("find it", Hooks(confirm=lambda _q: False, steer=lambda: next(typed, list[str]())))
+    agent.handle("sure?", NO_CONFIRM)
+
+    follow_up = json.dumps(model.seen[2])
+    assert follow_up.count("the blue one") == 2  # the typed words, then the reply
+    assert model.seen[2][: len(model.seen[1])] == model.seen[1]
+
+
+def test_condensing_leaves_room_so_it_is_not_redone_at_every_request() -> None:
+    page = "x" * 600
+    replies = [step for n in range(3) for step in (_call("search", call_id=f"c{n}"), _say("Ok."))]
+    search = Counter().op("search", origin=Origin.WEB, side_effect=False, text=page)
+    probe, _ = _agent(ScriptedModel(list(replies[:2])), [search], limits=FULL)
+    probe.handle("look 0", NO_CONFIRM)
+    one = probe.memory.cost()
+    agent, _ = _agent(
+        ScriptedModel(replies), [search], limits=replace(FULL, memory_tokens=one * 3 - 50)
+    )
+
+    for n in range(3):
+        agent.handle(f"look {n}", NO_CONFIRM)
+
+    # Leaving out one request's work would fit; down to three quarters, two go.
+    assert [bool(turn.work) for turn in agent.memory.turns] == [False, False, True]

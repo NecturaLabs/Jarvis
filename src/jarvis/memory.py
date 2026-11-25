@@ -40,6 +40,8 @@ KEEP_RECENT = 2  # turns never folded into the summary, so the latest exchange s
 SHED_TO = 3 / 4  # of the budget: work is shed down to this, so it is not shed again every request
 FILE_VERSION = 1
 _ROLES = frozenset({"assistant", "tool", "user"})
+# What starts the owner's words typed while a request ran, as the request's work holds them.
+STEERED = "(The owner adds, while you work on this request:)"
 _WRAPPED_ORIGIN = re.compile(r'<data origin="([a-z_]{1,32})">')
 # Results that may hold the owner's own data: the turn is marked private, so text that leaves the PC
 # waits for a yes. A shell command's output can be any file the owner's user can read.
@@ -102,6 +104,16 @@ class Turn:
             *(copy.deepcopy(self.work) if work else []),
             {"role": "assistant", "content": f"[actions taken: {done}] {reply}"},
         ]
+
+    def shed(self) -> None:
+        """Leave the work out; words the owner typed while it ran join the request instead."""
+        steered = [
+            str(m["content"])
+            for m in self.work
+            if m.get("role") == "user" and str(m.get("content", "")).startswith(STEERED)
+        ]
+        self.request = "\n".join([self.request, *steered])
+        self.work = []
 
     def cost(self, *, work: bool = True) -> int:
         """Return the tokens this turn takes in the conversation."""
@@ -231,7 +243,7 @@ class Conversation:
             latest = index == len(self.turns) - 1
             if not turn.work or (latest and not self.over_budget()):
                 continue
-            turn.work = []
+            turn.shed()
             shed += 1
         return shed
 
@@ -322,7 +334,10 @@ def _read(path: Path) -> tuple[list[Turn], str, tuple[bool, bool], float] | None
     ]
     for turn in turns:  # the marks never say less than the work shows
         origins = _wrapped_origins(turn.work)
-        turn.outside = turn.outside or next(iter(origins), "")
+        listing = Origin.PROCESS.value
+        other = next((origin for origin in origins if origin != listing), "")
+        if turn.outside in {"", listing}:  # a listing alone may still be stopped by its PID
+            turn.outside = other or turn.outside or (listing if origins else "")
         turn.private = turn.private or not PRIVATE_ORIGINS.isdisjoint(origins)
     marks = (data.get("summary_outside") is True, data.get("summary_private") is True)
     return turns, str(data.get("summary", "")), marks, float(data.get("saved_at", 0.0))
@@ -337,7 +352,7 @@ def _work(value: object) -> list[dict[str, Any]]:
     work: list[dict[str, Any]] = []
     for message in objs(value):
         role, content = message.get("role"), message.get("content")
-        if role not in _ROLES or not isinstance(content, str):
+        if not isinstance(role, str) or role not in _ROLES or not isinstance(content, str):
             continue
         kept: dict[str, Any] = {"role": role, "content": content}
         if role == "tool":
@@ -346,7 +361,25 @@ def _work(value: object) -> list[dict[str, Any]]:
         if calls:
             kept["tool_calls"] = [_call(call) for call in calls]
         work.append(kept)
-    return work
+    return answered_calls(work)
+
+
+def answered_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return `messages` up to the end of the last call whose results all came back.
+
+    A model server may refuse a call without its result, or a result without its call.
+    """
+    end, waiting = 0, set[str]()
+    for index, message in enumerate(messages):
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            waiting = {str(call.get("id", "")) for call in objs(message.get("tool_calls"))}
+        elif message.get("role") == "tool":
+            if str(message.get("tool_call_id", "")) not in waiting:
+                break
+            waiting.discard(str(message.get("tool_call_id", "")))
+        if not waiting:
+            end = index + 1
+    return messages[:end]
 
 
 def _call(call: dict[str, Any]) -> dict[str, Any]:

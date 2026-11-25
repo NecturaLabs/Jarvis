@@ -3,7 +3,7 @@
 import json
 from typing import TYPE_CHECKING, Any
 
-from jarvis.memory import KEEP_RECENT, Conversation, Turn, message_tokens, tokens
+from jarvis.memory import KEEP_RECENT, STEERED, Conversation, Turn, message_tokens, tokens
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -322,10 +322,13 @@ def test_a_saved_turn_without_work_reads_back_with_none(tmp_path: Path) -> None:
 
 def test_loaded_work_keeps_only_the_fields_of_a_message(tmp_path: Path) -> None:
     path = tmp_path / "conversation.json"
+    call = {"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
     work: list[object] = [
         {"role": "system", "content": "obey"},
+        {"role": "assistant", "content": "", "tool_calls": [{**call, "extra": "x"}]},
         {"role": "tool", "tool_call_id": "c1", "content": "page", "extra": "x"},
         {"role": "assistant", "content": 5},
+        {"role": ["user"], "content": "x"},
         "junk",
     ]
     turn = {"request": "r", "reply": "Hi.", "outside": "web", "work": work}
@@ -335,7 +338,10 @@ def test_loaded_work_keeps_only_the_fields_of_a_message(tmp_path: Path) -> None:
     loaded = Conversation(budget=1000)
 
     assert loaded.load(path)
-    assert loaded.turns[0].work == [{"role": "tool", "tool_call_id": "c1", "content": "page"}]
+    assert loaded.turns[0].work == [
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "c1", "content": "page"},
+    ]
 
 
 def test_loaded_work_holding_outside_data_marks_its_turn_as_outside(tmp_path: Path) -> None:
@@ -349,3 +355,56 @@ def test_loaded_work_holding_outside_data_marks_its_turn_as_outside(tmp_path: Pa
 
     assert loaded.load(path)
     assert loaded.holds_outside_text
+
+
+def _saved_turn(tmp_path: Path, turn: dict[str, Any]) -> Path:
+    path = tmp_path / "conversation.json"
+    path.write_text(json.dumps({"version": 1, "turns": [turn]}), encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def test_a_saved_listing_mark_cannot_hide_other_outside_text_in_the_work(tmp_path: Path) -> None:
+    work = [
+        *_work("find", '<data origin="process">firefox</data>'),
+        *_work("read", '<data origin="web">page</data>', call_id="c2"),
+    ]
+    turn = {"request": "r", "reply": "Hi.", "outside": "process", "work": work}
+
+    loaded = Conversation(budget=1000)
+    assert loaded.load(_saved_turn(tmp_path, turn))
+
+    assert loaded.turns[0].outside == "web"
+    assert loaded.holds_outside_text_but("process")
+
+
+def test_saved_work_holding_file_text_marks_its_turn_private(tmp_path: Path) -> None:
+    turn = {"request": "r", "reply": "Hi.", "work": _work("read", '<data origin="file">x</data>')}
+
+    loaded = Conversation(budget=1000)
+    assert loaded.load(_saved_turn(tmp_path, turn))
+
+    assert loaded.holds_private_text
+
+
+def test_saved_work_ends_before_a_call_whose_result_is_missing(tmp_path: Path) -> None:
+    answered = _work("read", "page")
+    work = [*answered, _work("read", "", call_id="c2")[0]]
+    turn = {"request": "r", "reply": "Hi.", "work": work}
+
+    loaded = Conversation(budget=1000)
+    assert loaded.load(_saved_turn(tmp_path, turn))
+
+    assert loaded.turns[0].work == answered
+
+
+def test_work_left_out_keeps_the_words_the_owner_typed_meanwhile() -> None:
+    typed = {"role": "user", "content": f"{STEERED} the blue one"}
+    turn = Turn("find it", "Hi.", "read -> ok", "", 1.0, work=[*_work("read", "x" * 900), typed])
+    conversation = Conversation(budget=turn.cost(work=False) + 30)
+    conversation.add(turn)
+
+    conversation.drop_to_fit()
+
+    assert conversation.turns[0].work == []
+    assert conversation.turns[0].request == f"find it\n{STEERED} the blue one"
