@@ -198,9 +198,9 @@ def test_a_key_the_run_config_replaced_says_what_to_do_instead(tmp_path: Path, k
         _load_text(tmp_path, f'[strata]\n{key} = "x"\n')
 
 
-def test_the_model_server_may_be_swapped_by_default() -> None:
-    """Keeping it in RAM takes that memory from everything else, so it is the owner's to choose."""
-    assert not config.StrataConfig().keep_in_ram
+def test_the_model_server_is_kept_in_ram_by_default() -> None:
+    """Swapping the model out pauses the GPU for almost no room: its weights barely compress."""
+    assert config.StrataConfig().keep_in_ram
 
 
 def test_the_vram_reserve_is_unset_by_default() -> None:

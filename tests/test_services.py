@@ -61,11 +61,11 @@ def test_the_strata_unit_for_a_normal_config(tmp_path: Path) -> None:
     assert text.endswith("WantedBy=graphical-session.target\n")
 
 
-def test_the_strata_unit_may_swap_unless_told_to_keep_the_model_in_ram(tmp_path: Path) -> None:
+def test_the_strata_unit_keeps_the_model_in_ram_unless_told_not_to(tmp_path: Path) -> None:
     key = tmp_path / "state" / "jarvis" / "strata.env"
-    kept = _config(tmp_path, keep_in_ram=True)
+    kept = _config(tmp_path)
 
-    plain = _lines(services.strata_unit(_config(tmp_path), key))
+    plain = _lines(services.strata_unit(_config(tmp_path, keep_in_ram=False), key))
     in_ram = _lines(services.strata_unit(kept, key))
 
     asked = ["LimitMEMLOCK=infinity", "MemorySwapMax=0"]

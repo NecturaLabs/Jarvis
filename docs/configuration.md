@@ -141,7 +141,7 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `idle_unload_s` | `86400` | 30 to 86400 | Seconds without a request before Strata frees the model. The default, 24 hours, keeps it loaded through the day; a lower value gives the RAM back sooner. |
 | `reasoning_budget_tokens` | `512` | 1 to 8192 | Thinking-token cap in the profile, for a request that names none; Jarvis's own requests name theirs (`thinking_tokens` in `[agent]` and `[chat]`). |
 | `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` of the Strata unit. `MemoryMax` is derived from it, 10% above (44G for 40G; a size that does not divide evenly is rounded up and written in bytes), so there is no second key. Past `MemoryHigh` the kernel throttles the unit and reclaims its memory; past `MemoryMax` it kills the unit. The size depends on the model: Qwen3.8-Flash-Next IQ2_XS needs `44G` ([models.md](models.md)). |
-| `keep_in_ram` | `false` | `true` or `false` | Keep the model server's memory in RAM: its unit gets `MemorySwapMax=0`, so the kernel never swaps it out, and `LimitMEMLOCK=infinity`, so the engine can lock its model as it asks to. Off, a PC short of memory swaps part of the model out between requests and back in on the next one; while it does, the graphics driver pauses the GPU ([Keeping the model in RAM](#keeping-the-model-in-ram)). On, that memory is no longer there for anything else to push into swap, a game included. |
+| `keep_in_ram` | `true` | `true` or `false` | Keep the model server's memory in RAM: its unit gets `MemorySwapMax=0`, so the kernel never swaps it out, and `LimitMEMLOCK=infinity`, so the engine can lock its model as it asks to. Off, a PC short of memory swaps part of the model out between requests and back in on the next one; while it does, the graphics driver pauses the GPU ([Keeping the model in RAM](#keeping-the-model-in-ram)). Turn it off only with swap on a disk and a game that needs that memory more than Jarvis needs a quick answer. |
 | `vram_reserve_mib` | `0` (unset) | 0, or 100 to 65536 | VRAM in MiB the engine leaves free for other programs, passed as `--vram-reserve-mib`. `0` passes nothing, so Strata's own default (700) applies. For an engine whose expert cache fills the card (`--expert-cache auto`) it is the VRAM limit and must be set: `jarvis setup` refuses such a run config without it, and `jarvis doctor` fails "VRAM left for games". On a 20 GB card, 12000 holds Qwen3.8-Flash-Next at about 8 GiB ([models.md](models.md)). A card with at most about 8 GB of VRAM cannot start with a reserve (Strata's tuner never tries one there). |
 | `kv_resident` | `0` (all in VRAM) | 0, or 20480 to 262144 | Context cells kept in VRAM, passed as `--kv-resident`. Set, the whole context also lives in pinned RAM and only this many cells stay on the card, so `context` can grow past them without more VRAM; the VRAM saved goes to expert slots. Pinned RAM counts against `memory_max`. A `context` of this many cells or fewer is not streamed. Reading past the cells on the card is slower; measure before raising `context` far. |
 | `learn_experts` | `true` | `true` or `false` | For an engine whose run config starts from a routing profile (`--expert-profile`): the engine saves which experts Jarvis's requests use to `~/.local/state/jarvis/strata-expert-profile-<model>.bin` (one file per model, so one model's profile never starts another) (when it stops, and every 10 minutes between requests) and starts from that file next time, so those experts are on the card from the first request. Nothing is deleted from the model. `jarvis setup` starts the file once from a copy of the run config's own profile and never overwrites what the engine learned; `jarvis doctor` fails when it is missing or empty. A routing profile the run config names by a relative path is refused. |
@@ -162,7 +162,7 @@ Both units are written by `jarvis setup`; their text is `jarvis_unit` and `strat
 | `CPUWeight=50` (half the default, so a game started by Steam in the same `app.slice` wins a CPU contest) | yes | yes |
 | `StartLimitIntervalSec=15min`, `StartLimitBurst=5` (in `[Unit]`) | yes | yes |
 | `MemoryHigh` / `MemoryMax` | none / `4G` | `memory_max` / 10% above it |
-| `LimitMEMLOCK=infinity`, `MemorySwapMax=0` | no | only with `strata.keep_in_ram` |
+| `LimitMEMLOCK=infinity`, `MemorySwapMax=0` | no | unless `strata.keep_in_ram` is off |
 
 - The voice service keeps your session's umask, so a file the file tools write at your request gets the
   mode it asks for (0644, a folder 0755).
@@ -203,13 +203,20 @@ the GPU paused during 12 of 119 model calls, by 1.5 s at the median and 9.8 s at
 first model call took a median 1.59 s and 5.28 s at the 90th percentile; the same call in runs one after
 another took 0.57 s.
 
-`strata.keep_in_ram = true` keeps the model out of swap: `jarvis setup` writes `MemorySwapMax=0` and
-`LimitMEMLOCK=infinity` into the Strata unit, and the change applies when the unit next starts
-(`jarvis restart`). How much of the pausing that removes has not been measured yet; it takes days of use
-with the setting on, and Strata's log (`paused the GPU`) shows it. What it costs is
-the other side of the same trade: about 36 GB that the kernel can no longer push into swap for a game or
-anything else that needs room, so the rest of the PC swaps sooner. `jarvis unload` still frees all of it. It
-is off by default for that reason.
+`strata.keep_in_ram` (on by default) keeps the model out of swap: the Strata unit gets `MemorySwapMax=0`
+and `LimitMEMLOCK=infinity`. `jarvis restart` writes the unit from the config and, since it changed,
+restarts the model server with it. How much of the pausing that removes has not been measured yet; it
+takes days of use with the setting on, and Strata's log (`paused the GPU`) shows it.
+
+What swapping the model out would win is small. Its weights are quantized and barely compress: a 256 MiB
+slice of Qwen3.8-Flash-Next's file takes 251 MiB under zstd, so on compressed swap in RAM (zram, the
+default on many desktop distributions) moving it out frees about 2 % of what it moves. Only swap on a disk
+makes real room, and then the cost is the pause plus a disk read. With the setting on, the rest of the PC
+swaps a little sooner instead, and `jarvis unload` still frees all of the model's memory before a heavy
+game. With no swap the unit's memory limits matter more: past `strata.memory_max` the kernel slows the
+server down rather than swapping it, so keep that limit above the model's own size, as the default is.
+Turn the setting off when the PC swaps to a disk and a game needs the room more than Jarvis needs a quick
+answer.
 
 `MemorySwapMax=0` works in any user unit. The lock does not by default: a user unit can raise a limit only
 up to its user manager's hard limit, and for locked memory that is 8 MiB on a stock systemd (the unit still

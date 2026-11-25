@@ -57,11 +57,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   loaded at start or on `jarvis resume`, it reads the system prompt and tools once (`prompt_primed` in the
   audit log), so the first request no longer spends 2 to 4 s on that
   ([docs/models.md](docs/models.md#warm-up)).
-- `strata.keep_in_ram` (off by default) keeps the model server's memory in RAM: its unit gets
+- `strata.keep_in_ram` (on by default) keeps the model server's memory in RAM: its unit gets
   `MemorySwapMax=0` and `LimitMEMLOCK=infinity`. On a PC short of memory the kernel otherwise swaps part of
   the model out between requests, and the graphics driver pauses the GPU while it comes back: 12 of 119
-  model calls were paused, by up to 9.8 s. It is off by default because that memory can then no longer make
-  room for a game ([docs/configuration.md](docs/configuration.md#keeping-the-model-in-ram)).
+  model calls were paused, by up to 9.8 s. Swapping it out frees little, since quantized weights barely
+  compress (2 % under zstd). `jarvis restart` writes it into the unit and restarts the model server
+  ([docs/configuration.md](docs/configuration.md#keeping-the-model-in-ram)).
 
 ### Fixed
 

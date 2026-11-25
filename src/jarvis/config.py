@@ -191,9 +191,9 @@ class StrataConfig(_Section):
     reasoning_budget_tokens: int = Field(default=512, gt=0, le=8192)
     memory_max: str = Field(default="40G", pattern=r"^\d+[KMGT]?$")
     # Keep the model server's memory in RAM: its unit may lock memory and gets no swap. Off: the
-    # kernel may swap the model out while the PC is short of memory, and swaps it back in on the
-    # next request.
-    keep_in_ram: bool = False
+    # kernel may swap the model out while the PC is short of memory and back in on the next
+    # request, pausing the GPU each time, for little room: quantized weights barely compress.
+    keep_in_ram: bool = True
     # VRAM in MiB the engine leaves free for other programs (`--vram-reserve-mib`); 0 passes
     # nothing, so Strata's own default (700) applies.
     vram_reserve_mib: VramReserve = 0
