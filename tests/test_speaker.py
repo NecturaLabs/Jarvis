@@ -452,3 +452,71 @@ def test_a_hush_during_the_own_voice_check_leaves_the_speaker_interruptible(
     speaker.wait()
 
     assert speaker.interruptible
+
+
+def test_a_sound_plays_in_its_place_among_the_sentences_through_the_same_player(
+    tmp_path: Path,
+) -> None:
+    player, files = _recorder(tmp_path)
+    synthesized: list[str] = []
+
+    def voice(text: str) -> tuple[bytes, int]:
+        synthesized.append(text)
+        return _voice(text)
+
+    speaker = Speaker(voice, player=player)
+    song = _sound(2000, seconds=0.2)
+
+    speaker.queue("a")
+    speaker.queue_sound(song, RATE, "la la")
+    speaker.queue("bb")
+    speaker.wait()
+
+    assert synthesized == ["a", "bb"]  # the sound is played as it is, never synthesized
+    assert len(files) == 1
+    assert files[0].read_bytes() == _voice("a")[0] + song + _voice("bb")[0]
+
+
+def test_a_sound_is_checked_for_the_wake_word_with_its_words(tmp_path: Path) -> None:
+    checked: list[str] = []
+
+    def own_wake(_pcm: bytes, _rate: int, text: str) -> bool:
+        checked.append(text)
+        return False
+
+    player, _files = _recorder(tmp_path)
+    speaker = Speaker(_voice, player=player, own_wake=own_wake)
+
+    speaker.queue_sound(_sound(2000), RATE, "the words of the song")
+    speaker.wait()
+
+    assert checked == ["the words of the song"]
+
+
+def test_a_hush_ends_a_sound_as_it_ends_speech(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pid"
+    speaker = Speaker(_voice, player=_stuck(pid_file))
+    try:
+        speaker.queue_sound(_sound(1000, seconds=2.0), RATE, "a long song")
+        speaker.queue_sound(_sound(1000, seconds=2.0), RATE, "and another")
+        _until(pid_file.exists)
+        speaker.hush()
+        waited = threading.Thread(target=speaker.wait, daemon=True)
+        waited.start()
+        waited.join(WAIT_S)
+
+        assert not waited.is_alive()
+        assert not speaker.busy
+    finally:
+        _end(pid_file)
+
+
+def test_no_sound_is_queued_after_a_stop(tmp_path: Path) -> None:
+    player, files = _recorder(tmp_path)
+    speaker = Speaker(_voice, player=player)
+
+    speaker.stop()
+    speaker.queue_sound(_sound(1000), RATE, "la")
+    speaker.wait()
+
+    assert not files

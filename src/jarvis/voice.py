@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 
     from jarvis.config import AudioConfig
     from jarvis.confirmkey import ConfirmKey, Waiting
+    from jarvis.operations import Sound
     from jarvis.schedule import Due
 
 log = logging.getLogger(__name__)
@@ -199,6 +200,7 @@ class _Speaker(Protocol):
     def interruptible(self) -> bool: ...
     def say(self, text: str) -> None: ...
     def queue(self, text: str) -> None: ...
+    def queue_sound(self, pcm: bytes, rate: int, words: str = "") -> None: ...
     def wait(self) -> None: ...
     def hush(self) -> None: ...
     def chime(self) -> None: ...
@@ -525,6 +527,21 @@ class VoiceLoop:
         for sentence in split_sentences(words):
             self._speaker.queue(sentence)
         if self._silent():  # spoken over or hushed while these were being queued
+            self._speaker.hush()
+
+    def _play(self, sound: Sound) -> None:
+        """Queue a sound an operation made (a song) after the reply's words (the `play` hook).
+
+        It plays like speech: spoken over with the wake word, ended by `jarvis hush`, and not
+        played at all while paused or after a hush.
+        """
+        if self._silent():
+            return
+        if self._first_words is None:
+            self._first_words = time.perf_counter()
+        self._begin_speaking()
+        self._speaker.queue_sound(sound.pcm, sound.rate, sound.words)
+        if self._silent():  # spoken over or hushed while it was being queued
             self._speaker.hush()
 
     def _hush(self) -> None:
@@ -1000,6 +1017,7 @@ class VoiceLoop:
                     still_waiting=lambda: self._cue(STILL_WAITING),
                     cancelled=self._cancelled,
                     speak=self._utter,
+                    play=self._play,
                     hush=self._hush,
                     quiet=self._asked_quiet,
                 ),

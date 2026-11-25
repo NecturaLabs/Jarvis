@@ -20,7 +20,7 @@ CHUNK_SIZE = 1 << 20
 class KnownModel:
     """One file of one upstream release."""
 
-    role: str  # which file it is: wake, vad, kokoro-model, kokoro-voices, vision
+    role: str  # which file it is: wake, vad, kokoro-model, kokoro-voices, vision, soulx-*
     project: str
     version: str  # the release's version or tag
     sha256: str
@@ -87,6 +87,20 @@ KNOWN_MODELS: tuple[KnownModel, ...] = (
         project="Inkling 2 Mini picture reader (strata-engine/Inkling-2-Mini-Strata)",
         version="04996a1e2c45009b6a04f2af126cb6bdb2ba3587",
         sha256="6589eff47f9c20bc3a032faa3d449f10bf4f04a84cc6b2ee8a44d51d2b6fc677",
+        licence="Apache-2.0",
+    ),
+    KnownModel(
+        role="soulx-model",
+        project="SoulX-Singer (audio-cpp/SoulX-Singer-GGUF soulx-singer-q8_0.gguf)",
+        version="ded36295f789661e590e4bf6ad49a25470cf830d",
+        sha256="c146c09427f88202db37a71869cdd498e6c0e92fa2cd08065bd5c2f735eb82fd",
+        licence="Apache-2.0",
+    ),
+    KnownModel(
+        role="soulx-binary",
+        project="audio.cpp audiocpp_cli (audio-v0.9.6-bin-ubuntu-x64-vulkan-portable.tar.gz)",
+        version="v0.9.6",
+        sha256="36c4a51f9b4019c7d22d5687ad4106d83e51c59a98d12bb3cb3fb8082ec3e539",
         licence="Apache-2.0",
     ),
 )

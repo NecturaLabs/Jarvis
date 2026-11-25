@@ -352,6 +352,19 @@ class PersonaConfig(_Section):
     addendum: str = ""
 
 
+class SingConfig(_Section):
+    """How Jarvis sings (the `sing` tool; `sing = "deny"` under `[boundaries.classes]` is off).
+
+    `engine` "speech" sings with the Kokoro voice, its words stretched and moved to each note on
+    the CPU. "soulx" sings with SoulX-Singer, a singing model run on the GPU for each song, and
+    falls back to "speech" when its files are missing or it fails. "auto" is "soulx" when its
+    files are installed, else "speech".
+    """
+
+    engine: Literal["auto", "speech", "soulx"] = "auto"
+    device: int = Field(default=0, ge=0, le=15)  # the Vulkan device SoulX-Singer runs on
+
+
 class ClockConfig(_Section):
     """How Jarvis says the time."""
 
@@ -560,6 +573,7 @@ class Config(_Section):
     spotify: SpotifyConfig = Field(default_factory=SpotifyConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
+    sing: SingConfig = Field(default_factory=SingConfig)
     clock: ClockConfig = Field(default_factory=ClockConfig)
     format: FormatConfig = Field(default_factory=FormatConfig)
     weather: WeatherConfig = Field(default_factory=WeatherConfig)

@@ -19,7 +19,7 @@ from jarvis.audit import AuditLog
 from jarvis.config import AudioConfig, Config, ModelConfig
 from jarvis.confirmkey import MIN_PRESS_S, NOTHING_WAITING, STRAY_HOLD_S, ConfirmKey
 from jarvis.model import Delta, StrataModel
-from jarvis.operations import Operation, Registry, Result
+from jarvis.operations import Operation, Registry, Result, Sound
 from jarvis.policy import OpClass, Origin
 from jarvis.schedule import Due, Job
 from jarvis.voice import PcListener, State, VoiceLoop
@@ -174,6 +174,7 @@ class Speaker:
     """Speaks at once; `broken` fails each speech the way the real speaker does, at its wait."""
 
     said: list[str] = field(default_factory=list[str])
+    sounds: list[tuple[int, int, str]] = field(default_factory=list[tuple[int, int, str]])
     chimes: int = 0
     broken: bool = False
     during_chime: Callable[[], object] = lambda: None
@@ -191,6 +192,12 @@ class Speaker:
             self._failed = True
             return
         self.said.append(text)
+
+    def queue_sound(self, pcm: bytes, rate: int, words: str = "") -> None:
+        if self.broken:
+            self._failed = True
+            return
+        self.sounds.append((len(pcm), rate, words))
 
     def wait(self) -> None:
         failed, self._failed = self._failed, False
@@ -1951,6 +1958,48 @@ def test_a_paused_loop_says_nothing_more() -> None:
     _run(loop)
 
     assert speaker.said == ["One."]
+
+
+SONG = Sound(b"\x01\x00" * 2400, 24000, "la la")
+
+
+def test_a_song_plays_through_the_speaker_after_the_words_before_it() -> None:
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        assert hooks.speak is not None
+        assert hooks.play is not None
+        hooks.speak("Here goes.")
+        hooks.play(SONG)
+        return ""
+
+    speaker = Speaker()
+    loop = _loop(Agent(reply), Mic(*REQUEST), speaker)
+
+    _run(loop)
+
+    assert speaker.said == ["Here goes."]
+    assert speaker.sounds == [(len(SONG.pcm), SONG.rate, "la la")]
+
+
+def test_a_song_is_not_played_after_a_hush_or_while_paused() -> None:
+    paused = [False]
+
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        assert hooks.play is not None
+        if len(agent.calls) == 1:
+            loop.hush()  # `jarvis hush` while the song is being made
+        else:
+            paused[0] = True  # `jarvis pause`
+        hooks.play(SONG)
+        return ""
+
+    agent = Agent(reply)
+    speaker = Speaker()
+    loop = _loop(agent, Mic(*REQUEST, *REQUEST), speaker, paused=lambda: paused[0])
+
+    _run(loop)
+
+    assert len(agent.calls) == 2
+    assert not speaker.sounds
 
 
 def _reopening_loop(

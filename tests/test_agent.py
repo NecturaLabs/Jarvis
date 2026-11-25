@@ -44,6 +44,7 @@ from jarvis.operations import (
     OperationError,
     Registry,
     Result,
+    Sound,
     UncertainOutcomeError,
     current_request,
 )
@@ -3499,3 +3500,66 @@ def test_words_the_owner_adds_while_it_works_join_the_request_before_the_next_ca
     assert [e["text"] for e in audit.events if e["event"] == "steered"] == [
         "also check the weekend"
     ]
+
+
+SONG = Sound(b"\x01\x00" * 2400, 24000, "la la la")
+
+
+def _singing() -> Operation:
+    return Operation(
+        "sing",
+        "Sing.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        lambda _args: Result("Singing now.", sound=SONG),
+    )
+
+
+def test_a_sound_a_tool_made_is_played_before_the_reply_that_follows_it() -> None:
+    heard: list[object] = []
+    model = ScriptedModel([_call("sing"), _say("Hope you liked it.")])
+    agent, _ = _agent(model, [_singing()])
+
+    reply = agent.handle(
+        "sing",
+        Hooks(confirm=lambda _q: False, speak=heard.append, play=heard.append),
+    )
+
+    assert heard == [SONG, "Hope you liked it."]
+    assert reply == "Hope you liked it."
+    tool = model.seen[1][-1]
+    assert tool["role"] == "tool"
+    assert tool["content"] == "Singing now."
+
+
+def test_a_channel_that_cannot_play_sound_tells_the_model_nothing_was_sung() -> None:
+    model = ScriptedModel([_call("sing"), _say("I can only sing by voice.")])
+    agent, audit = _agent(model, [_singing()])
+
+    assert agent.handle("sing", NO_CONFIRM) == "I can only sing by voice."
+    assert model.seen[1][-1]["content"] == agent_module.NO_SOUND
+    assert "sound_not_played" in _events(audit)
+    assert any(e.get("event") == "reply" for e in audit.events)
+
+
+def test_a_sound_is_not_played_once_the_request_was_cancelled() -> None:
+    played: list[Sound] = []
+    cancelled = [False]
+
+    def cancel_then_sing(_args: dict[str, Any]) -> Result:
+        cancelled[0] = True  # the owner spoke over Jarvis while the song was being made
+        return Result("Singing now.", sound=SONG)
+
+    op = Operation(
+        "sing",
+        "Sing.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        cancel_then_sing,
+    )
+    model = ScriptedModel([_call("sing"), _say("Done.")])
+    agent, _ = _agent(model, [op])
+
+    agent.handle(
+        "sing", Hooks(confirm=lambda _q: False, play=played.append, cancelled=lambda: cancelled[0])
+    )
+
+    assert not played

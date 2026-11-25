@@ -1848,6 +1848,27 @@ def make_synthesizer(
     return run
 
 
+def run_singer(cmd: list[str], timeout_s: float) -> tuple[int, str]:
+    """Run a singing program (`jarvis.sing.soulx`) to its end; return its exit code and stderr.
+
+    It reads nothing and makes no sound itself: it writes a file the speaker then plays.
+
+    Raises:
+        AudioError: it could not start, or ran past `timeout_s` and was killed.
+    """
+    try:
+        done = subprocess.run(
+            cmd, capture_output=True, timeout=timeout_s, check=False, stdin=subprocess.DEVNULL
+        )
+    except subprocess.TimeoutExpired as exc:
+        msg = f"{Path(cmd[0]).name} ran past {timeout_s:g} s and was stopped"
+        raise AudioError(msg) from exc
+    except OSError as exc:
+        msg = f"could not start {cmd[0]}: {exc}"
+        raise AudioError(msg) from exc
+    return done.returncode, done.stderr.decode("utf-8", errors="replace")
+
+
 def pw_play_command(rate: int) -> list[str]:
     """Return the `pw-play` command for raw mono 16-bit PCM on standard input."""
     return ["pw-play", "--raw", "--rate", str(rate), "--channels", "1", "--format", "s16", "-"]
@@ -1981,8 +2002,9 @@ class Speaker:
     """Speaks through `pw-play` with a synthesizer from `make_synthesizer`.
 
     Sentences are queued and spoken in order by one worker thread, each synthesized while the
-    one before it plays, through one player for as long as sentences keep coming. `hush` drops
-    what has not been heard yet, so the owner can speak over Jarvis.
+    one before it plays, through one player for as long as sentences keep coming. A sound made
+    elsewhere (a song) takes its place in the same queue (`queue_sound`) and plays the same way.
+    `hush` drops what has not been heard yet, so the owner can speak over Jarvis.
     """
 
     def __init__(  # ruff: ignore[too-many-arguments] - the player's settings, keyword-only
@@ -2008,7 +2030,7 @@ class Speaker:
         self._linger_s = linger_s
         self._clock = clock
         self._lock = threading.Condition()
-        self._items: queue.Queue[tuple[int, str]] = queue.Queue()
+        self._items: queue.Queue[tuple[int, str, tuple[bytes, int] | None]] = queue.Queue()
         self._pending = 0  # sentences queued, being synthesized or being handed to the player
         self._run = 0  # raised by `hush`: sentences queued before it are dropped
         self._error: AudioError | None = None
@@ -2052,7 +2074,20 @@ class Speaker:
 
     def queue(self, text: str) -> None:
         """Have `text` spoken after what is already queued, and return at once."""
-        if self._stopped.is_set() or not text.strip():
+        if not text.strip():
+            return
+        self._put(text, None)
+
+    def queue_sound(self, pcm: bytes, rate: int, words: str = "") -> None:
+        """Have int16 mono `pcm` at `rate` played after what is already queued; return at once.
+
+        `words` are what it says, for the check that it would not trigger the wake word itself.
+        """
+        if pcm:
+            self._put(words, (pcm, rate))
+
+    def _put(self, text: str, sound: tuple[bytes, int] | None) -> None:
+        if self._stopped.is_set():
             return
         with self._lock:
             self._pending += 1
@@ -2061,7 +2096,7 @@ class Speaker:
                     target=self._work, name="jarvis-speech", daemon=True
                 )
                 self._worker.start()
-            self._items.put((self._run, text))
+            self._items.put((self._run, text, sound))
 
     def wait(self) -> None:
         """Return once everything queued has played or was hushed.
@@ -2096,12 +2131,12 @@ class Speaker:
     def _work(self) -> None:
         while True:
             try:
-                run, text = self._items.get(timeout=self._linger_s if self._proc else None)
+                run, text, sound = self._items.get(timeout=self._linger_s if self._proc else None)
             except queue.Empty:
                 self._close()
                 continue
             try:
-                self._speak(run, text)
+                self._speak(run, text, sound)
             except AudioError as exc:
                 self._failed(exc)
             except Exception as exc:
@@ -2120,10 +2155,10 @@ class Speaker:
     def _current(self, run: int) -> bool:
         return run == self._run and not self._stopped.is_set()
 
-    def _speak(self, run: int, text: str) -> None:
+    def _speak(self, run: int, text: str, sound: tuple[bytes, int] | None = None) -> None:
         if not self._current(run):
             return
-        pcm, rate = self._synthesize(text)
+        pcm, rate = sound if sound is not None else self._synthesize(text)
         if not self._current(run):
             return
         if self._proc is not None and (rate != self._rate or self._player_run != run):

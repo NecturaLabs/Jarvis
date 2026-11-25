@@ -11,7 +11,7 @@ import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from jarvis.audit import AuditLog
     from jarvis.config import AgentConfig
     from jarvis.model import ChatModel, Delta
-    from jarvis.operations import Operation, Registry, Request
+    from jarvis.operations import Operation, Registry, Request, Sound
     from jarvis.pictures import Picture
 
 log = logging.getLogger(__name__)
@@ -121,6 +121,10 @@ SUMMARY_PROMPT = (
 FAILED_REMINDER = (
     "System check: no action in this request succeeded, so nothing has changed. Say plainly "
     "what went wrong, without saying that anything was done."
+)
+NO_SOUND = (
+    "Nothing was played: this channel has no sound, so a song can only be sung when the owner"
+    " talks to you by voice. Say so in a few words."
 )
 LOOKED_REMINDER = (
     "System check: the tools you called in this request only look things up, so nothing has "
@@ -675,7 +679,9 @@ class Hooks:
     the reply `handle` returns replaces it. With `preview` (a window), a question about an action
     that writes text also shows the start of that text, on the lines after the question.
     `steer` returns what the owner typed while the request runs (a window), taken once: it joins
-    the request as the owner's own words before the next model call.
+    the request as the owner's own words before the next model call. With `play`, a sound an
+    operation made (a song) is played through it, queued after the words passed to `speak`;
+    without it, such an operation's result is a failure, since nothing could be heard.
     """
 
     confirm: Callable[[str], bool | Declined]
@@ -689,6 +695,7 @@ class Hooks:
     quiet: Callable[[], None] = lambda: None
     preview: bool = False
     steer: Callable[[], list[str]] = list
+    play: Callable[[Sound], None] | None = None
 
 
 def _no_reason(answer: object) -> NoReason:
@@ -1537,10 +1544,22 @@ class Agent:
         for group in self._side_by_side(calls):
             ran = self._run_group(group, hooks, turn, taint=taint)
             results += (
-                self._record(call, result, turn) for call, result in zip(group, ran, strict=True)
+                self._record(call, self._play(result, hooks), turn)
+                for call, result in zip(group, ran, strict=True)
             )
         turn.stuck = any(result is _REPEATED for result in results)
         return results
+
+    def _play(self, result: Result, hooks: Hooks) -> Result:
+        """Play the sound a result carries; a channel that cannot play it gets a failure instead."""
+        if result.sound is None:
+            return result
+        if hooks.play is None:
+            self._audit.record("sound_not_played", reason="no sound on this channel")
+            return Result(NO_SOUND, ok=False)
+        if not hooks.cancelled():
+            hooks.play(result.sound)
+        return replace(result, sound=None)  # played: the conversation keeps only its words
 
     def _record(self, call: dict[str, Any], result: Result, turn: _Turn) -> Result:
         """Note what one call did in the request, add its result to the conversation, return it."""

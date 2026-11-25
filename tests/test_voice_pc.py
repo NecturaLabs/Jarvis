@@ -84,6 +84,10 @@ class Speaker:
     def queue(self, text: str) -> None:
         self.said.append(text)
 
+    def queue_sound(self, pcm: bytes, rate: int, words: str = "") -> None:
+        del pcm, rate
+        self.said.append(words)
+
     def wait(self) -> None:
         pass
 

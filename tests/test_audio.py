@@ -2247,3 +2247,19 @@ def test_a_wpctl_that_fails_raises_an_audio_error(
 
     with pytest.raises(audio_module.AudioError, match="sound server"):
         audio_module.wpctl(["set-volume", "@DEFAULT_AUDIO_SINK@", "0.40"])
+
+
+def test_a_singer_program_runs_to_its_end_and_gives_its_exit_code_and_errors() -> None:
+    code, errors = audio_module.run_singer(["sh", "-c", "echo out of memory >&2; exit 3"], 5.0)
+
+    assert code == 3
+    assert errors.strip() == "out of memory"
+
+
+def test_a_singer_that_runs_too_long_is_stopped_and_one_that_cannot_start_is_an_error(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(AudioError, match="ran past"):
+        audio_module.run_singer(["sleep", "5"], 0.2)
+    with pytest.raises(AudioError, match="could not start"):
+        audio_module.run_singer([str(tmp_path / "missing")], 1.0)

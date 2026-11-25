@@ -34,6 +34,8 @@ from jarvis.ratelimit import ActionRate
 from jarvis.schedule import JobStore, ScheduleOps
 from jarvis.secretfile import read_api_key
 from jarvis.services import StrataSetupError, read_run_config, reads_pictures
+from jarvis.sing.engines import singer_for
+from jarvis.sing.ops import SingOps
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
@@ -420,6 +422,7 @@ def channel_registry(
                 else []
             ),
             *([quiet_operation()] if channel == "voice" else []),
+            *(SingOps(singer_for(config)).operations() if channel == "voice" else []),
             *([think] if (think := think_operation(limits)) is not None else []),
             no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
         ],

@@ -111,6 +111,18 @@ def request_scope(*, foreign: bool, words: str = "") -> Generator[Request]:
 
 
 @dataclass(frozen=True, slots=True)
+class Sound:
+    """A sound an operation made for the owner to hear, a song: int16 mono samples at `rate`.
+
+    `words` are what it says, so the voice's check for its own wake word can read them.
+    """
+
+    pcm: bytes
+    rate: int
+    words: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class Result:
     """What an operation returns to the model, with the origin of its text.
 
@@ -122,6 +134,8 @@ class Result:
     window did not show where asked. A reply may then say what was done. `quiet` ends the
     request with nothing said: the owner asked for silence. `effort` asks the agent to let the
     model think that hard for the rest of the request (`think_harder`); the agent decides.
+    `sound` is played to the owner in the reply, after the words spoken before it; a channel
+    that cannot play sound turns the result into a failure the model is told about.
     """
 
     text: str
@@ -133,6 +147,7 @@ class Result:
     acted: bool = False
     quiet: bool = False
     effort: str = ""
+    sound: Sound | None = None
 
 
 @dataclass(frozen=True, slots=True)
