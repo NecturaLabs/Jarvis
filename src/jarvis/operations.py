@@ -73,11 +73,14 @@ class Request:
     Each request is its own object, equal only to itself, so an operation can keep what it showed
     the owner in one request and refuse to act on it in another. `foreign` says the request was
     heard in PC audio, not from the owner. `outside` holds the origins of the outside text that
-    came into the request so far (`"memory"` for outside text it remembers).
+    came into the request so far (`"memory"` for outside text it remembers). `words` are the
+    owner's own words of the request: none for one heard in PC audio or handed over with outside
+    text behind it, and without the pastes that count as outside data.
     """
 
     foreign: bool
     outside: set[str] = field(default_factory=set[str])
+    words: str = ""
 
     def saw(self, origin: str) -> None:
         """Note that text of `origin` came into the request."""
@@ -93,9 +96,9 @@ def current_request() -> Request | None:
 
 
 @contextmanager
-def request_scope(*, foreign: bool) -> Generator[Request]:
-    """Mark everything run inside as part of one new request."""
-    request = Request(foreign)
+def request_scope(*, foreign: bool, words: str = "") -> Generator[Request]:
+    """Mark everything run inside as part of one new request; `words` are the owner's own."""
+    request = Request(foreign, words=words)
     token = _CURRENT.set(request)
     try:
         yield request

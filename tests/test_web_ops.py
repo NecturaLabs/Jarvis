@@ -22,6 +22,7 @@ from jarvis.operations import (
     OperationError,
     Registry,
     Result,
+    request_scope,
     validate_args,
 )
 from jarvis.pictures import PictureCache
@@ -604,6 +605,53 @@ def test_an_address_no_search_returned_is_never_fetched() -> None:
     with pytest.raises(OperationError, match="search first"):
         _run(ops, "web_read", url="https://kettles.example/descale?owner=said-this")
     assert net.hosts() == ["127.0.0.1"]
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        "read https://kettles.example/descale please",
+        "what does https://kettles.example/descale, say?",
+        "(see https://kettles.example/descale)",
+    ],
+)
+def test_an_address_the_owner_wrote_in_this_request_is_read(words: str) -> None:
+    net = Net()
+
+    with request_scope(foreign=False, words=words):
+        result = _run(_ops(net), "web_read", url="https://kettles.example/descale")
+
+    assert "citric acid" in result.text
+    assert result.origin is Origin.WEB
+    assert net.hosts() == ["kettles.example"]
+
+
+@pytest.mark.parametrize(
+    ("words", "url"),
+    [
+        ("read https://kettles.example/descale", "https://kettles.example/descale?leak=1"),
+        ("read https://kettles.example/descale?a=1", "https://kettles.example/descale"),
+        ("read kettles.example/descale", "https://kettles.example/descale"),
+        ("", "https://kettles.example/descale"),
+    ],
+)
+def test_only_the_exact_address_the_owner_wrote_counts(words: str, url: str) -> None:
+    net = Net()
+
+    with (
+        request_scope(foreign=False, words=words),
+        pytest.raises(OperationError, match="search first"),
+    ):
+        _run(_ops(net), "web_read", url=url)
+    assert net.seen == []
+
+
+def test_an_address_the_owner_wrote_is_still_checked_as_public() -> None:
+    with (
+        request_scope(foreign=False, words="read http://127.0.0.1:8080/admin"),
+        pytest.raises(OperationError, match="Couldn't read that page"),
+    ):
+        _run(_ops(Net()), "web_read", url="http://127.0.0.1:8080/admin")
 
 
 def test_a_reddit_thread_in_web_results_is_read_from_the_archive() -> None:

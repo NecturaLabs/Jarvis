@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from jarvis.operations import Operation, OperationError, Result, cut_inert
+from jarvis.operations import Operation, OperationError, Request, Result, current_request, cut_inert
 from jarvis.pictures import SHOWN_SIDE, PictureError, prepare
 from jarvis.policy import Origin
 from jarvis.shortcuts import Shortcut
@@ -52,6 +52,9 @@ MAX_COMMENT = 300
 NO_HOME = (
     "I don't have a home set, so tell me a place. You can set one in the config under weather."
 )
+# A web address as the owner writes one; what a sentence puts after it is cut separately.
+_ADDRESS = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
+_TRAILING = ".,;:!?)]}"
 _REDDIT_POST = re.compile(r"^/r/(?P<sub>[A-Za-z0-9_]{2,21})/comments/(?P<id>[a-z0-9]{1,12})(?:/|$)")
 _UNIT_SIGNS = {"celsius": "°C", "fahrenheit": "°F"}
 _WIND_WORDS = {"kmh": "km/h", "mph": "mph", "ms": "m/s", "kn": "knots"}
@@ -102,6 +105,17 @@ def spoken_time(moment: datetime, *, twelve_hour: bool) -> str:
 def spoken_date(day: date) -> str:
     """Return a date as it is said: "Saturday, 21 November"."""
     return f"{day:%A}, {day.day} {day:%B}"
+
+
+def _written(request: Request | None) -> set[str]:
+    """Return the web addresses in the owner's own words of `request`, as they wrote them.
+
+    Each is taken whole, and also without the punctuation a sentence put after it.
+    """
+    if request is None:
+        return set()
+    found = _ADDRESS.findall(request.words)
+    return {*found, *(address.rstrip(_TRAILING) for address in found)}
 
 
 def _reddit_thread(url: str) -> tuple[str, str] | None:
@@ -455,14 +469,22 @@ class WebOps:
         return Result(f"Results for {query!r}:\n" + "\n".join(lines), Origin.WEB)
 
     def web_read(self, args: dict[str, Any]) -> Result:
-        """Read a page a recent search returned and give its main text.
+        """Read a page a recent search returned, or one the owner wrote, and give its main text.
+
+        An address the owner wrote counts only as written, in their own words of this request
+        (`Request.words`): never one in a paste, a page, a file or PC audio, where anyone could
+        have put an address that carries data off in its query.
 
         Raises:
-            OperationError: the address came from no search, or the page could not be read.
+            OperationError: the address came from no search and not from the owner, or the
+                page could not be read.
         """
         url = str(args["url"]).strip()
-        if not self._knows(self._urls, url):
-            msg = "Only a page a recent web_search returned can be read; search first."
+        if not self._knows(self._urls, url) and url not in _written(current_request()):
+            msg = (
+                "Only a page a recent web_search returned, or an address the owner wrote in "
+                "this request, can be read; search first."
+            )
             raise OperationError(msg)
         thread = _reddit_thread(url)
         if thread is not None:
@@ -722,7 +744,8 @@ class WebOps:
             ),
             Operation(
                 "web_read",
-                "Read the main text of a page that web_search returned (pass its address exactly).",
+                "Read the main text of a page that web_search returned or the owner wrote (pass "
+                "its address exactly).",
                 {
                     "type": "object",
                     "properties": {"url": {"type": "string", "minLength": 1, "maxLength": MAX_URL}},

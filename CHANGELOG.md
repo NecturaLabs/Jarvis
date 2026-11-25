@@ -8,6 +8,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Jarvis reads a web address you write in the request ("what does https://… say?") without searching for it first.
+  Only an address in your own words counts, exactly as written: never one in a long paste, a page, a file, PC audio
+  or a scheduled request that outside text steered, and every address is still checked to be public.
 - `pc_volume`: the PC's own output volume, read, set, turned up or down or muted, in any words; it is every
   program's sound, games and videos included. A change is bound to its start and end before any question.
 - `audio.transcribe_backend` says where the GGUF speech-to-text engine runs (Voxtype's `gguf_backend`): `cpu` keeps it

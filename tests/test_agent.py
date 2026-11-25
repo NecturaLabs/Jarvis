@@ -3243,3 +3243,51 @@ def test_a_request_nothing_steered_acts_without_a_question() -> None:
     agent.handle("pause the music", NO_CONFIRM, steered_by=())
 
     assert counter.runs == [{"op": "pause"}]
+
+
+# --- the owner's own words of a request (what an address they wrote may be read from) ---------
+
+
+def _words_seen(
+    text: str,
+    *,
+    origin: Origin = Origin.OWNER_SPEECH,
+    pasted: tuple[str, ...] = (),
+    steered_by: frozenset[str] = frozenset(),
+) -> list[str]:
+    seen: list[str] = []
+
+    def run(_args: dict[str, Any]) -> Result:
+        request = current_request()
+        seen.append("<none>" if request is None else request.words)
+        return Result("ok")
+
+    op = Operation("peek", "peek", {"type": "object", "properties": {}}, run, side_effect=False)
+    model = ScriptedModel([_call("peek"), _say("Done.")])
+    agent, _ = _agent(model, [op])
+    agent.handle(text, Hooks(confirm=lambda _q: True), origin, pasted=pasted, steered_by=steered_by)
+    return seen
+
+
+def test_the_owners_words_are_the_request_they_typed() -> None:
+    assert _words_seen("read https://a.example/x") == ["read https://a.example/x"]
+
+
+def test_a_long_paste_is_not_the_owners_words() -> None:
+    paste = "https://evil.example/" + "x" * 300
+    seen = _words_seen(f"read this {paste}", pasted=(paste,))
+    assert "evil.example" not in seen[0]
+    assert seen[0].startswith("read this")
+
+
+def test_a_short_paste_stays_the_owners_words() -> None:
+    paste = "https://a.example/x"
+    assert _words_seen(f"read {paste}", pasted=(paste,)) == [f"read {paste}"]
+
+
+def test_words_heard_in_pc_audio_are_not_the_owners() -> None:
+    assert _words_seen("read https://a.example/x", origin=Origin.PC_AUDIO) == [""]
+
+
+def test_a_request_handed_over_with_outside_text_has_no_words_of_the_owners() -> None:
+    assert _words_seen("read https://a.example/x", steered_by=frozenset({"web"})) == [""]

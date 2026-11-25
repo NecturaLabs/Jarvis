@@ -455,6 +455,15 @@ def _cost(message: Mapping[str, Any]) -> int:
     return tokens(_text(message)) + pictures * PICTURE_TOKENS
 
 
+def _own_words(text: str, outside: Sequence[str]) -> str:
+    """Return a request without the pastes that count as outside data (`_outside_pastes`)."""
+    if list(outside) == [text]:
+        return ""
+    for paste in outside:
+        text = text.replace(paste, " ")
+    return text
+
+
 def _steered(turn: _Turn, steered_by: frozenset[str]) -> None:
     """Count the outside text a request was handed over with as in its conversation from the start.
 
@@ -1068,7 +1077,9 @@ class Agent:
         Operations run inside the request's scope (`request_scope`), so one can tell this
         request from the next and a request heard in PC audio from the owner's.
         """
-        with request_scope(foreign=origin not in TRUSTED_ORIGINS) as request:
+        foreign = origin not in TRUSTED_ORIGINS
+        own = "" if foreign or steered_by else _own_words(text, self._outside_pastes(text, pasted))
+        with request_scope(foreign=foreign, words=own) as request:
             for seen in sorted(steered_by):
                 request.saw(seen)
             source = (origin, request, frozenset(steered_by))
