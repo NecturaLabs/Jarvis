@@ -8,6 +8,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- In `jarvis chat`, words typed while a request runs steer it: they join the request before the model's next
+  call, instead of being refused with "esc stops it". `chat.while_working = "queue"` (or `/config`) runs them as
+  the next request instead.
 - Switch a tool on or off, or make it ask first, without editing the config: `jarvis tools` lists them all,
   `jarvis tools NAME on|ask|key|off|default` sets one, and the chat's `/config` has a Tools list. A tool that is
   off (`deny`) is no longer offered to the model at all, rather than offered and refused.

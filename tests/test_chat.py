@@ -562,12 +562,40 @@ def test_esc_stops_the_request() -> None:
     assert seen == [True]
 
 
-def test_one_request_at_a_time() -> None:
+def test_words_typed_while_a_request_works_steer_it() -> None:
+    steered: list[str] = []
+
+    def answer(text: str, hooks: Hooks) -> str:
+        if text == "pause":
+            for _ in range(500):  # as the agent does before each model call
+                if taken := hooks.steer():
+                    steered.extend(taken)
+                    break
+                threading.Event().wait(0.01)
+        return "Done."
+
+    session = FakeSession(answer)
+    app = _app(session=session)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "pause")
+        await _until(pilot, lambda: session.asked == ["pause"])
+        await _type(pilot, "use high effort")
+        await _until(pilot, lambda: bool(steered))
+        await _until(pilot, lambda: _has(app, "steering"))
+
+    _run(test, app)
+    assert steered == ["use high effort"]
+    assert session.asked == ["pause"]  # one request, steered
+
+
+def test_words_the_request_ended_before_taking_run_next() -> None:
     release = threading.Event()
 
-    def answer(_text: str, _hooks: Hooks) -> str:
-        release.wait(5)
-        return ""
+    def answer(text: str, _hooks: Hooks) -> str:
+        if text == "pause":
+            release.wait(5)
+        return "Done."
 
     session = FakeSession(answer)
     app = _app(session=session)
@@ -576,11 +604,39 @@ def test_one_request_at_a_time() -> None:
         await _type(pilot, "pause")
         await _until(pilot, lambda: session.asked == ["pause"])
         await _type(pilot, "skip")
-        await _until(pilot, lambda: _has(app, "still working"))
+        await _until(pilot, lambda: _has(app, "steering"))
         release.set()
+        await _until(pilot, lambda: len(session.asked) == 2)
 
     _run(test, app)
-    assert session.asked == ["pause"]
+    assert session.asked == ["pause", "skip"]
+
+
+def test_with_queue_set_words_typed_while_working_run_as_the_next_request() -> None:
+    release = threading.Event()
+    steered: list[list[str]] = []
+
+    def answer(text: str, hooks: Hooks) -> str:
+        if text == "pause":
+            release.wait(5)
+            steered.append(hooks.steer())
+        return "Done."
+
+    session = FakeSession(answer)
+    app = _app(session=session, settings=ChatConfig(while_working="queue"))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "pause")
+        await _until(pilot, lambda: session.asked == ["pause"])
+        await _type(pilot, "skip")
+        await _type(pilot, "louder")
+        await _until(pilot, lambda: _has(app, "queued"))
+        release.set()
+        await _until(pilot, lambda: len(session.asked) == 3)
+
+    _run(test, app)
+    assert steered == [[]]
+    assert session.asked == ["pause", "skip", "louder"]
 
 
 # The owner's yes or no
@@ -1210,7 +1266,7 @@ def test_a_picture_that_fails_to_load_unexpectedly_leaves_the_window_open(
     _run(test, app)
 
 
-def test_a_request_sent_while_another_works_keeps_its_words_and_pictures() -> None:
+def test_a_request_with_a_picture_sent_while_another_works_is_queued_with_it() -> None:
     release = threading.Event()
 
     def answer(text: str, _hooks: Hooks) -> str:
@@ -1228,12 +1284,8 @@ def test_a_request_sent_while_another_works_keeps_its_words_and_pictures() -> No
         await _until(pilot, lambda: "[Image #1]" in _input(app).text)
         await pilot.press("w", "h", "a", "t", "?")
         await pilot.press("enter")
-        await _until(pilot, lambda: _has(app, "still working"))
-        assert _input(app).text == "[Image #1] what?"
-        assert "pasted picture" in _attached(app)
+        await _until(pilot, lambda: _has(app, "queued"))
         release.set()
-        await _until(pilot, lambda: not app.query_one("#working", Static).display)
-        await pilot.press("enter")
         await _until(pilot, lambda: len(session.asked) == 2)
 
     _run(test, app)

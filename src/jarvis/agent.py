@@ -71,6 +71,7 @@ MAX_STREAMED_CHARS = 4000  # no more is spoken before an answer is whole (no_act
 NO_ACTION = "no_action"
 THINK_HARDER = "think_harder"
 _UNKNOWN = "unknown operation"
+STEERED = "(The owner adds, while you work on this request:)"
 # What a remembered turn keeps of its look-ups, so a follow-up can go back to the same page.
 MAX_LOOK_UPS_KEPT = 6
 MAX_ASKED = 160  # characters of one argument
@@ -661,6 +662,8 @@ class Hooks:
     reply as far as it has been written, at the same points, for a window to show it growing;
     the reply `handle` returns replaces it. With `preview` (a window), a question about an action
     that writes text also shows the start of that text, on the lines after the question.
+    `steer` returns what the owner typed while the request runs (a window), taken once: it joins
+    the request as the owner's own words before the next model call.
     """
 
     confirm: Callable[[str], bool | Declined]
@@ -673,6 +676,7 @@ class Hooks:
     hush: Callable[[], None] = lambda: None
     quiet: Callable[[], None] = lambda: None
     preview: bool = False
+    steer: Callable[[], list[str]] = list
 
 
 def _no_reason(answer: object) -> NoReason:
@@ -1270,6 +1274,7 @@ class Agent:
                     return ""
                 if self._clock() - turn.started > turn.limit_s:
                     return _out_of_time(turn)
+                self._take_steering(turn, hooks)
                 if step == self._limits.max_steps - 1 and step > 0 and turn.actions:
                     # Rather than stop with nothing, the last call answers from what was found.
                     turn.last = True
@@ -1280,6 +1285,16 @@ class Agent:
             return TOO_MANY_STEPS
         finally:
             turn.cues.settle()
+
+    def _take_steering(self, turn: _Turn, hooks: Hooks) -> None:
+        """Add what the owner typed while the request ran, as their words, before the next call."""
+        for text in hooks.steer():
+            words = text.strip()
+            if not words:
+                continue
+            self._audit.record("steered", text=words[:MAX_AUDIT_TEXT])
+            turn.messages.append({"role": "user", "content": f"{STEERED} {words}"})
+            turn.stuck = False  # new words: the model may act on them, not only answer
 
     def _step(self, turn: _Turn, hooks: Hooks, step: int) -> str | None:
         """Run one model call and its tool calls; return the final reply, or None to go on.

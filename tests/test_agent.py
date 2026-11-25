@@ -3392,3 +3392,28 @@ def test_words_heard_in_pc_audio_are_not_the_owners() -> None:
 
 def test_a_request_handed_over_with_outside_text_has_no_words_of_the_owners() -> None:
     assert _words_seen("read https://a.example/x", steered_by=frozenset({"web"})) == [""]
+
+
+def test_words_the_owner_adds_while_it_works_join_the_request_before_the_next_call() -> None:
+    counter = Counter()
+    given: list[str] = []
+
+    def steer() -> list[str]:
+        if counter.runs and not given:  # typed while the search ran
+            given.append("also check the weekend")
+            return list(given)
+        return []
+
+    model = ScriptedModel([_call("search", {"q": "weather"}, "c1"), _say("Rain, dry on Saturday.")])
+    agent, audit = _agent(model, [counter.op("search", side_effect=False)])
+
+    reply = agent.handle("will it rain", Hooks(confirm=lambda _q: False, steer=steer))
+
+    assert reply == "Rain, dry on Saturday."
+    sent = [(m["role"], str(m.get("content", ""))) for m in model.seen[1]]
+    steered = ("user", "(The owner adds, while you work on this request:) also check the weekend")
+    assert steered in sent
+    assert [role for role, _ in sent].index("tool") < sent.index(steered)
+    assert [e["text"] for e in audit.events if e["event"] == "steered"] == [
+        "also check the weekend"
+    ]

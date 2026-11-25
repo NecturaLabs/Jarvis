@@ -195,6 +195,8 @@ class _Work:
     label: str = "Thinking"
     stop: threading.Event = field(default_factory=threading.Event)
     draft: str = ""
+    steering: list[str] = field(default_factory=list[str])  # typed meanwhile, not yet taken
+    taking: bool = True  # the request still takes steering; once it ends, the words wait
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +211,7 @@ TOOLS_ROW = "tools"  # the settings row that opens the list of tools
 SETTINGS = (
     _Setting("verbosity", "Verbosity", VERBOSITY, live=True),
     _Setting("toolbar", "Toolbar", (True, False), live=True),
+    _Setting("while_working", "Enter while working", ("steer", "queue"), live=True),
     _Setting("resume", "Resume the last conversation", (True, False), live=False),
     _Setting("reply_tokens", "Longest reply (tokens)", (1024, 2048, 4096), live=False),
     _Setting("max_steps", "Model calls per request", (15, 30, 60), live=False),
@@ -360,6 +363,8 @@ class ChatApp(App[None]):
         self._settings = settings or ChatConfig()
         self._services = services or Services()
         self._tools_shown = False  # the settings panel lists the tools
+        # Requests typed while one ran, waiting their turn: words, pictures, pastes.
+        self._queued: list[tuple[str, list[Picture], list[str]]] = []
         self._session_id = session_id
         self._poll_s = poll_s
         self._status_s = status_s
@@ -877,8 +882,7 @@ class ChatApp(App[None]):
         choice = self._menu_choice()
         text = event.text.strip()
         if text and choice is None and not text.startswith("/") and self._busy():
-            # Refused before anything is taken from the box: the words and pictures stay there.
-            self._note(STILL_WORKING, "warn")
+            self._while_working(text)
             return
         pictures = self._sent_pictures(text)
         pasted = self._sent_pastes(text)
@@ -901,6 +905,46 @@ class ChatApp(App[None]):
             self._command(text)
             return
         self._request(text, pictures, pasted)
+
+    def _while_working(self, text: str) -> None:
+        """Steer the running request with the typed words, or queue them as the next request.
+
+        Words that come with pictures or a long paste are queued: they are a request of their own.
+        """
+        pictures = self._sent_pictures(text)
+        pasted = self._sent_pastes(text)
+        self._input().set_text("")
+        if self._history is not None:
+            self._history.add(text, pasted)
+        now = datetime.now().astimezone().strftime("%H:%M:%S")
+        with self._lock:
+            work = self._work
+            steer = (
+                self._settings.while_working == "steer"
+                and work is not None
+                and work.taking
+                and not pictures
+                and not pasted
+            )
+            if steer and work is not None:
+                work.steering.append(text)
+            else:
+                self._queued.append((text, list(pictures), list(pasted)))
+        self._mount(Request(text, _joined("typed", now, "steering" if steer else "queued")))
+        self._exchanges.append(("you", text))
+
+    def _take_steering(self, work: _Work) -> list[str]:
+        with self._lock:
+            taken, work.steering = work.steering, []
+        return taken
+
+    def _next_queued(self) -> None:
+        """Start the next queued request, if any, once the window is idle."""
+        with self._lock:
+            if self._work is not None or not self._queued:
+                return
+            text, pictures, pasted = self._queued.pop(0)
+        self._request(text, pictures, pasted, shown=True)
 
     def _sent_pastes(self, text: str) -> list[str]:
         """Return what was pasted into `text`, once per paste, and forget it.
@@ -1319,12 +1363,23 @@ class ChatApp(App[None]):
 
     def _finish(self, work: _Work | None) -> None:
         with self._lock:
+            if work is not None:
+                work.taking = False
+                # Words the request ended before taking run next, ahead of the queue.
+                self._queued[:0] = [(text, [], []) for text in work.steering]
+                work.steering = []
             if self._work is work:
                 self._work = None
         self._from_worker(self._idle)
+        self._from_worker(self._next_queued)
 
     def _request(
-        self, text: str, pictures: Sequence[Picture] = (), pasted: Sequence[str] = ()
+        self,
+        text: str,
+        pictures: Sequence[Picture] = (),
+        pasted: Sequence[str] = (),
+        *,
+        shown: bool = False,
     ) -> None:
         if self._session is None:
             self._note(f"Typed requests are off: {self._unavailable}", "warn")
@@ -1334,11 +1389,12 @@ class ChatApp(App[None]):
         work = self._work
         if work is None:
             return
-        now = datetime.now().astimezone().strftime("%H:%M:%S")
-        count = len(pictures)
-        shared = "" if not count else "a picture" if count == 1 else f"{count} pictures"
-        self._mount(Request(text, _joined("typed", now, shared)))
-        self._exchanges.append(("you", text))
+        if not shown:  # a queued request was shown when it was typed
+            now = datetime.now().astimezone().strftime("%H:%M:%S")
+            count = len(pictures)
+            shared = "" if not count else "a picture" if count == 1 else f"{count} pictures"
+            self._mount(Request(text, _joined("typed", now, shared)))
+            self._exchanges.append(("you", text))
         self.run_worker(
             lambda: self._handle(text, work, pictures, pasted), thread=True, group="request"
         )
@@ -1359,6 +1415,7 @@ class ChatApp(App[None]):
             draft=lambda text: self._from_worker(self._show_draft, work, text),
             hush=lambda: self._from_worker(self._drop_draft, work),
             preview=True,
+            steer=lambda: self._take_steering(work),
         )
         reply = ""
         rate: float | None = None

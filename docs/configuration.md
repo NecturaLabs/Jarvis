@@ -93,6 +93,7 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 | `resume` | `true` | `true`, `false` | Open the chat on the conversation it had last time, kept 0600 in `~/.local/state/jarvis/chat-conversation.json`. `false` starts each session fresh and deletes the file. |
 | `verbosity` | `replies` | `replies`, `steps`, `everything` | How much of Jarvis's work the chat shows: requests and replies only, plus each step and its result, or plus every model call and detail. Ctrl+O and `/verbosity` change it and save it here. |
 | `toolbar` | `true` | `true`, `false` | The line under the input with the PC's CPU, GPU, VRAM and RAM use, temperatures, and how full the model's context is. In a narrow window it leaves out the temperatures first, so it stays on one line. |
+| `while_working` | `steer` | `steer`, `queue` | What Enter does while a request runs. `steer`: the words join that request as yours, before the model's next call; words it ended before taking run next. `queue`: they wait and run as the next request. Words sent with a picture or a long paste are always queued. Esc still stops the request; queued words then run. `/config` changes it. |
 | `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, with what was pasted into each, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
 
 `/config` in the chat changes `verbosity`, `toolbar`, `resume`, `reply_tokens` and `max_steps` and writes
