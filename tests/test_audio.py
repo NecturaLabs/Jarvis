@@ -27,6 +27,7 @@ from jarvis.audio import (
     VOXTYPE_FOLLOW,
     AppAudio,
     AudioError,
+    FileWarmer,
     Microphone,
     Speaker,
     Vad,
@@ -46,6 +47,7 @@ from jarvis.audio import (
     parse_voxtype_status,
     playing_app_streams,
     pw_record_command,
+    read_into_memory,
     screen_locked,
     source_found,
     to_16k,
@@ -1924,3 +1926,184 @@ def test_the_wake_word_logs_which_phrase_was_heard(
         assert wake.heard(np.zeros(FRAME, dtype=np.int16))
 
     assert "wake word yo_jarvis score 0.90" in caplog.text
+
+
+def _on_disk(*_args: object) -> int:
+    raise BlockingIOError
+
+
+def test_a_file_out_of_memory_is_read_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = tmp_path / "speech.gguf"
+    model.write_bytes(b"x" * 100_000)
+    monkeypatch.setattr(audio_module.os, "preadv", _on_disk)
+    monkeypatch.setattr(audio_module, "_WARM_CHUNK", 30_000)
+    read: list[int] = []
+    readv = os.readv
+
+    def counted(fd: int, buffers: list[bytearray]) -> int:
+        read.append(readv(fd, buffers))
+        return read[-1]
+
+    monkeypatch.setattr(audio_module.os, "readv", counted)
+    ticks = iter([10.0, 12.5])
+
+    seconds = read_into_memory(model, lambda: next(ticks))
+
+    assert seconds == pytest.approx(2.5)
+    assert read == [30_000, 30_000, 30_000, 10_000, 0]
+
+
+def test_a_file_already_in_memory_is_not_read_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = tmp_path / "speech.gguf"
+    model.write_bytes(b"x" * 100_000)
+    sampled: list[int] = []
+
+    def in_memory(_fd: int, _buffers: object, offset: int, flags: int) -> int:
+        assert flags == os.RWF_NOWAIT  # never waits for the disk
+        sampled.append(offset)
+        return 1
+
+    def unread(*_args: object) -> int:
+        raise AssertionError
+
+    monkeypatch.setattr(audio_module.os, "preadv", in_memory)
+    monkeypatch.setattr(audio_module.os, "readv", unread)
+
+    assert read_into_memory(model) is None
+    assert sampled[0] == 0
+    assert sampled == sorted(set(sampled))  # spread over the file
+    assert 90_000 < sampled[-1] < 100_000
+
+
+def test_a_file_partly_in_memory_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    model = tmp_path / "speech.gguf"
+    model.write_bytes(b"x" * 100_000)
+
+    def half(_fd: int, _buffers: object, offset: int, _flags: int) -> int:
+        if offset > 50_000:
+            raise BlockingIOError
+        return 1
+
+    monkeypatch.setattr(audio_module.os, "preadv", half)
+
+    assert read_into_memory(model) is not None
+
+
+def test_nothing_but_a_speech_model_sized_regular_file_is_read_ahead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(audio_module.os, "preadv", _on_disk)
+    empty = tmp_path / "empty.gguf"
+    empty.touch()
+    large = tmp_path / "large.gguf"
+    large.write_bytes(b"x" * 2_000)
+    monkeypatch.setattr(audio_module, "MAX_WARM_BYTES", 1_999)
+
+    assert read_into_memory(tmp_path / "missing.gguf") is None
+    assert read_into_memory(tmp_path) is None
+    assert read_into_memory(tmp_path / "a\0b.gguf") is None  # a config can hold a NUL
+    assert read_into_memory(empty) is None
+    assert read_into_memory(large) is None
+
+
+def test_a_named_pipe_is_not_opened_for_reading_ahead(tmp_path: Path) -> None:
+    """It would block the read until something wrote to it."""
+    fifo = tmp_path / "pipe.gguf"
+    os.mkfifo(fifo)
+    found: list[float | None] = []
+    reader = threading.Thread(target=lambda: found.append(read_into_memory(fifo)), daemon=True)
+
+    reader.start()
+    reader.join(timeout=10)
+    blocked = reader.is_alive()
+    if blocked:  # release the blocked open so the thread ends
+        with fifo.open("wb"):
+            pass
+        reader.join()
+
+    assert not blocked
+    assert found == [None]
+
+
+def test_a_read_that_fails_part_way_is_given_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = tmp_path / "speech.gguf"
+    model.write_bytes(b"x" * 100)
+    monkeypatch.setattr(audio_module.os, "preadv", _on_disk)
+
+    def failing(*_args: object) -> int:
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(audio_module.os, "readv", failing)
+
+    assert read_into_memory(model) is None
+
+
+def test_the_warmer_reads_its_file_on_a_thread_of_its_own_one_read_at_a_time(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    reading, finish = threading.Event(), threading.Event()
+    read: list[Path] = []
+
+    def slow(path: Path) -> float:
+        read.append(path)
+        reading.set()
+        assert finish.wait(10)
+        return 3.9
+
+    warmer = FileWarmer(Path("/models/speech.gguf"), slow)
+    with caplog.at_level(logging.INFO, logger="jarvis.audio"):
+        first = warmer.start()
+        assert first is not None
+        assert reading.wait(10)
+        assert warmer.start() is None  # one read under way: the wake word starts no second
+        finish.set()
+        first.join(10)
+        again = warmer.start()
+        assert again is not None
+        again.join(10)
+
+    assert read == [Path("/models/speech.gguf")] * 2
+    assert first.daemon
+    assert "read the speech model into memory in 3.9 s" in caplog.text
+
+
+def test_the_warmer_says_nothing_when_the_file_was_in_memory_and_reads_on_after_a_failure(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failures: list[type[BaseException]] = []
+
+    def caught(args: threading.ExceptHookArgs) -> None:
+        failures.append(args.exc_type)
+
+    monkeypatch.setattr(threading, "excepthook", caught)
+    outcomes: list[float | Exception | None] = [None, RuntimeError("a bug"), None]
+
+    def read(_path: Path) -> float | None:
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    warmer = FileWarmer(Path("/models/speech.gguf"), read)
+    with caplog.at_level(logging.INFO, logger="jarvis.audio"):
+        for _ in range(3):
+            thread = warmer.start()
+            assert thread is not None
+            thread.join(10)
+
+    assert not outcomes
+    assert failures == [RuntimeError]
+    assert "into memory" not in caplog.text
+
+
+def test_a_warmer_without_a_file_starts_nothing() -> None:
+    def unread(_path: Path) -> float | None:
+        raise AssertionError
+
+    assert FileWarmer(None, unread).start() is None

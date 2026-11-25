@@ -51,6 +51,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   through at 0.76 and 94.5 % at 0.5; its own speech never scored above 0.052
   ([ADR 0012](docs/adr/0012-lower-wake-score-while-speaking.md)). Its sentences are checked against the same
   score, and a wake word missed over its speech logs the closest score heard.
+- Jarvis gets two more things ready ahead of a request. At start and at each wake word it reads the speech
+  model's file into memory while the request is still being said, so Voxtype does not wait for the disk:
+  with a 2.2 GB model out of the file cache, transcription took 0.7 s instead of 4.2 s. And once the model is
+  loaded at start or on `jarvis resume`, it reads the system prompt and tools once (`prompt_primed` in the
+  audit log), so the first request no longer spends 2 to 4 s on that
+  ([docs/models.md](docs/models.md#warm-up)).
 
 ### Fixed
 

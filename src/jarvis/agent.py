@@ -50,6 +50,8 @@ MAX_SECONDS = 90.0
 COLD_LOAD_S = 180.0  # extra time when the model must load first (measured ~107 s while gaming)
 MIN_CALL_S = 1.0  # a model call always gets at least this long
 AFTER_ACTION_CALL_S = 15.0  # ...and at least this long once an action ran, to say how it went
+PRIME_S = 60.0  # how long reading the prompt ahead of the first request may take
+PRIME_WORDS = "Hello."  # what stands in for a request then; the model's answer is dropped
 MAX_CALLS_PER_TURN = 12
 MAX_TOOL_TEXT = 3000  # a read page or Reddit thread, with its title line
 REPLY_TOKENS = 400
@@ -894,6 +896,33 @@ class Agent:
             return None
         summary = _text(message).strip()
         return summary or None
+
+    def prime(self) -> bool:
+        """Have the model read the prompt and the tools once, ahead of the first request.
+
+        Strata keeps what every request starts with (`StrataModel.chat` marks it), and a model
+        just loaded holds nothing yet, so the first request would read all of it. This call starts
+        like a request's first one: the same prompt, tools and thinking. One token is asked for
+        and dropped; no tool runs and nothing is remembered. Return whether the model answered.
+        """
+        thinking = self._limits.thinking
+        began = self._clock()
+        try:
+            self._model.chat(
+                [
+                    {"role": "system", "content": self._system},
+                    {"role": "user", "content": PRIME_WORDS},
+                ],
+                self._registry.tool_schemas(),
+                timeout_s=PRIME_S,
+                max_tokens=1,
+                thinking=None if thinking is None else Thinking(thinking.effort, 1),
+            )
+        except Exception as exc:  # ruff: ignore[blind-except] - the first request reads it instead
+            log.warning("the model did not read its prompt ahead of the first request: %s", exc)
+            return False
+        self._audit.record("prompt_primed", seconds=round(self._clock() - began, 2))
+        return True
 
     def _expire(self, now: float) -> None:
         """Forget the conversation after the idle time, with what operations kept from it.

@@ -830,6 +830,7 @@ class _Run:
     kinds: dict[str, list[_Part]] = field(default_factory=dict[str, list[_Part]])
     refresh: list[threading.Event] = field(default_factory=list[threading.Event])
     warmed: threading.Event = field(default_factory=threading.Event)
+    primed: threading.Event = field(default_factory=threading.Event)
     loops: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
     audit: AuditLog = field(default_factory=lambda: AuditLog(None))
 
@@ -869,14 +870,15 @@ def _cmd_run(
     monkeypatch.setattr(cli.signal, "signal", signal_handler)
     monkeypatch.setattr(cli, "_load", lambda: cfg or config.Config())
     model = SimpleNamespace(
-        warm=lambda **_kw: run.warmed.set(),  # pyright: ignore[reportUnknownLambdaType] - a stand-in
+        warm=lambda **_kw: run.warmed.set() or True,  # pyright: ignore[reportUnknownLambdaType] - a stand-in
         is_loaded=lambda: True,
         load=lambda: True,
         status=lambda: "failed",  # what a suspend can leave behind
         file_missing=lambda: False,
     )
     ops = SimpleNamespace(start_refresh=run.refresh.append)
-    jarvis = SimpleNamespace(agent=object(), model=model, ops=ops, hint=lambda: "", audit=run.audit)
+    agent = SimpleNamespace(prime=run.primed.set)
+    jarvis = SimpleNamespace(agent=agent, model=model, ops=ops, hint=lambda: "", audit=run.audit)
 
     def build(_cfg: config.Config) -> SimpleNamespace:
         return jarvis
@@ -913,6 +915,7 @@ def test_a_stop_signal_only_raises_the_flag_and_the_stopper_ends_everything(
     (refresh,) = run.refresh
     assert refresh.wait(5)
     assert run.warmed.wait(5)
+    assert run.primed.wait(5)  # loaded: the model reads its prompt ahead of the first request
     (mic,), (speaker,), (pc_audio,) = (run.kinds[k] for k in ("Microphone", "Speaker", "AppAudio"))
     assert mic.started
     assert all(part.stopped.is_set() for part in (mic, speaker, pc_audio))
@@ -949,6 +952,62 @@ def test_the_run_reopens_a_lost_microphone_and_notices_one_gone_silent(
     (mic,) = run.kinds["Microphone"]
     assert mic.kwargs["stall_s"] == audio_module.MIC_STALL_S
     assert callable(run.loops[0]["reopen"])
+
+
+@pytest.mark.parametrize(
+    ("engine", "model", "expected"),
+    [
+        ("", "small.en", "{data}/voxtype/models/ggml-small.en.bin"),
+        ("whisper", "base.en", "{data}/voxtype/models/ggml-base.en.bin"),
+        ("whisper", "/models/ggml-own.bin", "/models/ggml-own.bin"),
+        ("gguf", "/models/speech.gguf", "/models/speech.gguf"),
+        ("parakeet", "/models/parakeet.gguf", "/models/parakeet.gguf"),
+        ("gguf", "speech.gguf", None),  # a file engine reads only a full path
+        ("moonshine", "base", None),  # an engine that keeps its models in its own form
+        ("moonshine", "/models/base", None),
+        ("", "", None),
+    ],
+)
+def test_the_speech_model_file_is_the_one_voxtype_will_read(
+    engine: str, model: str, expected: str | None
+) -> None:
+    audio = config.AudioConfig(transcribe_engine=engine, transcribe_model=model)
+
+    found = cli._speech_model_file(audio)  # pyright: ignore[reportPrivateUsage] - the helper the run and doctor share
+
+    data = str(paths.xdg_data_home())
+    assert (None if found is None else str(found)) == (expected and expected.format(data=data))
+
+
+def test_the_run_reads_the_speech_model_into_memory_at_start_and_on_each_wake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    made: list[tuple[Path | None, list[None]]] = []
+
+    class Warmer:
+        def __init__(self, path: Path | None) -> None:
+            super().__init__()
+            self.starts: list[None] = []
+            made.append((path, self.starts))
+
+        def start(self) -> None:
+            self.starts.append(None)
+
+    monkeypatch.setattr(audio_module, "FileWarmer", Warmer)
+
+    def body(run: _Run, _should_stop: Callable[[], bool]) -> None:
+        prewarm = run.loops[0]["prewarm"]
+        assert callable(prewarm)
+        prewarm()
+
+    cfg = config.Config(
+        audio=config.AudioConfig(transcribe_engine="gguf", transcribe_model="/models/speech.gguf")
+    )
+    _cmd_run(monkeypatch, body, cfg)
+
+    ((path, starts),) = made
+    assert str(path) == "/models/speech.gguf"
+    assert len(starts) == 2  # as the service starts, and at the wake word
 
 
 def test_the_run_follows_voxtypes_status_off_the_voice_thread_and_stops_it_with_the_run(
