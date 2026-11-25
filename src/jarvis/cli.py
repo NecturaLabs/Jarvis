@@ -57,7 +57,9 @@ if TYPE_CHECKING:
 
     import numpy as np
     from numpy.typing import NDArray
+    from pydantic import BaseModel
 
+    from jarvis.app import AgentModes
     from jarvis.audio import FallbackWake, Speaker, VoxtypeWatch, WakeWord
     from jarvis.chat.app import SharedSetting
     from jarvis.model import StrataModel
@@ -623,7 +625,7 @@ def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
 class _Shared:
     """One of Jarvis's own settings the chat's /config shows beside its own."""
 
-    section: str  # the config section it is in
+    section: str  # the config section it is in; dotted for a section inside one ("coding.chat")
     key: str
     label: str
     values: tuple[object, ...]
@@ -673,7 +675,55 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Jarvis will act without asking you first, even when a web page or a file could have "
         "steered it.",
     ),
+    _Shared(
+        "coding",
+        "back_after_s",
+        "Leave coding mode after (seconds)",
+        (0.0, 600.0, 1800.0, 3600.0, 14400.0),
+        "Mode",
+        "Jarvis goes back to normal mode after coding mode went unused this long; 0 stays in "
+        "coding mode until you switch (/model normal).",
+    ),
+    _Shared(
+        "coding.chat",
+        "auto",
+        "Switch mode by itself in the chat",
+        (False, True),
+        "Mode",
+        "The model moves a request that is programming work to coding mode, and back when you "
+        "say the work is over. Off: only /model and `jarvis model` switch. Takes effect when "
+        "the chat next starts.",
+    ),
+    _Shared(
+        "coding.voice",
+        "auto",
+        "Switch mode by itself for speech",
+        (False, True),
+        "Mode",
+        "The same for spoken requests. With a coding model of its own, a switch loads another "
+        "model, so the request that caused it waits in silence for the load.",
+        "A spoken request that is programming work will switch the mode by itself; with a "
+        "coding model of its own, Jarvis is silent while that model loads.",
+    ),
 )
+
+
+def _section(cfg: BaseModel, dotted: str) -> BaseModel:
+    """Return the config section a dotted name such as "coding.chat" names."""
+    found = cfg
+    for part in dotted.split("."):
+        found = getattr(found, part)
+    return found
+
+
+def _with_setting(model: BaseModel, dotted: str, name: str, value: object) -> BaseModel:
+    """Return `model` with `name` set to `value` in its section `dotted`, each level copied."""
+    head, _, rest = dotted.partition(".")
+    inner = getattr(model, head)
+    changed = (
+        _with_setting(inner, rest, name, value) if rest else inner.model_copy(update={name: value})
+    )
+    return model.model_copy(update={head: changed})
 
 
 def _shared_settings() -> list[SharedSetting]:
@@ -686,7 +736,7 @@ def _shared_settings() -> list[SharedSetting]:
             f"{item.section}.{item.key}",
             item.label,
             item.values,
-            getattr(getattr(cfg, item.section), item.key),
+            getattr(_section(cfg, item.section), item.key),
             item.heading,
             item.about,
             item.risky,
@@ -707,11 +757,9 @@ def _set_shared(key: str, value: object) -> None:
     if found is None or value not in found.values:
         msg = f"the chat cannot set {key} to {value!r}"
         raise config.ConfigError(msg)
-    section_name, name = found.section, found.key
     cfg = config.load()
-    section = getattr(cfg, section_name)
-    was = getattr(section, name)
-    changed = cfg.model_copy(update={section_name: section.model_copy(update={name: value})})
+    was = getattr(_section(cfg, found.section), found.key)
+    changed = _with_setting(cfg, found.section, found.key, value)
     config.save(config.Config.model_validate(changed.model_dump()))
     audit = AuditLog(paths.audit_file())
     if key == "boundaries.bypass_consent":  # recorded as `jarvis consent` records it
@@ -735,8 +783,13 @@ def chat_archive_dir() -> Path:
     return paths.state_dir() / "chat-archive"
 
 
-def _save_chat_settings(chat: config.ChatConfig) -> None:
-    """Write the chat's settings into the config file as it is now on disk, and audit them."""
+def _save_chat_settings(chat: config.ChatConfig, followed: AgentModes | None = None) -> None:
+    """Write the chat's settings into the config file as it is now on disk, and audit them.
+
+    `followed`, the running chat's modes, takes them too, so a change of mode keeps them.
+    """
+    if followed is not None:
+        followed.restyle(chat)
     current = config.load()
     config.save(current.model_copy(update={"chat": chat}))
     was, now = current.chat.model_dump(), chat.model_dump()
@@ -755,6 +808,13 @@ def _screenshot_folders(home: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
     return tuple(dict.fromkeys(folders))
 
 
+def _chat_prompt(chat: config.ChatConfig) -> str:
+    """Render the chat's instructions for these settings, in the mode Jarvis is in now."""
+    mode = modes.current()
+    cfg = modes.effective(config.load().model_copy(update={"chat": chat}), mode)
+    return system_prompt(cfg, "chat", coding=mode == "coding")
+
+
 def cmd_chat(_args: argparse.Namespace) -> int:
     """Open the chat window: typed requests, and everything Jarvis does, live."""
     from jarvis.chat.app import ChatApp, Services
@@ -762,9 +822,11 @@ def cmd_chat(_args: argparse.Namespace) -> int:
     cfg = _load()
     session_id = secrets.token_hex(8)
     agent = None
+    followed = None
     unavailable = ""
     try:
-        agent = build(cfg, via="chat", session=session_id, units=StrataUnits()).agent
+        built = build(cfg, via="chat", session=session_id, units=StrataUnits())
+        agent, followed = built.agent, built.modes
     except SetupError as exc:
         unavailable = str(exc)
     documents = Path.home() / "Documents"
@@ -772,10 +834,8 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         status=lambda: _chat_status(cfg),
         details=lambda: _chat_details(cfg),
         stats=Sampler().sample,
-        save_settings=_save_chat_settings,
-        system_prompt=lambda chat: system_prompt(
-            config.load().model_copy(update={"chat": chat}), "chat"
-        ),
+        save_settings=lambda chat: _save_chat_settings(chat, followed),
+        system_prompt=_chat_prompt,
         tools=lambda: _tool_settings(config.load()),
         next_tool_setting=_next_tool_setting,
         model_report=lambda: model_report(cfg),

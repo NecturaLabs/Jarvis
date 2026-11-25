@@ -2,7 +2,7 @@
 
 import json
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from strata_fixture import engine_run_config, install_engine, touch
@@ -10,6 +10,7 @@ from strata_fixture import engine_run_config, install_engine, touch
 from jarvis import cli, config, modes, paths, services
 from jarvis.agent import Agent, Hooks, Limits, Setup
 from jarvis.app import (
+    AgentModes,
     channel_limits,
     channel_registry,
     no_action_operation,
@@ -432,3 +433,93 @@ def test_the_doctor_checks_the_coding_models_files(installed: Config, tmp_path: 
 
 def test_the_doctor_has_nothing_to_check_without_a_coding_run_config() -> None:
     assert _coding_checks(Config()) == []
+
+
+def test_the_chats_config_sets_the_coding_settings_in_their_own_sections() -> None:
+    config.save(Config.model_validate({"coding": {"context": 32768, "chat": {"max_steps": 9}}}))
+
+    cli._set_shared("coding.voice.auto", True)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    cli._set_shared("coding.chat.auto", False)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    cli._set_shared("coding.back_after_s", 600.0)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    coding = config.load().coding
+    assert (coding.voice.auto, coding.chat.auto, coding.back_after_s) == (True, False, 600.0)
+    assert (coding.context, coding.chat.max_steps) == (32768, 9)  # the rest of each section stays
+    events = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
+    assert [(e["setting"], e["was"], e["to"], e["source"]) for e in events] == [
+        ("coding.voice.auto", False, True, "chat"),
+        ("coding.chat.auto", True, False, "chat"),
+        ("coding.back_after_s", 1800.0, 600.0, "chat"),
+    ]
+    shown = {s.key: s for s in cli._shared_settings()}  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    assert shown["coding.voice.auto"].value is True
+    assert shown["coding.voice.auto"].risky  # asked about before it is turned on
+    assert {shown[key].section for key in shown if key.startswith("coding.")} == {"Mode"}
+
+
+def test_a_coding_setting_takes_only_the_values_the_chat_offers() -> None:
+    config.save(Config())
+
+    with pytest.raises(config.ConfigError, match="cannot set"):
+        cli._set_shared("coding.back_after_s", 5.0)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    with pytest.raises(config.ConfigError, match="cannot set"):
+        cli._set_shared("coding.context", 1024)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+
+def _followed(made: list[str]) -> AgentModes:
+    def make(mode: modes.Mode, chat: config.ChatConfig | None) -> Setup:
+        made.append(mode)
+        cfg = modes.effective(Config() if chat is None else Config(chat=chat), mode)
+        return Setup(
+            system_prompt(cfg, "chat", coding=mode == "coding"),
+            Registry([no_action_operation()]),
+            channel_limits(cfg, "chat"),
+        )
+
+    return AgentModes(cast("modes.Switcher", None), make)  # no switch is made here
+
+
+def test_a_mode_change_keeps_what_the_chat_set_since_it_started() -> None:
+    made: list[str] = []
+    followed = _followed(made)
+    before = followed.setup("normal")
+    assert followed.setup("normal") is before  # built once
+    chat = config.ChatConfig(thinking="high", thinking_max="high", response_format="verbose")
+
+    followed.restyle(chat)
+
+    after = followed.setup("normal")
+    assert made == ["normal", "normal"]
+    assert after.limits == channel_limits(Config(chat=chat), "chat")
+    assert after.limits != before.limits
+    assert after.system_prompt == system_prompt(Config(chat=chat), "chat")
+    assert after.system_prompt != before.system_prompt
+    coding = modes.effective(Config(chat=chat), "coding")
+    assert followed.setup("coding").limits == channel_limits(coding, "chat")  # its own on top
+
+
+def test_saving_the_chats_settings_tells_the_running_chats_modes() -> None:
+    config.save(Config())
+    made: list[str] = []
+    followed = _followed(made)
+    followed.setup("normal")
+    chat = config.ChatConfig(thinking="high", thinking_max="high")
+
+    cli._save_chat_settings(chat, followed)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    assert followed.setup("normal").limits == channel_limits(Config(chat=chat), "chat")
+    assert config.load().chat.thinking == "high"
+
+
+@pytest.mark.usefixtures("stopped_server")
+def test_the_chat_renders_its_prompt_for_the_mode_jarvis_is_in(installed: Config) -> None:
+    chat = installed.chat.model_copy(update={"response_format": "verbose"})
+    usual = cli._chat_prompt(chat)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    assert main(["model", "coding"]) == 0
+
+    coding = cli._chat_prompt(chat)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    assert "You are in coding mode" not in usual
+    assert "You are in coding mode" in coding
+    served = modes.effective(installed.model_copy(update={"chat": chat}), "coding")
+    assert coding == system_prompt(served, "chat", coding=True)

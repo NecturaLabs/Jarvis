@@ -724,7 +724,7 @@ def test_chat_sends_typed_requests_to_an_agent_that_marks_its_audit_events(
         def handle(text: str, _hooks: Hooks) -> str:
             return f"heard {text}"
 
-        return SimpleNamespace(agent=SimpleNamespace(handle=handle))
+        return SimpleNamespace(agent=SimpleNamespace(handle=handle), modes=None)
 
     monkeypatch.setattr(cli, "build", build)
 

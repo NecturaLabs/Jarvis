@@ -336,7 +336,13 @@ SETTINGS = (
         about="Open the chat on the conversation it had last time.",
     ),
 )
-SECTIONS = ("Chat", "Voice", "Listening", "Safety")  # the shared settings' headings, in order
+SECTIONS = (
+    "Chat",
+    "Mode",
+    "Voice",
+    "Listening",
+    "Safety",
+)  # the shared settings' headings, in order
 
 
 def _joined(*parts: str) -> str:

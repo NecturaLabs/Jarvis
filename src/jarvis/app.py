@@ -49,7 +49,7 @@ from jarvis.web.searxng import Searxng
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    from jarvis.config import Config
+    from jarvis.config import ChatConfig, Config
 
 
 MAX_REPLY_CHARS = 4000
@@ -311,17 +311,34 @@ class Jarvis:
     ops: SpotifyOps
     hint: Callable[[], str]
     switcher: modes.Switcher | None = None
+    modes: AgentModes | None = None  # the chat tells it when its settings change (`restyle`)
 
 
 class AgentModes:
     """The modes as an agent uses them (`agent.Modes`): the state file, the switch, each setup."""
 
-    def __init__(self, switcher: modes.Switcher, make: Callable[[modes.Mode], Setup]) -> None:
-        """Follow and switch the mode through `switcher`; `make` builds a mode's setup, once."""
+    def __init__(
+        self, switcher: modes.Switcher, make: Callable[[modes.Mode, ChatConfig | None], Setup]
+    ) -> None:
+        """Follow and switch the mode through `switcher`; `make` builds a mode's setup, once.
+
+        `make` takes the chat's settings as they are now, when the chat changed them since it
+        started (`restyle`).
+        """
         super().__init__()
         self._switcher = switcher
         self._make = make
         self._made: dict[str, Setup] = {}
+        self._chat: ChatConfig | None = None
+
+    def restyle(self, chat: ChatConfig) -> None:
+        """Build each mode's setup from `chat` from now on: what the chat's settings became.
+
+        The agent already has the change for the mode it is in (`Agent.set_thinking`,
+        `Agent.set_system`); this keeps it when the mode changes.
+        """
+        self._chat = chat
+        self._made.clear()
 
     def current(self) -> str:
         """Return the mode now, going back to normal first when coding mode idled too long."""
@@ -332,7 +349,7 @@ class AgentModes:
         """Return what the agent works with in `mode` (the normal mode's for an unknown one)."""
         known: modes.Mode = "coding" if mode == "coding" else "normal"
         if known not in self._made:
-            self._made[known] = self._make(known)
+            self._made[known] = self._make(known, self._chat)
         return self._made[known]
 
     def switch(self, to: str, say: Callable[[str], None]) -> str:
@@ -721,9 +738,10 @@ def build(
     channel: Channel = "chat" if via == "chat" else "voice"
     elsewhere = via in {"chat", "ask"}  # the voice service says reminders; is one running?
 
-    def setup(mode: modes.Mode) -> Setup:
+    def setup(mode: modes.Mode, chat: ChatConfig | None = None) -> Setup:
         coding = mode == "coding"
-        cfg = modes.effective(config, mode)
+        base = config if chat is None else config.model_copy(update={"chat": chat})
+        cfg = modes.effective(base, mode)
         limits = channel_limits(cfg, channel)
         off: set[str] = {*switched_off(cfg), *(cfg.coding.tools_off if coding else ())}
         if units is None:
@@ -755,6 +773,7 @@ def build(
             busy=voice_busy if elsewhere else lambda: False,
         )
     )
+    agent_modes = None if switcher is None else AgentModes(switcher, setup)
     agent = Agent(
         model,
         normal.registry,
@@ -768,7 +787,7 @@ def build(
         pictures=normal.pictures,
         bypass_consent=config.boundaries.bypass_consent,
         actions=action_rate(config),
-        modes=None if switcher is None else AgentModes(switcher, setup),
+        modes=agent_modes,
     )
     return Jarvis(
         agent,

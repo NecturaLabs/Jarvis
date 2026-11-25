@@ -291,7 +291,10 @@ added to the prompt, and, when you set one, a model of its own.
   coding` and `jarvis model normal` switch, and so does `/model` in the chat. Where `auto` is on, the model
   switches by itself when a request is programming work, and back when you say that work is over
   (`switch_model`; switch it off like any tool with `jarvis tools switch_model off`). After
-  `back_after_s` without a request in coding mode Jarvis goes back to normal.
+  `back_after_s` without a request in coding mode Jarvis goes back to normal. In the chat, `/config` has
+  these under Mode: `back_after_s`, `coding.chat.auto` and `coding.voice.auto`. What the chat changed since
+  it started (`/effort`, `/format`, `/config`) is kept when the mode changes; coding mode still starts at
+  its own `[coding.chat]` values where it sets them.
 - **The model.** `strata.coding_run_config` names Strata's run config for the coding model, as
   `strata.run_config` does for the usual one: run `strata launch` for it once, then `jarvis setup
   --coding-run-config <its strata-<model>.json>`. Unset, coding mode keeps the usual model. With two

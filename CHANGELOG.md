@@ -18,6 +18,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   memory at a time, and Jarvis says first how long the load takes. Every switch is audited, and `jarvis
   doctor` checks the coding model's files. Settings: `[coding]`, `[coding.chat]` (laid over `[chat]`) and
   `[coding.voice]` (laid over `[agent]`).
+- `/config` in the chat has a "Mode" section: how long coding mode may go unused before Jarvis leaves it
+  (`coding.back_after_s`), and whether the model switches the mode by itself in the chat (`coding.chat.auto`)
+  and for speech (`coding.voice.auto`, asked about before it is turned on).
+- What the chat changed since it started (`/effort`, `/format`, `/config`) is kept when the mode changes, and
+  `/format` in coding mode keeps the prompt's part on programming. Coding mode still starts at its own
+  `coding.chat` values where it sets them, such as `thinking`.
 - The chat keeps every conversation in an archive (`~/.local/state/jarvis/chat-archive/`, 0600, the newest
   `chat.archive_keep` = 50) with its full log of requests, steps, results and replies. `/resume` lists them and
   `/resume 2` continues one, with what came from outside text still treated as data; `/rename` names the
