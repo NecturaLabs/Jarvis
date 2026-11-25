@@ -1055,7 +1055,7 @@ def _spotify_scope_notes(cfg: config.Config) -> list[str]:
         return []
     note = (
         f"note Spotify login lacks {', '.join(missing)}: run `jarvis spotify-login` once to "
-        "allow what needs them (adding to a playlist)"
+        "allow what needs them"
     )
     return [note]
 
@@ -1063,8 +1063,10 @@ def _spotify_scope_notes(cfg: config.Config) -> list[str]:
 def _tool_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[str]]:
     """Return the checks for the programs Jarvis runs, and notes for the optional ones."""
     needed = ["pw-record", "pw-play", "wpctl", "voxtype"]
-    if cfg.audio.listen_to_pc:
-        needed.append("pw-dump")
+    if cfg.audio.listen_to_pc or not cfg.audio.follow_up_over_audio:
+        needed.append(
+            "pw-dump"
+        )  # who is playing: PC audio's source, and follow-ups shut over audio
     checks = [(shutil.which(t) is not None, f"tool {t}", f"install {t}") for t in needed]
     if shutil.which("playerctl"):
         return checks, []
@@ -1090,11 +1092,22 @@ def _user_memlock_limit() -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
+def _model_bytes(cfg: config.Config) -> float:
+    """Return the size of the model file the run config names; infinite when it is not known."""
+    try:
+        model = services.read_run_config(cfg).model
+        return model.stat().st_size if model != Path() else float("inf")
+    except services.StrataSetupError, OSError:
+        return float("inf")
+
+
 def _memlock_notes(cfg: config.Config) -> list[str]:
     """Note that the model cannot be locked in RAM when the user manager's limit keeps it out."""
     limit = _user_memlock_limit()
     if not cfg.strata.keep_in_ram or limit in {"", "infinity"}:
         return []
+    if limit.isdigit() and int(limit) >= _model_bytes(cfg):
+        return []  # the whole model fits under the limit
     note = (
         f"note the model can't be locked in RAM: your user services may lock {limit} bytes at "
         "most (it still stays out of swap); see "

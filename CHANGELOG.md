@@ -116,6 +116,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   in the conversation is kept for 30 minutes, so reading it again needs no network. An address the owner
   wrote can be read again in a later request of the conversation, the 30 minutes count time asleep, and of a
   request's look-ups the newest are kept, with their words only and no address cut short.
+- `jarvis doctor` checks for `pw-dump` whenever Jarvis needs to know what else plays, which by default it does
+  (follow-ups stay shut while other audio plays), not only for PC audio.
+- Where the system cannot tell whether the speech model is in memory, a wake word no longer reads all of it
+  again within 5 minutes of the last whole read.
+- `jarvis doctor` notes a lock limit on the model's memory only when the model is larger than it.
 - `pc_media` binds a command to the players it is for before any question, and the question names them
   ("pause firefox and spotify"); a skip not answered in time is reported as uncertain, so it is not sent twice;
   a player that closes while it is listed is left out, and a player's own error words are not passed on.
@@ -136,12 +141,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   unasked ([ADR 0011](docs/adr/0011-reminders-and-scheduled-requests.md)).
 - `tools/idle_check.py` no longer reports "ok: idle" for the GPU when it could not see the process's GPU use
   (Strata's ROCm engine publishes no per-process engine time): the verdict says it was not measured, and
-  each card's whole busy share over the window is shown beside it.
-
+  each card's whole busy share over the window is shown beside it, also when another process of the tree
+  publishes counters.
 - A place said with its state or country, "Springfield (Illinois)" or "Lisbon, Portugal", is found for the time
   and the weather: the geocoder takes only a name and found nothing for the whole phrase, so the name is
   looked up alone and the qualifier picks among the matches.
-
 - Spotify's "Restriction violated" (shuffle, previous or a seek that what plays now does not allow) is said as
   what it means, that Spotify does not allow that command here and nothing changed, instead of a raw 403.
 

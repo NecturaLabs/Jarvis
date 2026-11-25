@@ -12,9 +12,9 @@ and every descendant of it, and reports per root:
 - GPU: the `drm-engine-<name>: <n> ns` counters in /proc/<pid>/fdinfo/* (amdgpu and i915 publish
   them), as a busy percentage per engine, counting each DRM client once (`drm-client-id`). A
   ROCm compute client (Strata's engine, through /dev/kfd) publishes none, so its GPU use is not
-  measured and the verdict says so. Beside it, each card's own `gpu_busy_percent` in
-  /sys/class/drm is read once a second and averaged: the whole card's, every program's, so it is
-  shown and never fails the check;
+  measured and the verdict says so, also when another process of the tree publishes counters.
+  Beside it, each card's own `gpu_busy_percent` in /sys/class/drm is read once a second and
+  averaged: the whole card's, every program's, so it is shown and never fails the check;
 - RSS: VmRSS in /proc/<pid>/status summed over the tree at the start and at the end (pages shared
   between processes count once per process, so a growing total is what matters, not its size).
 
@@ -40,6 +40,7 @@ from pathlib import Path
 
 PROC = Path("/proc")
 DRM = Path("/sys/class/drm")
+KFD = "/dev/kfd"  # the ROCm compute device
 _CARD = re.compile(r"card[0-9]+")  # a card, not one of its connectors (card1-DP-1)
 _KIB_PER_MIB = 1024
 DEFAULT_MAX_CPU_PERCENT = 5.0
@@ -89,6 +90,7 @@ class Snapshot:
     ticks: dict[int, Ticks]
     rss_kib: int
     gpu_ns: dict[GpuKey, int]
+    computes: bool = False  # a process holds the ROCm compute device, which publishes no time
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +126,7 @@ class Result:
     seconds: float = 0.0
     cpu_percent: float = 0.0
     gpu_percent: dict[str, float] = field(default_factory=dict[str, float])
+    computes: bool = False
     card_percent: dict[str, float] = field(default_factory=dict[str, float])
     rss_start_mib: float = 0.0
     rss_end_mib: float = 0.0
@@ -226,6 +229,22 @@ def gpu_ns(proc: Path, pids: Sequence[int]) -> dict[GpuKey, int]:
     return totals
 
 
+def holds_compute_device(proc: Path, pids: Sequence[int]) -> bool:
+    """Whether any of `pids` has /dev/kfd open: a ROCm compute client, whose GPU time is unseen."""
+    for pid in pids:
+        try:
+            fds = list((proc / str(pid) / "fd").iterdir())
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                if str(fd.readlink()) == KFD:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def snapshot(proc: Path, root: int, clock: Callable[[], float]) -> Snapshot | None:
     """Read the tree under `root`, or return None when `root` is not running."""
     when = clock()
@@ -238,6 +257,7 @@ def snapshot(proc: Path, root: int, clock: Callable[[], float]) -> Snapshot | No
         ticks=ticks,
         rss_kib=sum(rss_kib(proc, pid) for pid in pids),
         gpu_ns=gpu_ns(proc, pids),
+        computes=holds_compute_device(proc, pids),
     )
 
 
@@ -365,6 +385,7 @@ def measure(
             engine: 100 * ns / 1e9 / elapsed
             for engine, ns in sorted(_gpu_delta(start, end).items())
         }
+        result.computes = start.computes or end.computes
         result.rss_start_mib = start.rss_kib / _KIB_PER_MIB
         result.rss_end_mib = end.rss_kib / _KIB_PER_MIB
         _judge(result, limits)
@@ -422,11 +443,17 @@ def format_result(result: Result, limits: Limits) -> str:
                 f" ({growth:+.1f} MiB, limit +{limits.max_rss_growth_mib:g} MiB)"
             ),
         ]
-    verdict = (
-        "  ok: idle"
-        if result.gpu_percent or result.seconds <= 0
-        else "  ok: idle on CPU and memory; its GPU use was not measured (no engine time published)"
-    )
+    if result.computes and result.seconds > 0:
+        verdict = (
+            "  ok: idle on CPU and memory; its ROCm compute use was not measured (/dev/kfd "
+            "publishes no engine time)"
+        )
+    elif result.gpu_percent or result.seconds <= 0:
+        verdict = "  ok: idle"
+    else:
+        verdict = (
+            "  ok: idle on CPU and memory; its GPU use was not measured (no engine time published)"
+        )
     lines += [f"  FAIL: {problem}" for problem in result.problems] or [verdict]
     return "\n".join(lines)
 

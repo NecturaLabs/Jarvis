@@ -243,7 +243,8 @@ daemon and never your Voxtype config or recordings. Each run is
   default on) under `[whisper]`, and `keep_failed_recordings = false` under `[audio]`, so Voxtype keeps no audio of a
   failed transcription from Jarvis's runs. For the `parakeet`, `cohere` and `gguf` engines a model given as a full
   path goes in that engine's own section (`[gguf] model = "…"`, plus the `architecture` the file's GGUF header
-  names for `gguf`), where Voxtype reads it, and `--model` is left out. `jarvis speech-test` writes
+  names for `gguf`), where Voxtype reads it, and `--model` is left out. For `gguf` the section also takes
+  `threads` (`audio.transcribe_threads`) and, when `audio.transcribe_backend` is set, `gguf_backend`. `jarvis speech-test` writes
   `voxtype-speech-test.toml` instead, so trying another engine never changes a running Jarvis's settings. `-q` (errors only) keeps Voxtype's log lines out of the transcript. Whisper pads every clip to a 30 s window, so without the short window a
   two-second request costs as much as a long one; with it a short command took 0.29 s instead of 1.66 s
   (commit `d29d73e`, measured with `small.en`). Whisper.cpp also uses only 4 threads unless told otherwise.

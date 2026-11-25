@@ -1433,6 +1433,9 @@ def _read_ahead(fd: int, clock: Callable[[], float]) -> float | None:
     return clock() - began
 
 
+WARM_COOL_S = 300.0  # after a whole read the file is in memory still; no new read sooner
+
+
 class FileWarmer:
     """Reads one file into memory on a thread of its own, one read at a time.
 
@@ -1442,18 +1445,31 @@ class FileWarmer:
     """
 
     def __init__(
-        self, path: Path | None, read: Callable[[Path], float | None] = read_into_memory
+        self,
+        path: Path | None,
+        read: Callable[[Path], float | None] = read_into_memory,
+        *,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """Keep the file to read; without one, `start` does nothing."""
         super().__init__()
         self._path = path
         self._read = read
+        self._clock = clock
         self._reading = threading.Lock()
+        self._read_at = float("-inf")  # when the last whole read ended
 
     def start(self) -> threading.Thread | None:
-        """Start a read unless one is under way; return its thread, None when none started."""
+        """Start a read unless one is under way or ended within `WARM_COOL_S`.
+
+        Return its thread, None when none started. The rest after a whole read matters where the
+        cache cannot be asked without waiting: there every read reads all of the file again.
+        """
         path = self._path
         if path is None or not self._reading.acquire(blocking=False):
+            return None
+        if self._clock() - self._read_at < WARM_COOL_S:
+            self._reading.release()
             return None
         thread = threading.Thread(
             target=self._run, args=(path,), name="jarvis-speech-warm", daemon=True
@@ -1468,6 +1484,8 @@ class FileWarmer:
     def _run(self, path: Path) -> None:
         try:
             seconds = self._read(path)
+            if seconds is not None:
+                self._read_at = self._clock()
         finally:
             self._reading.release()
         if seconds is not None:

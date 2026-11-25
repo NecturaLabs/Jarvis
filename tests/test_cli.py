@@ -2080,19 +2080,27 @@ def test_doctor_notes_a_missing_media_player_tool_without_failing(
     assert "pacman -S playerctl" in line
 
 
-def test_doctor_checks_pw_dump_only_when_listening_to_pc_audio(
-    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("audio", "checked"),
+    [
+        (config.AudioConfig(), True),  # follow-ups shut while other audio plays: pw-dump tells
+        (config.AudioConfig(follow_up_over_audio=True), False),
+        (config.AudioConfig(follow_up_over_audio=True, listen_to_pc=True), True),
+    ],
+)
+def test_doctor_checks_pw_dump_when_jarvis_needs_what_plays(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    audio: config.AudioConfig,
+    *,
+    checked: bool,
 ) -> None:
-    _doctor_config(home / "models")
-    assert not [
-        line for line in _doctor_with_tools(monkeypatch, capsys, {"pw-dump"}) if "pw-dump" in line
-    ]
+    config.save(config.Config(data_dir=home / "models", audio=audio))
 
-    config.save(
-        config.Config(data_dir=home / "models", audio=config.AudioConfig(listen_to_pc=True))
-    )
     lines = _doctor_with_tools(monkeypatch, capsys, {"pw-dump"})
-    assert any(line.startswith("FAIL tool pw-dump") for line in lines)
+
+    assert any(line.startswith("FAIL tool pw-dump") for line in lines) is checked
 
 
 def test_doctor_notes_a_spotify_login_without_the_playlist_permissions(
@@ -2130,6 +2138,26 @@ def test_doctor_notes_when_the_model_cannot_be_locked_in_ram(
     assert bool(notes) is noted
     if noted:
         assert "keeping-the-model-in-ram" in notes[0]
+
+
+@pytest.mark.parametrize(("limit", "noted"), [("1999", True), ("2000", False)])
+def test_doctor_says_nothing_of_a_lock_limit_the_model_fits_in(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit: str,
+    *,
+    noted: bool,
+) -> None:
+    model = home / "models" / "q4.gguf"
+    model.parent.mkdir(parents=True, exist_ok=True)
+    model.write_bytes(b"x" * 2000)
+    run = engine_run_config(home, model)
+    config.save(config.Config(data_dir=home / "models", strata=config.StrataConfig(run_config=run)))
+    monkeypatch.setattr(cli, "_user_memlock_limit", lambda: limit)
+
+    notes = cli._memlock_notes(config.load())  # pyright: ignore[reportPrivateUsage] - the note itself
+
+    assert bool(notes) is noted
 
 
 def test_tools_lists_every_tool_with_its_setting(capsys: pytest.CaptureFixture[str]) -> None:

@@ -25,6 +25,7 @@ from jarvis.audio import (
     VAD_CHUNK,
     VAD_CONTEXT,
     VOXTYPE_FOLLOW,
+    WARM_COOL_S,
     AppAudio,
     AudioError,
     FileWarmer,
@@ -2019,6 +2020,19 @@ def test_a_file_already_in_memory_is_not_read_again(
     assert 90_000 < sampled[-1] < 100_000
 
 
+def test_a_python_without_the_no_wait_flag_still_imports_the_audio_module() -> None:
+    """CI's Python once lacked `os.RWF_NOWAIT`; the value is the kernel's, the same everywhere."""
+    probe = (
+        "import os; vars(os).pop('RWF_NOWAIT', None); import jarvis.audio as a; print(a.RWF_NOWAIT)"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=60, check=False
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "8"
+
+
 def test_a_file_partly_in_memory_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     model = tmp_path / "speech.gguf"
     model.write_bytes(b"x" * 100_000)
@@ -2111,7 +2125,8 @@ def test_the_warmer_reads_its_file_on_a_thread_of_its_own_one_read_at_a_time(
         assert finish.wait(10)
         return 3.9
 
-    warmer = FileWarmer(Path("/models/speech.gguf"), slow)
+    now = [0.0]
+    warmer = FileWarmer(Path("/models/speech.gguf"), slow, clock=lambda: now[0])
     with caplog.at_level(logging.INFO, logger="jarvis.audio"):
         first = warmer.start()
         assert first is not None
@@ -2119,6 +2134,7 @@ def test_the_warmer_reads_its_file_on_a_thread_of_its_own_one_read_at_a_time(
         assert warmer.start() is None  # one read under way: the wake word starts no second
         finish.set()
         first.join(10)
+        now[0] += WARM_COOL_S
         again = warmer.start()
         assert again is not None
         again.join(10)
@@ -2126,6 +2142,30 @@ def test_the_warmer_reads_its_file_on_a_thread_of_its_own_one_read_at_a_time(
     assert read == [Path("/models/speech.gguf")] * 2
     assert first.daemon
     assert "read the speech model into memory in 3.9 s" in caplog.text
+
+
+def test_after_a_whole_read_the_warmer_rests_before_reading_again() -> None:
+    """Where the cache cannot be asked without waiting, each read reads the whole file again."""
+    now = [100.0]
+    read: list[Path] = []
+
+    def whole(path: Path) -> float:
+        read.append(path)
+        return 2.0
+
+    warmer = FileWarmer(Path("/models/speech.gguf"), whole, clock=lambda: now[0])
+    first = warmer.start()
+    assert first is not None
+    first.join(10)
+
+    now[0] += WARM_COOL_S - 1
+    assert warmer.start() is None  # the file was read a moment ago: it is in memory still
+    now[0] += 1
+    later = warmer.start()
+    assert later is not None
+    later.join(10)
+
+    assert len(read) == 2
 
 
 def test_the_warmer_says_nothing_when_the_file_was_in_memory_and_reads_on_after_a_failure(

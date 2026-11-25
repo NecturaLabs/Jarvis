@@ -78,7 +78,7 @@ as planned.
 
 ## Requirements
 
-- Omarchy on Arch Linux with PipeWire (`pw-record` and `pw-play`; `pw-dump` too for PC audio; `wpctl` for the
+- Omarchy on Arch Linux with PipeWire (`pw-record`, `pw-play`, `pw-dump` to know what else plays, and `wpctl` for the
   PC's volume) and systemd user services. `playerctl` (`pacman -S playerctl`) for other media players, if wanted.
 - Voxtype as the dictation backend, with the speech model you set in `audio.transcribe_model` downloaded (a
   Whisper model by default; `audio.transcribe_engine` picks another). Voxtype's GPU build

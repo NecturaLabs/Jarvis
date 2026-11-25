@@ -84,6 +84,12 @@ class FakeProc:
             "\n".join(lines) + "\n", encoding="utf-8"
         )
 
+    def kfd_fd(self, pid: int, fd: int) -> None:
+        """A descriptor of the ROCm compute device, which publishes no engine time."""
+        folder = self.root / str(pid) / "fd"
+        folder.mkdir(exist_ok=True)
+        (folder / str(fd)).symlink_to("/dev/kfd")
+
     def plain_fd(self, pid: int, fd: int) -> None:
         (self.root / str(pid) / "fdinfo" / str(fd)).write_text(
             "pos:\t0\nflags:\t02\n", encoding="utf-8"
@@ -589,6 +595,21 @@ def test_a_process_whose_gpu_time_was_read_gets_a_plain_ok(
     _main(proc, "--pid", "100", "--seconds", "30")
 
     assert "  ok: idle\n" in capsys.readouterr().out + "\n"
+
+
+def test_a_compute_client_beside_a_measured_one_is_not_a_clean_bill_for_the_gpu(
+    proc: FakeProc, capsys: pytest.CaptureFixture[str]
+) -> None:
+    proc.process(100, children=[101])
+    proc.process(101)
+    proc.drm_fd(100, 8, client=1, engines={"gfx": 0})
+    proc.kfd_fd(101, 9)
+
+    _main(proc, "--pid", "100", "--seconds", "30")
+
+    out = capsys.readouterr().out
+    assert "  ok: idle\n" not in out + "\n"
+    assert "its ROCm compute use was not measured" in out
 
 
 def _card(drm: Path, name: str, busy: int) -> Path:
