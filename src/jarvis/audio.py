@@ -1321,6 +1321,9 @@ MAX_WARM_BYTES = 8 << 30
 # file was still in the cache afterwards; read 1 MiB or less at a time, all of it was.
 _WARM_CHUNK = 1 << 20
 _CACHE_SAMPLES = 64
+# `preadv2`'s flag for "do not wait for the disk" (Linux 4.14). A Python built against older
+# headers does not name it; the number is the kernel's own.
+RWF_NOWAIT: int = getattr(os, "RWF_NOWAIT", 8)
 
 
 def _in_memory(fd: int, size: int) -> bool:
@@ -1328,8 +1331,10 @@ def _in_memory(fd: int, size: int) -> bool:
     sample = bytearray(1)
     for number in range(_CACHE_SAMPLES):
         try:
-            os.preadv(fd, [sample], size * number // _CACHE_SAMPLES, os.RWF_NOWAIT)
-        except OSError:  # BlockingIOError: that part is on the disk; any other: it cannot be told
+            os.preadv(fd, [sample], size * number // _CACHE_SAMPLES, RWF_NOWAIT)
+        except OSError, NotImplementedError:
+            # BlockingIOError: that part is on the disk. Anything else: this system or this
+            # Python cannot say, and the file is read.
             return False
     return True
 

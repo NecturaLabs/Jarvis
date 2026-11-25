@@ -1963,7 +1963,7 @@ def test_a_file_already_in_memory_is_not_read_again(
     sampled: list[int] = []
 
     def in_memory(_fd: int, _buffers: object, offset: int, flags: int) -> int:
-        assert flags == os.RWF_NOWAIT  # never waits for the disk
+        assert flags == audio_module.RWF_NOWAIT == 8  # never waits for the disk
         sampled.append(offset)
         return 1
 
@@ -1989,6 +1989,21 @@ def test_a_file_partly_in_memory_is_read(tmp_path: Path, monkeypatch: pytest.Mon
         return 1
 
     monkeypatch.setattr(audio_module.os, "preadv", half)
+
+    assert read_into_memory(model) is not None
+
+
+def test_a_python_that_cannot_ask_without_waiting_reads_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One built without `preadv2` refuses the flag; the file is then read at every wake word."""
+    model = tmp_path / "speech.gguf"
+    model.write_bytes(b"x" * 100)
+
+    def unsupported(*_args: object) -> int:
+        raise NotImplementedError
+
+    monkeypatch.setattr(audio_module.os, "preadv", unsupported)
 
     assert read_into_memory(model) is not None
 
