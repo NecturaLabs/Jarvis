@@ -14,9 +14,11 @@ from jarvis.operations import Operation, OperationError, Registry, Result, curre
 from jarvis.paths import audit_file, spotify_token_file, strata_key_file  # re-exported for callers
 from jarvis.pc.apps import AppOps
 from jarvis.pc.files import Boundary, FileOps
+from jarvis.pc.media import MediaOps
 from jarvis.pc.processes import ProcessOps
 from jarvis.pc.shell import ShellOps
 from jarvis.pc.stats import StatsOps
+from jarvis.pc.volume import VolumeOps
 from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
@@ -35,7 +37,7 @@ from jarvis.web.page import PageReader
 from jarvis.web.searxng import Searxng
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from jarvis.config import Config
 
@@ -278,8 +280,36 @@ def files_boundary(config: Config, home: Path | None = None) -> Boundary:
     return Boundary.of(config.files, home or Path.home(), protected=(paths.state_dir(),))
 
 
+def _wpctl(args: Sequence[str]) -> str:
+    """Run `wpctl` for `pc_volume`; a failure is said as an OperationError.
+
+    Raises:
+        OperationError: the sound server could not be reached or refused the change.
+    """
+    from jarvis import audio  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which a typed request may never need
+
+    try:
+        return audio.wpctl(args)
+    except audio.AudioError as exc:
+        raise OperationError(str(exc)) from exc
+
+
+def _playerctl(args: Sequence[str]) -> str:
+    """Run `playerctl` for `pc_media`; a failure is said as an OperationError.
+
+    Raises:
+        OperationError: no player answered, or playerctl is missing.
+    """
+    from jarvis import audio  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which a typed request may never need
+
+    try:
+        return audio.playerctl(args)
+    except audio.AudioError as exc:
+        raise OperationError(str(exc)) from exc
+
+
 def pc_operations(config: Config, limits: Limits, home: Path | None = None) -> list[Operation]:
-    """Return the PC operations: stats, files, processes, `open_app` and the opt-in `pc_shell`.
+    """Return the PC operations: stats, the volume, files, processes, `open_app` and `pc_shell`.
 
     The files are those within `[files]`, `open_app` opens only what `[apps]` lists, and
     `pc_shell` is there only when `[shell]` turns it on.
@@ -289,6 +319,8 @@ def pc_operations(config: Config, limits: Limits, home: Path | None = None) -> l
     boundary = files_boundary(config, home)
     return [
         *StatsOps(Sampler()).operations(),
+        *VolumeOps(_wpctl).operations(),
+        *MediaOps(_playerctl).operations(),
         *FileOps(boundary, max_chars=limits.tool_text_chars).operations(),
         *ProcessOps().operations(),
         *AppOps(config.apps.programs).operations(),
@@ -320,9 +352,13 @@ class SetupError(Exception):
 
 
 def channel_limits(config: Config, channel: Channel) -> Limits:
-    """Return the limits of a channel: the chat's own, or the voice service's."""
+    """Return the limits of a channel: the chat's own, or the voice service's.
+
+    Both remember a reply that drew on outside text, as data, so a follow-up ("what was the
+    second one?") has it and an action the model then chooses needs a yes (#44, 2026-11-26).
+    """
     section = config.chat if channel == "chat" else config.agent
-    return Limits.of(section, config.strata.context, remember_outside=channel == "chat")
+    return Limits.of(section, config.strata.context, remember_outside=True)
 
 
 def channel_registry(

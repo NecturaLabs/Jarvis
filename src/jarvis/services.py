@@ -434,6 +434,8 @@ def strata_profile(config: Config) -> dict[str, object]:
         "idle_unload_s": s.idle_unload_s,
         "reasoning_budget_tokens": s.reasoning_budget_tokens,
     }
+    if s.effort_position:
+        profile["effort_position"] = s.effort_position
     vision = _vision(config, run)
     if vision is not None:
         profile["vision"] = vision

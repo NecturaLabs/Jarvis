@@ -157,7 +157,7 @@ class ChatConfig(AgentConfig):
     max_seconds: float = Field(default=600.0, ge=10, le=3600)
     reply_tokens: int = Field(default=2048, ge=64, le=8192)
     tool_text_chars: int = Field(default=8000, ge=500, le=50000)
-    memory_tokens: int = Field(default=7800, ge=0, le=200000)
+    memory_tokens: int = Field(default=7000, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
     thinking_tokens: int = Field(default=512, ge=32, le=8192)
     thinking_raised_tokens: int = Field(default=1024, ge=32, le=8192)
@@ -189,6 +189,8 @@ class StrataConfig(_Section):
     expert_vram_gib: float = Field(default=1.0, ge=0, le=64)
     idle_unload_s: int = Field(default=86400, ge=30, le=86400)  # stays loaded (#34, decision 2)
     reasoning_budget_tokens: int = Field(default=512, gt=0, le=8192)
+    # Where Strata writes a raised effort (`effort_position`); empty: the run config's own.
+    effort_position: Literal["", "start", "end"] = ""
     memory_max: str = Field(default="40G", pattern=r"^\d+[KMGT]?$")
     # Keep the model server's memory in RAM: its unit may lock memory and gets no swap. Off: the
     # kernel may swap the model out while the PC is short of memory and back in on the next
@@ -301,6 +303,8 @@ class AudioConfig(_Section):
     transcribe_engine: str = ""
     transcribe_model: str = "small.en"  # measured faster and more accurate than base.en here
     transcribe_threads: int = Field(default=8, ge=1, le=256)
+    # Where the gguf engine runs (Voxtype's `gguf_backend`); empty: Voxtype's own choice.
+    transcribe_backend: Literal["", "auto", "cpu", "cpu_accel", "vulkan"] = ""
     transcribe_short_window: bool = True  # size Whisper's window to the clip: ~5x faster
     vocabulary_hint: bool = True
     hint_names: int = Field(default=40, ge=0, le=200)

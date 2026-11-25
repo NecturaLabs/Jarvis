@@ -16,14 +16,15 @@ When the conversation is forgotten (`reset`), so is what its searches returned.
 """
 
 import re
+import threading
 from collections import deque
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from jarvis.operations import Operation, OperationError, Result, cut_inert
+from jarvis.operations import Operation, OperationError, Request, Result, current_request, cut_inert
 from jarvis.pictures import SHOWN_SIDE, PictureError, prepare
 from jarvis.policy import Origin
 from jarvis.shortcuts import Shortcut
@@ -51,6 +52,9 @@ MAX_COMMENT = 300
 NO_HOME = (
     "I don't have a home set, so tell me a place. You can set one in the config under weather."
 )
+# A web address as the owner writes one; what a sentence puts after it is cut separately.
+_ADDRESS = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
+_TRAILING = ".,;:!?)]}"
 _REDDIT_POST = re.compile(r"^/r/(?P<sub>[A-Za-z0-9_]{2,21})/comments/(?P<id>[a-z0-9]{1,12})(?:/|$)")
 _UNIT_SIGNS = {"celsius": "°C", "fahrenheit": "°F"}
 _WIND_WORDS = {"kmh": "km/h", "mph": "mph", "ms": "m/s", "kn": "knots"}
@@ -101,6 +105,17 @@ def spoken_time(moment: datetime, *, twelve_hour: bool) -> str:
 def spoken_date(day: date) -> str:
     """Return a date as it is said: "Saturday, 21 November"."""
     return f"{day:%A}, {day.day} {day:%B}"
+
+
+def _written(request: Request | None) -> set[str]:
+    """Return the web addresses in the owner's own words of `request`, as they wrote them.
+
+    Each is taken whole, and also without the punctuation a sentence put after it.
+    """
+    if request is None:
+        return set()
+    found = _ADDRESS.findall(request.words)
+    return {*found, *(address.rstrip(_TRAILING) for address in found)}
 
 
 def _reddit_thread(url: str) -> tuple[str, str] | None:
@@ -170,6 +185,45 @@ def _weather_result(forecast: Forecast, when: str, where: str) -> Result:
     return Result(f"Weather in {where} this week. " + "; ".join(lines) + ".")
 
 
+def _hour_result(
+    forecast: Forecast, asked: tuple[str, int], where: str, *, twelve_hour: bool
+) -> Result:
+    """Word the forecast for one hour of today or tomorrow (`asked` is `when` and the hour).
+
+    With `when` left at "now", the hour is the next one of that number: today's if it has not
+    passed at the place, else tomorrow's.
+
+    Raises:
+        OperationError: the forecast lacks that hour.
+    """
+    when, hour = asked
+    today = forecast.local_now[:10] or (forecast.days[0].date if forecast.days else "")
+    if not today:
+        msg = "The forecast didn't include that hour."
+        raise OperationError(msg)
+    day = date.fromisoformat(today)
+    passed = bool(forecast.local_now) and int(forecast.local_now[11:13]) > hour
+    tomorrow = when == "tomorrow" or (when == "now" and passed)
+    if tomorrow:
+        day += timedelta(days=1)
+    found = next((h for h in forecast.hours if h.time == f"{day.isoformat()}T{hour:02d}:00"), None)
+    if found is None:
+        msg = "The forecast didn't include that hour."
+        raise OperationError(msg)
+    label = "Tomorrow" if tomorrow else "Today"
+    sign = _UNIT_SIGNS.get(forecast.temperature_unit, "degrees")
+    clock = spoken_time(datetime(day.year, day.month, day.day, hour), twelve_hour=twelve_hour)  # ruff: ignore[call-datetime-without-tzinfo] - only its hour is said
+    text = (
+        f"Weather in {where}. {label} at {hour:02d}:00: {found.condition}, "
+        f"{_round(found.temperature)} {sign}, {found.rain_chance}% chance of rain."
+    )
+    spoken = (
+        f"{label} at {clock} looks like {found.condition}, {_round(found.temperature)} degrees, "
+        f"with a {found.rain_chance} percent chance of rain."
+    )
+    return Result(text, spoken=spoken)
+
+
 @dataclass(frozen=True, slots=True)
 class Clients:
     """The services the operations reach."""
@@ -211,12 +265,15 @@ class WebOps:
         self._shown = shown
         self._images: dict[str, ImageHit] = {}
         self._image_number = 0
+        # Look-ups of one request may run side by side; this guards what they remember.
+        self._lock = threading.Lock()
 
     def reset(self) -> None:
         """Forget every address, post and picture earlier searches returned."""
-        self._urls.clear()
-        self._posts.clear()
-        self._images.clear()
+        with self._lock:
+            self._urls.clear()
+            self._posts.clear()
+            self._images.clear()
 
     # --- time -------------------------------------------------------------------------------
 
@@ -360,6 +417,10 @@ class WebOps:
         """
         place = str(args.get("place", "")).strip()
         when = str(args.get("when", "now"))
+        hour = args.get("hour")
+        if hour is not None and when == "week":
+            msg = "An hour goes with today or tomorrow, not the whole week."
+            raise OperationError(msg)
         if place:
             found = self._find(place)
             latitude, longitude = found.latitude, found.longitude
@@ -372,9 +433,13 @@ class WebOps:
                 longitude,
                 temperature_unit=self._weather_config.temperature_unit,
                 wind_unit=self._weather_config.wind_unit,
+                hours=hour is not None,
             )
         except WeatherUnavailableError as exc:
             raise OperationError(str(exc)) from exc
+        if hour is not None:
+            twelve = self._clock_config.twelve_hour
+            return _hour_result(forecast, (when, int(hour)), where, twelve_hour=twelve)
         return _weather_result(forecast, when, where)
 
     # --- web --------------------------------------------------------------------------------
@@ -404,14 +469,22 @@ class WebOps:
         return Result(f"Results for {query!r}:\n" + "\n".join(lines), Origin.WEB)
 
     def web_read(self, args: dict[str, Any]) -> Result:
-        """Read a page a recent search returned and give its main text.
+        """Read a page a recent search returned, or one the owner wrote, and give its main text.
+
+        An address the owner wrote counts only as written, in their own words of this request
+        (`Request.words`): never one in a paste, a page, a file or PC audio, where anyone could
+        have put an address that carries data off in its query.
 
         Raises:
-            OperationError: the address came from no search, or the page could not be read.
+            OperationError: the address came from no search and not from the owner, or the
+                page could not be read.
         """
         url = str(args["url"]).strip()
-        if url not in self._urls:
-            msg = "Only a page a recent web_search returned can be read; search first."
+        if not self._knows(self._urls, url) and url not in _written(current_request()):
+            msg = (
+                "Only a page a recent web_search returned, or an address the owner wrote in "
+                "this request, can be read; search first."
+            )
             raise OperationError(msg)
         thread = _reddit_thread(url)
         if thread is not None:
@@ -437,11 +510,12 @@ class WebOps:
 
     def _remember_image(self, found: ImageHit) -> str:
         """Return the id a picture is shown by; the oldest are forgotten past `REMEMBERED`."""
-        self._image_number += 1
-        image_id = f"i{self._image_number}"
-        self._images[image_id] = found
-        while len(self._images) > REMEMBERED:
-            del self._images[next(iter(self._images))]
+        with self._lock:
+            self._image_number += 1
+            image_id = f"i{self._image_number}"
+            self._images[image_id] = found
+            while len(self._images) > REMEMBERED:
+                del self._images[next(iter(self._images))]
         return image_id
 
     def image_search(self, args: dict[str, Any]) -> Result:
@@ -474,7 +548,8 @@ class WebOps:
                 read or kept.
         """
         image_id = str(args["image_id"]).strip().lower()
-        found = self._images.get(image_id)
+        with self._lock:
+            found = self._images.get(image_id)
         if found is None or self._shown is None:
             msg = (
                 "Only a picture a recent image_search or web_read returned can be shown; "
@@ -556,7 +631,7 @@ class WebOps:
             OperationError: the thread came from no search, or the archive failed or lacks it.
         """
         post_id = str(args["post_id"]).strip().lower()
-        if post_id not in self._posts:
+        if not self._knows(self._posts, post_id):
             msg = "Only a thread a recent reddit_search returned can be read; search first."
             raise OperationError(msg)
         try:
@@ -577,11 +652,15 @@ class WebOps:
             parts.append("No comments archived.")
         return Result(cut_inert("\n".join(parts), self._research.page_chars), Origin.WEB)
 
-    @staticmethod
-    def _remember(seen: deque[str], item: str) -> None:
-        if item in seen:
-            seen.remove(item)
-        seen.append(item)
+    def _remember(self, seen: deque[str], item: str) -> None:
+        with self._lock:
+            if item in seen:
+                seen.remove(item)
+            seen.append(item)
+
+    def _knows(self, seen: deque[str], item: str) -> bool:
+        with self._lock:
+            return item in seen
 
     # --- the operations ---------------------------------------------------------------------
 
@@ -606,6 +685,7 @@ class WebOps:
                 },
                 self.time,
                 side_effect=False,
+                concurrent=True,
                 outbound=True,
                 outbound_args=_PLACE_ARG,
                 spoken_summary=lambda _a: "tell you the time",
@@ -613,7 +693,8 @@ class WebOps:
             ),
             Operation(
                 "weather",
-                "The weather now, today, tomorrow or this week, at home or in a named place.",
+                "The weather now, today, tomorrow or this week, or at an hour of today or "
+                "tomorrow, at home or in a named place.",
                 {
                     "type": "object",
                     "properties": {
@@ -622,12 +703,20 @@ class WebOps:
                             "enum": ["now", "today", "tomorrow", "week"],
                             "default": "now",
                         },
+                        "hour": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 23,
+                            "description": "An hour of the day, 0 to 23 on the place's clock, for "
+                            "the weather then; leave when out for the next such hour",
+                        },
                         "place": _PLACE,
                     },
                     "additionalProperties": False,
                 },
                 self.weather,
                 side_effect=False,
+                concurrent=True,
                 outbound=True,
                 outbound_args=_PLACE_ARG,
                 spoken_summary=lambda _a: "check the weather",
@@ -649,12 +738,14 @@ class WebOps:
                 },
                 self.web_search,
                 side_effect=False,
+                concurrent=True,
                 outbound=True,
                 spoken_summary=lambda a: f"search the web for {str(a.get('query', ''))[:60]}",
             ),
             Operation(
                 "web_read",
-                "Read the main text of a page that web_search returned (pass its address exactly).",
+                "Read the main text of a page that web_search returned or the owner wrote (pass "
+                "its address exactly).",
                 {
                     "type": "object",
                     "properties": {"url": {"type": "string", "minLength": 1, "maxLength": MAX_URL}},
@@ -663,6 +754,7 @@ class WebOps:
                 },
                 self.web_read,
                 side_effect=False,
+                concurrent=True,
                 spoken_summary=lambda a: f"read {urlsplit(str(a.get('url', ''))).hostname}",
             ),
             Operation(
@@ -685,6 +777,7 @@ class WebOps:
                 },
                 self.reddit_search,
                 side_effect=False,
+                concurrent=True,
                 outbound=True,
                 spoken_summary=lambda a: f"search Reddit for {str(a.get('query', ''))[:60]}",
             ),
@@ -699,6 +792,7 @@ class WebOps:
                 },
                 self.reddit_read,
                 side_effect=False,
+                concurrent=True,
                 spoken_summary=lambda _a: "read that Reddit thread",
             ),
             *(self._picture_operations() if self._shown is not None else []),
@@ -722,6 +816,7 @@ class WebOps:
                 },
                 self.image_search,
                 side_effect=False,
+                concurrent=True,
                 outbound=True,
                 spoken_summary=lambda a: f"search for pictures of {str(a.get('query', ''))[:60]}",
             ),

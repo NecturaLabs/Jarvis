@@ -35,7 +35,8 @@ What leaves the PC, and to whom:
 - **Open-Meteo** gets the home coordinates (or the home place name, looked up once per run) and any
   place the owner names.
 - **Arctic Shift** gets the ids of the Reddit threads a search found.
-- **Web pages**: Jarvis opens only a page a search in the same session returned, through a client that
+- **Web pages**: Jarvis opens only a page a search in the same session returned, or (added 2026-11-26, #45)
+  an address the owner wrote in their own words of the request, exactly as written, through a client that
   reaches only public addresses on ports 80 and 443, checked at every connection and every redirect
   (`web/guard.py`).
 
@@ -56,7 +57,8 @@ No request carries anything that names the owner, the PC or the project: the use
   checked identifiers and the place the model asked about, so they do not count as outside text.
 - Every one of these operations is a read (`side_effect=False`), so none asks for a yes, even after a page
   is in the conversation. A page can open no address of its own choosing: only an address or thread a
-  search in the session returned can be read, and only on a public address. What remains open is
+  search in the session returned, or an address the owner wrote (never one in a long paste, a page, a
+  file, PC audio or a scheduled request outside text steered), can be read, and only on a public address. What remains open is
   low-bandwidth: a page could steer the model into putting up to 200 characters of the conversation in
   a search (80 in a place name), which goes to the search engines or Open-Meteo, not to whoever wrote the page.
   This is accepted for now so research does not ask for a yes at every step; the stricter choice, a yes

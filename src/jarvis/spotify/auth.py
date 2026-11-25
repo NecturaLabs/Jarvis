@@ -45,6 +45,8 @@ SCOPES = (
     "user-library-modify",
     "playlist-read-private",
     "playlist-read-collaborative",
+    "playlist-modify-private",  # add the song playing to a playlist (2026-11-26)
+    "playlist-modify-public",
     "user-top-read",
     "user-follow-read",
     "user-read-recently-played",
@@ -357,6 +359,14 @@ class TokenStore:
         """
         with self._lock, self._file_lock():
             self._save(record)
+
+    def granted(self) -> frozenset[str] | None:
+        """Return the scopes the stored login was granted, or None when that is not known."""
+        try:
+            scope = self._load().scope
+        except SpotifyAuthError:
+            return None
+        return frozenset(scope.split()) or None
 
     @property
     def authorized_at(self) -> float | None:

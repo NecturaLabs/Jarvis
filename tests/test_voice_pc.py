@@ -12,7 +12,7 @@ from jarvis.policy import Origin
 from jarvis.voice import PcListener, VoiceLoop
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Collection, Generator
 
     from numpy.typing import NDArray
 
@@ -99,7 +99,15 @@ class Agent:
     calls: list[tuple[str, Origin]] = field(default_factory=list[tuple[str, Origin]])
     done: threading.Event = field(default_factory=threading.Event)
 
-    def handle(self, text: str, hooks: Hooks, origin: Origin = Origin.OWNER_SPEECH) -> str:
+    def handle(
+        self,
+        text: str,
+        hooks: Hooks,
+        origin: Origin = Origin.OWNER_SPEECH,
+        *,
+        steered_by: Collection[str] = (),
+    ) -> str:
+        assert not steered_by  # a request heard now carries nothing from before
         self.calls.append((text, origin))
         self.done.set()
         if hooks.speak is not None:

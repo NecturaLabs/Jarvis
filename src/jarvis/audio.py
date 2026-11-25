@@ -221,6 +221,45 @@ def source_found(objects: object, source: str) -> bool:
     )
 
 
+CONTROL_TIMEOUT_S = 5.0
+
+
+def _control(program: str, args: Sequence[str], who: str) -> str:
+    """Run `program` with a fixed argument list and return its output; `who` names it in errors.
+
+    Raises:
+        AudioError: the program is missing, timed out or failed.
+    """
+    try:
+        done = subprocess.run(
+            [program, *args], capture_output=True, text=True, timeout=CONTROL_TIMEOUT_S, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        msg = f"{who} did not answer ({type(exc).__name__})"
+        raise AudioError(msg) from exc
+    if done.returncode != 0:
+        msg = f"{who} refused that ({done.stderr.strip()[:200] or done.returncode})"
+        raise AudioError(msg)
+    return done.stdout
+
+
+def wpctl(args: Sequence[str]) -> str:
+    """Run PipeWire's `wpctl` with `pc_volume`'s arguments and return its output.
+
+    An `AudioError` says wpctl is missing, timed out or failed.
+    """
+    return _control("wpctl", args, "the sound server")
+
+
+def playerctl(args: Sequence[str]) -> str:
+    """Run `playerctl` (MPRIS media players) with `pc_media`'s arguments and return its output.
+
+    An `AudioError` says playerctl is missing, timed out or failed; its own words come back in
+    it, so "No players found" can be told apart.
+    """
+    return _control("playerctl", args, "the media players")
+
+
 def pw_dump() -> object:
     """Return PipeWire's object graph, or an empty one when it cannot be read."""
     try:
@@ -1282,17 +1321,24 @@ def model_in_settings(engine: str, model: str) -> bool:
     return engine in FILE_ENGINES and model.startswith("/")
 
 
-def voxtype_settings(threads: int, *, short_window: bool, engine: str = "", model: str = "") -> str:
+def voxtype_settings(
+    threads: int, *, short_window: bool, engine: str = "", model: str = "", backend: str = ""
+) -> str:
     """Return Jarvis's own Voxtype config (TOML), read in place of the owner's for its runs.
 
     Whisper pads every clip to 30 s, so a two-second request costs as much as a long one;
     `short_window` (Voxtype's `context_window_optimization`) sizes the window to the clip, about
-    five times faster for a spoken command. Whisper.cpp also uses only 4 threads unless told.
+    five times faster for a spoken command. Whisper.cpp also uses only 4 threads unless told; the
+    GGUF engine is told the same count (measured 2026-11-25 on its CPU build: 2 threads took 10 to
+    13 s for a request its default took 6.7 s for).
     `keep_failed_recordings` off means Voxtype never leaves the owner's voice in its
     `failed-audio` folder after one of Jarvis's runs. A model file for an engine in
     `FILE_ENGINES` goes in that engine's own section, which is where Voxtype reads it; the
     GGUF engine is also told the file's architecture, which it refuses to guess. A model path
-    that is not UTF-8 text cannot go in the file, and raises ValueError.
+    that is not UTF-8 text cannot go in the file, and raises ValueError. `backend` is where
+    the GGUF engine runs (its `gguf_backend`): on Voxtype's GPU build, "cpu" keeps it off the
+    graphics card (measured 2026-11-25: no VRAM instead of about 3 GB per request, 7 to 8
+    CPU-seconds instead of 0.35, the same transcript).
     """
     text = (
         "[audio]\n"
@@ -1312,6 +1358,12 @@ def voxtype_settings(threads: int, *, short_window: bool, engine: str = "", mode
                 "could not read the architecture of %r; Voxtype refuses a GGUF file without one",
                 model,
             )
+        if engine == "gguf":
+            text += f"threads = {int(threads)}\n"
+    if engine == "gguf" and backend:
+        if not model_in_settings(engine, model):
+            text += "\n[gguf]\n"
+        text += f"gguf_backend = {_toml_string(backend)}\n"
     return text
 
 

@@ -73,11 +73,14 @@ class Request:
     Each request is its own object, equal only to itself, so an operation can keep what it showed
     the owner in one request and refuse to act on it in another. `foreign` says the request was
     heard in PC audio, not from the owner. `outside` holds the origins of the outside text that
-    came into the request so far (`"memory"` for outside text it remembers).
+    came into the request so far (`"memory"` for outside text it remembers). `words` are the
+    owner's own words of the request: none for one heard in PC audio or handed over with outside
+    text behind it, and without the pastes that count as outside data.
     """
 
     foreign: bool
     outside: set[str] = field(default_factory=set[str])
+    words: str = ""
 
     def saw(self, origin: str) -> None:
         """Note that text of `origin` came into the request."""
@@ -93,9 +96,9 @@ def current_request() -> Request | None:
 
 
 @contextmanager
-def request_scope(*, foreign: bool) -> Generator[Request]:
-    """Mark everything run inside as part of one new request."""
-    request = Request(foreign)
+def request_scope(*, foreign: bool, words: str = "") -> Generator[Request]:
+    """Mark everything run inside as part of one new request; `words` are the owner's own."""
+    request = Request(foreign, words=words)
     token = _CURRENT.set(request)
     try:
         yield request
@@ -145,6 +148,9 @@ class Operation:
     `lowest_class` is as low as the owner's `boundaries.classes` may set it. With
     `audit_text=False` the audit log keeps a result's text only as a SHA-256 and a length (a
     shell command's output can hold anything the owner's user can read).
+    `concurrent` lets the agent run the call beside the other `concurrent` calls of the same
+    model message; only a read-only operation whose `run` is safe in several threads at once
+    may set it.
     """
 
     name: str
@@ -162,6 +168,17 @@ class Operation:
     preview: Callable[[dict[str, Any]], str] | None = None
     hashed: frozenset[str] = frozenset()
     audit_text: bool = True
+    concurrent: bool = False
+
+    def __post_init__(self) -> None:
+        """Refuse an operation that acts yet claims to run beside others.
+
+        Raises:
+            ValueError: `concurrent` is set on an operation with a side effect.
+        """
+        if self.concurrent and self.side_effect:
+            msg = f"{self.name}: only a read-only operation may run beside others"
+            raise ValueError(msg)
 
     def sends_words(self, args: Mapping[str, Any]) -> bool:
         """Whether this call sends words the model wrote off the PC.

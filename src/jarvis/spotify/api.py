@@ -51,6 +51,14 @@ _LIBRARY_PARTS: tuple[tuple[str, str, dict[str, Any], tuple[str, ...]], ...] = (
 _DETAIL_CHARS = 160
 _REASON = re.compile(r"[A-Z_]{1,40}")
 _NO_DEVICE = "NO_ACTIVE_DEVICE"
+# Spotify's 403 "Player command failed: Restriction violated": what plays now does not allow the
+# command (shuffle or previous in some contexts, a track the device cannot seek). Its reason is a
+# bare "UNKNOWN", so the message is the only sign.
+_RESTRICTED = "restriction violated"
+_RESTRICTED_SAID = (
+    "Spotify does not allow that command for what is playing now (the track, album, playlist or "
+    "device restricts it); nothing changed"
+)
 _QUOTA = "QUOTA_EXCEEDED"
 _GATEWAY_ERRORS = frozenset(
     {HTTPStatus.BAD_GATEWAY, HTTPStatus.SERVICE_UNAVAILABLE, HTTPStatus.GATEWAY_TIMEOUT}
@@ -115,6 +123,7 @@ class SpotifyApi:
         """
         super().__init__()
         self._tokens = tokens
+        self._my_id = ""
         self._http = http or httpx.Client(
             base_url=API, timeout=httpx.Timeout(10.0, connect=5.0), trust_env=False
         )
@@ -290,6 +299,8 @@ class SpotifyApi:
             if no_device:
                 msg = "no active Spotify device"
                 raise NoDeviceError(msg, status=status, reason=reason)
+            if status == HTTPStatus.FORBIDDEN and _RESTRICTED in message.casefold():
+                raise SpotifyError(_RESTRICTED_SAID, status=status, reason=reason)
             if message:
                 msg = f"Spotify answered {status}: {message}"
                 raise SpotifyError(msg, origin=Origin.SPOTIFY, status=status, reason=reason)
@@ -301,6 +312,17 @@ class SpotifyApi:
             return response.json()
         except ValueError:
             return None
+
+    def granted(self, *scopes: str) -> bool | None:
+        """Whether the stored login was granted every one of `scopes`; None when not known."""
+        have = self._tokens.granted()
+        return None if have is None else set(scopes) <= have
+
+    def my_id(self) -> str:
+        """Return the owner's Spotify user id (asked once, then kept)."""
+        if not self._my_id:
+            self._my_id = str(obj(self.request("GET", "/me")).get("id") or "")
+        return self._my_id
 
     def devices(self) -> list[Device]:
         """Return the owner's Spotify Connect devices."""
@@ -333,6 +355,10 @@ class SpotifyApi:
         data = obj(self.request("GET", "/me/player/queue"))
         current = obj(data.get("currently_playing"))
         return ([current] if current else []) + objs(data.get("queue"))
+
+    def queued(self) -> list[dict[str, Any]]:
+        """Return what is queued after what is playing (Spotify caps the list)."""
+        return objs(obj(self.request("GET", "/me/player/queue")).get("queue"))
 
     def search_page(self, query: str, kind: str, *, offset: int = 0) -> SearchPage:
         """Return one page of items of one kind (track, album, artist, playlist).

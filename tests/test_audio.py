@@ -859,7 +859,47 @@ def test_the_gguf_engine_is_told_the_architecture_its_file_names(tmp_path: Path)
         voxtype_settings(8, short_window=True, engine="gguf", model=str(model))
     )
 
-    assert settings["gguf"] == {"model": str(model), "architecture": "qwen3_asr"}
+    assert settings["gguf"] == {"model": str(model), "architecture": "qwen3_asr", "threads": 8}
+
+
+@pytest.mark.parametrize("threads", [2, 12])
+def test_the_gguf_engine_gets_the_thread_count_too(threads: int, tmp_path: Path) -> None:
+    """`audio.transcribe_threads` reached only Whisper; the GGUF engine took its own default."""
+    model = _gguf(tmp_path / "q.gguf", "qwen3_asr")
+
+    settings = tomllib.loads(
+        voxtype_settings(threads, short_window=True, engine="gguf", model=str(model))
+    )
+
+    assert settings["gguf"]["threads"] == threads
+    assert settings["whisper"]["threads"] == threads
+
+
+@pytest.mark.parametrize("backend", ["cpu", "vulkan"])
+def test_the_gguf_engine_is_told_where_to_run(backend: str, tmp_path: Path) -> None:
+    # On Voxtype's GPU build, "cpu" keeps speech-to-text off a graphics card a game fills.
+    model = _gguf(tmp_path / "q.gguf", "qwen3_asr")
+
+    settings = tomllib.loads(
+        voxtype_settings(8, short_window=True, engine="gguf", model=str(model), backend=backend)
+    )
+
+    assert settings["gguf"]["gguf_backend"] == backend
+
+
+def test_no_backend_leaves_the_choice_to_voxtype(tmp_path: Path) -> None:
+    model = _gguf(tmp_path / "q.gguf", "qwen3_asr")
+
+    settings = tomllib.loads(
+        voxtype_settings(8, short_window=True, engine="gguf", model=str(model), backend="")
+    )
+
+    assert "gguf_backend" not in settings["gguf"]
+
+
+def test_another_engine_is_not_given_the_gguf_backend() -> None:
+    settings = tomllib.loads(voxtype_settings(8, short_window=True, backend="cpu"))
+    assert "gguf" not in settings
 
 
 @pytest.mark.parametrize("content", [b"", b"not a gguf file", b"GGUF\x03\x00"])
@@ -948,7 +988,7 @@ def test_an_unreadable_gguf_checkpoint_is_logged(
             voxtype_settings(8, short_window=True, engine="gguf", model=str(model))
         )
 
-    assert settings["gguf"] == {"model": str(model)}
+    assert settings["gguf"] == {"model": str(model), "threads": 8}  # no architecture guessed
     assert any(str(model) in r.getMessage() for r in caplog.records)
 
 
@@ -2122,3 +2162,36 @@ def test_a_warmer_without_a_file_starts_nothing() -> None:
         raise AssertionError
 
     assert FileWarmer(None, unread).start() is None
+
+
+def test_wpctl_runs_with_a_fixed_argument_list_and_returns_its_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[list[str]] = []
+
+    def run(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "Volume: 0.25\n", "")
+
+    monkeypatch.setattr(audio_module.subprocess, "run", run)
+
+    assert audio_module.wpctl(["get-volume", "@DEFAULT_AUDIO_SINK@"]) == "Volume: 0.25\n"
+    assert seen == [["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"]]
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [OSError("no wpctl"), subprocess.TimeoutExpired("wpctl", 5.0), "refused"],
+)
+def test_a_wpctl_that_fails_raises_an_audio_error(
+    monkeypatch: pytest.MonkeyPatch, outcome: object
+) -> None:
+    def run(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return subprocess.CompletedProcess(cmd, 1, "", "no such node")
+
+    monkeypatch.setattr(audio_module.subprocess, "run", run)
+
+    with pytest.raises(audio_module.AudioError, match="sound server"):
+        audio_module.wpctl(["set-volume", "@DEFAULT_AUDIO_SINK@", "0.40"])

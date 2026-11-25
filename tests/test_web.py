@@ -515,6 +515,41 @@ def test_a_redirect_loop_counts_against_the_same_deadline() -> None:
         PageReader(client, clock=lambda: now[0]).read("http://public.example/")
 
 
+def test_a_read_started_meanwhile_gives_an_earlier_read_no_more_time() -> None:
+    # Two pages of one request may be read side by side; each keeps its own deadline.
+    now = [0.0]
+    midway, other_done = threading.Event(), threading.Event()
+
+    def chunks() -> Iterator[bytes]:
+        for n in range(1000):
+            now[0] += 1.0  # a second per byte
+            if n == 10:
+                midway.set()
+                assert other_done.wait(5)
+            yield b"x"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        plain = {"content-type": "text/plain"}
+        if request.url.path == "/quick":
+            return httpx.Response(200, headers=plain, content=iter([b"done"]))
+        return httpx.Response(200, headers=plain, content=chunks())
+
+    reader = PageReader(httpx.Client(transport=httpx.MockTransport(handler)), clock=lambda: now[0])
+
+    def other() -> None:
+        assert midway.wait(5)
+        reader.read("http://public.example/quick")
+        other_done.set()
+
+    side = threading.Thread(target=other)
+    side.start()
+    with pytest.raises(PageError, match="too long"):
+        reader.read("http://public.example/slow")
+    side.join(5)
+    assert other_done.is_set()
+    assert now[0] <= READ_LIMIT_S + 2
+
+
 def test_a_compressed_bomb_inflates_only_to_the_cap() -> None:
     bomb = gzip.compress(b"a" * 20_000_000)
     client, _ = _guarded(_http("200 OK", bomb, Content_Type="text/plain", Content_Encoding="gzip"))
@@ -816,9 +851,62 @@ def test_a_place_is_found_with_its_zone_and_country_code() -> None:
     assert seen[0].url.params["name"] == "Berlin"
 
 
+TWO_SPRINGFIELDS = {
+    "results": [
+        {**GEO["results"][0], "name": "Springfield", "admin1": "Missouri", "latitude": 37.2},
+        {**GEO["results"][0], "name": "Springfield", "admin1": "Illinois", "latitude": 39.8},
+    ]
+}
+
+
+@pytest.mark.parametrize("said", ["Springfield (Illinois)", "Springfield, Illinois"])
+def test_a_place_said_with_its_state_or_country_is_looked_up_by_its_name(said: str) -> None:
+    """The geocoder finds nothing for "Springfield (Illinois)"; the qualifier picks a match."""
+    meteo, seen = _meteo(geo=TWO_SPRINGFIELDS)
+
+    place = meteo.find(said)
+
+    assert place is not None
+    assert place.latitude == pytest.approx(39.8)
+    assert seen[0].url.params["name"] == "Springfield"
+
+
+def test_a_qualifier_that_matches_nothing_takes_the_best_known_place() -> None:
+    meteo, _ = _meteo(geo=TWO_SPRINGFIELDS)
+
+    place = meteo.find("Springfield (Atlantis)")
+
+    assert place is not None
+    assert place.latitude == pytest.approx(37.2)
+
+
 def test_an_unknown_place_is_none() -> None:
     meteo, _ = _meteo(geo={})
     assert meteo.find("Nowhere") is None
+
+
+def test_hours_are_asked_for_only_when_wanted_and_a_broken_hour_is_left_out() -> None:
+    hourly = {
+        "time": ["2026-11-21T00:00", "not a time", "2026-11-21T02:00"],
+        "weather_code": [0, 0, 3],
+        "temperature_2m": [1.0, 2.0, None],
+        "precipitation_probability": [5, 5, None],
+    }
+    meteo, seen = _meteo(forecast={**FORECAST_ANSWER, "hourly": hourly})
+
+    plain = meteo.forecast(52.5, 13.4, temperature_unit="celsius", wind_unit="kmh")
+    assert plain.hours == ()
+    assert "hourly" not in seen[-1].url.params
+
+    by_hour = meteo.forecast(52.5, 13.4, temperature_unit="celsius", wind_unit="kmh", hours=True)
+    assert [hour.time for hour in by_hour.hours] == ["2026-11-21T00:00"]
+    assert by_hour.hours[0].condition == "clear"
+
+
+def test_an_answer_without_hours_when_they_were_asked_for_is_unusable() -> None:
+    meteo, _ = _meteo()
+    with pytest.raises(WeatherUnavailableError, match="no hours"):
+        meteo.forecast(52.5, 13.4, temperature_unit="celsius", wind_unit="kmh", hours=True)
 
 
 def test_a_made_up_zone_or_country_is_not_passed_on() -> None:
@@ -1064,3 +1152,53 @@ def test_the_container_limits_its_processes() -> None:
     compose = (_ROOT / "deploy/searxng/compose.yaml").read_text(encoding="utf-8")
 
     assert "\n    pids_limit: " in compose
+
+
+type _Factory = Callable[[], httpx.Client]
+
+# For each web client: how one is made, and one first use of it.
+_FIRST_USES: dict[str, tuple[Callable[[_Factory], Any], Callable[[Any], object]]] = {
+    "search": (
+        lambda f: Searxng("http://127.0.0.1:8888", factory=f),
+        lambda c: c.search("x", limit=1),
+    ),
+    "reddit": (lambda f: ArcticShift(factory=f), lambda c: c.posts(["abc"])),
+    "weather": (lambda f: OpenMeteo(factory=f), lambda c: c.find("Berlin")),
+    "pages": (lambda f: PageReader(factory=f), lambda c: c.read("http://public.example/")),
+}
+
+
+@pytest.mark.parametrize("service", sorted(_FIRST_USES))
+def test_two_first_uses_at_once_make_one_web_client(service: str) -> None:
+    # Read-only look-ups of one request may run side by side; a client made twice leaks a pool.
+    made: list[httpx.Client] = []
+    entered, release = threading.Event(), threading.Event()
+    ended: list[object] = []
+
+    def factory() -> httpx.Client:
+        entered.set()
+        assert release.wait(5)
+        made.append(_mock(lambda _request: httpx.Response(503, content=iter([b""]))))
+        return made[-1]
+
+    make, use = _FIRST_USES[service]
+    client = make(factory)
+
+    def first_use() -> None:
+        try:
+            ended.append(use(client))
+        except Exception as exc:  # ruff: ignore[blind-except] - only the clients made count
+            ended.append(exc)
+
+    one = threading.Thread(target=first_use)
+    one.start()
+    assert entered.wait(5)
+    two = threading.Thread(target=first_use)
+    two.start()
+    two.join(0.2)  # without a lock, the second use is making its own client by now
+    release.set()
+    one.join(5)
+    two.join(5)
+
+    assert len(ended) == 2
+    assert len(made) == 1

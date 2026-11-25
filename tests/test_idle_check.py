@@ -129,7 +129,8 @@ def _measure(
     limits: Limits = LIMITS,
 ) -> tuple[list[idle_check.Result], FakeClock]:
     clock = FakeClock(during)
-    host = Host(proc=proc.root, clock=clock, sleep=clock.sleep, clk_tck=TICKS)
+    drm = proc.root / "drm"  # no graphics card: the wait is one sleep
+    host = Host(proc=proc.root, clock=clock, sleep=clock.sleep, clk_tck=TICKS, drm=drm)
     return idle_check.measure(roots, seconds, limits, host), clock
 
 
@@ -403,10 +404,16 @@ def _main(
     *argv: str,
     during: Callable[[], None] | None = None,
     run: idle_check.Run | None = None,
+    drm: Path | None = None,
 ) -> tuple[int, FakeClock]:
     clock = FakeClock(during)
     status = idle_check.main(
-        list(argv), proc=proc.root, clock=clock, sleep=clock.sleep, run=run or subprocess.run
+        list(argv),
+        proc=proc.root,
+        clock=clock,
+        sleep=clock.sleep,
+        run=run or subprocess.run,
+        drm=drm or proc.root / "drm",
     )
     return status, clock
 
@@ -568,6 +575,49 @@ def test_a_drm_client_without_engine_counters_is_not_reported_as_no_client(
         "gpu: no GPU engine time published (no DRM client, or one without drm-engine counters)"
         in out
     )
+    # Its own GPU use was not seen, so the verdict must not read as a clean bill for the GPU.
+    assert "ok: idle on CPU and memory; its GPU use was not measured" in out
+    assert "  ok: idle\n" not in out
+
+
+def test_a_process_whose_gpu_time_was_read_gets_a_plain_ok(
+    proc: FakeProc, capsys: pytest.CaptureFixture[str]
+) -> None:
+    proc.process(100)
+    proc.drm_fd(100, 8, client=1, engines={"gfx": 0})
+
+    _main(proc, "--pid", "100", "--seconds", "30")
+
+    assert "  ok: idle\n" in capsys.readouterr().out + "\n"
+
+
+def _card(drm: Path, name: str, busy: int) -> Path:
+    device = drm / name / "device"
+    device.mkdir(parents=True)
+    (device / "gpu_busy_percent").write_text(f"{busy}\n", encoding="utf-8")
+    return device / "gpu_busy_percent"
+
+
+def test_the_whole_cards_busy_share_is_sampled_over_the_window(
+    proc: FakeProc, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """KFD compute publishes no per-process time; the card's own busy share is the next best."""
+    drm = tmp_path / "drm"
+    busy = _card(drm, "card1", 0)
+    _card(drm, "card1-DP-1", 99)  # a connector, not a card
+    readings = iter([10, 30, 20])
+    proc.process(100)
+
+    def tick() -> None:
+        busy.write_text(f"{next(readings, 20)}\n", encoding="utf-8")
+
+    status, clock = _main(proc, "--pid", "100", "--seconds", "3", during=tick, drm=drm)
+
+    out = capsys.readouterr().out
+    assert status == 0  # the whole card is every program's, so it never fails the check
+    assert clock.slept == [1.0, 1.0, 1.0]
+    assert "card1 20.0 % busy on average" in out
+    assert "DP-1" not in out
 
 
 def test_a_process_that_leaves_the_tree_does_not_hide_the_trees_work(proc: FakeProc) -> None:

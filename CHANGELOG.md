@@ -8,6 +8,35 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Jarvis reads a web address you write in the request ("what does https://… say?") without searching for it first.
+  Only an address in your own words counts, exactly as written: never one in a long paste, a page, a file, PC audio
+  or a scheduled request that outside text steered, and every address is still checked to be public.
+- `pc_volume`: the PC's own output volume, read, set, turned up or down or muted, in any words; it is every
+  program's sound, games and videos included. A change is bound to its start and end before any question.
+- `audio.transcribe_backend` says where the GGUF speech-to-text engine runs (Voxtype's `gguf_backend`): `cpu` keeps it
+  off the graphics card on Voxtype's GPU build, for a game that needs all of its memory. Empty, the default, leaves
+  it to Voxtype.
+- The weather at an hour of today or tomorrow ("will it rain at five?"): `weather` takes an `hour` on the place's
+  own clock, said on yours (`clock.twelve_hour`); an hour already past today means tomorrow's unless today is said.
+  Only the hours' columns are added to what Open-Meteo is asked; nothing new is sent.
+- Spotify: jump within what plays or restart it (`spotify_seek`), move playback to another device by its name
+  (`spotify_resume`'s `device`), hear what is queued next and which devices there are (`spotify_now_playing`'s
+  `more`), and unlike the song playing or add it to one of your playlists (`spotify_library`, which asks first).
+  Adding to a playlist needs two new permissions: run `jarvis spotify-login` once; until then only that part
+  says so.
+- `strata.effort_position` passes Strata's `effort_position` into its profile: with `end`, a request whose model
+  raised its effort to `low` reuses the pinned prompt instead of reading it all again. Empty, the default, keeps
+  the run config's own, until the model's answers with it are measured.
+- Look-ups the model asks for together run side by side: two pages, a search and the weather, or the time in
+  two places take about as long as the slowest one. Each is still decided, asked about and audited one by
+  one first; actions always run on their own, in order.
+- `pc_media`: play, pause or skip a video in the browser, VLC or another MPRIS player, or say what plays,
+  through `playerctl` (`pacman -S playerctl`). Spotify keeps its own tools; "everything" pauses it too. Only a
+  player's plain name is said, never a title.
+
+- Reminders and scheduled requests can be set in seconds ("in 30 seconds"), up to an hour, for a one-off job;
+  the smallest step was a minute. One due within two minutes is said as "in 30 seconds".
+
 - The model thinks harder only when a request needs it. Each request still starts at `thinking` (`none` by
   default). For one that needs careful thought (several steps, a name it may have misheard, a correction, a
   try that failed), the model raises its own effort for the rest of that request with the new `think_harder`
@@ -66,6 +95,32 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Speech remembers a reply that drew on outside text (a search, a page, a song name) as data, as the chat does,
+  so "what was the second one?" has the answer to go on. While it is remembered, an action the model chooses
+  asks first; a plain command does not. It was left out of later requests before.
+- A scheduled request keeps where its request came from. One first heard in PC audio runs as PC audio when it is due,
+  and one added while outside text (a web page, a file, a remembered answer) was in the conversation runs with that
+  text counted, so its actions need a yes as they would have then. Requests the owner alone asked for still run
+  unasked ([ADR 0011](docs/adr/0011-reminders-and-scheduled-requests.md)).
+- `tools/idle_check.py` no longer reports "ok: idle" for the GPU when it could not see the process's GPU use
+  (Strata's ROCm engine publishes no per-process engine time): the verdict says it was not measured, and
+  each card's whole busy share over the window is shown beside it.
+
+- A place said with its state or country, "Springfield (Illinois)" or "Lisbon, Portugal", is found for the time
+  and the weather: the geocoder takes only a name and found nothing for the whole phrase, so the name is
+  looked up alone and the qualifier picks among the matches.
+
+- Spotify's "Restriction violated" (shuffle, previous or a seek that what plays now does not allow) is said as
+  what it means, that Spotify does not allow that command here and nothing changed, instead of a raw 403.
+
+- `audio.transcribe_threads` reaches the GGUF engine too; before, only Whisper got it and the GGUF engine used
+  its own default.
+
+- A step that may only answer (after a repeated call, or a request's last step) no longer makes Strata read
+  the whole prompt again. It kept the tool list out of the request, which changed the prompt Strata had
+  pinned; now the tools stay and the model is made to answer through `no_action`. A call to any other tool
+  on that step is still not run ([docs/models.md](docs/models.md#warm-up)).
+
 - The audit log could grow past `max_bytes` when several writers ran at once on a busy PC: a writer that
   had just rotated a full log reopened the new one and wrote without checking its size, though others may
   have filled it meanwhile. The size is now checked again after each rotation. No event was ever lost.
@@ -83,6 +138,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   for. A home set in `[weather]` is always the place it names.
 
 ### Changed
+
+- The chat's default `memory_tokens` is now 7000 (was 7800): the new tools' and arguments' schemas take that room
+  in the default 24,576-token window. A larger `strata.context` leaves room for more.
 
 - The chat's default `memory_tokens` is now 7800 (was 9100), so the default 24,576-token window keeps room
   for the thinking the model may raise to.

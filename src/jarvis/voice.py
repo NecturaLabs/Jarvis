@@ -40,7 +40,7 @@ from jarvis.schedule import reminder_words, scheduled_request
 from jarvis.sentences import split_sentences
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterator, Sequence
+    from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 
     from numpy.typing import NDArray
 
@@ -177,7 +177,14 @@ class _Vad(Protocol):
 
 
 class _Responder(Protocol):
-    def handle(self, text: str, hooks: Hooks, origin: Origin = Origin.OWNER_SPEECH) -> str: ...
+    def handle(
+        self,
+        text: str,
+        hooks: Hooks,
+        origin: Origin = Origin.OWNER_SPEECH,
+        *,
+        steered_by: Collection[str] = (),
+    ) -> str: ...
 
 
 class _Audit(Protocol):
@@ -965,8 +972,11 @@ class VoiceLoop:
             time.perf_counter() - started,
         )
 
-    def _think(self, text: str, origin: Origin) -> float:
-        """Hand `text` to the agent and speak its reply; return the seconds the agent took."""
+    def _think(self, text: str, origin: Origin, steered_by: Collection[str] = ()) -> float:
+        """Hand `text` to the agent and speak its reply; return the seconds the agent took.
+
+        `steered_by` is what outside text could have steered it before (`Agent.handle`).
+        """
         self.state = State.THINK
         started = time.perf_counter()
         self._first_words = None
@@ -985,6 +995,7 @@ class VoiceLoop:
                     quiet=self._asked_quiet,
                 ),
                 origin,
+                steered_by=steered_by,
             )
             if not reply.strip() and self._first_words is None:
                 self._said_nothing = True
@@ -1026,9 +1037,12 @@ class VoiceLoop:
         return True
 
     def _run_due(self, due: Due) -> None:
-        """Say a due reminder, or carry out a due request as if the owner had just asked.
+        """Say a due reminder, or carry out a due request as if it had just been asked.
 
-        One that came too late is not done, only audited as missed.
+        It is asked again by whoever asked for it: the owner, or PC audio for a request first
+        heard there, with the outside text its request had seen counted as in the
+        conversation, so what needed a yes then needs one now. One that came too late is not
+        done, only audited as missed.
         """
         job = due.job
         fields = {"id": job.id, "action": job.action, "late_s": round(due.late_s)}
@@ -1045,7 +1059,8 @@ class VoiceLoop:
             self._chime()
             self._say(reminder_words(due))
             return
-        self._think(scheduled_request(job), Origin.OWNER_SPEECH)
+        origin = Origin.PC_AUDIO if job.foreign else Origin.OWNER_SPEECH
+        self._think(scheduled_request(job), origin, job.outside)
 
     def _watch_pc(self, should_stop: Callable[[], bool]) -> None:
         """Listen to PC audio for the wake word, restarting after a failure, until stopped."""

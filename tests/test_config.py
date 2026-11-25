@@ -303,6 +303,16 @@ def test_transcription_runs_fast_by_default() -> None:
     assert audio.transcribe_short_window is True
 
 
+def test_speech_to_text_runs_where_voxtype_chooses_unless_told(tmp_path: Path) -> None:
+    assert not config.AudioConfig().transcribe_backend
+    assert (
+        _load_text(tmp_path, '[audio]\ntranscribe_backend = "cpu"\n').audio.transcribe_backend
+        == "cpu"
+    )
+    with pytest.raises(config.ConfigError):
+        _load_text(tmp_path, '[audio]\ntranscribe_backend = "gpu"\n')
+
+
 def test_weather_and_research_round_trip(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     original = config.Config(

@@ -22,6 +22,7 @@ from jarvis.operations import (
     OperationError,
     Registry,
     Result,
+    request_scope,
     validate_args,
 )
 from jarvis.pictures import PictureCache
@@ -45,8 +46,11 @@ GEO = {
         }
     ]
 }
+# Two days of hours in the place's own time: at hour n of a day it is n degrees.
+HOURS = [f"2026-11-{day}T{hour:02d}:00" for day in (21, 22) for hour in range(24)]
 FORECAST = {
     "current": {
+        "time": "2026-11-21T15:00",
         "temperature_2m": 4.4,
         "apparent_temperature": 0.2,
         "weather_code": 1,
@@ -59,6 +63,12 @@ FORECAST = {
         "temperature_2m_max": [6.3, 4.7, 3.0],
         "temperature_2m_min": [0.6, 1.9, -0.3],
         "precipitation_probability_max": [53, 50, 0],
+    },
+    "hourly": {
+        "time": HOURS,
+        "temperature_2m": [float(n % 24) for n in range(48)],
+        "precipitation_probability": list(range(48)),
+        "weather_code": [61 if n % 24 == 17 else 3 for n in range(48)],
     },
 }
 SEARCH = {
@@ -469,6 +479,56 @@ def test_today_tomorrow_and_the_week() -> None:
     assert "Monday: clear" in week.text
 
 
+def test_an_hour_still_to_come_today_is_answered_for_today() -> None:
+    net = Net()
+
+    result = _run(_ops(net), "weather", hour=17)
+
+    assert result.spoken == (
+        "Today at 5:00 PM looks like light rain, 17 degrees, with a 17 percent chance of rain."
+    )
+    assert "Today at 17:00: light rain, 17" in result.text
+    hourly = net.seen[0].url.params["hourly"]
+    assert hourly == "temperature_2m,precipitation_probability,weather_code"
+
+
+def test_an_hour_already_past_means_tomorrow_unless_today_is_said() -> None:
+    ops = _ops(Net())
+
+    assert _run(ops, "weather", hour=9).spoken == (
+        "Tomorrow at 9:00 AM looks like overcast, 9 degrees, with a 33 percent chance of rain."
+    )
+    assert _run(ops, "weather", hour=9, when="today").spoken.startswith("Today at 9:00 AM")
+    assert _run(ops, "weather", hour=9, when="tomorrow").spoken.startswith("Tomorrow at 9:00 AM")
+
+
+def test_the_hour_is_said_on_the_owners_clock() -> None:
+    config = Config(
+        weather=WeatherConfig(coordinates=[52.52, 13.41], place="Berlin"),
+        clock=ClockConfig(twelve_hour=False),
+    )
+    assert _run(_ops(Net(), config), "weather", hour=17).spoken.startswith("Today at 17:00 ")
+
+
+def test_an_hour_goes_with_today_or_tomorrow_only() -> None:
+    with pytest.raises(OperationError, match="today or tomorrow"):
+        _run(_ops(Net()), "weather", hour=17, when="week")
+
+
+def test_without_an_hour_no_hours_are_asked_for() -> None:
+    net = Net()
+
+    _run(_ops(net), "weather", when="today")
+
+    assert "hourly" not in net.seen[0].url.params
+
+
+@pytest.mark.parametrize("hour", [-1, 24, 3.5, "five"])
+def test_an_hour_off_the_clock_is_refused(hour: object) -> None:
+    with pytest.raises(ArgumentError):
+        validate_args(_op(_ops(Net()), "weather"), {"hour": hour})
+
+
 def test_weather_somewhere_else_names_its_country() -> None:
     result = _run(_ops(Net()), "weather", place="Tokyo")
     assert "Weather in Tokyo (JP) now" in result.text
@@ -545,6 +605,53 @@ def test_an_address_no_search_returned_is_never_fetched() -> None:
     with pytest.raises(OperationError, match="search first"):
         _run(ops, "web_read", url="https://kettles.example/descale?owner=said-this")
     assert net.hosts() == ["127.0.0.1"]
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        "read https://kettles.example/descale please",
+        "what does https://kettles.example/descale, say?",
+        "(see https://kettles.example/descale)",
+    ],
+)
+def test_an_address_the_owner_wrote_in_this_request_is_read(words: str) -> None:
+    net = Net()
+
+    with request_scope(foreign=False, words=words):
+        result = _run(_ops(net), "web_read", url="https://kettles.example/descale")
+
+    assert "citric acid" in result.text
+    assert result.origin is Origin.WEB
+    assert net.hosts() == ["kettles.example"]
+
+
+@pytest.mark.parametrize(
+    ("words", "url"),
+    [
+        ("read https://kettles.example/descale", "https://kettles.example/descale?leak=1"),
+        ("read https://kettles.example/descale?a=1", "https://kettles.example/descale"),
+        ("read kettles.example/descale", "https://kettles.example/descale"),
+        ("", "https://kettles.example/descale"),
+    ],
+)
+def test_only_the_exact_address_the_owner_wrote_counts(words: str, url: str) -> None:
+    net = Net()
+
+    with (
+        request_scope(foreign=False, words=words),
+        pytest.raises(OperationError, match="search first"),
+    ):
+        _run(_ops(net), "web_read", url=url)
+    assert net.seen == []
+
+
+def test_an_address_the_owner_wrote_is_still_checked_as_public() -> None:
+    with (
+        request_scope(foreign=False, words="read http://127.0.0.1:8080/admin"),
+        pytest.raises(OperationError, match="Couldn't read that page"),
+    ):
+        _run(_ops(Net()), "web_read", url="http://127.0.0.1:8080/admin")
 
 
 def test_a_reddit_thread_in_web_results_is_read_from_the_archive() -> None:

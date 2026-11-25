@@ -30,6 +30,13 @@ SERVICE_UNAVAILABLE = 503
 DEFAULT_MAX_TOKENS = 400
 
 
+def _tool_choice(*, require_tool: bool | str) -> str | dict[str, Any]:
+    """Return the request's `tool_choice`: a named tool, any tool, or the model's own pick."""
+    if isinstance(require_tool, str):
+        return {"type": "function", "function": {"name": require_tool}}
+    return "required" if require_tool else "auto"
+
+
 class ModelError(Exception):
     """The model server could not answer."""
 
@@ -72,7 +79,7 @@ class ChatModel(Protocol):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         *,
-        require_tool: bool = False,
+        require_tool: bool | str = False,
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
@@ -80,6 +87,9 @@ class ChatModel(Protocol):
         thinking: Thinking | None = None,
     ) -> dict[str, Any]:
         """Return the assistant message; with `require_tool`, the model must call a tool.
+
+        `require_tool` may instead name the one tool the model must call; the tool list is still
+        sent whole, so the prompt the server pinned stays the same.
 
         `timeout_s` caps how long this one call may wait (the time the request has left);
         `load_s` is how much longer than one answer it may take, as the model must load first.
@@ -374,7 +384,7 @@ class StrataModel:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         *,
-        require_tool: bool = False,
+        require_tool: bool | str = False,
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
@@ -410,7 +420,7 @@ class StrataModel:
             body["max_tokens"] += thinking.tokens
         if tools:
             body["tools"] = tools
-            body["tool_choice"] = "required" if require_tool else "auto"
+            body["tool_choice"] = _tool_choice(require_tool=require_tool)
             if len(messages) > 1 and messages[0].get("role") == "system":
                 # Strata keeps the system prompt and tools read once, pinned, so a request reads
                 # only its own words (an engine without pin support ignores the mark).

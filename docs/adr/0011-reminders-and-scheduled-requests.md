@@ -43,7 +43,8 @@ Accepted on 2026-11-23: one jobs file, typed fields, and a scheduled request run
   write systemd units for words the model wrote, run a second Jarvis process that cannot speak through the
   voice service, and leave units behind when Jarvis is removed. The voice service looks at the file at most
   once a second and only when it changed, so it costs nothing while idle.
-- **Typed fields.** `schedule_add` takes `in_minutes` (up to a week), or `at` (HH:MM) with `day` (today,
+- **Typed fields.** `schedule_add` takes `in_seconds` (up to an hour, a one-off job only; added
+  2026-11-25 for timers under a minute), `in_minutes` (up to a week), or `at` (HH:MM) with `day` (today,
   tomorrow or a weekday), and `repeat` (`none`, `daily`, `weekdays`, `weekends`, `weekly`, or `every`
   with `every_minutes`, 5 to 1440). The schema bounds every value; a cron line would need its own parser to
   be bounded, and a small local model writes typed fields more reliably. At most 50 jobs, 200 characters
@@ -55,6 +56,14 @@ Accepted on 2026-11-23: one jobs file, typed fields, and a scheduled request run
   PC, which is when they are wanted. Setting one already goes through the policy: when outside text (a web
   page, a file, PC audio) is in the conversation, `schedule_add` needs a yes, and the question reads out the
   whole request, so a page cannot schedule one the owner did not hear.
+- **A job keeps where its request came from** (amended 2026-11-26, #43, on the owner's instruction to build
+  the audit's findings). The yes when a job is added is not always asked (`boundaries.bypass_consent`), and
+  a yes then is not a yes to every action the job takes later. So each job records whether its request was
+  heard in PC audio (`foreign`) and the origins of the outside text that request had seen (`outside`: web,
+  file, memory and so on). When it falls due, a request from PC audio runs as PC audio, and one added beside
+  outside text runs with that text counted as in the conversation: its side effects need a yes, and after
+  file text so does sending words off the PC, as they would have when it was added. A job the owner alone
+  asked for still runs as the owner's own, unasked. A jobs file from before keeps its jobs as the owner's.
 - **Late jobs.** A job whose time passed while the voice service was not running, the PC slept, Jarvis was
   paused, or the owner was dictating or in a meeting, is late. A one-off reminder is still said up to six
   hours late, and says how late it is. A scheduled request or a repeating reminder more than ten minutes

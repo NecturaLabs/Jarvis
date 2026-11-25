@@ -94,7 +94,7 @@ def stream_pieces(message: dict[str, Any], size: int) -> list[Delta]:
 class ScriptedModel:
     replies: list[dict[str, Any]]
     seen: list[list[dict[str, Any]]] = field(default_factory=list[list[dict[str, Any]]])
-    required: list[bool] = field(default_factory=list[bool])
+    required: list[bool | str] = field(default_factory=list[bool | str])
     tools_offered: list[int] = field(default_factory=list[int])
     loaded: bool | None = True
     error: Exception | None = None
@@ -112,7 +112,7 @@ class ScriptedModel:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         *,
-        require_tool: bool = False,
+        require_tool: bool | str = False,
         timeout_s: float | None = None,
         on_delta: Callable[[Delta], None] | None = None,
         max_tokens: int | None = None,
@@ -794,7 +794,9 @@ def test_repeat_in_a_later_step_is_not_run_and_ends_with_a_spoken_summary() -> N
     assert len(counter.runs) == 1
     assert "tool_repeated" in _events(audit)
     assert reply == "Skipped one track."
-    assert model.tools_offered[-1] == 0
+    # The tools stay in the prompt, so the server reuses the pinned prompt; only a reply may come.
+    assert model.tools_offered[-1] == model.tools_offered[0] > 0
+    assert model.required[-1] == "no_action"
 
 
 def _pc_agent(model: ScriptedModel, ops: list[Operation], clock: Clock) -> Agent:
@@ -1580,9 +1582,58 @@ def test_the_last_step_answers_from_what_was_found_instead_of_giving_up() -> Non
     reply = agent.handle("which wand", NO_CONFIRM)
 
     assert reply == "The Fairy Wand is the usual pick at level 40."
-    assert model.tools_offered[-1] == 0  # the last call may only answer
+    assert model.tools_offered[-1] == model.tools_offered[0] > 0  # the pinned prompt is kept
+    assert model.required[-1] == "no_action"  # the last call may only answer
     assert "answer" in model.seen[-1][-1]["content"].lower()
     assert len(counter.runs) == 2
+
+
+def test_the_last_step_answers_through_the_reply_call_it_is_given() -> None:
+    counter = Counter()
+    replies = [
+        _call("search", {"q": "a"}, "c1"),
+        _call("search", {"q": "b"}, "c2"),
+        _call("no_action", {"reply": "The Fairy Wand is the usual pick."}, "c3"),
+    ]
+    model = ScriptedModel(replies)
+    agent, _ = _agent(model, [counter.op("search")], limits=Limits(max_steps=3))
+
+    assert agent.handle("which wand", NO_CONFIRM) == "The Fairy Wand is the usual pick."
+    assert len(counter.runs) == 2
+
+
+def test_the_last_step_runs_no_other_tool_even_when_the_server_returns_one() -> None:
+    counter = Counter()
+    replies = [
+        _call("search", {"q": "a"}, "c1"),
+        _call("search", {"q": "b"}, "c2"),
+        _call("search", {"q": "c"}, "c3"),
+    ]
+    model = ScriptedModel(replies)
+    agent, _ = _agent(model, [counter.op("search")], limits=Limits(max_steps=3))
+
+    assert agent.handle("which wand", NO_CONFIRM) == TOO_MANY_STEPS
+    assert [run["q"] for run in counter.runs] == ["a", "b"]
+
+
+def test_the_last_step_offers_no_tools_when_the_reply_call_is_refused() -> None:
+    counter = Counter()
+    replies = [
+        _call("search", {"q": "a"}, "c1"),
+        _call("search", {"q": "b"}, "c2"),
+        _say("Here is what I found."),
+    ]
+    model = ScriptedModel(replies)
+    agent, _ = _agent(
+        model,
+        [counter.op("search")],
+        overrides={"no_action": "deny"},
+        limits=Limits(max_steps=3),
+    )
+
+    assert agent.handle("which wand", NO_CONFIRM) == "Here is what I found."
+    assert model.tools_offered[-1] == 0
+    assert model.required[-1] is False
 
 
 def test_a_strong_operation_is_refused_even_when_the_owner_would_say_yes() -> None:
@@ -3147,3 +3198,96 @@ def test_a_model_that_cannot_be_primed_is_left_to_the_first_request() -> None:
 
     assert not agent.prime()
     assert not _events(audit)
+
+
+# --- a request handed over with outside text behind it (a scheduled request) ------------------
+
+
+def test_a_request_steered_by_outside_text_earlier_needs_a_yes_to_act() -> None:
+    # A request scheduled while web text was in the conversation runs later as if that text were
+    # still there: its action is asked about, as it would have been then.
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_call("pause"), _say("Paused.")])
+    agent, audit = _agent(model, [counter.op("pause", summary=lambda _a: "pause the music")])
+
+    agent.handle(
+        "pause the music", Hooks(confirm=lambda q: asked.append(q) is None), steered_by={"web"}
+    )
+
+    assert asked == ["Should I pause the music?"]
+    assert counter.runs == [{"op": "pause"}]
+    call = next(e for e in audit.events if e["event"] == "tool_call")
+    assert call["verdict"] == "confirm"
+
+
+def test_a_request_steered_by_file_text_earlier_needs_a_yes_to_send_words_off_the_pc() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_call("search", {"q": "x"}), _say("Found.")])
+    search = counter.op("search", side_effect=False, outbound=True)
+    agent, _ = _agent(model, [search])
+
+    agent.handle(
+        "look it up", Hooks(confirm=lambda q: asked.append(q) is None), steered_by={"file"}
+    )
+
+    assert len(asked) == 1
+
+
+def test_a_request_nothing_steered_acts_without_a_question() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("pause"), _say("Paused.")])
+    agent, _ = _agent(model, [counter.op("pause")])
+
+    agent.handle("pause the music", NO_CONFIRM, steered_by=())
+
+    assert counter.runs == [{"op": "pause"}]
+
+
+# --- the owner's own words of a request (what an address they wrote may be read from) ---------
+
+
+def _words_seen(
+    text: str,
+    *,
+    origin: Origin = Origin.OWNER_SPEECH,
+    pasted: tuple[str, ...] = (),
+    steered_by: frozenset[str] = frozenset(),
+) -> list[str]:
+    seen: list[str] = []
+
+    def run(_args: dict[str, Any]) -> Result:
+        request = current_request()
+        seen.append("<none>" if request is None else request.words)
+        return Result("ok")
+
+    op = Operation("peek", "peek", {"type": "object", "properties": {}}, run, side_effect=False)
+    model = ScriptedModel([_call("peek"), _say("Done.")])
+    agent, _ = _agent(model, [op])
+    agent.handle(text, Hooks(confirm=lambda _q: True), origin, pasted=pasted, steered_by=steered_by)
+    return seen
+
+
+def test_the_owners_words_are_the_request_they_typed() -> None:
+    assert _words_seen("read https://a.example/x") == ["read https://a.example/x"]
+
+
+def test_a_long_paste_is_not_the_owners_words() -> None:
+    paste = "https://evil.example/" + "x" * 300
+    seen = _words_seen(f"read this {paste}", pasted=(paste,))
+    assert "evil.example" not in seen[0]
+    assert seen[0].startswith("read this")
+
+
+def test_a_short_paste_stays_the_owners_words() -> None:
+    paste = "https://a.example/x"
+    assert _words_seen(f"read {paste}", pasted=(paste,)) == [f"read {paste}"]
+
+
+def test_words_heard_in_pc_audio_are_not_the_owners() -> None:
+    assert _words_seen("read https://a.example/x", origin=Origin.PC_AUDIO) == [""]
+
+
+def test_a_request_handed_over_with_outside_text_has_no_words_of_the_owners() -> None:
+    assert _words_seen("read https://a.example/x", steered_by=frozenset({"web"})) == [""]

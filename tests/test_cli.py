@@ -774,6 +774,21 @@ def test_a_gguf_engine_gets_its_model_in_jarvis_settings_and_no_hint(
     )
 
 
+def test_the_gguf_backend_setting_reaches_jarvis_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    _transcribed(monkeypatch, "pause")
+    audio = config.AudioConfig(
+        transcribe_engine="gguf", transcribe_model="/m/q.gguf", transcribe_backend="cpu"
+    )
+    request, _ = cli._transcribers(config.Config(audio=audio), lambda: "")  # pyright: ignore[reportPrivateUsage] - the helper that builds both transcribers
+
+    request(SAMPLES)
+
+    settings = (paths.config_dir() / "voxtype.toml").read_text()
+    assert settings == audio_module.voxtype_settings(
+        8, short_window=True, engine="gguf", model="/m/q.gguf", backend="cpu"
+    )
+
+
 def test_a_transcript_that_only_repeats_the_hint_is_dropped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

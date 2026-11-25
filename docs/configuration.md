@@ -78,14 +78,15 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 | `thinking_max` | `high` | `none`, `low`, `medium`, `high`, and not below `thinking` | The most the model may raise its own effort to, for the rest of one request, when it judges the request needs careful thought (several steps, a name it may have misheard, a correction, a try that failed). It does so with the `think_harder` tool, which is offered only when this is above `thinking`: set it to the same as `thinking` to keep one effort. The effort never drops within a request, and each request starts at `thinking` again. Raising to `low` or `high` can cost the model one more read of its whole prompt on Qwen3.8 ([models.md](models.md#thinking)). The tool's class is `safe`; `think_harder = "deny"` under `[boundaries.classes]` also switches it off. |
 | `thinking_raised_tokens` | `768` | 32 to 8192 | The most the model thinks before each answer once it raised its effort: about 12 s at most for speech. A raised call never gets less than `thinking_tokens` when a request starts above `none`. The context keeps room for the larger of the two. |
 
-A spoken reply that drew on outside text (a web page, a song name) is left out of later requests, as before;
-the chat keeps it (see below).
+A spoken reply that drew on outside text (a web page, a song name) is remembered as data, as in the chat: a
+follow-up such as "what was the second one?" has it, and while it is remembered an action the model chooses
+needs your yes; a plain command (`pause`, `volume 40`) does not. Until 2026-11-26 the voice left such a reply out.
 
 ## `[chat]`: the same for typed requests in `jarvis chat`
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `7800` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger), `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
+`memory_tokens` `7000` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger), `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -140,6 +141,7 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `expert_vram_gib` | `1.0` | 0 to 64 | Expert weights kept in VRAM, for an engine that takes a size: passed as `--expert-vram` or `--vram-experts-gb`, whichever the run config has; the planner keeps the other experts in RAM (Jarvis drops the run config's `--ram-experts-gb`). An engine whose expert cache fills the card (`--expert-cache auto`, Qwen3.8-Flash-Next) ignores it: limit that one with `vram_reserve_mib`. |
 | `idle_unload_s` | `86400` | 30 to 86400 | Seconds without a request before Strata frees the model. The default, 24 hours, keeps it loaded through the day; a lower value gives the RAM back sooner. |
 | `reasoning_budget_tokens` | `512` | 1 to 8192 | Thinking-token cap in the profile, for a request that names none; Jarvis's own requests name theirs (`thinking_tokens` in `[agent]` and `[chat]`). |
+| `effort_position` | `""` | `""`, `start`, `end` | Where Strata writes a request's thinking effort, as its `effort_position` in the profile; empty keeps the run config's own (Strata's default is `start`). With `end`, a `low` or `medium` effort goes into a short turn before the answer, so a request whose model raised its effort (`think_harder`) reuses the pinned prompt instead of reading it all again; `high` stays at the start. How well the model follows an effort written there is not measured yet ([models.md](models.md#thinking)), so it is not the default. |
 | `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` of the Strata unit. `MemoryMax` is derived from it, 10% above (44G for 40G; a size that does not divide evenly is rounded up and written in bytes), so there is no second key. Past `MemoryHigh` the kernel throttles the unit and reclaims its memory; past `MemoryMax` it kills the unit. The size depends on the model: Qwen3.8-Flash-Next IQ2_XS needs `44G` ([models.md](models.md)). |
 | `keep_in_ram` | `true` | `true` or `false` | Keep the model server's memory in RAM: its unit gets `MemorySwapMax=0`, so the kernel never swaps it out, and `LimitMEMLOCK=infinity`, so the engine can lock its model as it asks to. Off, a PC short of memory swaps part of the model out between requests and back in on the next one; while it does, the graphics driver pauses the GPU ([Keeping the model in RAM](#keeping-the-model-in-ram)). Turn it off only with swap on a disk and a game that needs that memory more than Jarvis needs a quick answer. |
 | `vram_reserve_mib` | `0` (unset) | 0, or 100 to 65536 | VRAM in MiB the engine leaves free for other programs, passed as `--vram-reserve-mib`. `0` passes nothing, so Strata's own default (700) applies. For an engine whose expert cache fills the card (`--expert-cache auto`) it is the VRAM limit and must be set: `jarvis setup` refuses such a run config without it, and `jarvis doctor` fails "VRAM left for games". On a 20 GB card, 12000 holds Qwen3.8-Flash-Next at about 8 GiB ([models.md](models.md)). A card with at most about 8 GB of VRAM cannot start with a reserve (Strata's tuner never tries one there). |
@@ -245,6 +247,12 @@ being swapped; the lock is what Strata's own start-up text asks a systemd servic
 | `search_pages` | `8` | 1 to 20 | Search result pages read while looking for a match. |
 | `library_refresh_s` | `21600` | 60 or more | How often the playlist and liked-songs cache is refreshed in the background. |
 
+The login (`jarvis spotify-login`) asks Spotify for: reading and controlling playback, reading what plays and
+what played recently, reading and changing your library (Liked Songs), reading your playlists and changing
+them (`playlist-modify-private`, `playlist-modify-public`, added 2026-11-26 so the song playing can go into one of
+your playlists), and reading your top items and the artists you follow. A login from before 2026-11-26 lacks
+the playlist ones: everything else works, and adding to a playlist says to run `jarvis spotify-login` once.
+
 ## `[audio]`: microphone, wake word, speech and voice
 
 | Key | Default | Allowed | What it does |
@@ -273,7 +281,8 @@ being swapped; the lock is what Strata's own start-up text asks a systemd servic
 | `kokoro_phoneme_map` | `false` | true or false | Kokoro voices only. Rewrite espeak's phonemes into the symbols Kokoro was trained on (`eɪ` to `A`, `aɪ` to `I`, `tʃ` to `ʧ`, `r` to `ɹ`, and the rest of the table in `src/jarvis/phonemes.py`) before they are spoken. Off, Kokoro gets espeak's raw output, as the kokoro-onnx package does. It is off until you have heard it help: set it, run `jarvis restart` and compare a few sentences. |
 | `transcribe_engine` | empty | text | Voxtype `--engine`. Empty means Voxtype's own. Jarvis supports `whisper`, `parakeet`, `cohere` and `gguf` (Qwen3-ASR and other checkpoints Voxtype runs natively). |
 | `transcribe_model` | `small.en` | text | Voxtype `--model`: a model name or a full path to a model file. Empty means Voxtype's own. For `parakeet`, `cohere` and `gguf`, a full path to a `.gguf` file goes in Jarvis's own Voxtype config instead, in the section Voxtype reads it from; the `gguf` engine is also told the architecture the file names. The vocabulary hint goes only to Whisper, the one engine that reads it. The model must already be downloaded; `jarvis doctor` checks Whisper models and model files. Voxtype's CPU build runs every engine on the CPU; its GPU build is chosen system-wide (`voxtype setup gpu`). |
-| `transcribe_threads` | `8` | 1 to 256 | Whisper threads, written to Jarvis's own Voxtype settings file. |
+| `transcribe_threads` | `8` | 1 to 256 | CPU threads for speech-to-text, written to Jarvis's own Voxtype settings file for Whisper and for the GGUF engine (`transcribe_engine = "gguf"`). Fewer threads leave more of the CPU to a game but transcribe more slowly; Voxtype's GPU build needs few either way. |
+| `transcribe_backend` | `""` | `""`, `auto`, `cpu`, `cpu_accel`, `vulkan` | Where the GGUF engine runs, written as its `gguf_backend`; empty leaves it to Voxtype (its GPU build uses the graphics card). `cpu` keeps speech-to-text off the card on the GPU build, for a game that fills it: measured here, no VRAM instead of about 3 GB for each request, but 7 to 8 CPU-seconds instead of 0.35 and about a second longer, with the same transcript. Other engines ignore it. |
 | `transcribe_short_window` | `true` | true or false | Size Whisper's window to the clip (`context_window_optimization`); much faster for short commands. |
 | `vocabulary_hint` | `true` | true or false | Prime speech-to-text with Jarvis's name, its actions and your artist names. |
 | `hint_names` | `40` | 0 to 200 | Most artist names put in the hint (the hint also stops at 800 characters). |

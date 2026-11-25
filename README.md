@@ -27,8 +27,10 @@ Jarvis is pre-1.0 software; see [Status](#status).
   only, with no desktop notifications.
   Tell Jarvis to be quiet, in any words, and it stops without a word. Say the wake word while it speaks
   to stop it and ask something else.
-- **Spotify:** play a track, album, artist, playlist or your liked songs; pause, resume, next, previous; set or
-  change the volume; shuffle; repeat; queue songs; like the current song; say what is playing. When Spotify is
+- **Spotify:** play a track, album, artist, playlist or your liked songs; pause, resume, next, previous; jump
+  within a song or restart it; move playback to another device; set or change the volume; shuffle; repeat; queue
+  songs; like or unlike the current song, or add it to one of your playlists (after a yes); say what is playing,
+  what is queued next and which devices there are. When Spotify is
   closed, Jarvis says so and asks whether to open it, and where; it never opens a program unasked.
 - **Your PC:** ask how the PC is doing, in any words, for its CPU, graphics card, VRAM, memory,
   temperatures and disks. Jarvis can list and read your files (your home folder by default, hidden ones
@@ -40,6 +42,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
   program ([Stopping a program](docs/configuration.md#stopping-a-program)).
   A shell command you say can run too, only if you turn it on (`[shell]`, off by default) and only after
   your confirm key, with time and memory limits and no sudo ([`[shell]`](docs/configuration.md)).
+  It can read, set, turn up or down and mute the PC's own volume, and play, pause or skip a video or
+  another media player (`playerctl` needed), leaving Spotify to its own tools unless you mean everything.
 - **Omarchy questions:** Jarvis answers questions about Omarchy (settings, themes, key bindings, crashes,
   building an app) from the guides Omarchy ships in `/usr/share/omarchy/default/agents/skills/`. It reads
   them as reference text and never runs a command they contain.
@@ -53,7 +57,7 @@ Jarvis is pre-1.0 software; see [Status](#status).
   [the ADR](docs/adr/0011-reminders-and-scheduled-requests.md).
 - **About itself:** ask which model it runs, its version, its voice or how it is set up; it answers from its
   config and Strata's run config, and reads out its own config files, secrets hidden. It never changes them.
-- **Time and weather:** the time, or the weather now, later or in a named place, asked in any words.
+- **Time and weather:** the time, or the weather now, at an hour, later or in a named place, asked in any words.
   The time comes from this PC, for a city, a state or province, or a whole country. A country with several
   time zones (the United States, Russia, Australia) gets the time on each of its clocks. The weather comes
   from Open-Meteo, free and without an account. Set your home in [`[weather]`](docs/configuration.md).
@@ -69,12 +73,13 @@ Jarvis is pre-1.0 software; see [Status](#status).
   while it talks and it stops and listens to your new request. See
   [the ADR](docs/adr/0008-speak-while-writing-and-barge-in.md).
 
-Not built yet: switching workspaces, the PC's own volume and running Omarchy's commands. The plan marks each
+Not built yet: switching workspaces and running Omarchy's commands. The plan marks each
 as planned.
 
 ## Requirements
 
-- Omarchy on Arch Linux with PipeWire (`pw-record` and `pw-play`; `pw-dump` too for PC audio) and systemd user services.
+- Omarchy on Arch Linux with PipeWire (`pw-record` and `pw-play`; `pw-dump` too for PC audio; `wpctl` for the
+  PC's volume) and systemd user services. `playerctl` (`pacman -S playerctl`) for other media players, if wanted.
 - Voxtype as the dictation backend, with the speech model you set in `audio.transcribe_model` downloaded (a
   Whisper model by default; `audio.transcribe_engine` picks another). Voxtype's GPU build
   (`sudo voxtype setup gpu --enable`) transcribes in less than half the time and spares the CPU while a game
@@ -155,7 +160,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 
 Jarvis is pre-1.0 and has no tagged releases yet. It was built and measured on one machine (Omarchy, an RX
 7900 XT and 64 GB of RAM); other hardware is untested. The configuration file has one schema version and no
-migrations, so a later version may ask you to edit it. Some PC operations (workspaces, the PC's own volume)
+migrations, so a later version may ask you to edit it. Some PC operations (workspaces, Omarchy's commands)
 are not built; [docs/roadmap.md](docs/roadmap.md) lists what is planned and
 [docs/plan.md](docs/plan.md) says what is built. Changes are in [CHANGELOG.md](CHANGELOG.md).
 

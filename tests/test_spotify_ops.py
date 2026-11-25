@@ -133,7 +133,7 @@ class FakeSpotify:
             wanted = json.loads(request.content)["device_ids"]
             for device in self.devices:
                 device["is_active"] = device["id"] in wanted
-        if method in {"PUT", "POST"}:
+        if method in {"PUT", "POST", "DELETE"}:
             return httpx.Response(204)
         return self._read(path, request)
 
@@ -152,6 +152,7 @@ class FakeSpotify:
             "/me/following": {"artists": {"items": []}},
             "/me/player/recently-played": {"items": []},
             "/me/playlists": {"items": self.playlists},
+            "/me": {"id": "me"},
             "/me/player/queue": {"currently_playing": self.playing_item, "queue": self.queue_items},
         }
         if path == "/me/player":
@@ -1060,7 +1061,7 @@ def test_resuming_while_paused_with_a_refusal_keeps_the_error(tmp_path: Path) ->
     fake = FakeSpotify(state=playing_state(playing=False))
     fake.script("PUT", "/me/player/play", spotify_error(403, "UNKNOWN", "Restriction violated"))
 
-    with pytest.raises(SpotifyError, match="Restriction violated"):
+    with pytest.raises(SpotifyError, match="does not allow"):
         find_op(build_ops(fake, tmp_path), "spotify_resume").run({})
 
 
@@ -2217,7 +2218,29 @@ SHIPPED: list[tuple[str, str, bool, dict[str, Any]]] = [
         },
     ),
     ("spotify_pause", "safe", True, NO_ARGUMENTS),
-    ("spotify_resume", "safe", True, NO_ARGUMENTS),
+    (
+        "spotify_resume",
+        "safe",
+        True,
+        {
+            "additionalProperties": False,
+            "properties": {"device": {"maxLength": 60, "type": "string"}},
+            "type": "object",
+        },
+    ),
+    (
+        "spotify_seek",
+        "safe",
+        True,
+        {
+            "additionalProperties": False,
+            "properties": {
+                "by_s": {"maximum": 3600, "minimum": -3600, "type": "integer"},
+                "to_s": {"maximum": 21600, "minimum": 0, "type": "integer"},
+            },
+            "type": "object",
+        },
+    ),
     ("spotify_next", "safe", True, SKIP_ARGUMENTS),
     ("spotify_previous", "safe", True, SKIP_ARGUMENTS),
     (
@@ -2281,7 +2304,30 @@ SHIPPED: list[tuple[str, str, bool, dict[str, Any]]] = [
         },
     ),
     ("spotify_like", "safe", True, NO_ARGUMENTS),
-    ("spotify_now_playing", "safe", False, NO_ARGUMENTS),
+    (
+        "spotify_library",
+        "confirm",
+        True,
+        {
+            "additionalProperties": False,
+            "properties": {
+                "change": {"enum": ["unlike", "add_to_playlist"], "type": "string"},
+                "playlist": {"maxLength": 120, "type": "string"},
+            },
+            "required": ["change"],
+            "type": "object",
+        },
+    ),
+    (
+        "spotify_now_playing",
+        "safe",
+        False,
+        {
+            "additionalProperties": False,
+            "properties": {"more": {"type": "boolean"}},
+            "type": "object",
+        },
+    ),
 ]
 SUMMARIES: list[tuple[str, dict[str, Any], str]] = [
     ("spotify_play", {"kind": "track", "query": "Low Tide"}, "play the track Low Tide"),

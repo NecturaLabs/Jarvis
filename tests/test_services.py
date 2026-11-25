@@ -234,6 +234,25 @@ def test_the_profile_keeps_the_models_own_settings_and_sets_jarvis_limits(tmp_pa
     assert profile["cwd"] == str(tmp_path / "strata-home" / "terminal" / "current")
 
 
+def test_where_a_raised_effort_goes_is_the_models_own_unless_set(tmp_path: Path) -> None:
+    # "end" lets a raised effort reuse the pinned prompt; how well a model follows it there is
+    # its own to measure, so Jarvis writes it only when told.
+    assert "effort_position" not in services.strata_profile(_config(tmp_path))
+    profile = services.strata_profile(_config(tmp_path, effort_position="end"))
+    assert profile["effort_position"] == "end"
+
+
+def test_the_effort_position_strata_wrote_stays_unless_set(tmp_path: Path) -> None:
+    run = engine_run_config(tmp_path)
+    data = json.loads(run.read_text(encoding="utf-8"))
+    run.write_text(json.dumps({**data, "effort_position": "end"}), encoding="utf-8")
+
+    kept = _config(tmp_path, run_config=run, vram_reserve_mib=12000)
+    assert services.strata_profile(kept)["effort_position"] == "end"
+    started = _config(tmp_path, run_config=run, vram_reserve_mib=12000, effort_position="start")
+    assert services.strata_profile(started)["effort_position"] == "start"
+
+
 def test_an_engine_whose_cache_fills_the_card_is_held_back_by_the_reserve(tmp_path: Path) -> None:
     args = _args(services.strata_profile(_config(tmp_path, vram_reserve_mib=12000)))
 

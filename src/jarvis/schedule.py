@@ -28,13 +28,13 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from jarvis.files import write_atomic
 from jarvis.jsonutil import obj, objs
-from jarvis.operations import ArgumentError, Operation, OperationError, Result
+from jarvis.operations import ArgumentError, Operation, OperationError, Result, current_request
 from jarvis.policy import Origin
 from jarvis.secretfile import read_private
 from jarvis.web.ops import spoken_time
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
+    from collections.abc import Callable, Generator, Iterable
     from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -43,6 +43,8 @@ FILE_VERSION = 1
 MAX_JOBS = 50
 MAX_TEXT = 200
 MAX_IN_MINUTES = 7 * 24 * 60  # a week ahead
+MAX_IN_SECONDS = 3600  # past an hour, minutes say it
+_IN_SECONDS_UNDER = 120  # a one-off job due sooner than this is said in seconds
 MIN_EVERY_MINUTES = 5
 MAX_EVERY_MINUTES = 24 * 60
 LATE_S = 10 * 60.0  # later than this, a request or a repeating reminder is not done
@@ -66,6 +68,9 @@ class Job:
 
     `at` is the time of day ("07:30") it repeats at, `days` the weekdays (0 is Monday) for
     `weekdays`, `weekends` and `weekly`, and `every` the minutes between two of an `every` job.
+    `foreign` says the request that added it was heard in PC audio, and `outside` holds the
+    origins of the outside text that request had seen (`operations.Request`): a scheduled
+    request runs with both, so what could steer it then still counts when it is due.
     """
 
     id: int
@@ -76,6 +81,8 @@ class Job:
     days: tuple[int, ...]
     every: int
     next: float
+    foreign: bool = False
+    outside: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,19 +178,21 @@ class _When:
     clock: str
     day: str
     every: int
+    seconds: int | None = None
 
 
 def _when_of(args: dict[str, Any]) -> _When:
     """Return the time arguments of `schedule_add`.
 
     Raises:
-        ArgumentError: `at` is not a time of day, `day` not a day, or both `in_minutes` and `at`
-            are given.
+        ArgumentError: `at` is not a time of day, `day` not a day, or more than one of
+            `in_seconds`, `in_minutes` and `at` is given.
     """
     minutes = args.get("in_minutes")
+    seconds = args.get("in_seconds")
     clock = _clock_of(str(args["at"])) if args.get("at") else ""
-    if minutes is not None and clock:
-        msg = "give either in_minutes or at, not both"
+    if sum(given is not None for given in (minutes, seconds, clock or None)) > 1:
+        msg = "give one of in_seconds, in_minutes and at, not both"
         raise ArgumentError(msg)
     every = int(args.get("every_minutes") or 0)
     day = str(args.get("day", "")).strip().casefold()
@@ -192,7 +201,16 @@ def _when_of(args: dict[str, Any]) -> _When:
     if day and day not in {"today", "tomorrow", *DAY_NAMES}:
         msg = "day must be today, tomorrow or a weekday's name"
         raise ArgumentError(msg)
-    return _When(None if minutes is None else int(minutes), clock, day, every)
+    return _When(
+        None if minutes is None else int(minutes),
+        clock,
+        day,
+        every,
+        None if seconds is None else int(seconds),
+    )
+
+
+MAX_ORIGIN = 32  # characters of one outside origin a job keeps ("web", "file", "memory")
 
 
 def plan(args: dict[str, Any], now: float, ident: int) -> Job:
@@ -208,6 +226,11 @@ def plan(args: dict[str, Any], now: float, ident: int) -> Job:
     if (repeat == "every") != bool(when.every):
         msg = "repeat every goes with every_minutes, and every_minutes only with it"
         raise ArgumentError(msg)
+    if when.seconds is not None:
+        if repeat != "none":
+            msg = "in_seconds is for a one-off job; a repeating one takes in_minutes or at"
+            raise ArgumentError(msg)
+        return Job(ident, action, text, repeat, "", (), 0, now + float(when.seconds))
     if repeat == "every":
         first = now + 60.0 * (when.minutes if when.minutes is not None else when.every)
         if when.clock:
@@ -234,7 +257,7 @@ def _once_at(when: _When, now: float) -> float:
         ArgumentError: no time was given, or it has passed today.
     """
     if not when.clock:
-        msg = "say when: in_minutes, or at a time of day"
+        msg = "say when: in_seconds, in_minutes, or at a time of day"
         raise ArgumentError(msg)
     today = _local(now)
     if when.day == "today":
@@ -285,6 +308,9 @@ def spoken_when(job: Job, now: float, *, twelve_hour: bool) -> str:
     repeating = _repeating(job, now, clock)
     if repeating is not None:
         return repeating
+    seconds = round(job.next - now)
+    if 0 < seconds < _IN_SECONDS_UNDER:
+        return f"in {seconds} second{'' if seconds == 1 else 's'}"
     return _on_day(moment, now, clock)
 
 
@@ -356,9 +382,12 @@ class JobStore:
         with self._locked() as (_free, jobs):
             return sorted(jobs, key=lambda job: job.next)
 
-    def add(self, args: dict[str, Any]) -> Job:
+    def add(
+        self, args: dict[str, Any], *, foreign: bool = False, outside: Iterable[str] = ()
+    ) -> Job:
         """Add the job `schedule_add`'s arguments describe and return it.
 
+        `foreign` and `outside` are where the request that adds it came from (`Job`).
         `plan` raises `ArgumentError` when they do not describe a time to come.
 
         Raises:
@@ -368,7 +397,11 @@ class JobStore:
             if len(jobs) >= MAX_JOBS:
                 msg = f"there are {MAX_JOBS} reminders and scheduled requests already"
                 raise OperationError(msg)
-            job = plan(args, self._clock(), free)
+            job = replace(
+                plan(args, self._clock(), free),
+                foreign=foreign,
+                outside=_origins(list(outside)),
+            )
             self._write(free + 1, [*jobs, job])
             return job
 
@@ -450,7 +483,18 @@ def _job(item: dict[str, Any]) -> Job:
         days,
         every,
         float(item["next"]),
+        # A file from before jobs kept these reads as the owner's own request, as it ran then.
+        foreign=item.get("foreign") is True,
+        outside=_origins(item.get("outside")),
     )
+
+
+def _origins(value: object) -> tuple[str, ...]:
+    """Return the outside origins a job's entry holds: short texts, each once, sorted."""
+    if not isinstance(value, list):
+        return ()
+    texts = cast("list[object]", value)
+    return tuple(sorted({o for o in texts if isinstance(o, str) and 0 < len(o) <= MAX_ORIGIN}))
 
 
 _TEXT = {"type": "string", "minLength": 1, "maxLength": MAX_TEXT}
@@ -484,12 +528,20 @@ class ScheduleOps:
             OperationError: the arguments describe no time to come (the model is told why, to
                 fix them), or there are `MAX_JOBS` already.
         """
+        request = current_request()
         try:
-            job = self._store.add(args)
+            job = (
+                self._store.add(args)
+                if request is None
+                else self._store.add(args, foreign=request.foreign, outside=request.outside)
+            )
         except ArgumentError as exc:
             raise OperationError(str(exc)) from exc
         what = "remind you" if job.action == "remind" else "do that"
         sentence = f"Okay, I'll {what} {self._when(job)}."
+        if job.action == "do" and (job.foreign or job.outside):
+            # It runs as it was asked for: its actions will need a yes (ADR 0011).
+            sentence += " I'll check with you before it acts."
         if not self._voice_running():
             sentence += " Jarvis's voice service isn't running now; start it, or it won't be said."
         text = f"Added job {job.id} ({job.action}): {job.text!r}, {self._when(job)}."
@@ -542,12 +594,13 @@ class ScheduleOps:
             Operation(
                 "schedule_add",
                 "Set a reminder (remind: said then) or a request (do: done then). When:"
-                " in_minutes, or at HH:MM with day; repeat, every_minutes for every.",
+                " in_seconds or in_minutes, or at HH:MM with day; repeat, every_minutes for every.",
                 {
                     "type": "object",
                     "properties": {
                         "text": _TEXT,
                         "action": {"type": "string", "enum": list(ACTIONS)},
+                        "in_seconds": {"type": "integer", "minimum": 1, "maximum": MAX_IN_SECONDS},
                         "in_minutes": {"type": "integer", "minimum": 1, "maximum": MAX_IN_MINUTES},
                         "at": {"type": "string", "maxLength": 5},
                         "day": {"type": "string", "maxLength": 9},

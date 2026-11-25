@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from jarvis import espeak
 from jarvis.jsonutil import obj, objs
 from jarvis.operations import Operation, OperationError, Result, UncertainOutcomeError
-from jarvis.policy import Origin
+from jarvis.policy import OpClass, Origin
 from jarvis.shortcuts import Shortcut
 from jarvis.spotify.api import SAVED_PAGE, SpotifyApi, pick_device
 from jarvis.spotify.errors import NoDeviceError, SpotifyAuthError, SpotifyError, SpotifyLoginExpired
@@ -173,6 +173,45 @@ def best_match(
         return None
     score, item = max(scored, key=operator.itemgetter(0))
     return item if score >= threshold else None
+
+
+_NAME_LIKENESS = 0.7  # how alike a said device or playlist name must be to a real one
+_LEADING_ARTICLE = re.compile(r"^(?:the|my|our)\s+", re.IGNORECASE)
+MAX_SEEK_S = 6 * 3600  # the longest track or episode a position may point into
+_MS = 1000
+_UP_NEXT = 5  # queued songs named by now_playing(more=true)
+
+
+def _named[T](heard: str, items: list[T], name: Callable[[T], str]) -> T | None:
+    """Return the item whose name is most like `heard` ("the kitchen speaker"), if alike enough."""
+    said = _LEADING_ARTICLE.sub("", heard.strip())
+    scored = [(likeness(said, name(item)), item) for item in items]
+    if not scored:
+        return None
+    score, item = max(scored, key=operator.itemgetter(0))
+    return item if score >= _NAME_LIKENESS else None
+
+
+def _clock(seconds: int) -> str:
+    """Return a position as it is said: "1:35"."""
+    minutes, rest = divmod(seconds, 60)
+    return f"{minutes}:{rest:02d}"
+
+
+def _seek_question(args: dict[str, Any]) -> str:
+    if "by_s" in args:
+        by = int(args["by_s"])
+        return f"skip ahead {by} seconds" if by >= 0 else f"go back {-by} seconds"
+    to = int(args.get("to_s", 0))
+    return "restart this track" if to == 0 else f"jump to {_clock(to)} in this track"
+
+
+def _library_question(args: dict[str, Any]) -> str:
+    song = _spoken(args.get("name", "this track"))
+    if args.get("change") == "unlike":
+        return f"remove {song} from your Liked Songs"
+    playlist = _spoken(args.get("playlist_name") or args.get("playlist", "a playlist"))
+    return f"add {song} to your playlist {playlist}"
 
 
 def _base_title(name: str) -> str:
@@ -774,7 +813,21 @@ class SpotifyOps:
             f"Queued {len(queued)} of {asked} ({', '.join(queued)}), then {why}", Origin.SPOTIFY
         )
 
-    def now_playing(self, _args: dict[str, Any]) -> Result:
+    def now_playing(self, args: dict[str, Any]) -> Result:
+        """Describe what is playing; with `more`, also what is queued next and the devices."""
+        result = self._playing_now()
+        if not args.get("more"):
+            return result
+        queued = [_names(item) for item in self._api.queued()[:_UP_NEXT]]
+        devices = [
+            f"{device.name} (playing here)" if device.is_active else device.name
+            for device in self._api.devices()
+        ]
+        extra = f" Up next: {'; '.join(queued) or 'nothing queued'}."
+        extra += f" Devices: {', '.join(devices) or 'none'}."
+        return Result(result.text + extra, Origin.SPOTIFY, ok=result.ok, spoken=result.spoken)
+
+    def _playing_now(self) -> Result:
         """Describe what is playing."""
         state = self._api.player()
         current = _current(state)
@@ -825,6 +878,107 @@ class SpotifyOps:
             raise OperationError(msg)
         return {"uri": str(current.item["uri"]), "name": _names(current.item)}
 
+    def _prepare_seek(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Bind a seek to the exact position it goes to, inside what is playing now.
+
+        Raises:
+            OperationError: neither or both of `to_s` and `by_s`, or nothing is playing.
+        """
+        if ("to_s" in args) == ("by_s" in args):
+            msg = "give one of to_s (a second to jump to) or by_s (seconds forward or back)"
+            raise OperationError(msg)
+        state = self._api.player()
+        if not state or not obj(state.get("item")):
+            raise OperationError(NOTHING_PLAYING)
+        progress = int(state.get("progress_ms") or 0)
+        wanted = int(args["to_s"]) * _MS if "to_s" in args else progress + int(args["by_s"]) * _MS
+        duration = obj(state.get("item")).get("duration_ms")
+        last = duration - _MS if isinstance(duration, int) and duration > _MS else None
+        position = max(0, wanted if last is None else min(wanted, last))
+        return {**args, "position_ms": position}
+
+    def _seek(self, args: dict[str, Any]) -> Result:
+        """Jump to the position `prepare` bound in what is playing."""
+        plan = args if "position_ms" in args else self._prepare_seek(args)
+        position = int(plan["position_ms"])
+        done = Result(f"Moved to {_clock(position // _MS)}.", spoken="Done.")
+        return self._command("PUT", "/me/player/seek", done, position_ms=position)
+
+    def _prepare_resume(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Bind a named device to the one Spotify lists, so the yes is for that device.
+
+        Raises:
+            OperationError: no listed device is called anything like that (with the names there
+                are, which are Spotify's words).
+        """
+        said = str(args.get("device") or "").strip()
+        if not said:
+            return args
+        devices = self._api.devices()
+        found = _named(said, devices, lambda device: device.name)
+        if found is None:
+            names = ", ".join(_spoken(device.name) for device in devices) or "none"
+            msg = f"No Spotify device is called that. The devices there are: {names}."
+            raise OperationError(msg, origin=Origin.SPOTIFY)
+        return {**args, "device_id": found.id, "device_name": found.name}
+
+    def _resume_on(self, args: dict[str, Any]) -> Result:
+        """Move playback to the device `_prepare_resume` bound and play there."""
+        plan = args if "device_id" in args else self._prepare_resume(args)
+        self._api.transfer(str(plan["device_id"]), play=True)
+        name = _spoken(plan["device_name"])
+        return Result(f"Playing on {name}.", Origin.SPOTIFY, spoken=f"Playing on {name}.")
+
+    def _prepare_library(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Bind a library change to the song playing now and, to add it, the owner's playlist.
+
+        Only a playlist the owner made or may change (collaborative) is offered.
+
+        Raises:
+            OperationError: nothing that can be saved is playing, no playlist was named or none
+                of the owner's is called that, or the login was made before Jarvis asked
+                for changing playlists.
+        """
+        song = self._playing_song()
+        if args["change"] == "unlike":
+            return {**args, **song}
+        said = str(args.get("playlist") or "").strip()
+        if not said:
+            msg = "Say which playlist to add it to."
+            raise OperationError(msg)
+        if self._api.granted("playlist-modify-private", "playlist-modify-public") is False:
+            msg = (
+                "Spotify's login is from before Jarvis could change playlists; run "
+                "`jarvis spotify-login` once, then ask again."
+            )
+            raise OperationError(msg)
+        me = self._api.my_id()
+        mine = [
+            p
+            for p in self._api.my_playlists()
+            if p.get("collaborative") is True or obj(p.get("owner")).get("id") == me
+        ]
+        found = _named(said, mine, lambda p: str(p.get("name", "")))
+        if found is None:
+            names = ", ".join(_spoken(p.get("name", "")) for p in mine[:_NAMED_IN_REPLY]) or "none"
+            msg = f"None of your playlists is called that. Some you can add to: {names}."
+            raise OperationError(msg, origin=Origin.SPOTIFY)
+        return {**args, **song, "playlist_id": found["id"], "playlist_name": found.get("name", "")}
+
+    def _change_library(self, args: dict[str, Any]) -> Result:
+        """Make the library change `_prepare_library` bound."""
+        plan = args if args.get("uri") else self._prepare_library(args)
+        song = _spoken(plan["name"])
+        if plan["change"] == "unlike":
+            self._api.request("DELETE", "/me/library", params={"uris": plan["uri"]})
+            said = f"Removed {song} from your Liked Songs."
+        else:
+            self._api.request(
+                "POST", f"/playlists/{plan['playlist_id']}/items", json={"uris": [plan["uri"]]}
+            )
+            said = f"Added {song} to {_spoken(plan['playlist_name'])}."
+        return Result(said, Origin.SPOTIFY, spoken=said)
+
     def like(self, args: dict[str, Any]) -> Result:
         """Save a track to the owner's library: the one `prepare` bound, else the one playing."""
         song = args if args.get("uri") else self._playing_song()
@@ -869,12 +1023,16 @@ class SpotifyOps:
             "PUT", "/me/player/pause", Result("Paused.", spoken="Paused."), refusal_check="pause"
         )
 
-    def resume(self, _args: dict[str, Any]) -> Result:
+    def resume(self, args: dict[str, Any]) -> Result:
         """Resume playback, moving it to a listed player when none is active; never opens Spotify.
+
+        With a `device`, playback moves there and plays (`_prepare_resume` bound it).
 
         Raises:
             SpotifyError: Spotify refused for a reason other than "already playing".
         """
+        if args.get("device") or args.get("device_id"):
+            return self._resume_on(args)
         try:
             self._api.request("PUT", "/me/player/play")
         except NoDeviceError:
@@ -1038,11 +1196,42 @@ class SpotifyOps:
             ),
             Operation(
                 "spotify_resume",
-                "Resume playback.",
-                _NO_ARGS,
+                "Resume playback, or move it to another Spotify device by its name.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "device": {
+                            "type": "string",
+                            "maxLength": 60,
+                            "description": "The device to play on; leave out for where it is",
+                        }
+                    },
+                    "additionalProperties": False,
+                },
                 self.resume,
-                spoken_summary=lambda _a: "resume the music",
+                spoken_summary=lambda a: (
+                    f"move the music to {_spoken(a['device_name'])}"
+                    if a.get("device_name")
+                    else "resume the music"
+                ),
+                prepare=self._prepare_resume,
                 shortcuts=(_RESUME,),
+            ),
+            Operation(
+                "spotify_seek",
+                "Jump within what is playing: to a second (to_s; 0 restarts it), or forward or "
+                "back by seconds (by_s; negative goes back).",
+                {
+                    "type": "object",
+                    "properties": {
+                        "to_s": {"type": "integer", "minimum": 0, "maximum": MAX_SEEK_S},
+                        "by_s": {"type": "integer", "minimum": -3600, "maximum": 3600},
+                    },
+                    "additionalProperties": False,
+                },
+                self._seek,
+                spoken_summary=_seek_question,
+                prepare=self._prepare_seek,
             ),
             Operation(
                 "spotify_next",
@@ -1160,9 +1349,32 @@ class SpotifyOps:
                 shortcuts=(_LIKE,),
             ),
             Operation(
+                "spotify_library",
+                "Remove the song playing now from the owner's Liked Songs (unlike), or add it "
+                "to one of their playlists by name (add_to_playlist).",
+                {
+                    "type": "object",
+                    "properties": {
+                        "change": {"type": "string", "enum": ["unlike", "add_to_playlist"]},
+                        "playlist": {"type": "string", "maxLength": 120},
+                    },
+                    "required": ["change"],
+                    "additionalProperties": False,
+                },
+                self._change_library,
+                default_class=OpClass.CONFIRM,
+                spoken_summary=_library_question,
+                prepare=self._prepare_library,
+            ),
+            Operation(
                 "spotify_now_playing",
-                "Say what is playing, on which device, and the volume.",
-                _NO_ARGS,
+                "Say what is playing, on which device, and the volume; with more, also what is "
+                "queued next and the devices.",
+                {
+                    "type": "object",
+                    "properties": {"more": {"type": "boolean"}},
+                    "additionalProperties": False,
+                },
                 self.now_playing,
                 side_effect=False,
                 spoken_summary=lambda _a: "check what's playing",
