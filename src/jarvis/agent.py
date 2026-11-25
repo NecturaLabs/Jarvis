@@ -1535,6 +1535,12 @@ class Agent:
         admitted = [self._admitted(call, hooks, turn, taint=taint) for call in group]
         ready = {n: item for n, item in enumerate(admitted) if isinstance(item, _Ready)}
         caught: dict[int, _Caught] = {}
+        if ready and hooks.cancelled():  # stopped while a later call of the group was asked about
+            stopped = Result("Stopped: Jarvis is shutting down.", ok=False)
+            return [
+                item if isinstance(item, Result) else self._finished(item, stopped)
+                for item in admitted
+            ]
         if ready:
             workers = min(len(ready), MAX_SIDE_BY_SIDE)
             with ThreadPoolExecutor(workers, thread_name_prefix="jarvis-lookup") as pool:

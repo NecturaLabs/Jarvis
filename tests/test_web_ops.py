@@ -875,6 +875,15 @@ def test_only_a_call_that_carries_the_models_words_sends_them(
     assert op.sends_words(args) is sends
 
 
+def test_the_look_ups_that_may_run_side_by_side_are_the_read_only_ones(tmp_path: Path) -> None:
+    ops = _ops(Net(), shown=_shown(tmp_path)).operations()
+    side_by_side = {op.name for op in ops if op.concurrent}
+
+    # `show_image` puts a picture on the screen, one at a time, so it runs on its own.
+    assert side_by_side == {op.name for op in ops} - {"show_image"}
+    assert not any(op.side_effect for op in ops if op.concurrent)
+
+
 # --- pictures -------------------------------------------------------------------------------------
 
 

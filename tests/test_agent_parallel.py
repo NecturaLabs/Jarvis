@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from test_agent import Clock, ScriptedModel
 
-from jarvis.agent import Agent, Hooks
+from jarvis.agent import MAX_SIDE_BY_SIDE, Agent, Hooks, Limits
 from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
 from jarvis.operations import Operation, OperationError, Registry, Result, current_request
@@ -19,11 +19,16 @@ WAIT_S = 5.0
 
 
 def _agent(
-    model: ScriptedModel, ops: list[Operation], *, overrides: dict[str, str] | None = None
+    model: ScriptedModel,
+    ops: list[Operation],
+    *,
+    overrides: dict[str, str] | None = None,
+    limits: Limits | None = None,
 ) -> tuple[Agent, AuditLog]:
     audit = AuditLog(None)
     registry = Registry([*ops, no_action_operation()])
-    return Agent(model, registry, "system", audit, overrides or {}, clock=Clock()), audit
+    agent = Agent(model, registry, "system", audit, overrides or {}, clock=Clock(), limits=limits)
+    return agent, audit
 
 
 def _say(text: str) -> dict[str, Any]:
@@ -77,6 +82,7 @@ def _lookup(
     wait_for: threading.Event | None = None,
     then: threading.Event | None = None,
     error: str = "",
+    crash: bool = False,
     cls: OpClass = OpClass.SAFE,
 ) -> Operation:
     """A read-only look-up; `meet` makes it wait until the others reach it too."""
@@ -90,6 +96,8 @@ def _lookup(
                 assert wait_for.wait(WAIT_S)
             if error:
                 raise OperationError(error)
+            if crash:
+                raise RuntimeError("a bug in the look-up")
             return Result(f"{name} found {args.get('q', '')}", Origin.WEB)
         finally:
             board.leave(name)
@@ -270,7 +278,10 @@ def test_a_look_up_sees_the_request_it_runs_for() -> None:
     agent.handle("look both up", NO_CONFIRM)
 
     assert len(seen) == 2
-    assert all(request is not None for request in seen)
+    first, second = seen
+    assert first is not None
+    assert first is second  # the very request they run for, in each look-up's thread
+    assert getattr(first, "words", None) == "look both up"
 
 
 def test_an_operation_that_acts_cannot_claim_to_run_beside_others() -> None:
@@ -282,3 +293,106 @@ def test_an_operation_that_acts_cannot_claim_to_run_beside_others() -> None:
             lambda _a: Result(""),
             concurrent=True,
         )
+
+
+def test_no_more_look_ups_run_at_once_than_the_cap() -> None:
+    board = Board()
+    go = threading.Event()
+    names = [f"l{n}" for n in range(MAX_SIDE_BY_SIDE + 2)]
+    model = ScriptedModel([_message(*((n, {"q": n}) for n in names)), _say("Done.")])
+    agent, _ = _agent(model, [_lookup(board, n, wait_for=go) for n in names])
+
+    def release() -> None:
+        # Let them go only once the cap is reached and any look-up over it had time to start.
+        while board.running < MAX_SIDE_BY_SIDE:
+            threading.Event().wait(0.01)
+        threading.Event().wait(0.2)
+        go.set()
+
+    helper = threading.Thread(target=release, daemon=True)
+    helper.start()
+    agent.handle("look them all up", NO_CONFIRM)
+    helper.join(WAIT_S)
+
+    assert board.most == MAX_SIDE_BY_SIDE
+    assert len([line for line in board.log if line.startswith("end")]) == len(names)
+
+
+def test_a_look_up_that_crashes_is_reported_as_an_internal_error() -> None:
+    board = Board()
+    model = ScriptedModel([_message(("a", {"q": "1"}), ("b", {"q": "2"})), _say("Done.")])
+    agent, _ = _agent(model, [_lookup(board, "a", crash=True), _lookup(board, "b")])
+
+    agent.handle("look both up", NO_CONFIRM)
+
+    tools = _tool_messages(model)
+    assert tools[0]["content"] == "Failed: an internal error."
+    assert "b found 2" in tools[1]["content"]
+
+
+def test_a_group_over_the_cap_on_tool_calls_runs_only_what_fits() -> None:
+    board = Board()
+    model = ScriptedModel([_message(("a", {"q": "1"}), ("b", {"q": "2"})), _say("Done.")])
+    agent, _ = _agent(
+        model, [_lookup(board, "a"), _lookup(board, "b")], limits=Limits(max_tool_calls=1)
+    )
+
+    agent.handle("look both up", NO_CONFIRM)
+
+    assert "start a" in board.log
+    assert "start b" not in board.log
+    assert "too many actions" in _tool_messages(model)[1]["content"]
+
+
+def test_a_no_in_a_group_declines_the_later_questions_unasked() -> None:
+    board = Board()
+    asked: list[str] = []
+
+    def confirm(question: str) -> bool:
+        asked.append(question)
+        return False
+
+    model = ScriptedModel([_message(("a", {"q": "1"}), ("b", {"q": "2"})), _say("Done.")])
+    ops = [_lookup(board, "a", cls=OpClass.CONFIRM), _lookup(board, "b", cls=OpClass.CONFIRM)]
+    agent, _ = _agent(model, ops)
+
+    agent.handle("look both up", Hooks(confirm=confirm))
+
+    assert len(asked) == 1
+    assert board.log == []
+
+
+def test_a_look_up_repeated_from_an_earlier_message_is_not_run_again() -> None:
+    board = Board()
+    model = ScriptedModel(
+        [
+            _message(("a", {"q": "1"})),
+            _message(("a", {"q": "1"}), ("b", {"q": "2"})),
+            _say("Done."),
+        ]
+    )
+    agent, _ = _agent(model, [_lookup(board, "a"), _lookup(board, "b")])
+
+    agent.handle("look it up", NO_CONFIRM)
+
+    assert board.log.count("start a") == 1
+    assert "start b" in board.log
+
+
+def test_look_ups_approved_before_jarvis_stopped_do_not_run() -> None:
+    board = Board()
+    stopping = threading.Event()
+
+    def confirm(_question: str) -> bool:
+        stopping.set()  # Jarvis is told to stop while the second call is asked about
+        return True
+
+    model = ScriptedModel([_message(("a", {"q": "1"}), ("b", {"q": "2"})), _say("Done.")])
+    ops = [_lookup(board, "a"), _lookup(board, "b", cls=OpClass.CONFIRM)]
+    agent, audit = _agent(model, ops)
+
+    agent.handle("look both up", Hooks(confirm=confirm, cancelled=stopping.is_set))
+
+    assert board.log == []
+    results = [e for e in audit.events if e["event"] == "tool_result"]
+    assert [e["ok"] for e in results] == [False, False]

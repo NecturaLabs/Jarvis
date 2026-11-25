@@ -243,11 +243,12 @@ Threads in the `jarvis run` process:
 | `jarvis-azure-wake` | `AzureWake._read`: reads the Azure helper's `ready` and `wake` lines. Only with `audio.wake_engine = "azure"`. |
 | `jarvis-stopper` | Waits for SIGTERM or SIGINT, then stops the speaker, mic and PC capture. |
 | `jarvis-control-work` | `Controls`' slow work, off the request path: the model load at start and on resume (then one read of the prompt, `Agent.prime`), the unload after a pause, the check after a suspend. |
+| `jarvis-lookup-N` | The read-only look-ups of one model message, side by side (`ThreadPoolExecutor`, at most `MAX_SIDE_BY_SIDE`); they end with the request's step. |
 | `jarvis-speech-warm` | `FileWarmer`: reads the speech model's file into the file cache at start and at each wake word; ends once read. |
 | `jarvis-spotify-refresh` | Keeps the Spotify login and library fresh. |
 | Short-lived | A model prewarm on each wake, the chime, the "waking up" lines (`jarvis-waking` and a timer). |
 
-Every thread Jarvis starts itself (`threading.Thread` and the waiting-line timer) is a daemon thread, so
+Every `threading.Thread` Jarvis starts itself, and the waiting-line timer, is a daemon thread, so
 Python ends the process without waiting for any. That is deliberate (#32): Python's docs warn that a
 daemon thread may stop in the middle of its work. Most state files are replaced whole through
 `files.write_atomic` (the private ones too), so a thread cut off mid-write leaves the old file. Two
@@ -258,7 +259,9 @@ cut-off append can leave one partial last line. `cmd_run`'s `finally` closes the
 Voxtype watcher and the Azure helper explicitly. No lost write has been seen; make a thread
 non-daemon, stopped by an event, only if one is.
 
-The exception is `jarvis chat`: Textual's `run_worker(..., thread=True)` workers (the agent request,
+The look-up threads are not daemon threads either: the agent's thread waits for them within the step, each bounded by its own deadline, and Python joins any left at exit.
+
+The other exception is `jarvis chat`: Textual's `run_worker(..., thread=True)` workers (the agent request,
 status and stats reads, picture and paste handling) are not daemon threads, so the process waits for
 them when the window closes.
 

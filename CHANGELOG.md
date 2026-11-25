@@ -98,6 +98,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Look-ups approved in one message no longer run when Jarvis is stopped while a later one of them is asked about.
+- A request that used up its tool calls or its time now still says the answer the model gave on its last step,
+  instead of "That needed too many steps".
 - Clearer words: `pc_media` says "Nothing is playing." when no player plays, the Spotify device list marks
   the active device "(playing now)", and a reminder given two times says to give only one.
 - Speech remembers a reply that drew on outside text (a search, a page, a song name) as data, as the chat does,
