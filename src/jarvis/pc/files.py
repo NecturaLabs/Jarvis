@@ -52,11 +52,11 @@ from jarvis.operations import (
     cut_inert,
     inert_chars,
 )
-from jarvis.pc.workspace import workspace_path, workspace_problem
+from jarvis.pc.workspace import folder_problem, workspace_path, workspace_problem
 from jarvis.policy import OpClass, Origin
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
     from jarvis.config import FilesConfig
     from jarvis.pc.workspace import Ledger
@@ -218,10 +218,14 @@ def _printable(line: str) -> str:
     return text if len(text) <= PREVIEW_WIDTH else text[: PREVIEW_WIDTH - 1] + "\u2026"
 
 
-def _open_folder(folder: Path, *, create: int = 0) -> int:
+def _open_folder(
+    folder: Path, *, create: int = 0, vet: tuple[int, Callable[[int], None]] | None = None
+) -> int:
     """Open a resolved folder one name at a time from `/`, following no link on the way.
 
     The last `create` names may be missing; they are made (mode `FOLDER_MODE`) as they are met.
+    `vet` is a name's place on the way and a check to run on that folder as opened, which raises
+    to stop (the descriptor is then closed).
     What `os.open` and `os.mkdir` raise passes through: `FileNotFoundError` for a missing folder
     that may not be made, `ELOOP` for a link on the way and `ENOTDIR` for a name that is no folder.
     """
@@ -232,6 +236,12 @@ def _open_folder(folder: Path, *, create: int = 0) -> int:
             inner = _open_inner(fd, name, make=index >= len(names) - create)
         finally:
             os.close(fd)
+        if vet is not None and vet[0] == index:
+            try:
+                vet[1](inner)
+            except BaseException:
+                os.close(inner)
+                raise
         fd = inner
     return fd
 
@@ -815,21 +825,58 @@ class FileOps:
         with contextlib.suppress(OSError):
             self._made.record(path, os.stat(path.name, dir_fd=folder, follow_symlinks=False))
 
-    def _ready_workspace(self, path: Path, shown: str) -> None:
+    def _ready_workspace(self, path: Path, shown: str) -> tuple[int, Callable[[int], None]] | None:
         """Before a write into the workspace: judge the folder again, and make it if it is gone.
+
+        Returns the check to run on the workspace folder as `_open_folder` opens it, so the
+        folder written through is the one judged here, or None for a path outside it.
 
         Raises:
             FileRefusalError: the workspace is no longer a folder of the owner's alone, or cannot
                 be made.
         """
-        if not self._boundary.in_workspace(path) or self._boundary.workspace_given is None:
-            return
-        problem = self._boundary.workspace_trouble() or workspace_problem(
-            self._boundary.workspace_given, create=True
-        )
+        boundary, given = self._boundary, self._boundary.workspace_given
+        if not boundary.in_workspace(path) or given is None or boundary.workspace is None:
+            return None
+        problem = boundary.workspace_trouble() or workspace_problem(given, create=True)
+        judged = (0, 0)
+        if not problem:
+            try:
+                info = os.lstat(given)
+            except OSError as exc:
+                problem = f"cannot be read ({exc.strerror or exc})"
+            else:
+                judged = (info.st_dev, info.st_ino)
         if problem:
             msg = f"My workspace {problem}, so I didn't write {shown}."
             raise FileRefusalError(msg)
+
+        def vet(fd: int) -> None:
+            """Judge the workspace folder as opened: the one judged just now, still the owner's.
+
+            Raises:
+                FileRefusalError: it is another folder than the one judged, or no longer safe.
+            """
+            info = os.fstat(fd)
+            reason = (
+                "is not the folder it was a moment ago"
+                if (info.st_dev, info.st_ino) != judged
+                else folder_problem(info)
+            )
+            if reason:
+                msg = f"My workspace {reason}, so I didn't write {shown}."
+                raise FileRefusalError(msg)
+
+        return len(boundary.workspace.parts) - 2, vet
+
+    def _verifier(self, path: Path, changed: str) -> Callable[[os.stat_result], None]:
+        """Return the check that a file opened for a "made by Jarvis" write is still that file."""
+
+        def verify(info: os.stat_result) -> None:
+            if not self._ours(path, info):
+                raise FileRefusalError(changed)
+
+        return verify
 
     def write_summary(self, args: dict[str, Any]) -> str:
         """Return the confirmation question's words: how, which file, how much, what is made."""
@@ -879,7 +926,7 @@ class FileOps:
         changed = f"{shown} changed after you were asked, so I didn't write it."
         if again != path:
             raise FileRefusalError(changed)
-        self._ready_workspace(path, shown)
+        vet = self._ready_workspace(path, shown)
         content = str(args["content"])
         if not content.endswith("\n"):
             content += "\n"
@@ -888,7 +935,9 @@ class FileOps:
         # that appeared since is the owner's, and was never asked about.
         mode = "create" if claim == NEW_FILE else str(args.get("mode", "create"))
         try:
-            folder = _open_folder(path.parent, create=int(args.get("new_folders") or 0))
+            folder = _open_folder(path.parent, create=int(args.get("new_folders") or 0), vet=vet)
+        except FileRefusalError:
+            raise
         except OSError as exc:
             if exc.errno in _SWAPPED or isinstance(exc, FileNotFoundError):
                 raise FileRefusalError(changed) from exc
@@ -900,6 +949,7 @@ class FileOps:
             shown,
             single=path.is_relative_to(self._boundary.home),
             old=_named(args.get("old_size"), args.get("old_file")),
+            verify=self._verifier(path, changed) if claim == MADE_FILE else None,
         )
         try:
             ours = self._remembered(path, folder, claim)
@@ -1013,6 +1063,7 @@ class _Target:
     shown: str
     single: bool  # refuse a file with a second name on disk (under home)
     old: tuple[int, ...] | None  # for `replace`: the file the question named (`_state`), or none
+    verify: Callable[[os.stat_result], None] | None = None  # for the file as opened (a made one)
 
 
 def _identity(info: os.stat_result) -> list[int]:
@@ -1058,6 +1109,8 @@ def _write(target: _Target, data: bytes, mode: str) -> None:
     folder, name = target.folder, target.name
     if mode == "replace":
         old = _check_replaced(target)
+        if old is not None and target.verify is not None:
+            target.verify(old)
         carried = None if old is None else stat.S_IMODE(old.st_mode) & _CARRIED_MODE
         temp = f".{name}.{secrets.token_hex(6)}.tmp"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -1080,6 +1133,12 @@ def _write(target: _Target, data: bytes, mode: str) -> None:
         if not stat.S_ISREG(info.st_mode):
             msg = f"{target.shown} is not a regular file, so I don't write it."
         raise FileRefusalError(msg)
+    if mode == "append" and target.verify is not None:
+        try:  # the file as opened, not as looked at a moment ago, is what was judged
+            target.verify(info)
+        except FileRefusalError:
+            os.close(fd)
+            raise
     _fill(fd, data)
 
 

@@ -15,13 +15,21 @@ from jarvis.agent import Agent, Hooks, Limits
 from jarvis.app import files_boundary, no_action_operation, system_prompt
 from jarvis.audit import AuditLog
 from jarvis.config import DEFAULT_WORKSPACE, Config, ConfigError, FilesConfig, ShellConfig
-from jarvis.operations import UNASKED_ARG, Operation, Registry
+from jarvis.operations import (
+    UNASKED_ARG,
+    Operation,
+    OperationError,
+    Registry,
+    request_scope,
+)
+from jarvis.pc import files as files_module
 from jarvis.pc.files import MADE_FILE, NEW_FILE, Boundary, FileOps, FileRefusalError
 from jarvis.pc.shell import ShellOps
 from jarvis.pc.workspace import Ledger, workspace_path, workspace_problem
 from jarvis.policy import OpClass, Origin, Verdict, decide
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 
@@ -816,18 +824,55 @@ def test_the_facts_say_when_the_workspace_is_not_in_use(home: Path) -> None:
     assert "not in use" in said
 
 
-def test_a_shell_question_says_where_the_command_runs_and_a_missing_workspace_means_home(
-    home: Path,
-) -> None:
+def _shell(home: Path) -> tuple[ShellOps, Operation, Path]:
     folder = home / "Documents" / "Jarvis"
     ops = ShellOps(ShellConfig(enabled=True), home, max_chars=1000, workspace=folder)
-    op = Registry(ops.operations()).get("pc_shell") or pytest.fail("no pc_shell")
+    return ops, Registry(ops.operations()).get("pc_shell") or pytest.fail("no pc_shell"), folder
 
-    assert "in your home folder: " in op.spoken_summary({"command": "ls"})
-    assert f"--working-directory={home}" in ops.command_line("ls", "u")
+
+def _prepared(op: Operation) -> dict[str, Any]:
+    with request_scope(foreign=False, words="run ls"):
+        return (op.prepare or pytest.fail("no prepare"))({"command": "ls"})
+
+
+def test_a_shell_command_binds_its_start_folder_and_the_question_and_run_name_it(
+    home: Path,
+) -> None:
+    ops, op, folder = _shell(home)
+    assert _prepared(op)["start"] == str(home)
+    assert "in your home folder: " in op.spoken_summary(_prepared(op))
+
     folder.mkdir()
-    assert f"in {folder}: " in op.spoken_summary({"command": "ls"})
-    assert f"--working-directory={folder}" in ops.command_line("ls", "u")
+    bound = _prepared(op)
+
+    assert bound["start"] == str(folder)
+    assert "in ~/Documents/Jarvis: " in op.spoken_summary(bound)
+    assert f"--working-directory={folder}" in ops.command_line("ls", "u", folder)
+
+
+def test_a_workspace_that_is_a_link_is_not_a_place_to_start_a_command(home: Path) -> None:
+    ops, op, folder = _shell(home)
+    elsewhere = home / "elsewhere"
+    elsewhere.mkdir()
+    folder.symlink_to(elsewhere)
+
+    assert _prepared(op)["start"] == str(home)
+    assert f"--working-directory={home}" in ops.command_line("ls", "u")
+
+
+def test_a_shell_command_is_not_run_if_its_start_folder_changed_after_the_question(
+    home: Path,
+) -> None:
+    _unused, op, folder = _shell(home)
+    folder.mkdir()
+    bound = _prepared(op)
+    folder.rmdir()
+
+    with (
+        request_scope(foreign=False, words="run ls"),
+        pytest.raises(OperationError, match="changed"),
+    ):
+        op.run(bound)
 
 
 def test_a_file_changed_inside_a_coarse_change_time_tick_is_not_jarvis_s(home: Path) -> None:
@@ -854,3 +899,168 @@ def test_a_file_changed_inside_a_coarse_change_time_tick_is_not_jarvis_s(home: P
     assert not ledger.made(made, seen(st_mtime_ns=real.st_mtime_ns + 1))
     assert not ledger.made(made, seen(st_ino=real.st_ino + 1))
     assert not ledger.made(made, seen(st_ctime_ns=real.st_ctime_ns + 1))
+
+
+# --- second review: checks that every guard is exercised -----------------------------------------
+
+
+def test_a_workspace_moved_since_start_is_no_longer_judged_in_use(home: Path) -> None:
+    boundary = files_boundary(Config(), home)
+    assert not boundary.workspace_trouble()
+    (home / "Documents").rename(home / "Docs-real")
+    (home / "Documents").symlink_to(home / "Docs-real")
+
+    assert "not where it was" in boundary.workspace_trouble()
+
+
+def test_the_folders_above_a_workspace_are_judged_whether_it_exists_or_not(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    folder = shared / "Jarvis"
+    shared.chmod(0o777)
+
+    assert "folder above it" in workspace_problem(folder, create=False)  # missing
+    folder.mkdir(mode=0o700)
+    assert "folder above it" in workspace_problem(folder, create=False)  # existing
+    assert "folder above it" in workspace_problem(folder, create=True)
+    shared.chmod(0o755)
+    assert not workspace_problem(folder, create=False)
+
+
+def test_the_message_for_a_group_writable_folder_says_why_and_how_to_fix_it(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o775)  # a private group (umask 002) looks just like a shared one
+
+    said = workspace_problem(shared / "Jarvis", create=False)
+
+    assert f"chmod go-w {shared}" in said
+    assert "move the workspace away" in said
+    assert "group of only you" in said
+
+
+def test_a_folder_above_the_workspace_owned_by_another_user_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "Jarvis"
+    assert not workspace_problem(folder, create=False)
+    real = os.geteuid()
+    monkeypatch.setattr(os, "geteuid", lambda: real + 1)  # the folders above are now "theirs"
+
+    assert "belongs to another user" in workspace_problem(folder, create=False)
+
+
+def test_a_file_with_a_second_name_is_not_jarvis_s_even_if_nothing_else_changed(home: Path) -> None:
+    # A second name changes the change time too, so only the link count can tell on its own.
+    made = home / "a.md"
+    made.write_text("x\n", encoding="utf-8")
+    info = made.stat()
+    ledger = Ledger(home / "ledger.json")
+    ledger.record(made, info)
+    ops = _ops(home, made=ledger)
+
+    def seen(links: int) -> os.stat_result:
+        fields = {
+            name: getattr(info, name)
+            for name in ("st_mode", "st_dev", "st_ino", "st_ctime_ns", "st_mtime_ns", "st_size")
+        }
+        return cast("os.stat_result", SimpleNamespace(**fields, st_nlink=links))
+
+    assert ops._ours(made, seen(1))  # pyright: ignore[reportPrivateUsage] - the guard under test
+    assert not ops._ours(made, seen(2))  # pyright: ignore[reportPrivateUsage] - same
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {UNASKED_ARG: NEW_FILE},
+        {"made": True},
+        {"new_folders": 3},
+        {"old_size": 1},
+        {"old_file": [1, 2, 3]},
+    ],
+)
+def test_arguments_the_model_sends_that_are_only_for_jarvis_are_rejected(
+    home: Path, extra: dict[str, Any]
+) -> None:
+    call = _write("a.md")
+    call["tool_calls"][0]["function"]["arguments"] = json.dumps(
+        {"path": "a.md", "content": "x"} | extra
+    )
+    agent, audit = _agent(_ops(home), [call, DONE])
+
+    assert _asked(agent) == []
+
+    assert not (home / "Documents" / "Jarvis" / "a.md").exists()
+    assert any(e["event"] == "tool_rejected" and e["op"] == "write_file" for e in audit.events)
+
+
+def test_a_workspace_made_writable_between_judging_and_opening_is_refused(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = home / "Documents" / "Jarvis"
+    ops = _ops(home)
+    workspace.mkdir()
+    workspace.chmod(0o700)
+    bound = ops.bind_write({"path": "a.md", "content": "x"})
+    real = files_module._open_folder  # pyright: ignore[reportPrivateUsage] - the seam under test
+
+    def opened(
+        folder: Path, *, create: int = 0, vet: tuple[int, Callable[[int], None]] | None = None
+    ) -> int:
+        workspace.chmod(0o777)  # after the judging, before the folder is opened
+        return real(folder, create=create, vet=vet)
+
+    monkeypatch.setattr(files_module, "_open_folder", opened)
+
+    with pytest.raises(FileRefusalError, match="written by other users"):
+        _write_op(ops).run(bound)
+    assert not (workspace / "a.md").exists()
+
+
+def test_a_workspace_swapped_for_another_folder_between_judging_and_opening_is_refused(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = home / "Documents" / "Jarvis"
+    ops = _ops(home)
+    workspace.mkdir()
+    workspace.chmod(0o700)
+    bound = ops.bind_write({"path": "a.md", "content": "x"})
+    real = files_module._open_folder  # pyright: ignore[reportPrivateUsage] - the seam under test
+
+    def opened(
+        folder: Path, *, create: int = 0, vet: tuple[int, Callable[[int], None]] | None = None
+    ) -> int:
+        workspace.rename(home / "Documents" / "Jarvis-away")
+        workspace.mkdir(mode=0o700)  # another folder, as private as the first
+        return real(folder, create=create, vet=vet)
+
+    monkeypatch.setattr(files_module, "_open_folder", opened)
+
+    with pytest.raises(FileRefusalError, match="not the folder it was"):
+        _write_op(ops).run(bound)
+    assert not (workspace / "a.md").exists()
+
+
+def test_a_file_swapped_between_the_check_and_the_append_open_is_not_appended_to(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = home / "Documents" / "Jarvis"
+    ops = _ops(home, made=Ledger(home / "ledger.json"))
+    _run(ops, path="a.md", content="one")
+    bound = ops.bind_write(
+        {"path": "a.md", "content": "two", "mode": "append", UNASKED_ARG: MADE_FILE}
+    )
+    real = FileOps._remembered  # pyright: ignore[reportPrivateUsage] - the seam under test
+
+    def swapped(self: FileOps, path: Path, folder: int, claim: object) -> bool:
+        ours = real(self, path, folder, claim)  # judged: still Jarvis's file
+        (workspace / "a.md").unlink()  # then the owner puts their own under the name
+        (workspace / "a.md").write_text("the owner's own\n", encoding="utf-8")
+        return ours
+
+    monkeypatch.setattr(FileOps, "_remembered", swapped)
+
+    with pytest.raises(FileRefusalError, match="changed"):
+        _write_op(ops).run(bound)
+    assert (workspace / "a.md").read_text(encoding="utf-8") == "the owner's own\n"

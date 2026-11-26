@@ -47,7 +47,7 @@ def workspace_problem(path: Path, *, create: bool) -> str:
         return _made(path) if create else _parents(path)
     except OSError as exc:
         return f"cannot be read ({exc.strerror or exc})"
-    return _judged(info) or _parents(path)
+    return folder_problem(info) or _parents(path)
 
 
 def workspace_in_use(config: FilesConfig, home: Path) -> bool:
@@ -59,7 +59,9 @@ def _parents(path: Path) -> str:
     """Return why a folder above `path` lets someone else move or replace the workspace, or "".
 
     A folder that group or others may write to (without the sticky bit, which keeps others from
-    renaming what is not theirs) can have the workspace renamed away and another put in its place.
+    renaming what is not theirs), or one that belongs to another user who is not root, can have
+    the workspace renamed away and another put in its place. A group-writable folder is refused
+    even when you are the group's only member (a private group, umask 002): Jarvis cannot tell.
     Missing folders are skipped: they are made by this user. Links are followed first.
     """
     for folder in Path(os.path.realpath(path)).parents:
@@ -67,10 +69,17 @@ def _parents(path: Path) -> str:
             info = os.lstat(folder)
         except OSError:
             continue
+        if info.st_uid not in {0, os.geteuid()}:
+            return (
+                f"has a folder above it, {folder}, that belongs to another user, who could "
+                "move the workspace away and put another in its place"
+            )
         if info.st_mode & _OTHERS_WRITE and not info.st_mode & stat.S_ISVTX:
             return (
-                f"has a folder above it, {folder}, that other users can write to "
-                "(remove group and other write with chmod go-w)"
+                f"has a folder above it, {folder}, that group or other users can write to, so "
+                "they could move the workspace away and put another in its place. Fix it with "
+                f"`chmod go-w {folder}` (this holds for a group of only you too, which Jarvis "
+                "cannot tell from a shared one)"
             )
     return ""
 
@@ -80,12 +89,12 @@ def _made(path: Path) -> str:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.mkdir(mode=FOLDER_MODE, exist_ok=True)
-        return _judged(os.lstat(path)) or _parents(path)
+        return folder_problem(os.lstat(path)) or _parents(path)
     except OSError as exc:
         return f"cannot be made ({exc.strerror or exc})"
 
 
-def _judged(info: os.stat_result) -> str:
+def folder_problem(info: os.stat_result) -> str:
     """Return why a folder that exists, as `info` describes it, is not the owner's alone."""
     if stat.S_ISLNK(info.st_mode):
         return "is a link; point files.workspace at the folder itself"
