@@ -10,6 +10,7 @@ Every setting lives in one TOML file, validated when Jarvis reads it. This page 
 | Config file | `~/.config/jarvis/config.toml` (`$XDG_CONFIG_HOME/jarvis/`) | `jarvis setup`, `jarvis pc-audio`, or by hand |
 | Strata profile (generated) | `~/.config/jarvis/strata-profile.json` | `jarvis setup` |
 | Jarvis's own Voxtype settings (generated) | `~/.config/jarvis/voxtype.toml`, and `voxtype-speech-test.toml` for `jarvis speech-test` | `jarvis run`, at each start; `jarvis speech-test` |
+| Your own skills | `~/.config/jarvis/skills/<name>.md`, the folder and files yours alone ([ADR 0024](adr/0024-owner-skills.md)) | you, by hand; read at the next `jarvis restart` or chat window |
 | User units | `~/.config/systemd/user/jarvis.service` and `jarvis-strata.service` | `jarvis setup`, `jarvis update` |
 | Strata API key, Spotify tokens, audit log, action count, reminders and scheduled requests, Strata log | `~/.local/state/jarvis/` (`$XDG_STATE_HOME/jarvis/`): `strata.env`, `spotify-token.json`, `audit.jsonl` (and five older `audit.jsonl.1` to `.5`), `actions.json`, `schedule.json` (and its `schedule.json.lock`), `strata.log` | Jarvis; the key, token, log, count and jobs files are mode 0600 |
 | Wake, VAD and voice model files | `data_dir`; the installer sets it to `$XDG_STATE_HOME/jarvis/models` on a fresh install | `uv run tools/get_models.py` or [manual model setup](models.md) |
@@ -74,8 +75,8 @@ See [ADR 0019](adr/0019-install-and-update.md) for the release trust and rollbac
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
-| `base_url` | empty | empty, or an `http://` or `https://` URL on `127.0.0.1`, `localhost` or `::1`; no user name or password | Empty means `http://127.0.0.1:<strata.port>/v1`. |
-| `model` | `jarvis` | text | The model name sent in each request. |
+| `base_url` | empty | empty, or an `http://` or `https://` URL on `127.0.0.1`, `localhost` or `::1` | Local mode only. Empty means `http://127.0.0.1:<strata.port>/v1`. |
+| `model` | `jarvis` | text | The model name sent in each request. In remote mode it is the fallback when Strata's list gives no usable model ID. |
 | `request_timeout_s` | `120.0` | above 0, up to 600 | Longest one model call may wait; a request's first call waits 180 s more when the model must load first. A request also stops after `agent.max_seconds` (`chat.max_seconds` in the chat) in total. |
 | `temperature` | `0.2` | 0 to 2 | Sampling temperature. |
 
@@ -175,13 +176,19 @@ Ask the chat to show you something, in any words, and it searches for pictures a
 one in the window, through kitty's graphics protocol (Sixel in a Sixel terminal, coloured half cells
 elsewhere). It fetches only a picture that search offered, from a public address, and does not see it itself.
 
-## `[strata]`: how the `jarvis-strata` service runs the model
+## `[strata]`: where and how Strata runs
 
-These are written into the Strata profile and unit by `jarvis setup`. Strata serves only Jarvis and listens on
-`127.0.0.1`.
+In local mode `jarvis setup` writes the Strata profile and both user units. Strata serves only Jarvis
+and listens on `127.0.0.1`. Remote and backend setup are described below.
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
+| `mode` | `local` | `local`, `remote`, `backend` | Run both services here, run the voice client here, or serve the model here. Set with `jarvis setup --local`, `--remote URL` or `--backend`. |
+| `url` | empty | HTTP(S) base URL | Required in remote mode. Supply an origin or a prefix with an optional trailing `/v1`. Keep credentials, queries and fragments out of it. |
+| `allow_plain_http` | `false` | true or false | Allow HTTP to a private IP in remote mode. Loopback is allowed by default. `jarvis doctor` warns when the key and requests travel in cleartext beyond loopback. |
+| `tls_ca` | unset | path to a PEM file | Trust this CA or self-signed server certificate for an HTTPS endpoint. Jarvis checks the server name against its certificate. Without it, Jarvis uses its standard CA bundle. |
+| `remote_pictures` | `false` | true or false | Picture support in remote mode when the server does not advertise it. Enable only if its model can read pictures. |
+| `listen` | `127.0.0.1` | loopback or private IP | Backend bind address. Set with `--listen IP`. A wildcard address is refused. |
 | `home` | `~/.local/share/strata` | path | Strata's data folder (`STRATA_DATA_DIR`). `--strata-home`. |
 | `components_parent` | `~/.local/share` | path | The `XDG_DATA_HOME` Strata runs with. `--strata-components-parent`. |
 | `run_config` | unset | path | Strata's own run config for the model: the `strata-<model>.json` that `strata launch` writes in Strata's `install` folder. The model, its engine, its flags, its tokenizer, its name and its picture reader all come from it; Jarvis sets only the limits in this table. Once set, the Strata unit starts only if the model file it names exists, and `jarvis setup` refuses a run config naming a file that is gone (mount the drive, or run `strata launch` for the model again). A model whose drive is not mounted is still known by its path, so Jarvis says the file is missing at once and keeps pictures on for when it is back. A run config with its own `--host` or `--port` is refused: Jarvis serves on `127.0.0.1` at `port`. Unset, `jarvis setup` saves the config and stops there; `jarvis doctor` fails until it is set. `--run-config`. |
@@ -201,7 +208,73 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `pictures` | `true` | `true` or `false` | Read pictures with the reader the run config names: Strata's reader beside the main engine runs on the processor, in RAM and no VRAM, from the first picture until `vision_idle_s` without one; Inkling's engine reads them itself. `false` drops the reader. A run config without a reader reads no pictures either way. |
 | `vision_idle_s` | `120` | 10 to 86400 | Seconds without a picture before the picture reader stops. |
 
-Fixed by Jarvis, not configurable: lazy loading on, one request at a time, `127.0.0.1`, its own log and working folder. Everything else in the profile is the run config's.
+Jarvis sets lazy loading, one request at a time, and the log and working folder. Local mode binds to
+`127.0.0.1`. Backend mode can use Strata's own VRAM reserve default on a dedicated machine. Set
+`vram_reserve_mib` if other applications also need the GPU.
+
+### Model on another machine
+
+Use a machine you own on your network. Prepare the Strata model there with `strata launch` and stop
+that launch server before Jarvis takes over. Have Jarvis on both machines, SSH access to the backend,
+and the normal audio and Spotify prerequisites on the client.
+
+1. On the backend, substitute the run-config path and the SSH name or `user@host` that works from
+   the client:
+
+   ```sh
+   jarvis setup --backend --run-config /path/to/strata-model.json --ssh-target model-box --enable
+   ```
+
+2. On the client, run the command printed by setup. It forwards client loopback port `18080` to
+   Strata, reads the key from the backend over SSH and runs
+   `jarvis setup --remote http://127.0.0.1:18080 --enable`. If your checkout uses `uv run jarvis`, use
+   it in place of `jarvis` in the printed command. You can append `--spotify-client-id` if the client
+   still needs its ID.
+
+The SSH forward is a background `ssh -fNT` process: it ends at a reboot or logout and is not started
+again for you. When it is down, `jarvis doctor` says so and gives the command to start it again; run
+the printed SSH forwarding command (the part before `&&`), or the same `ssh -fNT -o
+ExitOnForwardFailure=yes -L 127.0.0.1:18080:<backend listen address>:<backend port> -- <ssh-target>`
+by hand. To keep it up across reboots, run it from a systemd user service of your own. Choose a
+different client port in both places in the printed command if `18080` is taken. Backend setup enables a user service under `default.target`, so a graphical
+session is unnecessary. A systemd user manager for that account must be running.
+
+For direct access, use `--listen IP` on the backend and an HTTPS proxy on that machine or network.
+The backend itself speaks plain HTTP: with `--listen` set to anything but loopback, its key and the
+conversations cross the network unencrypted. `jarvis setup --backend` and the backend's
+`jarvis doctor` warn about it; keep the default `127.0.0.1` with an SSH tunnel or put the HTTPS proxy
+in front.
+Run `jarvis setup --remote https://your-model-host --tls-ca /path/to/ca.pem --enable` on the client
+if the HTTPS endpoint uses your own CA or certificate. The file is the only trust Jarvis uses for that
+endpoint, and it must name the host. A self-signed server certificate works only if it can act as a
+CA (`basicConstraints=CA:TRUE`, with `keyCertSign`); otherwise make a small CA and sign the server
+certificate with it, and pass the CA's certificate. Omit `--tls-ca` for an endpoint that chains to the
+standard CA bundle. A WireGuard or Tailscale IP can use
+`jarvis setup --remote http://PRIVATE_IP:8080 --allow-plain-http --enable` if the network tunnel
+provides the encryption. Use the opt-in only on a link you trust. Public IP literals and non-loopback
+HTTP host names are refused. An HTTPS host name is looked up and refused unless every address it
+resolves to is loopback or private (`10/8`, `172.16/12`, `192.168/16`, `100.64/10` for Tailscale,
+`fc00::/7`); `jarvis setup --remote`, `jarvis doctor` and every connection make the check.
+
+For manual client setup, enter the backend key at the hidden terminal prompt or pipe it on stdin.
+Setup accepts the raw token, a `STRATA_API_KEY=…` line, or the backend's whole key file (the line
+can be anywhere in it, which is what the printed `cat` command sends). The backend key is in
+`$XDG_STATE_HOME/jarvis/strata-backend.env` and the client stores its copy in
+`$XDG_STATE_HOME/jarvis/strata-remote.json`, both mode 0600. The default state home is
+`~/.local/state`. A new endpoint needs a fresh `--remote URL` invocation to associate its key.
+Running `jarvis setup --enable` again keeps the existing endpoint and key.
+
+`jarvis doctor` and `jarvis status` show reachability, the model and HTTP probe time. A probe is one
+attempt of at most 3 seconds, and its answer, good or bad, is reused for 5 seconds, so a backend that
+is down delays a request once, not at every step. When `jarvis-strata.service` still runs on a
+client in remote mode, `doctor` says so and gives the command that frees its RAM and VRAM. The client reads
+the model ID and any context or picture capability advertised by `GET /v1/models` when the voice
+service or chat starts. Restart the voice service or reopen the chat after replacing the backend
+model. If the fields are absent, set `[model].model` (default `jarvis`), `[strata].context` (default
+24,576 tokens) and `[strata].remote_pictures` (default `false`) to match the backend. Jarvis sizes
+its conversation against that context. Run `start`, `stop`, `restart` and `unload` on the backend
+to manage the model service. Strata loads the model when a request needs it. Converting an all-local
+client leaves any existing Strata unit and its enablement in place.
 
 ### What the two units set
 
@@ -332,6 +405,10 @@ added to the prompt, and, when you set one, a model of its own.
   model's files too.
 - **Every switch is audited** (`mode_switched`: from, to, by the owner, the model or the idle time, the
   model's name, whether the server restarted, the seconds).
+
+With a remote backend, the same mode commands and tool change the local prompt, request limits,
+temperature and tool settings. Both modes use the backend's current model and context. Configure
+the served model on the backend.
 
 | Key | Default | What it does |
 |---|---|---|
@@ -640,8 +717,8 @@ than `idle_close_s`) does nothing; ask again and Jarvis opens the page anew.
 | `deny` | `[]` | shell-style patterns | More names (`diary*`), paths under home (`.config/app`, `~/Documents/private`) or absolute paths (`/data/finance`) never read or written, with what is inside them. A trailing slash or a leading `./` makes no difference. An entry that could never match (`..` in it, `~` alone, another user's `~name`) is refused when the config loads. |
 | `hidden_allow` | the desktop's settings: `.config/hypr`, `omarchy`, `waybar`, `walker`, `mako`, `swayosd`, `kitty`, `alacritty`, `ghostty`, `foot`, `btop`, `fastfetch`, `jarvis` | paths under home, shell-style | The hidden files and folders directly under home Jarvis may read (`.config/app` and the like). Everything else hidden there (shell history, app logins, cookies, caches) stays shut; `[]` shuts them all. A hidden folder deeper down (`~/Projects/site/.git`) is not shut by this; secret names still are. |
 
-Whatever the roots say, Jarvis never reads or writes keys, tokens, password stores, browser profiles
-and its own state: `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.netrc`, `.env` files, `*.pem`,
+Whatever the roots say, Jarvis never reads or writes keys, tokens, password stores, browser profiles,
+its own state and its own config folder (`~/.config/jarvis`, with your skills): `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.netrc`, `.env` files, `*.pem`,
 `*.key`, `id_rsa*` and the like, any name with `secret`, `password` or `credential` in it, shell
 history files and cookie stores, `~/.config/gh`, keyrings and browser profiles (the full lists are `SECRET_NAMES` and `SECRET_PATHS`
 in `src/jarvis/pc/files.py`). Paths are resolved through links first, so a link cannot lead out of a

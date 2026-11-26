@@ -23,8 +23,11 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
 
 ## Product rules (from the owner; they shape the code)
 
-- Jarvis's runtime loads no global agent instructions, skills, plugins or MCP servers. The only outside
-  knowledge it may read is the Omarchy OS skills in `/usr/share/omarchy/default/agents/skills/`.
+- Jarvis never uses the owner's coding-agent setup: it loads no global agent instructions, skills, plugins
+  or MCP servers, and calls none of their tools. Whatever Jarvis needs is written for Jarvis, in this
+  repository. It reads three kinds of instructions: its own shipped skills, the owner's own skills in Jarvis's config
+  folder (`~/.config/jarvis/skills/`, ADR 0024), and the Omarchy OS skills in
+  `/usr/share/omarchy/default/agents/skills/`.
 - One agent does all the work. Never add a subagent, delegation or second-agent tool to Jarvis.
 - Boundaries are enforced in code before any tool runs, never only in the prompt: typed operations,
   default deny, provenance on every message part, confirmation bound to one exact action, an audit log.
@@ -37,10 +40,10 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
   recording Jarvis did not start.
 - Strata serves only Jarvis. Its model lives outside the repository, named by Strata's own run config
   (`strata.run_config`); nothing model-specific is hardcoded in Jarvis. Health
-  checks never generate tokens. The model is loaded when `jarvis run` starts and stays loaded (the owner's
+  checks never generate tokens. The local model is loaded when `jarvis run` starts and stays loaded (the owner's
   choice): it may hold RAM and VRAM, but must use no GPU or CPU while idle, and Jarvis runs beside games.
-- Jarvis runs locally and is free to use and maintain: no hosted model backend, no paid API. Voice activation
-  and speech-to-text stay local too.
+- Jarvis runs locally and is free to use and maintain. Strata may run on the owner's own machine on
+  their network. No hosted model backend or paid API. Voice activation and speech-to-text stay local.
 - Jarvis replies by voice only; no desktop notifications.
 - Never hardcode spoken commands: the owner says whatever is on their mind, so the model decides what a
   request means. Add a typed tool with a clear description, never a new shortcut phrasing or keyword list.

@@ -168,6 +168,7 @@ class Controls:
         *,
         keys: _Key | None = None,
         prime: Callable[[], object] = lambda: None,
+        remote_status: Callable[[], dict[str, object]] | None = None,
         background: Callable[[Callable[[], object]], None] = _in_background,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -181,6 +182,7 @@ class Controls:
         super().__init__()
         self._keys = keys
         self._prime = prime
+        self._remote_status = remote_status
         self._loop = loop
         self._mic = mic
         self._model = model
@@ -213,6 +215,14 @@ class Controls:
                 return self._status()
 
     def _status(self) -> dict[str, Any]:
+        if self._remote_status is not None:
+            report = self._remote_status()
+            state = str(report["model"]) if report["model_reachable"] else None
+            paused = self._mic.paused
+            return report | {
+                "state": public_state(str(self._loop.state), paused=paused, model=state),
+                "paused": paused,
+            }
         model = self._model.status()
         paused = self._mic.paused
         return {
@@ -230,7 +240,7 @@ class Controls:
             self._pauses += changed
             pause = self._pauses
         self._audit.record("control", command="pause", changed=changed)
-        if changed:
+        if changed and self._remote_status is None:
             self._background(lambda: self._unload_when_idle(pause))
         return {"paused": True, "changed": changed}
 
@@ -248,6 +258,8 @@ class Controls:
 
     def warm_at_start(self) -> None:
         """Load the model in the background as the service starts, taking turns with a pause."""
+        if self._remote_status is not None:
+            return
         with self._commands:
             resume = self._pauses
         self._background(lambda: self._warm(resume))
@@ -258,6 +270,8 @@ class Controls:
         Called on its own thread; it takes turns with a pause's unload, so a pause that comes
         meanwhile still frees the model once the load is over.
         """
+        if self._remote_status is not None:
+            return
         with self._commands:
             resume = self._pauses
         with self._model_turn:
@@ -271,6 +285,8 @@ class Controls:
         and so does a paused one. Called on the voice loop's thread; the check runs in the
         background.
         """
+        if self._remote_status is not None:
+            return
         with self._commands:
             resume = self._pauses
         self._background(lambda: self._recheck(resume))
@@ -298,7 +314,7 @@ class Controls:
             self._pauses += changed  # a pause's unload still waiting is now stale
             resume = self._pauses
         self._audit.record("control", command="resume", changed=changed)
-        if changed:
+        if changed and self._remote_status is None:
             self._background(lambda: self._warm(resume))
         return {"paused": False, "changed": changed}
 

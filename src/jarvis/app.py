@@ -7,7 +7,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from jarvis import __version__, calc, modes, osskills, paths, skills
+from jarvis import __version__, calc, modes, osskills, paths, services, skills
 from jarvis.about import AboutOps
 from jarvis.agent import SWITCH_MODEL, Agent, Limits, Setup
 from jarvis.audit import AuditLog
@@ -22,7 +22,8 @@ from jarvis.operations import (
     UncertainOutcomeError,
     current_request,
 )
-from jarvis.paths import audit_file, spotify_token_file, strata_key_file  # re-exported for callers
+from jarvis.paths import audit_file, spotify_token_file
+from jarvis.paths import strata_key_file as strata_key_file  # ruff: ignore[useless-import-alias] - re-export
 from jarvis.pc.apps import AppOps
 from jarvis.pc.files import Boundary, FileOps
 from jarvis.pc.hearing import HearingOps, Listening
@@ -37,7 +38,6 @@ from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
 from jarvis.schedule import JobStore, ScheduleOps
-from jarvis.secretfile import read_api_key
 from jarvis.services import StrataSetupError, read_run_config, reads_pictures
 from jarvis.sing.engines import singer_for
 from jarvis.sing.ops import SingOps
@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from jarvis.config import ChatConfig, Config
+    from jarvis.model import ModelStatus
 
 
 MAX_REPLY_CHARS = 4000
@@ -140,9 +141,10 @@ def switch_operation(config: Config, *, coding: bool) -> Operation:
     """
     to: modes.Mode = "normal" if coding else "coding"
     if coding:
+        back_to = "usual settings" if config.strata.mode == "remote" else "usual model"
         about = (
             "Call this alone when the owner says the programming work is over or asks for the "
-            "usual model back, however they put it. Jarvis leaves coding mode and you answer "
+            f"{back_to} back, however they put it. Jarvis leaves coding mode and you answer "
             "again there. Never while programming work is still asked for."
         )
     else:
@@ -153,6 +155,8 @@ def switch_operation(config: Config, *, coding: bool) -> Operation:
             f"coding mode ({modes.model_name(config, 'coding')}, more room to think and write) "
             "and you work the request out again there. Never for anything else."
         )
+    if config.strata.mode == "remote":
+        about += " This changes Jarvis's settings. Strata continues serving the same model."
     return Operation(
         "switch_model",  # the agent's SWITCH_MODEL
         about,
@@ -200,6 +204,8 @@ def no_action_operation(max_reply_chars: int = MAX_REPLY_CHARS) -> Operation:
 
 def _served_model(config: Config) -> str:
     """Return which model Strata serves, from its run config, as the prompt says it."""
+    if config.strata.mode == "remote":
+        return "a model on the owner's network"
     try:
         name = read_run_config(config).name
     except StrataSetupError:
@@ -220,7 +226,7 @@ def system_prompt(config: Config, channel: Channel = "voice", *, coding: bool = 
     style = prompts.joinpath(f"{channel}.md").read_text(encoding="utf-8")
     words = int(round(config.chat.reply_tokens * WORDS_PER_TOKEN, -1))
     fill = {
-        "skills": skills.prompt_section(skills.shipped())
+        "skills": skills.prompt_section(skills.available())
         + osskills.prompt_section(osskills.catalog()),
         "name": config.persona.name,
         "version": __version__,
@@ -319,6 +325,7 @@ class Jarvis:
     hint: Callable[[], str]
     switcher: modes.Switcher | None = None
     modes: AgentModes | None = None  # the chat tells it when its settings change (`restyle`)
+    pictures: bool = False
 
 
 class AgentModes:
@@ -453,8 +460,14 @@ def browser_ops(  # ruff: ignore[too-many-arguments] - what the browser is made 
 
 
 def files_boundary(config: Config, home: Path | None = None) -> Boundary:
-    """Return where the file operations may read and write; Jarvis's own state is never in it."""
-    return Boundary.of(config.files, home or Path.home(), protected=(paths.state_dir(),))
+    """Return where the file operations may read and write.
+
+    Jarvis's own state and config folders are never in it: its settings and the owner's skills
+    there steer Jarvis, so no request may rewrite them through a file operation.
+    """
+    return Boundary.of(
+        config.files, home or Path.home(), protected=(paths.state_dir(), paths.config_dir())
+    )
 
 
 def _wpctl(args: Sequence[str]) -> str:
@@ -614,7 +627,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     web = config.model_copy(
         update={"research": config.research.model_copy(update={"page_chars": pages})}
     )
-    shipped = skills.shipped()
+    shipped = skills.available()
     guides = osskills.catalog()
     shown = chat_pictures() if channel == "chat" else None
     online = web_ops(web, shown)
@@ -753,12 +766,20 @@ def action_rate(config: Config) -> ActionRate:
 
 def strata_model(config: Config, key: str) -> StrataModel:
     """Return the client for this config's Strata server, knowing its model file when set."""
+    endpoint = config.model.model_copy(update={"base_url": config.model_base_url()})
+    if config.strata.mode == "remote":
+        return StrataModel(
+            endpoint,
+            key,
+            remote=True,
+            tls_ca=config.strata.tls_ca if config.strata.tls_ca != Path() else None,
+        )
     try:
         model_file = read_run_config(config).model
     except StrataSetupError:  # no usable run config: the server cannot start, `doctor` says why
         model_file = Path()
     return StrataModel(
-        config.model.model_copy(update={"base_url": config.model_base_url()}),
+        endpoint,
         key,
         model_file=model_file if model_file != Path() else None,
     )
@@ -770,10 +791,69 @@ def mode_model(config: Config, key: str) -> StrataModel:
     It talks to the server as the normal mode sets it, and knows the model file of the mode
     Jarvis is in now: a missing file is named rightly in coding mode too.
     """
+    if config.strata.mode == "remote":
+        return strata_model(config, key)
     files = {
         mode: strata_model(modes.effective(config, mode), key).model_file for mode in modes.MODES
     }
     return replace(strata_model(config, key), file_of=lambda: files[modes.current()])
+
+
+def with_remote_metadata(config: Config, status: ModelStatus) -> Config:
+    """Apply advertised capabilities in memory. Missing fields keep the client's settings."""
+    strata: dict[str, object] = {}
+    if status.context is not None:
+        strata["context"] = status.context
+    if status.pictures is not None:
+        strata["remote_pictures"] = status.pictures
+    return config.model_copy(
+        update={
+            "strata": config.strata.model_copy(update=strata),
+            "model": config.model.model_copy(update={"model": status.name or config.model.model}),
+        }
+    )
+
+
+def _agent_model(config: Config) -> tuple[Config, str, StrataModel]:
+    key_file = services.key_file(config)
+    try:
+        key = services.read_key(config)
+    except OSError, ValueError:
+        msg = f"cannot read the Strata API key at {key_file}; check the private key file"
+        raise SetupError(msg) from None
+    if not key:
+        setup_command = (
+            "jarvis setup --remote <url>" if config.strata.mode == "remote" else "jarvis setup"
+        )
+        msg = f"no Strata API key at {key_file}; run `{setup_command}`"
+        raise SetupError(msg)
+    model = mode_model(config, key)
+    if model.remote:
+        config = with_remote_metadata(config, model.probe())
+        model = replace(model, config=model.config.model_copy(update={"model": config.model.model}))
+    return config, key, model
+
+
+def _check_overrides(config: Config, operations: list[Operation]) -> None:
+    if unknown := unknown_overrides(config, operations):
+        msg = (
+            f"boundaries.classes names no operation: {', '.join(unknown)}; "
+            "fix the name or remove it"
+        )
+        raise SetupError(msg)
+    if low := overrides_below_floor(config, operations):
+        allowed = "; ".join(
+            f"{name} takes only {' or '.join(f'"{c}"' for c in classes)}"
+            for name, classes in low.items()
+        )
+        msg = f"boundaries.classes sets {', '.join(low)} below what it allows; {allowed}"
+        raise SetupError(msg)
+    if core := sorted(switched_off(config) & ALWAYS_OFFERED):
+        msg = (
+            f"boundaries.classes switches off {', '.join(core)}, which is how Jarvis answers, "
+            "not a tool; remove it"
+        )
+        raise SetupError(msg)
 
 
 def build(
@@ -800,36 +880,17 @@ def build(
             `boundaries.classes` names an operation that does not exist (a typo would otherwise
             leave it at its default class) or sets one below its lowest class.
     """
-    key = read_api_key(strata_key_file())
-    if not key:
-        msg = f"no Strata API key at {strata_key_file()}; run `jarvis setup`"
+    if config.strata.mode == "backend":
+        msg = "backend mode only serves the model. Run this command on the Jarvis client."
         raise SetupError(msg)
-    model = mode_model(config, key)
+    config, key, model = _agent_model(config)
     ops = _spotify_ops(config)
     available = ops.operations()
     tags = {"via": via} if via else {}
     if session:
         tags["session"] = session
     audit = AuditLog(audit_file(), tags=tags or None)
-    if unknown := unknown_overrides(config, available):
-        msg = (
-            f"boundaries.classes names no operation: {', '.join(unknown)}; "
-            "fix the name or remove it"
-        )
-        raise SetupError(msg)
-    if low := overrides_below_floor(config, available):
-        allowed = "; ".join(
-            f"{name} takes only {' or '.join(f'"{c}"' for c in classes)}"
-            for name, classes in low.items()
-        )
-        msg = f"boundaries.classes sets {', '.join(low)} below what it allows; {allowed}"
-        raise SetupError(msg)
-    if core := sorted(switched_off(config) & ALWAYS_OFFERED):
-        msg = (
-            f"boundaries.classes switches off {', '.join(core)}, which is how Jarvis answers, "
-            "not a tool; remove it"
-        )
-        raise SetupError(msg)
+    _check_overrides(config, available)
     channel: Channel = "chat" if via in WRITTEN else "voice"
     elsewhere = via in {*WRITTEN, "ask"}  # the voice service says reminders; is one running?
 
@@ -904,4 +965,5 @@ def build(
         ),
         switcher,
         agent_modes,
+        normal.pictures,
     )

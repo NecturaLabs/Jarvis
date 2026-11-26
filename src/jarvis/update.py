@@ -343,9 +343,15 @@ _ERROR = (UpdateError, config.ConfigError, OSError)
 class Apply:
     """Keep enough state to restore the prior checkout, files and services on failure."""
 
-    def __init__(self, checkout: Checkout, before: str, target: str) -> None:
-        """Capture the current revision, generated files and running services."""
+    def __init__(
+        self, checkout: Checkout, before: str, target: str, *, remote: bool = False
+    ) -> None:
+        """Capture the current revision, generated files and running services.
+
+        `remote` is a client of a model server on another machine: it waits for none here.
+        """
         super().__init__()
+        self.remote = remote
         self.checkout = checkout
         self.before = before
         self.target = target
@@ -402,7 +408,10 @@ class Apply:
     def _ensure_ready(self) -> None:
         ready = [
             name
-            for name, on in (("strata", self.strata or self.voice), ("voice", self.voice))
+            for name, on in (
+                ("strata", not self.remote and (self.strata or self.voice)),
+                ("voice", self.voice),
+            )
             if on
         ]
         if ready:
@@ -460,7 +469,9 @@ class Apply:
         self._ensure_ready()
 
 
-def _apply(checkout: Checkout, before: str, target: str, audit: AuditLog) -> int:
+def _apply(
+    checkout: Checkout, before: str, target: str, audit: AuditLog, *, remote: bool = False
+) -> int:
     with modes.locked(), modes.nobody_answering() as free, modes.voice_idle() as idle:
         if not free or not idle:
             msg = "Jarvis is handling a request; try the update again when it is idle"
@@ -468,7 +479,7 @@ def _apply(checkout: Checkout, before: str, target: str, audit: AuditLog) -> int
         if Checkout.installed(checkout.branch) != checkout or checkout.clean_head() != before:
             msg = "the checkout changed while fetching; run the update check again"
             raise UpdateError(msg)
-        action = Apply(checkout, before, target)
+        action = Apply(checkout, before, target, remote=remote)
         try:
             action.apply()
         except (*_ERROR, KeyboardInterrupt) as exc:
@@ -575,7 +586,7 @@ def _command(args: Namespace, audit: AuditLog) -> int:
         print(_read_git(checkout.root, "log", "--oneline", f"{before}..{target}"))
         print(_read_git(checkout.root, "diff", "--stat", before, target))
     if args.apply:
-        return _apply(checkout, before, target, audit)
+        return _apply(checkout, before, target, audit, remote=cfg.strata.mode == "remote")
     audit.record("update", result="available", before=before, target=target)
     return 0
 

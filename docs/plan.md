@@ -43,10 +43,12 @@ behind the same speech setting, as the Piper-licence risk below asked.
 
 - Always running; wakes on "Hey Jarvis" (bare "Jarvis" later, optional).
 - Transcription through Omarchy's local dictation (Voxtype, the configured default), not the API backend.
-- Reasoning by the local model on Strata. Strata serves only Jarvis.
+- Reasoning by Strata, on this PC by default or on the owner's own machine on their network
+  ([ADR 0020](adr/0020-model-on-another-machine.md)). Strata serves only Jarvis.
 - First-time configuration sets boundaries, tone/persona and the core instructions (what Jarvis is).
 - Researches online and operates this PC.
-- No global instructions, skills or plugins except the Omarchy OS skills; no subagents: one main agent.
+- No global instructions, skills or plugins: only Jarvis's own skills, the owner's skills in Jarvis's config
+  folder ([ADR 0024](adr/0024-owner-skills.md)) and the Omarchy OS skills; no subagents: one main agent.
 - First core feature: Spotify control (needs Spotify Premium). v1 is Spotify management by voice only; PC operations
   and research come after it works.
 - Light on the PC so gaming stays decent at any time: no GPU or CPU use while idle and no heavy CPU use between

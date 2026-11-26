@@ -45,6 +45,12 @@ _DETAIL = {
 
 def jarvis_files(config: Config) -> dict[str, Path]:
     """Return Jarvis's own configuration files by the names `read_jarvis_file` takes."""
+    if config.strata.mode == "remote":
+        return {
+            "config": paths.config_file(),
+            "voxtype": paths.config_dir() / "voxtype.toml",
+            "voice_unit": services.unit_dir() / services.JARVIS_UNIT,
+        }
     return {
         "config": paths.config_file(),
         "strata_run_config": config.strata.run_config,
@@ -110,6 +116,16 @@ def _yes(value: object) -> str:
 
 
 def _model_lines(config: Config) -> list[str]:
+    if config.strata.mode == "remote":
+        reader = (
+            "with picture support" if config.strata.remote_pictures else "without picture support"
+        )
+        return [
+            (
+                f"Model: {config.model.model}, served by Strata on the owner's network, "
+                f"context {config.strata.context} tokens, {reader}."
+            )
+        ]
     try:
         run = services.read_run_config(config)
     except services.StrataSetupError as exc:
@@ -136,10 +152,15 @@ def facts(config: Config, channel: str, limits: Limits) -> str:
     replies = "spoken" if channel == "voice" else "written"
     engine = f", engine {audio.transcribe_engine}" if audio.transcribe_engine else ""
     asking = "off (bypass_consent)" if bounds.bypass_consent else "on"
+    where = (
+        "one agent on this PC, no hosted model"
+        if config.strata.mode == "remote"
+        else "running only on this PC; one agent, no hosted model"
+    )
     lines = [
         (
             f"Name: {config.persona.name}. Program: Jarvis {__version__}, free software under"
-            " GPL-3.0-or-later, running only on this PC; one agent, no hosted model."
+            f" GPL-3.0-or-later, {where}."
         ),
         f"This conversation: the {channel}; replies are {replies}.",
         *_model_lines(config),

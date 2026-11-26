@@ -17,6 +17,18 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   announcement, the control socket streams them to a subscriber (`subscribe`), and `jarvis acp` writes each as
   `Jarvis: <line>` into every session's next reply, since T3 Code shows nothing that arrives between requests.
   Still no desktop notifications.
+- Your own skills: Markdown files in `~/.config/jarvis/skills/` are listed in the prompt and read with
+  `read_skill` like the shipped ones. A file is read only when it and its folder are yours alone, it is no
+  link, and it fits the size limits. `jarvis doctor` names any file it left out. Jarvis's file operations
+  never read or write its config folder. Jarvis never uses your coding agents' setup ([ADR 0024](docs/adr/0024-owner-skills.md)).
+- Serve the model from another machine you own with `jarvis setup --backend` and
+  `jarvis setup --remote`. The client keeps speech, tools and policy on the PC it controls.
+  The default remains all-local. Remote `doctor` and `status` show the model and connection
+  latency. A remote probe is one short attempt reused for a few seconds, so a backend that is down
+  delays a request once; an HTTPS name must resolve only to private addresses; the doctor warns about
+  a LAN-facing backend, a tunnel that ended at reboot and a leftover local Strata; an update does not
+  wait for a Strata that is on the other machine. See
+  [ADR 0020](docs/adr/0020-model-on-another-machine.md).
 - Install Jarvis with `install.sh` from a terminal or checkout. It checks prerequisites, uses the
   locked environment, fetches the default wake word, VAD and Kokoro files with SHA-256 verification
   (`tools/get_models.py`, which you can also run yourself),

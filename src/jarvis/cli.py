@@ -10,18 +10,32 @@ import os
 import random
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
+import termios
 import threading
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 from urllib.parse import urlsplit
 
-from jarvis import __version__, acp, cliout, config, control, models, modes, paths, services, update
+from jarvis import (
+    __version__,
+    acp,
+    cliout,
+    config,
+    control,
+    models,
+    modes,
+    paths,
+    services,
+    skills,
+    update,
+)
 from jarvis.activity import AuditTail
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.app import (
@@ -34,6 +48,7 @@ from jarvis.app import (
     strata_model,
     system_prompt,
     voice_busy,
+    with_remote_metadata,
 )
 from jarvis.audit import AuditLog
 from jarvis.chat import clipboard
@@ -41,13 +56,20 @@ from jarvis.chat.archive import ChatArchive
 from jarvis.chat.history import InputHistory
 from jarvis.confirmkey import ConfirmKey
 from jarvis.files import write_atomic
+from jarvis.model import NOT_PRIVATE, ModelStatus, tls_context
 from jarvis.operations import OperationError
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.pc.hearing import Listening, PcHearing
 from jarvis.pc.screenshot import folders as screenshot_folders
 from jarvis.policy import OpClass, is_yes
 from jarvis.schedule import JobStore
-from jarvis.secretfile import ensure_api_key, read_api_key, read_private
+from jarvis.secretfile import (
+    MAX_KEY_INPUT,
+    ensure_api_key,
+    read_api_key,
+    read_private,
+    remote_key_input,
+)
 from jarvis.services import JARVIS_UNIT, STRATA_UNIT, parse_systemd_time, reads_pictures
 from jarvis.spotify.auth import SCOPES, SpotifyAuthError, TokenStore, login, redirect_uri
 from jarvis.sysinfo import Sampler
@@ -77,6 +99,8 @@ AZURE_PYTHON = "azure-wake/venv/bin/python"
 AZURE_CHECK_S = 30.0
 SYSTEMCTL_S = 120.0  # a start or stop; Strata takes up to 45 s to stop (TimeoutStopSec)
 SYSTEMCTL_QUERY_S = 10.0  # is-active, show
+KEY_INPUT_LIMIT = 4096
+_TTY = Path("/dev/tty")
 WAKE_NAME = re.compile(r"\bjarvis\b", re.IGNORECASE)  # what an Azure model also wakes on
 
 
@@ -302,6 +326,32 @@ class _ListFormatter(argparse.RawDescriptionHelpFormatter, _Formatter):
     """The top-level help: the grouped list of commands keeps its own layout."""
 
 
+def _setup_role_arguments(setup: argparse.ArgumentParser) -> None:
+    role = setup.add_mutually_exclusive_group()
+    role.add_argument(
+        "--remote", metavar="URL", help="use Strata on your own machine on the network"
+    )
+    role.add_argument("--backend", action="store_true", help="set up only the Strata model service")
+    role.add_argument(
+        "--local", action="store_true", help="serve Strata and run the voice service here"
+    )
+    setup.add_argument("--listen", metavar="IP", help="backend bind address (default: 127.0.0.1)")
+    setup.add_argument(
+        "--ssh-target", metavar="[USER@]HOST", help="SSH destination for the printed client command"
+    )
+    setup.add_argument(
+        "--tls-ca",
+        type=Path,
+        metavar="PEM",
+        help="remote HTTPS CA or self-signed server certificate",
+    )
+    setup.add_argument(
+        "--allow-plain-http",
+        action="store_true",
+        help="allow cleartext HTTP to a private IP address",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Return the argument parser for the `jarvis` command."""
     parser = argparse.ArgumentParser(
@@ -339,6 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
         )
 
     setup = made["setup"]
+    _setup_role_arguments(setup)
     setup.add_argument(
         "--spotify-client-id", default=None, metavar="ID", help="your Spotify app's client ID"
     )
@@ -530,11 +581,64 @@ def _load() -> config.Config:
         raise SystemExit(2) from exc
 
 
+def _setup_mode(args: argparse.Namespace, current: config.StrataConfig) -> str:
+    if args.remote is not None:
+        return "remote"
+    if args.backend:
+        return "backend"
+    return "local" if args.local else current.mode
+
+
+def _setup_role(args: argparse.Namespace, current: config.Config) -> dict[str, object]:
+    mode = _setup_mode(args, current.strata)
+    if mode != "backend" and (args.listen is not None or args.ssh_target is not None):
+        msg = "--listen and --ssh-target require backend mode"
+        raise config.ConfigError(msg)
+    if mode != "remote" and (args.tls_ca is not None or args.allow_plain_http):
+        msg = "--tls-ca and --allow-plain-http require remote mode"
+        raise config.ConfigError(msg)
+    updates: dict[str, object] = {"mode": mode}
+    if mode != "remote":
+        updates |= {
+            "url": "",
+            "tls_ca": Path(),
+            "allow_plain_http": False,
+            "remote_pictures": False,
+        }
+    if mode != "backend":
+        updates["listen"] = "127.0.0.1"
+    if args.listen is not None:
+        updates["listen"] = args.listen
+    if mode == "remote":
+        updates.update(_remote_setup_settings(args, current.strata))
+    return updates
+
+
+def _remote_setup_settings(
+    args: argparse.Namespace, current: config.StrataConfig
+) -> dict[str, object]:
+    updates: dict[str, object] = {}
+    if args.remote is not None:
+        updates["url"] = args.remote
+        if args.remote != current.url:
+            updates |= {"tls_ca": Path(), "allow_plain_http": False}
+    if args.tls_ca is not None:
+        updates["tls_ca"] = args.tls_ca.expanduser().absolute()
+    if args.allow_plain_http:
+        updates["allow_plain_http"] = True
+    return updates
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
-    """Write config, key, Strata profile and units; keep every value already set unless given."""
+    """Write the config, key and units for the selected role."""
     current = _load()
     if args.has_run_config:
-        return int(current.strata.run_config == Path())
+        return int(current.strata.mode == "local" and current.strata.run_config == Path())
+    try:
+        role = _setup_role(args, current)
+    except config.ConfigError as exc:
+        print(f"jarvis: {exc}", file=sys.stderr)
+        return 2
     spotify = current.spotify.model_copy(
         update={"client_id": args.spotify_client_id} if args.spotify_client_id is not None else {}
     )
@@ -553,8 +657,11 @@ def cmd_setup(args: argparse.Namespace) -> int:
     updated = current.model_copy(
         update={
             "spotify": spotify,
-            "strata": current.strata.model_copy(update=strata_updates),
+            "strata": current.strata.model_copy(update=strata_updates | role),
             "audio": audio,
+            "model": current.model.model_copy(update={"base_url": ""})
+            if role["mode"] != "local"
+            else current.model,
             "update": current.update.model_copy(update={"branch": args.update_branch})
             if args.update_branch is not None
             else current.update,
@@ -566,6 +673,12 @@ def cmd_setup(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"jarvis: setup value refused: {exc}", file=sys.stderr)
         return 2
+    if updated.strata.mode != "local":
+        return _setup_split(args, updated)
+    return _setup_local(args, updated)
+
+
+def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
     if args.coding_run_config is not None and updated.strata.run_config != Path():
         try:  # a coding run config that cannot be served is refused before anything is saved
             services.strata_profile(modes.effective(updated, "coding"))
@@ -594,16 +707,15 @@ def cmd_setup(args: argparse.Namespace) -> int:
         return 2
     print(f"config: {paths.config_file()}\nstrata profile: {profile}")
     print("units: " + ", ".join(str(u) for u in units))
-    result = _setup_units(enable=args.enable)
-    if not result and updated.spotify.client_id and read_private(spotify_token_file()) is None:
-        print("next: jarvis spotify-login")
+    result = _setup_units(STRATA_UNIT, JARVIS_UNIT, enable=args.enable)
+    _setup_spotify(updated, failed=result)
     return result
 
 
-def _setup_units(*, enable: bool) -> int:
-    units = [STRATA_UNIT, JARVIS_UNIT]
+def _setup_units(*units: str, enable: bool) -> int:
     commands = [["daemon-reload"]]
     if enable:
+        # A unit stopped by its start limit refuses to start until its failed state is cleared.
         commands.extend((["reset-failed", *units], ["enable", "--now", *units]))
     for args in commands:
         try:
@@ -623,6 +735,133 @@ def _setup_units(*, enable: bool) -> int:
             )
             return 1
     return 0
+
+
+def _setup_spotify(updated: config.Config, *, failed: int) -> None:
+    if not failed and updated.spotify.client_id and read_private(spotify_token_file()) is None:
+        print("next: jarvis spotify-login")
+
+
+def _typed_key() -> str:
+    """Read one line from the terminal with echo off, and put echo back whatever happens.
+
+    Raises:
+        ConfigError: the terminal does not take its echo switched off.
+    """
+    with _TTY.open(encoding="utf-8") as terminal, _TTY.open("w", encoding="utf-8") as prompt:
+        original: list[Any] | None = None
+        try:
+            original = termios.tcgetattr(terminal)
+            hidden = list(original)
+            hidden[3] &= ~termios.ECHO
+            termios.tcsetattr(terminal, termios.TCSAFLUSH, hidden)
+            print("Strata API key: ", file=prompt, end="", flush=True)
+            return terminal.readline(KEY_INPUT_LIMIT + 2)
+        except termios.error as exc:
+            msg = "could not read the key at the terminal; supply it on stdin instead"
+            raise config.ConfigError(msg) from exc
+        finally:
+            if original is not None:
+                with contextlib.suppress(termios.error):
+                    termios.tcsetattr(terminal, termios.TCSAFLUSH, original)
+            print(file=prompt, flush=True)
+
+
+def _read_remote_key() -> str:
+    entered = _typed_key() if sys.stdin.isatty() else sys.stdin.read(MAX_KEY_INPUT + 1)
+    key = remote_key_input(entered)
+    if key is None:
+        msg = "supply the Strata API key on stdin or enter it at the terminal prompt"
+        raise config.ConfigError(msg)
+    return key
+
+
+_PLAIN_BACKEND = (
+    "warning: the backend listens beyond this machine over plain HTTP, so its key and the "
+    "conversations cross the network unencrypted. Keep strata.listen on 127.0.0.1 and use an SSH "
+    "tunnel, or put an HTTPS proxy in front of it."
+)
+
+
+def _client_command(cfg: config.Config, target: str | None) -> str:
+    ssh_destination = r"(?:[a-zA-Z0-9_][a-zA-Z0-9_.-]*@)?[a-zA-Z0-9][a-zA-Z0-9_.-]*"
+    if target is not None and not re.fullmatch(ssh_destination, target):
+        msg = "--ssh-target must be an OpenSSH host or user@host"
+        raise config.ConfigError(msg)
+    destination = shlex.quote(target) if target else "<ssh-target>"
+    bind = cfg.strata.listen
+    host = f"[{bind}]" if ":" in bind else bind
+    key_command = shlex.quote(f"cat -- {shlex.quote(str(services.key_file(cfg)))}")
+    return (
+        f"ssh -fNT -o ExitOnForwardFailure=yes -L 127.0.0.1:18080:{host}:{cfg.strata.port}"
+        f" -- {destination} && ssh -T -- {destination} {key_command} | "
+        "jarvis setup --remote http://127.0.0.1:18080 --enable"
+    )
+
+
+def _setup_split(args: argparse.Namespace, cfg: config.Config) -> int:
+    try:
+        if cfg.strata.mode == "backend":
+            return _setup_backend(args, cfg)
+        return _setup_remote(args, cfg)
+    except config.ConfigError as exc:
+        print(f"jarvis: {exc}", file=sys.stderr)
+        return 2
+    except OSError, ValueError:
+        print(
+            "jarvis: setup could not read or write its config, TLS CA, key or unit", file=sys.stderr
+        )
+        return 2
+
+
+def _setup_remote(args: argparse.Namespace, cfg: config.Config) -> int:
+    if cfg.strata.tls_ca != Path():
+        tls_context(cfg.strata.tls_ca)
+    if not config.private_endpoint(cfg.strata.host()):
+        msg = f"strata.url's {NOT_PRIVATE}"
+        raise config.ConfigError(msg)
+    # An explicit endpoint always needs a key. A routine setup reuses private state.
+    key = _read_remote_key() if args.remote is not None else services.read_key(cfg)
+    if not key:
+        msg = "no remote key file; run jarvis setup --remote <url>"
+        raise config.ConfigError(msg)
+    with modes.locked():
+        unit = services.write_voice_unit()
+        if args.remote is not None:
+            services.write_remote_key(cfg, key)
+        config.save(cfg)
+    print(f"config: {paths.config_file()}\nvoice unit: {unit}")
+    active = args.enable and _unit_state(JARVIS_UNIT) == "active"
+    code = _setup_units(JARVIS_UNIT, enable=args.enable)
+    if code == 0 and active:
+        code = _systemctl("restart", JARVIS_UNIT)
+    _setup_spotify(cfg, failed=code)
+    return code
+
+
+def _setup_backend(args: argparse.Namespace, cfg: config.Config) -> int:
+    command = _client_command(cfg, args.ssh_target)
+    key_file = services.key_file(cfg)
+    with modes.locked():
+        if (services.unit_dir() / JARVIS_UNIT).exists():
+            msg = "backend setup needs an account without an installed Jarvis voice unit"
+            raise config.ConfigError(msg)
+        services.strata_profile(cfg)
+        services.strata_unit(cfg, key_file)  # validate both before writing anything
+        ensure_api_key(key_file)
+        profile = services.write_strata_profile(cfg)
+        unit = services.write_strata_unit(cfg, key_file)
+        config.save(cfg)
+    print(f"config: {paths.config_file()}\nstrata profile: {profile}\nbackend unit: {unit}")
+    if cfg.strata.serves_beyond_loopback():
+        print(_PLAIN_BACKEND)
+    target_note = (
+        " (replace <ssh-target> with the backend's SSH destination)" if not args.ssh_target else ""
+    )
+    print(f"On the Jarvis client{target_note}:\n{command}")
+    active = args.enable and _unit_state(STRATA_UNIT) == "active"
+    code = _setup_units(STRATA_UNIT, enable=args.enable)
+    return _systemctl("restart", STRATA_UNIT) if code == 0 and active else code
 
 
 def cmd_spotify_login(args: argparse.Namespace) -> int:
@@ -691,6 +930,8 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
 def _chat_status(cfg: config.Config) -> str:
     voice = _unit_state(JARVIS_UNIT)
+    if cfg.strata.mode == "remote":
+        return f"voice {voice} · {_probe_strata(cfg).report(cfg.model.model)}"
     model = _strata(cfg).status() if _unit_state(STRATA_UNIT) == "active" else None
     return f"voice {voice} · model {model or 'server not running'}"
 
@@ -698,6 +939,8 @@ def _chat_status(cfg: config.Config) -> str:
 def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
     """Return what /status adds to the services: versions, the model and where things live."""
     mode = modes.current()
+    if cfg.strata.mode == "remote":
+        cfg = with_remote_metadata(cfg, _probe_strata(cfg))
     served = modes.effective(cfg, mode)
     chat = served.chat
     return [
@@ -984,9 +1227,12 @@ def cmd_chat(_args: argparse.Namespace) -> int:
     agent = None
     followed = None
     unavailable = ""
+    pictures = reads_pictures(cfg)
     try:
         built = build(cfg, via="chat", session=session_id, units=StrataUnits())
         agent, followed = built.agent, built.modes
+        if cfg.strata.mode == "remote":
+            pictures = built.pictures
     except SetupError as exc:
         unavailable = str(exc)
     documents = Path.home() / "Documents"
@@ -1008,7 +1254,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         archive=_chat_archive(cfg.chat.archive_keep),
         export_dir=documents if documents.is_dir() else Path.home(),
         paste=clipboard.read,
-        pictures=reads_pictures(cfg),
+        pictures=pictures,
         screenshots=_screenshot_folders(Path.home(), os.environ),
         shown=chat_pictures(),
         twelve_hour=cfg.clock.twelve_hour,
@@ -1130,6 +1376,31 @@ def _serve_controls(handler: control.Controls, audit: AuditLog) -> control.Contr
     return controls
 
 
+def _load_client() -> config.Config:
+    """Load the config for a command that needs the whole client.
+
+    Raises:
+        SystemExit: this machine is a backend only, which has no client.
+    """
+    cfg = _load()
+    if cfg.strata.mode == "backend":
+        print(
+            "jarvis: backend mode only serves the model. Run this command on the Jarvis client.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return cfg
+
+
+def _remote_status(
+    cfg: config.Config, model: StrataModel
+) -> Callable[[], dict[str, object]] | None:
+    """What the control server reports about a remote model (a probe, never a generation)."""
+    if cfg.strata.mode != "remote":
+        return None
+    return lambda: _probe_fields(model.probe(), model.config.model)
+
+
 def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] - the voice service's parts, wired together here
     """Run the voice loop until stopped."""
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
@@ -1146,7 +1417,7 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
     from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, which loads numpy and ONNX Runtime
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    cfg = _load()
+    cfg = _load_client()
     # The hint is the agent's, built after the transcribers that `pc_audio_listen` needs; it is
     # first asked for once a request is heard.
     request, answer = _transcribers(cfg, lambda: jarvis.hint())  # ruff: ignore[unnecessary-lambda] - `jarvis` is built below
@@ -1232,7 +1503,13 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
         schedule_ready=jobs.may_be_due,
     )
     handler = control.Controls(
-        loop, mic, jarvis.model, jarvis.audit, keys=keys, prime=jarvis.agent.prime
+        loop,
+        mic,
+        jarvis.model,
+        jarvis.audit,
+        keys=keys,
+        prime=jarvis.agent.prime,
+        remote_status=_remote_status(cfg, jarvis.model),
     )
     handler.warm_at_start()  # the model loads now, so the first request does not wait for it
     if jarvis.switcher is not None:
@@ -1298,10 +1575,11 @@ def _model_files(cfg: config.Config) -> list[tuple[str, Path]]:
         model, voices = voice_files(cfg.data_dir, cfg.audio.voice)
         found += [("kokoro-model", model), ("kokoro-voices", voices)]
     found += singer_files(cfg)
-    with contextlib.suppress(services.StrataSetupError):  # `_model_checks` reports it
-        reader = services.read_run_config(cfg).picture_reader
-        if cfg.strata.pictures and reader is not None:
-            found.append(("vision", reader))
+    if cfg.strata.mode == "local":
+        with contextlib.suppress(services.StrataSetupError):  # `_model_checks` reports it
+            reader = services.read_run_config(cfg).picture_reader
+            if cfg.strata.pictures and reader is not None:
+                found.append(("vision", reader))
     return found
 
 
@@ -1347,7 +1625,11 @@ def _model_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
         learned = services.expert_profile_file(cfg)
         usable = learned.is_file() and learned.stat().st_size > 0
         checks.append((usable, f"expert profile {learned}", "run jarvis setup"))
-    if services.fills_the_card(run) and not cfg.strata.vram_reserve_mib:
+    if (
+        cfg.strata.mode == "local"
+        and services.fills_the_card(run)
+        and not cfg.strata.vram_reserve_mib
+    ):
         checks.append(
             (False, "VRAM left for games", "set strata.vram_reserve_mib (docs/models.md)")
         )
@@ -1556,19 +1838,30 @@ def essential_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], l
     from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
     from jarvis.sing.engines import doctor_checks  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, as above
 
+    config_check = (
+        paths.config_file().is_file(),
+        f"config {paths.config_file()}",
+        "run jarvis setup",
+    )
+    key_check = (_has_key(cfg), "Strata API key", _setup_fix(cfg))
+    if cfg.strata.mode == "backend":  # only the model service lives here: check just that
+        unit = services.unit_dir() / STRATA_UNIT
+        unit_check = (unit.is_file(), f"backend unit {unit}", "run jarvis setup --backend")
+        return [config_check, key_check, unit_check, *_model_checks(cfg)], []
     wake_checks, wake_notes = _wake_checks(cfg)
     tool_checks, tool_notes = _tool_checks(cfg)
     sing_checks, sing_notes = doctor_checks(cfg)
     files = [cfg.data_dir / VAD_MODEL, *voice_files(cfg.data_dir, cfg.audio.voice)]
+    local = cfg.strata.mode == "local"
     return [
-        (paths.config_file().is_file(), f"config {paths.config_file()}", "run jarvis setup"),
-        (bool(read_api_key(strata_key_file())), "Strata API key", "run jarvis setup"),
+        config_check,
+        key_check,
         *wake_checks,
         *((f.is_file(), f"file {f}", FETCH_MODELS) for f in files),
         *_whisper_model(cfg),
-        *_model_url(cfg),
-        *_model_checks(cfg),
-        *_coding_checks(cfg),
+        *(_model_url(cfg) if local else []),
+        *(_model_checks(cfg) if local else []),
+        *(_coding_checks(cfg) if local else []),
         *tool_checks,
         *sing_checks,
         *_source_checks(cfg),
@@ -1577,9 +1870,56 @@ def essential_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], l
     ], [*wake_notes, *tool_notes, *sing_notes]
 
 
+def _has_key(cfg: config.Config) -> bool:
+    try:
+        return bool(services.read_key(cfg))
+    except OSError, ValueError:
+        return False
+
+
+def _setup_fix(cfg: config.Config) -> str:
+    return {
+        "local": "run jarvis setup",
+        "remote": "run jarvis setup --remote <url>",
+        "backend": "run jarvis setup --backend",
+    }[cfg.strata.mode]
+
+
 def strata_status(cfg: config.Config) -> str | None:
     """Read Strata's state without generating tokens or loading its model."""
+    if cfg.strata.mode != "local":
+        probe = _probe_strata(cfg)
+        return (probe.state or "unknown") if probe.reachable else None
     return _strata(cfg).status() if read_api_key(strata_key_file()) else None
+
+
+def _split_model_check(cfg: config.Config) -> tuple[bool, str, str]:
+    """The reachability, model name and latency of a Strata that runs on another machine."""
+    probe = _probe_strata(cfg)
+    if cfg.strata.mode == "remote":
+        return (
+            probe.reachable and probe.state != "failed",
+            probe.report(cfg.model.model),
+            _remote_fix(cfg),
+        )
+    return (
+        probe.reachable and probe.state != "failed",
+        probe.report(services.model_name(cfg), "Strata backend"),
+        "check the key, then run jarvis start on the backend",
+    )
+
+
+def _remote_fix(cfg: config.Config) -> str:
+    """Say what to try when the remote model server does not answer."""
+    fix = "check the backend, tunnel or TLS settings and the key from jarvis setup --remote"
+    parts = urlsplit(cfg.strata.url)
+    if parts.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return fix
+    return (
+        f"{fix}. An SSH tunnel ends at a reboot or logout; start it again with `ssh -fNT -o "
+        f"ExitOnForwardFailure=yes -L 127.0.0.1:{parts.port or 80}:<backend listen address>:"
+        "<backend port> -- <ssh-target>` (jarvis setup --backend on the backend prints it)"
+    )
 
 
 def print_checks(checks: Sequence[tuple[bool, str, str]]) -> int:
@@ -1620,10 +1960,25 @@ def _t3_notes() -> list[str]:
     return [f"{head} with the executable {program} and the argument acp"]
 
 
+def _remote_notes(cfg: config.Config, *, no_service: bool) -> list[str]:
+    """Notes for a client whose model runs on another machine."""
+    notes: list[str] = []
+    if cfg.strata.plain_lan():
+        notes.append("warning: unencrypted HTTP sends the model's key and requests in cleartext")
+    if not no_service and _unit_state(STRATA_UNIT) in {"active", "activating"}:
+        notes.append(
+            f"note {STRATA_UNIT} still runs on this PC and holds RAM and VRAM this remote client "
+            f"does not use; free them with: systemctl --user disable --now {STRATA_UNIT}"
+        )
+    return notes
+
+
 def doctor_report(args: argparse.Namespace) -> DoctorReport:
     """Run every check `jarvis doctor` runs; print nothing."""
     cfg = _load()
     checks, notes = essential_checks(cfg)
+    if cfg.strata.mode == "backend":
+        return _backend_report(cfg, checks, wait=args.wait, no_service=args.no_service)
     if cfg.spotify.client_id:
         login = _spotify_login(cfg)
         if not login[0] and args.essential:
@@ -1636,20 +1991,42 @@ def doctor_report(args: argparse.Namespace) -> DoctorReport:
             "note Spotify is off; set a client ID and run jarvis spotify-login to connect it"
         )
     if not args.no_service:
-        state = update.wait_for(lambda: strata_status(cfg)) if args.wait else strata_status(cfg)
-        checks.append(
-            (
-                state is not None and state != "failed",
-                f"Strata server ({state or 'unreachable'})",
-                "jarvis start (it clears a start limit first)",
+        if cfg.strata.mode == "remote":
+            if args.wait:
+                update.wait_for(lambda: strata_status(cfg))
+            checks.append(_split_model_check(cfg))
+        else:
+            state = update.wait_for(lambda: strata_status(cfg)) if args.wait else strata_status(cfg)
+            checks.append(
+                (
+                    state is not None and state != "failed",
+                    f"Strata server ({state or 'unreachable'})",
+                    "jarvis start (it clears a start limit first)",
+                )
             )
-        )
     release_lines, unreadable = _release_lines(cfg)
     checks.extend(unreadable)
-    notes.extend([*_memlock_notes(cfg), *_t3_notes(), *update.doctor_notes(cfg, launch_for_update)])
+    if cfg.strata.mode == "local":
+        notes.extend(_memlock_notes(cfg))
+    else:
+        notes.extend(_remote_notes(cfg, no_service=args.no_service))
+    notes.extend([*_t3_notes(), *update.doctor_notes(cfg, launch_for_update)])
+    notes.extend(skills.doctor_notes())
     verified = [line.removeprefix("ok").strip() for line in release_lines if line.startswith("ok ")]
     notes.extend(line for line in release_lines if not line.startswith("ok "))
     return DoctorReport(checks, notes, verified)
+
+
+def _backend_report(
+    cfg: config.Config, checks: list[tuple[bool, str, str]], *, wait: bool, no_service: bool
+) -> DoctorReport:
+    """The doctor on a backend-only machine: its unit, key, model files and server, nothing else."""
+    if not no_service:
+        if wait:
+            update.wait_for(lambda: strata_status(cfg))
+        checks.append(_split_model_check(cfg))
+    notes = [_PLAIN_BACKEND] if cfg.strata.serves_beyond_loopback() else []
+    return DoctorReport(checks, [*notes, *_memlock_notes(cfg)], [])
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -1712,9 +2089,16 @@ def finish_update() -> int:
         return 0
     if sys.argv[1] != "health":
         return 2
-    served = modes.effective(cfg, modes.current())
-    services.write_strata_profile(served)
-    services.write_units(served, paths.strata_key_file())
+    match cfg.strata.mode:
+        case "remote":
+            services.write_voice_unit()
+        case "backend":
+            services.write_strata_profile(cfg)
+            services.write_strata_unit(cfg, services.key_file(cfg))
+        case _:
+            served = modes.effective(cfg, modes.current())
+            services.write_strata_profile(served)
+            services.write_units(served, paths.strata_key_file())
     checks, _notes = essential_checks(cfg)
     return int(bool(print_checks([check for check in checks if not check[0]])))
 
@@ -1857,7 +2241,27 @@ def _azure_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
 
 
 def _strata(cfg: config.Config) -> StrataModel:
-    return strata_model(cfg, read_api_key(strata_key_file()) or "")
+    return strata_model(cfg, services.read_key(cfg) or "")
+
+
+def _probe_strata(cfg: config.Config) -> ModelStatus:
+    try:
+        key = services.read_key(cfg)
+    except OSError, ValueError:
+        return ModelStatus(reachable=False, latency_ms=0, issue="key could not be read")
+    if not key:
+        return ModelStatus(reachable=False, latency_ms=0, issue="key missing for this endpoint")
+    return strata_model(cfg, key).probe()
+
+
+def _probe_fields(probe: ModelStatus, name: str) -> dict[str, object]:
+    return {
+        "model": (probe.state or "unknown") if probe.reachable else "unreachable",
+        "model_name": probe.name or name,
+        "model_latency_ms": probe.latency_ms,
+        "model_reachable": probe.reachable,
+        "model_issue": probe.issue,
+    }
 
 
 class StrataUnits:
@@ -1885,6 +2289,17 @@ def _switcher(cfg: config.Config, source: str) -> modes.Switcher:
 def model_report(cfg: config.Config) -> list[str]:
     """Return what `jarvis model` and the chat's /model show: the mode and each mode's model."""
     state = modes.read_state()
+    if cfg.strata.mode == "remote":
+        probe = _probe_strata(cfg)
+        served = with_remote_metadata(cfg, probe)
+        return [
+            f"mode: {state.mode}",
+            probe.report(cfg.model.model),
+            f"context: {served.strata.context:,} tokens in either mode",
+            "Use model normal or model coding to change client settings without changing Strata.",
+        ]
+    if cfg.strata.mode == "backend":
+        return [_probe_strata(cfg).report(services.model_name(cfg), "Strata backend")]
     running = _unit_state(STRATA_UNIT) == "active"
     loaded = (_strata(cfg).status() if running else None) or "server not running"
     lines = [f"mode: {state.mode} (model {loaded})"]
@@ -1916,6 +2331,12 @@ def switch_model(cfg: config.Config, to: str, say: Callable[[str], None], source
     if done.error:
         return done.error
     name = modes.model_name(cfg, done.mode)
+    if cfg.strata.mode == "remote":
+        return (
+            f"Now in {done.mode} mode on this client."
+            if done.changed
+            else (f"Already in {done.mode} mode on this client. The remote model stays the same.")
+        )
     if not done.changed:
         return f"Already in {done.mode} mode ({name})."
     took = f", loaded in {done.seconds:.0f} s" if done.restarted else ""
@@ -1942,12 +2363,15 @@ _MODEL_SHOWN = {
 
 def cmd_status(args: argparse.Namespace) -> int:
     """Print what the running Jarvis is doing, or the model state when it is not running."""
+    cfg = _load()
+    if cfg.strata.mode != "local":
+        return _split_status(cfg, as_json=args.json)
     reply = control.send("status")
     running = reply is not None
     if reply is not None and reply.get("ok"):
         shown = {key: value for key, value in reply.items() if key != "ok"}
     else:
-        strata = _strata(_load())
+        strata = _strata(cfg)
         model = strata.status() or control.unreachable_model(strata)
         shown = {"state": "unavailable", "paused": False, "model": model}
         if reply is not None:
@@ -1968,6 +2392,34 @@ def cmd_status(args: argparse.Namespace) -> int:
         return 0
     print(f"jarvis: not running, model: {model}")
     return 0 if shown["model"] not in _MODEL_SHOWN else 1
+
+
+def _split_status(cfg: config.Config, *, as_json: bool) -> int:
+    remote = cfg.strata.mode == "remote"
+    reply = control.send("status") if remote else None
+    unit = JARVIS_UNIT if remote else STRATA_UNIT
+    running = _unit_state(unit) in {"active", "activating"}
+    if reply and reply.get("ok") and "model_reachable" in reply:
+        shown = {key: value for key, value in reply.items() if key != "ok"}
+    else:
+        probe = _probe_strata(cfg)
+        name = cfg.model.model if remote else services.model_name(cfg)
+        shown = _probe_fields(probe, name)
+        shown["state"] = str(reply.get("state", "unavailable")) if reply else "unavailable"
+        shown["paused"] = bool(reply and reply.get("paused"))
+    shown["running"] = running
+    if as_json:
+        print(json.dumps(shown))
+        return 0
+    label = "remote model server" if remote else "Strata backend"
+    prefix = f"jarvis: {shown['state'] if running else 'not running'}, " if remote else ""
+    detail = (
+        f"reachable, {shown['model_name']} ({shown['model']}, {shown['model_latency_ms']} ms)"
+        if shown["model_reachable"]
+        else f"{shown['model_issue'] or 'unreachable'} ({shown['model_latency_ms']} ms)"
+    )
+    print(f"{prefix}{label} {detail}")
+    return 0 if shown["model_reachable"] else 1
 
 
 def _control(command: str, done: Callable[[dict[str, object]], str]) -> int:
@@ -2019,7 +2471,11 @@ def cmd_confirm(_args: argparse.Namespace) -> int:
 
 def cmd_unload(_args: argparse.Namespace) -> int:
     """Free the model now."""
-    ok = _strata(_load()).unload()
+    cfg = _load()
+    if cfg.strata.mode == "remote":
+        print("The remote model is managed on the backend. Run jarvis unload there.")
+        return 1
+    ok = _strata(cfg).unload()
     print("model unloaded" if ok else "could not unload (busy or unreachable)")
     return 0 if ok else 1
 
@@ -2068,6 +2524,9 @@ def cmd_help(_args: argparse.Namespace) -> int:
 
 def cmd_start(_args: argparse.Namespace) -> int:
     """Start both services."""
+    cfg = _load()
+    if cfg.strata.mode != "local":
+        return _split_lifecycle("start", cfg)
     _reset_failed(STRATA_UNIT, JARVIS_UNIT)
     code = _systemctl("start", STRATA_UNIT, JARVIS_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
@@ -2076,9 +2535,46 @@ def cmd_start(_args: argparse.Namespace) -> int:
 
 def cmd_stop(_args: argparse.Namespace) -> int:
     """Stop the voice service, then the model server (which frees the model)."""
+    cfg = _load()
+    if cfg.strata.mode != "local":
+        return _split_lifecycle("stop", cfg)
     code = _systemctl("stop", JARVIS_UNIT, STRATA_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
     return code
+
+
+def _split_lifecycle(action: str, cfg: config.Config) -> int:
+    remote = cfg.strata.mode == "remote"
+    unit = JARVIS_UNIT if remote else STRATA_UNIT
+    if action != "stop":
+        try:
+            if _prepare_split_unit(cfg, action):
+                return 1
+        except config.ConfigError, OSError, ValueError:
+            print(
+                f"jarvis: could not prepare {unit}. Check jarvis setup and jarvis doctor.",
+                file=sys.stderr,
+            )
+            return 1
+        _reset_failed(unit)
+    code = _systemctl(action, unit)
+    label = "jarvis" if remote else "Strata backend"
+    print(f"{label}: {_unit_state(unit)}")
+    return code
+
+
+def _prepare_split_unit(cfg: config.Config, action: str) -> int:
+    if cfg.strata.mode == "remote":
+        voice = services.unit_dir() / JARVIS_UNIT
+        if voice.is_file() and STRATA_UNIT in voice.read_text(encoding="utf-8"):
+            services.write_voice_unit()
+    elif action == "restart":
+        with modes.locked():
+            services.write_strata_profile(cfg)
+            services.write_strata_unit(cfg, services.key_file(cfg))
+    else:
+        return 0
+    return _systemctl("daemon-reload")
 
 
 def _started_at(unit: str) -> float | None:
@@ -2113,7 +2609,11 @@ def _refresh_strata() -> None:
     """
     try:
         cfg = config.load()
-        if cfg.strata.run_config == Path() or not (services.unit_dir() / STRATA_UNIT).is_file():
+        if (
+            cfg.strata.mode != "local"
+            or cfg.strata.run_config == Path()
+            or not (services.unit_dir() / STRATA_UNIT).is_file()
+        ):
             return
         served = modes.effective(cfg, modes.current())
         services.write_strata_profile(served)
@@ -2134,6 +2634,14 @@ def cmd_restart(_args: argparse.Namespace) -> int:
     it cut one, and requests are not held off then. It is also made when the modes' lock cannot
     be opened, which is said.
     """
+    try:
+        cfg = config.load()
+    except config.ConfigError as exc:
+        print(f"jarvis: the model server's settings were left as they were: {exc}")
+        _reset_failed(JARVIS_UNIT)
+        return _systemctl("restart", JARVIS_UNIT)
+    if cfg.strata.mode != "local":
+        return _split_lifecycle("restart", cfg)
     _reset_failed(STRATA_UNIT, JARVIS_UNIT)
     with contextlib.ExitStack() as held:
         try:
@@ -2155,14 +2663,16 @@ def cmd_restart(_args: argparse.Namespace) -> int:
 
 
 def cmd_logs(_args: argparse.Namespace) -> int:
-    """Follow both services' journals."""
+    """Follow the local services' journals."""
+    units = {
+        "local": ["-u", JARVIS_UNIT, "-u", STRATA_UNIT],
+        "remote": ["-u", JARVIS_UNIT],
+        "backend": ["-u", STRATA_UNIT],
+    }[_load().strata.mode]
     cmd = [
         "journalctl",
         "--user",
-        "-u",
-        JARVIS_UNIT,
-        "-u",
-        STRATA_UNIT,
+        *units,
         "-f",
         "-n",
         "30",
@@ -2416,12 +2926,14 @@ _UNIT_SHOWN = {"active": "running", "inactive": "stopped", "activating": "starti
 
 def cmd_overview(args: argparse.Namespace) -> int:
     """Show what is running and the model state, then follow the live log."""
+    cfg = _load()
+    if cfg.strata.mode != "local":
+        return _split_status(cfg, as_json=False)
     voice, server = _unit_state(JARVIS_UNIT), _unit_state(STRATA_UNIT)
-    state = _strata(_load()).status() if server == "active" else None
+    state = _strata(cfg).status() if server == "active" else None
     shown = (_UNIT_SHOWN.get(unit, unit) for unit in (voice, server))
     print("jarvis: {}   model server: {}".format(*shown), end="")
     print(f"   model: {state}" if state else "")
-    cfg = _load()
     print(f"pc audio: {_pc_audio_summary(cfg.audio)}")
     ok, login, fix = _spotify_login(cfg)
     print(login if ok else f"{login}: run {fix}")
