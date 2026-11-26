@@ -159,6 +159,36 @@ Inkling 2 Mini, with 4 GiB of its experts in VRAM so a game keeps its room, pick
 almost every request, but most of its misses were Jarvis's 90 s request limit, and some replies held its
 raw tool-call markup (`<|content_invoke_tool_json|>`), which would be spoken. Qwen3.8 stays the model.
 
+### Router benchmark
+
+`tools = "routed"` ([ADR 0022](adr/0022-tool-router.md)) stays off until a live run shows it as accurate as
+`all` and not slower (#56). `tools/router_bench.py` makes that run: the requests in
+`tools/router_bench_cases.json` (a typed set that covers every tool group, requests that need two groups or none, and a
+short spoken-style set) go through Jarvis's real agent, prompt and tool schemas, in `all` and in `routed`, for the
+voice channel (`[agent]`) and the chat (`[chat]`). Every tool that would act on the PC, Spotify or the web is a
+recording stub; the reminders, `calculate` and `about_jarvis` run for real, in a throwaway state folder, and nothing
+is played. It talks to a model server that is already running and loaded, and starts, stops and loads nothing.
+
+Start Strata for the model you want to measure, then, from the repository root (silent, with nothing of yours
+read or written):
+
+```sh
+uv run tools/router_bench.py --base-url http://127.0.0.1:PORT/v1 \
+    --key-file ~/.local/state/jarvis/strata.env --out DIR --label MODEL_NAME
+```
+
+`--runs 3` repeats each request, `--channel`, `--tools`, `--set` and `--only` narrow the run (`--only music`,
+`--only skip_two`), and `--thinking` and `--context` set the model's effort and window as the server runs them.
+One JSON file per variant lands in `DIR` (every call, its arguments, the model calls with their prompt tokens
+and times); the Markdown printed at the end is the table below. A request counts as right when it called what it
+needed, with the right arguments, and nothing else; the other columns say how it went wrong: a wrong tool, wrong
+arguments, an answer without the tool it needed (a routed request that never asked for the group counts here), an
+extra or forbidden call, or a model failure. The first reply is the first sentence handed to the speaker (voice)
+or the first draft of the reply (chat); prompt tokens are the server's own count, where it sends one.
+
+Results: **pending a live run** (not run yet; the owner runs it against Strata). The table will hold, for each of
+the four variants, the model, the date, the request set and the measures above.
+
 ### Experts
 
 A mixture-of-experts model keeps some experts on the card and the rest in RAM. On an engine whose run

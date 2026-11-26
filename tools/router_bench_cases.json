@@ -1,0 +1,514 @@
+{
+  "version": 1,
+  "about": "Requests for tools/router_bench.py. A case says what a request needs: `expect` lists the calls that must run (each matched by a distinct call, in any order), `allow` the other tools a good answer may also call, `forbid` the ones that must not run. An argument is a value (strings compare ignoring case), or {contains}, {one_of}, {lt}, {gt}. {any_of} lists alternatives for one expected call. Core tools (no_action, use_tools, ...) are never extra. `channels` limits a case to the channels that offer its tools; `set` is typed (written requests) or spoken (short, as transcribed speech comes).",
+  "cases": [
+    {
+      "id": "play_artist",
+      "group": "music",
+      "set": "typed",
+      "turns": ["Play something by Radiohead."],
+      "expect": [{"tool": "spotify_play", "args": {"kind": "artist", "query": {"contains": "radiohead"}}}]
+    },
+    {
+      "id": "play_track",
+      "group": "music",
+      "set": "typed",
+      "turns": ["Play Hurt by Johnny Cash."],
+      "expect": [{"tool": "spotify_play", "args": {"kind": "track", "query": {"contains": "hurt"}}}]
+    },
+    {
+      "id": "play_my_playlist",
+      "group": "music",
+      "set": "typed",
+      "turns": ["Play my chill vibes playlist."],
+      "expect": [{"tool": "spotify_play", "args": {"kind": "playlist", "mine": true, "query": {"contains": "chill"}}}]
+    },
+    {
+      "id": "skip_two",
+      "group": "music",
+      "set": "typed",
+      "turns": ["Skip the next two songs."],
+      "expect": [{"tool": "spotify_next", "args": {"count": 2}}]
+    },
+    {
+      "id": "seek_in_song",
+      "group": "music",
+      "set": "typed",
+      "turns": ["Jump to the two minute mark of this song."],
+      "expect": [{"tool": "spotify_seek", "args": {"to_s": 120}}]
+    },
+    {
+      "id": "shuffle_on",
+      "group": "music",
+      "set": "typed",
+      "turns": ["Turn shuffle on."],
+      "expect": [{"tool": "spotify_shuffle", "args": {"on": true}}]
+    },
+    {
+      "id": "repeat_track",
+      "group": "music",
+      "set": "typed",
+      "turns": ["Keep repeating this track."],
+      "expect": [{"tool": "spotify_repeat", "args": {"mode": "track"}}]
+    },
+    {
+      "id": "queue_three",
+      "group": "music",
+      "set": "typed",
+      "turns": ["Queue three more songs by Daft Punk."],
+      "expect": [
+        {
+          "any_of": [
+            {"tool": "spotify_queue", "args": {"count": 3, "query": {"contains": "daft punk"}}},
+            {"tool": "spotify_queue", "args": {"count": 3, "artist": {"contains": "daft punk"}}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "like_song",
+      "group": "music",
+      "set": "typed",
+      "turns": ["Add this song to my liked songs."],
+      "expect": [{"tool": "spotify_like"}],
+      "allow": ["spotify_now_playing"]
+    },
+    {
+      "id": "unlike_song",
+      "group": "music",
+      "set": "typed",
+      "turns": ["Remove this song from my liked songs."],
+      "expect": [{"tool": "spotify_library", "args": {"change": "unlike"}}],
+      "allow": ["spotify_now_playing"]
+    },
+    {
+      "id": "pc_volume_percent",
+      "group": "sound",
+      "set": "typed",
+      "turns": ["Set the computer's volume to 35 percent."],
+      "expect": [{"tool": "pc_volume", "args": {"percent": 35}}]
+    },
+    {
+      "id": "pc_mute",
+      "group": "sound",
+      "set": "typed",
+      "turns": ["Mute the computer."],
+      "expect": [{"tool": "pc_volume", "args": {"mute": true}}]
+    },
+    {
+      "id": "pause_video",
+      "group": "sound",
+      "set": "typed",
+      "turns": ["Pause the video that is playing in my browser."],
+      "expect": [{"tool": "pc_media", "args": {"action": "pause"}}]
+    },
+    {
+      "id": "hear_the_pc",
+      "group": "sound",
+      "set": "typed",
+      "channels": ["voice"],
+      "turns": ["Listen to what the computer is playing for a few seconds and tell me what it is."],
+      "expect": [{"tool": "pc_audio_listen"}]
+    },
+    {
+      "id": "sing_a_line",
+      "group": "sound",
+      "set": "typed",
+      "channels": ["voice"],
+      "turns": ["Sing the first line of Happy Birthday."],
+      "expect": [{"tool": "sing"}]
+    },
+    {
+      "id": "list_windows",
+      "group": "screen",
+      "set": "typed",
+      "turns": ["Which windows do I have open?"],
+      "expect": [{"tool": "pc_windows"}]
+    },
+    {
+      "id": "focus_window",
+      "group": "screen",
+      "set": "typed",
+      "turns": ["Switch to my terminal window."],
+      "expect": [{"tool": "pc_windows"}, {"tool": "pc_window", "args": {"window": 2, "action": "focus"}}]
+    },
+    {
+      "id": "close_window",
+      "group": "screen",
+      "set": "typed",
+      "turns": ["Close the Discord window."],
+      "expect": [{"tool": "pc_windows"}, {"tool": "pc_window_close", "args": {"window": 3}}]
+    },
+    {
+      "id": "take_screenshot",
+      "group": "screen",
+      "set": "typed",
+      "turns": ["Take a screenshot of my screen."],
+      "expect": [{"tool": "pc_screenshot", "args": {"of": "screen"}}]
+    },
+    {
+      "id": "watch_for_error",
+      "group": "screen",
+      "set": "typed",
+      "channels": ["voice"],
+      "turns": ["Keep an eye on the screen for the next ten minutes and tell me if an error dialog shows up."],
+      "expect": [{"tool": "pc_watch", "args": {"of": "screen"}}]
+    },
+    {
+      "id": "list_watches",
+      "group": "screen",
+      "set": "typed",
+      "channels": ["voice"],
+      "turns": ["Which screen watches are running right now?"],
+      "expect": [{"tool": "pc_watches"}]
+    },
+    {
+      "id": "stop_watch",
+      "group": "screen",
+      "set": "typed",
+      "channels": ["voice"],
+      "turns": ["Stop watching the screen."],
+      "expect": [{"tool": "pc_watch_stop"}],
+      "allow": ["pc_watches"]
+    },
+    {
+      "id": "open_program",
+      "group": "apps",
+      "set": "typed",
+      "turns": ["Open Spotify on workspace 2."],
+      "expect": [{"tool": "open_app", "args": {"app": "spotify", "where": "2"}}]
+    },
+    {
+      "id": "close_program",
+      "group": "apps",
+      "set": "typed",
+      "turns": ["Close Discord."],
+      "expect": [
+        {"tool": "find_processes", "args": {"name": {"contains": "discord"}}},
+        {"tool": "stop_process", "args": {"pid": 4242}}
+      ]
+    },
+    {
+      "id": "gpu_temperature",
+      "group": "system",
+      "set": "typed",
+      "turns": ["How hot is my graphics card running?"],
+      "expect": [{"tool": "pc_stats"}]
+    },
+    {
+      "id": "kernel_version",
+      "group": "system",
+      "set": "typed",
+      "turns": ["Run uname -r in a shell and tell me what it prints."],
+      "expect": [{"tool": "pc_shell", "args": {"command": {"contains": "uname"}}}]
+    },
+    {
+      "id": "list_folder",
+      "group": "files",
+      "set": "typed",
+      "turns": ["What is in my Documents folder?"],
+      "expect": [{"tool": "list_dir", "args": {"path": {"contains": "documents"}}}]
+    },
+    {
+      "id": "read_notes",
+      "group": "files",
+      "set": "typed",
+      "turns": ["Read notes.txt in my Documents folder and give me the gist."],
+      "expect": [{"tool": "read_file", "args": {"path": {"contains": "notes.txt"}}}],
+      "allow": ["list_dir"]
+    },
+    {
+      "id": "write_list",
+      "group": "files",
+      "set": "typed",
+      "turns": ["Create a file called shopping.txt in your workspace folder with milk and eggs in it."],
+      "expect": [
+        {"tool": "write_file", "args": {"path": {"contains": "shopping.txt"}, "content": {"contains": "milk"}}}
+      ],
+      "allow": ["list_dir"]
+    },
+    {
+      "id": "time_abroad",
+      "group": "everyday",
+      "set": "typed",
+      "turns": ["What time is it in Tokyo right now?"],
+      "expect": [{"tool": "time_now", "args": {"place": {"contains": "tokyo"}}}]
+    },
+    {
+      "id": "rain_tomorrow",
+      "group": "everyday",
+      "set": "typed",
+      "turns": ["Will I need an umbrella in Paris tomorrow?"],
+      "expect": [{"tool": "weather", "args": {"place": {"contains": "paris"}, "when": "tomorrow"}}]
+    },
+    {
+      "id": "percent_of",
+      "group": "everyday",
+      "set": "typed",
+      "turns": ["What is 17.5 percent of 2,340?"],
+      "expect": [{"tool": "calculate"}]
+    },
+    {
+      "id": "latest_news",
+      "group": "web",
+      "set": "typed",
+      "turns": ["Who won the most recent Formula 1 race?"],
+      "expect": [{"tool": "web_search"}],
+      "allow": ["web_read"]
+    },
+    {
+      "id": "read_page",
+      "group": "web",
+      "set": "typed",
+      "turns": ["Read https://example.org/article and give me the gist."],
+      "expect": [{"tool": "web_read", "args": {"url": {"contains": "example.org"}}}]
+    },
+    {
+      "id": "reddit_opinion",
+      "group": "web",
+      "set": "typed",
+      "turns": ["What does Reddit think about the Steam Deck OLED?"],
+      "expect": [{"tool": "reddit_search"}],
+      "allow": ["reddit_read"]
+    },
+    {
+      "id": "find_picture",
+      "group": "web",
+      "set": "typed",
+      "channels": ["chat"],
+      "turns": ["Show me a picture of a red panda."],
+      "expect": [{"tool": "image_search", "args": {"query": {"contains": "panda"}}}],
+      "allow": ["show_image"]
+    },
+    {
+      "id": "open_page_in_browser",
+      "group": "browser",
+      "set": "typed",
+      "channels": ["chat"],
+      "turns": ["Open https://example.org in the browser and tell me what the page says."],
+      "expect": [{"tool": "browser_open", "args": {"url": {"contains": "example.org"}}}],
+      "allow": ["browser_screenshot"]
+    },
+    {
+      "id": "remind_in_minutes",
+      "group": "schedule",
+      "set": "typed",
+      "turns": ["Remind me to check the oven in 20 minutes."],
+      "expect": [{"tool": "schedule_add", "args": {"in_minutes": 20, "text": {"contains": "oven"}}}]
+    },
+    {
+      "id": "remind_weekdays",
+      "group": "schedule",
+      "set": "typed",
+      "turns": ["Every weekday at 7:30 remind me to stretch."],
+      "expect": [
+        {
+          "tool": "schedule_add",
+          "args": {"repeat": "weekdays", "at": {"one_of": ["07:30", "7:30"]}, "text": {"contains": "stretch"}}
+        }
+      ]
+    },
+    {
+      "id": "do_later",
+      "group": "schedule",
+      "set": "typed",
+      "turns": ["At 11 pm pause the music."],
+      "expect": [{"tool": "schedule_add", "args": {"action": "do", "at": "23:00"}}],
+      "forbid": ["spotify_pause"]
+    },
+    {
+      "id": "list_reminders",
+      "group": "schedule",
+      "set": "typed",
+      "turns": ["What reminders do I have set?"],
+      "expect": [{"tool": "schedule_list"}]
+    },
+    {
+      "id": "remind_then_cancel",
+      "group": "schedule",
+      "set": "typed",
+      "turns": ["Remind me to water the plants at 9 pm.", "Actually, cancel that."],
+      "expect": [{"tool": "schedule_add", "args": {"text": {"contains": "plants"}}}, {"tool": "schedule_cancel"}],
+      "allow": ["schedule_list"]
+    },
+    {
+      "id": "desktop_guide",
+      "group": "guides",
+      "set": "typed",
+      "turns": ["How do I change the gaps between windows in Hyprland on this computer?"],
+      "expect": [{"tool": "os_skill", "args": {"file": {"contains": "omarchy/"}}}],
+      "allow": ["os_skill"]
+    },
+    {
+      "id": "which_model",
+      "group": "jarvis",
+      "set": "typed",
+      "turns": ["Which model are you running on, and which version of you is this?"],
+      "expect": [{"tool": "about_jarvis"}]
+    },
+    {
+      "id": "show_config",
+      "group": "jarvis",
+      "set": "typed",
+      "turns": ["Show me your config file."],
+      "expect": [{"tool": "read_jarvis_file", "args": {"file": "config"}}]
+    },
+    {
+      "id": "plain_knowledge",
+      "group": "core",
+      "set": "typed",
+      "turns": ["How many legs does a spider have?"],
+      "expect": []
+    },
+    {
+      "id": "refuse_delete_all",
+      "group": "core",
+      "set": "typed",
+      "turns": ["Delete everything in my Documents folder."],
+      "expect": [],
+      "allow": ["list_dir"],
+      "forbid": ["write_file", "pc_shell", "stop_process"]
+    },
+    {
+      "id": "music_and_reminder",
+      "group": "multi",
+      "set": "typed",
+      "turns": ["Pause the music and remind me to call my sister at 6 pm."],
+      "expect": [
+        {"tool": "spotify_pause"},
+        {"tool": "schedule_add", "args": {"at": {"one_of": ["18:00", "6:00 pm", "6 pm"]}, "text": {"contains": "sister"}}}
+      ]
+    },
+    {
+      "id": "gpu_and_time",
+      "group": "multi",
+      "set": "typed",
+      "turns": ["How hot is my graphics card, and what time is it in London?"],
+      "expect": [{"tool": "pc_stats"}, {"tool": "time_now", "args": {"place": {"contains": "london"}}}]
+    },
+    {
+      "id": "search_then_remind",
+      "group": "multi",
+      "set": "typed",
+      "turns": ["Search the web for when the next solar eclipse is and remind me tomorrow at 9 am."],
+      "expect": [{"tool": "web_search"}, {"tool": "schedule_add"}],
+      "allow": ["web_read", "time_now"]
+    },
+    {
+      "id": "follow_ups",
+      "group": "multi",
+      "set": "typed",
+      "turns": ["Play some Daft Punk.", "Louder please.", "And what song is this?"],
+      "expect": [
+        {"tool": "spotify_play", "args": {"query": {"contains": "daft punk"}}},
+        {
+          "any_of": [
+            {"tool": "spotify_change_volume", "args": {"delta": {"gt": 0}}},
+            {"tool": "spotify_set_volume"}
+          ]
+        },
+        {"tool": "spotify_now_playing"}
+      ]
+    },
+    {
+      "id": "say_play_artist",
+      "group": "music",
+      "set": "spoken",
+      "turns": ["put on some radiohead"],
+      "expect": [{"tool": "spotify_play", "args": {"query": {"contains": "radiohead"}}}]
+    },
+    {
+      "id": "say_skip",
+      "group": "music",
+      "set": "spoken",
+      "turns": ["skip this one"],
+      "expect": [{"tool": "spotify_next"}]
+    },
+    {
+      "id": "say_pause",
+      "group": "music",
+      "set": "spoken",
+      "turns": ["pause the music"],
+      "expect": [{"tool": "spotify_pause"}]
+    },
+    {
+      "id": "say_quieter",
+      "group": "music",
+      "set": "spoken",
+      "turns": ["it's a bit loud turn it down"],
+      "expect": [
+        {
+          "any_of": [
+            {"tool": "spotify_change_volume", "args": {"delta": {"lt": 0}}},
+            {"tool": "spotify_set_volume"},
+            {"tool": "pc_volume"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "say_what_song",
+      "group": "music",
+      "set": "spoken",
+      "turns": ["what song is this"],
+      "expect": [{"tool": "spotify_now_playing"}]
+    },
+    {
+      "id": "say_time",
+      "group": "everyday",
+      "set": "spoken",
+      "turns": ["what time is it in new york"],
+      "expect": [{"tool": "time_now", "args": {"place": {"contains": "new york"}}}]
+    },
+    {
+      "id": "say_rain",
+      "group": "everyday",
+      "set": "spoken",
+      "turns": ["is it going to rain tomorrow"],
+      "expect": [{"tool": "weather", "args": {"when": "tomorrow"}}]
+    },
+    {
+      "id": "say_multiply",
+      "group": "everyday",
+      "set": "spoken",
+      "turns": ["how much is forty five times twelve"],
+      "expect": [{"tool": "calculate"}]
+    },
+    {
+      "id": "say_remind",
+      "group": "schedule",
+      "set": "spoken",
+      "turns": ["remind me in ten minutes to take the laundry out"],
+      "expect": [{"tool": "schedule_add", "args": {"in_minutes": 10, "text": {"contains": "laundry"}}}]
+    },
+    {
+      "id": "say_cpu",
+      "group": "system",
+      "set": "spoken",
+      "turns": ["how hot is my cpu"],
+      "expect": [{"tool": "pc_stats"}]
+    },
+    {
+      "id": "say_open",
+      "group": "apps",
+      "set": "spoken",
+      "turns": ["open spotify"],
+      "expect": [{"tool": "open_app", "args": {"app": "spotify"}}]
+    },
+    {
+      "id": "say_quiet",
+      "group": "core",
+      "set": "spoken",
+      "channels": ["voice"],
+      "turns": ["be quiet"],
+      "expect": [{"tool": "stay_quiet"}]
+    },
+    {
+      "id": "say_joke",
+      "group": "core",
+      "set": "spoken",
+      "turns": ["tell me a joke"],
+      "expect": []
+    }
+  ]
+}
