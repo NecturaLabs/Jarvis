@@ -26,13 +26,11 @@ or a request loading it again after an unload. Which of them are guarded, and ho
 
 Chosen option 3.
 
-- **The number.** The need is the size of the model file the profile serves (`--native`), which is what
-  Strata's log calls "about 39 GB". This is an empirical estimate, not Strata's own figure: on the reference
+- **The number.** The need is the size of the model file the profile serves (`--native`); Strata's log
+  says "about 39 GB". The file size is an estimate, not Strata's figure: on the reference
   machine the loaded server's cgroup holds 35.6 GiB of anonymous memory against a 36.5 GiB file, and the
-  second part of a split model (`--ple-gguf`) is not counted. It would change if Strata reported its need
-  (`strata serve` or `strata launch` printing a planned RAM figure), if an engine's footprint stopped
-  tracking the file (a long context, `strata.kv_resident`, the picture reader), or if the second part were
-  shown to be read into RAM too. What is available is `MemAvailable` from `/proc/meminfo`: free memory plus
+  second part of a split model (`--ple-gguf`) is not counted. A planned RAM figure from Strata would replace it; a long context,
+  `strata.kv_resident` or the picture reader can outgrow it. What is available is `MemAvailable` from `/proc/meminfo`: free memory plus
   the page cache the kernel can reclaim, as the kernel counts it. A load is refused when
   `available - need < strata.min_free_ram_mib`. A file size or meminfo that cannot be read blocks nothing.
 - **A restart gives memory back.** A running server holds its loaded model, which `MemAvailable` leaves out.
@@ -47,14 +45,14 @@ Chosen option 3.
 - **The override is a config key**, `strata.allow_low_ram`, not a command-line flag: the unit's check reads the
   config when it runs, and a flag on `jarvis start` could not reach it. The owner sets it, starts, and turns it
   off again.
-- **What counts as already loaded.** The client guard and `doctor` add what the server's cgroup holds (always,
-  also for a running server that lists the model as unloaded: Strata lists a load that another process began as
-  unloaded too, so the load's growing memory cannot be told apart from an idle server's, whose anonymous
-  memory was not measured: a few hundred MiB is an estimate, and the margin is meant to absorb it), as the
-  restart paths do, and the client asks nothing while a load of its own waits for its answer or the server
-  lists the model as loaded: the model's memory is then already out of `MemAvailable`, and refusing would be
-  wrong. A load under way in another process has taken part of its memory already, which the same credit
-  adds back.
+- **What counts as already loaded.**
+  - The client guard and `doctor` add what the server's cgroup holds, as the restart paths do.
+  - The client asks nothing while a load of its own waits for its answer or the server lists the model as
+    loaded: the model's memory is then already out of `MemAvailable`, and refusing would be wrong.
+  - The credit is added also for a running server that lists the model as unloaded: Strata lists a load that
+    another process began as unloaded too, so that load's growing memory cannot be told apart from an idle
+    server's. An idle server's anonymous memory was not measured; a few hundred MiB is an estimate, and the
+    margin is meant to absorb it.
 - **Where it is guarded.** `jarvis start` and `jarvis restart` (and the backend's) print the reason, change
   nothing and exit 1. The unit has `ExecCondition=python -I -m jarvis.ramguard --config … --profile …`, which reads
   the config and the profile at run time (the profile is what the mode in force serves) and exits 75, so every
@@ -64,17 +62,18 @@ Chosen option 3.
   why. The client (`StrataModel.load`, `warm`, and a request that must load the model) refuses before
   asking the server, which covers the load at `jarvis run`, the wake word after an unload, and a request that
   would let the server load lazily, and one that finds the server down beside too little memory (its unit's
-  check refused the start) answers with the reason and says to run `jarvis start`. `jarvis update` makes
-  the check before it restarts the server: a refusal keeps the server running what it loaded, skips only that
-  restart and prints the reason; the rest of the update goes ahead, and `jarvis restart` reloads when there is
-  room. `jarvis doctor` shows the check; the update's health check only notes it. A refusal in the
-  commands, the unit, the switch, the client and the update is audited as `ram_refused` with where, the
-  need, what was available (with the credit it includes: the memory a stopping server gives back, `credit`),
-  the margin and the model file. A start the unit skipped after the command's own check passed is audited
-  twice, once by each.
+  check refused the start) answers with the reason and says to run `jarvis start`.
+- **`jarvis update`** makes the check before it restarts the server: a refusal keeps the server running what
+  it loaded, skips only that restart and prints the reason; the rest of the update goes ahead, and
+  `jarvis restart` reloads when there is room.
+- **`jarvis doctor`** shows the check; the update's health check only notes it.
+- **Audit.** A refusal in the commands, the unit, the switch, the client and the update is audited as
+  `ram_refused` with where, the need, what was available (with the credit a stopping server gives back,
+  `credit`), the margin and the model file. A start the unit skipped after the command's own check passed is
+  audited twice, once by each.
 - **The unit's check.** It runs as `python -I -m jarvis.ramguard` (isolated: no current-directory or
   environment path; checked against the venv's editable install, which it still finds), and it is an
-  `ExecCondition=`, not an `ExecStartPre=`. Probed with transient user units: an `ExecStartPre=` that exits
+  `ExecCondition=`, not an `ExecStartPre=`. Tested with transient user units: an `ExecStartPre=` that exits
   75 under `Restart=on-failure` is retried five times into `start-limit-hit` and leaves the unit `failed`
   (`RestartPreventExitStatus=75` does not stop that, as it applies to the main process), while an
   `ExecCondition=` that exits 75 skips the start: `systemctl start` exits 0, there are no restarts, the unit
@@ -86,7 +85,7 @@ Chosen option 3.
   arguments), says on stderr that the memory check could not run and exits 0. And the command is wrapped:
   `/bin/sh -c '"$@"; [ $? -eq 75 ] && exit 75; exit 0' sh python -I -m jarvis.ramguard …`, so that only the
   check's own 75 skips the start and anything else, a missing interpreter (203) included, lets the server
-  start. The quoting was run through systemd with transient user units and a stand-in check: 75 skipped
+  start. Tested through systemd with a stand-in check: 75 skipped
   the start; 0, 1, 2, 255 and a program that is not there started it.
 - **`jarvis start` and `jarvis restart` never report a stopped server as started.** After a `systemctl` that
   says 0, a model server that is not running is a failure: "the model server did not start; see jarvis
@@ -95,7 +94,7 @@ Chosen option 3.
 - **A refused switch writes nothing.** The switch makes the check before it writes the server's files, so a
   refusal leaves their times alone and nothing later sees them as newer than the server.
 - **Option 4 rejected:** `MemoryMax` ends a server that already took the memory, after the other program
-  lacked it; and it is set above the model's size on purpose.
+  lacked it.
 
 ## Consequences
 

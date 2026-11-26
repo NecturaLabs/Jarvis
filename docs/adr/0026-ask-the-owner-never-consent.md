@@ -30,7 +30,8 @@ Chosen option 2.
   offered by voice, in `jarvis ask` or in `jarvis acp` (`CHAT_WINDOW_ONLY`). They add schema to every chat request,
   so their descriptions are short, and the chat's remembered conversation still keeps its floor.
 - **The recommended option is required.** `recommended` is part of the arguments; the picker lists that option
-  first, marked "(Recommended)", and the timeout acts on it.
+  first, marked "(Recommended)", and at a timeout the model is told to go on with it unless it judges
+  another better.
 - **Answers cannot be consent, by structure rather than by wording.** An answer, picked or timed out, reaches the
   model in one of two ways: as the result of a call that waits, or as a `Notice` that joins the running request
   (`Hooks.notices`), or starts one. It is never given to the confirmation flow: that flow is a separate question

@@ -12,7 +12,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   up to 20 tasks, one in progress), shown above the input and folded to one line when all is done or the window is
   short; Ctrl+T folds and opens it; `/compact` keeps it and `/clear` empties it. It can put a choice to you
   (`ask_owner`: 2 to 4 options, always with its recommended one marked and listed first, `Other` added, several
-  at once if asked) and carries on while it waits, or pauses the request for the answer. With no answer in
+  at once if asked) and carries on while it waits, or with `wait` pauses for the answer. With no answer in
   `chat.ask_timeout_s` (default 300 s, `0` waits for ever, set in `/config` too) the question closes with a note
   and Jarvis goes on with what it judges best. An answer is never a yes to an action, and the countdown stops
   while one is asked about. Chat only. See [ADR 0026](docs/adr/0026-ask-the-owner-never-consent.md).
@@ -326,16 +326,18 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   "Provider session failed to open"; the remembered turns are sent back and the conversation goes on.
 - `/clear` in a T3 Code thread starts the conversation afresh. T3 Code sends it to Jarvis as text, and the
   model answered that it could not clear; `jarvis acp` now offers the command and runs it itself.
-  It also works while a confirmation question waits (the question is declined). The kept sessions
+  It works while a confirmation question waits too; the question is declined. The kept sessions
   follow the chat's privacy settings: `chat.archive_keep = 0` keeps none, and `/forget all` deletes them.
-- The model server no longer loads a model into memory that is not there. With a game running and 13 to 20 GB
-  of RAM available, starting Strata read about 39 GB of experts into RAM, the kernel failed page allocations
-  and the game's process died. `jarvis start`, `jarvis restart`, a switch of modes, a model load and the
-  server's own unit (`ExecCondition=`, which skips the start instead of failing and retrying it) now compare the model file's size with `MemAvailable` and refuse, with
+- The model server no longer starts a load that does not fit in memory. With a game running and 13 to
+  20 GB of RAM available, starting Strata read about 39 GB of experts into RAM, the kernel failed page
+  allocations and the game's process died. `jarvis start`, `jarvis restart`, a switch of modes, a model
+  load and the server's own unit now compare the model file's size with `MemAvailable` and refuse, with
   the figures and nothing started, when the load would leave less than `strata.min_free_ram_mib` (4096).
   `strata.allow_low_ram` loads anyway; `jarvis doctor` reports the check; `jarvis update` skips only the
-  server's restart when it would not fit; each refusal is audited as `ram_refused`; the unit's check fails open, and `jarvis start` and `jarvis restart` report a server that did not start. `jarvis setup` or `jarvis restart` writes the
-  unit's check ([docs/configuration.md](docs/configuration.md#refusing-a-load-that-does-not-fit),
+  server's restart when it would not fit. Each refusal is audited as `ram_refused`. `jarvis start` and
+  `jarvis restart` now report a server that did not start, and a check that crashes lets the server
+  start. `jarvis setup` or `jarvis restart` writes the unit's check
+  ([docs/configuration.md](docs/configuration.md#refusing-a-load-that-does-not-fit),
   [ADR 0029](docs/adr/0029-refuse-a-load-that-does-not-fit.md)).
 - A reply no longer starts with "[looked up: …]": the notes memory puts before a remembered reply are
   stripped when the model copies them, as "[actions taken: …]" already was. So is the `<data origin="…">`
