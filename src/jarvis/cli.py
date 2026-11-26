@@ -639,6 +639,24 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Jarvis will keep the last seconds of the PC's audio in memory.",
     ),
     _Shared(
+        "browser",
+        "idle_close_s",
+        "Close the browser after (seconds)",
+        (30.0, 60.0, 120.0, 300.0),
+        "Chat",
+        "How long the headless browser stays open after its last use, in the chat and by "
+        "voice; then it closes with its profile and pages. The chat takes it when it opens again.",
+    ),
+    _Shared(
+        "agent",
+        "browser",
+        "Headless browser by voice",
+        (False, True),
+        "Voice",
+        "Spoken requests can open and read pages in the headless browser too; every click or "
+        "typing there asks you first. Needs agent-browser.",
+    ),
+    _Shared(
         "boundaries",
         "bypass_consent",
         "Act without asking first",

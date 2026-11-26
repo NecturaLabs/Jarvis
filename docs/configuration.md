@@ -104,9 +104,11 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 `/config` in the chat opens the settings in sections, each setting with its values, when a change applies
 and a line on what it does; ↑↓ move, Enter or → takes the next value, ← the one before, Esc closes. Under
 Chat it changes `verbosity`, `toolbar`, `while_working` and `thinking` at once, and `reply_tokens`,
-`max_steps`, `memory_detail` and `resume` from the next time the chat opens, writing them here. Under Voice, Listening and
-Safety it sets `audio.speech_speed`, `audio.listen_to_pc` (off by default) and `boundaries.bypass_consent`,
-and under Tools each tool's setting; the voice service restarts once to take these when the screen closes.
+`max_steps`, `memory_detail`, `resume` and `browser` from the next time the chat opens, writing them here.
+Under Chat it also sets `browser.idle_close_s` (30, 60, 120 or 300 seconds), under Voice
+`audio.speech_speed` and `agent.browser`, under Listening and Safety `audio.listen_to_pc` (off by default)
+and `boundaries.bypass_consent`, and under Tools each tool's setting; the voice service restarts once to take
+these when the screen closes.
 Acting without asking and taking requests from PC audio are turned on only by a second Enter, after the row
 says what that means, and are marked in red while they are on. A restart that fails is said in the chat.
 
@@ -607,9 +609,10 @@ The command restarts the voice service at once; the chat restarts it once, when 
 takes the change the next time it opens.
 
 `/config` in the chat also sets the speaking speed (`audio.speech_speed`), whether Jarvis acts without asking
-first (`boundaries.bypass_consent`) and whether it takes requests from PC audio (`audio.listen_to_pc`), marked
-"voice too": each change is saved and audited (`setting_changed`), and the voice service takes them when the
-settings close.
+first (`boundaries.bypass_consent`), whether it takes requests from PC audio (`audio.listen_to_pc`), whether
+spoken requests get the headless browser (`agent.browser`) and when the browser closes
+(`browser.idle_close_s`), marked "voice too": each change is saved and audited (`setting_changed`), and the
+voice service takes them when the settings close.
 
 ## The confirm key (`jarvis confirm`)
 

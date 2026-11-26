@@ -2376,8 +2376,41 @@ def test_the_chat_sets_jarvis_settings_and_audits_them(monkeypatch: pytest.Monke
     assert shown["audio.speech_speed"] == pytest.approx(1.5)
 
 
+def test_the_chat_sets_the_voice_browser_and_when_the_browser_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config.save(config.Config())
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: None)
+
+    cli._set_shared("agent.browser", True)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    cli._set_shared("browser.idle_close_s", 300.0)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    loaded = config.load()
+    assert loaded.agent.browser is True
+    assert loaded.browser.idle_close_s == pytest.approx(300.0)
+    events = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
+    assert [(e["event"], e.get("setting"), e["source"]) for e in events] == [
+        ("setting_changed", "agent.browser", "chat"),
+        ("setting_changed", "browser.idle_close_s", "chat"),
+    ]
+    shown = {s.key: s for s in cli._shared_settings()}  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    assert shown["agent.browser"].value is True
+    assert shown["agent.browser"].section == "Voice"
+    assert shown["browser.idle_close_s"].value == pytest.approx(300.0)
+    assert shown["browser.idle_close_s"].section == "Chat"
+    for value in shown["browser.idle_close_s"].values:  # each one the config takes
+        config.BrowserConfig(idle_close_s=cast("float", value))
+
+
 @pytest.mark.parametrize(
-    ("key", "value"), [("audio.voice", "x"), ("audio.speech_speed", 9.0), ("strata.port", 1)]
+    ("key", "value"),
+    [
+        ("audio.voice", "x"),
+        ("audio.speech_speed", 9.0),
+        ("strata.port", 1),
+        ("browser.idle_close_s", 45.0),
+        ("chat.browser", False),  # the chat's own setting, not one of Jarvis's
+    ],
 )
 def test_the_chat_cannot_set_what_it_does_not_offer(key: str, value: object) -> None:
     config.save(config.Config())

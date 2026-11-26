@@ -14,6 +14,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   there, and always asks first, even with questions turned off. It runs headless and muted with a throwaway
   profile, every connection goes through a loopback proxy that reaches only public addresses, and it closes
   when idle. On in the chat (`chat.browser`), off for speech (`agent.browser`); `[browser] idle_close_s`.
+  The chat's `/config` sets all three.
   A preview session for the owner's own builds (one project folder, served read-only on loopback, with a
   proxy that reaches that port alone) is ready for coding mode to use.
 - The chat keeps every conversation in an archive (`~/.local/state/jarvis/chat-archive/`, 0600, the newest
