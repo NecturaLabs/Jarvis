@@ -30,6 +30,12 @@ JARVIS_UNIT = "jarvis.service"
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _NEEDS_QUOTES = re.compile(r"""[\s"'\\;]""")
+# The memory check runs as an `ExecCondition=`, where any exit of 1 to 254 skips the start. This
+# wrapper lets only the check's own refusal (`RAM_SHORT_EXIT`) through: a check that is missing,
+# will not run or crashes (a moved venv exits 203) must not keep the model server from starting.
+_SHELL = "/bin/sh"
+RAM_SHORT_EXIT = 75  # the unit's memory check exits with this (1 to 254 skips the start)
+_FAIL_OPEN = f'"$@"; [ $? -eq {RAM_SHORT_EXIT} ] && exit {RAM_SHORT_EXIT}; exit 0'
 _SETUP_ERROR = 2  # `jarvis run` exits with this when setup is missing; restarting cannot fix it
 
 
@@ -606,6 +612,19 @@ def strata_unit(config: Config, key_file: Path) -> str:
             exec_word(str(strata_ready_file()), "ready file"),
         ]
     )
+    check = " ".join(
+        [
+            exec_program(_SHELL, "shell"),
+            "-c",
+            exec_word(_FAIL_OPEN, "memory check wrapper"),
+            "sh",
+            exec_program(sys.executable, "python executable"),
+            "-I -m jarvis.ramguard --config",
+            exec_word(str(paths.config_file()), "config file"),
+            "--profile",
+            exec_word(str(strata_profile_file()), "profile file"),
+        ]
+    )
     memory = _path(s.memory_max, "memory_max")
     limit = memory_limit(memory)
     in_ram = _KEEP_IN_RAM if s.keep_in_ram else ""
@@ -625,6 +644,7 @@ Type=exec
 Environment=PIPEWIRE_REMOTE=/nonexistent
 Environment=PULSE_SERVER=unix:/nonexistent
 EnvironmentFile={_path(key_file, "key file")}
+ExecCondition={check}
 ExecStart={start}
 Restart=on-failure
 RestartSec=5

@@ -1,6 +1,7 @@
 """OpenAI-compatible chat client for the Strata server, with non-generating health checks."""
 
 import json
+import logging
 import math
 import queue
 import re
@@ -14,6 +15,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from jarvis import ramguard
 from jarvis.config import STRATA_CONTEXT_MAX, STRATA_CONTEXT_MIN, private_endpoint
 from jarvis.jsonutil import obj, objs
 
@@ -22,7 +24,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.config import ModelConfig
+    from jarvis.ramguard import Verdict
 
+log = logging.getLogger(__name__)
 
 # A load request waits as long as Strata may take to answer it: up to 3 engine starts of 900 s each
 # (`engine_ready_s`), and a margin. A cold load from disk took about 110 s.
@@ -55,6 +59,10 @@ class ModelError(Exception):
 
 class ModelMissingError(ModelError):
     """The model server is down and its model file is not there (its drive not mounted, say)."""
+
+
+class ModelMemoryError(ModelError):
+    """The model would not fit in the memory that is free, so loading it was refused."""
 
 
 class RemoteModelError(ModelError):
@@ -364,6 +372,9 @@ class StrataModel:
     model_file: Path | None = None  # what the server loads (the run config's `--native`)
     # ... as it is now, where what the server loads changes while this client lives (a mode)
     file_of: Callable[[], Path | None] | None = None
+    # Says whether the model fits in the memory free now, for the file the server loads; asked
+    # before any load, and by a local server's request that must load it or finds it down.
+    ram_guard: Callable[[Path | None], Verdict] | None = None
     remote: bool = False
     tls_ca: Path | None = None
     resolve: Callable[[str], list[str]] | None = None  # tests answer name lookups in place of DNS
@@ -378,6 +389,26 @@ class StrataModel:
     def served_file(self) -> Path | None:
         """Return the model file the server loads now, when known."""
         return self.model_file if self.file_of is None else self.file_of()
+
+    def _no_room(self) -> str:
+        """Return why the model must not load now, or "" (also for a remote server's).
+
+        Nothing is refused while a load of this client waits for its answer, or while the server
+        has the model: its memory is no longer in what is available, so it would look too big.
+        """
+        if self.remote or self.ram_guard is None or self._loads.pending():
+            return ""
+        verdict = self.ram_guard(self.served_file())
+        if not verdict.short or self._listing()[1] in {"loaded", "loading"}:
+            return ""
+        return ramguard.refusal("model load", verdict)
+
+    def _load_refused(self) -> bool:
+        """Return whether a load must not be asked for now, saying why in the log."""
+        why = self._no_room()
+        if why:
+            log.warning("the model was not loaded: %s", why)
+        return bool(why)
 
     def _client(self, timeout: float, *, connect: float | None = None) -> httpx.Client:
         """Return a client for one request; a remote one first checks where its host leads.
@@ -490,7 +521,7 @@ class StrataModel:
         going after that carries on in the server. While a load Jarvis asked for is under way,
         this one joins it instead of queueing a second behind it.
         """
-        if self.remote:
+        if self.remote or self._load_refused():
             return False
         try:
             with self._loads.asking_alone() as alone:
@@ -515,7 +546,7 @@ class StrataModel:
         and can take minutes when it is not in the page cache, so the request waits for it. Each
         attempt first asks `keep_going`, so a load nobody wants any more (a pause came) stops.
         """
-        if self.remote:
+        if self.remote or self._load_refused():
             return False
         for _ in range(attempts):
             if not keep_going():
@@ -573,7 +604,14 @@ class StrataModel:
 
         A failed request raises ModelError. A local server that is down with its model file
         missing raises ModelMissingError.
+
+        Raises:
+            ModelMemoryError: the request must load the model (`load_s`) and the memory that is
+                free would not hold it: the server would load it all the same, and the kernel
+                would take memory from a running program.
         """
+        if load_s > 0 and (why := self._no_room()):
+            raise ModelMemoryError(why)
         body: dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,
@@ -637,6 +675,8 @@ class StrataModel:
         if self.file_missing():  # systemd skips Strata then: nothing to wait for
             msg = f"model server down and its model file is missing: {self.served_file()}"
             raise ModelMissingError(msg) from error
+        if why := self._no_room():  # its unit's own check refused the start
+            raise ModelMemoryError(why) from error
         if not retry:
             msg = f"model server unreachable: {error}"
             raise ModelError(msg) from error

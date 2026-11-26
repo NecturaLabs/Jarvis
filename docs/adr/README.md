@@ -32,3 +32,4 @@ edited once accepted; a later decision supersedes it with a new record that link
 | [0025](0025-workspace-folder.md) | Give Jarvis a workspace folder it can always write in, where a new file needs no yes | proposed |
 | [0027](0027-skill-plugins.md) | Use only the skills of plugins from Claude Code-format marketplaces, kept at their newest commit | proposed |
 | [0028](0028-voice-and-chat-as-two-channels.md) | Voice and chat as two cooperating channels: a spoken request is its own, and a typed tool hands the owner's words to the open chat | proposed |
+| [0029](0029-refuse-a-load-that-does-not-fit.md) | Refuse to start or load the model when the memory available would be left below a margin | proposed |

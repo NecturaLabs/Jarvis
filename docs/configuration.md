@@ -302,6 +302,8 @@ and listens on `127.0.0.1`. Remote and backend setup are described below.
 | `effort_position` | `""` | `""`, `start`, `end` | Where Strata writes a request's thinking effort, as its `effort_position` in the profile; empty keeps the run config's own (Strata's default is `start`). With `end`, a `low` or `medium` effort goes into a short turn before the answer, so a request whose model raised its effort (`think_harder`) reuses the pinned prompt instead of reading it all again; `high` stays at the start. How well the model follows an effort written there is not measured yet ([models.md](models.md#thinking)), so it is not the default. |
 | `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` of the Strata unit. `MemoryMax` is derived from it, 10% above (44G for 40G; a size that does not divide evenly is rounded up and written in bytes), so there is no second key. Past `MemoryHigh` the kernel throttles the unit and reclaims its memory; past `MemoryMax` it kills the unit. The size depends on the model: Qwen3.8-Flash-Next IQ2_XS needs `44G` ([models.md](models.md)). |
 | `keep_in_ram` | `true` | `true` or `false` | Keep the model server's memory in RAM: its unit gets `MemorySwapMax=0`, so the kernel never swaps it out, and `LimitMEMLOCK=infinity`, so the engine can lock its model as it asks to. Off, a PC short of memory swaps part of the model out between requests and back in on the next one; while it does, the graphics driver pauses the GPU ([Keeping the model in RAM](#keeping-the-model-in-ram)). Turn it off only with swap on a disk and a game that needs that memory more than Jarvis needs a quick answer. |
+| `min_free_ram_mib` | `4096` | 0 to 1048576 | Memory in MiB that must stay available after the model loads into RAM. Before the model server starts, restarts or loads its model, Jarvis compares the model file's size (`--native` in the run config) with `MemAvailable` in `/proc/meminfo` (free memory plus the page cache the kernel can reclaim; the memory a running model server holds counts as free, since a restart gives it back) and refuses when the load would leave less than this. 4 GiB is room for the context, the picture reader and the desktop, and keeps the load clear of the kernel's emergency reserve, where page allocations fail and a running program is killed ([Refusing a load that does not fit](#refusing-a-load-that-does-not-fit)). |
+| `allow_low_ram` | `false` | `true` or `false` | Load anyway when the memory available is less than the model needs plus `min_free_ram_mib`. For a PC with swap on a disk or a reason the owner knows better; with it on, a load beside a game can take the memory the game runs in. Set it, run `jarvis start`, and turn it off again. |
 | `speed_projection` | `true` | `true` or `false` | Keep a control vector the run config loads, such as Strata's experimental speed projection, which makes the model decline far fewer requests ([The speed projection](#the-speed-projection)). Off, Jarvis's profile leaves the control-vector options out, so the model declines as it was trained to. Jarvis never adds a vector itself. |
 | `vram_reserve_mib` | `0` (unset) | 0, or 100 to 65536 | VRAM in MiB the engine leaves free for other programs, passed as `--vram-reserve-mib`. `0` passes nothing, so Strata's own default (700) applies. For an engine whose expert cache fills the card (`--expert-cache auto`) it is the VRAM limit and must be set: `jarvis setup` refuses such a run config without it, and `jarvis doctor` fails "VRAM left for games". On a 20 GB card, 12000 holds Qwen3.8-Flash-Next at about 8 GiB ([models.md](models.md)). A card with at most about 8 GB of VRAM cannot start with a reserve (Strata's tuner never tries one there). |
 | `kv_resident` | `0` (all in VRAM) | 0, or 20480 to 262144 | Context cells kept in VRAM, passed as `--kv-resident`. Set, the whole context also lives in pinned RAM and only this many cells stay on the card, so `context` can grow past them without more VRAM; the VRAM saved goes to expert slots. Pinned RAM counts against `memory_max`. A `context` of this many cells or fewer is not streamed. Reading past the cells on the card is slower; measure before raising `context` far. |
@@ -390,6 +392,7 @@ Both units are written by `jarvis setup`; their text is `jarvis_unit` and `strat
 | `StartLimitIntervalSec=15min`, `StartLimitBurst=5` (in `[Unit]`) | yes | yes |
 | `MemoryHigh` / `MemoryMax` | none / `4G` | `memory_max` / 10% above it |
 | `LimitMEMLOCK=infinity`, `MemorySwapMax=0` | no | unless `strata.keep_in_ram` is off |
+| `ExecCondition=` the memory check (`python -I -m jarvis.ramguard`) | no | yes |
 
 - The voice service keeps your session's umask, so a file the file tools write at your request gets the
   mode it asks for (0644, a folder 0755).
@@ -459,6 +462,36 @@ LimitMEMLOCK=8M:infinity
 
 then `systemctl daemon-reload`, and log out and in. The swap setting alone already keeps the model from
 being swapped; the lock is what Strata's own start-up text asks a systemd service for.
+
+### Refusing a load that does not fit
+
+Strata reads the model's experts into RAM when it loads. Started with a game running and 13 to 20 GB of RAM
+available, the model server's load (about 39 GB, `loading the experts into RAM (about 39 GB)` in Strata's log)
+made the kernel fail page allocations, and the game's process died. Jarvis now checks first. The need is the
+size of the model file the profile serves (`--native`; a second file the run config names, such as
+`--ple-gguf`, is not counted); what is available is `MemAvailable`, plus, for a restart, the anonymous memory the
+running server holds (read from its cgroup), which the restart frees before the load. A load that would leave
+less than `strata.min_free_ram_mib` is refused, with the figures, and nothing is started:
+
+| Where the model loads | What happens when it does not fit |
+|---|---|
+| `jarvis start`, and `jarvis restart` when the server is stopped or its settings changed | Says why on stderr, changes nothing, exits 1. The same on a backend. After a start that systemd reports as made, a server that is not running is a failure too ("the model server did not start", with the memory reason when there is one). |
+| The model server's unit, however it is started (`systemctl --user start`, the voice service pulling it in, a crash restart) | `ExecCondition=` runs `python -I -m jarvis.ramguard`, which reads the config and the profile when it starts and exits 75 with the reason in the journal. The start is skipped (`Skipped due to 'exec-condition'`): the unit stays `inactive`, is not `failed` and is not retried, and `systemctl start` still exits 0. `jarvis start` and `jarvis restart` look again afterwards and refuse with the reason. Run `jarvis start` when there is room. The check fails open: the unit runs it through `/bin/sh` so that only its own exit 75 skips the start, and a check that crashes, cannot read the config or is not there lets the server start. |
+| A switch of modes that restarts the server (`jarvis model`, the chat's `/model`, the model's own switch) | The server is left as it is, Jarvis stays in its mode and says why. |
+| `jarvis update` restarting the server for new settings | The server is not restarted and keeps what it loaded; the rest of the update goes ahead and the reason is printed. `jarvis restart` reloads when there is room. A rollback restores the old unit, which has no check, and restarts it: that only reads back a model the server held before. |
+| `jarvis run` loading the model at start, the wake word loading it after `jarvis unload`, a resume | Logged, and nothing asks the server to load. The next wake word asks again. A server that already holds the model, or a load already under way, is never refused: its memory is no longer in `MemAvailable`. |
+| A request that finds the model unloaded, or the server down because its unit refused to start | Jarvis answers that it cannot load its model for lack of memory, and to run `jarvis start` if the server is stopped, instead of letting the server load it. |
+
+Every refusal is written to the audit log as `ram_refused` (where it came from, the need, what was available, the credit that figure includes (the memory a stopping server gives back), the margin and the model file).
+
+`jarvis doctor` shows the check as a line (`memory for the model`) with the figures; it fails while a load
+would be refused, and in the check `jarvis update` runs afterwards it is only a note, so an update is not
+undone because a game is running. When the memory is short, close the game or whatever else is large and
+start again, or set `strata.allow_low_ram = true` to load anyway. A file size or `/proc/meminfo` that cannot
+be read never blocks a load.
+
+The check is a size comparison, not a measurement of the load: a model whose engine uses much more than its
+file (a long context, `strata.kv_resident`, the picture reader) needs a larger `min_free_ram_mib`.
 
 ### The speed projection
 
