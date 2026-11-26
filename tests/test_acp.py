@@ -531,6 +531,36 @@ def test_cancel_while_a_question_waits_answers_it_no_and_frees_the_session() -> 
         assert [call[0] for call in client.agent.calls] == ["close notes", "yes"]
 
 
+@pytest.mark.parametrize(
+    ("how", "reason"), [("cancel", "stopped"), ("close", "closed"), ("end", "closed")]
+)
+def test_a_question_declined_by_a_stop_or_a_close_says_which(how: str, reason: str) -> None:
+    ran: list[str] = []
+    seen: list[bool | Declined] = []
+
+    def script(_text: str, hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        seen.append(hooks.confirm("Close the window named Notes?"))
+        if seen[-1] is True:
+            ran.append("closed")
+        return "Left it open."
+
+    with Client(FakeAgent(script)) as client:
+        session = client.start()
+        client.response(client.prompt(session, text("close notes")))
+        if how == "cancel":
+            client.notify("session/cancel", {"sessionId": session})
+        elif how == "close":
+            client.ask("session/close", {"sessionId": session})
+        if how != "end":
+            until(lambda: bool(seen), "the question was declined")
+    # leaving the `with` closes the connection, which declines a question still waiting
+    until(lambda: bool(seen), "the question was declined")
+    (answer,) = seen
+    assert isinstance(answer, Declined)
+    assert answer.reason == reason
+    assert ran == []  # the action never ran
+
+
 def test_a_question_nobody_answers_is_a_no_and_the_next_prompt_is_a_request() -> None:
     ran: list[str] = []
     with Client(FakeAgent(closing_script(ran)), question_s=0.05) as client:

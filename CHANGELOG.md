@@ -342,6 +342,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   prompt runs on the cleared conversation.
 - `/clear` in a T3 Code thread while a confirmation question waits declines it with its own audit reason,
   `cleared`; the log read `closed`, as if the session had been closed. The action still does not run.
+- A question that waits in a T3 Code thread and is declined because the request was stopped (`session/cancel`) is
+  audited with the reason `stopped`; `closed` is kept for a session or connection that really closed. The action
+  still does not run.
 - The model server no longer starts a load that does not fit in memory. With a game running and 13 to
   20 GB of RAM available, starting Strata read about 39 GB of experts into RAM, the kernel failed page
   allocations and the game's process died. `jarvis start`, `jarvis restart`, a switch of modes, a model

@@ -331,7 +331,7 @@ class AcpServer:
         if feed is not None:
             feed.close()
         for session in list(self._sessions.values()):
-            self._cancel(session)
+            self._cancel(session, NoReason.CLOSED)
         with self._threads_lock:
             threads = list(self._threads)
         for thread in threads:
@@ -822,7 +822,7 @@ class AcpServer:
 
     def _close_session(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._session(params)
-        self._cancel(session, close=True)
+        self._cancel(session, NoReason.CLOSED, close=True)
         self._sessions.pop(session.id, None)
         return {}
 
@@ -1155,8 +1155,10 @@ class AcpServer:
         question = _Question(text)
         self._flush(session, run)  # the prompt ends with the question: nothing is written after
         with session.lock:
-            if run.cancel.is_set() or self._closing.is_set():
+            if self._closing.is_set() or session.closed:
                 return Declined(NoReason.CLOSED)
+            if run.cancel.is_set():
+                return Declined(NoReason.STOPPED)
             run.question = question
         self._write(
             session, run, f"{SEPARATOR if run.total else ''}{text}{SEPARATOR}{ASK_HOW}{SEPARATOR}"
@@ -1179,8 +1181,10 @@ class AcpServer:
         if session is not None:
             self._cancel(session)
 
-    def _cancel(self, session: _Session, *, close: bool = False) -> None:
-        """Stop the request in flight; a question it waits on is answered no."""
+    def _cancel(
+        self, session: _Session, reason: NoReason = NoReason.STOPPED, *, close: bool = False
+    ) -> None:
+        """Stop the request in flight; a question it waits on is declined for `reason`."""
         with session.lock, self._write_lock:
             if close:
                 session.closed = True
@@ -1191,7 +1195,7 @@ class AcpServer:
             run.cancel.set()
             question = run.question
             if question is not None and not question.answered.is_set():
-                question.answer = Declined(NoReason.CLOSED)
+                question.answer = Declined(reason)
                 question.answered.set()
 
 
