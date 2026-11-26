@@ -244,7 +244,8 @@ class Browser:
         """Make the throwaway folder and the proxy for a new session, if none is open.
 
         Raises:
-            BrowserError: the folder could not be made.
+            BrowserError: the folder could not be made or the proxy could not start (the folder
+                is then deleted again).
         """
         if self._dir is not None:
             return self._dir
@@ -254,7 +255,12 @@ class Browser:
             msg = f"the browser's folder couldn't be made: {exc.strerror or type(exc).__name__}"
             raise BrowserError(msg) from exc
         proxy = self._make_proxy()
-        proxy.start()
+        try:
+            proxy.start()
+        except OSError as exc:
+            shutil.rmtree(folder, ignore_errors=True)
+            msg = f"the browser's proxy couldn't start: {exc.strerror or type(exc).__name__}"
+            raise BrowserError(msg) from exc
         self._dir, self._proxy = folder, proxy
         atexit.register(self.close)
         return folder

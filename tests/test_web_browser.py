@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 import pytest
 
@@ -377,6 +377,23 @@ def test_a_timeout_closes_the_session(tmp_path: Path) -> None:
 
     assert proxy.stopped
     assert not made.running
+
+
+def test_a_proxy_that_cannot_start_leaves_no_folder_and_starts_no_browser(tmp_path: Path) -> None:
+    class BrokenProxy(FakeProxy):
+        @override
+        def start(self) -> int:
+            raise OSError(98, "Address already in use")
+
+    fake = FakeAgentBrowser()
+    made, _, _ = _browser(tmp_path, fake, BrokenProxy())
+
+    with pytest.raises(BrowserError, match="proxy"):
+        made.open("https://site.example/")
+
+    assert fake.calls == []
+    assert not made.running
+    assert list((tmp_path / "browser").iterdir()) == []
 
 
 def test_closing_twice_or_before_use_does_nothing(tmp_path: Path) -> None:
