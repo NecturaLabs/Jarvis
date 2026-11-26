@@ -2443,6 +2443,28 @@ def test_memory_notes_the_model_copied_are_stripped_from_a_reply() -> None:
     assert agent.handle("how is the pc", NO_CONFIRM) == "All fine."
 
 
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "[Pause] is the button you want.",
+        "It is sunny. [looked up: weather] was earlier.",
+        "[note] Hi.",
+    ],
+)
+def test_text_that_only_looks_like_a_note_is_kept(reply: str) -> None:
+    model = ScriptedModel([_say(reply)])
+    agent, _ = _agent(model, [])
+
+    assert agent.handle("hi", NO_CONFIRM) == reply
+
+
+def test_a_note_with_brackets_inside_is_stripped_whole() -> None:
+    model = ScriptedModel([_say("[looked up: web_search a[1] b] Here it is.")])
+    agent, _ = _agent(model, [])
+
+    assert agent.handle("search", NO_CONFIRM) == "Here it is."
+
+
 def test_a_looked_up_note_is_stripped_from_a_no_action_reply() -> None:
     model = ScriptedModel([_call("no_action", {"reply": "[looked up: weather] Sunny."})])
     agent, _ = _agent(model, [])

@@ -227,7 +227,9 @@ _DASH = re.compile(r"\s*(?:[\u2012\u2013\u2014\u2015\u2212]|--)\s*|\s-\s")
 _CLAUSE_BREAK = re.compile(r"[,\u3001\uff0c(\[]")  # a comma, or an aside opening
 _EDGES = "\"'\u201c\u201d\u2018)]"
 # The notes memory puts before a remembered reply (`memory.Turn.messages`), which a model may copy.
-_ACTIONS_NOTE = re.compile(r"^(?:\[(?:actions taken|looked up):[^\]]*\]\s*)+", re.IGNORECASE)
+_ACTIONS_NOTE = re.compile(
+    r"^(?:\[(?:actions taken|looked up):(?:[^\[\]]|\[[^\[\]]*\])*\]\s*)+", re.IGNORECASE
+)
 _REPLY_KEY = '{"reply":"'
 _REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
 _WRAPPED = re.compile(r'(?P<head><data origin="[a-z_]+">)(?P<body>.*)</data>', re.DOTALL)

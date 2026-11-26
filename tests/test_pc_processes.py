@@ -1713,3 +1713,63 @@ def test_cpu_is_a_share_of_the_whole_processor(proc: FakeProc) -> None:
 
     (notes,) = [u for u in ops.usage() if u.name == "notes"]
     assert notes.cpu_percent == pytest.approx(20.0)  # 80% of one core is 20% of four
+
+
+def test_a_program_with_protected_and_other_processes_is_listed_once(proc: FakeProc) -> None:
+    proc.add(3500, "python3", start=600_000, rss_kib=100 * 1024)
+    proc.add(
+        3501,
+        "python3",
+        ppid=1356,
+        start=610_000,
+        rss_kib=100 * 1024,
+        cgroup=f"0::/x/{processes.STRATA_UNIT}",
+    )
+
+    text = _all(_ops(proc))
+
+    rows = [line for line in text.splitlines() if line.startswith("- python3:")]
+    assert len(rows) == 1
+    assert "2 processes" in rows[0]
+    assert "some of its processes are never stopped" in rows[0]
+
+
+def test_cpu_is_measured_over_the_time_that_really_passed(proc: FakeProc) -> None:
+    _desktop(proc)
+    now = [0.0]
+
+    def busy(_seconds: float) -> None:
+        now[0] += 1.0  # the wait and the second reading took a whole second
+        proc.add(3200, "notes", start=700_000, rss_kib=50 * 1024, utime=40)
+
+    ops = ProcessOps(
+        proc=proc.root,
+        uid=OWNER,
+        self_pid=SELF,
+        windows=list,
+        stopper=FakeStopper(),
+        clock=lambda: NOW,
+        ticks_per_s=TICKS,
+        sleep=busy,
+        timer=lambda: now[0],
+        page_size=PAGE,
+        cpus=1,
+    )
+
+    (notes,) = [u for u in ops.usage() if u.name == "notes"]
+    assert notes.cpu_percent == pytest.approx(40.0)  # 0.4 s of CPU in 1 s, not in 0.5 s
+
+
+def test_a_program_from_the_listing_cannot_be_watched_by_its_pid(
+    proc: FakeProc, owner_request: None
+) -> None:
+    del owner_request
+    _desktop(proc)
+    ops = _ops(proc)
+    _all(ops)
+    request = current_request()
+    assert request is not None
+    request.next_message()
+
+    with pytest.raises(OperationError, match="find_processes"):
+        ops.watched(3100)

@@ -960,11 +960,14 @@ window = "\\bspotify\\b"                 # matched, case-blind, with a window's 
 ## Seeing what is running
 
 Ask in any words what is running, or what uses the most memory or CPU, and Jarvis lists your running
-programs (`find_processes` without a name, `safe`): each program once, with its processes added up, how much
-memory they use and their share of the whole processor over half a second, its window's title and when it last started. The list is
+programs (`find_processes` without a name, `safe`): each program once, with its processes added up, their
+resident memory (shared pages counted in each process) and their share of the whole processor over the half
+second or so it measures, its window's title and when it last started. Every listed program's window title
+reaches the model, as data with the `process` origin, like the names. The list is
 sorted by memory, CPU or newest (`sort`), shows 12 by default (`count`, up to 40) and says how many more run.
 Another user's processes and the kernel's are left out; the programs Jarvis never stops (below) are listed
-and marked. A child running the same program as its parent (a browser's tabs) counts as that program. Nothing
+and marked ("some of its processes" when only part of a program is). A child running the same program as its
+parent (a browser's tabs) counts as that program. Nothing
 in this list can be stopped by its PID: to stop one, Jarvis looks it up by name first, as below.
 
 ## Stopping a program
@@ -987,7 +990,8 @@ In code, whatever the model says:
   shell command's output, or such text remembered from earlier): ask again in a request of its own.
 - A program matched only by one window's title (a browser tab's, say) is marked so, and the question
   names that title and says all its windows close.
-- Only your own processes are listed. Never listed or stopped: PID 1, kernel threads, other users'
+- Only your own processes are listed. Never matched by name or stopped (and marked when every program is
+  listed): PID 1, kernel threads, other users'
   processes and set-user-ID programs, processes another user started (or whose parent cannot be seen) and
   those in the login session's own scope (`session-N.scope`), Jarvis and the terminal or shell it runs in,
   the processes that started the desktop session, login shells, the `jarvis` and `jarvis-strata`

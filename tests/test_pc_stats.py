@@ -1,7 +1,7 @@
 """`pc_stats`: what the PC is and how busy it is, read from fake /proc and /sys trees."""
 
+from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
 
 import pytest
 
@@ -12,9 +12,6 @@ from jarvis.pc.processes import Usage
 from jarvis.pc.stats import Disk, StatsOps
 from jarvis.policy import OpClass, Origin
 from jarvis.sysinfo import Sampler
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 GIB = 1024**3
 
@@ -137,7 +134,7 @@ def test_pc_stats_says_what_is_free_the_swap_and_who_uses_the_most(tmp_path: Pat
 
     assert "12.0 GiB available" in text
     assert "Swap: 2.0 of 8.0 GiB used" in text
-    assert "Most memory: model-server 36.0 GiB, browser 2.0 GiB, editor 512 MiB." in text
+    assert "Most memory (resident): model-server 36.0 GiB, browser 2.0 GiB, editor 512 MiB." in text
     assert "Most CPU: browser 74%, editor 9%." in text  # an idle program is left out
 
 
@@ -151,17 +148,72 @@ def test_pc_stats_without_a_process_reader_still_answers(tmp_path: Path) -> None
     assert "Swap" not in text  # no swap counters in this /proc
 
 
-def test_two_subvolumes_of_one_file_system_are_one_disk(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setattr(stats.Path, "home", staticmethod(lambda: home))
+MOUNTS = (
+    "26 1 0:33 /@ / rw,relatime shared:1 - btrfs /dev/mapper/root rw,subvol=/@\n"
+    "27 26 0:35 /@home /home rw,relatime shared:2 - btrfs /dev/mapper/root rw,subvol=/@home\n"
+)
+
+
+def _disks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mounts: str) -> list[str]:
+    monkeypatch.setattr(stats.Path, "home", staticmethod(lambda: Path("/home/someone")))
     usage = SimpleNamespace(total=900 * GIB, used=300 * GIB, free=600 * GIB)
 
     def disk_usage(_path: object) -> SimpleNamespace:
         return usage
 
     monkeypatch.setattr(stats.shutil, "disk_usage", disk_usage)
+    info = tmp_path / "mountinfo"
+    info.write_text(mounts, encoding="utf-8")
+    return [d.name for d in stats.home_disks(info)]
 
-    assert [d.name for d in stats.home_disks()] == ["~"]
+
+def test_two_subvolumes_of_one_file_system_are_one_disk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assert _disks(monkeypatch, tmp_path, MOUNTS) == ["~"]
+
+
+def test_two_file_systems_of_equal_size_are_two_disks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mounts = MOUNTS.replace(
+        "/@home /home rw,relatime shared:2 - btrfs /dev/mapper/root", "/ /home rw - ext4 /dev/sdb1"
+    )
+
+    assert _disks(monkeypatch, tmp_path, mounts) == ["~", "/"]
+
+
+def test_a_result_that_names_programs_is_process_data(tmp_path: Path) -> None:
+    proc, sys = _tree(tmp_path)
+    usage = [Usage("some-program", 1, 2 * GIB, 5.0)]
+    ops = StatsOps(
+        Sampler(proc, sys), proc=proc, wait=_Ticks(proc), disks=list, usage=lambda: usage
+    )
+    (op,) = ops.operations()
+
+    named = op.run(validate_args(op, {}))
+    plain = op.run(validate_args(op, {"programs": False}))
+
+    assert named.origin is Origin.PROCESS
+    assert "some-program" not in plain.text
+    assert plain.origin is Origin.TOOL_STATUS
+
+
+@pytest.mark.parametrize("said", ["how's my PC doing", "system stats", "what's my GPU usage"])
+def test_a_plain_question_does_not_look_up_the_programs(tmp_path: Path, said: str) -> None:
+    proc, sys = _tree(tmp_path)
+    calls: list[int] = []
+
+    def usage() -> list[Usage]:
+        calls.append(1)
+        return []
+
+    ops = StatsOps(Sampler(proc, sys), proc=proc, wait=_Ticks(proc), disks=list, usage=usage)
+    registry = Registry(ops.operations())
+    hit = shortcuts.match(said, registry.shortcuts())
+    assert hit is not None
+    (op,) = ops.operations()
+
+    op.run(validate_args(op, hit.arguments))
+
+    assert calls == []

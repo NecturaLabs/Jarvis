@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jarvis.operations import Operation, Result
+from jarvis.policy import Origin
 from jarvis.shortcuts import Shortcut
 
 if TYPE_CHECKING:
@@ -27,16 +28,24 @@ CPU_WINDOW_S = 0.25  # between the two samples a CPU share needs
 TOP = 3  # programs named as using the most memory and CPU
 BUSY_PERCENT = 1.0  # a program below this much CPU is not named as busy
 MIB = 1024**2
+MOUNT_POINT = 4  # the mount point's field in a /proc/self/mountinfo line
 DAY_S = 86400
 HOUR_S = 3600
 MINUTE_S = 60
 
+
+def _plain(_groups: dict[str, str]) -> dict[str, Any]:
+    """A plain question hears only the spoken sentence: the busiest programs are not looked up."""
+    return {"programs": False}
+
+
 _STATS = (
-    Shortcut(r"(?:how is|hows) (?:my |the )?(?:pc|computer|system) (?:doing|running)"),
-    Shortcut(r"(?:my |the )?(?:pc|computer|system) (?:stats|status|load|usage|specs)"),
+    Shortcut(r"(?:how is|hows) (?:my |the )?(?:pc|computer|system) (?:doing|running)", _plain),
+    Shortcut(r"(?:my |the )?(?:pc|computer|system) (?:stats|status|load|usage|specs)", _plain),
     Shortcut(
         r"(?:(?:whats|what is) (?:my |the )?)?(?:cpu|gpu|vram|ram|memory) "
-        r"(?:usage|load|temperature|temp)"
+        r"(?:usage|load|temperature|temp)",
+        _plain,
     ),
 )
 
@@ -50,22 +59,41 @@ class Disk:
     used: int
 
 
-def home_disks() -> list[Disk]:
-    """Return the file systems of the home folder and the root, once each.
+def _mount_source(path: Path, mountinfo: str) -> str | None:
+    """Return the source (device) of the mount `path` is on, from /proc/self/mountinfo's text.
 
-    Two btrfs subvolumes of one file system have their own device numbers but the same size and
-    use, so either match counts as the same file system.
+    Two btrfs subvolumes of one file system have their own device numbers but one source.
     """
+    target = os.path.realpath(path)
+    best, source = "", None
+    for line in mountinfo.splitlines():
+        head, sep, tail = line.partition(" - ")
+        fields, rest = head.split(), tail.split()
+        if not sep or len(fields) < MOUNT_POINT + 1 or len(rest) < 2:  # ruff: ignore[magic-value-comparison] - fs type and source
+            continue
+        point = fields[MOUNT_POINT].replace("\\040", " ")
+        inside = target == point or target.startswith(point.rstrip("/") + "/")
+        if inside and len(point) >= len(best):
+            best, source = point, rest[1]
+    return source
+
+
+def home_disks(mountinfo: Path = Path("/proc/self/mountinfo")) -> list[Disk]:
+    """Return the file systems of the home folder and the root, once each (by mount source)."""
+    try:
+        mounts = mountinfo.read_text(encoding="utf-8")
+    except OSError, UnicodeDecodeError:
+        mounts = ""
     seen: set[object] = set()
     disks: list[Disk] = []
     for name, path in (("~", Path.home()), ("/", Path("/"))):
         try:
-            device = path.stat().st_dev
+            key: object = _mount_source(path, mounts) or path.stat().st_dev
             usage = shutil.disk_usage(path)
         except OSError:
             continue
-        if device not in seen and (usage.total, usage.used) not in seen:
-            seen.update((device, (usage.total, usage.used)))
+        if key not in seen:
+            seen.add(key)
             disks.append(Disk(name, usage.total, usage.used))
     return disks
 
@@ -123,15 +151,20 @@ class StatsOps:
         except OSError, UnicodeDecodeError:
             return []
 
-    def stats(self, _args: dict[str, Any]) -> Result:
-        """Report the PC's specs and its load now."""
+    def stats(self, args: dict[str, Any]) -> Result:
+        """Report the PC's specs and its load now, and with `programs` the busiest programs.
+
+        Program names are other programs' words, so a result that names them carries the
+        `process` origin, as `find_processes` does.
+        """
         sample = self._sampler.sample()
         if sample.cpu_percent is None:
             self._wait(CPU_WINDOW_S)
             sample = self._sampler.sample()
         specs = self._sampler.specs()
         lines = [*self._cpu_lines(specs, sample), *self._memory_lines(sample), self._swap_line()]
-        lines.extend(self._top_lines())
+        top = self._top_lines() if args.get("programs", True) else []
+        lines.extend(top)
         lines.extend(
             f"Disk {d.name}: {round(d.used / GIB)} of {round(d.total / GIB)} GiB used "
             f"({_share(d.used, d.total)}), {round((d.total - d.used) / GIB)} GiB free."
@@ -140,7 +173,10 @@ class StatsOps:
         up = self._read("uptime")[:1]
         with contextlib.suppress(ValueError):
             lines.append(f"Up {_uptime(float(up[0]))}." if up else "")
-        return Result("\n".join(line for line in lines if line), spoken=_spoken(sample))
+        text = "\n".join(line for line in lines if line)
+        if top:
+            return Result(text, Origin.PROCESS, spoken=_spoken(sample))
+        return Result(text, spoken=_spoken(sample))
 
     def _cpu_lines(self, specs: Specs, sample: Stats) -> list[str]:
         about = [specs.cpu_model or "Processor"]
@@ -189,7 +225,9 @@ class StatsOps:
         by_memory = sorted(usage, key=lambda u: -u.rss)[:TOP]
         if by_memory:
             lines.append(
-                "Most memory: " + ", ".join(f"{u.name} {_size(u.rss)}" for u in by_memory) + "."
+                "Most memory (resident): "
+                + ", ".join(f"{u.name} {_size(u.rss)}" for u in by_memory)
+                + "."
             )
         busy = [
             u for u in sorted(usage, key=lambda u: -u.cpu_percent) if u.cpu_percent >= BUSY_PERCENT
@@ -236,7 +274,17 @@ class StatsOps:
                 "This PC's specs and how busy it is now: CPU, memory and swap, graphics card "
                 "and VRAM, temperatures, disks, uptime, and the programs using the most memory "
                 "and CPU.",
-                {"type": "object", "properties": {}, "additionalProperties": False},
+                {
+                    "type": "object",
+                    "properties": {
+                        "programs": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "false: leave out the busiest programs",
+                        }
+                    },
+                    "additionalProperties": False,
+                },
                 self.stats,
                 side_effect=False,
                 spoken_summary=lambda _a: "check the PC",

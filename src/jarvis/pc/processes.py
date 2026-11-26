@@ -8,6 +8,10 @@ that exact process; just before the signal, the process is held by a pidfd and c
 PID that ended and was reused in between is never signalled. A request heard in PC audio may stop
 nothing.
 
+Without a name, `find_processes` lists every running program of the owner's instead, with its
+processes' resident memory and CPU added up (`usage` gives the same to `pc_stats`). That listing
+shows no PID and binds none: a program in it is stopped only after a by-name find.
+
 Processes are read from /proc, and window titles from Hyprland's own socket, so finding starts no
 program. Program names and window titles are other programs' words: the listing carries the
 `process` origin and reaches the model as data.
@@ -60,8 +64,8 @@ STAT_PPID, STAT_FLAGS, STAT_START = 1, 6, 19  # fields 4, 9 and 22, counted afte
 STAT_UTIME, STAT_STIME = 11, 12  # fields 14 and 15
 MINUTE_S, HOUR_S, DAY_S = 60, 3600, 86400
 
-# Programs never listed or stopped, by the casefolded name of their command, executable or
-# argv[0], with why.
+# Programs never stopped (never matched by name, marked in a listing of all), by the casefolded
+# name of their command, executable or argv[0], with why.
 PROTECTED_PROGRAMS = {
     "systemd": "the service manager: stopping it ends the session",
     "(sd-pam)": "part of the user's service manager",
@@ -103,19 +107,19 @@ PROTECTED_PROGRAMS = {
     "fcitx5": "the input method: typing in other scripts and languages",
 }
 
-# Programs never listed or stopped, by the start of their casefolded name, with why.
+# Programs never stopped (as above), by the start of their casefolded name, with why.
 PROTECTED_PREFIXES = {
     "gvfs": "GNOME's virtual file systems: mounts, the trash and network shares",
     "omarchy-": "one of Omarchy's own desktop helpers: its watchers and launchers",
 }
 
-# Systemd units whose processes are never listed or stopped, by the last part of their cgroup.
+# Systemd units whose processes are never stopped (as above), by the last part of their cgroup.
 PROTECTED_UNITS = {
     JARVIS_UNIT: "Jarvis's voice service",
     STRATA_UNIT: "the model server Jarvis thinks with",
 }
 
-# Processes never listed or stopped for what they are, whatever their name.
+# Processes never stopped (as above) for what they are, whatever their name.
 PROTECTED_RULES = {
     "init": "PID 1, the system's service manager",
     "kernel": "a kernel thread, part of Linux itself",
@@ -185,7 +189,8 @@ class _Program:
     rss: int = 0  # bytes
     ticks: int = 0  # CPU ticks over the sample
     start: int = 0  # the newest process's
-    never: str | None = None  # why it is never stopped, when it is not
+    never: str | None = None  # why some or all of its processes are never stopped
+    stoppable: int = 0  # how many of its processes may be stopped
 
 
 @dataclass(slots=True)
@@ -306,6 +311,7 @@ class ProcessOps:
         clock: Callable[[], float] = time.time,
         ticks_per_s: int | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        timer: Callable[[], float] = time.monotonic,
         page_size: int | None = None,
         cpus: int | None = None,
     ) -> None:
@@ -319,6 +325,7 @@ class ProcessOps:
         self._clock = clock
         self._ticks = ticks_per_s or os.sysconf("SC_CLK_TCK")
         self._sleep = sleep
+        self._timer = timer
         self._page = page_size or os.sysconf("SC_PAGE_SIZE")
         self._cpus = cpus or os.cpu_count() or 1
         self._lock = threading.Lock()
@@ -566,29 +573,36 @@ class ProcessOps:
         except IndexError, ValueError:
             return 0
 
-    def _programs(self) -> list[_Program]:
-        """Return the owner's running programs, each with its processes added up.
+    def _programs(self) -> tuple[list[_Program], float]:
+        """Return the owner's running programs, each with its processes added up, and the sample.
 
-        CPU use is measured over `CPU_SAMPLE_S`: the processes' CPU ticks before and after.
+        CPU use is the processes' CPU ticks before and after a wait of `CPU_SAMPLE_S`, over the
+        time that really passed between the two readings (never less than the wait).
         """
         before = self._table()
+        began = self._timer()
         self._sleep(CPU_SAMPLE_S)
         table = self._table()
+        sample_s = max(CPU_SAMPLE_S, self._timer() - began)
         guarded = self._guarded(table)
-        programs: dict[tuple[str, str | None], _Program] = {}
+        programs: dict[str, _Program] = {}
         for proc in table.values():
             if proc.state in {"Z", "X"} or proc.kernel or not self._owned(proc):
                 continue
             never = self._protection(proc, table, guarded)
             name = self._program(self._top_of_same_program(proc, table))
-            item = programs.setdefault((name, never), _Program(name, never=never))
+            item = programs.setdefault(name, _Program(name))
+            if never is None:
+                item.stoppable += 1
+            elif item.never is None:
+                item.never = never
             item.pids.append(proc.pid)
             item.rss += self._rss(proc.pid)
             item.start = max(item.start, proc.start)
             old = before.get(proc.pid)
             if old is not None and old.start == proc.start:
                 item.ticks += max(0, proc.cpu_ticks - old.cpu_ticks)
-        return list(programs.values())
+        return list(programs.values()), sample_s
 
     def _top_of_same_program(self, proc: _Proc, table: dict[int, _Proc]) -> _Proc:
         """Return the topmost ancestor running the same executable: a browser's for its tabs."""
@@ -602,39 +616,39 @@ class ProcessOps:
             top = parent
         return top
 
-    def _cpu_scale(self) -> float:
+    def _cpu_scale(self, sample_s: float) -> float:
         """Return what one CPU tick in the sample is as a share of the whole processor (percent)."""
-        return 100 / self._ticks / CPU_SAMPLE_S / self._cpus
+        return 100 / self._ticks / sample_s / self._cpus
 
     def usage(self) -> list[Usage]:
         """Return every running program of the owner's with its memory and CPU use now."""
-        scale = self._cpu_scale()
-        return [
-            Usage(item.name, len(item.pids), item.rss, item.ticks * scale)
-            for item in self._programs()
-        ]
+        programs, sample_s = self._programs()
+        scale = self._cpu_scale(sample_s)
+        return [Usage(item.name, len(item.pids), item.rss, item.ticks * scale) for item in programs]
 
-    def _program_line(self, item: _Program, windows: dict[int, Window]) -> str:
+    def _program_line(self, item: _Program, windows: dict[int, Window], scale: float) -> str:
         size = f"{item.rss / GIB:.1f} GiB" if item.rss >= GIB else f"{item.rss // MIB} MiB"
-        cpu = item.ticks * self._cpu_scale()
         count = len(item.pids)
         parts = [
             f"- {item.name}: {count} process{'es' if count != 1 else ''}",
-            size,
-            f"{cpu:.0f}% CPU",
+            f"{size} resident",
+            f"{item.ticks * scale:.0f}% CPU",
         ]
         window = next((windows[pid] for pid in sorted(item.pids) if pid in windows), None)
         if window is not None and window.title.strip():
             parts.append(f'window "{_printable(window.title, MAX_TITLE)}"')
         with contextlib.suppress(OSError, ValueError):
             parts.append(self._age(item.start).replace("started", "newest started"))
-        if item.never is not None:
+        if item.never is not None and item.stoppable:
+            parts.append(f"some of its processes are never stopped ({item.never})")
+        elif item.never is not None:
             parts.append(f"never stopped ({item.never})")
         return ", ".join(parts)
 
     def _list_all(self, sort: str, count: int) -> Result:
         """List every running program of the owner's, sorted by `sort`; it binds no PID."""
-        programs = self._programs()
+        programs, sample_s = self._programs()
+        scale = self._cpu_scale(sample_s)
         keys: dict[str, Callable[[_Program], tuple[int, str]]] = {
             "memory": lambda p: (-p.rss, p.name),
             "cpu": lambda p: (-p.ticks, p.name),
@@ -649,7 +663,7 @@ class ProcessOps:
             f"CPU over {CPU_SAMPLE_S:g} s:"
         )
         lines = [head]
-        lines.extend(self._program_line(item, windows) for item in shown)
+        lines.extend(self._program_line(item, windows, scale) for item in shown)
         if len(programs) > len(shown):
             lines.append(f"{len(programs) - len(shown)} more are not listed.")
         lines.append(
