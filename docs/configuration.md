@@ -946,10 +946,11 @@ jobs in it and refuses to add one, rather than writing over the newer jobs. Why 
 
 ## `[acp]`: Jarvis in T3 Code
 
-`jarvis acp` ([ADR 0023](adr/0023-acp-front-end.md)) is what T3 Code starts for a Jarvis provider; add it
-twice, as `jarvis acp` and as `jarvis acp --coding` (every session in that one works in coding mode: the
-coding prompt, `[coding.chat]` over `[chat]`, `coding.tools_off` and `coding.write_roots`, as the chat has them
-in coding mode). On the first request, the provider reloads the configuration and compares the resolved
+`jarvis acp` ([ADR 0023](adr/0023-acp-front-end.md)) is what T3 Code starts for a Jarvis provider. It lists
+the normal and coding modes as two models, each by its run config's model name and what it is for, and a
+thinking effort that starts at the mode's `thinking` (`[chat]`, and `[coding.chat]` over it). A session in
+coding mode works as the chat does in coding mode: the coding prompt, `[coding.chat]` over `[chat]`,
+`coding.tools_off` and `coding.write_roots`. `jarvis acp --coding` makes coding mode the first choice. On the first request, the provider reloads the configuration and compares the resolved
 `strata.run_config` and `strata.coding_run_config` paths. On a local Strata setup with a separate coding
 run config, the first request uses the same switch as `/model coding` and reports the result. With a
 shared run config, it keeps the shared mode and uses the normal context limit. While it answers, the

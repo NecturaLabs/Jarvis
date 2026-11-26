@@ -41,6 +41,10 @@ class FakeAgent:
         super().__init__()
         self.script = script
         self.calls: list[tuple[str, list[Picture]]] = []
+        self.efforts: list[str] = []
+
+    def set_effort(self, level: str) -> None:
+        self.efforts.append(level)
 
     def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
         self.calls.append((text, list(pictures)))
@@ -60,10 +64,14 @@ class Client:
         retry_s: float = 0.01,
         pusher: acp.Pusher | None = None,
         record: Callable[..., None] | None = None,
+        models: Sequence[acp.ModelChoice] = (),
+        agents: dict[str, FakeAgent] | None = None,
     ) -> None:
         super().__init__()
         self.agent = agent or FakeAgent(lambda _t, _h, _p: "ok")
+        self.agents = agents or {}
         self.made: list[str] = []
+        self.made_models: list[tuple[str, str]] = []
         read_in, write_in = os.pipe()
         read_out, write_out = os.pipe()
         self._to_server = os.fdopen(write_in, "w", encoding="utf-8")
@@ -82,6 +90,7 @@ class Client:
             retry_s=retry_s,
             pusher=pusher,
             record=record,
+            models=models,
         )
         self._serving = threading.Thread(
             target=self.server.serve, args=(self._source,), daemon=True
@@ -91,9 +100,10 @@ class Client:
         self._reading.start()
         self._next = 0
 
-    def _make(self, session_id: str) -> FakeAgent:
+    def _make(self, session_id: str, model: str = "") -> FakeAgent:
         self.made.append(session_id)
-        return self.agent
+        self.made_models.append((session_id, model))
+        return self.agents.get(model, self.agent)
 
     def _read(self) -> None:
         for line in self._from_server:
@@ -243,7 +253,7 @@ def test_a_new_session_gets_an_id_and_an_agent_of_its_own() -> None:
 
 
 def test_a_session_that_cannot_start_says_why() -> None:
-    def refuse(_session: str) -> FakeAgent:
+    def refuse(_session: str, _model: str = "") -> FakeAgent:
         msg = "no Strata API key; run `jarvis setup`"
         raise StartError(msg)
 
@@ -927,7 +937,7 @@ def test_a_marked_prompt_with_a_huge_number_in_its_tag_is_refused_and_the_server
 
 
 def test_a_failure_in_a_handler_is_an_error_answer_and_never_ends_the_loop() -> None:
-    def broken(_session: str) -> FakeAgent:
+    def broken(_session: str, _model: str = "") -> FakeAgent:
         msg = "private detail"
         raise PermissionError(msg)
 
@@ -1266,7 +1276,7 @@ def test_a_session_that_fails_to_start_does_not_cost_the_oldest_one_its_place(
     with Client() as client:
         first = client.start()
 
-        def broken(_session: str) -> FakeAgent:
+        def broken(_session: str, _model: str = "") -> FakeAgent:
             msg = "no model"
             raise StartError(msg)
 
@@ -1444,7 +1454,7 @@ def test_a_worker_flushing_announcements_does_not_hold_off_cancel(
 ) -> None:
     agent = FakeAgent(lambda _t, _h, _p: "ok")
     out = io.StringIO()
-    server = AcpServer(lambda _session: agent, out)
+    server = AcpServer(lambda _session, _model: agent, out)
     run = acp._Run()  # pyright: ignore[reportPrivateUsage] - reserve a run for the flush
     session = acp._Session("session", agent, run=run)  # pyright: ignore[reportPrivateUsage] - same
     for number in (1, 2):
@@ -1618,3 +1628,166 @@ def test_the_command_builds_the_real_pusher_even_with_the_push_off(
     assert isinstance(pusher, T3Push)
     assert pusher.marked("⟲ Jarvis: hi")
     assert pusher.verified("⟲ Jarvis: hi") is None
+
+
+# Models and effort: the app's one list of Jarvis's modes, each with its thinking effort
+
+MODELS = (
+    acp.ModelChoice("normal", "example-model-a", "Everyday requests", "none"),
+    acp.ModelChoice("coding", "example-model-b", "Programming work", "medium"),
+)
+
+
+def _options(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {str(option["id"]): option for option in result["configOptions"]}
+
+
+def _models_client() -> tuple[Client, FakeAgent, FakeAgent]:
+    normal = FakeAgent(lambda _t, _h, _p: "normal answer")
+    coding = FakeAgent(lambda _t, _h, _p: "coding answer")
+    client = Client(models=MODELS, agents={"normal": normal, "coding": coding})
+    return client, normal, coding
+
+
+def _set(client: Client, session: str, option: str, value: str) -> dict[str, Any]:
+    return client.ask(
+        "session/set_config_option", {"sessionId": session, "configId": option, "value": value}
+    )
+
+
+def test_a_new_session_offers_the_models_by_name_with_their_purpose_and_effort() -> None:
+    client, normal, _coding = _models_client()
+    with client:
+        client.ask("initialize", {"protocolVersion": 1})
+        result = client.ask("session/new", {"cwd": "/", "mcpServers": []})["result"]
+
+    options = _options(result)
+    model = options[acp.MODEL_OPTION]
+    assert model["category"] == "model"
+    assert model["type"] == "select"
+    assert model["currentValue"] == "normal"
+    assert model["options"] == [
+        {"value": "normal", "name": "example-model-a", "description": "Everyday requests"},
+        {"value": "coding", "name": "example-model-b", "description": "Programming work"},
+    ]
+    effort = options[acp.EFFORT_OPTION]
+    assert effort["category"] == "thought_level"
+    assert effort["type"] == "select"
+    assert effort["currentValue"] == "none"
+    assert [choice["value"] for choice in effort["options"]] == ["none", "low", "medium", "high"]
+    listed = result["models"]
+    assert listed["currentModelId"] == "normal"
+    assert [
+        (m["modelId"], m["name"], m["_meta"]["reasoningEffort"]) for m in listed["availableModels"]
+    ] == [("normal", "example-model-a", "none"), ("coding", "example-model-b", "medium")]
+    efforts = listed["availableModels"][0]["_meta"]["reasoningEfforts"]
+    assert [level["value"] for level in efforts] == ["none", "low", "medium", "high"]
+    assert client.made_models == [(str(result["sessionId"]), "normal")]
+    assert normal.efforts == ["none"]
+
+
+def test_choosing_a_model_moves_the_session_to_its_agent_at_that_models_effort() -> None:
+    client, normal, coding = _models_client()
+    with client:
+        session = client.start()
+        answer = _set(client, session, acp.MODEL_OPTION, "coding")["result"]
+        reply = client.response(client.prompt(session, text("write a function")))
+
+    options = _options(answer)
+    assert options[acp.MODEL_OPTION]["currentValue"] == "coding"
+    assert options[acp.EFFORT_OPTION]["currentValue"] == "medium"
+    assert coding.efforts == ["medium"]
+    assert reply["result"] == {"stopReason": "end_turn"}
+    assert [call[0] for call in coding.calls] == ["write a function"]
+    assert normal.calls == []
+
+
+def test_going_back_to_a_model_keeps_its_agent_and_its_conversation() -> None:
+    client, _normal, _coding = _models_client()
+    with client:
+        session = client.start()
+        _set(client, session, acp.MODEL_OPTION, "coding")
+        _set(client, session, acp.MODEL_OPTION, "normal")
+        _set(client, session, acp.MODEL_OPTION, "coding")
+
+    assert [model for _sid, model in client.made_models] == ["normal", "coding"]
+
+
+def test_choosing_an_effort_sets_it_on_the_sessions_agent() -> None:
+    client, normal, _coding = _models_client()
+    with client:
+        session = client.start()
+        answer = _set(client, session, acp.EFFORT_OPTION, "high")["result"]
+
+    assert _options(answer)[acp.EFFORT_OPTION]["currentValue"] == "high"
+    assert normal.efforts == ["none", "high"]
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [("model", "unknown"), ("effort", "extreme"), ("mode", "normal")],
+)
+def test_an_option_or_value_jarvis_does_not_have_is_invalid_params(option: str, value: str) -> None:
+    client, normal, _coding = _models_client()
+    with client:
+        session = client.start()
+        answer = _set(client, session, option, value)
+
+    assert answer["error"]["code"] == acp.INVALID_PARAMS
+    assert normal.efforts == ["none"]
+    assert client.made_models == [(session, "normal")]
+
+
+def test_an_option_is_not_changed_while_a_request_is_being_answered() -> None:
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow(_t: str, _h: Hooks, _p: Sequence[Picture]) -> str:
+        started.set()
+        release.wait(WAIT_S)
+        return "done"
+
+    normal = FakeAgent(slow)
+    client = Client(models=MODELS, agents={"normal": normal})
+    with client:
+        session = client.start()
+        prompt = client.prompt(session, text("think"))
+        assert started.wait(WAIT_S)
+        answer = _set(client, session, acp.EFFORT_OPTION, "high")
+        release.set()
+        client.response(prompt)
+
+    assert answer["error"]["code"] == acp.BUSY
+    assert normal.efforts == ["none"]
+
+
+def test_without_models_a_session_has_no_options_to_set() -> None:
+    with Client() as client:
+        client.ask("initialize", {"protocolVersion": 1})
+        result = client.ask("session/new", {"cwd": "/", "mcpServers": []})["result"]
+        session = str(result["sessionId"])
+        answer = _set(client, session, acp.EFFORT_OPTION, "high")
+
+    assert set(result) == {"sessionId"}
+    assert answer["error"]["code"] == acp.INVALID_PARAMS
+    assert client.agent.efforts == []
+
+
+def test_a_model_whose_agent_cannot_be_made_leaves_the_session_as_it_was() -> None:
+    normal = FakeAgent(lambda _t, _h, _p: "normal answer")
+    client = Client(models=MODELS, agents={"normal": normal})
+
+    def refuse(_session: str, model: str = "") -> FakeAgent:
+        if model == "coding":
+            raise StartError("coding mode is not set up")
+        return normal
+
+    client.server._make_agent = refuse  # pyright: ignore[reportPrivateUsage] - the factory fails
+    with client:
+        session = client.start()
+        answer = _set(client, session, acp.MODEL_OPTION, "coding")
+        reply = client.response(client.prompt(session, text("hello")))
+
+    assert answer["error"] == {"code": acp.INTERNAL_ERROR, "message": "coding mode is not set up"}
+    assert reply["result"] == {"stopReason": "end_turn"}
+    assert [call[0] for call in normal.calls] == ["hello"]

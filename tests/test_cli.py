@@ -246,7 +246,7 @@ def test_doctor_says_how_to_add_jarvis_to_t3_code_only_where_t3_code_is_set_up(
     assert "Local ACP command" in said[0]
     assert "/opt/bin/jarvis" in said[0]
     assert "and the argument acp;" in said[0]
-    assert said[0].rstrip().endswith("acp --coding for programming work")
+    assert said[0].rstrip().endswith("it lists the normal and coding modes as models")
 
 
 def test_doctor_looks_for_t3_code_where_t3code_home_says(
@@ -290,6 +290,10 @@ class _Said:
     def __init__(self) -> None:
         super().__init__()
         self.asked: list[str] = []
+        self.thinking: list[tuple[str, str]] = []
+
+    def set_thinking(self, section: config.AgentConfig) -> None:
+        self.thinking.append((section.thinking, section.thinking_max))
 
     def handle(self, text: str, hooks: Hooks, *, pictures: object = ()) -> str:  # ruff: ignore[unused-method-argument] - the agent's call
         self.asked.append(text)
@@ -306,7 +310,8 @@ class _Acp:
     switch_configs: list[config.Config] = field(default_factory=list[config.Config])
     reply: str = "Now in coding mode: flash-coder, loaded in 3 s."
     agent: _Said = field(default_factory=_Said)
-    made: Callable[[str], Any] | None = None
+    made: Callable[..., Any] | None = None
+    models: list[Any] = field(default_factory=list[Any])
 
     def run(self, monkeypatch: pytest.MonkeyPatch, *args: str) -> None:
         def build(cfg: config.Config, **kwargs: object) -> SimpleNamespace:
@@ -322,8 +327,9 @@ class _Acp:
             self.switched.append((to, source))
             return self.reply
 
-        def serve(_source: object, _out: object, make: Callable[[str], Any], **_kw: object) -> int:
+        def serve(_source: object, _out: object, make: Callable[..., Any], **kw: object) -> int:
             self.made = make
+            self.models = list(cast("list[Any]", kw["models"]))
             return 0
 
         def claim() -> tuple[None, None]:
@@ -363,6 +369,89 @@ def test_acp_builds_the_normal_agent_that_follows_the_owners_mode(
     assert acp.built[0].get("mode") is None
     assert acp.built[0]["units"] is not None
     assert acp.switched == []
+
+
+def test_acp_lists_both_modes_by_their_models_name_purpose_and_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def model_name(_cfg: config.Config, mode: str) -> str:
+        return f"{mode}-model"
+
+    monkeypatch.setattr(modes, "model_name", model_name)
+    acp = _Acp()
+    acp.run(monkeypatch)
+
+    assert [(m.id, m.name, m.effort) for m in acp.models] == [
+        ("normal", "normal-model", "none"),
+        ("coding", "coding-model", "medium"),
+    ]
+    assert all(m.description for m in acp.models)
+    assert acp.models[0].description != acp.models[1].description
+
+
+def test_acp_coding_lists_coding_mode_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+
+    assert [m.id for m in acp.models] == ["coding", "normal"]
+
+
+def test_acp_makes_each_sessions_agent_for_the_mode_it_chose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    acp = _Acp()
+    acp.run(monkeypatch)
+    assert acp.made is not None
+    hooks = Hooks(confirm=lambda _q: False)
+
+    normal, coding = acp.made("s1", "normal"), acp.made("s1", "coding")
+
+    assert normal.handle("one", hooks) == "answer"
+    assert coding.handle("two", hooks) == "answer"
+    assert acp.built[0].get("mode") is None
+    assert acp.built[0]["units"] is not None
+    assert acp.built[1]["mode"] == "coding"
+
+
+@pytest.mark.parametrize("mode", ["normal", "coding"])
+def test_acp_sets_a_sessions_effort_raising_the_ceiling_with_it(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    config.save(config.Config(chat=config.ChatConfig(thinking_max="low")))
+    if mode == "coding":
+        config.save(
+            config.Config(
+                chat=config.ChatConfig(thinking_max="low"),
+                coding=config.CodingConfig(
+                    chat=config.CodingChatConfig(thinking="none", thinking_max="low")
+                ),
+            )
+        )
+    acp = _Acp()
+    acp.run(monkeypatch)
+    assert acp.made is not None
+    session = acp.made("s1", mode)
+
+    session.set_effort("high")
+    session.set_effort("none")
+
+    assert acp.agent.thinking == [("high", "high"), ("none", "low")]
+
+
+def test_acp_coding_keeps_the_chosen_effort_on_the_agent_made_for_a_new_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+    assert acp.made is not None
+    session = acp.made("s1")
+    session.set_effort("high")
+    _own_coding_model(tmp_path)
+
+    assert session.handle("hello", Hooks(confirm=lambda _q: False)) == "answer"
+
+    assert len(acp.built) == 2  # the agent was made again for the coding model's config
+    assert acp.agent.thinking[-1][0] == "high"
 
 
 def test_acp_coding_builds_agents_fixed_in_coding_mode_without_touching_the_model(

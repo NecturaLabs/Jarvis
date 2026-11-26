@@ -5,8 +5,14 @@ A coding app that speaks ACP (T3 Code's "Local ACP command") starts `jarvis acp`
 second one: each ACP session is one chat conversation (`build(via="acp")`, its own memory, written
 replies), and the model is the one Strata already serves. Nothing here is spoken.
 
-Owned here: the transport, `initialize`, `session/new`, `session/prompt` and `session/cancel`.
-Anything else is "method not found". Jarvis loads no MCP servers and no sessions are kept across
+Owned here: the transport, `initialize`, `session/new`, `session/prompt`, `session/cancel`,
+`session/close` and `session/set_config_option`. Anything else is "method not found".
+
+With `models` (Jarvis's modes, `ModelChoice`) a session offers them as one model list, each by
+the name of the model that serves it and what it is for, and a thinking effort (`thought_level`)
+that starts at the chosen mode's own. Each mode is its own agent in the session, made when it is
+first chosen and kept, so going back to a mode keeps its conversation. Neither changes while a
+request is being answered. Jarvis loads no MCP servers and no sessions are kept across
 runs, so `mcpServers` and `cwd` are ignored and `loadSession` is off.
 
 Announcements (a reminder, a watch alert: `jarvis.announce`) the voice service makes reach every
@@ -42,6 +48,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TextIO
 
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.announce import Announcement
+from jarvis.config import EFFORTS
 from jarvis.jsonutil import obj, objs
 from jarvis.pictures import MAX_FILE_BYTES, Picture, PictureError, prepare
 from jarvis.policy import is_yes
@@ -75,6 +82,8 @@ FORGED = "That looks like one of my announcements but its tag is not valid, so I
 NO_WORDS = "(a picture, no words)"
 ASK_HOW = "Reply yes to go ahead. Anything else cancels it."
 SEPARATOR = "\n\n"
+MODEL_OPTION = "model"
+EFFORT_OPTION = "effort"
 
 # JSON-RPC 2.0 error codes.
 PARSE_ERROR = -32700
@@ -90,11 +99,25 @@ class StartError(Exception):
 
 
 class AgentSession(Protocol):
-    """What a session needs of the agent: `Agent.handle`, as the chat calls it."""
+    """What a session needs of the agent: `Agent.handle`, as the chat calls it, and its effort."""
 
     def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
         """Answer one typed request and return the reply."""
         ...
+
+    def set_effort(self, level: str) -> None:
+        """Think at `level` (one of `config.EFFORTS`) from the next request on."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class ModelChoice:
+    """One of Jarvis's modes as the app lists it: its id, its model's name, its use, its effort."""
+
+    id: str
+    name: str
+    description: str
+    effort: str
 
 
 class Feed(Protocol):
@@ -162,7 +185,7 @@ class _Run:
 @dataclass(slots=True)
 class _Session:
     id: str
-    agent: AgentSession
+    agent: AgentSession  # the chosen model's
     lock: threading.Lock = field(default_factory=threading.Lock)
     run: _Run | None = None
     pending: dict[tuple[int, int], Announcement | Delivery] = field(
@@ -171,6 +194,9 @@ class _Session:
     cwd: str = ""  # the project folder the client opened it in, when it said
     stops: int = 0  # how many times the client stopped it (`session/cancel`)
     closed: bool = False
+    model: str = ""  # the chosen `ModelChoice.id`, "" when the server offers none
+    effort: str = ""
+    agents: dict[str, AgentSession] = field(default_factory=dict[str, AgentSession])
 
     def keep(self, note: Announcement | Delivery) -> None:
         """Keep this copy of the announcement for the next reply."""
@@ -184,7 +210,7 @@ class AcpServer:
 
     def __init__(  # ruff: ignore[too-many-arguments] - a connection's collaborators and options
         self,
-        make_agent: Callable[[str], AgentSession],
+        make_agent: Callable[[str, str], AgentSession],
         out: TextIO,
         *,
         names: Sequence[str] = (),
@@ -194,8 +220,12 @@ class AcpServer:
         retry_s: float = FEED_RETRY_S,
         pusher: Pusher | None = None,
         record: Callable[..., None] | None = None,
+        models: Sequence[ModelChoice] = (),
     ) -> None:
-        """Serve sessions whose agents `make_agent` makes (it takes the session's id).
+        """Serve sessions whose agents `make_agent` makes (it takes the session's id and model).
+
+        With `models` each session starts on the first and may choose another; without, the
+        model `make_agent` is given is "".
 
         `names` are what the assistant is called, so "yes, Jarvis" is a yes; `question_s` is how
         long a question waits for its answer. `follow` opens the running Jarvis's announcements
@@ -218,6 +248,7 @@ class AcpServer:
         self._follow = follow
         self._pusher = pusher
         self._record = record
+        self._models = tuple(models)
         self._pushes: collections.deque[tuple[Announcement, set[str]]] = collections.deque(
             maxlen=MAX_PUSHES
         )
@@ -434,6 +465,8 @@ class AcpServer:
                 self._prompt(request_id, params)
             case "session/close":
                 self._result(request_id, self._close_session(params))
+            case "session/set_config_option":
+                self._result(request_id, self._set_option(params))
             case _:
                 raise _Rpc(METHOD_NOT_FOUND, f"method not found: {method}")
 
@@ -459,16 +492,125 @@ class AcpServer:
         if full and all(session.run is not None for session in self._sessions.values()):
             raise _Rpc(INTERNAL_ERROR, f"at most {MAX_SESSIONS} sessions at once, all busy")
         session_id = f"jarvis-{secrets.token_hex(6)}"
-        try:
-            agent = self._make_agent(session_id)
-        except StartError as exc:
-            raise _Rpc(INTERNAL_ERROR, str(exc)) from exc
+        first = self._models[0] if self._models else None
+        model = first.id if first is not None else ""
+        agent = self._agent_for(session_id, model)
+        if first is not None:
+            agent.set_effort(first.effort)
         if full:
             self._evict_idle()
         cwd = params.get("cwd")
         folder = cwd if isinstance(cwd, str) and cwd.startswith("/") and "\0" not in cwd else ""
-        self._sessions[session_id] = _Session(session_id, agent, cwd=folder)
-        return {"sessionId": session_id}
+        session = _Session(session_id, agent, cwd=folder, model=model)
+        if first is not None:
+            session.effort = first.effort
+            session.agents[model] = agent
+        self._sessions[session_id] = session
+        if first is None:
+            return {"sessionId": session_id}
+        return {"sessionId": session_id, **self._offered(session)}
+
+    def _agent_for(self, session_id: str, model: str) -> AgentSession:
+        """Make a session's agent for `model`.
+
+        Raises:
+            _Rpc: it cannot be made; the message says why.
+        """
+        try:
+            return self._make_agent(session_id, model)
+        except StartError as exc:
+            raise _Rpc(INTERNAL_ERROR, str(exc)) from exc
+
+    def _offered(self, session: _Session) -> dict[str, Any]:
+        """Return the session's options and its model list, as the app shows them."""
+        efforts = [{"value": level, "name": level.capitalize()} for level in EFFORTS]
+        listed = [
+            {"value": choice.id, "name": choice.name, "description": choice.description}
+            for choice in self._models
+        ]
+        return {
+            "configOptions": [
+                {
+                    "id": MODEL_OPTION,
+                    "name": "Model",
+                    "category": "model",
+                    "type": "select",
+                    "currentValue": session.model,
+                    "options": listed,
+                },
+                {
+                    "id": EFFORT_OPTION,
+                    "name": "Effort",
+                    "description": "How hard the model thinks before it answers.",
+                    "category": "thought_level",
+                    "type": "select",
+                    "currentValue": session.effort,
+                    "options": efforts,
+                },
+            ],
+            "models": {
+                "currentModelId": session.model,
+                "availableModels": [
+                    {
+                        "modelId": choice.id,
+                        "name": choice.name,
+                        "description": choice.description,
+                        "_meta": {
+                            "reasoningEfforts": [
+                                {"value": level, "label": level.capitalize()} for level in EFFORTS
+                            ],
+                            "reasoningEffort": choice.effort,
+                        },
+                    }
+                    for choice in self._models
+                ],
+            },
+        }
+
+    def _set_option(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Choose the session's model or its effort; answer with every option as it now is.
+
+        A new model is its own agent, made the first time it is chosen, at its own effort.
+
+        Raises:
+            _Rpc: no such session, option or value; a request is being answered; or the
+                chosen model's agent cannot be made.
+        """
+        session = self._session(params)
+        option, value = params.get("configId"), params.get("value")
+        choice = next((m for m in self._models if m.id == value), None)
+        if option == MODEL_OPTION and choice is not None:
+            with session.lock:
+                self._idle(session)
+                agent = session.agents.get(choice.id)
+            if agent is None:
+                agent = self._agent_for(session.id, choice.id)  # may take a while: unlocked
+            with session.lock:
+                self._idle(session)
+                session.agents.setdefault(choice.id, agent)
+                session.agent = session.agents[choice.id]
+                session.model, session.effort = choice.id, choice.effort
+                session.agent.set_effort(choice.effort)
+                return self._offered(session)
+        if option == EFFORT_OPTION and self._models and value in EFFORTS:
+            with session.lock:
+                self._idle(session)
+                session.agent.set_effort(str(value))
+                session.effort = str(value)
+                return self._offered(session)
+        raise _Rpc(INVALID_PARAMS, f"no option {option} with the value {value}")
+
+    @staticmethod
+    def _idle(session: _Session) -> None:
+        """Refuse a change while the session answers a request (the lock held).
+
+        Raises:
+            _Rpc: the session is closed or a request is in flight.
+        """
+        if session.closed:
+            raise _Rpc(INVALID_PARAMS, "unknown session")
+        if session.run is not None:
+            raise _Rpc(BUSY, "a request is still being answered")
 
     def _evict_idle(self) -> None:
         """Make room for a new session after its agent has been built.
@@ -849,19 +991,20 @@ def _picture(block: dict[str, Any], number: int) -> Picture:
 def serve(  # ruff: ignore[too-many-arguments] - what one connection is given
     source: TextIO,
     out: TextIO,
-    make_agent: Callable[[str], AgentSession],
+    make_agent: Callable[[str, str], AgentSession],
     *,
     names: Sequence[str] = (),
     version: str = "",
     follow: Callable[[], Feed | None] | None = None,
     pusher: Pusher | None = None,
     record: Callable[..., None] | None = None,
+    models: Sequence[ModelChoice] = (),
 ) -> int:
     """Serve one ACP connection over `source` and `out`; return the exit code (0 at its end).
 
     `follow` opens the running Jarvis's announcements (`control.subscribe`), tried again while
     none runs; `pusher` sends them into the client's own threads as well; `record` writes
-    the audit log's events.
+    the audit log's events; `models` are the modes a session may choose (`ModelChoice`).
     """
     server = AcpServer(
         make_agent,
@@ -871,6 +1014,7 @@ def serve(  # ruff: ignore[too-many-arguments] - what one connection is given
         follow=follow,
         pusher=pusher,
         record=record,
+        models=models,
     )
     server.serve(source)
     return 0

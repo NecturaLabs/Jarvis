@@ -123,10 +123,19 @@ Add `jarvis acp`, a front end to the agent `jarvis chat` already has.
 Showing tool steps (`tool_call` updates) needs step events from the agent; showing a picture Jarvis
 fetched needs the client to take an image content block in a reply.
 
-## Coding mode: `jarvis acp --coding`
+## One provider, two models
 
-T3 Code can list the program twice, so there are two providers: `jarvis acp` and `jarvis acp --coding`. Both are
-the same front end and the one agent. In a `--coding` process every session is built in coding mode
+The modes are offered as the session's models, not as two providers: `session/new` returns a `model`
+select (each mode by the name of the model that serves it, with what it is for) and a `thought_level`
+select (`none` to `high`), and also `models.availableModels`, whose `_meta.reasoningEffort` is each mode's
+own starting effort (T3 Code reads it from there). `session/set_config_option` changes either while no
+request runs. Each mode is its own agent in the session, made when first chosen and kept, so going back
+keeps its conversation; a new mode starts at its own effort. A client that lists one section per provider
+then shows Jarvis once. `--coding` makes coding mode the first one.
+
+## Coding mode
+
+A session in coding mode is built in coding mode
 (`build(..., mode="coding")`): the chat's coding prompt part and `[coding.chat]` over `[chat]`, `coding.tools_off` and
 `coding.write_roots`, as the chat gets in coding mode. The first request reloads the configuration and compares
 the resolved run-config paths. If coding has its own run config, the request uses the same switch as
@@ -134,6 +143,7 @@ the resolved run-config paths. If coding has its own run config, the request use
 on the next request. Cancellation while waiting for either switch lock skips it. With a shared run
 config, the provider keeps the shared mode and budgets for the normal Strata context on local setups.
 
-The coding provider holds the shared answering lock while handling a request and resets the idle timer
+A coding-mode session holds the shared answering lock while handling a request and resets the idle timer
 when it finishes in shared coding mode. The voice service can return Strata to normal after the idle interval.
-The provider's prompt and tools stay in coding mode. The push finds the newest open thread of either provider.
+The session's prompt and tools stay in coding mode. The push finds the newest open thread that runs Jarvis
+(`jarvis acp`, or `jarvis acp --coding` as set up before the modes became models).

@@ -20,7 +20,7 @@ import threading
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO, cast
 from urllib.parse import urlsplit
 
 from jarvis import (
@@ -259,8 +259,8 @@ _DETAILS = {
         "with the one Jarvis agent, answered in text. A question about an action is asked in "
         "the reply and your next message is the answer: a clear yes runs it, anything else "
         "cancels it. In T3 Code: Settings, Providers, Add provider, Local ACP command, with "
-        "this program and the argument acp; add it a second time with the arguments acp "
-        "--coding for programming work (coding mode in every session)."
+        "this program and the argument acp. The app lists Jarvis's two modes as models, each "
+        "by its model's name and what it is for, with a thinking effort to choose."
     ),
     "restart": (
         "Restarts the voice service. A stopped model server is started; a running one is "
@@ -497,8 +497,8 @@ def build_parser() -> argparse.ArgumentParser:
     made["acp"].add_argument(
         "--coding",
         action="store_true",
-        help="every session works in coding mode: the coding prompt, limits and tools, and the "
-        "coding model when it has one of its own",
+        help="a new session starts in coding mode (the coding prompt, limits and tools, and the "
+        "coding model when it has one of its own) rather than the normal mode",
     )
     made["status"].add_argument(
         "--json", action="store_true", help="print one JSON object (for a status bar)"
@@ -1360,15 +1360,68 @@ class _CodingFirst:
             return self._ready, line
 
 
+# What each mode is for, as a coding app lists it under the model's name.
+ACP_PURPOSE: dict[modes.Mode, str] = {
+    "normal": "Everyday requests: questions, the web, music and the PC",
+    "coding": "Programming work: the coding prompt, tools and room for long tasks",
+}
+
+
+def _acp_models(cfg: config.Config, *, coding_first: bool) -> list[acp.ModelChoice]:
+    """Return Jarvis's modes as a coding app lists them: model name, purpose, starting effort."""
+    choices = [
+        acp.ModelChoice(
+            mode,
+            modes.model_name(cfg, mode),
+            ACP_PURPOSE[mode],
+            modes.effective(cfg, mode).chat.thinking,
+        )
+        for mode in modes.MODES
+    ]
+    return sorted(choices, key=lambda choice: choice.id != "coding") if coding_first else choices
+
+
+def _at_effort(section: config.ChatConfig, level: str) -> config.ChatConfig:
+    """Return `section` thinking at `level`, its ceiling raised to it when lower (as `/effort`)."""
+    effort = cast("config.Effort", level)
+    ceiling = section.thinking_max
+    if config.EFFORTS.index(ceiling) < config.EFFORTS.index(effort):
+        ceiling = effort
+    return section.model_copy(update={"thinking": effort, "thinking_max": ceiling})
+
+
+class _NormalSession:
+    """A `jarvis acp` session's agent in the normal mode, which follows the owner's mode."""
+
+    def __init__(self, cfg: config.Config, session_id: str) -> None:
+        super().__init__()
+        self._section = cfg.chat
+        self._agent = build(cfg, via="acp", session=session_id, units=StrataUnits()).agent
+
+    def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
+        """Answer `text`."""
+        return self._agent.handle(text, hooks, pictures=pictures)
+
+    def set_effort(self, level: str) -> None:
+        """Think at `level` from the next request on."""
+        self._agent.set_thinking(_at_effort(self._section, level))
+
+
 class _CodingSession:
     """An agent whose first request waits for the coding model, and says how that went."""
 
     def __init__(self, cfg: config.Config, session_id: str, first: _CodingFirst) -> None:
         super().__init__()
-        self._config = cfg
+        self._config: config.Config = cfg
         self._session_id = session_id
         self._agent = build(cfg, via="acp", session=session_id, mode="coding").agent
         self._first = first
+        self._effort = ""  # the effort the session chose, kept across a new agent
+
+    def set_effort(self, level: str) -> None:
+        """Think at `level` from the next request on."""
+        self._effort = level
+        self._agent.set_thinking(_at_effort(modes.effective(self._config, "coding").chat, level))
 
     def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
         """Answer `text` on the coding model; a switch that failed is the answer instead."""
@@ -1381,6 +1434,8 @@ class _CodingSession:
             except SetupError as exc:
                 return str(exc)
             self._config = cfg
+            if self._effort:
+                self.set_effort(self._effort)
         if line and hooks.draft is not None:
             hooks.draft(line)
         if hooks.cancelled():
@@ -1392,13 +1447,14 @@ def cmd_acp(args: argparse.Namespace) -> int:
     """Speak the Agent Client Protocol on standard input and output, for a coding app."""
     cfg = _load()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    first = _CodingFirst() if args.coding else None
+    first = _CodingFirst()
+    default: modes.Mode = "coding" if args.coding else "normal"
 
-    def make(session_id: str) -> acp.AgentSession:
+    def make(session_id: str, model: str = "") -> acp.AgentSession:
         try:
-            if first is None:
-                return build(cfg, via="acp", session=session_id, units=StrataUnits()).agent
-            return _CodingSession(cfg, session_id, first)
+            if (model or default) == "coding":
+                return _CodingSession(cfg, session_id, first)
+            return _NormalSession(cfg, session_id)
         except SetupError as exc:
             raise acp.StartError(str(exc)) from exc
 
@@ -1414,6 +1470,7 @@ def cmd_acp(args: argparse.Namespace) -> int:
         follow=control.subscribe,
         pusher=pusher,
         record=AuditLog(paths.audit_file(), tags={"via": "acp"}).record,
+        models=_acp_models(cfg, coding_first=args.coding),
     )
 
 
@@ -2201,7 +2258,7 @@ def _t3_notes(cfg: config.Config) -> list[str]:
     notes = [
         (
             f"{head} with the executable {program} and the argument acp; "
-            "add it again with the arguments acp --coding for programming work"
+            "it lists the normal and coding modes as models"
         )
     ]
     pusher = t3push.T3Push(cfg.acp.t3_command, cfg.acp.t3_provider)

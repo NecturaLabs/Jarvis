@@ -19,11 +19,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   Strata already serves, answered in text. Pictures work as in the chat. A question about an action is asked
   in the reply and your next message is the answer; a permission button in the app never stands for your yes
   ([ADR 0023](docs/adr/0023-acp-front-end.md)). `jarvis doctor` says how to add it when T3 Code is set up.
-- `jarvis acp --coding` is Jarvis in coding mode for T3 Code: add the program twice there, with the
-  argument `acp` and with `acp --coding`, to have both. Every session of a `--coding` process works in coding
-  mode, with the coding prompt, `[coding.chat]` limits, tools and write roots. Where coding mode has a model of
-  its own, the first request loads it as `/model coding` does and says so in the reply. A pushed
-  announcement goes to the newest open thread of either provider.
+- `jarvis acp` lists Jarvis's normal and coding modes as the app's models, each under the name of the model
+  that serves it and what it is for, with a thinking effort that starts at the mode's own (`none` and
+  `medium` by default), so T3 Code shows Jarvis once. A thread in coding mode works with the coding prompt,
+  `[coding.chat]` limits, tools and write roots; `--coding` makes coding mode the first choice. Where
+  coding mode has a model of its own, a thread's first request in it loads that model as `/model coding`
+  does and says so in the reply. A pushed announcement goes to the newest open thread that runs Jarvis.
 - Reminders also reach open text front ends: the voice service publishes each line it says as an
   announcement, the control socket streams them to a subscriber (`subscribe`), and `jarvis acp` writes each as
   `Jarvis: <line>` into every session's next reply, since T3 Code shows nothing that arrives between requests.
