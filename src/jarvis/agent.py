@@ -505,6 +505,13 @@ def _wrapped(origin: str, text: str, cap: int) -> str:
     return f"{head}{body}{tail}"
 
 
+def _handed(result: Result, body: str) -> str:
+    """Return `body`, the result as the model gets it, once the operation was told (`delivered`)."""
+    if result.delivered is not None:
+        result.delivered(body)
+    return body
+
+
 def _text(message: Mapping[str, Any]) -> str:
     content: object = message.get("content")
     if isinstance(content, str):
@@ -2180,7 +2187,11 @@ class Agent:
             turn.private = turn.private or result.origin in PRIVATE_ORIGINS
             body = _wrapped(result.origin.value, text, self._limits.tool_text_chars)
         turn.messages.append(
-            {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": body}
+            {
+                "role": "tool",
+                "tool_call_id": str(call.get("id", "")),
+                "content": _handed(result, body),
+            }
         )
         return result
 
@@ -2535,6 +2546,9 @@ class Agent:
             bound = self._attempt(op.prepare, op, args, asked_for)
             if isinstance(bound, _Failed):
                 stopped = bound.result
+                # Nothing ran: the same call may be made again once what refused it changed
+                # (a listing read, say); the step and call caps still bound the retries.
+                turn.seen.discard(asked_for)
             else:
                 args = bound
         digest = action_hash(op.name, args)

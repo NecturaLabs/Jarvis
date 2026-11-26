@@ -217,7 +217,8 @@ class Result:
     `groups` asks the agent to offer those tool groups for the rest of the request (`use_tools`).
     `look` is a picture the model is to see next (a screenshot just taken), when it can see
     pictures; the agent adds it to the conversation as outside data, and says in the result's
-    text whether it did.
+    text whether it did. `delivered` is told the result as the model got it, cut to the agent's
+    cap (and wrapped, for outside text), so an operation can hold to what was really read.
     """
 
     text: str
@@ -233,6 +234,7 @@ class Result:
     mode: str = ""
     groups: tuple[str, ...] = ()
     look: Picture | None = None
+    delivered: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -257,6 +257,16 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A PID or window number counts as read only when its whole row reached the model: a listing the
+  agent cut to fit its cap no longer lets a later call take a row the model never saw. A call that
+  was refused before it could run (a listing not read yet) may be made again in a later step, and a
+  watch that would fail for want of a target, a condition or pictures is refused before the question.
+
+- `stop_process` and a process watch take only a PID from a `find_processes` listing the model has
+  read, as a window number must be: one written beside its listing, in the same message, is refused.
+  A process watch that would be refused (outside text, a PID not listed) is refused before the
+  owner is asked about it.
+
 - Web reads and the browser no longer reach a public address on one of this PC's own networks: its own
   addresses, and a network it reaches without a router, such as the home network's global IPv6 prefix
   (checked at each connection, including for embedded IPv4 addresses). Missing route or local-address
