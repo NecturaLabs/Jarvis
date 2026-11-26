@@ -30,7 +30,7 @@ from jarvis.chat.app import ChatApp
 from jarvis.chat.archive import ChatArchive
 from jarvis.cli import main
 from jarvis.confirmkey import ConfirmKey
-from jarvis.memory import Conversation
+from jarvis.memory import Conversation, Turn
 from jarvis.operations import OperationError
 from jarvis.pc.hearing import Listening
 from jarvis.secretfile import write_private_json
@@ -293,6 +293,7 @@ class _Said:
         super().__init__()
         self.asked: list[str] = []
         self.thinking: list[tuple[str, str]] = []
+        self.memory = Conversation(budget=10_000)
 
     def set_thinking(self, section: config.AgentConfig) -> None:
         self.thinking.append((section.thinking, section.thinking_max))
@@ -561,6 +562,24 @@ def test_acp_coding_uses_the_first_requests_snapshot_for_the_new_model_and_agent
     assert session.handle("hello", Hooks(confirm=lambda _q: False)) == "answer"
     assert acp.switched == [("coding", "acp")]
     assert acp.switch_configs[0] is acp.configs[-1]
+
+
+def test_acp_coding_keeps_a_reopened_sessions_talk_when_it_builds_the_new_models_agent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+    assert acp.made is not None
+    session = acp.made("s1")
+    acp.agent.memory.add(Turn("earlier question", "earlier answer", outside="web"))
+    acp.agent.memory.summary, acp.agent.memory.summary_private = "older talk", True
+    rebuilt = acp.agent = _Said()  # the next build hands out a new agent
+    _own_coding_model(tmp_path)
+
+    assert session.handle("hello", Hooks(confirm=lambda _q: False)) == "answer"
+    assert rebuilt.asked == ["hello"]
+    assert [(t.request, t.outside) for t in rebuilt.memory.turns] == [("earlier question", "web")]
+    assert (rebuilt.memory.summary, rebuilt.memory.summary_private) == ("older talk", True)
 
 
 def test_acp_coding_rechecks_cancellation_under_the_shared_mode_lock(
@@ -1153,6 +1172,16 @@ def test_a_chat_that_keeps_no_archive_deletes_the_one_kept_before(
     assert not list(folder.iterdir())
 
 
+def test_t3_code_sessions_are_not_kept_when_the_chat_keeps_no_archive() -> None:
+    kept = paths.acp_sessions_dir()
+    kept.mkdir(parents=True)
+    (kept / "jarvis-0123456789ab.json").write_text("{}", encoding="utf-8")
+
+    assert cli._acp_store(50) == kept  # pyright: ignore[reportPrivateUsage] - the store jarvis acp is given
+    assert cli._acp_store(0) is None  # pyright: ignore[reportPrivateUsage] - the store jarvis acp is given
+    assert not list(kept.iterdir())  # what an earlier setting kept is deleted
+
+
 def _transcribed(monkeypatch: pytest.MonkeyPatch, text: str) -> list[tuple[str, Path | None]]:
     heard: list[tuple[str, Path | None]] = []
 
@@ -1607,19 +1636,35 @@ def test_pc_audio_is_not_followed_unless_it_is_switched_on(
     assert run.loops[0]["pc"] is None
 
 
-def _restart_calls(
-    monkeypatch: pytest.MonkeyPatch, started_at: float | None
-) -> list[tuple[str, ...]]:
+def _record_systemctl(monkeypatch: pytest.MonkeyPatch, *, fails: str = "") -> list[tuple[str, ...]]:
+    """Record every `systemctl` call, answer 0 (1 for the `fails` one), and let a unit that was
+    started or restarted read as running afterwards, as systemd leaves it."""
     calls: list[tuple[str, ...]] = []
+    began: set[str] = set()
+    before = cli._unit_state  # pyright: ignore[reportPrivateUsage] - the test's own state stand-in
 
     def systemctl(*args: str) -> int:
         calls.append(args)
-        return 0
+        if args[0] in {"start", "restart"}:
+            began.update(args[1:])
+        return 1 if args[0] == fails else 0
+
+    def state(unit: str) -> str:
+        return "active" if unit in began else before(unit)
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+    monkeypatch.setattr(cli, "_unit_state", state)
+    return calls
+
+
+def _restart_calls(
+    monkeypatch: pytest.MonkeyPatch, started_at: float | None
+) -> list[tuple[str, ...]]:
+    calls = _record_systemctl(monkeypatch)
 
     def started(_unit: str) -> float | None:
         return started_at
 
-    monkeypatch.setattr(cli, "_systemctl", systemctl)
     monkeypatch.setattr(cli, "_started_at", started)
     assert cli.main(["restart"]) == 0
     return calls
@@ -1796,14 +1841,8 @@ def test_start_clears_a_failed_state_before_starting_both_units(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A unit that hit its start limit stays `failed` until reset (#33).
-    calls: list[tuple[str, ...]] = []
-
-    def systemctl(*args: str) -> int:
-        calls.append(args)
-        return 0
-
-    monkeypatch.setattr(cli, "_systemctl", systemctl)
     _states(monkeypatch, jarvis="failed", strata="failed")
+    calls = _record_systemctl(monkeypatch)
 
     assert cli.main(["start"]) == 0
     assert calls == [
@@ -1830,14 +1869,8 @@ def test_start_resets_only_a_unit_that_failed(monkeypatch: pytest.MonkeyPatch) -
 
 def test_a_failed_reset_does_not_stop_start(monkeypatch: pytest.MonkeyPatch) -> None:
     # `reset-failed` fails for a unit that is not loaded; `start` then says what is wrong.
-    calls: list[tuple[str, ...]] = []
-
-    def systemctl(*args: str) -> int:
-        calls.append(args)
-        return 1 if args[0] == "reset-failed" else 0
-
-    monkeypatch.setattr(cli, "_systemctl", systemctl)
     _states(monkeypatch, jarvis="failed")
+    calls = _record_systemctl(monkeypatch, fails="reset-failed")
 
     assert cli.main(["start"]) == 0
     assert calls[-1][0] == "start"
@@ -3087,7 +3120,11 @@ def test_restart_keeps_mode_switches_out_while_it_writes_and_restarts_strata(
     def started(_unit: str) -> float | None:
         return profile.stat().st_mtime - 60
 
+    def running(_unit: str) -> str:
+        return "active"
+
     monkeypatch.setattr(cli, "_systemctl", systemctl)
+    monkeypatch.setattr(cli, "_unit_state", running)
     monkeypatch.setattr(cli, "_started_at", started)
 
     assert cli.main(["restart"]) == 0

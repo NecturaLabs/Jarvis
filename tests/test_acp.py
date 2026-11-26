@@ -66,6 +66,7 @@ class Client:
         record: Callable[..., None] | None = None,
         models: Sequence[acp.ModelChoice] = (),
         agents: dict[str, FakeAgent] | None = None,
+        store: Path | None = None,
     ) -> None:
         super().__init__()
         self.agent = agent or FakeAgent(lambda _t, _h, _p: "ok")
@@ -77,6 +78,7 @@ class Client:
         self._to_server = os.fdopen(write_in, "w", encoding="utf-8")
         self._from_server = os.fdopen(read_out, "r", encoding="utf-8")
         self.raw: list[str] = []
+        self.commands: list[dict[str, Any]] = []
         self.messages: queue.Queue[dict[str, Any]] = queue.Queue()
         self.seen: list[dict[str, Any]] = []
         self._out = os.fdopen(write_out, "w", encoding="utf-8")
@@ -91,6 +93,7 @@ class Client:
             pusher=pusher,
             record=record,
             models=models,
+            store=store,
         )
         self._serving = threading.Thread(
             target=self.server.serve, args=(self._source,), daemon=True
@@ -108,7 +111,12 @@ class Client:
     def _read(self) -> None:
         for line in self._from_server:
             self.raw.append(line)
-            self.messages.put(json.loads(line))
+            message = json.loads(line)
+            update = obj(obj(message.get("params")).get("update"))
+            if update.get("sessionUpdate") == "available_commands_update":
+                self.commands.append(update)  # the session's commands: kept apart, as an app does
+                continue
+            self.messages.put(message)
 
     def __enter__(self) -> Self:
         return self
@@ -1424,7 +1432,7 @@ def test_a_chunk_waiting_to_write_is_dropped_after_cancel(
         session: _Session | None = None,
         run: _Run | None = None,
     ) -> bool:
-        if message.get("method") == "session/update":
+        if message.get("method") == "session/update" and run is not None:  # a request's chunk
             reached_writer.set()
             assert write.wait(WAIT_S)
         return send(server, message, session=session, run=run)
@@ -1791,3 +1799,253 @@ def test_a_model_whose_agent_cannot_be_made_leaves_the_session_as_it_was() -> No
     assert answer["error"] == {"code": acp.INTERNAL_ERROR, "message": "coding mode is not set up"}
     assert reply["result"] == {"stopReason": "end_turn"}
     assert [call[0] for call in normal.calls] == ["hello"]
+
+
+# --- sessions kept across runs (session/load) ----------------------------------------------
+
+
+class KeptAgent(FakeAgent):
+    """A fake agent with a conversation it saves, reads back and replays."""
+
+    def __init__(self) -> None:
+        super().__init__(lambda text, _h, _p: f"reply to {text}")
+        self.turns: list[tuple[str, str]] = []
+        self.loaded: list[Path] = []
+
+    @override
+    def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
+        reply = super().handle(text, hooks, pictures=pictures)
+        self.turns.append((text, reply))
+        return reply
+
+    def save(self, path: Path) -> None:
+        path.write_text(json.dumps(self.turns), encoding="utf-8")
+
+    def load(self, path: Path) -> bool:
+        self.loaded.append(path)
+        if not path.exists():
+            return False
+        self.turns = [tuple(t) for t in json.loads(path.read_text(encoding="utf-8"))]
+        return True
+
+    def history(self) -> list[tuple[str, str]]:
+        return list(self.turns)
+
+
+def _finished(client: Client, request_id: int) -> None:
+    assert "result" in client.response(request_id)
+
+
+def test_a_session_is_kept_and_loaded_by_a_later_run_with_its_history(tmp_path: Path) -> None:
+    store = tmp_path / "acp"
+    with Client(KeptAgent(), store=store) as first:
+        assert first.ask("initialize", {"protocolVersion": 1})["result"]["agentCapabilities"][
+            "loadSession"
+        ]
+        session = first.start()
+        _finished(first, first.prompt(session, {"type": "text", "text": "hello"}))
+
+    later = KeptAgent()
+    with Client(later, store=store) as second:
+        second.ask("initialize", {"protocolVersion": 1})
+        answer = second.ask("session/load", {"sessionId": session, "cwd": "/", "mcpServers": []})
+
+        assert "result" in answer
+        replayed = [
+            (
+                obj(m["params"])["update"]["sessionUpdate"],
+                obj(m["params"])["update"]["content"]["text"],
+            )
+            for m in second.seen
+            if m.get("method") == "session/update"
+        ]
+        assert replayed == [
+            ("user_message_chunk", "hello"),
+            ("agent_message_chunk", "reply to hello"),
+        ]
+        _finished(second, second.prompt(session, {"type": "text", "text": "again"}))
+    assert later.calls[-1][0] == "again"
+    assert (store.stat().st_mode & 0o777) == 0o700
+
+
+def test_an_unknown_session_opens_empty_under_its_id(tmp_path: Path) -> None:
+    agent = KeptAgent()
+    with Client(agent, store=tmp_path / "acp") as client:
+        client.ask("initialize", {"protocolVersion": 1})
+        answer = client.ask(
+            "session/load", {"sessionId": "jarvis-0123456789ab", "cwd": "/", "mcpServers": []}
+        )
+
+        assert "result" in answer
+        _finished(client, client.prompt("jarvis-0123456789ab", {"type": "text", "text": "hi"}))
+    assert agent.calls == [("hi", [])]
+
+
+@pytest.mark.parametrize("bad", ["../etc/passwd", "jarvis-XYZ", "", "jarvis-0123456789ab/.."])
+def test_a_session_id_jarvis_never_made_is_refused(tmp_path: Path, bad: str) -> None:
+    with Client(KeptAgent(), store=tmp_path / "acp") as client:
+        client.ask("initialize", {"protocolVersion": 1})
+        answer = client.ask("session/load", {"sessionId": bad, "cwd": "/", "mcpServers": []})
+
+    assert answer["error"]["code"] == acp.INVALID_PARAMS
+    assert not any((tmp_path / "acp").glob("*")) if (tmp_path / "acp").exists() else True
+
+
+def test_loading_a_session_that_is_open_keeps_it(tmp_path: Path) -> None:
+    with Client(KeptAgent(), store=tmp_path / "acp") as client:
+        session = client.start()
+        made = len(client.made)
+
+        answer = client.ask("session/load", {"sessionId": session, "cwd": "/", "mcpServers": []})
+
+        assert "result" in answer
+        assert len(client.made) == made
+
+
+def test_without_a_store_sessions_are_not_loadable() -> None:
+    with Client() as client:
+        result = client.ask("initialize", {"protocolVersion": 1})["result"]
+
+    assert result["agentCapabilities"]["loadSession"] is False
+
+
+def test_only_the_newest_sessions_are_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(acp, "MAX_KEPT", 1)
+    store = tmp_path / "acp"
+    with Client(KeptAgent(), store=store) as client:
+        first = client.start()
+        _finished(client, client.prompt(first, {"type": "text", "text": "one"}))
+        time.sleep(0.02)
+        second = client.start()
+        _finished(client, client.prompt(second, {"type": "text", "text": "two"}))
+
+    kept = {p.name.split(".")[0] for p in store.iterdir()}
+    assert kept == {second}
+
+
+class ClearableAgent(KeptAgent):
+    """A kept agent that can forget its conversation."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.forgotten = 0
+
+    def forget(self) -> None:
+        self.forgotten += 1
+        self.turns = []
+
+
+def test_a_session_offers_the_clear_command(tmp_path: Path) -> None:
+    with Client(ClearableAgent(), store=tmp_path / "acp") as client:
+        client.start()
+        client.ask("session/new", {"cwd": "/", "mcpServers": []})  # the first advert has come
+        update = client.commands[0]
+
+    assert update["sessionUpdate"] == "available_commands_update"
+    assert [c["name"] for c in update["availableCommands"]] == ["clear"]
+
+
+def test_clear_forgets_the_conversation_without_the_model(tmp_path: Path) -> None:
+    agent = ClearableAgent()
+    store = tmp_path / "acp"
+    with Client(agent, store=store) as client:
+        session = client.start()
+        _finished(client, client.prompt(session, {"type": "text", "text": "hello"}))
+        assert any(store.glob(f"{session}.*.memory.json"))
+
+        answer = client.response(client.prompt(session, {"type": "text", "text": "/clear"}))
+
+        assert answer["result"]["stopReason"] == "end_turn"
+        assert "afresh" in client.said()
+    assert agent.forgotten == 1
+    assert [text for text, _ in agent.calls] == ["hello"]  # the model never saw /clear
+    assert not any(store.glob(f"{session}.*.memory.json"))
+
+
+def test_clear_while_a_question_waits_declines_it_and_then_clears(tmp_path: Path) -> None:
+    ran: list[str] = []
+    agent = ClearableAgent()
+    agent.script = closing_script(ran)
+    with Client(agent, store=tmp_path / "acp") as client:
+        session = client.start()
+        client.response(client.prompt(session, text("close notes")))  # the question is asked
+
+        answer = client.response(client.prompt(session, text("/clear")))
+
+        assert answer["result"]["stopReason"] == "end_turn"
+        assert "afresh" in client.said()
+    assert ran == []  # the action the question was about never ran
+    assert agent.forgotten == 1
+    assert [call[0] for call in agent.calls] == ["close notes"]
+
+
+def test_clear_after_a_stop_waits_for_the_stopped_request_then_clears(tmp_path: Path) -> None:
+    release = threading.Event()
+
+    def slow(_text: str, hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        release.wait(5)
+        return "" if hooks.cancelled() else "done"
+
+    agent = ClearableAgent()
+    agent.script = slow
+    with Client(agent, store=tmp_path / "acp") as client:
+        session = client.start()
+        first = client.prompt(session, text("work"))
+        client.notify("session/cancel", {"sessionId": session})
+        cleared = client.prompt(session, text("/clear"))
+        release.set()
+
+        assert client.response(first)["result"]["stopReason"] == "cancelled"
+        assert client.response(cleared)["result"]["stopReason"] == "end_turn"
+    assert agent.forgotten == 1
+
+
+def test_clear_with_a_picture_is_a_request_not_the_command(tmp_path: Path) -> None:
+    agent = ClearableAgent()
+    with Client(agent, store=tmp_path / "acp") as client:
+        session = client.start()
+        picture = {"type": "image", "mimeType": "image/png", "data": "AAAA"}
+        client.response(client.prompt(session, text("/clear"), picture))
+    assert agent.forgotten == 0
+
+
+def test_a_kept_file_that_cannot_be_read_opens_the_session_empty(tmp_path: Path) -> None:
+    store = tmp_path / "acp"
+    store.mkdir(mode=0o700)
+    session = "jarvis-0123456789ab"
+    meta = store / f"{session}.json"
+    meta.write_text("[" * 100_000, encoding="utf-8")
+    meta.chmod(0o600)
+    with Client(KeptAgent(), store=store) as client:
+        client.ask("initialize", {"protocolVersion": 1})
+        answer = client.ask("session/load", {"sessionId": session, "cwd": "/", "mcpServers": []})
+    assert "result" in answer
+
+
+def test_a_session_that_cannot_be_kept_still_gives_its_reply(tmp_path: Path) -> None:
+    class Unkept(KeptAgent):
+        @override
+        def save(self, path: Path) -> None:
+            raise TypeError("not saveable")
+
+    with Client(Unkept(), store=tmp_path / "acp") as client:
+        session = client.start()
+        answer = client.response(client.prompt(session, text("hello")))
+        assert answer["result"]["stopReason"] == "end_turn"
+        assert "reply to hello" in client.said()
+
+
+def test_forget_kept_deletes_only_the_sessions_files(tmp_path: Path) -> None:
+    store = tmp_path / "acp"
+    store.mkdir()
+    for name in (
+        "jarvis-0123456789ab.json",
+        "jarvis-0123456789ab.chat.memory.json",
+        "jarvis-ba9876543210.json",
+        "notes.txt",
+    ):
+        (store / name).write_text("{}", encoding="utf-8")
+
+    assert acp.forget_kept(store) == 2
+    assert [p.name for p in store.iterdir()] == ["notes.txt"]
+    assert acp.forget_kept(tmp_path / "none") == 0

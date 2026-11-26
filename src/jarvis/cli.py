@@ -35,6 +35,7 @@ from jarvis import (
     modes,
     paths,
     pluginsync,
+    ramguard,
     services,
     skills,
     t3push,
@@ -1430,6 +1431,22 @@ class _NormalSession:
         """Think at `level` from the next request on."""
         self._agent.set_thinking(_at_effort(self._section, level))
 
+    def save(self, path: Path) -> None:
+        """Keep the conversation in `path`."""
+        self._agent.memory.save(path)
+
+    def load(self, path: Path) -> bool:
+        """Go on from the conversation kept in `path`."""
+        return self._agent.memory.load(path)
+
+    def history(self) -> list[tuple[str, str]]:
+        """Return the remembered turns as (request, reply)."""
+        return [(turn.request, turn.reply) for turn in self._agent.memory.turns]
+
+    def forget(self) -> None:
+        """Start the conversation afresh (`/clear`)."""
+        self._agent.forget()
+
 
 class _CodingSession:
     """An agent whose first request waits for the coding model, and says how that went."""
@@ -1447,6 +1464,22 @@ class _CodingSession:
         self._effort = level
         self._agent.set_thinking(_at_effort(modes.effective(self._config, "coding").chat, level))
 
+    def save(self, path: Path) -> None:
+        """Keep the conversation in `path`."""
+        self._agent.memory.save(path)
+
+    def load(self, path: Path) -> bool:
+        """Go on from the conversation kept in `path`."""
+        return self._agent.memory.load(path)
+
+    def history(self) -> list[tuple[str, str]]:
+        """Return the remembered turns as (request, reply)."""
+        return [(turn.request, turn.reply) for turn in self._agent.memory.turns]
+
+    def forget(self) -> None:
+        """Start the conversation afresh (`/clear`)."""
+        self._agent.forget()
+
     def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
         """Answer `text` on the coding model; a switch that failed is the answer instead."""
         cfg, line = self._first.ready(hooks)
@@ -1454,10 +1487,11 @@ class _CodingSession:
             return line
         if cfg != self._config:
             try:
-                self._agent = build(cfg, via="acp", session=self._session_id, mode="coding").agent
+                agent = build(cfg, via="acp", session=self._session_id, mode="coding").agent
             except SetupError as exc:
                 return str(exc)
-            self._config = cfg
+            agent.memory.adopt(self._agent.memory)  # a reopened session's talk is kept
+            self._agent, self._config = agent, cfg
             if self._effort:
                 self.set_effort(self._effort)
         if line and hooks.draft is not None:
@@ -1495,7 +1529,26 @@ def cmd_acp(args: argparse.Namespace) -> int:
         pusher=pusher,
         record=AuditLog(paths.audit_file(), tags={"via": "acp"}).record,
         models=_acp_models(cfg, coding_first=args.coding),
+        store=_acp_store(cfg.chat.archive_keep),
     )
+
+
+def _acp_store(keep: int) -> Path | None:
+    """Return the folder T3 Code's sessions are kept in; None when `chat.archive_keep` is 0.
+
+    With 0, the sessions an earlier setting kept are deleted, as the chat's archive is.
+    """
+    store = paths.acp_sessions_dir()
+    if keep:
+        return store
+    try:
+        gone = acp.forget_kept(store)
+    except OSError as exc:
+        log.warning("the kept T3 Code sessions could not be deleted: %s", exc)
+    else:
+        if gone:
+            log.info("deleted %d kept T3 Code sessions: chat.archive_keep is 0", gone)
+    return None
 
 
 def _export_folder(cfg: config.Config) -> Path:
@@ -2143,6 +2196,31 @@ def _model_bytes(cfg: config.Config) -> float:
         return float("inf")
 
 
+def _ram_report(
+    cfg: config.Config, *, essential: bool
+) -> tuple[list[tuple[bool, str, str]], list[str]]:
+    """Return the doctor's line on whether the model fits in the memory available now.
+
+    A server that runs holds its model, so its memory counts as free (`ramguard.held_by_unit`).
+    The update's health check only notes it: an update is not undone because a game is running.
+    """
+    served = modes.effective(cfg, modes.current()) if cfg.strata.mode == "local" else cfg
+    verdict = ramguard.check(
+        ramguard.served_model(served),
+        cfg.strata,
+        credit=ramguard.held_by_unit(STRATA_UNIT),
+    )
+    if not verdict.known:
+        return [], []
+    what = f"memory for the model ({verdict.summary})"
+    if essential and verdict.short:
+        return [], [
+            f"note {what}: close a game or other heavy program, or set strata.allow_low_ram"
+        ]
+    fix = "close a game or other heavy program, or set strata.allow_low_ram = true"
+    return [(not verdict.short, what, fix)], []
+
+
 def _memlock_notes(cfg: config.Config) -> list[str]:
     """Note that the model cannot be locked in RAM when the user manager's limit keeps it out."""
     limit = _user_memlock_limit()
@@ -2346,7 +2424,9 @@ def doctor_report(args: argparse.Namespace) -> DoctorReport:
     release_lines, unreadable = _release_lines(cfg)
     checks.extend(unreadable)
     if cfg.strata.mode == "local":
-        notes.extend(_memlock_notes(cfg))
+        ram_checks, ram_notes = _ram_report(cfg, essential=args.essential)
+        checks.extend(ram_checks)
+        notes.extend([*ram_notes, *_memlock_notes(cfg)])
     else:
         notes.extend(_remote_notes(cfg, no_service=args.no_service))
     notes.extend([*_t3_notes(cfg), *update.doctor_notes(cfg, launch_for_update)])
@@ -2366,7 +2446,8 @@ def _backend_report(
             update.wait_for(lambda: strata_status(cfg))
         checks.append(_split_model_check(cfg))
     notes = [_PLAIN_BACKEND] if cfg.strata.serves_beyond_loopback() else []
-    return DoctorReport(checks, [*notes, *_memlock_notes(cfg)], [])
+    ram_checks, ram_notes = _ram_report(cfg, essential=False)
+    return DoctorReport([*checks, *ram_checks], [*notes, *ram_notes, *_memlock_notes(cfg)], [])
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -2669,7 +2750,9 @@ class StrataUnits:
 def _switcher(cfg: config.Config, source: str) -> modes.Switcher:
     """Return the switch of modes for a command or a window, audited as coming from `source`."""
     audit = AuditLog(paths.audit_file(), tags={"via": source})
-    return modes.Switcher(cfg, StrataUnits(), _strata, audit, busy=voice_busy)
+    return modes.Switcher(
+        cfg, StrataUnits(), _strata, audit, busy=voice_busy, ram_reason=ramguard.switch_reason
+    )
 
 
 def model_report(cfg: config.Config) -> list[str]:
@@ -2917,15 +3000,52 @@ def cmd_help(_args: argparse.Namespace) -> int:
     return 0
 
 
+_RUNNING = {"active", "activating", "reloading"}
+
+
+def _no_room(cfg: config.Config, where: str) -> bool:
+    """Print why the model server must not load its model now, and return True when it must not.
+
+    The memory the running server holds counts as free: a restart gives it back first. A load
+    that would leave less than `strata.min_free_ram_mib` is refused, as the unit's own check
+    refuses it too; `strata.allow_low_ram` lets it through.
+    """
+    why = ramguard.reload_reason(modes.effective(cfg, modes.current()), where)
+    if why:
+        print(f"jarvis: {why}", file=sys.stderr)
+    return bool(why)
+
+
+def _not_started(cfg: config.Config, where: str) -> bool:
+    """Say so and return True when `systemctl` reported a start and the model server is not running.
+
+    A unit whose condition fails is skipped without failing, so `systemctl start` says 0 with the
+    server stopped: the memory check of its unit, a model file that is not there. When the load
+    would not fit now, that reason is printed, as for a refusal up front.
+    """
+    if _unit_state(STRATA_UNIT) in _RUNNING:
+        return False
+    print(
+        "jarvis: the model server did not start; see jarvis doctor and "
+        "journalctl --user -u jarvis-strata",
+        file=sys.stderr,
+    )
+    _no_room(cfg, where)
+    return True
+
+
 def cmd_start(_args: argparse.Namespace) -> int:
-    """Start both services."""
+    """Start both services, unless loading the model would take the memory a program needs."""
     cfg = _load()
     if cfg.strata.mode != "local":
         return _split_lifecycle("start", cfg)
+    if _unit_state(STRATA_UNIT) not in _RUNNING and _no_room(cfg, "start"):
+        print("jarvis: nothing was started", file=sys.stderr)
+        return 1
     _reset_failed(STRATA_UNIT, JARVIS_UNIT)
     code = _systemctl("start", STRATA_UNIT, JARVIS_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
-    return code
+    return code or int(_not_started(cfg, "start"))
 
 
 def cmd_stop(_args: argparse.Namespace) -> int:
@@ -2941,7 +3061,11 @@ def cmd_stop(_args: argparse.Namespace) -> int:
 def _split_lifecycle(action: str, cfg: config.Config) -> int:
     remote = cfg.strata.mode == "remote"
     unit = JARVIS_UNIT if remote else STRATA_UNIT
+    loads = not remote and (action == "restart" or _unit_state(unit) not in _RUNNING)
     if action != "stop":
+        if loads and _no_room(cfg, action):
+            print("jarvis: nothing was changed", file=sys.stderr)
+            return 1
         try:
             if _prepare_split_unit(cfg, action):
                 return 1
@@ -2955,7 +3079,7 @@ def _split_lifecycle(action: str, cfg: config.Config) -> int:
     code = _systemctl(action, unit)
     label = "jarvis" if remote else "Strata backend"
     print(f"{label}: {_unit_state(unit)}")
-    return code
+    return code or int(action != "stop" and not remote and _not_started(cfg, action))
 
 
 def _prepare_split_unit(cfg: config.Config, action: str) -> int:
@@ -3048,8 +3172,14 @@ def cmd_restart(_args: argparse.Namespace) -> int:
         _refresh_strata()
         started = _started_at(STRATA_UNIT)
         changed = started is not None and services.strata_changed_since(started)
+        if (started is None or changed) and _no_room(cfg, "restart"):
+            print("jarvis: nothing was restarted", file=sys.stderr)
+            return 1
         cut = changed and not free
         code = _systemctl("restart" if changed else "start", STRATA_UNIT)
+        if not code and _not_started(cfg, "restart"):
+            print("jarvis: the voice service was not restarted", file=sys.stderr)
+            return 1
     code = code or _systemctl("restart", JARVIS_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}" + (", model server restarted" if changed else ""))
     if cut:

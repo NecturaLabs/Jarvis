@@ -17,6 +17,7 @@ from jarvis import (
     osskills,
     paths,
     plugins,
+    ramguard,
     services,
     skills,
 )
@@ -167,7 +168,8 @@ def switch_operation(config: Config, *, coding: bool) -> Operation:
         about = (
             "Call this alone when the owner says the programming work is over or asks for the "
             f"{back_to} back, however they put it. Jarvis leaves coding mode and you answer "
-            "again there. Never while programming work is still asked for."
+            "again there. Never while programming work is still asked for, or for a question "
+            "about the modes."
         )
     else:
         about = (
@@ -175,7 +177,8 @@ def switch_operation(config: Config, *, coding: bool) -> Operation:
             "writing, changing or fixing code, building a program, site, game or script, or "
             "going on with a software project, however the owner puts it. Jarvis moves to "
             f"coding mode ({modes.model_name(config, 'coding')}, more room to think and write) "
-            "and you work the request out again there. Never for anything else."
+            "and you work the request out again there. Never for anything else, a question "
+            "about the modes included."
         )
     if config.strata.mode == "remote":
         about += " This changes Jarvis's settings. Strata continues serving the same model."
@@ -902,6 +905,7 @@ def strata_model(config: Config, key: str) -> StrataModel:
         endpoint,
         key,
         model_file=model_file if model_file != Path() else None,
+        ram_guard=lambda file: ramguard.server_verdict(file, config.strata),
     )
 
 
@@ -1125,6 +1129,7 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
             lambda cfg: strata_model(cfg, key),
             audit,
             busy=voice_busy if elsewhere else lambda: False,
+            ram_reason=ramguard.switch_reason,
         )
     )
     agent_modes = (

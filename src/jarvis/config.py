@@ -333,6 +333,10 @@ class StrataConfig(_Section):
     # kernel may swap the model out while the PC is short of memory and back in on the next
     # request, pausing the GPU each time, for little room: quantized weights barely compress.
     keep_in_ram: bool = True
+    # Memory in MiB that must stay available after the model loads into RAM; a start or load that
+    # would leave less is refused (`jarvis.ramguard`). `allow_low_ram` loads anyway.
+    min_free_ram_mib: int = Field(default=4096, ge=0, le=1048576)
+    allow_low_ram: bool = False
     # Keep a control vector the run config loads (Strata's experimental speed projection, which
     # lowers how often the model declines). Off: Jarvis's profile leaves those options out.
     speed_projection: bool = True

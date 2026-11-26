@@ -86,6 +86,11 @@ def actions_file() -> Path:
     return state_dir() / "actions.json"
 
 
+def acp_sessions_dir() -> Path:
+    """Return the folder that keeps T3 Code's sessions for `session/load` (ADR 0023)."""
+    return state_dir() / "acp-sessions"
+
+
 def workspace_ledger_file() -> Path:
     """Return the file that lists the files Jarvis made in its workspace (ADR 0025)."""
     return state_dir() / "workspace-files.json"
