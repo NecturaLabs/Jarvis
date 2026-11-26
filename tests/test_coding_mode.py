@@ -507,6 +507,12 @@ def test_the_switch_tool_offers_only_the_other_mode() -> None:
     assert switch_operation(cfg, coding=False).side_effect  # outside text needs a yes for it
 
 
+def test_the_switch_says_a_question_about_the_modes_is_answered_not_switched_for() -> None:
+    about = switch_operation(Config(), coding=False).tool_schema()["function"]["description"]
+
+    assert "question about the modes" in about
+
+
 def test_the_prompt_gains_its_coding_part_and_the_owners_own_in_coding_mode() -> None:
     cfg = Config.model_validate({"coding": {"prompt": "Use tabs."}})
 

@@ -160,7 +160,8 @@ def switch_operation(config: Config, *, coding: bool) -> Operation:
             "writing, changing or fixing code, building a program, site, game or script, or "
             "going on with a software project, however the owner puts it. Jarvis moves to "
             f"coding mode ({modes.model_name(config, 'coding')}, more room to think and write) "
-            "and you work the request out again there. Never for anything else."
+            "and you work the request out again there. Never for anything else, a question "
+            "about the modes included."
         )
     if config.strata.mode == "remote":
         about += " This changes Jarvis's settings. Strata continues serving the same model."

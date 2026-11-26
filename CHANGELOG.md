@@ -309,6 +309,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The model no longer moves the chat to coding mode to answer a question about the modes: the switch's
+  description says a question about them is answered, not switched for. A needless switch restarts the
+  model server.
 - A reply no longer starts with "[looked up: …]": the notes memory puts before a remembered reply are
   stripped when the model copies them, as "[actions taken: …]" already was.
 - `pc_stats` lists a file system once (by its mount source) when the home folder and the root are two btrfs
