@@ -17,6 +17,15 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   user timer is available with `jarvis update --auto on` ([ADR 0019](docs/adr/0019-install-and-update.md)).
 - Set up Jarvis without Spotify. Tools and background Spotify refresh stay off until a client ID is set.
 
+- A headless browser for pages `web_read` can't read or that must be used (a search box, a button), through
+  agent-browser when it is installed: `browser_open` opens a search result, an address you wrote or a link the
+  page shows, and reads it, less the text and elements the page hides (best effort); `browser_screenshot`
+  shows the chat a picture of it; `browser_act` clicks or types there, and always asks first, even with
+  questions turned off and with `jarvis ask --yes`, which asks it on the terminal. It runs headless and muted with a throwaway profile, every connection goes through a
+  loopback proxy that reaches only public addresses, and it closes when idle. On in the chat (`chat.browser`), off for speech (`agent.browser`); `[browser] idle_close_s`.
+  The chat's `/config` sets all three.
+  A preview session for the owner's own builds (one project folder, served read-only on loopback, with a
+  proxy that reaches that port alone) is ready for coding mode to use.
 - Coding mode, for programming work ([ADR 0017](docs/adr/0017-coding-mode.md)): more model calls, longer
   replies, more thinking and a larger context, a part on programming in the prompt, and a model of its own
   when `strata.coding_run_config` names one (`jarvis setup --coding-run-config`). `jarvis model` shows the mode
@@ -76,6 +85,18 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   listens for up to a minute and tells you. `audio.pc_audio_recall_s` (off by default) keeps the last seconds in
   memory, so it can also tell you what was just said. The audio reaches the disk only for the moment Voxtype
   transcribes it, the words are someone else's data, and when Jarvis asks first (`bypass_consent` off) a search
+  or action after them waits for your yes.
+- Jarvis sings: ask in any words and the model writes the song as notes (words, pitches and lengths), which
+  the new `sing` tool checks (at most 30 seconds and 64 notes) before Jarvis sings it by voice, spoken over
+  (but not a stretch of about 3 seconds that sounds like the wake word), hushed and paused like a reply. It
+  sings with the Kokoro voice moved to each note (Praat, through the new `praat-parselmouth` dependency), or
+  with SoulX-Singer on the GPU once `tools/get_singer.py` has installed it (it skips files already in place);
+  `[sing] engine` chooses. A song still being made stops at once when you speak over Jarvis, hush or pause
+  it, and making one never takes longer than the request's time. Asked for after a web page while Jarvis
+  asks first, a song waits for your yes to a question that reads out all its words. Before each song, and
+  in `jarvis doctor`, every file of SoulX-Singer's runner is checked against its pinned release; when one is
+  not, Jarvis sings with the speaking voice. `tools/get_singer.py` puts a new runner in place only whole
+  ([ADR 0018](docs/adr/0018-sing-a-song-the-model-writes.md)).
   or action after them waits for your yes. Only your own request can listen, never a scheduled one; a stop ends
   a listen at once, and the words heard are not kept in the remembered conversation after that request.
 - The chat's `/config` also sets Jarvis's speaking speed, whether it acts without asking first and whether it
@@ -182,6 +203,17 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Web reads and the browser no longer reach a public address on one of this PC's own networks: its own
+  addresses, and a network it reaches without a router, such as the home network's global IPv6 prefix
+  (checked at each connection, including for embedded IPv4 addresses). Missing route or local-address
+  data now blocks the connection. Site-local IPv6 (`fec0::/10`) is refused too.
+- Browser confirmations reject ambiguous links, name the full host and require interactive input under
+  `jarvis ask --yes`. A lost browser reply after sending an action is reported as uncertain. Pages keep
+  their visible text when Chrome has already omitted hidden text; a page too big to check for hidden text
+  shows nothing, and the model is told why.
+- The browser proxy caps unauthenticated connections and request headers. Preview startup verifies its
+  open folder before serving and closes it if startup fails. Directory URLs redirect to the correct
+  index URL.
 - The chat archive survives a write that was cut short: moving a conversation kept in the first format is
   made again from that file, a half-written log line no longer swallows the next entry, and files no
   listed conversation owns are deleted once they are an hour old. `/forget all` that cannot delete says so
@@ -277,17 +309,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
-- The chat's default `memory_tokens` is now 6700 (was 7000): the `switch_model` tool's schema takes that
-  room in the default 24,576-token window.
 - Speech keeps a short memory for quick commands: `agent.memory_idle_s` is now `300.0` (was `1800.0`), so the
   conversation is forgotten after five idle minutes, and `agent.memory_tokens` is now `3000` (was `6000`). A
   scheduled request shares speech's conversation and limits; `jarvis ask` remembers nothing between runs. The
   chat's own memory is unchanged.
-- The chat's default `memory_tokens` is now 7000 (was 7800): the new tools' and arguments' schemas take that room
-  in the default 24,576-token window. A larger `strata.context` leaves room for more.
-
-- The chat's default `memory_tokens` is now 7800 (was 9100), so the default 24,576-token window keeps room
-  for the thinking the model may raise to.
+- The chat's default `memory_tokens` is now 6200 (was 9100), so the default 24,576-token window keeps room for
+  the thinking the model may raise to and for the new tools' and arguments' schemas, the browser's and
+  `switch_model`'s among them.
+  A larger `strata.context` leaves room for more.
 - Spotify names are matched by sound as well as spelling, whichever is closer, using espeak's phonemes. A
   name speech-to-text wrote as words that sound like it ("flocks days" for "Phlox Daze", "7" for "seven")
   now finds your artist or song, and an item of yours of the kind asked for that sounds closer to what was

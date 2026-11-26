@@ -529,13 +529,24 @@ def test_doctor_checks_the_kokoro_files_only_for_a_kokoro_voice(
     piper = data / "voices"
     (piper / "en_GB-alan-medium.onnx").write_bytes(b"piper")
     (piper / "en_GB-alan-medium.onnx.json").write_bytes(b"{}")
-    config.save(config.Config(data_dir=data, audio=config.AudioConfig(voice="en_GB-alan-medium")))
+    piper_voice = config.AudioConfig(voice="en_GB-alan-medium")
+    singing_off = config.BoundariesConfig(classes={"sing": "deny"})
+    config.save(config.Config(data_dir=data, audio=piper_voice, boundaries=singing_off))
 
     cli.main(["doctor"])
 
     out = _doctor_lines(capsys)
     assert not any("Example kokoro" in line or "kokoro-v1.0" in line for line in out)
     assert not any("not a known release" in line and "alan" in line for line in out)
+
+    # Jarvis sings in a Kokoro voice whatever voice speaks, so singing on checks its files.
+    config.save(config.Config(data_dir=data, audio=piper_voice))
+
+    cli.main(["doctor"])
+
+    out = _doctor_lines(capsys)
+    assert any("Example kokoro-model 9.9" in line for line in out)
+    assert any("ok   singing voice kokoro:bm_george" in line for line in out)
 
 
 def test_doctor_fails_a_model_file_it_cannot_read(
@@ -1633,6 +1644,45 @@ def test_jarvis_ask_with_yes_has_no_confirm_key(
 
 
 @pytest.mark.parametrize(
+    ("terminal", "typed", "allowed"),
+    [(True, "y", True), (True, "n", False), (True, None, False), (False, "y", False)],
+    ids=["yes", "no", "eof", "piped-yes"],
+)
+def test_jarvis_ask_with_yes_still_asks_here_about_a_browser_click_or_typing(
+    monkeypatch: pytest.MonkeyPatch, typed: str | None, *, terminal: bool, allowed: bool
+) -> None:
+    # `--yes` cannot know which element a page will offer: an action that always asks is asked
+    # on the terminal, and with no terminal to answer on it is refused.
+    answers: list[object] = []
+    asked: list[str] = []
+
+    def handle(_text: str, hooks: Hooks) -> str:
+        assert hooks.confirm_always is not None
+        answers.append(hooks.confirm("Should I pause?"))
+        answers.append(hooks.confirm_always('Should I click the button "Buy"?'))
+        return "ok"
+
+    def typing(prompt: str) -> str:
+        asked.append(prompt)
+        if typed is None:
+            raise EOFError
+        return typed
+
+    def build(_cfg: object, **_kwargs: object) -> object:
+        return types.SimpleNamespace(agent=types.SimpleNamespace(handle=handle))
+
+    monkeypatch.setattr(cli, "build", build)
+    monkeypatch.setattr("builtins.input", typing)
+    monkeypatch.setattr(cli.sys, "stdin", types.SimpleNamespace(isatty=lambda: terminal))
+
+    assert main(["ask", "--yes", "buy", "it"]) == 0
+
+    assert answers[0] is True
+    assert (answers[1] is True) == allowed
+    assert asked == (['Should I click the button "Buy"? [y/n] '] if terminal else [])
+
+
+@pytest.mark.parametrize(
     ("typed", "allowed"),
     [
         ("y", True),
@@ -2144,6 +2194,63 @@ def test_doctor_notes_a_missing_media_player_tool_without_failing(
     assert "pacman -S playerctl" in line
 
 
+def test_doctor_notes_a_missing_browser_without_failing(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _doctor_config(home / "models")
+    lines = _doctor_with_tools(monkeypatch, capsys, {"agent-browser"})
+    (line,) = [line for line in lines if "agent-browser" in line]
+    assert line.startswith("note tool agent-browser missing")
+
+
+def _doctor_with_agent_browser(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> list[str]:
+    """Run doctor with agent-browser on PATH and no system Chrome, Chromium or Brave."""
+    real = shutil.which
+
+    def which(name: str) -> str | None:
+        if name == "agent-browser":
+            return "/usr/bin/agent-browser"
+        if "chrom" in name or "brave" in name:
+            return None
+        return real(name)
+
+    monkeypatch.setattr(cli.shutil, "which", which)
+    cli.main(["doctor"])
+    return [line for line in _doctor_lines(capsys) if "agent-browser" in line]
+
+
+def test_doctor_notes_agent_browser_without_a_chrome_to_drive(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _doctor_config(home / "models")
+
+    (line,) = _doctor_with_agent_browser(monkeypatch, capsys)
+
+    assert line.startswith("note ")
+    assert "agent-browser install" in line
+
+
+@pytest.mark.parametrize(
+    "chrome",
+    [
+        ".agent-browser/browsers/chrome-158.0.1/chrome-linux64/chrome",
+        ".agent-browser/browsers/chrome-158.0.1/chrome",
+        ".cache/puppeteer/chrome/linux-158.0.1/chrome-linux64/chrome",
+        ".cache/ms-playwright/chromium-1200/chrome-linux/chrome",
+    ],
+)
+def test_doctor_says_nothing_of_agent_browser_with_its_chrome(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], chrome: str
+) -> None:
+    _doctor_config(home / "models")
+    (home / chrome).parent.mkdir(parents=True)
+    (home / chrome).write_bytes(b"")
+
+    assert _doctor_with_agent_browser(monkeypatch, capsys) == []
+
+
 @pytest.mark.parametrize(
     ("audio", "checked"),
     [
@@ -2345,8 +2452,41 @@ def test_the_chat_sets_jarvis_settings_and_audits_them(monkeypatch: pytest.Monke
     assert shown["audio.speech_speed"] == pytest.approx(1.5)
 
 
+def test_the_chat_sets_the_voice_browser_and_when_the_browser_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config.save(config.Config())
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: None)
+
+    cli._set_shared("agent.browser", True)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    cli._set_shared("browser.idle_close_s", 300.0)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    loaded = config.load()
+    assert loaded.agent.browser is True
+    assert loaded.browser.idle_close_s == pytest.approx(300.0)
+    events = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
+    assert [(e["event"], e.get("setting"), e["source"]) for e in events] == [
+        ("setting_changed", "agent.browser", "chat"),
+        ("setting_changed", "browser.idle_close_s", "chat"),
+    ]
+    shown = {s.key: s for s in cli._shared_settings()}  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    assert shown["agent.browser"].value is True
+    assert shown["agent.browser"].section == "Voice"
+    assert shown["browser.idle_close_s"].value == pytest.approx(300.0)
+    assert shown["browser.idle_close_s"].section == "Chat"
+    for value in shown["browser.idle_close_s"].values:  # each one the config takes
+        config.BrowserConfig(idle_close_s=cast("float", value))
+
+
 @pytest.mark.parametrize(
-    ("key", "value"), [("audio.voice", "x"), ("audio.speech_speed", 9.0), ("strata.port", 1)]
+    ("key", "value"),
+    [
+        ("audio.voice", "x"),
+        ("audio.speech_speed", 9.0),
+        ("strata.port", 1),
+        ("browser.idle_close_s", 45.0),
+        ("chat.browser", False),  # the chat's own setting, not one of Jarvis's
+    ],
 )
 def test_the_chat_cannot_set_what_it_does_not_offer(key: str, value: object) -> None:
     config.save(config.Config())

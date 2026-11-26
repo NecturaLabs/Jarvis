@@ -25,7 +25,7 @@ Paths and names may not contain control characters, because they are written int
 Jarvis reads the file when a command starts, so `jarvis ask`, `status`, `unload` and `doctor` always see the
 current file. The running voice service reads it once, when it starts.
 
-- `audio`, `persona`, `boundaries`, `spotify`, `model`, `clock`, `weather`, `research` and `files` keys:
+- `audio`, `persona`, `boundaries`, `spotify`, `model`, `clock`, `weather`, `research`, `files` and `sing` keys:
   run `jarvis restart`.
 - `strata` keys: run `jarvis restart`. It writes Strata's profile and unit from the config, restarts
   Strata when either changed since Strata started, and otherwise leaves a running Strata, and its loaded
@@ -100,6 +100,7 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 | `thinking_tokens` | `192` | 32 to 8192 | The most the model thinks before each answer at `thinking`; Strata then closes the thinking and lets it answer. It comes on top of `reply_tokens`, so the reply keeps all its room, and the context keeps room for both. |
 | `thinking_max` | `high` | `none`, `low`, `medium`, `high`, and not below `thinking` | The most the model may raise its own effort to, for the rest of one request, when it judges the request needs careful thought (several steps, a name it may have misheard, a correction, a try that failed). It does so with the `think_harder` tool, which is offered only when this is above `thinking`: set it to the same as `thinking` to keep one effort. The effort never drops within a request, and each request starts at `thinking` again. Raising to `low` or `high` can cost the model one more read of its whole prompt on Qwen3.8 ([models.md](models.md#thinking)). The tool's class is `safe`; `think_harder = "deny"` under `[boundaries.classes]` also switches it off. |
 | `thinking_raised_tokens` | `768` | 32 to 8192 | The most the model thinks before each answer once it raised its effort: about 12 s at most for speech. A raised call never gets less than `thinking_tokens` when a request starts above `none`. The context keeps room for the larger of the two. |
+| `browser` | `false` | `true`, `false` | Offer the headless browser tools (`browser_open`, `browser_act`; see [`[browser]`](#browser-the-headless-browser)) to spoken requests and `jarvis ask`, when agent-browser is installed. Off by default: speech is for quick commands, and clicking or typing on a page always waits for your spoken yes. |
 
 A spoken reply that drew on outside text (a web page, a song name) is remembered as data, as in the chat: a
 follow-up such as "what was the second one?" has it, and while it is remembered an action the model chooses
@@ -110,7 +111,7 @@ remembered is marked the same way, so that holds after the turn that read it is 
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `6700` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger; with a larger `strata.context` a larger value has room for more of the earlier requests' work), `memory_detail` `full`, `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
+`memory_tokens` `6200` (what the default 24,576-token window holds beside the raised thinking's room and the browser tools; less when a thinking cap is larger; with a larger `strata.context` a larger value has room for more of the earlier requests' work), `memory_detail` `full`, `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, `browser` `true` (the headless browser tools, `browser_screenshot` too, when agent-browser is installed), plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -125,11 +126,12 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 `/config` in the chat opens the settings in sections, each setting with its values, when a change applies
 and a line on what it does; ↑↓ move, Enter or → takes the next value, ← the one before, Esc closes. Under
 Chat it changes `verbosity`, `toolbar`, `while_working` and `thinking` at once, and `reply_tokens`,
-`max_steps`, `memory_detail` and `resume` from the next time the chat opens, writing them here. Under Voice, Listening and
-Safety it sets `audio.speech_speed`, `audio.listen_to_pc` (off by default) and `boundaries.bypass_consent`,
-and under Tools each tool's setting; the voice service restarts once to take these when the screen closes,
-and the open chat takes `bypass_consent` at once (what Jarvis says about its own setup, `about_jarvis`,
-follows when the chat next opens).
+`max_steps`, `memory_detail`, `resume` and `browser` from the next time the chat opens, writing them here.
+Under Chat it also sets `browser.idle_close_s` (30, 60, 120 or 300 seconds), under Voice
+`audio.speech_speed` and `agent.browser`, under Listening and Safety `audio.listen_to_pc` (off by default)
+and `boundaries.bypass_consent`, and under Tools each tool's setting; the voice service restarts once to take
+these when the screen closes, and the open chat takes `bypass_consent` at once (what Jarvis says about its
+own setup, `about_jarvis`, follows when the chat next opens).
 Acting without asking and taking requests from PC audio are turned on only by the same step again to the same
 value (a second Enter or →, or ← after ←), after the row says what that means and which value, and are marked in
 red while they are on; a step to another value asks about that one instead. A restart that fails is said in the chat.
@@ -525,6 +527,25 @@ be spoken over.
 | `tone` | calm, warm, to the point, with a light touch of dry wit | How it speaks. |
 | `addendum` | empty | Your own extra instructions, added to the system prompt. |
 
+## `[sing]`: how Jarvis sings
+
+Ask Jarvis to sing, in any words: the model writes the song as notes (words or syllables, pitches and lengths)
+and the `sing` tool checks it in code before a sound is made: at most 64 notes and 30 seconds, pitches from C2
+to C6. The song plays like a reply, after what Jarvis said before it: say the wake word over it to stop it,
+`jarvis hush` ends it, and nothing is sung while Jarvis is paused. The song is checked for its own wake word in
+chunks of about 2.5 seconds, so a stretch that sounds like it is the only part that cannot be spoken over. It is sung by voice only; the chat does not
+offer it. The tool's class is `safe` and it counts as an action: after outside text (a web page) it needs a
+yes, unless `boundaries.bypass_consent` is on, and the question reads out the song's length and all its words.
+`sing = "deny"` under `[boundaries.classes]` switches it off.
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `engine` | `auto` | `auto`, `speech`, `soulx` | `speech` sings with the Kokoro voice: its words stretched to each note and moved to its pitch on the CPU (Praat), in a fraction of the song's length. `soulx` sings with SoulX-Singer, a singing-voice model, on the GPU for about two seconds a song, in the same voice; it falls back to `speech` when its files are missing or not the pinned release, it fails, it runs past 20 seconds or the request's time left, or less than 5 seconds are left to start it, and it stops at once when the song is stopped (the wake word, `jarvis hush`, a pause). `auto` is `soulx` when its files are installed ([models.md](models.md#singing)), else `speech`. |
+| `device` | `0` | `0` to `15` | The Vulkan device SoulX-Singer runs on (`audiocpp_cli --list-devices` lists them). |
+
+Jarvis sings in a Kokoro voice: the speaking voice when `audio.voice` is a Kokoro one, else `bm_george`. The song
+is moved by whole octaves to suit that voice. Restart Jarvis (`jarvis restart`) after changing these.
+
 ## `[format]`
 
 | Key | Default | Allowed | What it does |
@@ -575,6 +596,39 @@ It listens on `127.0.0.1:8888` only (`SEARXNG_PORT` in `.env` changes the port; 
 with it) and restarts with Docker unless you stop it (`docker compose -f deploy/searxng/compose.yaml
 down`). The `.env` file is git-ignored. Reddit threads are found through SearXNG and read from the
 Arctic Shift archive, a free copy of public Reddit that can lag behind it by a little.
+
+## `[browser]`: the headless browser
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `idle_close_s` | `60.0` | 10 to 900 | Seconds after its last use that the browser closes, with its profile and anything a page saved. |
+
+For pages `web_read` can't read (built by scripts) or that must be used (a search box, a button), Jarvis
+drives a real Chrome through [agent-browser](https://github.com/vercel-labs/agent-browser) (Apache-2.0),
+when the `agent-browser` program is on `PATH` and has its browser (`agent-browser install`). `chat.browser`
+offers its tools in the chat (on by default) and `agent.browser` to speech and `jarvis ask` (off by
+default). Without the program they are not offered, and `jarvis doctor` notes it, as it notes a program
+with no Chrome to drive. The tools:
+
+- `browser_open` opens an address a search in the conversation returned or you wrote (the same rule as
+  `web_read`), follows a link the open page shows, or reads on in the page. It asks nothing.
+- `browser_screenshot` (the chat only) shows you one screen of the page. It asks nothing.
+- `browser_act` clicks something on the page, or types up to 200 characters into a text box (never a
+  password field) and presses Enter. It always asks first, naming the element, the site and the words (and
+  where a link goes), even with `bypass_consent` on. With `jarvis ask --yes`, browser actions require
+  an answer on an interactive terminal. Jarvis refuses actions when it cannot identify the link
+  or fit the full host in the question. `[boundaries.classes]` can switch it off (`deny`) or
+  ask for the confirm key (`strong`), never set it to run unasked.
+
+The browser runs headless and muted, opens no window, and uses a throwaway profile and home folder in
+`$XDG_RUNTIME_DIR/jarvis/browser/`: none of your browsers, cookies, logins or Downloads. Every connection it makes goes
+through a proxy Jarvis runs on loopback, which reaches only public addresses on ports 80 and 443, so a
+page cannot reach this PC (Strata, SearXNG) or your home network. The browser and `web_read` both
+refuse connections when they cannot check this PC's own networks. Downloads, uploads, page scripts run by
+Jarvis, cookies and other tabs are refused. It closes after `idle_close_s`, and when the conversation is
+forgotten, so it uses nothing between requests. A yes given after it closed (a question left open longer
+than `idle_close_s`) does nothing; ask again and Jarvis opens the page anew.
+[ADR 0016](adr/0016-headless-browser.md) has the details.
 
 ## `[files]`: the folders Jarvis may read and write
 
@@ -637,13 +691,14 @@ A table from operation name to a class: `safe` (runs), `confirm` (needs your spo
 (needs the confirm key, below; never a spoken yes, and not skipped by `bypass_consent`) or `deny`.
 A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` with an error, so a typo
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
-its shipped class, which is `safe` for every operation but `write_file` (`confirm`) and `stop_process`
+its shipped class, which is `safe` for every operation but `write_file` and `browser_act` (`confirm`) and `stop_process`
 (`strong`): `spotify_*`, `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`,
-`pc_stats`, `pc_volume`, `pc_media`, `pc_audio_listen`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`; set one to `deny` to switch it off: it is then
+`pc_stats`, `pc_volume`, `pc_media`, `pc_audio_listen`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`,
+`sing`, `browser_open`, `browser_screenshot`; set one to `deny` to switch it off: it is then
 not offered to the model at all. `no_action`, `think_harder` and `stay_quiet` are how Jarvis answers, not tools, and
 cannot be switched off. `stop_process`
 may be set only to `strong` or `deny`: a program is stopped by your command and your key alone, so any
-other class stops `jarvis run`, `ask` and `chat` with an error. Whatever the class, side effects are raised to `confirm` while text from outside
+other class stops `jarvis run`, `ask` and `chat` with an error. `browser_act` may not be set to `safe`. Whatever the class, side effects are raised to `confirm` while text from outside
 your own speech is in the request, and so are the operations that send words off the PC while a file's text or a shell command's output is. Example:
 
 ```toml
@@ -661,10 +716,11 @@ The command restarts the voice service at once; the chat restarts it once, when 
 takes the change the next time it opens.
 
 `/config` in the chat also sets the speaking speed (`audio.speech_speed`), whether Jarvis acts without asking
-first (`boundaries.bypass_consent`) and whether it takes requests from PC audio (`audio.listen_to_pc`), marked
-"voice too": each change is saved and audited (`setting_changed`; acting without asking as `consent_changed`,
-as `jarvis consent` records it), and the voice service takes them when the settings close. Acting without
-asking also applies to the open chat at once, turned on or off.
+first (`boundaries.bypass_consent`), whether it takes requests from PC audio (`audio.listen_to_pc`), whether
+spoken requests get the headless browser (`agent.browser`) and when the browser closes
+(`browser.idle_close_s`), marked "voice too": each change is saved and audited (`setting_changed`; acting
+without asking as `consent_changed`, as `jarvis consent` records it), and the voice service takes them when
+the settings close. Acting without asking also applies to the open chat at once, turned on or off.
 
 ## The confirm key (`jarvis confirm`)
 

@@ -29,9 +29,10 @@ known-first-party = ["jarvis"]
 "tests/test_chat.py" = ["TID253"]
 "tests/test_cli.py" = ["TID253"]
 "tests/test_kokoro.py" = ["TID253"]
+"tests/test_sing_psola.py" = ["TID253"]
 
-# These modules are heavy to import (Textual, ONNX models, Piper, LiveKit, an HTML extractor, the Azure
-# SDK in its own helper) and most commands and the idle service never use them, so they load inside the
+# These modules are heavy to import (Textual, ONNX models, Piper, LiveKit, an HTML extractor, Praat,
+# the Azure SDK in its own helper) and most commands and the idle service never use them, so they load inside the
 # function that needs them. Ruff then allows that import there without a suppression (PLC0415) and
 # rejects a top-level import of them (TID253). `jarvis.audio` and `jarvis.voice` are lazy in cli.py too
 # but `voice.py` and the tests import `jarvis.audio` at the top, so their deferrals carry a reason instead.
@@ -41,6 +42,7 @@ banned-module-level-imports = [
   "jarvis.chat.app",
   "jarvis.kokoro",
   "livekit",
+  "parselmouth",
   "piper",
   "trafilatura",
 ]

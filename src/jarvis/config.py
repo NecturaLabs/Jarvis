@@ -150,6 +150,7 @@ class AgentConfig(_Section):
     thinking_tokens: int = Field(default=192, ge=32, le=8192)
     thinking_max: Effort = "high"
     thinking_raised_tokens: int = Field(default=768, ge=32, le=8192)
+    browser: bool = False  # offer the headless browser tools (`[browser]`), when installed
 
     @model_validator(mode="after")
     def _ceiling_above_start(self) -> Self:
@@ -167,11 +168,12 @@ class ChatConfig(AgentConfig):
     max_seconds: float = Field(default=600.0, ge=10, le=3600)
     reply_tokens: int = Field(default=2048, ge=64, le=8192)
     tool_text_chars: int = Field(default=8000, ge=500, le=50000)
-    memory_tokens: int = Field(default=6700, ge=0, le=200000)
+    memory_tokens: int = Field(default=6200, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
     memory_detail: MemoryDetail = "full"
     thinking_tokens: int = Field(default=512, ge=32, le=8192)
     thinking_raised_tokens: int = Field(default=1024, ge=32, le=8192)
+    browser: bool = True
     resume: bool = True  # open the chat on the conversation it had last time
     verbosity: Literal["replies", "steps", "everything"] = "replies"
     toolbar: bool = True  # the line of PC load, model and context under the input
@@ -375,6 +377,19 @@ class PersonaConfig(_Section):
     addendum: str = ""
 
 
+class SingConfig(_Section):
+    """How Jarvis sings (the `sing` tool; `sing = "deny"` under `[boundaries.classes]` is off).
+
+    `engine` "speech" sings with the Kokoro voice, its words stretched and moved to each note on
+    the CPU. "soulx" sings with SoulX-Singer, a singing model run on the GPU for each song, and
+    falls back to "speech" when its files are missing or it fails. "auto" is "soulx" when its
+    files are installed, else "speech".
+    """
+
+    engine: Literal["auto", "speech", "soulx"] = "auto"
+    device: int = Field(default=0, ge=0, le=15)  # the Vulkan device SoulX-Singer runs on
+
+
 class ClockConfig(_Section):
     """How Jarvis says the time."""
 
@@ -422,6 +437,16 @@ class ResearchConfig(_Section):
     results: int = Field(default=5, ge=1, le=8)
     page_chars: int = Field(default=2800, ge=500, le=50000)  # within the channel's tool_text_chars
     reddit_comments: int = Field(default=6, ge=1, le=10)
+
+
+class BrowserConfig(_Section):
+    """The headless browser (agent-browser, when it is on PATH; ADR 0016).
+
+    Each channel offers its tools by its own `browser` key (`[chat]` on, `[agent]` off by
+    default); the browser closes `idle_close_s` seconds after its last use.
+    """
+
+    idle_close_s: float = Field(default=60.0, ge=10, le=900)
 
 
 def _check_root(root: str) -> str:
@@ -660,10 +685,12 @@ class Config(_Section):
     spotify: SpotifyConfig = Field(default_factory=SpotifyConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
+    sing: SingConfig = Field(default_factory=SingConfig)
     clock: ClockConfig = Field(default_factory=ClockConfig)
     format: FormatConfig = Field(default_factory=FormatConfig)
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
     research: ResearchConfig = Field(default_factory=ResearchConfig)
+    browser: BrowserConfig = Field(default_factory=BrowserConfig)
     files: FilesConfig = Field(default_factory=FilesConfig)
     apps: AppsConfig = Field(default_factory=AppsConfig)
     shell: ShellConfig = Field(default_factory=ShellConfig)

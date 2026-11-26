@@ -113,11 +113,144 @@ def test_public_addresses_are_public(address: str) -> None:
         "::5db8:d70e",
         "64:ff9b::a00:1",  # NAT64 for 10.0.0.1
         "64:ff9b::7f00:1",  # NAT64 for 127.0.0.1
+        "fec0::1",  # site-local, deprecated: Python calls it global, a network may still route it
+        "feff:1::5",
         "not an address",
     ],
 )
 def test_private_and_special_addresses_are_not(address: str) -> None:
     assert not is_public(address)
+
+
+ROUTES_V4 = (
+    "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+    "eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"  # default, via a router
+    "eth0\t00380B5D\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n"  # 93.11.56.0/24 on the link
+    "tun0\t00000000\t00000000\t0001\t0\t0\t0\t00000080\t0\t0\t0\n"  # 0.0.0.0/1, a VPN's half
+)
+ROUTES_V6 = (
+    # 2a01:db9:1:2::/64 on the link (a home network's global prefix)
+    "2a010db9000100020000000000000000 40 00000000000000000000000000000000 00 "
+    "00000000000000000000000000000000 00000100 00000001 00000000 00000001 eth0\n"
+    # the default route, via the router
+    "00000000000000000000000000000000 00 00000000000000000000000000000000 00 "
+    "fe800000000000000000000000000001 00000400 00000001 00000000 00000003 eth0\n"
+    # 2000::/3 into a VPN: too wide to be a network of this PC's own
+    "20000000000000000000000000000000 03 00000000000000000000000000000000 00 "
+    "00000000000000000000000000000000 00000100 00000001 00000000 00000001 tun0\n"
+)
+ADDRESSES_V6 = "2a05d0140000000000000000000000aa 02 80 00 80 eth1\n"  # a /128 of this PC's own
+FIB_V4 = (
+    "Main:\n"
+    "  +-- 0.0.0.0/0 3 0 5\n"
+    "     |-- 0.0.0.0\n"
+    "        /0 universe UNICAST\n"
+    "     |-- 127.0.0.1\n"
+    "        /32 host LOCAL\n"
+    "     |-- 93.11.57.8\n"
+    "        /32 host LOCAL\n"
+    "Local:\n"
+    "  +-- 0.0.0.0/0 3 0 5\n"
+    "     |-- 93.11.57.8\n"
+    "        /32 host LOCAL\n"
+)
+
+
+@pytest.fixture
+def this_pc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    files = {
+        "route": ROUTES_V4,
+        "fib_trie": FIB_V4,
+        "ipv6_route": ROUTES_V6,
+        "if_inet6": ADDRESSES_V6,
+    }
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    monkeypatch.setattr(guard, "NET_FILES", tmp_path)
+
+
+@pytest.mark.usefixtures("this_pc")
+@pytest.mark.parametrize(
+    "address",
+    [
+        "93.11.56.7",
+        "93.11.57.8",
+        "2a01:db9:1:2::1",
+        "2a01:db9:1:2:aaaa::9",
+        "2a05:d014::aa",
+        "64:ff9b::5d0b:3807",
+    ],
+    ids=["v4-link", "v4-own", "v6-router", "v6-device", "v6-own", "nat64"],
+)
+def test_a_public_address_on_this_pcs_own_networks_is_refused(address: str) -> None:
+    # Global addresses, but the PC reaches them without a router: its own, or the home network's.
+    def answers(host: str, port: int, **_options: object) -> list[tuple[Any, ...]]:
+        return [
+            (
+                socket.AF_INET6 if ":" in host else socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                (host, port),
+            )
+        ]
+
+    with pytest.raises(BlockedDestinationError, match="this PC's own network"):
+        public_addresses(address, 443, answers)
+
+
+@pytest.mark.usefixtures("this_pc")
+def test_a_6to4_address_is_checked_against_ipv4_own_networks() -> None:
+    # Python already treats 6to4 as non-global. Check the own-network decision independently.
+    assert guard._on_own_network(  # pyright: ignore[reportPrivateUsage] - address classification
+        "2002:5d0b:3908::", guard.own_networks()
+    )
+
+
+@pytest.mark.usefixtures("this_pc")
+@pytest.mark.parametrize("address", [PUBLIC, "2606:4700::6810:84e5", "1.1.1.1"])
+def test_a_public_address_past_the_router_or_a_wide_vpn_route_is_reached(address: str) -> None:
+    def answers(host: str, port: int, **_options: object) -> list[tuple[Any, ...]]:
+        return [
+            (
+                socket.AF_INET6 if ":" in host else socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                (host, port),
+            )
+        ]
+
+    assert public_addresses(address, 443, answers) == [address]
+
+
+@pytest.mark.usefixtures("this_pc")
+@pytest.mark.parametrize("file", ["route", "fib_trie", "ipv6_route", "if_inet6"])
+@pytest.mark.parametrize("missing", [True, False], ids=["missing", "unreadable"])
+def test_incomplete_own_network_data_refuses_the_connection(
+    tmp_path: Path, file: str, *, missing: bool
+) -> None:
+    path = tmp_path / file
+    path.unlink()
+    if not missing:
+        path.mkdir()
+
+    client, wire = _guarded(_http("200 OK", b"hi"))
+    with pytest.raises(httpx.ConnectError, match="couldn't check this PC's"):
+        client.get("http://public.example/")
+    assert wire.connected == []
+
+
+@pytest.mark.usefixtures("this_pc")
+@pytest.mark.parametrize("ipv6", [False, True], ids=["ipv4-only", "dual-stack"])
+def test_web_read_works_with_complete_route_data(tmp_path: Path, *, ipv6: bool) -> None:
+    if not ipv6:
+        (tmp_path / "ipv6_route").unlink()
+        (tmp_path / "if_inet6").unlink()
+    client, wire = _guarded(_http("200 OK", b"Public article", Content_Type="text/plain"))
+
+    assert client.get("http://public.example/").text == "Public article"
+    assert wire.connected == [(PUBLIC, 80)]
 
 
 @pytest.mark.parametrize(

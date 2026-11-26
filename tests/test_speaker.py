@@ -20,6 +20,7 @@ from jarvis.audio import (
     to_16k,
     trim_silence,
 )
+from jarvis.cli import WAKE_NAME
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -452,3 +453,184 @@ def test_a_hush_during_the_own_voice_check_leaves_the_speaker_interruptible(
     speaker.wait()
 
     assert speaker.interruptible
+
+
+def test_a_sound_plays_in_its_place_among_the_sentences_through_the_same_player(
+    tmp_path: Path,
+) -> None:
+    player, files = _recorder(tmp_path)
+    synthesized: list[str] = []
+
+    def voice(text: str) -> tuple[bytes, int]:
+        synthesized.append(text)
+        return _voice(text)
+
+    speaker = Speaker(voice, player=player)
+    song = _sound(2000, seconds=0.2)
+
+    speaker.queue("a")
+    speaker.queue_sound(song, RATE, ((0.0, 0.2, "la"),))
+    speaker.queue("bb")
+    speaker.wait()
+
+    assert synthesized == ["a", "bb"]  # the sound is played as it is, never synthesized
+    assert len(files) == 1
+    assert files[0].read_bytes() == _voice("a")[0] + song + _voice("bb")[0]
+
+
+def test_each_chunk_of_a_sound_is_checked_with_the_words_sung_in_it(tmp_path: Path) -> None:
+    checked: list[str] = []
+
+    def own_wake(_pcm: bytes, _rate: int, text: str) -> bool:
+        checked.append(text)
+        return False
+
+    player, _files = _recorder(tmp_path)
+    speaker = Speaker(_voice, player=player, own_wake=own_wake)
+
+    # Six seconds, in chunks of 0 to 2.5, 1.5 to 5 and 4 to 6 s (each with the second before it).
+    lyrics = ((0.5, 1.0, "one"), (2.6, 3.0, "two"), (5.2, 5.6, "three"))
+    speaker.queue_sound(_sound(2000, seconds=6.0), RATE, lyrics)
+    speaker.wait()
+
+    assert checked == ["one", "two", "three"]
+
+
+class _NeverHears:
+    """A wake model that hears nothing in any sound."""
+
+    @staticmethod
+    def heard(frame: NDArray[np.int16]) -> bool:
+        return frame.size < 0
+
+    def reset(self) -> None:
+        pass
+
+
+def test_a_song_that_names_the_assistant_once_is_guarded_only_where_it_is_sung(
+    tmp_path: Path,
+) -> None:
+    # An Azure keyword model also wakes on the name alone, so the text check is what guards.
+    own_wake = OwnVoiceCheck(_NeverHears(), WAKE_NAME)
+    samples = np.full(RATE * 10, 1000, dtype=np.int16)
+    lyrics = ((0.5, 1.0, "la"), (3.0, 3.5, "la"), (5.8, 6.2, "Jarvis"), (8.5, 9.0, "la"))
+    pid_file, heard = tmp_path / "pid", tmp_path / "heard.raw"
+    now = [0.0]
+    speaker = Speaker(
+        _voice, player=_taking(pid_file, heard), own_wake=own_wake, clock=lambda: now[0]
+    )
+    try:
+        speaker.queue_sound(samples.tobytes(), RATE, lyrics)
+        _until(lambda: heard.exists() and heard.stat().st_size == samples.nbytes)
+        found: list[bool] = []
+        for moment in (1.0, 3.0, 5.0, 6.0, 9.5):
+            now[0] = moment
+            found.append(speaker.interruptible)
+    finally:
+        speaker.hush()
+        _end(pid_file)
+
+    assert found == [True, True, False, False, True]  # only the chunk from 4 to 7.5 s
+
+
+def test_a_song_keeps_the_rests_written_at_its_start_and_end(tmp_path: Path) -> None:
+    player, files = _recorder(tmp_path)
+    speaker = Speaker(_voice, player=player)
+    rest = np.zeros(RATE, dtype=np.int16).tobytes()  # a second of silence, from the score
+    song = rest + _sound(2000, seconds=0.5) + rest
+
+    speaker.queue_sound(song, RATE, ((1.0, 1.5, "la"),))
+    speaker.wait()
+
+    assert files[0].read_bytes() == song
+
+
+def test_a_hush_ends_a_sound_as_it_ends_speech(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pid"
+    speaker = Speaker(_voice, player=_stuck(pid_file))
+    try:
+        speaker.queue_sound(_sound(1000, seconds=2.0), RATE, ((0.0, 2.0, "long"),))
+        speaker.queue_sound(_sound(1000, seconds=2.0), RATE, ((0.0, 2.0, "another"),))
+        _until(pid_file.exists)
+        speaker.hush()
+        waited = threading.Thread(target=speaker.wait, daemon=True)
+        waited.start()
+        waited.join(WAIT_S)
+
+        assert not waited.is_alive()
+        assert not speaker.busy
+    finally:
+        _end(pid_file)
+
+
+def test_no_sound_is_queued_after_a_stop(tmp_path: Path) -> None:
+    player, files = _recorder(tmp_path)
+    speaker = Speaker(_voice, player=player)
+
+    speaker.stop()
+    speaker.queue_sound(_sound(1000), RATE, ((0.0, 0.1, "la"),))
+    speaker.wait()
+
+    assert not files
+
+
+def test_a_wake_like_stretch_of_a_song_guards_only_that_stretch(tmp_path: Path) -> None:
+    # Ten seconds of song with the wake phrase sung at 6.0 to 6.2 s (the one louder stretch).
+    samples = np.full(RATE * 10, 1000, dtype=np.int16)
+    samples[RATE * 6 : int(RATE * 6.2)] = 5000
+    pid_file, heard = tmp_path / "pid", tmp_path / "heard.raw"
+    now = [0.0]
+
+    def own_wake(pcm: bytes, _rate: int, _text: str) -> bool:
+        return bool((np.frombuffer(pcm, dtype=np.int16) == 5000).any())
+
+    speaker = Speaker(
+        _voice, player=_taking(pid_file, heard), own_wake=own_wake, clock=lambda: now[0]
+    )
+    try:
+        speaker.queue_sound(samples.tobytes(), RATE, ((0.0, 1.0, "la"),))
+        _until(lambda: heard.exists() and heard.stat().st_size == samples.nbytes)
+        found: list[bool] = []
+        for moment in (1.0, 3.0, 5.0, 8.0, 9.5):
+            now[0] = moment
+            found.append(speaker.interruptible)
+    finally:
+        speaker.hush()
+        _end(pid_file)
+
+    assert found == [True, True, False, False, True]
+
+
+def test_a_wake_phrase_across_two_chunks_of_a_song_is_still_guarded(tmp_path: Path) -> None:
+    # The phrase straddles the 2.5 s edge between two chunks; neither half alone sounds like it.
+    samples = np.full(RATE * 6, 1000, dtype=np.int16)
+    samples[int(RATE * 2.0) : int(RATE * 3.0)] = 5000
+    pid_file, heard = tmp_path / "pid", tmp_path / "heard.raw"
+    now = [0.0]
+
+    def own_wake(pcm: bytes, _rate: int, _text: str) -> bool:
+        return bool((np.frombuffer(pcm, dtype=np.int16) == 5000).sum() >= RATE)  # a whole second
+
+    speaker = Speaker(
+        _voice, player=_taking(pid_file, heard), own_wake=own_wake, clock=lambda: now[0]
+    )
+    try:
+        speaker.queue_sound(samples.tobytes(), RATE, ((0.0, 1.0, "la"),))
+        _until(lambda: heard.exists() and heard.stat().st_size == samples.nbytes)
+        now[0] = 2.2
+        guarded = not speaker.interruptible
+    finally:
+        speaker.hush()
+        _end(pid_file)
+
+    assert guarded
+
+
+def test_a_sound_with_nothing_in_it_is_checked_without_an_error(tmp_path: Path) -> None:
+    speaker = Speaker(_voice, player=_taking(tmp_path / "pid", tmp_path / "heard.raw"))
+    try:
+        spans = speaker._song_spans(b"", RATE, (), 0)  # pyright: ignore[reportPrivateUsage]
+    finally:
+        speaker.hush()
+
+    assert spans == []

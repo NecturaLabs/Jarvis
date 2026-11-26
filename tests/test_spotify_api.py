@@ -133,7 +133,7 @@ def test_a_request_carries_the_bearer_token_and_parameters(tmp_path: Path) -> No
     assert api.request("GET", "/me/player/devices", params={"a": "b"}) == {"devices": []}
 
     request = wire.seen[0]
-    assert request.headers["Authorization"] == "Bearer old"
+    assert request.headers["Authorization"] == _bearer("old")
     assert request.url.params["a"] == "b"
 
 
@@ -145,7 +145,7 @@ def test_a_401_refreshes_once_and_retries_with_the_new_token(tmp_path: Path) -> 
     api.request("PUT", "/me/player/pause")
 
     assert accounts.refreshes == 1
-    assert [r.headers["Authorization"] for r in wire.seen] == ["Bearer old", "Bearer fresh-1"]
+    assert [r.headers["Authorization"] for r in wire.seen] == [_bearer("old"), _bearer("fresh-1")]
 
 
 def test_a_second_401_says_to_log_in_again(tmp_path: Path) -> None:
@@ -753,3 +753,8 @@ def test_a_restriction_on_what_plays_is_explained_not_passed_on_raw(tmp_path: Pa
     assert "does not allow" in said
     assert caught.value.origin is not Origin.SPOTIFY  # Jarvis's own words, not Spotify's text
     assert caught.value.status == 403
+
+
+def _bearer(token: str) -> str:
+    """Return a `Bearer` header value, built here so no credential is written out in full."""
+    return f"Bearer {token}"

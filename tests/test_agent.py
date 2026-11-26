@@ -1,5 +1,6 @@
 """The agent loop against a scripted model: what runs, what is asked, what is remembered."""
 
+import contextlib
 import hashlib
 import json
 import threading
@@ -8,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, Any, cast, override
 
+import numpy as np
 import pytest
 
 from jarvis import agent as agent_module
@@ -43,23 +45,31 @@ from jarvis.memory import tokens
 from jarvis.model import Delta, ModelError, ModelMissingError, Thinking
 from jarvis.operations import (
     REMEMBERED_LISTING,
+    Lyric,
     Operation,
     OperationError,
+    OperationStoppedError,
     Registry,
     Result,
+    Sound,
     UncertainOutcomeError,
     current_request,
+    validate_args,
 )
 from jarvis.pc.files import Boundary, FileOps
 from jarvis.pictures import Picture
 from jarvis.policy import OpClass, Origin, action_hash
 from jarvis.ratelimit import ActionRate
 from jarvis.shortcuts import Shortcut
+from jarvis.sing.ops import SingOps
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator, Iterator
     from pathlib import Path
     from typing import Self
+
+    from jarvis.sing.budget import Budget
+    from jarvis.sing.score import Score
 
 
 def _call(name: str, args: dict[str, Any] | None = None, call_id: str = "c1") -> dict[str, Any]:
@@ -681,6 +691,101 @@ def test_an_operation_is_told_how_much_of_the_requests_time_is_left() -> None:
     agent.handle("wait for it", Hooks(confirm=lambda _q: False))
 
     assert seen == [60.0]
+
+
+def test_an_operation_can_ask_whether_the_request_was_cancelled() -> None:
+    stopped = [False]
+    seen: list[bool] = []
+    counter = Counter()
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        seen.append(request.cancelled())
+        stopped[0] = True
+        seen.append(request.cancelled())
+
+    ops = [counter.op("wait", side_effect=False, then=note)]
+    agent, _ = _agent(ScriptedModel([_call("wait"), _say("Done.")]), ops)
+
+    agent.handle("wait for it", Hooks(confirm=lambda _q: False, cancelled=lambda: stopped[0]))
+
+    assert seen == [False, True]
+
+
+def test_the_time_an_operation_is_told_is_left_leaves_out_the_wait_for_a_yes() -> None:
+    clock = Clock()
+    seen: list[float] = []
+    counter = Counter()
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        seen.append(request.time_left())
+
+    def answer(_question: str) -> bool:
+        clock.now += 30  # the owner takes their time to say yes
+        return True
+
+    ops = [counter.op("wait", cls=OpClass.CONFIRM, then=note)]
+    agent, _ = _agent(
+        ScriptedModel([_call("wait"), _say("Done.")]),
+        ops,
+        clock=clock,
+        limits=Limits(max_seconds=90.0),
+    )
+
+    agent.handle("wait for it", Hooks(confirm=answer))
+
+    assert seen == [90.0]  # the request's own time, as its calls are admitted by
+
+
+def test_an_operation_can_ask_whether_anything_more_can_be_heard_and_say_it_makes_sound() -> None:
+    hushed = [False]
+    seen: list[bool] = []
+    entered: list[str] = []
+    counter = Counter()
+
+    @contextlib.contextmanager
+    def making_sound() -> Generator[None]:
+        entered.append("in")
+        try:
+            yield
+        finally:
+            entered.append("out")
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        with request.making_sound():
+            seen.append(request.hushed())
+            hushed[0] = True
+            seen.append(request.hushed())
+
+    ops = [counter.op("wait", side_effect=False, then=note)]
+    agent, _ = _agent(ScriptedModel([_call("wait"), _say("Done.")]), ops)
+
+    agent.handle(
+        "wait for it",
+        Hooks(confirm=lambda _q: False, hushed=lambda: hushed[0], making_sound=making_sound),
+    )
+
+    assert seen == [False, True]
+    assert entered == ["in", "out"]
+
+
+def test_an_operation_stopped_part_way_is_audited_as_stopped_not_failed() -> None:
+    counter = Counter()
+    ops = [counter.op("wait", error=OperationStoppedError("the song was stopped"))]
+    model = ScriptedModel([_call("wait"), _say("Stopped.")])
+    agent, audit = _agent(model, ops)
+
+    agent.handle("wait for it", NO_CONFIRM)
+
+    stopped = next(e for e in audit.events if e["event"] == "tool_stopped")
+    assert stopped["op"] == "wait"
+    assert "tool_failed" not in _events(audit)
+    assert model.seen[1][-1]["content"] == "Stopped: the song was stopped."
 
 
 def test_a_search_after_only_web_text_runs_without_a_yes() -> None:
@@ -2222,6 +2327,25 @@ def test_a_question_that_cannot_be_asked_counts_as_no() -> None:
     assert counter.runs == []
 
 
+def test_a_question_that_cannot_be_worded_counts_as_no() -> None:
+    # Regression: an operation whose summary raised ended the whole request with the error.
+    counter = Counter()
+
+    def broken(_args: dict[str, Any]) -> str:
+        msg = "no words for this"
+        raise ValueError(msg)
+
+    op = replace(counter.op("play", cls=OpClass.CONFIRM), spoken_summary=broken)
+    model = ScriptedModel([_call("play"), _say("I couldn't check with you.")])
+    agent, audit = _agent(model, [op])
+
+    reply = agent.handle("play", Hooks(confirm=lambda _question: True))
+
+    assert reply == "I couldn't check with you."
+    assert counter.runs == []
+    assert _confirmation(audit)["reason"] == "failed"
+
+
 def test_a_no_action_reply_is_spoken_without_a_second_model_call() -> None:
     model = ScriptedModel([_call("no_action", {"reply": "Hey. What are we listening to?"})])
     agent, _ = _agent(model, [])
@@ -2606,6 +2730,69 @@ def test_with_consent_bypassed_pc_audio_runs_unasked() -> None:
     agent.handle("pause", Hooks(confirm=_never_asked), Origin.PC_AUDIO)
 
     assert counter.runs == [{"op": "pause"}]
+
+
+def _always_asking(counter: Counter, cls: OpClass) -> Operation:
+    def run(args: dict[str, Any]) -> Result:
+        counter.runs.append({"op": "press", **args})
+        return Result("pressed")
+
+    return Operation(
+        "press",
+        "press",
+        {"type": "object", "properties": {}},
+        run,
+        default_class=cls,
+        always_ask=True,
+        spoken_summary=lambda _args: "press it",
+    )
+
+
+def test_with_consent_bypassed_an_always_asking_action_is_still_asked() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("press"), _say("Pressed.")])
+    agent, audit = _bypassing(model, [_always_asking(counter, OpClass.CONFIRM)])
+    asked: list[str] = []
+
+    agent.handle("press it", Hooks(confirm=lambda q: asked.append(q) or True))
+
+    assert asked == ["Should I press it?"]
+    assert counter.runs == [{"op": "press"}]
+    call = next(e for e in audit.events if e["event"] == "tool_call")
+    assert call["verdict"] == "confirm"
+    assert "consent" not in call
+
+
+def test_with_consent_bypassed_an_always_asking_action_declined_does_not_run() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("press"), _say("Okay.")])
+    agent, _ = _bypassing(model, [_always_asking(counter, OpClass.CONFIRM)])
+
+    agent.handle("press it", Hooks(confirm=lambda _q: False))
+
+    assert counter.runs == []
+
+
+def test_always_asking_raises_no_class_of_its_own() -> None:
+    # It only keeps a question that the policy asked for; a safe call still runs unasked.
+    counter = Counter()
+    model = ScriptedModel([_call("press"), _say("Pressed.")])
+    agent, _ = _bypassing(model, [_always_asking(counter, OpClass.SAFE)])
+
+    agent.handle("press it", Hooks(confirm=_never_asked))
+
+    assert counter.runs == [{"op": "press"}]
+
+
+def test_with_consent_bypassed_other_confirm_actions_beside_it_still_run_unasked() -> None:
+    counter = Counter()
+    model = ScriptedModel([_call("delete_all"), _say("Done.")])
+    ops = [_always_asking(counter, OpClass.CONFIRM), counter.op("delete_all", cls=OpClass.CONFIRM)]
+    agent, _ = _bypassing(model, ops)
+
+    agent.handle("delete it all", Hooks(confirm=_never_asked))
+
+    assert counter.runs == [{"op": "delete_all"}]
 
 
 def test_with_consent_bypassed_a_denied_action_is_still_refused() -> None:
@@ -3713,6 +3900,179 @@ def test_words_the_owner_adds_while_it_works_join_the_request_before_the_next_ca
     assert [e["text"] for e in audit.events if e["event"] == "steered"] == [
         "also check the weekend"
     ]
+
+
+SONG = Sound(b"\x01\x00" * 2400, 24000, (Lyric(0.0, 0.1, "la"),))
+
+
+def _singing() -> Operation:
+    return Operation(
+        "sing",
+        "Sing.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        lambda _args: Result("Singing now.", sound=SONG),
+    )
+
+
+def test_a_sound_a_tool_made_is_played_before_the_reply_that_follows_it() -> None:
+    heard: list[object] = []
+    model = ScriptedModel([_call("sing"), _say("Hope you liked it.")])
+    agent, _ = _agent(model, [_singing()])
+
+    reply = agent.handle(
+        "sing",
+        Hooks(confirm=lambda _q: False, speak=heard.append, play=heard.append),
+    )
+
+    assert heard == [SONG, "Hope you liked it."]
+    assert reply == "Hope you liked it."
+    tool = model.seen[1][-1]
+    assert tool["role"] == "tool"
+    assert tool["content"] == "Singing now."
+
+
+@pytest.mark.parametrize("together", [False, True], ids=["after-it", "beside-it"])
+def test_a_song_then_silence_keeps_the_song_and_says_nothing_more(together: bool) -> None:
+    heard: list[object] = []
+    hushes: list[str] = []
+    quiet: list[str] = []
+    both = _call("sing")
+    both["tool_calls"] += _call("stay_quiet", call_id="c2")["tool_calls"]
+    steps = [both] if together else [_call("sing"), _call("stay_quiet", call_id="c2")]
+    agent, _ = _agent(ScriptedModel(steps), [_singing(), quiet_operation()])
+
+    reply = agent.handle(
+        "sing, then say nothing",
+        Hooks(
+            confirm=lambda _q: False,
+            speak=heard.append,
+            play=heard.append,
+            hush=lambda: hushes.append("hush"),
+            quiet=lambda: quiet.append("quiet"),
+        ),
+    )
+
+    assert not reply
+    assert heard == [SONG]
+    assert not hushes  # the song queued in this request is not cut off
+    assert quiet == ["quiet"]
+
+
+def test_silence_asked_for_without_a_song_still_hushes_what_was_said() -> None:
+    hushes: list[str] = []
+    agent, _ = _agent(ScriptedModel([_call("stay_quiet")]), [quiet_operation()])
+
+    agent.handle("Shut up.", Hooks(confirm=lambda _q: False, hush=lambda: hushes.append("hush")))
+
+    assert hushes == ["hush"]
+
+
+class _Renders:
+    """A singer that renders a tenth of a second per song and keeps the scores it rendered."""
+
+    name = "test"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scores: list[Score] = []
+
+    def render(self, score: Score, _budget: Budget, /) -> tuple[np.ndarray, int]:
+        self.scores.append(score)
+        return np.ones(2400, dtype=np.int16), 24000
+
+
+SUNG = "Morn- E4 1, ing G4 1, light C5 2"  # an original line, written for these tests
+
+
+def _sing_after_web_text(
+    *, bypass: bool, yes: bool
+) -> tuple[list[str], list[Sound], _Renders, AuditLog, dict[str, Any]]:
+    """Read a web page, then sing: return the questions, what played, the singer and the log."""
+    singer = _Renders()
+    (sing,) = SingOps(lambda: singer).operations()
+    counter = Counter()
+    page = counter.op("page", origin=Origin.WEB, side_effect=False)
+    model = ScriptedModel(
+        [_call("page"), _call("sing", {"notes": SUNG}, call_id="c2"), _say("Done.")]
+    )
+    audit = AuditLog(None)
+    agent = Agent(
+        model,
+        Registry([page, sing, no_action_operation()]),
+        "system",
+        audit,
+        {},
+        clock=Clock(),
+        bypass_consent=bypass,
+    )
+    asked: list[str] = []
+    played: list[Sound] = []
+
+    agent.handle(
+        "find a song and sing it",
+        Hooks(confirm=lambda q: asked.append(q) or yes, play=played.append),
+    )
+
+    return asked, played, singer, audit, validate_args(sing, {"notes": SUNG})
+
+
+@pytest.mark.parametrize("yes", [False, True], ids=["no", "yes"])
+def test_a_song_after_web_text_is_asked_about_with_all_its_words_and_bound_to_them(
+    yes: bool,
+) -> None:
+    asked, played, singer, audit, args = _sing_after_web_text(bypass=False, yes=yes)
+
+    assert asked == ["Should I sing a 2-second song with these words: Morning light?"]
+    (confirmation,) = [e for e in audit.events if e["event"] == "confirmation"]
+    (call,) = [e for e in audit.events if e["event"] == "tool_call" and e["op"] == "sing"]
+    assert confirmation["approved"] is yes
+    assert confirmation["action"] == call["action"] == action_hash("sing", args)
+    assert call["verdict"] == "confirm"
+    assert len(played) == len(singer.scores) == (1 if yes else 0)  # a no makes and plays nothing
+
+
+def test_a_song_after_web_text_runs_unasked_when_the_owner_bypasses_consent() -> None:
+    asked, played, singer, audit, _args = _sing_after_web_text(bypass=True, yes=False)
+
+    assert not asked
+    assert len(played) == len(singer.scores) == 1
+    (call,) = [e for e in audit.events if e["event"] == "tool_call" and e["op"] == "sing"]
+    assert call["consent"] == "bypassed"
+    assert call["would_need"] == "confirm"
+
+
+def test_a_channel_that_cannot_play_sound_tells_the_model_nothing_was_sung() -> None:
+    model = ScriptedModel([_call("sing"), _say("I can only sing by voice.")])
+    agent, audit = _agent(model, [_singing()])
+
+    assert agent.handle("sing", NO_CONFIRM) == "I can only sing by voice."
+    assert model.seen[1][-1]["content"] == agent_module.NO_SOUND
+    assert "sound_not_played" in _events(audit)
+    assert any(e.get("event") == "reply" for e in audit.events)
+
+
+def test_a_sound_is_not_played_once_the_request_was_cancelled() -> None:
+    played: list[Sound] = []
+    cancelled = [False]
+
+    def cancel_then_sing(_args: dict[str, Any]) -> Result:
+        cancelled[0] = True  # the owner spoke over Jarvis while the song was being made
+        return Result("Singing now.", sound=SONG)
+
+    op = Operation(
+        "sing",
+        "Sing.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        cancel_then_sing,
+    )
+    model = ScriptedModel([_call("sing"), _say("Done.")])
+    agent, _ = _agent(model, [op])
+
+    agent.handle(
+        "sing", Hooks(confirm=lambda _q: False, play=played.append, cancelled=lambda: cancelled[0])
+    )
+
+    assert not played
 
 
 def test_words_the_owner_adds_while_it_works_count_as_their_own_words() -> None:

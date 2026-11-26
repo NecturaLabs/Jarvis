@@ -364,6 +364,58 @@ the sentences before and after it can.
   unclear. Because Jarvis imports `piper-tts` for both voices, Jarvis is published under GPL-3.0-or-later
   (`docs/adr/0006-gpl-licence.md`).
 
+## Singing
+
+The `sing` tool ([configuration.md](configuration.md#sing-how-jarvis-sings)) has two singers. Nobody but the
+owner listens to Jarvis's sound, so both were judged by measurement on 2026-11-26: the pitch Praat tracks in each
+note against the note asked for, each song's length against the score's, and the words `voxtype transcribe`
+(Qwen3-ASR 1.7B) heard in the song. How natural either sounds is the owner's to judge.
+
+### The speaking voice (`engine = "speech"`)
+
+- Kokoro says the words (its `duration` output gives how long each phoneme lasts, 600 samples a step) and
+  Praat's overlap-add, through `praat-parselmouth` 0.4.7 (GPL-3.0-or-later, Praat 6.1.38 inside), stretches
+  each vowel to its note and sets its pitch. No model file of its own: it uses the Kokoro files above.
+- Measured on four Kokoro voices (`bm_george`, `af_heart`, `bf_emma`, `am_michael`) and two public-domain
+  tunes of 12 and 14 notes: 103 of 104 notes within a semitone of the note asked for (the one miss, on
+  `am_michael`, a short note on a creaky vowel), and every song exactly its score's length. An 8.5 s song took 0.4 to 0.5 s on the
+  CPU. Its vowels are stretched up to 20 times, so expect a buzzy, synthetic sound.
+- Kokoro's sounds come about 20 ms before its durations say, it counts the silence after its last word into
+  its last sound, and a word said last falls in pitch and often creaks: the singer reads where each vowel is
+  clearly voiced, sings one more word after the phrase and drops it, and pads Praat's input, whose output is
+  at most three times its input's length.
+
+### SoulX-Singer (`engine = "soulx"`, or `auto` once installed)
+
+- [SoulX-Singer](https://huggingface.co/Soul-AILab/SoulX-Singer) (Soul AI Lab), a singing-voice model that
+  sings a score in the voice of a reference clip, run by [audio.cpp](https://github.com/0xShug0/audio.cpp)'s
+  `audiocpp_cli` on the GPU through Vulkan, one process per song. The reference is the same song sung first by
+  the speaking voice, so Jarvis ships no recording and sings in its own voice.
+- Files, under `<data_dir>/sing/`: `soulx-singer-q8_0.gguf` (1,173,681,632 bytes, from
+  `audio-cpp/SoulX-Singer-GGUF` at revision `ded36295f789661e590e4bf6ad49a25470cf830d`) with that repository's
+  `LICENSE`, `LICENSE.amphion` and `NOTICE`, and `audiocpp/` holding `audiocpp_cli`, its `libggml*` libraries and
+  its `LICENSE`, from the audio.cpp v0.9.6 release `audio-v0.9.6-bin-ubuntu-x64-vulkan-portable.tar.gz`
+  (93,520,711 bytes, sha256 `9effac5d…be361`). `uv run tools/get_singer.py` downloads them, checks each against
+  its size and sha256, and keeps only those files; Jarvis never downloads anything when it sings. A file already there
+  with the right sha256 is not downloaded again, so the script can be run again to repair an install. The runner's
+  files are unpacked to a new folder and checked against the 23 pinned files of the bundle (`SOULX_RUNNER` in
+  `src/jarvis/models.py`, each read from the archive) before they replace the old folder. Before every song,
+  and in `jarvis doctor`, the bundle is checked again (regular files, no links, each size and sha256, the runner
+  executable) and the model's size; a bundle that fails sings with the speaking voice. `jarvis doctor` also
+  hashes the model.
+- Licence: Apache-2.0 for the SoulX-Singer weights (model card and the GGUF repository's `LICENSE`, read
+  2026-11-26), with the flow-matching part MIT (Amphion, `LICENSE.amphion`); audio.cpp is Apache-2.0 (its
+  `LICENSE`). Both run as separate programs Jarvis starts; Jarvis ships none of their files. The paper says
+  only that the 42,000 hours of training singing came from separated songs; their sources and rights are not
+  named.
+- Measured on the RX 7900 XT: a 7.8 s song took 2.8 s from the score to the sound, the speaking-voice
+  reference and the model's load included; all 11 notes landed within 0.1 semitone, and the transcriber heard
+  "Far away the river runs, it down to the sea" for "far away the river runs down to the sea". On the CPU it
+  is about five times slower than the song, so Jarvis runs it on the GPU only. VRAM beside a game and a
+  game's frame time while it runs are not measured.
+- audio.cpp v0.9.6 was 12 days old when pinned (released 2026-11-14), under the two weeks this project
+  usually waits; it is the version measured here.
+
 ## Wake word and end of speech
 
 `uv run tools/get_models.py` fetches and verifies the default wake word from the LiveKit 2.1.3 release
@@ -467,6 +519,7 @@ alone never scored above 0.052. The full table and the choice are in
 | onnxruntime | 1.32.0 | MIT |
 | pillow (checks and shrinks pictures for the model) | 13.0.0 | MIT-CMU |
 | piper-tts | 1.8.0 | GPL-3.0-or-later |
+| praat-parselmouth (Praat, for singing with the speaking voice) | 0.4.7 | GPL-3.0-or-later |
 | pydantic | 2.14.3 | MIT |
 | textual (the `jarvis chat` window) | 8.2.8 | MIT |
 | textual-image (pictures in the chat window) | 0.14.2 | LGPL-3.0-or-later |
@@ -479,7 +532,8 @@ What textual pulls in: rich 15.0.0, markdown-it-py 4.3.0, mdit-py-plugins 0.7.0,
 textual-image needs only pillow and rich, both above. It is LGPL-3.0-or-later, which a GPL-3.0-or-later
 program may use. Version 0.14.2 (2026-10-20) is pinned because 0.14.3 and 0.14.4 were under two weeks old.
 
-tomlkit has no dependencies of its own.
+tomlkit has no dependencies of its own. praat-parselmouth needs only numpy, and is imported only when Jarvis
+first sings.
 
 What trafilatura pulls in: lxml 6.1.3 and lxml-html-clean 0.4.6 (BSD-3-Clause), jusText 3.0.2 (BSD-2-Clause,
 read from its LICENSE), courlan 1.5.0, htmldate 1.11.0 and tzlocal 5.4.5, dateparser 1.5.1, python-dateutil

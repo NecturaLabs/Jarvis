@@ -21,7 +21,7 @@ from jarvis.agent import Agent, ContextUse, Declined, Hooks, NoReason
 from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
 from jarvis.chat import commands
-from jarvis.chat.app import NO_REPLY, ChatApp, Services
+from jarvis.chat.app import NO_REPLY, SETTINGS, ChatApp, Services
 from jarvis.chat.archive import ChatArchive
 from jarvis.chat.clipboard import Clip, ClipboardError
 from jarvis.chat.history import InputHistory
@@ -1357,6 +1357,25 @@ def test_config_shows_sections_and_what_each_setting_does_and_left_steps_back() 
 
     _run(test, app)
     assert saved[0].verbosity == "everything"
+
+
+def test_config_switches_the_browser_tools_off_from_the_next_chat() -> None:
+    saved: list[ChatConfig] = []
+    app = _app(session=FakeSession(), services=Services(save_settings=saved.append))
+    row = [setting.key for setting in SETTINGS].index("browser")
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        assert "Headless browser" in _settings_text(app)
+        await pilot.press(*["down"] * row, "enter")
+        await _until(pilot, lambda: bool(saved))
+        await pilot.press("escape")
+        await _until(pilot, lambda: app.query_one("#prompt").display)
+
+    _run(test, app)
+    assert saved[0].browser is False
+    assert not next(s for s in SETTINGS if s.key == "browser").live  # its tools are set at start
 
 
 def test_thinking_effort_set_in_config_reaches_the_agent() -> None:

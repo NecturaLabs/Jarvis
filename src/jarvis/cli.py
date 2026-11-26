@@ -50,6 +50,7 @@ from jarvis.spotify.auth import SCOPES, SpotifyAuthError, TokenStore, login, red
 from jarvis.sysinfo import Sampler
 from jarvis.toolswitch import WORDS as TOOL_WORDS
 from jarvis.toolswitch import ToolSetting, tool_settings, with_class
+from jarvis.web import browser
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -412,7 +413,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes",
         action="store_true",
         help="answer yes to Jarvis's questions (default: ask here); it cannot press the "
-        "confirm key a strong action waits for",
+        "confirm key a strong action waits for, and a browser click or typing is still asked here",
     )
 
     made["status"].add_argument(
@@ -640,6 +641,13 @@ def _terminal_confirm(question: str) -> bool | Declined:
     return answer.strip().casefold() == "y" or is_yes(answer)
 
 
+def _terminal_confirm_always(question: str) -> bool | Declined:
+    """Require an answer from an interactive terminal, even when ordinary consent is bypassed."""
+    if not sys.stdin.isatty():
+        return Declined(NoReason.NO_ANSWER)
+    return _terminal_confirm(question)
+
+
 def cmd_ask(args: argparse.Namespace) -> int:
     """Answer one typed request and print the reply."""
     try:
@@ -650,8 +658,11 @@ def cmd_ask(args: argparse.Namespace) -> int:
     confirm: Callable[[str], bool | Declined] = (
         (lambda q: print(q, "-> yes") is None) if args.yes else _terminal_confirm
     )
+    # `--yes` cannot answer for a click or typing in the browser, which always asks (ADR 0016).
+    always = _terminal_confirm_always if args.yes else None
     reply = jarvis.agent.handle(
-        " ".join(args.text), Hooks(confirm=confirm, waking=lambda: print("(waking up)"))
+        " ".join(args.text),
+        Hooks(confirm=confirm, confirm_always=always, waking=lambda: print("(waking up)")),
     )
     print(reply)
     return 0
@@ -723,6 +734,24 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Keep the last seconds of PC audio in memory so Jarvis can hear what was just said "
         "(needs PC audio on); 0 keeps none.",
         "Jarvis will keep the last seconds of the PC's audio in memory.",
+    ),
+    _Shared(
+        "browser",
+        "idle_close_s",
+        "Close the browser after (seconds)",
+        (30.0, 60.0, 120.0, 300.0),
+        "Chat",
+        "How long the headless browser stays open after its last use, in the chat and by "
+        "voice; then it closes with its profile and pages. The chat takes it when it opens again.",
+    ),
+    _Shared(
+        "agent",
+        "browser",
+        "Headless browser by voice",
+        (False, True),
+        "Voice",
+        "Spoken requests can open and read pages in the headless browser too; every click or "
+        "typing there asks you first. Needs agent-browser.",
     ),
     _Shared(
         "boundaries",
@@ -1210,11 +1239,13 @@ def _run_until_stopped(
 def _model_files(cfg: config.Config) -> list[tuple[str, Path]]:
     """Return the (role, file) pairs the doctor can check against a known release."""
     from jarvis.audio import KOKORO_PREFIX, voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
+    from jarvis.sing.engines import singer_files  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, as above
 
     found = [*(("wake", path) for path in wake_files(cfg)), ("vad", cfg.data_dir / VAD_MODEL)]
     if cfg.audio.voice.startswith(KOKORO_PREFIX):
         model, voices = voice_files(cfg.data_dir, cfg.audio.voice)
         found += [("kokoro-model", model), ("kokoro-voices", voices)]
+    found += singer_files(cfg)
     with contextlib.suppress(services.StrataSetupError):  # `_model_checks` reports it
         reader = services.read_run_config(cfg).picture_reader
         if cfg.strata.pictures and reader is not None:
@@ -1397,13 +1428,24 @@ def _tool_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[
             "pw-dump"
         )  # who is playing: PC audio's source, and follow-ups shut over audio
     checks = [(shutil.which(t) is not None, f"tool {t}", f"install {t}") for t in needed]
-    if shutil.which("playerctl"):
-        return checks, []
-    note = (
-        "note tool playerctl missing: other media players can't be paused or skipped "
-        "(`pacman -S playerctl`)"
-    )
-    return checks, [note]
+    notes: list[str] = []
+    if not shutil.which("playerctl"):
+        notes.append(
+            "note tool playerctl missing: other media players can't be paused or skipped "
+            "(`pacman -S playerctl`)"
+        )
+    if cfg.chat.browser or cfg.agent.browser:
+        if not shutil.which(browser.PROGRAM):
+            notes.append(
+                f"note tool {browser.PROGRAM} missing: the headless browser tools are not offered "
+                "(see docs/configuration.md, `[browser]`)"
+            )
+        elif not browser.chrome_found(Path.home()):
+            notes.append(
+                f"note tool {browser.PROGRAM} has no Chrome to drive: its tools fail until "
+                f"`{browser.PROGRAM} install` downloads one"
+            )
+    return checks, notes
 
 
 def _user_memlock_limit() -> str:
@@ -1448,9 +1490,11 @@ def _memlock_notes(cfg: config.Config) -> list[str]:
 def essential_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[str]]:
     """Return the local checks shared by doctor and the update health check."""
     from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
+    from jarvis.sing.engines import doctor_checks  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, as above
 
     wake_checks, wake_notes = _wake_checks(cfg)
     tool_checks, tool_notes = _tool_checks(cfg)
+    sing_checks, sing_notes = doctor_checks(cfg)
     files = [cfg.data_dir / VAD_MODEL, *voice_files(cfg.data_dir, cfg.audio.voice)]
     return [
         (paths.config_file().is_file(), f"config {paths.config_file()}", "run jarvis setup"),
@@ -1462,10 +1506,11 @@ def essential_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], l
         *_model_checks(cfg),
         *_coding_checks(cfg),
         *tool_checks,
+        *sing_checks,
         *_source_checks(cfg),
         *_azure_checks(cfg),
         *_lock_checks(cfg),
-    ], [*wake_notes, *tool_notes]
+    ], [*wake_notes, *tool_notes, *sing_notes]
 
 
 def strata_status(cfg: config.Config) -> str | None:

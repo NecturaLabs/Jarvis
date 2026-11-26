@@ -66,11 +66,20 @@ Questions that need the outside world ([ADR 0007](adr/0007-outside-services-for-
   answered; others were rate-limited). They see the search and your public IP address.
 - **Web pages**: Jarvis opens only a page a search in the same conversation returned, or an address you wrote
   yourself in a request of the conversation, exactly as written (never one in a page, a file, or a long paste while Jarvis asks before acting),
-  and only on a public address. The site sees your IP address and a generic user agent.
+  and only on a public address. Jarvis checks the PC's own addresses and connected networks before
+  opening a connection. If it cannot read that information, it refuses the connection. The site sees
+  your IP address and a generic user agent.
 - **Pictures in the chat**: a picture search goes through SearXNG like a web search. A picture Jarvis shows
   is fetched from the site that holds it, which sees your IP address, and only when an image search or a
   read page in the same conversation offered it. The chat keeps the newest 50 shown pictures, 0600, in
   `~/.local/state/jarvis/chat-pictures/`; delete the folder to remove them.
+- **The headless browser** (when agent-browser is installed; [ADR 0016](adr/0016-headless-browser.md)): it
+  opens the same pages `web_read` may, and the links they show. Each site sees what any visit by Chrome shows
+  it (your public IP address, the browser and what the page itself loads), and gets words only when you said
+  yes to typing them there. An interactive terminal is required to confirm browser actions under
+  `jarvis ask --yes`. It carries none of your browsers' cookies or logins, uses a home folder of its
+  own (never your Downloads), its own profile is deleted once it has ended, and it reaches nothing on this PC
+  or your network.
 - **Reddit**: thread searches go through SearXNG the same way, with `site:reddit.com` added; the
   `arctic-shift.photon-reddit.com` archive gets the ids of the threads Jarvis reads.
 

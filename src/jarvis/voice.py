@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 
     from jarvis.config import AudioConfig
     from jarvis.confirmkey import ConfirmKey, Waiting
+    from jarvis.operations import Sound
     from jarvis.schedule import Due
 
 log = logging.getLogger(__name__)
@@ -208,6 +209,9 @@ class _Speaker(Protocol):
     def interruptible(self) -> bool: ...
     def say(self, text: str) -> None: ...
     def queue(self, text: str) -> None: ...
+    def queue_sound(
+        self, pcm: bytes, rate: int, lyrics: Sequence[tuple[float, float, str]] = ()
+    ) -> None: ...
     def wait(self) -> None: ...
     def hush(self) -> None: ...
     def chime(self) -> None: ...
@@ -425,6 +429,7 @@ class VoiceLoop:
         self._watcher: tuple[threading.Thread, threading.Event] | None = None
         self._watch_lock = threading.Lock()
         self._barged_at: float | None = None  # when the owner spoke over Jarvis
+        self._making = False  # an operation is making a sound: listen for the wake word
         self._first_words: float | None = None
         self.state = State.IDLE
 
@@ -439,6 +444,10 @@ class VoiceLoop:
         if chiming is not None:
             chiming.join()
         self.state = State.SPEAK
+        self._watch()
+
+    def _watch(self) -> None:
+        """Start listening for the wake word while Jarvis speaks, unless barge-in is off."""
         if self._cfg.barge_in:
             with self._watch_lock:
                 if self._watcher is None:
@@ -449,11 +458,25 @@ class VoiceLoop:
                     self._watcher = (watcher, done)
                     watcher.start()
 
-    def _watch_speech(self, done: threading.Event) -> None:
-        """Listen for the wake word while Jarvis speaks; on it, stop speaking.
+    @contextlib.contextmanager
+    def _making_sound(self) -> Generator[None]:
+        """Listen for the wake word while an operation makes a sound (the `making_sound` hook).
 
-        Frames are read only while speech is playing, so the loop's own reads (an answer to a
-        question, the next request) never lose one to this thread.
+        A song takes a while to make with nothing playing meanwhile; spoken over, the request
+        is cancelled, which stops it being made, and the owner's new request is taken.
+        """
+        self._making = True
+        self._watch()
+        try:
+            yield
+        finally:
+            self._making = False
+
+    def _watch_speech(self, done: threading.Event) -> None:
+        """Listen for the wake word while Jarvis speaks or makes a sound; on it, stop speaking.
+
+        Frames are read only while speech is playing or a sound is being made, so the loop's
+        own reads (an answer to a question, the next request) never lose one to this thread.
         """
         try:
             self._listen_while_speaking(done)
@@ -466,13 +489,16 @@ class VoiceLoop:
         self._wake.reset()
         frames = self._mic.frames()
         while not done.is_set():
-            if not self._speaker.busy:
+            speaking = self._speaker.busy
+            if not speaking and not self._making:
                 done.wait(0.02)
                 continue
             frame = next(frames, None)
             if frame is None:
                 return
-            if self._speaker.interruptible and self._heard_over_speech(frame):
+            if not self._speaker.interruptible:
+                continue
+            if self._heard_over_speech(frame) if speaking else self._wake.heard(frame):
                 self._barged_at = self._clock()
                 log.info("wake word while speaking: stopping to listen")
                 self._speaker.hush()
@@ -537,6 +563,21 @@ class VoiceLoop:
         for sentence in split_sentences(words):
             self._speaker.queue(sentence)
         if self._silent():  # spoken over or hushed while these were being queued
+            self._speaker.hush()
+
+    def _play(self, sound: Sound) -> None:
+        """Queue a sound an operation made (a song) after the reply's words (the `play` hook).
+
+        It plays like speech: spoken over with the wake word, ended by `jarvis hush`, and not
+        played at all while paused or after a hush.
+        """
+        if self._silent():
+            return
+        if self._first_words is None:
+            self._first_words = time.perf_counter()
+        self._begin_speaking()
+        self._speaker.queue_sound(sound.pcm, sound.rate, sound.lyrics)
+        if self._silent():  # spoken over or hushed while it was being queued
             self._speaker.hush()
 
     def _hush(self) -> None:
@@ -1012,6 +1053,9 @@ class VoiceLoop:
                     still_waiting=lambda: self._cue(STILL_WAITING),
                     cancelled=self._cancelled,
                     speak=self._utter,
+                    play=self._play,
+                    hushed=self._silent,
+                    making_sound=self._making_sound,
                     hush=self._hush,
                     quiet=self._asked_quiet,
                 ),
