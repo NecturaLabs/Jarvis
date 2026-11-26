@@ -19,9 +19,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   Chrome, and `jarvis doctor` fails a missing agent-browser or Chrome while the browser is switched on.
 - Jarvis handles your windows on Hyprland: `pc_windows` lists them, `pc_window` shows one, moves it to
   a workspace, or turns fullscreen or floating on or off, and `pc_window_close` closes one after
-  asking. Each action is checked afterwards, because Hyprland can answer "ok" without having done it.
-  Nothing is moved, resized or opened beside a fullscreen window (`open_app` included), since a
-  fullscreen game can crash when that happens.
+  asking. Each action is checked afterwards, because Hyprland can answer "ok" without having done it,
+  and acts only on a window list the model has already read. A fullscreen window is never moved,
+  resized, toggled or closed, and nothing is moved or opened beside it (`open_app` included, which
+  also waits while a fullscreen window is on screen), since a fullscreen game can crash when that
+  happens.
 - `pc_screenshot` takes a picture of the screen, a workspace or one window. A window or workspace
   that is not on screen is captured off-screen without switching to it. The picture is saved where
   Omarchy keeps screenshots, copied to the clipboard and shown in the chat.

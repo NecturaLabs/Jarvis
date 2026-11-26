@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from test_pc_windows import FakeDesktop, make_window
+from test_pc_windows import FakeDesktop, make_window, seen
 
 from jarvis.operations import OperationError, request_scope
 from jarvis.pc.screenshot import CaptureError, ScreenshotOps, save_folder
-from jarvis.pc.windows import WindowOps
+from jarvis.pc.windows import Monitor, WindowOps
 from jarvis.pictures import PictureCache
 from jarvis.policy import Origin
 
@@ -50,7 +50,7 @@ def desktop() -> FakeDesktop:
         open=[
             make_window("0xa1", "kitty", "2", width=1280, height=1440),
             make_window("0xa2", "firefox", "2", x=1280, width=1280, height=1440, focused=True),
-            make_window("0xb1", "steam_app_1", "3", fullscreen=True, width=2560, height=1440),
+            make_window("0xb1", "a_game", "6", fullscreen=True, width=2560, height=1440),
         ],
         showing="1",
     )
@@ -110,7 +110,8 @@ def test_a_workspace_not_on_screen_is_made_from_its_windows_without_showing_it(
         result = shots.screenshot({"of": "workspace", "workspace": "2"})
 
     assert grim.calls == [["-T", "a1"], ["-T", "a2"]]
-    picture = Image.open(next(tmp_path.glob("screenshot-*.png"))).convert("RGB")
+    with Image.open(next(tmp_path.glob("screenshot-*.png"))) as saved:
+        picture = saved.convert("RGB")
     assert picture.size == (2560, 1440)
     assert picture.getpixel((10, 10)) == COLOURS["a1"]
     assert picture.getpixel((2000, 10)) == COLOURS["a2"]
@@ -125,7 +126,7 @@ def test_a_workspace_with_a_fullscreen_game_is_taken_without_touching_it(
     shots, _, _ = _ops(desktop, tmp_path, grim)
 
     with request_scope(foreign=False):
-        assert shots.screenshot({"of": "workspace", "workspace": "3"}).ok
+        assert shots.screenshot({"of": "workspace", "workspace": "6"}).ok
 
     assert grim.calls == [["-T", "b1"]]
     assert desktop.ran == []
@@ -151,7 +152,7 @@ def test_a_listed_window_is_taken_by_its_id_and_named_as_other_programs_words(
     shots, windows, _ = _ops(desktop, tmp_path, grim)
 
     with request_scope(foreign=False):
-        windows.list_windows({})
+        seen(windows)
         result = shots.screenshot({"of": "window", "window": 1})
 
     assert grim.calls == [["-T", "a1"]]
@@ -166,7 +167,7 @@ def test_a_window_number_must_come_from_this_requests_listing(
     shots, windows, _ = _ops(desktop, tmp_path, Grim(desktop))
 
     with request_scope(foreign=False):
-        windows.list_windows({})
+        seen(windows)
     with request_scope(foreign=False), pytest.raises(OperationError, match="not listed"):
         shots.screenshot({"of": "window", "window": 1})
 
@@ -256,3 +257,52 @@ def test_screenshots_go_where_omarchy_saves_them(tmp_path: Path) -> None:
     assert save_folder(tmp_path, {}) == tmp_path / "Pictures" / "Screenshots"
     assert save_folder(tmp_path, {"OMARCHY_SCREENSHOT_DIR": "/shots"}) == Path("/shots")
     assert save_folder(tmp_path, {"OMASNAP_SCREENSHOT_DIR": "~/s"}) == Path("~/s").expanduser()
+
+
+def test_a_request_heard_in_pc_audio_takes_no_screenshot(
+    desktop: FakeDesktop, tmp_path: Path
+) -> None:
+    grim = Grim(desktop)
+    shots, _, copied = _ops(desktop, tmp_path, grim)
+
+    with request_scope(foreign=True), pytest.raises(OperationError, match="owner's own request"):
+        shots.screenshot({"of": "screen"})
+
+    assert grim.calls == []
+    assert copied == []
+
+
+def test_a_workspace_under_a_shown_special_workspace_is_made_from_its_windows(
+    desktop: FakeDesktop, tmp_path: Path
+) -> None:
+    desktop.showing = "2"
+    special = Monitor(0, "DP-1", 0, 0, 2560, 1440, True, "2", "special:jarvis")
+    desktop.monitors = lambda: [special]  # type: ignore[method-assign]
+    grim = Grim(desktop)
+    shots, _, _ = _ops(desktop, tmp_path, grim)
+
+    with request_scope(foreign=False):
+        shots.screenshot({"of": "workspace", "workspace": "2"})
+
+    assert grim.calls == [["-T", "a1"], ["-T", "a2"]]  # not the monitor, which shows the overlay
+
+
+def test_a_scaled_monitors_workspace_keeps_its_pixels(desktop: FakeDesktop, tmp_path: Path) -> None:
+    scaled = Monitor(0, "DP-1", 0, 0, 1280, 720, True, "1", "", 2.0)
+    desktop.monitors = lambda: [scaled]  # type: ignore[method-assign]
+    desktop.open = [make_window("0xa1", "kitty", "2", width=1280, height=720)]
+    shots, _, _ = _ops(desktop, tmp_path, Grim(desktop))
+
+    with request_scope(foreign=False):
+        shots.screenshot({"of": "workspace", "workspace": "2"})
+
+    with Image.open(next(tmp_path.glob("screenshot-*.png"))) as picture:
+        assert picture.size == (2560, 1440)
+
+
+def test_the_owners_own_folder_is_kept_and_a_relative_one_ignored(tmp_path: Path) -> None:
+    pictures = str(tmp_path / "Pictures")
+    assert save_folder(tmp_path, {"OMARCHY_SCREENSHOT_DIR": pictures}) == Path(pictures)
+    assert save_folder(tmp_path, {"OMARCHY_SCREENSHOT_DIR": "shots"}) == (
+        tmp_path / "Pictures" / "Screenshots"
+    )

@@ -9,6 +9,7 @@ import json
 import os
 import socket
 from pathlib import Path
+from typing import cast
 
 from jarvis.jsonutil import objs
 
@@ -48,26 +49,31 @@ def ask(path: Path, request: bytes, timeout_s: float = HYPR_TIMEOUT_S) -> bytes:
     return b"".join(chunks)
 
 
-def _listing(request: bytes, timeout_s: float) -> list[dict[str, object]]:
-    """Return the objects Hyprland lists for one `j/…` request; [] when it cannot answer."""
+def listing(request: bytes, timeout_s: float = HYPR_TIMEOUT_S) -> list[dict[str, object]] | None:
+    """Return the objects Hyprland lists for one `j/…` request; None when it cannot answer.
+
+    None, not [], so a caller that must act safely can tell "nothing there" from "unknown".
+    """
     path = socket_path()
     if path is None:
-        return []
+        return None
     try:
         found: object = json.loads(ask(path, request, timeout_s))
     except OSError, ValueError:
-        return []
-    return objs(found)
+        return None
+    if not isinstance(found, list):
+        return None
+    return objs(cast("list[object]", found))
 
 
 def clients(timeout_s: float = HYPR_TIMEOUT_S) -> list[dict[str, object]]:
     """Return Hyprland's windows as it describes them (`j/clients`); [] when it cannot answer."""
-    return _listing(b"j/clients", timeout_s)
+    return listing(b"j/clients", timeout_s) or []
 
 
 def monitors(timeout_s: float = HYPR_TIMEOUT_S) -> list[dict[str, object]]:
     """Return Hyprland's monitors as it describes them (`j/monitors`); [] when it cannot answer."""
-    return _listing(b"j/monitors", timeout_s)
+    return listing(b"j/monitors", timeout_s) or []
 
 
 def lua_string(text: str) -> str:

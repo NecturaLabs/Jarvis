@@ -3,9 +3,10 @@
 `grim` takes the picture: the whole screen as it shows now, or one window by its Hyprland id
 (`grim -T`), which works for a window on a workspace that is not on screen, so the owner's
 view never changes. A workspace on screen is taken as its monitor shows it; one that is not
-is made from its windows, each captured on its own and laid where it sits (no wallpaper or
-bar). Capturing is read-only: no window is moved, resized or focused, so even a fullscreen game
-is safe to take.
+(or one a special workspace covers) is made from its windows, each captured on its own at full
+resolution and laid where it sits (no wallpaper or bar). Capturing only reads frames: no window
+is moved, resized or focused. Only the owner's own request takes one, never one heard in PC
+audio.
 
 The picture is saved as a PNG where Omarchy saves screenshots, named as Omarchy names them, and
 copied to the clipboard (`wl-copy`); the chat also shows it. The model is told what was taken,
@@ -15,16 +16,15 @@ never what it shows: it cannot see it.
 import contextlib
 import io
 import os
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PIL import Image, UnidentifiedImageError
 
-from jarvis.operations import Operation, OperationError, Result
+from jarvis.operations import Operation, OperationError, Result, current_request
 from jarvis.pc.apps import BACKGROUND, SPECIAL, WORKSPACES
-from jarvis.pc.windows import MAX_LISTED, Monitor, Win, WindowOps, shown, where
+from jarvis.pc.windows import MAX_LISTED, STABLE_ID, Monitor, Win, WindowOps, shown, where
 from jarvis.pictures import SHOWN_SIDE, PictureError, prepare
 from jarvis.policy import Origin
 
@@ -38,7 +38,6 @@ COPY_TIMEOUT_S = 5.0
 MAX_PICTURE_BYTES = 64 * 1024 * 1024  # four 4K monitors as PNG fit well within this
 MAX_PIXELS = 60_000_000
 KINDS = ("screen", "workspace", "window", "active_window")
-_STABLE = re.compile(r"[0-9a-f]{1,16}")
 _BACKDROP = (20, 20, 24)
 
 
@@ -99,14 +98,14 @@ def folders(home: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
     """Return where Omarchy saves screenshots (its setting first), then the Pictures folder."""
     chosen = [env.get(name, "") for name in ("OMASNAP_SCREENSHOT_DIR", "OMARCHY_SCREENSHOT_DIR")]
     found = [Path(value).expanduser() for value in chosen if value]
+    found = [path for path in found if path.is_absolute()]  # a relative one would follow the cwd
     found += [home / "Pictures" / "Screenshots", home / "Pictures"]
     return tuple(dict.fromkeys(found))
 
 
 def save_folder(home: Path, env: Mapping[str, str]) -> Path:
     """Return the folder a new screenshot goes in: Omarchy's setting, else Pictures/Screenshots."""
-    chosen = folders(home, env)
-    return chosen[0] if chosen[0] != home / "Pictures" else home / "Pictures" / "Screenshots"
+    return folders(home, env)[0]
 
 
 def _decoded(data: bytes) -> Image.Image:
@@ -154,7 +153,7 @@ class ScreenshotOps:
         self._now = now
 
     def _window(self, window: Win) -> bytes:
-        if not _STABLE.fullmatch(window.stable):
+        if not STABLE_ID.fullmatch(window.stable):
             msg = "Hyprland gave that window no id to capture it by"
             raise CaptureError(msg)
         return self._capture(["-T", window.stable])
@@ -166,7 +165,15 @@ class ScreenshotOps:
             CaptureError: no window is open there, its monitor is unknown, or grim failed.
         """
         on = [w for w in windows if w.workspace == workspace]
-        showing = next((m for m in monitors if workspace in {m.workspace, m.special}), None)
+        # As shown: its own special workspace, or a regular one no special workspace covers.
+        showing = next(
+            (
+                m
+                for m in monitors
+                if workspace == m.special or (workspace == m.workspace and not m.special)
+            ),
+            None,
+        )
         if showing is not None:
             return self._capture(["-o", showing.name])
         if not on:
@@ -176,12 +183,16 @@ class ScreenshotOps:
         if screen is None:
             msg = "Hyprland did not say which monitor that workspace is on"
             raise CaptureError(msg)
-        canvas = Image.new("RGB", (screen.width, screen.height), _BACKDROP)
+        scale = screen.scale  # windows are captured in pixels, laid out in layout units
+        canvas = Image.new(
+            "RGB", (round(screen.width * scale), round(screen.height * scale)), _BACKDROP
+        )
         # Tiled windows first, floating ones over them, a fullscreen one over everything.
         for window in sorted(on, key=lambda w: (w.fullscreen, w.floating)):
             picture = _decoded(self._window(window)).convert("RGB")
-            size = (max(window.width, 1), max(window.height, 1))
-            canvas.paste(picture.resize(size), (window.x - screen.x, window.y - screen.y))
+            size = (max(round(window.width * scale), 1), max(round(window.height * scale), 1))
+            at = (round((window.x - screen.x) * scale), round((window.y - screen.y) * scale))
+            canvas.paste(picture.resize(size), at)
         buffer = io.BytesIO()
         canvas.save(buffer, "PNG")
         return buffer.getvalue()
@@ -215,7 +226,7 @@ class ScreenshotOps:
                 msg = "No window is focused now."
                 raise OperationError(msg)
         visible = "" if shown(window, desktop.monitors()) else f", {where(window.workspace)}"
-        return self._window(window), f"the {window.klass} window{visible}", True
+        return self._window(window), f"the {window.app} window{visible}", True
 
     def _save(self, data: bytes) -> Path:
         self._folder.mkdir(parents=True, exist_ok=True)
@@ -238,6 +249,10 @@ class ScreenshotOps:
         Raises:
             OperationError: the picture could not be taken, read or saved.
         """
+        request = current_request()
+        if request is None or request.foreign:
+            msg = "a screenshot is taken only on the owner's own request, never from PC audio"
+            raise OperationError(msg)
         try:
             data, what, names_program = self._take(args)
             _decoded(data)

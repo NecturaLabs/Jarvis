@@ -35,6 +35,7 @@ SPECIAL = "special:jarvis"  # the background: a special workspace, shown only wh
 OPEN_WAIT_S = 15.0
 SETTLE_S = 1.0
 POLL_S = 0.25
+UNREADABLE = "Hyprland did not give its window list, so nothing was opened"
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +53,11 @@ class Compositor(Protocol):
     """What `open_app` needs of the compositor."""
 
     def windows(self) -> list[Placed]:
-        """Return the windows now open."""
+        """Return the windows now open; raise `OperationError` when they cannot be read."""
+        ...
+
+    def showing(self) -> set[str]:
+        """Return the workspaces the monitors show now; raise `OperationError` if unknown."""
         ...
 
     def run(self, lua: str) -> bool:
@@ -65,23 +70,48 @@ class HyprlandCompositor:
 
     @staticmethod
     def windows() -> list[Placed]:
-        """Return Hyprland's windows; [] when it cannot answer."""
+        """Return Hyprland's windows.
+
+        Raises:
+            OperationError: Hyprland did not answer, so what is open is unknown.
+        """
+        clients = hyprland.listing(b"j/clients")
+        if clients is None:
+            raise OperationError(UNREADABLE)
         placed: list[Placed] = []
-        for client in hyprland.clients():
+        for client in clients:
             address, klass, title = client.get("address"), client.get("class"), client.get("title")
             name = obj(client.get("workspace")).get("name")
             if all(isinstance(v, str) for v in (address, klass, title, name)):
-                full = client.get("fullscreen")
+                full = [client.get(key) for key in ("fullscreen", "fullscreenClient")]
                 placed.append(
                     Placed(
                         str(address),
                         str(name),
                         str(klass),
                         str(title),
-                        fullscreen=isinstance(full, int) and full > 0,
+                        fullscreen=any(isinstance(f, int) and f > 0 for f in full),
                     )
                 )
         return placed
+
+    @staticmethod
+    def showing() -> set[str]:
+        """Return the workspaces Hyprland's monitors show now, special ones included.
+
+        Raises:
+            OperationError: Hyprland did not answer.
+        """
+        monitors = hyprland.listing(b"j/monitors")
+        if not monitors:
+            raise OperationError(UNREADABLE)
+        shown: set[str] = set()
+        for monitor in monitors:
+            for key in ("activeWorkspace", "specialWorkspace"):
+                name = obj(monitor.get(key)).get("name")
+                if isinstance(name, str) and name:
+                    shown.add(name)
+        return shown
 
     @staticmethod
     def run(lua: str) -> bool:
@@ -156,6 +186,9 @@ class AppOps:
             return Result(text, Origin.TOOL_STATUS, spoken=f"{name} is already open {where}.")
         workspace = SPECIAL if place == BACKGROUND else place
         _spare_fullscreen(windows, workspace, f"{name} was not opened")
+        # A program can ignore where it was sent and open where the owner is looking.
+        for shown in sorted(self._compositor.showing()):
+            _spare_fullscreen(windows, shown, f"{name} was not opened, as it could open there")
         rule = f"[workspace {workspace} silent] {shlex.join(self._apps[name].command)}"
         if not self._compositor.run(f"hl.exec_cmd({hyprland.lua_string(rule)})"):
             msg = f"Hyprland did not take the command, so {name} was not opened"
@@ -181,24 +214,36 @@ class AppOps:
         """Return the program's first window once it shows, None after `OPEN_WAIT_S`."""
         deadline = self._clock() + OPEN_WAIT_S
         while True:
-            found = [w for w in self._compositor.windows() if mine(w)]
+            found = [w for w in self._read() if mine(w) and not w.fullscreen]
             if found:
                 return found[0]
             if self._clock() >= deadline:
                 return None
             self._sleep(POLL_S)
 
+    def _read(self) -> list[Placed]:
+        """Return the windows, [] while Hyprland does not answer (the program was started)."""
+        try:
+            return self._compositor.windows()
+        except OperationError:
+            return []
+
     def _gather(self, mine: Callable[[Placed], bool], workspace: str) -> list[Placed]:
-        """Move the program's windows that are elsewhere to `workspace`; return those still out."""
+        """Move the program's windows that are elsewhere to `workspace`; return those still out.
+
+        A fullscreen window, and any window on a workspace that has one, is never moved.
+        """
         target = hyprland.lua_string(workspace) if workspace == SPECIAL else workspace
-        for window in [w for w in self._compositor.windows() if mine(w)]:
-            if window.workspace != workspace:
+        windows = self._read()
+        held = {w.workspace for w in windows if w.fullscreen}
+        for window in [w for w in windows if mine(w)]:
+            if window.workspace != workspace and window.workspace not in held:
                 address = hyprland.lua_string(f"address:{window.address}")
                 self._compositor.run(
                     "hl.dispatch(hl.dsp.window.move({ workspace = "
                     f"{target}, follow = false, window = {address} }}))"
                 )
-        return [w for w in self._compositor.windows() if mine(w) and w.workspace != workspace]
+        return [w for w in self._read() if mine(w) and w.workspace != workspace]
 
     def operations(self) -> list[Operation]:
         """Return `open_app` over the listed programs; none when the list is empty."""

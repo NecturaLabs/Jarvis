@@ -29,9 +29,16 @@ class FakeHyprland:
     takes_commands: bool = True
     open: list[Placed] = field(default_factory=list[Placed])
     ran: list[str] = field(default_factory=list[str])
+    shown: set[str] = field(default_factory=lambda: {"1"})
+    readable: bool = True
 
     def windows(self) -> list[Placed]:
+        if not self.readable:
+            raise OperationError("Hyprland did not give its window list, so nothing was opened")
         return list(self.open)
+
+    def showing(self) -> set[str]:
+        return set(self.shown)
 
     def run(self, lua: str) -> bool:
         self.ran.append(lua)
@@ -251,16 +258,69 @@ def test_a_lua_string_cannot_be_broken_out_of(text: str) -> None:
     assert inner.count("\\") == sum(1 for ch in text if ch in "\"'\\\n")
 
 
-@pytest.mark.parametrize("game_on", ["3", SPECIAL])
+@pytest.mark.parametrize("game_on", ["6", SPECIAL])
 def test_nothing_opens_on_a_workspace_with_a_fullscreen_window(game_on: str) -> None:
-    # A fullscreen game can crash when a window opens beside it (the owner's PC, 2026-11-26).
-    game = Placed("0xg", game_on, "steam_app_1", "A game", fullscreen=True)
+    # A fullscreen program such as a game can crash when a window opens beside it.
+    game = Placed("0xg", game_on, "a_game", "A game", fullscreen=True)
     fake = FakeHyprland(open=[game])
 
     with (
         request_scope(foreign=False),
-        pytest.raises(OperationError, match="fullscreen steam_app_1"),
+        pytest.raises(OperationError, match="fullscreen a_game"),
     ):
-        _ops(fake).open_app({"app": "spotify", "where": "3" if game_on == "3" else "background"})
+        _ops(fake).open_app({"app": "spotify", "where": "6" if game_on == "6" else "background"})
 
     assert fake.ran == []
+
+
+def test_nothing_opens_while_a_shown_workspace_has_a_fullscreen_window() -> None:
+    # A program may ignore where it was sent and open where the owner is looking.
+    game = Placed("0xg", "6", "a_game", "A game", fullscreen=True)
+    fake = FakeHyprland(open=[game], shown={"6"})
+
+    with request_scope(foreign=False), pytest.raises(OperationError, match="could open there"):
+        _ops(fake).open_app({"app": "spotify", "where": "4"})
+
+    assert fake.ran == []
+
+
+def test_an_unreadable_window_list_opens_nothing() -> None:
+    fake = FakeHyprland(readable=False)
+
+    with request_scope(foreign=False), pytest.raises(OperationError, match="window list"):
+        _ops(fake).open_app({"app": "spotify", "where": "4"})
+
+    assert fake.ran == []
+
+
+def test_a_stray_window_on_a_fullscreen_workspace_is_left_where_it_is() -> None:
+    # The new window ignored its rule and opened beside a fullscreen game: moving it out would
+    # lay the game's workspace out again, so it stays and the owner is told.
+    game = Placed("0xg", "6", "a_game", "A game", fullscreen=True)
+    fake = FakeHyprland(open=[game], opens_on="6", shown={"1"})
+
+    result = _opened(_ops(fake), "4")
+
+    assert not result.ok
+    assert "stayed on workspace 6" in result.text
+    assert not any("window.move" in lua for lua in fake.ran)
+
+
+def test_a_fullscreen_window_matching_the_program_is_never_taken_for_it_or_moved() -> None:
+    clock = Clock()
+    full = Placed("0xf", "6", "Spotify", "Spotify", fullscreen=True)
+    fake = FakeHyprland(opens_on=None)
+    ops = _ops(fake, clock)
+    (op,) = ops.operations()
+
+    def appears_fullscreen(lua: str) -> bool:
+        fake.ran.append(lua)
+        fake.open.append(full)  # a fullscreen window of the same class shows during the wait
+        return True
+
+    fake.run = appears_fullscreen  # type: ignore[method-assign]
+    with request_scope(foreign=False):
+        result = op.run(validate_args(op, {"app": "spotify", "where": "4"}))
+
+    assert not result.ok  # not seen: the fullscreen window is not the new one
+    assert not any("window.move" in lua for lua in fake.ran)

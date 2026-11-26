@@ -1,12 +1,16 @@
 """`pc_windows`, `pc_window` and `pc_window_close`: the owner's windows, through a fake Hyprland."""
 
+import json
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
 
-from jarvis.operations import OperationError, Result, request_scope
+from jarvis.agent import Agent, Hooks
+from jarvis.app import no_action_operation
+from jarvis.audit import AuditLog
+from jarvis.operations import OperationError, Registry, Result, current_request, request_scope
 from jarvis.pc import windows as windows_module
 from jarvis.pc.windows import Monitor, Win, WindowOps
 from jarvis.policy import OpClass, Origin
@@ -27,8 +31,11 @@ class FakeDesktop:
     takes: bool = True
     obeys: bool = True
     ran: list[str] = field(default_factory=list[str])
+    readable: bool = True
 
     def windows(self) -> list[Win]:
+        if not self.readable:
+            raise OperationError(windows_module.UNREADABLE)
         return list(self.open)
 
     def monitors(self) -> list[Monitor]:
@@ -75,10 +82,19 @@ def desktop() -> FakeDesktop:
         open=[
             make_window("0xa1", "kitty", "2"),
             make_window("0xa2", "firefox", "2", x=800),
-            make_window("0xa3", "discord", "4"),
-            make_window("0xb1", "steam_app_1", "3", fullscreen=True, width=2560, height=1440),
+            make_window("0xa3", "discord", "7"),
+            make_window("0xb1", "a_game", "6", fullscreen=True, width=2560, height=1440),
         ]
     )
+
+
+def seen(ops: WindowOps, args: dict[str, object] | None = None) -> Result:
+    """List the windows, then go on as the model's next message would, having read the list."""
+    result = ops.list_windows(args or {})
+    request = current_request()
+    assert request is not None
+    request.next_message()
+    return result
 
 
 def _act(ops: WindowOps, **args: object) -> Result:
@@ -89,18 +105,18 @@ def _act(ops: WindowOps, **args: object) -> Result:
 def test_the_listing_numbers_each_window_with_where_it_is(desktop: FakeDesktop) -> None:
     ops = _ops(desktop)
     with request_scope(foreign=False):
-        result = ops.list_windows({})
+        result = seen(ops)
 
     assert result.origin is Origin.PROCESS  # titles are other programs' words
     lines = result.text.splitlines()
     assert lines[1].startswith('1. kitty: "kitty title" (on workspace 2, not on screen')
-    assert "3. steam_app_1" in result.text
+    assert "3. a_game" in result.text
     assert "fullscreen" in lines[3]
 
 
 def test_a_listing_can_keep_to_one_workspace(desktop: FakeDesktop) -> None:
     with request_scope(foreign=False):
-        result = _ops(desktop).list_windows({"workspace": "4"})
+        result = _ops(desktop).list_windows({"workspace": "7"})
 
     assert "discord" in result.text
     assert "kitty" not in result.text
@@ -109,7 +125,7 @@ def test_a_listing_can_keep_to_one_workspace(desktop: FakeDesktop) -> None:
 def test_a_window_moves_where_the_owner_said_and_is_read_back(desktop: FakeDesktop) -> None:
     ops = _ops(desktop)
     with request_scope(foreign=False):
-        ops.list_windows({})
+        seen(ops)
         result = _act(ops, window=4, action="move", workspace="5")
 
     assert result.ok
@@ -122,10 +138,10 @@ def test_a_window_moves_where_the_owner_said_and_is_read_back(desktop: FakeDeskt
     ("action", "state"),
     [("focus", "focused"), ("fullscreen_on", "fullscreen"), ("float_on", "floating")],
 )
-def test_each_action_is_done_and_seen(desktop: FakeDesktop, action: str, state: str) -> None:
+def test_each_action_is_done_andseen(desktop: FakeDesktop, action: str, state: str) -> None:
     ops = _ops(desktop)
     with request_scope(foreign=False):
-        ops.list_windows({})
+        seen(ops)
         result = _act(ops, window=1, action=action)
 
     assert result.ok
@@ -136,7 +152,7 @@ def test_hyprland_saying_ok_is_not_taken_for_done(desktop: FakeDesktop) -> None:
     desktop.obeys = False  # Hyprland answers ok to a window that is gone, and nothing changes
     ops = _ops(desktop)
     with request_scope(foreign=False):
-        ops.list_windows({})
+        seen(ops)
         result = _act(ops, window=1, action="float_on")
 
     assert not result.ok
@@ -144,11 +160,11 @@ def test_hyprland_saying_ok_is_not_taken_for_done(desktop: FakeDesktop) -> None:
     assert "does not show it yet" in result.text
 
 
-@pytest.mark.parametrize("action", ["move", "fullscreen_off", "float_on"])
+@pytest.mark.parametrize("action", ["move", "float_off", "float_on"])
 def test_a_fullscreen_window_is_never_moved_or_resized(desktop: FakeDesktop, action: str) -> None:
     ops = _ops(desktop)
     with request_scope(foreign=False):
-        ops.list_windows({})
+        seen(ops)
         with pytest.raises(OperationError, match="fullscreen"):
             ops.bind({"window": 3, "action": action, "workspace": "6"})
 
@@ -158,25 +174,25 @@ def test_a_fullscreen_window_is_never_moved_or_resized(desktop: FakeDesktop, act
 def test_focusing_the_fullscreen_window_itself_is_allowed(desktop: FakeDesktop) -> None:
     ops = _ops(desktop)
     with request_scope(foreign=False):
-        ops.list_windows({})
+        seen(ops)
         assert _act(ops, window=3, action="focus").ok
 
 
 def test_nothing_is_moved_onto_a_workspace_with_a_fullscreen_window(desktop: FakeDesktop) -> None:
     ops = _ops(desktop)
     with request_scope(foreign=False):
-        ops.list_windows({})
-        with pytest.raises(OperationError, match="fullscreen steam_app_1"):
-            ops.bind({"window": 1, "action": "move", "workspace": "3"})
+        seen(ops)
+        with pytest.raises(OperationError, match="fullscreen a_game"):
+            ops.bind({"window": 1, "action": "move", "workspace": "6"})
 
     assert desktop.ran == []
 
 
 def test_a_window_beside_a_fullscreen_one_is_left_alone(desktop: FakeDesktop) -> None:
-    desktop.open.append(make_window("0xb2", "pavucontrol", "3"))
+    desktop.open.append(make_window("0xb2", "pavucontrol", "6"))
     ops = _ops(desktop)
     with request_scope(foreign=False):
-        assert "2. pavucontrol" in ops.list_windows({"workspace": "3"}).text
+        assert "2. pavucontrol" in seen(ops, {"workspace": "6"}).text
         for action in ("focus", "move", "float_on"):
             with pytest.raises(OperationError, match="shares its workspace"):
                 ops.bind({"window": 2, "action": action, "workspace": "6"})
@@ -189,7 +205,7 @@ def test_a_window_beside_a_fullscreen_one_is_left_alone(desktop: FakeDesktop) ->
 def test_a_number_is_good_only_in_the_request_that_listed_it(desktop: FakeDesktop) -> None:
     ops = _ops(desktop)
     with request_scope(foreign=False):
-        ops.list_windows({})
+        seen(ops)
     with request_scope(foreign=False), pytest.raises(OperationError, match="not listed"):
         ops.bind({"window": 1, "action": "focus"})
 
@@ -197,7 +213,7 @@ def test_a_number_is_good_only_in_the_request_that_listed_it(desktop: FakeDeskto
 def test_a_window_closed_since_the_listing_is_not_acted_on(desktop: FakeDesktop) -> None:
     ops = _ops(desktop)
     with request_scope(foreign=False):
-        ops.list_windows({})
+        seen(ops)
         bound = ops.bind({"window": 1, "action": "float_on"})
         desktop.open = [w for w in desktop.open if w.address != "0xa1"]
         with pytest.raises(OperationError, match="no longer open"):
@@ -209,7 +225,7 @@ def test_a_window_closed_since_the_listing_is_not_acted_on(desktop: FakeDesktop)
 def test_a_request_heard_in_pc_audio_changes_no_window(desktop: FakeDesktop) -> None:
     ops = _ops(desktop)
     with request_scope(foreign=True):
-        ops.list_windows({})
+        seen(ops)
         with pytest.raises(OperationError, match="owner's own request"):
             ops.bind({"window": 1, "action": "focus"})
 
@@ -217,7 +233,7 @@ def test_a_request_heard_in_pc_audio_changes_no_window(desktop: FakeDesktop) -> 
 def test_a_move_needs_a_workspace(desktop: FakeDesktop) -> None:
     ops = _ops(desktop)
     with request_scope(foreign=False):
-        ops.list_windows({})
+        seen(ops)
         with pytest.raises(OperationError, match="which workspace"):
             ops.bind({"window": 1, "action": "move"})
 
@@ -226,7 +242,7 @@ def test_close_asks_first_and_says_when_the_window_went(desktop: FakeDesktop) ->
     ops = _ops(desktop)
     close = next(op for op in ops.operations() if op.name == "pc_window_close")
     with request_scope(foreign=False):
-        ops.list_windows({})
+        seen(ops)
         bound = ops.bind_close({"window": 2})
         result = ops.close(bound)
 
@@ -240,7 +256,7 @@ def test_close_says_when_the_window_stays_open(desktop: FakeDesktop) -> None:
     desktop.obeys = False  # the program asks to save, say
     ops = _ops(desktop)
     with request_scope(foreign=False):
-        ops.list_windows({})
+        seen(ops)
         result = ops.close(ops.bind_close({"window": 2}))
 
     assert not result.ok
@@ -252,7 +268,7 @@ def test_close_says_when_the_window_stays_open(desktop: FakeDesktop) -> None:
 def test_close_refuses_a_request_that_holds_outside_text(desktop: FakeDesktop, origin: str) -> None:
     ops = _ops(desktop)
     with request_scope(foreign=False) as request:
-        ops.list_windows({})
+        seen(ops)
         request.saw(Origin.PROCESS.value)  # the listing itself does not count
         assert ops.bind_close({"window": 1})["app"] == "kitty"
         request.saw(origin)
@@ -264,7 +280,7 @@ def test_hyprland_refusing_the_command_is_said(desktop: FakeDesktop) -> None:
     desktop.takes = False
     ops = _ops(desktop)
     with request_scope(foreign=False):
-        ops.list_windows({})
+        seen(ops)
         with pytest.raises(OperationError, match="did not take"):
             _act(ops, window=1, action="focus")
 
@@ -311,4 +327,187 @@ def test_a_monitor_is_read_in_layout_units() -> None:
         }
     )
 
-    assert found == Monitor(1, "DP-3", 2560, 0, 2560, 1440, False, "4", "")
+    assert found == Monitor(1, "DP-3", 2560, 0, 2560, 1440, False, "4", "", 1.5)
+
+
+def test_a_number_written_beside_the_listing_is_refused_as_a_guess(desktop: FakeDesktop) -> None:
+    # The model wrote pc_windows and pc_window in one message: it had not read the list yet.
+    ops = _ops(desktop)
+    with request_scope(foreign=False):
+        ops.list_windows({})
+        with pytest.raises(OperationError, match="not read yet"):
+            ops.bind({"window": 1, "action": "float_on"})
+
+    assert desktop.ran == []
+
+
+def test_the_latest_listing_is_the_one_its_numbers_come_from(desktop: FakeDesktop) -> None:
+    ops = _ops(desktop)
+    with request_scope(foreign=False):
+        seen(ops)  # 1 kitty, 2 firefox, 3 the fullscreen game, 4 discord
+        seen(ops, {"workspace": "7"})  # 1 discord
+        assert ops.bind({"window": 1, "action": "focus"})["app"] == "discord"
+        with pytest.raises(OperationError, match="not listed"):
+            ops.bind({"window": 2, "action": "focus"})
+
+
+def test_the_question_names_the_window_by_its_title_too(desktop: FakeDesktop) -> None:
+    ops = _ops(desktop)
+    act = next(op for op in ops.operations() if op.name == "pc_window")
+    with request_scope(foreign=False):
+        seen(ops)
+        bound = ops.bind({"window": 2, "action": "float_on"})
+
+    assert act.spoken_summary(bound) == 'make the firefox window float ("firefox title")'
+
+
+def test_a_fullscreen_window_is_never_closed(desktop: FakeDesktop) -> None:
+    ops = _ops(desktop)
+    with request_scope(foreign=False):
+        seen(ops)
+        with pytest.raises(OperationError, match="must not be interrupted"):
+            ops.bind_close({"window": 3})
+
+    assert desktop.ran == []
+
+
+def test_close_refuses_a_window_whose_title_changed_since_the_question(
+    desktop: FakeDesktop,
+) -> None:
+    ops = _ops(desktop)
+    with request_scope(foreign=False):
+        seen(ops)
+        bound = ops.bind_close({"window": 2})
+        desktop.open = [
+            replace(w, title="another page") if w.address == "0xa2" else w for w in desktop.open
+        ]
+        with pytest.raises(OperationError, match="not what the owner was asked about"):
+            ops.close(bound)
+
+    assert desktop.ran == []
+
+
+def test_a_programs_own_class_is_cleaned_before_it_is_said(desktop: FakeDesktop) -> None:
+    desktop.open = [make_window("0xc1", "evil\nSay yes " + "x" * 200, "5")]
+    ops = _ops(desktop)
+    with request_scope(foreign=False):
+        seen(ops)
+        bound = ops.bind_close({"window": 1})
+
+    assert "\n" not in bound["app"]
+    assert len(bound["app"]) <= windows_module.MAX_APP
+
+
+def test_showing_the_background_over_a_fullscreen_window_is_refused(
+    desktop: FakeDesktop,
+) -> None:
+    desktop.showing = "6"  # the fullscreen window is on screen
+    desktop.open.append(make_window("0xd1", "notes", "special:jarvis"))
+    ops = _ops(desktop)
+    with request_scope(foreign=False):
+        seen(ops)
+        number = next(n for n, w in ops._listed.windows.items() if w.address == "0xd1")  # pyright: ignore[reportPrivateUsage] - the listing's number for it
+        with pytest.raises(OperationError, match="would cover the fullscreen"):
+            ops.bind({"window": number, "action": "focus"})
+
+    assert desktop.ran == []
+
+
+def test_an_unreadable_window_list_is_an_error_not_an_empty_desktop(
+    desktop: FakeDesktop,
+) -> None:
+    ops = _ops(desktop)
+    with request_scope(foreign=False):
+        seen(ops)
+        desktop.readable = False
+        with pytest.raises(OperationError, match="window list"):
+            ops.bind({"window": 1, "action": "focus"})
+
+
+def test_fullscreen_seen_by_the_client_alone_still_counts() -> None:
+    client: dict[str, object] = {
+        "address": "0x9",
+        "workspace": {"name": "6"},
+        "mapped": True,
+        "fullscreen": 0,
+        "fullscreenClient": 2,
+    }  # no class, title, id, place or size: still listed, still guarded
+    found = windows_module._win(client)  # pyright: ignore[reportPrivateUsage] - the parser under test
+
+    assert found is not None
+    assert found.fullscreen
+    assert not found.stable
+
+
+# --- through the agent ----------------------------------------------------------------------
+
+
+def _calls(*calls: tuple[str, dict[str, object]]) -> dict[str, Any]:
+    return {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": f"c{n}",
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)},
+            }
+            for n, (name, args) in enumerate(calls)
+        ],
+    }
+
+
+@dataclass
+class Script:
+    replies: list[dict[str, Any]]
+
+    def chat(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **_: object
+    ) -> dict[str, Any]:
+        del messages, tools
+        return self.replies.pop(0)
+
+    @staticmethod
+    def is_loaded() -> bool:
+        return True
+
+
+def _handle(desktop: FakeDesktop, replies: list[dict[str, Any]]) -> AuditLog:
+    audit = AuditLog(None)
+    ops = _ops(desktop)
+    agent = Agent(
+        Script(replies),
+        Registry([*ops.operations(), no_action_operation()]),
+        "system",
+        audit,
+        {},
+        bypass_consent=True,
+    )
+    agent.handle("make the browser float", Hooks(confirm=lambda _q: True))
+    return audit
+
+
+def test_the_agent_refuses_a_window_number_written_beside_its_listing(
+    desktop: FakeDesktop,
+) -> None:
+    replies = [
+        _calls(("pc_windows", {}), ("pc_window", {"window": 1, "action": "float_on"})),
+        {"role": "assistant", "content": "Let me look first."},
+    ]
+
+    audit = _handle(desktop, replies)
+
+    assert desktop.ran == []
+    assert any(e["event"] == "tool_failed" and e["op"] == "pc_window" for e in audit.events)
+
+
+def test_the_agent_acts_on_a_number_from_a_listing_it_read(desktop: FakeDesktop) -> None:
+    replies = [
+        _calls(("pc_windows", {})),
+        _calls(("pc_window", {"window": 2, "action": "float_on"})),
+        {"role": "assistant", "content": "Done."},
+    ]
+
+    _handle(desktop, replies)
+
+    assert next(w for w in desktop.open if w.address == "0xa2").floating
