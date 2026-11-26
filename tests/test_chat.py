@@ -7,7 +7,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from PIL import Image
 from rich.console import Console
@@ -22,6 +22,7 @@ from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
 from jarvis.chat import commands
 from jarvis.chat.app import NO_REPLY, ChatApp, Services
+from jarvis.chat.archive import ChatArchive
 from jarvis.chat.clipboard import Clip, ClipboardError
 from jarvis.chat.history import InputHistory
 from jarvis.chat.widgets import (
@@ -2268,8 +2269,6 @@ def test_a_folder_name_with_a_newline_stays_in_the_question_not_the_preview(
 
 
 def test_resume_lists_earlier_conversations_and_continues_one(tmp_path: Path) -> None:
-    from jarvis.chat.archive import ChatArchive  # ruff: ignore[import-outside-top-level] - only these tests
-
     archive = ChatArchive(tmp_path / "archive", keep=10)
     earlier = Conversation(budget=1000)
     archive.record({"event": "request", "text": "my cat is called Miso"})
@@ -2295,8 +2294,6 @@ def test_resume_lists_earlier_conversations_and_continues_one(tmp_path: Path) ->
 
 
 def test_forget_all_deletes_the_archive(tmp_path: Path) -> None:
-    from jarvis.chat.archive import ChatArchive  # ruff: ignore[import-outside-top-level] - only these tests
-
     archive = ChatArchive(tmp_path / "archive", keep=10)
     memory = Conversation(budget=1000)
     archive.record({"event": "request", "text": "hello"})
@@ -2316,9 +2313,136 @@ def test_forget_all_deletes_the_archive(tmp_path: Path) -> None:
     assert archive.listed() == []
 
 
-def test_a_finished_request_is_archived_with_the_windows_own_log(tmp_path: Path) -> None:
-    from jarvis.chat.archive import ChatArchive  # ruff: ignore[import-outside-top-level] - only these tests
+def test_forget_all_also_forgets_this_conversation_so_none_of_it_is_archived_again(
+    tmp_path: Path,
+) -> None:
+    archive = ChatArchive(tmp_path / "archive", keep=10)
+    tail = FakeTail()
+    session = FakeSession()
 
+    def answer(text: str, _hooks: Hooks) -> str:
+        tail.entries.append({"event": "request", "text": text, "session": SESSION})
+        session.memory.add(Turn(text, "Noted.", "", "", 1.0))
+        return "Noted."
+
+    session.answer = answer
+    app = _app(tail, session, services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "my locker code is 4711")
+        await _until(pilot, lambda: bool(archive.listed()))
+        await _type(pilot, "/forget all")
+        await _until(pilot, lambda: _has(app, "Deleted 1 archived conversation"))
+        assert not _has(app, "my locker code is 4711")
+        await _type(pilot, "/clear")
+        await _until(pilot, lambda: _has(app, "Started a new conversation"))
+
+    _run(test, app)
+    assert session.memory.turns == []
+    assert archive.listed() == []
+
+
+def test_forget_all_waits_for_a_request_to_finish(tmp_path: Path) -> None:
+    archive = ChatArchive(tmp_path / "archive", keep=10)
+    memory = Conversation(budget=1000)
+    archive.record({"event": "request", "text": "hello"})
+    memory.add(Turn("hello", "Hi.", "", "", 1.0))
+    archive.save(memory)
+    archive.start()
+    release = threading.Event()
+
+    def answer(_text: str, _hooks: Hooks) -> str:
+        release.wait(5)
+        return "Done."
+
+    session = FakeSession(answer)
+    app = _app(session=session, services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "work on it")
+        await _until(pilot, lambda: bool(session.asked))
+        await _type(pilot, "/forget all")
+        await _until(pilot, lambda: _has(app, "Wait for the request to finish"))
+        release.set()
+
+    _run(test, app)
+    assert [a.name for a in archive.listed()] == ["hello"]
+
+
+class _WatchedArchive(ChatArchive):
+    """An archive that notes whether each save came while the agent still worked."""
+
+    def __init__(self, folder: Path, working: threading.Event) -> None:
+        super().__init__(folder, keep=10)
+        self.working = working
+        self.saved_while_working: list[bool] = []
+
+    @override
+    def save(self, memory: Conversation) -> None:
+        self.saved_while_working.append(self.working.is_set())
+        super().save(memory)
+
+
+def test_a_rename_during_a_request_is_saved_once_it_settles(tmp_path: Path) -> None:
+    working, release = threading.Event(), threading.Event()
+    archive = _WatchedArchive(tmp_path / "archive", working)
+    session = FakeSession()
+
+    def answer(text: str, _hooks: Hooks) -> str:
+        working.set()
+        release.wait(5)
+        session.memory.add(Turn(text, "Done.", "", "", 1.0))
+        working.clear()
+        return "Done."
+
+    session.answer = answer
+    app = _app(session=session, services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "plan the trip")
+        await _until(pilot, working.is_set)
+        await _type(pilot, "/rename Trip")
+        await _until(pilot, lambda: _has(app, "Named this conversation Trip"))
+        release.set()
+        await _until(pilot, lambda: bool(archive.listed()))
+
+    _run(test, app)
+    assert True not in archive.saved_while_working
+    (kept,) = archive.listed()
+    assert kept.name == "Trip"
+
+
+def test_closing_during_a_request_archives_it_once_the_agent_has_finished(tmp_path: Path) -> None:
+    working = threading.Event()
+    archive = _WatchedArchive(tmp_path / "archive", working)
+    session = FakeSession()
+
+    def answer(text: str, hooks: Hooks) -> str:
+        working.set()
+        for _ in range(500):
+            if hooks.cancelled():
+                break
+            time.sleep(0.01)
+        session.memory.add(Turn(text, "(The owner stopped the request here.)", "", "", 1.0))
+        working.clear()
+        return ""
+
+    session.answer = answer
+    app = _app(session=session, services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "write the report")
+        await _until(pilot, working.is_set)
+
+    _run(test, app)  # the window closes while the request runs
+    assert True not in archive.saved_while_working
+    (kept,) = archive.listed()
+    restored = Conversation(budget=1000)
+    assert restored.load(tmp_path / "archive" / f"{kept.id}.memory.json")
+    assert [t.request for t in restored.turns] == ["write the report"]
+
+
+def test_a_finished_request_is_archived_with_the_windows_own_log(tmp_path: Path) -> None:
     archive = ChatArchive(tmp_path / "archive", keep=10)
     tail = FakeTail()
     session = FakeSession()

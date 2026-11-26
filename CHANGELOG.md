@@ -11,7 +11,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - The chat keeps every conversation in an archive (`~/.local/state/jarvis/chat-archive/`, 0600, the newest
   `chat.archive_keep` = 50) with its full log of requests, steps, results and replies. `/resume` lists them and
   `/resume 2` continues one, with what came from outside text still treated as data; `/rename` names the
-  current one, and `/forget all` deletes the archive.
+  current one, and `/forget all` deletes the archive and forgets the conversation in the window, so none of it
+  is archived again. A conversation is written only once something happened in it, never while a request
+  works on it: closing the chat mid-request archives the stopped request once the agent is done, and opening
+  and closing the chat writes no copy. Listing and the cap read only a small file per conversation, and the
+  log is added to, not rewritten. With `archive_keep = 0` the chat deletes the conversations kept before.
 - `chat.response_format` says how the chat's replies are written: `concise` (the default), `normal` or
   `verbose`. `/format verbose` and `/config` change it from the next request on; the voice keeps its own style.
 - The chat shows calls of one tool in a row as one step: "Write file "…/game.js" · 10 calls" with the newest

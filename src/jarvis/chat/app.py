@@ -251,6 +251,8 @@ class _Work:
     draft: str = ""
     steering: list[str] = field(default_factory=list[str])  # typed meanwhile, not yet taken
     taking: bool = True  # the request still takes steering; once it ends, the words wait
+    running: bool = True  # the agent still works on the conversation: it is not archived now
+    archive: bool = False  # it was asked to be archived meanwhile: once the agent is done
 
 
 @dataclass(frozen=True, slots=True)
@@ -562,17 +564,35 @@ class ChatApp(App[None]):
         self._tick()
 
     def on_unmount(self) -> None:
-        """Answer a waiting question with no, stop a request and let go of the log."""
+        """Answer a waiting question with no, stop a request, archive and let go of the log.
+
+        While the agent still works on a request, its worker archives the conversation once the
+        agent is done with it (`_ran`), so the stopped request is in the archive too.
+        """
         with self._lock:
             self._closing = True
             question, self._question = self._question, None
             work = self._work
+            running = work is not None and work.running
         if question is not None:
             question.answered.set()
         if work is not None:
             work.stop.set()
-        self._archive_now()
-        self._tail.close()
+        if not running:
+            self._close_archive()
+
+    def _close_archive(self) -> None:
+        """Archive the conversation, with the log's last events, as the window closes."""
+        archive = self._services.archive
+        try:
+            if archive is not None:
+                for entry in self._tail.read():
+                    if self._session_id and entry.get("session") == self._session_id:
+                        archive.record(entry)
+                if self._session is not None:
+                    archive.save(self._session.memory)
+        finally:
+            self._tail.close()
 
     # The transcript
 
@@ -1297,6 +1317,12 @@ class ChatApp(App[None]):
         self._archive_now()
         if self._services.archive is not None:
             self._services.archive.start()
+        self._forget_here()
+        self._note("Started a new conversation.")
+        self._draw_toolbar()
+
+    def _forget_here(self) -> None:
+        """Forget the conversation in the window and the agent's memory; start a new one."""
         if self._session is not None:
             self._session.forget()
         transcript = self.query_one("#transcript", VerticalScroll)
@@ -1306,8 +1332,6 @@ class ChatApp(App[None]):
         self._picture_number = 0
         self._input().set_text("")
         self.query_one("#welcome", Static).update(self._welcome())
-        self._note("Started a new conversation.")
-        self._draw_toolbar()
 
     def _compact(self) -> None:
         session = self._session
@@ -1331,6 +1355,9 @@ class ChatApp(App[None]):
                 )
                 self._from_worker(self._note, note)
             finally:
+                self._ran(work)
+                if work is not None and work.archive:
+                    self._from_worker(self._archive_now)
                 self._finish(work)
 
         self.run_worker(run, thread=True, group="request")
@@ -1388,10 +1415,36 @@ class ChatApp(App[None]):
         self._note(f"{self._effort_line()} From the next request on.")
 
     def _archive_now(self) -> None:
-        """Write the conversation into the archive as it is now."""
+        """Write the conversation into the archive as it is now, or once the agent is done.
+
+        While the agent works on it (a request, a compaction), the memory may be changing: it
+        is written once the agent is done (when the request settles), never mid-way.
+        """
+        with self._lock:
+            work = self._work
+            if work is not None and work.running:
+                work.archive = True
+                return
         archive = self._services.archive
         if archive is not None and self._session is not None:
             archive.save(self._session.memory)
+
+    def _ran(self, work: _Work | None, *, changed: bool = False) -> None:
+        """Note, from the worker, that the agent is done with the conversation.
+
+        `changed` says it changed (a request ended), so the archive writes it. When the window
+        closed meanwhile, nothing on its thread runs any more, so it is archived from here.
+        """
+        if work is None:
+            return
+        with self._lock:
+            work.running = False
+            closing = self._closing
+        archive = self._services.archive
+        if changed and archive is not None:
+            archive.touch()
+        if closing:
+            self._close_archive()
 
     def _resume_command(self, argument: str) -> None:
         """List the archived conversations, or continue the one numbered `argument`."""
@@ -1457,7 +1510,8 @@ class ChatApp(App[None]):
             return
         archive.rename(argument)
         self._archive_now()
-        self._note(f"Named this conversation {archive.name}.")
+        later = "" if archive.kept or self._busy() else "; it is archived once it has a request"
+        self._note(f"Named this conversation {archive.name}{later}.")
 
     def _forget_command(self, argument: str) -> None:
         archive = self._services.archive
@@ -1465,10 +1519,21 @@ class ChatApp(App[None]):
             self._note("The archive is off (chat.archive_keep is 0).", "warn")
             return
         if argument != "all":
-            self._note("/forget all deletes every archived conversation, this one's file too.")
+            self._note(
+                "/forget all deletes every archived conversation and forgets this one too, "
+                "as /clear does, so none of it is archived again."
+            )
+            return
+        if self._busy():
+            self._note("Wait for the request to finish, or press esc to stop it.", "warn")
             return
         gone = archive.forget()
-        self._note(f"Deleted {gone} archived conversation{'' if gone == 1 else 's'}.")
+        self._forget_here()
+        self._note(
+            f"Deleted {gone} archived conversation{'' if gone == 1 else 's'} and forgot this "
+            "one: a new conversation starts."
+        )
+        self._draw_toolbar()
 
     def _format_command(self, argument: str) -> None:
         """Show how replies are written, or set it for the requests from now on."""
@@ -1834,6 +1899,7 @@ class ChatApp(App[None]):
         except Exception as exc:  # ruff: ignore[blind-except] - shown in the window, never raised
             self._from_worker(self._note, f"Something went wrong: {type(exc).__name__}", "error")
         finally:
+            self._ran(work, changed=True)
             seconds = self._clock() - work.started
             stopped = work.stop.is_set() and not self._closing
             self._from_worker(
