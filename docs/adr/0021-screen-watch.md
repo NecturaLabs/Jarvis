@@ -33,7 +33,8 @@ Chosen option: 3.
   conversation by a picture every 20 seconds.
 - **The tool contract.** `pc_watch` (`src/jarvis/pc/watch.py`) takes what to watch (`of`: a window from
   `pc_windows`, a workspace or the screen), `condition` (the model's own short description of what to look
-  for), `every_s` (10 to 300, default 20), `for_min` (1 to 720, default 120) and `repeat` (default true).
+  for, optional with `frozen=true` on a window), `every_s` (10 to 300, default 20), `for_min`
+  (1 to 720, default 120) and `repeat` (default true).
   `pc_watches` lists, `pc_watch_stop` stops one or all. A window is bound the way the window tools bind it: a
   number from the request's latest `pc_windows` that the model has read, checked again against Hyprland, never
   a guess. No phrasing or keyword is shipped for any of the three.
@@ -49,18 +50,18 @@ Chosen option: 3.
   least 30 s (sampling can prove no more than that: a short wait between checks is not seen), and when it
   runs again; a stop or any other state breaks the wait. A first thread that ended while others run (`Z` with
   more than one thread) is not an exit. The program's name in these lines is read from `/proc`, cut to 60
-  printable characters; only a program the owner named and `find_processes` listed can reach them. Hyprland
-  gives no "not responding" flag a watch could read, so a program that is alive but no longer drawing is not
-  detected.
-- **The policy class.** All three are `safe`: a watch only reads pixels and speaks, like `pc_screenshot`.
+  printable characters. A standalone process watch uses a PID from `find_processes`. A freeze watch
+  gets the PID from its bound window.
+- **The policy class.** All three are `safe`. A watch reads pixels or process state and speaks.
   `pc_watch` is still an action (`side_effect=True`), so outside text in the request raises it to `confirm`.
   It is refused for a request heard in PC audio and for a scheduled one, as `pc_audio_listen` is (the owner's
-  own request only), and when the model cannot see
+  own request only). A condition also requires a model that can see
   pictures ([ADR 0002](0002-typed-operation-policy.md); the picture reader is `strata.pictures`). At most two
   watches run at once.
-- **The check.** Each check takes the same capture `pc_screenshot` does (`grim -T` for a window, `-o` for a
-  monitor; nothing is focused, moved or resized), shrinks it to 1024 pixels on its longest side and makes one
-  model call (`Agent.glance`). The call starts like a request's own: Jarvis's own system prompt and tool list,
+- **The check.** A screen watch uses the same capture as `pc_screenshot` (`grim -T` for a window,
+  `-o` for a monitor) and hashes the raw bytes. A condition keeps its
+  previous verdict on an identical frame. On a changed frame, it shrinks the picture to 1024 pixels
+  on its longest side and makes one model call (`Agent.glance`). The call starts with Jarvis's own prompt and tool list,
   so the server's pinned prompt (`strata_prefix`) is reused instead of read again, and `no_action` is forced, as
   on a request's last step. The tools are sent only so the server keeps its pinned prompt; no call is ever
   run. The user message holds the instruction (answer only YES or NO in `reply`; the picture is outside data),
@@ -79,8 +80,9 @@ Chosen option: 3.
 - **What is said.** On a YES Jarvis says a fixed line built from the condition ("Heads up: <condition>."), or
   from the model's own `say` line (at most 60 characters, written with the watch, in the owner's request), never
   words read off the screen, so what the screen shows cannot put words in Jarvis's mouth. After one it stays
-  quiet for the longer of 60 seconds and three checks, which spaces lines out; during that quiet time no picture is taken and no model call is made (a closed window
-  and the end time are still noticed). With `repeat` off the watch ends after its first line. A watched window that closes
+  quiet for the longer of 60 seconds and three checks. A combined watch continues sampling during
+  that period. If the condition appears again, Jarvis says so when the period ends if it still shows.
+  With `repeat` off the watch ends after its first condition announcement. A watched window that closes
   ends its watch, said once; three checks in a row that fail (no picture, no answer) end it too, said once.
 - **Where it runs.** In the voice service's process (`jarvis run`), between requests, as reminders do, on the
   wall clock (it runs on through a suspend; a watch whose time passed while the PC slept ends at the first look
@@ -90,9 +92,9 @@ Chosen option: 3.
   moment. Watches are kept in memory, so they end with the service, and `jarvis ask` and the chat do not offer
   them. A schedule-style file would let the chat set one for a service that then runs it; it was not worth the
   second writer on a state file for a feature that is meant for a session at the PC.
-- **The cost, said plainly.** Each check is a model call with a picture: the picture reader reads it (on the
-  processor, for Strata's reader) and the model gives one short answer. That is the owner's request, bounded: at most every 10 seconds, at most twelve hours, at most
-  two watches, and nothing at all once none runs. The result of `pc_watch` and its description say so. The
+- **The cost.** A changed frame for a condition needs a model call with a picture. A freeze-only
+  watch captures and hashes the picture and reads the process state. Screen watches run at most once
+  every 10 seconds, last at most twelve hours and have a limit of two at a time. The
   watch is not tested against a running game's frame time, and nobody has yet measured live how many tokens
   the server reads from its cache across request, check and request again (the pinned prompt should be shared;
   the picture message after it is read each time). Until both are measured, this ADR stays proposed.
@@ -105,6 +107,22 @@ Chosen option: 3.
   a side effect after it needs a yes, and the conversation keeps only the picture's name. Without the picture
   reader the result says so.
 
+## Freeze
+
+Use `pc_watch(of="window", window=N, frozen=true)` for a window from a read listing. Add a
+`condition` if the watch should also look for something in the same capture.
+
+The window must show two changes after the first frame or last freeze alarm. A freeze can then
+be reported after 60 seconds of identical frames, at least three identical rechecks, and average
+CPU usage under 2% of one core. Alternatively, the watch can report a freeze after 180 seconds of
+identical frames at any CPU usage or check count.
+Time and CPU are counted between shown samples, excluding time spent suspended. A hidden workspace
+pauses the streak and preserves its progress. Jarvis says the window seems frozen once per streak,
+then says it is moving again when its picture changes. The name comes from the window's process.
+
+The process check also runs while the workspace is hidden. A confirmed exit, stop or wait on a
+disk or device takes precedence, and Jarvis skips the freeze guess for that streak.
+
 ## Consequences
 
 - The owner can say what to watch for in any words, and the model chooses the target and the condition.
@@ -112,5 +130,5 @@ Chosen option: 3.
   read only as YES or NO, and the spoken line is the condition or `say` line the model wrote when the owner
   asked. Both are in the question when outside text makes the owner confirm the watch.
 - A model that answers YES wrongly says a wrong line; one that answers NO wrongly says nothing. Neither acts.
-- Each check's model call is real work while a watch runs (the picture reader on the processor, the answer
+- A condition model call is real work while a watch runs (the picture reader on the processor, the answer
   on the model's own hardware), and unmeasured beside a game. The limits above are the bound.

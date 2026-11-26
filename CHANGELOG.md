@@ -57,8 +57,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   720; `repeat`), said by voice in a fixed line built from what you asked for, never words read off the
   screen. `pc_watches` lists and `pc_watch_stop` stops. Two at most, only in `jarvis run`, only
   between requests (a check under way gives way to the wake word), said when it starts to show (a line that
-  stays up is said once), optionally in the model's own short `say` line, and each check is one model call
-  with a picture ([ADR 0021](docs/adr/0021-screen-watch.md), proposed).
+  stays up is said once), optionally in the model's own short `say` line. A condition uses a model call
+  only when the capture changes ([ADR 0021](docs/adr/0021-screen-watch.md), proposed).
+- Window freeze watches: set `frozen=true` on a listed window to hear when its picture seems frozen
+  and when it moves again. A hidden workspace pauses the check for a freeze. The watch reports
+  process exits, stops and waits on a disk or device before guessing from the picture. The
+  `condition` is optional, and a freeze-only watch uses no model calls.
 - Every `jarvis` command answers a script or an AI agent in one line of JSON with `--agent` (or
   `--agent-format`, or `JARVIS_AGENT_FORMAT=1`): `command`, `ok` and `exit`, then its own keys (`doctor`,
   `status`, `tools`, `speed`, `consent`) or its output lines, even for a wrong argument or a crash. Interactive

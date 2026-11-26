@@ -53,6 +53,7 @@ COMM_MAX = 15  # a command name is cut to this many characters
 PF_KTHREAD = 0x00200000
 KTHREADD = 2
 STAT_PPID, STAT_FLAGS, STAT_START = 1, 6, 19  # fields 4, 9 and 22, counted after the comm
+STAT_UTIME, STAT_STIME = 11, 12  # fields 14 and 15
 MINUTE_S, HOUR_S, DAY_S = 60, 3600, 86400
 
 # Programs never listed or stopped, by the casefolded name of their command, executable or
@@ -145,6 +146,7 @@ class _Proc:
     start: int
     kernel: bool
     state: str
+    cpu_ticks: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,20 +290,22 @@ class ProcessOps:
 
     # --- reading /proc --------------------------------------------------------------------
 
-    def _text(self, pid: int, name: str) -> str:
+    def _text(self, pid: int, name: str, *, strict: bool = False) -> str:
         try:
             return (self._proc / str(pid) / name).read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        except OSError as exc:
+            if strict and not isinstance(exc, FileNotFoundError):
+                raise
             return ""
 
-    def _read(self, pid: int) -> _Proc | None:
-        stat = self._text(pid, "stat")
+    def _read(self, pid: int, *, strict: bool = False) -> _Proc | None:
+        stat = self._text(pid, "stat", strict=strict)
         head, sep, tail = stat.rpartition(")")
         fields = tail.split()
         if not sep or len(fields) <= STAT_START:
             return None
         uids: tuple[int, ...] = ()
-        for line in self._text(pid, "status").splitlines():
+        for line in self._text(pid, "status", strict=strict).splitlines():
             if line.startswith("Uid:"):
                 with contextlib.suppress(ValueError):
                     uids = tuple(int(value) for value in line.split()[1:])
@@ -309,11 +313,12 @@ class ProcessOps:
             return None
         try:
             ppid, flags, start = (int(fields[i]) for i in (STAT_PPID, STAT_FLAGS, STAT_START))
+            cpu_ticks = int(fields[STAT_UTIME]) + int(fields[STAT_STIME])
         except ValueError:
             return None
         comm = head.partition("(")[2]
         kernel = bool(flags & PF_KTHREAD) or KTHREADD in {pid, ppid}
-        return _Proc(pid, ppid, uids, comm, start, kernel, fields[0])
+        return _Proc(pid, ppid, uids, comm, start, kernel, fields[0], cpu_ticks)
 
     def _table(self) -> dict[int, _Proc]:
         table: dict[int, _Proc] = {}
@@ -682,16 +687,42 @@ class ProcessOps:
 
         None once it is gone: another process may have its PID by then.
         """
-        proc = self._read(pid)
+        sample = self.sample(pid, start, strict=False)
+        return sample[0] if sample is not None else None
+
+    def window_target(self, pid: int) -> tuple[str, int]:
+        """Return the program and start time of a PID from a bound window.
+
+        Raises:
+            OperationError: the PID cannot be read or does not belong to the owner.
+        """
+        proc = self._read(pid) if pid > 1 else None
+        if proc is None or not self._owned(proc):
+            msg = "I can't read the process for that window."
+            raise OperationError(msg)
+        return self._program(proc), proc.start
+
+    @property
+    def ticks_per_s(self) -> int:
+        """The clock tick rate used by the process stat counters."""
+        return self._ticks
+
+    def sample(self, pid: int, start: int, *, strict: bool = True) -> tuple[str, int] | None:
+        """Return the process state and CPU ticks, or None if that process ended.
+
+        In strict mode an I/O error other than a missing file is a failed check.
+        """
+        proc = self._read(pid, strict=strict)
         if proc is None or proc.start != start:
             return None
-        if proc.state == "Z" and self._threads(pid) > 1:
-            return "S"  # its first thread ended, the others run: the program has not exited
-        return proc.state
+        state = proc.state
+        if proc.state == "Z" and self._threads(pid, strict=strict) > 1:
+            state = "S"  # its first thread ended, the others run: the program has not exited
+        return state, proc.cpu_ticks
 
-    def _threads(self, pid: int) -> int:
+    def _threads(self, pid: int, *, strict: bool) -> int:
         """Return how many threads the process has, from its `status` (1 when it does not say)."""
-        for line in self._text(pid, "status").splitlines():
+        for line in self._text(pid, "status", strict=strict).splitlines():
             if line.startswith("Threads:"):
                 with contextlib.suppress(ValueError, IndexError):
                     return int(line.split()[1])
