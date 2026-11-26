@@ -108,6 +108,20 @@ follow-up such as "what was the second one?" has it, and while it is remembered 
 needs your yes; a plain command (`pause`, `volume 40`) does not. A request the model answers while such text is
 remembered is marked the same way, so that holds after the turn that read it is forgotten.
 
+## Voice and chat: which settings are each channel's own
+
+The voice service and the chat window are two channels with their own settings for what shapes a request:
+the limits, thinking, memory and `browser` of `[agent]` (voice) and `[chat]`, and their coding-mode overlays
+`[coding.voice]` and `[coding.chat]`. Shared on purpose (the owner's boundaries, one login, one machine): `[boundaries]` (`classes`, `bypass_consent` and the `max_actions` cap, counted across both),
+`[spotify]` (one login), `[files]`, `[apps]`, `[shell]`, `[persona]`, `[model]` and `[strata]` (one model
+server with one slot).
+
+A spoken request is the voice agent's own: it is done and spoken, and does not show in an open chat window.
+`chat_hand_off` (class `safe`, offered to spoken requests only while a chat window is open) hands the owner's
+spoken words to the open window instead, for work that belongs to the chat's own request or conversation: see
+[ADR 0028](adr/0028-voice-and-chat-as-two-channels.md). `boundaries.classes` can name it like any tool
+(`chat_hand_off = "deny"` switches it off).
+
 ## `[chat]`: the same for typed requests in `jarvis chat`
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
@@ -790,7 +804,7 @@ Without editing the file: `jarvis tools` lists every tool with its setting, and 
 sets one (`default` puts it back as shipped); in `jarvis chat`, `/config` has a Tools list where Enter moves a tool
 on to its next setting, from as shipped to stricter and back, never below how it ships (that takes `jarvis tools
 NAME on`). Either way the change is audited (`tool_class_changed`, with the old setting and where it was made).
-The command restarts the voice service at once; the chat restarts it once, when its settings close. An open chat
+The command restarts the voice service at once; the chat restarts it once, when its settings close, and waits first until the voice loop is idle (the window says "They apply when Jarvis is idle"). An open chat
 takes the change the next time it opens.
 
 `/config` in the chat also sets the speaking speed (`audio.speech_speed`), whether Jarvis acts without asking

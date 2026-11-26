@@ -1068,7 +1068,7 @@ class Agent:
         self._audit = audit
         self._overrides = overrides
         self._limits = limits or Limits()
-        self._schemas = tokens(json.dumps(registry.tool_schemas()))
+        self._schemas = tokens(json.dumps(registry.tool_schemas(every=True)))
         self._fixed = tokens(system_prompt) + self._schemas
         self._memory = Conversation(self._memory_budget(), self._limits.memory_idle_s)
         self._memory_file = memory_file
@@ -1103,7 +1103,7 @@ class Agent:
         self._limits = setup.limits
         self._pictures = setup.pictures
         self._model = setup.model or self._model
-        self._schemas = tokens(json.dumps(setup.registry.tool_schemas()))
+        self._schemas = tokens(json.dumps(setup.registry.tool_schemas(every=True)))
         self._fixed = tokens(setup.system_prompt) + self._schemas
         self._memory.budget = self._memory_budget()
         self._last_used = 0
@@ -1765,6 +1765,9 @@ class Agent:
                 hooks.hush()
             hooks.quiet()
             return ""
+        if len(results) == 1 and results[0].ends and results[0].ok and results[0].spoken:
+            self._cut(stream)  # the work went elsewhere: the operation's line is the whole reply
+            return results[0].spoken
         answer = self._no_action_reply(calls, results)
         if answer is None:
             self._cut(stream)  # the model answers again; what it said here was not its reply

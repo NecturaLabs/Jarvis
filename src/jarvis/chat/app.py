@@ -1,10 +1,11 @@
 """The chat window (`jarvis chat`): talk to Jarvis in writing and watch what it does, live.
 
 Typed requests go to the window's own agent; its replies are rendered as Markdown as they are
-written. What the voice service does is read from the shared audit log, so spoken requests and
-their replies show here too. How much of the work in between shows is the verbosity: by default
-only requests and replies, with a working line that says what Jarvis is doing; `steps` adds each
-tool call and its result, `everything` the model calls and other details.
+written. What other Jarvis processes do (`jarvis ask`, other windows) is read from the shared audit
+log and shown too; the voice service's own work is not (`VOICE_VIA`). How much of the work in
+between shows is the verbosity: by default only requests and replies, with a working line that says
+what Jarvis is doing; `steps` adds each tool call and its result, `everything` the model calls
+and other details.
 
 A question the agent asks opens a yes-or-no choice above the input; anything but a chosen yes is a
 no, as by voice. A picture is attached as Claude Code does it: Ctrl+V pastes a copied picture (or
@@ -35,7 +36,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import OptionList, Static
 
-from jarvis.activity import Shown, call_target, describe, full_text, working_label
+from jarvis.activity import VOICE_VIA, Shown, call_target, describe, full_text, working_label
 from jarvis.agent import MAX_TRUSTED_PASTE, PICTURES_OFF, Declined, Hooks, NoReason
 from jarvis.chat import commands
 from jarvis.chat.clipboard import ClipboardError
@@ -75,6 +76,7 @@ from jarvis.chat.widgets import (
     worked_line,
 )
 from jarvis.config import ChatConfig
+from jarvis.handoff import HandoffError, State
 from jarvis.pictures import PictureError, newest, pasted_path, prepare, read_file
 
 if TYPE_CHECKING:
@@ -213,7 +215,8 @@ class Services:
     # Jarvis's own settings the chat may change too (the voice service restarts to take them).
     shared: Callable[[], list[SharedSetting]] | None = None
     set_shared: Callable[[str, object], None] | None = None
-    apply: Callable[[], None] | None = None  # restarts the voice service after changes, once
+    # Restarts the voice service after changes, once; returns a line to show, if any.
+    apply: Callable[[], str | None] | None = None
     tools: Callable[[], list[ToolSetting]] | None = None  # every tool and its setting
     next_tool_setting: Callable[[str], ToolSetting] | None = None  # moves one on, saves it
     history: InputHistory | None = None
@@ -368,7 +371,7 @@ def _joined(*parts: str) -> str:
     return " · ".join(part for part in parts if part)
 
 
-class ChatApp(App[None]):
+class ChatApp(App[None]):  # ruff: ignore[too-many-public-methods] - Textual's handlers and actions are public
     """Shows Jarvis's conversation and work, and takes typed requests, one at a time."""
 
     TITLE = "Jarvis"
@@ -715,9 +718,13 @@ class ChatApp(App[None]):
         with contextlib.suppress(NoMatches):
             self._show_log()
 
+    def _new_entries(self) -> list[dict[str, object]]:
+        """Return what the log gained, less the voice agent's own work (spoken, not shown)."""
+        return [entry for entry in self._tail.read() if entry.get("via") != VOICE_VIA]
+
     def _show_log(self) -> None:
         self._follow_down()  # a reply's Markdown grows after it is mounted
-        for entry in self._tail.read():
+        for entry in self._new_entries():
             own = bool(self._session_id) and entry.get("session") == self._session_id
             if own:
                 self._follow(entry)
@@ -1119,13 +1126,23 @@ class ChatApp(App[None]):
     def _while_working(self, text: str) -> None:
         """Steer the running request with the typed words, or queue them as the next request.
 
-        Words that come with pictures or anything pasted are queued: a request of their own.
+        Words that come with pictures or anything pasted into them are queued: a request of their
+        own.
         """
         pictures = self._sent_pictures(text)
         pasted = self._sent_pastes(text)
         self._input().set_text("")
         if self._history is not None:
             self._history.add(text, pasted)
+        self._join_or_queue(text, "typed", pictures, pasted)
+
+    def _join_or_queue(
+        self, text: str, source: str, pictures: Sequence[Picture] = (), pasted: Sequence[str] = ()
+    ) -> bool:
+        """Join the running request with `text` or queue it, and show it; return True on joining.
+
+        `source` is how the words came ("typed", "spoken"), shown under them.
+        """
         now = datetime.now().astimezone().strftime("%H:%M:%S")
         with self._lock:
             work = self._work
@@ -1140,8 +1157,34 @@ class ChatApp(App[None]):
                 work.steering.append(text)
             else:
                 self._queued.append((text, list(pictures), list(pasted)))
-        self._mount(Request(text, _joined("typed", now, "steering" if steer else "queued")))
+        self._mount(Request(text, _joined(source, now, "steering" if steer else "queued")))
         self._exchanges.append(("you", text))
+        return steer
+
+    def take_handoff(self, text: str) -> State:
+        """Take the owner's spoken words the voice service handed over; return what was done.
+
+        Called from the hand-off socket's thread. The words are the owner's own: they join the
+        running request or start a new one, marked as spoken, like typed ones; typing and speaking
+        never pause the work in progress.
+
+        Raises:
+            HandoffError: the chat cannot take requests, or the window is closing.
+        """
+        try:
+            return self.call_from_thread(self._handed_over, text)
+        except RuntimeError as exc:  # the window is not running (any more)
+            msg = "the chat window is closing"
+            raise HandoffError(msg) from exc
+
+    def _handed_over(self, text: str) -> State:
+        if self._session is None:
+            msg = f"the chat cannot take requests: {self._unavailable}"
+            raise HandoffError(msg)
+        if self._busy():
+            return State.STEERED if self._join_or_queue(text, "spoken") else State.QUEUED
+        self._request(text, source="spoken")
+        return State.STARTED
 
     def _take_steering(self, work: _Work) -> list[str]:
         with self._lock:
@@ -1808,10 +1851,12 @@ class ChatApp(App[None]):
         self._input().focus()
         self.call_after_refresh(self._follow_down)
 
-    def _apply(self, apply: Callable[[], None]) -> None:
+    def _apply(self, apply: Callable[[], str | None]) -> None:
         """Restart the voice service on a worker, never blocking the window; say if it failed."""
         try:
-            apply()
+            said = apply()
+            if said:
+                self._from_worker(self._note, said)
         except Exception as exc:  # ruff: ignore[blind-except] - shown in the window, never raised
             self._from_worker(self._note, f"Settings saved, but {exc}", "warn")
 
@@ -1932,6 +1977,7 @@ class ChatApp(App[None]):
         pasted: Sequence[str] = (),
         *,
         shown: bool = False,
+        source: str = "typed",
     ) -> None:
         if self._session is None:
             self._note(f"Typed requests are off: {self._unavailable}", "warn")
@@ -1945,7 +1991,7 @@ class ChatApp(App[None]):
             now = datetime.now().astimezone().strftime("%H:%M:%S")
             count = len(pictures)
             shared = "" if not count else "a picture" if count == 1 else f"{count} pictures"
-            self._mount(Request(text, _joined("typed", now, shared)))
+            self._mount(Request(text, _joined(source, now, shared)))
             self._exchanges.append(("you", text))
         self.run_worker(
             lambda: self._handle(text, work, pictures, pasted), thread=True, group="request"

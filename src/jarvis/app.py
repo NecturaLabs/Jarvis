@@ -7,7 +7,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from jarvis import __version__, calc, modes, osskills, paths, services, skills
+from jarvis import __version__, calc, handoff, modes, osskills, paths, services, skills
 from jarvis.about import AboutOps
 from jarvis.agent import SWITCH_MODEL, Agent, Limits, Setup
 from jarvis.audit import AuditLog
@@ -668,6 +668,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
                 else []
             ),
             *([quiet_operation()] if channel == "voice" else []),
+            *([handoff.operation()] if channel == "voice" else []),
             *(SingOps(singer_for(config)).operations() if channel == "voice" else []),
             *([think] if (think := think_operation(limits)) is not None else []),
             *(
@@ -689,8 +690,8 @@ def switches_itself(config: Config, channel: Channel) -> bool:
 # Operations offered only when their files or programs are installed (and the browser switched on),
 # known to `boundaries.classes` either way.
 INSTALLED_ONLY = frozenset({"read_skill", "os_skill", *browserops.NAMES})
-# ... and only while a setting turns them on (`audio.listen_to_pc`).
-SETTING_ONLY = frozenset({"pc_audio_listen", SWITCH_MODEL})
+# ... and only while a setting or a window turns them on (`audio.listen_to_pc`; an open chat).
+SETTING_ONLY = frozenset({"pc_audio_listen", SWITCH_MODEL, handoff.NAME})
 # Tools whose result is a sound, and the voice-channel callers that cannot play one (`jarvis ask`
 # prints its reply): they are not offered there, so nothing is made only to be thrown away.
 MAKES_SOUND = frozenset({"sing"})
@@ -863,8 +864,9 @@ def build(
     """Assemble the agent from the config.
 
     `via` marks every audit event of this agent with where its requests come from ("chat",
-    "ask"); the voice service leaves it out. The chat gets the chat's limits and written replies,
-    and keeps its conversation across sessions when `chat.resume` is on. `session` marks the
+    "ask", `VOICE_VIA` for the voice service, which the chat does not show). The chat gets the
+    chat's limits and written replies, and keeps its conversation across sessions when
+    `chat.resume` is on. `session` marks the
     agent's audit events too, so a window can tell its own from others'. With `units` (the
     model server's systemd unit) the agent follows the mode Jarvis is in and can switch it;
     without, it stays in the normal mode. `listening` is how the voice service hears PC audio for
@@ -901,7 +903,7 @@ def build(
         off: set[str] = {
             *switched_off(cfg),
             *(cfg.coding.tools_off if coding else ()),
-            *(MAKES_SOUND if via in SOUNDLESS else ()),
+            *(MAKES_SOUND | {handoff.NAME} if via in SOUNDLESS else ()),
         }
         if units is None:
             off.add(SWITCH_MODEL)

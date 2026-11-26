@@ -210,6 +210,8 @@ class Result:
     `sound` is played to the owner in the reply, after the words spoken before it; a channel
     that cannot play sound turns the result into a failure the model is told about.
     `mode` asks the agent to go on in that mode, on that mode's model (`switch_model`).
+    `ends` closes the request with `spoken` as its reply, without another model call, when
+    the call ran alone in its message (`chat_hand_off`: the work went to the chat).
     """
 
     text: str
@@ -223,6 +225,7 @@ class Result:
     effort: str = ""
     sound: Sound | None = None
     mode: str = ""
+    ends: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +250,8 @@ class Operation:
     may set it. With `always_ask`, a call that needs a yes is asked about even while the owner
     has consent bypassed (`boundaries.bypass_consent`): it can send the owner's words to whoever
     wrote a page, so a page must not be able to make it happen unseen.
+    `offered` says whether the model is offered the operation now (`chat_hand_off`, only while a
+    chat window is open); without it the operation is always offered.
     """
 
     name: str
@@ -266,6 +271,7 @@ class Operation:
     audit_text: bool = True
     concurrent: bool = False
     always_ask: bool = False
+    offered: Callable[[], bool] | None = None
 
     def __post_init__(self) -> None:
         """Refuse an operation that acts yet claims to run beside others.
@@ -393,9 +399,13 @@ class Registry:
         kept = [op for name, op in self._ops.items() if name not in dropped]
         return Registry(kept, resets=self._resets)
 
-    def tool_schemas(self) -> list[dict[str, Any]]:
-        """Return every operation as an OpenAI tool."""
-        return [op.tool_schema() for op in self._ops.values()]
+    def tool_schemas(self, *, every: bool = False) -> list[dict[str, Any]]:
+        """Return the operations offered now as OpenAI tools; with `every`, all of them."""
+        return [
+            op.tool_schema()
+            for op in self._ops.values()
+            if every or op.offered is None or op.offered()
+        ]
 
     def names(self) -> list[str]:
         """Return the operation names."""

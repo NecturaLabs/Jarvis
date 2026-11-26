@@ -26,3 +26,4 @@ edited once accepted; a later decision supersedes it with a new record that link
 | [0019](0019-install-and-update.md) | Install and update Jarvis from a release branch | proposed |
 | [0020](0020-model-on-another-machine.md) | Optionally serve Strata on another machine owned by the user, with the Jarvis client on the PC it controls | proposed |
 | [0024](0024-owner-skills.md) | Read the owner's own skills from Jarvis's config folder | accepted |
+| [0028](0028-voice-and-chat-as-two-channels.md) | Voice and chat as two cooperating channels: a spoken request is its own, and a typed tool hands the owner's words to the open chat | proposed |

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import termios
 import threading
+import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,7 @@ from jarvis import (
     cliout,
     config,
     control,
+    handoff,
     models,
     modes,
     paths,
@@ -35,7 +37,7 @@ from jarvis import (
     skills,
     update,
 )
-from jarvis.activity import AuditTail
+from jarvis.activity import VOICE_VIA, AuditTail
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.app import (
     SetupError,
@@ -1111,14 +1113,54 @@ def _set_shared(key: str, value: object) -> None:
         audit.record("setting_changed", setting=key, was=was, to=value, source="chat")
 
 
-def _apply_from_chat() -> None:
-    """Restart the voice service so it takes what the chat's settings changed.
+APPLIES_WHEN_IDLE = (
+    "Settings saved. They apply when Jarvis is idle: the voice service restarts then."
+)
+IDLE_POLL_S = 0.5
+IDLE_GIVE_UP_S = 900.0  # a restart queued behind a request that never ends is dropped
+_queued_restart = threading.Lock()  # held while one restart waits for the voice service
+
+
+def _restart_when_idle(
+    busy: Callable[[], bool], restart: Callable[[], bool], sleep: Callable[[float], None]
+) -> None:
+    """Wait until no spoken request is in flight, then restart the voice service."""
+    waited = 0.0
+    while busy() and waited < IDLE_GIVE_UP_S:
+        sleep(IDLE_POLL_S)
+        waited += IDLE_POLL_S
+    if busy():
+        log.warning("the voice service stayed busy: the chat's settings apply at its next restart")
+    elif not restart():
+        log.warning(
+            "the voice service did not restart after the chat's settings: %s", RESTART_FAILED
+        )
+
+
+def _apply_from_chat(sleep: Callable[[float], None] = time.sleep) -> str:
+    """Restart the voice service so it takes what the chat's settings changed; never cut a request.
+
+    A restart ends a spoken request in flight, so with one under way it is queued and made once
+    the voice loop is idle; the answer is then the line that says so, else "". `sleep` times
+    the wait.
 
     Raises:
         RestartError: the restart failed, so the voice service runs on the old settings.
     """
-    if not _restart_if_running():
-        raise RestartError(RESTART_FAILED)
+    if not voice_busy():
+        if not _restart_if_running():
+            raise RestartError(RESTART_FAILED)
+        return ""
+    if _queued_restart.acquire(blocking=False):
+
+        def later() -> None:
+            try:
+                _restart_when_idle(voice_busy, _restart_if_running, sleep)
+            finally:
+                _queued_restart.release()
+
+        threading.Thread(target=later, name="jarvis-restart-when-idle", daemon=True).start()
+    return APPLIES_WHEN_IDLE
 
 
 def chat_archive_dir() -> Path:
@@ -1215,7 +1257,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         shown=chat_pictures(),
         twelve_hour=cfg.clock.twelve_hour,
     )
-    ChatApp(
+    window = ChatApp(
         AuditTail(paths.audit_file()),
         agent,
         unavailable=unavailable,
@@ -1223,7 +1265,23 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         settings=cfg.chat,
         services=services,
         session_id=session_id,
-    ).run()
+    )
+    audit = AuditLog(paths.audit_file(), tags={"via": "chat", "session": session_id})
+
+    def take(words: str) -> handoff.State:
+        state = window.take_handoff(words)
+        audit.record("chat_handoff_received", text=words, state=state.value)
+        return state
+
+    listener = handoff.ChatListener(session_id, take)
+    try:
+        listener.start()  # the voice service hands spoken instructions over here
+    except OSError as exc:
+        log.warning("the chat cannot take spoken hand-offs: %s", exc)
+    try:
+        window.run()
+    finally:
+        listener.close()
     return 0
 
 
@@ -1380,7 +1438,7 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
     mic = PausableMic(Microphone(cfg.audio.source, stall_s=MIC_STALL_S))
     listening = _pc_listening(cfg, answer, paused=lambda: mic.paused)
     try:
-        jarvis = build(cfg, units=StrataUnits(), listening=listening)
+        jarvis = build(cfg, via=VOICE_VIA, units=StrataUnits(), listening=listening)
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2

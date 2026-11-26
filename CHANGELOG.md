@@ -8,6 +8,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- The voice service and the chat work as two channels that cooperate ([ADR 0028](docs/adr/0028-voice-and-chat-as-two-channels.md)).
+  A spoken request no longer shows in an open chat window. `chat_hand_off`, offered to speech only while a chat window is open,
+  hands your spoken words for the chat's own work to that window as your own input: it joins the request the window is running
+  or starts one, marked as spoken, and Jarvis says one short line. The words are always your own transcript, never the model's; PC audio,
+  scheduled requests and a request that read outside text are refused.
 - Your own skills: Markdown files in `~/.config/jarvis/skills/` are listed in the prompt and read with
   `read_skill` like the shipped ones. A file is read only when it and its folder are yours alone, it is no
   link, and it fits the size limits. `jarvis doctor` names any file it left out. Jarvis's file operations
@@ -337,6 +342,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- A setting changed in the chat's `/config` restarts the voice service only once the voice loop is idle, and `jarvis pause`
+  frees the model only once no request anywhere (a chat window's included) is being answered.
 - The chat's default `memory_tokens` is now 5700 (was 6200), so the default 24,576-token window
   still holds it beside the new window and screenshot tools.
 - `jarvis doctor` ends with the names of the checks that failed, not only their count, writes every note

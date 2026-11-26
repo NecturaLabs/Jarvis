@@ -200,7 +200,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis logs` | Follow the live log (Ctrl+C to leave). |
 | `jarvis help` | List the commands by group, each with what it does (the same as `jarvis --help`); `jarvis <command> --help` explains one command and its options, and a mistyped command gets a suggestion when one is close. |
 | `jarvis ask <text>` | Send one typed request as if spoken; a question is answered `y` or `n` on the terminal, and `--yes` answers yes to confirmations, except a browser click or typing, which it still asks on the terminal (and refuses with no terminal to answer on). |
-| `jarvis chat` | Open a Textual window where you type requests and watch what Jarvis does, live. |
+| `jarvis chat` | Open a Textual window where you type requests and watch what Jarvis does, live. Spoken requests are the voice's own and do not show there; ask Jarvis to pass something to the chat and it hands your words to the open window ([ADR 0028](docs/adr/0028-voice-and-chat-as-two-channels.md)). |
 | `jarvis consent [ask\|bypass]` | Show or set whether Jarvis asks for a yes before a risky action or one after outside text; a `strong` action still waits for the confirm key either way. |
 | `jarvis wake [livekit\|azure]` | Show or switch the wake word model; `--model FILE` names the Azure `.table` file; `--words hey_jarvis,yo_jarvis` picks the LiveKit models that listen. |
 | `jarvis pc-audio [on\|off]` | Show or set listening to PC audio; `--apps discord,firefox` names the apps, `--all-output` listens to everything the PC plays. |

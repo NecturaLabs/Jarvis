@@ -28,6 +28,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
+from jarvis import modes
 from jarvis.jsonutil import obj
 from jarvis.paths import runtime_dir
 
@@ -97,6 +98,12 @@ class _Model(Protocol):
     def load(self) -> bool: ...
 
 
+def _anyone_answering() -> bool:
+    """Whether any Jarvis process (a chat window, `jarvis ask`) is answering a request."""
+    with modes.nobody_answering() as free:
+        return not free
+
+
 def _in_background(work: Callable[[], object]) -> None:
     threading.Thread(target=work, name="jarvis-control-work", daemon=True).start()
 
@@ -156,6 +163,7 @@ class Controls:
         prime: Callable[[], object] = lambda: None,
         remote_status: Callable[[], dict[str, object]] | None = None,
         background: Callable[[Callable[[], object]], None] = _in_background,
+        answering: Callable[[], bool] = _anyone_answering,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -176,6 +184,7 @@ class Controls:
         self._model_turn = threading.Lock()  # an unload and a load never overlap
         self._commands = threading.Lock()
         self._background = background
+        self._answering = answering
         self._clock = clock
         self._sleep = sleep
         self._pauses = 0
@@ -233,6 +242,10 @@ class Controls:
     def _unload_when_idle(self, pause: int) -> None:
         deadline = self._clock() + IDLE_WAIT_S
         while self._in_flight() and self._clock() < deadline:
+            self._sleep(IDLE_POLL_S)
+        # A request in a chat window may run for minutes: unloading waits for it for as long as
+        # this pause stands, never cutting its model call.
+        while self._answering() and pause == self._pauses and self._mic.paused:
             self._sleep(IDLE_POLL_S)
         with self._model_turn:
             if pause == self._pauses and self._mic.paused:
@@ -305,7 +318,7 @@ class Controls:
         return {"paused": False, "changed": changed}
 
 
-def _peer(conn: socket.socket) -> tuple[int, int] | None:
+def peer_credentials(conn: socket.socket) -> tuple[int, int] | None:
     """Return the connecting process's PID and user ID."""
     try:
         raw = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, _UCRED.size)
@@ -475,7 +488,7 @@ class ControlServer:
                 log.exception("control connection failed")
 
     def _answer(self, conn: socket.socket) -> None:
-        peer = _peer(conn)
+        peer = peer_credentials(conn)
         if peer is None or peer[1] != os.getuid():
             log.warning("refused a control connection from another user")
             self._audit.record("control_refused", peer_uid=None if peer is None else peer[1])
