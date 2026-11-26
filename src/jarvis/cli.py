@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,9 +31,11 @@ from jarvis.app import (
     echoes_hint,
     spotify_operations,
     strata_model,
+    system_prompt,
 )
 from jarvis.audit import AuditLog
 from jarvis.chat import clipboard
+from jarvis.chat.archive import ChatArchive
 from jarvis.chat.history import InputHistory
 from jarvis.confirmkey import ConfirmKey
 from jarvis.files import write_atomic
@@ -584,17 +587,68 @@ def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
         ("jarvis", __version__),
         ("model", f"{services.model_name(cfg)}, {cfg.strata.context:,} tokens of context"),
         ("replies", f"up to {cfg.chat.reply_tokens:,} tokens, {cfg.chat.max_steps} model calls"),
+        ("memory", f"{cfg.chat.memory_detail}, up to {cfg.chat.memory_tokens:,} tokens"),
         ("config", str(paths.config_file())),
         ("conversation", str(chat_memory_file())),
+        ("archive", f"{chat_archive_dir()}, up to {cfg.chat.archive_keep} conversations"),
         ("audit log", str(paths.audit_file())),
     ]
 
 
-# Jarvis's own settings the chat's /config shows beside its own: (section, key, label, choices).
-SHARED_SETTINGS: tuple[tuple[str, str, str, tuple[object, ...]], ...] = (
-    ("audio", "speech_speed", "Speaking speed", (0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0)),
-    ("boundaries", "bypass_consent", "Act without asking first", (False, True)),
-    ("audio", "listen_to_pc", "Take requests from PC audio", (False, True)),
+@dataclass(frozen=True, slots=True)
+class _Shared:
+    """One of Jarvis's own settings the chat's /config shows beside its own."""
+
+    section: str  # the config section it is in
+    key: str
+    label: str
+    values: tuple[object, ...]
+    heading: str  # the heading /config shows it under
+    about: str
+    risky: str = ""  # what turning it on means, said before it is turned on
+
+
+SHARED_SETTINGS: tuple[_Shared, ...] = (
+    _Shared(
+        "audio",
+        "speech_speed",
+        "Speaking speed",
+        (0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0),
+        "Voice",
+        "How fast Jarvis speaks its replies; 1.0 is the voice's own pace.",
+    ),
+    _Shared(
+        "audio",
+        "listen_to_pc",
+        "Take requests from PC audio",
+        (False, True),
+        "Listening",
+        "Jarvis also hears requests spoken in the PC's own audio, such as someone in a call or "
+        "a video. Whatever they ask to be done always needs your yes.",
+        "Jarvis will take requests from voices in the PC's audio, such as a call or a video; "
+        "each of their actions still needs your yes.",
+    ),
+    _Shared(
+        "audio",
+        "pc_audio_recall_s",
+        "Recall PC audio (seconds)",
+        (0, 10, 30, 60),
+        "Listening",
+        "Keep the last seconds of PC audio in memory so Jarvis can hear what was just said "
+        "(needs PC audio on); 0 keeps none.",
+        "Jarvis will keep the last seconds of the PC's audio in memory.",
+    ),
+    _Shared(
+        "boundaries",
+        "bypass_consent",
+        "Act without asking first",
+        (False, True),
+        "Safety",
+        "On: Jarvis acts without asking for your yes, even after reading a web page or a file. "
+        "A tool that needs the confirm key still waits for it, and a tool that is off stays off.",
+        "Jarvis will act without asking you first, even when a web page or a file could have "
+        "steered it.",
+    ),
 )
 
 
@@ -604,8 +658,16 @@ def _shared_settings() -> list[SharedSetting]:
 
     cfg = config.load()
     return [
-        SharedSetting(f"{section}.{key}", label, values, getattr(getattr(cfg, section), key))
-        for section, key, label, values in SHARED_SETTINGS
+        SharedSetting(
+            f"{item.section}.{item.key}",
+            item.label,
+            item.values,
+            getattr(getattr(cfg, item.section), item.key),
+            item.heading,
+            item.about,
+            item.risky,
+        )
+        for item in SHARED_SETTINGS
     ]
 
 
@@ -617,30 +679,48 @@ def _set_shared(key: str, value: object) -> None:
     Raises:
         ConfigError: no shared setting has that key, or the value is not one of its choices.
     """
-    found = next((s for s in SHARED_SETTINGS if f"{s[0]}.{s[1]}" == key), None)
-    if found is None or value not in found[3]:
+    found = next((s for s in SHARED_SETTINGS if f"{s.section}.{s.key}" == key), None)
+    if found is None or value not in found.values:
         msg = f"the chat cannot set {key} to {value!r}"
         raise config.ConfigError(msg)
-    section_name, name = found[0], found[1]
+    section_name, name = found.section, found.key
     cfg = config.load()
     section = getattr(cfg, section_name)
     was = getattr(section, name)
     changed = cfg.model_copy(update={section_name: section.model_copy(update={name: value})})
-    AuditLog(paths.audit_file()).record(
-        "setting_changed", setting=key, was=was, to=value, source="chat"
-    )
     config.save(config.Config.model_validate(changed.model_dump()))
+    audit = AuditLog(paths.audit_file())
+    if key == "boundaries.bypass_consent":  # recorded as `jarvis consent` records it
+        audit.record("consent_changed", bypass_consent=value, source="chat")
+    else:
+        audit.record("setting_changed", setting=key, was=was, to=value, source="chat")
 
 
 def _apply_from_chat() -> None:
-    """Restart the voice service so it takes what the chat's settings changed."""
-    _restart_if_running()
+    """Restart the voice service so it takes what the chat's settings changed.
+
+    Raises:
+        RestartError: the restart failed, so the voice service runs on the old settings.
+    """
+    if not _restart_if_running():
+        raise RestartError(RESTART_FAILED)
+
+
+def chat_archive_dir() -> Path:
+    """Return where the chat keeps every conversation for /resume and reading back."""
+    return paths.state_dir() / "chat-archive"
 
 
 def _save_chat_settings(chat: config.ChatConfig) -> None:
-    """Write the chat's settings into the config file as it is now on disk."""
+    """Write the chat's settings into the config file as it is now on disk, and audit them."""
     current = config.load()
     config.save(current.model_copy(update={"chat": chat}))
+    was, now = current.chat.model_dump(), chat.model_dump()
+    audit = AuditLog(paths.audit_file())
+    for key in sorted(k for k in now if now[k] != was.get(k)):
+        audit.record(
+            "setting_changed", setting=f"chat.{key}", was=was.get(key), to=now[key], source="chat"
+        )
 
 
 def _screenshot_folders(home: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
@@ -669,12 +749,18 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         details=lambda: _chat_details(cfg),
         stats=Sampler().sample,
         save_settings=_save_chat_settings,
+        system_prompt=lambda chat: system_prompt(
+            config.load().model_copy(update={"chat": chat}), "chat"
+        ),
         tools=lambda: _tool_settings(config.load()),
         next_tool_setting=_next_tool_setting,
         shared=_shared_settings,
         set_shared=_set_shared,
         apply=_apply_from_chat,
         history=InputHistory(paths.state_dir() / "chat-history", cfg.chat.history_size),
+        archive=ChatArchive(chat_archive_dir(), cfg.chat.archive_keep)
+        if cfg.chat.archive_keep
+        else None,
         export_dir=documents if documents.is_dir() else Path.home(),
         paste=clipboard.read,
         pictures=reads_pictures(cfg),
@@ -1610,17 +1696,26 @@ def _pc_audio_summary(audio: config.AudioConfig) -> str:
     return f"on ({apps}; a yes lasts {audio.pc_audio_grant_s / 60:g} min)"
 
 
-def _restart_if_running() -> None:
-    if _unit_state(JARVIS_UNIT) == "active":
-        # A restart counts against the start limit (5 in 15 min): clear it first, so a few
-        # config changes in a row do not leave the voice service stopped.
-        _systemctl("reset-failed", JARVIS_UNIT)
-        if _systemctl("restart", JARVIS_UNIT) != 0:
-            print(
-                "jarvis: the voice service did not restart, so it still runs on the old "
-                "settings; see `jarvis logs`",
-                file=sys.stderr,
-            )
+RESTART_FAILED = (
+    "the voice service did not restart, so it still runs on the old settings; see `jarvis logs`"
+)
+
+
+class RestartError(RuntimeError):
+    """The voice service did not restart after a change, so it runs on the old settings."""
+
+
+def _restart_if_running() -> bool:
+    """Restart the voice service if it runs; return False when that restart failed."""
+    if _unit_state(JARVIS_UNIT) != "active":
+        return True
+    # A restart counts against the start limit (5 in 15 min): clear it first, so a few
+    # config changes in a row do not leave the voice service stopped.
+    _systemctl("reset-failed", JARVIS_UNIT)
+    if _systemctl("restart", JARVIS_UNIT) != 0:
+        print(f"jarvis: {RESTART_FAILED}", file=sys.stderr)
+        return False
+    return True
 
 
 CONSENT_SAID = {
@@ -1702,10 +1797,10 @@ def set_tool(
         raise config.ConfigError(msg)
     changed = with_class(cfg, found, found.shipped if cls is None else cls)
     now = next(s for s in _tool_settings(changed) if s.name == name)
+    config.save(changed)
     AuditLog(paths.audit_file()).record(
         "tool_class_changed", op=name, was=found.state.value, to=now.state.value, source=source
     )
-    config.save(changed)
     if restart:
         _restart_if_running()
     return now

@@ -28,6 +28,8 @@ MIN_PC_RECALL_S = 3.0  # the shortest PC audio listen, and recall kept (`pc_audi
 OpClassName = Literal["safe", "confirm", "strong", "deny"]
 
 type Effort = Literal["none", "low", "medium", "high"]
+# What later requests keep of one: its request, reply, actions and look-ups, or also its work.
+type MemoryDetail = Literal["condensed", "full"]
 EFFORTS: tuple[Effort, ...] = ("none", "low", "medium", "high")  # least to most thinking
 
 
@@ -125,11 +127,13 @@ class AgentConfig(_Section):
 
     `reply_tokens` caps what the model writes in one go, so a reply is kept short by the model,
     never cut afterwards. `memory_tokens` is the room the remembered conversation may take of the
-    model's context; older turns are summarized to stay within it. `thinking` is how hard the
-    model thinks before each answer at the start of a request (`none` answers at once), and
-    `thinking_tokens` the most it may think then, on top of the reply's room. The model may raise
-    its own effort for the rest of a request, up to `thinking_max` (the same as `thinking`: never);
-    a raised call thinks up to `thinking_raised_tokens`.
+    model's context; older turns are summarized to stay within it. `memory_detail` is what later
+    requests keep of one: its request, reply, actions and look-ups (`condensed`), or also its tool
+    calls and their results (`full`, the oldest left out first when room runs short). `thinking` is
+    how hard the model thinks before each answer at the start of a request (`none` answers at once),
+    and `thinking_tokens` the most it may think then, on top of the reply's room. The model may
+    raise its own effort for the rest of a request, up to `thinking_max` (the same as `thinking`:
+    never); a raised call thinks up to `thinking_raised_tokens`.
     """
 
     max_steps: int = Field(default=8, ge=1, le=100)  # model calls in one request
@@ -137,8 +141,11 @@ class AgentConfig(_Section):
     max_seconds: float = Field(default=90.0, ge=10, le=3600)
     reply_tokens: int = Field(default=400, ge=64, le=8192)
     tool_text_chars: int = Field(default=3000, ge=500, le=50000)  # of one tool result
-    memory_tokens: int = Field(default=6000, ge=0, le=200000)
-    memory_idle_s: float = Field(default=1800.0, ge=0)  # forget after this long unused; 0 never
+    # Speech is short-term memory for quick commands: a follow-up comes within a minute or two,
+    # and after five idle minutes an old exchange is likelier to mislead the next command.
+    memory_tokens: int = Field(default=3000, ge=0, le=200000)
+    memory_idle_s: float = Field(default=300.0, ge=0)  # forget after this long unused; 0 never
+    memory_detail: MemoryDetail = "condensed"
     thinking: Effort = "none"
     thinking_tokens: int = Field(default=192, ge=32, le=8192)
     thinking_max: Effort = "high"
@@ -163,6 +170,7 @@ class ChatConfig(AgentConfig):
     tool_text_chars: int = Field(default=8000, ge=500, le=50000)
     memory_tokens: int = Field(default=6500, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
+    memory_detail: MemoryDetail = "full"
     thinking_tokens: int = Field(default=512, ge=32, le=8192)
     thinking_raised_tokens: int = Field(default=1024, ge=32, le=8192)
     browser: bool = True
@@ -172,7 +180,11 @@ class ChatConfig(AgentConfig):
     # What Enter does while a request runs: steer it (the words join it before the model's next
     # call) or queue them as the next request.
     while_working: Literal["steer", "queue"] = "steer"
+    # How replies are written: brief, as the request needs, or explained in full (the prompt).
+    response_format: Literal["concise", "normal", "verbose"] = "concise"
     history_size: int = Field(default=1000, ge=0, le=100000)  # typed lines ↑ brings back
+    # Chat conversations kept in the archive for /resume and reading back; 0 keeps none.
+    archive_keep: int = Field(default=50, ge=0, le=1000)
 
 
 # Keys the model's own Strata run config replaced (its model, tokenizer, name, prompt chunk and

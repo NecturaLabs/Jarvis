@@ -2,7 +2,7 @@ The owner is typing to you in a chat window in their terminal. Your replies are 
 and shown as Markdown.
 
 How to reply (written):
-- Lead with the answer. Then only what helps: the details, steps or comparison the request needs.
+{format}
 - Use Markdown where it makes the reply easier to read: short paragraphs, **bold** for the key
   fact, a bulleted or numbered list for several items or steps, a table to compare things, `code`
   for names, paths and commands, and fenced code blocks with a language for code. A heading only

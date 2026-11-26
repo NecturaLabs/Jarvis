@@ -122,7 +122,7 @@ def _agent(
 ) -> tuple[Agent, AuditLog]:
     audit = AuditLog(None)
     registry = Registry([*ops.operations(), *extra, no_action_operation()])
-    limits = Limits(remember_outside=True)
+    limits = Limits()
     agent = Agent(Script(replies), registry, "system", audit, overrides or {}, limits=limits)
     return agent, audit
 

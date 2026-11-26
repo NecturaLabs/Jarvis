@@ -391,6 +391,18 @@ def test_a_request_dropped_when_dictation_started_shows_as_a_note() -> None:
         ({"event": "consent_changed", "bypass_consent": True}, "Questions turned off"),
         ({"event": "consent_changed", "bypass_consent": False}, "Questions turned on"),
         ({"event": "service_started", "bypass_consent": True}, "acting without asking"),
+        (
+            {"event": "setting_changed", "setting": "chat.thinking", "was": "none", "to": "high"},
+            "Setting chat.thinking: none → high",
+        ),
+        (
+            {"event": "setting_changed", "setting": "audio.listen_to_pc", "was": False, "to": True},
+            "Setting audio.listen_to_pc: off → on",
+        ),
+        (
+            {"event": "tool_class_changed", "op": "web_search", "was": "safe", "to": "deny"},
+            "Tool web_search: on → off",
+        ),
     ],
 )
 def test_consent_changes_and_the_services_start_show_as_notes(
@@ -436,3 +448,11 @@ def test_due_and_missed_jobs_show_in_the_window(
 
     assert shown is not None
     assert (shown.kind, shown.text) == (kind, text)
+
+
+def test_a_calls_gist_is_its_target_when_it_has_one() -> None:
+    args = {"content": {"sha256": "ab", "chars": 9}, "mode": "append", "path": "/srv/x/game.js"}
+    shown = describe({"event": "tool_call", "op": "write_file", "args": args, "verdict": "run"})
+
+    assert shown is not None
+    assert shown.note == '"/srv/x/game.js"'

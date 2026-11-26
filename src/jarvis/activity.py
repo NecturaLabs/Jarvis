@@ -149,6 +149,26 @@ def _plain(value: object) -> str:
     return text if len(text) <= MAX_SHOWN_CHARS else text[: MAX_SHOWN_CHARS - 1] + "…"
 
 
+def _value(value: object) -> str:
+    """Return a setting's value as the settings show it: on and off for a yes or no."""
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    return _plain(value)
+
+
+# A tool's class as `jarvis tools` and the chat's /config name it.
+_TOOL_LABELS = {
+    "safe": "on",
+    "confirm": "asks first",
+    "strong": "needs the confirm key",
+    "deny": "off",
+}
+
+
+def _tool_label(value: object) -> str:
+    return _TOOL_LABELS.get(str(value), _plain(value))
+
+
 def full_text(value: object) -> str:
     """Return outside text whole, as printable characters and line breaks only."""
     lines = str(value).replace("\r\n", "\n").replace("\t", "    ").split("\n")
@@ -191,17 +211,29 @@ def _request(entry: dict[str, object]) -> _Line:
 MAX_ARGUMENT_CHARS = 60
 
 
-def _arguments(value: object) -> str:
-    """Return the gist of a call's arguments: its first words, as `"words"`."""
+# Argument names that say what a call works on; the first one a call has is its target.
+_TARGET_KEYS = ("path", "url", "query", "q", "name", "post_id", "location")
+
+
+def call_target(value: object) -> str:
+    """Return what a call works on: a path, address or query, else its first words, else ""."""
     if not isinstance(value, dict):
         return ""
-    for item in cast("dict[object, object]", value).values():
+    args = cast("dict[object, object]", value)
+    named = [args.get(key) for key in _TARGET_KEYS]
+    for item in [*named, *args.values()]:
         if isinstance(item, str) and item.strip():
             words = _plain(item)
             if len(words) > MAX_ARGUMENT_CHARS:
                 words = words[: MAX_ARGUMENT_CHARS - 1] + "…"
-            return f'"{words}"'
+            return words
     return ""
+
+
+def _arguments(value: object) -> str:
+    """Return the gist of a call's arguments: what it works on, as `"words"`."""
+    target = call_target(value)
+    return f'"{target}"' if target else ""
 
 
 def _tool_call(entry: dict[str, object]) -> _Line:
@@ -372,6 +404,24 @@ def _simple(entry: dict[str, object]) -> _Line | None:
             "note",
             "The voice service started"
             + (", acting without asking" if entry.get("bypass_consent") is True else ""),
+            False,
+            "",
+        ),
+        "setting_changed": (
+            "note",
+            (
+                f"Setting {_plain(entry.get('setting', '?'))}: "
+                f"{_value(entry.get('was'))} → {_value(entry.get('to'))}"
+            ),
+            False,
+            "",
+        ),
+        "tool_class_changed": (
+            "note",
+            (
+                f"Tool {_plain(entry.get('op', '?'))}: "
+                f"{_tool_label(entry.get('was'))} → {_tool_label(entry.get('to'))}"
+            ),
             False,
             "",
         ),
