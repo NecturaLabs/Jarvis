@@ -1979,6 +1979,33 @@ def test_clear_while_a_question_waits_declines_it_and_then_clears(tmp_path: Path
     assert [call[0] for call in agent.calls] == ["close notes"]
 
 
+def test_clear_declines_a_waiting_question_as_a_cleared_conversation_not_a_closed_session(
+    tmp_path: Path,
+) -> None:
+    seen: list[bool | Declined] = []
+    audited: list[tuple[str, dict[str, object]]] = []
+
+    def script(_text: str, hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        seen.append(hooks.confirm("Close the window named Notes?"))
+        return "Left it open."
+
+    def record(event: str, **fields: object) -> None:
+        audited.append((event, fields))
+
+    agent = ClearableAgent()
+    agent.script = script
+    with Client(agent, store=tmp_path / "acp", record=record) as client:
+        session = client.start()
+        client.response(client.prompt(session, text("close notes")))
+        client.response(client.prompt(session, text("/clear")))
+
+    (answer,) = seen
+    assert isinstance(answer, Declined)
+    assert answer.reason == "cleared"
+    assert not answer
+    assert ("acp_cleared", {"session": session}) in audited
+
+
 def test_clear_after_a_stop_waits_for_the_stopped_request_then_clears(tmp_path: Path) -> None:
     release = threading.Event()
 

@@ -340,6 +340,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - A prompt typed right after `/clear` in a T3 Code thread, while `/clear` waited for a stopped request to end,
   could begin first and make `/clear` answer "a request is still being answered". `/clear` now goes first and the
   prompt runs on the cleared conversation.
+- `/clear` in a T3 Code thread while a confirmation question waits declines it with its own audit reason,
+  `cleared`; the log read `closed`, as if the session had been closed. The action still does not run.
 - The model server no longer starts a load that does not fit in memory. With a game running and 13 to
   20 GB of RAM available, starting Strata read about 39 GB of experts into RAM, the kernel failed page
   allocations and the game's process died. `jarvis start`, `jarvis restart`, a switch of modes, a model

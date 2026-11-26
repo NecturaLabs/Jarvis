@@ -932,7 +932,7 @@ class AcpServer:
                 question = run.question
                 if question is not None and not question.answered.is_set() and not run.attached:
                     # A question waits: it is declined and its request stopped, then cleared.
-                    question.answer = Declined(NoReason.CLOSED)
+                    question.answer = Declined(NoReason.CLEARED)
                     question.answered.set()
                     run.cancel.set()
                 elif not run.cancel.is_set():
