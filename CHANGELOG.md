@@ -337,6 +337,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - After `/forget all` in the chat, a `jarvis acp` that was already running no longer writes its open T3 Code
   threads back: each forgets what it remembered before its next reply and keeps only what is said after. A reply
   that was being written while the files were deleted leaves none behind, and a failed deletion forgets nothing.
+- A prompt typed right after `/clear` in a T3 Code thread, while `/clear` waited for a stopped request to end,
+  could begin first and make `/clear` answer "a request is still being answered". `/clear` now goes first and the
+  prompt runs on the cleared conversation.
 - The model server no longer starts a load that does not fit in memory. With a game running and 13 to
   20 GB of RAM available, starting Strata read about 39 GB of experts into RAM, the kernel failed page
   allocations and the game's process died. `jarvis start`, `jarvis restart`, a switch of modes, a model

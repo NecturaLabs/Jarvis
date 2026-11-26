@@ -242,6 +242,7 @@ class _Session:
     effort: str = ""
     agents: dict[str, AgentSession] = field(default_factory=dict[str, AgentSession])
     synced: float = field(default_factory=time.time)  # when its memory last matched the store
+    clearing: threading.Event | None = None  # the latest `/clear` waiting for a stopped request
 
     def keep(self, note: Announcement | Delivery) -> None:
         """Keep this copy of the announcement for the next reply."""
@@ -857,6 +858,19 @@ class AcpServer:
                 self._result(request_id, {"stopReason": "cancelled"})
                 return
             run = session.run
+            clearing = session.clearing
+            if stops is None and clearing is not None and not clearing.is_set():
+                # A `/clear` sent earlier still waits for a stopped request: it goes first.
+                self._spawn(
+                    self._prompt_later,
+                    request_id,
+                    params,
+                    run,
+                    session.stops,
+                    clearing,
+                    name="acp-prompt-wait",
+                )
+                return
             if run is None:
                 run = session.run = _Run()
             elif stops is None and run.cancel.is_set():
@@ -867,6 +881,7 @@ class AcpServer:
                     params,
                     run,
                     session.stops,
+                    None,
                     name="acp-prompt-wait",
                 )
                 return
@@ -910,6 +925,7 @@ class AcpServer:
             return True
         if not _is_clear(blocks):
             return False
+        done = previous = None
         with session.lock:
             run = session.run
             if run is not None:
@@ -921,28 +937,56 @@ class AcpServer:
                     run.cancel.set()
                 elif not run.cancel.is_set():
                     raise _Rpc(BUSY, "a request is still being answered")
-        if run is None:
+                previous, done = session.clearing, threading.Event()
+                session.clearing = done  # a prompt that comes now waits for this clear
+        if run is None or done is None:
             self._clear(request_id, session)
         else:
-            self._spawn(self._clear_later, request_id, session, run, name="acp-clear-wait")
+            self._spawn(
+                self._clear_later, request_id, session, run, done, previous, name="acp-clear-wait"
+            )
         return True
 
-    def _clear_later(self, request_id: str | int, session: _Session, run: _Run) -> None:
-        """Clear once the request that was stopped has ended (or after `CANCEL_WAIT_S`)."""
-        run.finished.wait(CANCEL_WAIT_S)
+    def _clear_later(
+        self,
+        request_id: str | int,
+        session: _Session,
+        run: _Run,
+        done: threading.Event,
+        previous: threading.Event | None,
+    ) -> None:
+        """Clear once the request that was stopped has ended (or after `CANCEL_WAIT_S`).
+
+        A `/clear` before this one goes first, and a prompt sent after it waits for `done`.
+        """
         try:
+            run.finished.wait(CANCEL_WAIT_S)
+            if previous is not None:
+                previous.wait(CANCEL_WAIT_S)
             self._clear(request_id, session)
         except _Rpc as exc:
             self._error(request_id, exc.code, exc.message)
+        finally:
+            done.set()
 
     def _prompt_later(
-        self, request_id: str | int, params: dict[str, Any], old: _Run, stops: int
+        self,
+        request_id: str | int,
+        params: dict[str, Any],
+        old: _Run | None,
+        stops: int,
+        clearing: threading.Event | None,
     ) -> None:
         """Begin a prompt once the request that was stopped has ended (or after `CANCEL_WAIT_S`).
 
-        A stop that came meanwhile (`stops` is how many there were when it waited) stops it too.
+        A `/clear` sent before it (`clearing`) is done first, so the prompt runs on the cleared
+        session. A stop that came meanwhile (`stops` is how many there were when it waited) stops
+        it too.
         """
-        old.finished.wait(CANCEL_WAIT_S)
+        if old is not None:
+            old.finished.wait(CANCEL_WAIT_S)
+        if clearing is not None:
+            clearing.wait(CANCEL_WAIT_S)
         try:
             self._prompt(request_id, params, stops=stops)
         except _Rpc as exc:

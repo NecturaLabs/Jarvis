@@ -2000,6 +2000,54 @@ def test_clear_after_a_stop_waits_for_the_stopped_request_then_clears(tmp_path: 
     assert agent.forgotten == 1
 
 
+def test_a_prompt_typed_right_after_clear_runs_on_the_cleared_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = threading.Event()
+    next_began = threading.Event()
+    hold_next = threading.Event()
+    forgotten_when_next_ran: list[int] = []
+    agent = ClearableAgent()
+
+    def script(text_: str, hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        if text_ == "work":
+            release.wait(WAIT_S)
+            return "" if hooks.cancelled() else "done"
+        forgotten_when_next_ran.append(agent.forgotten)
+        next_began.set()
+        assert hold_next.wait(WAIT_S)
+        return "next done"
+
+    agent.script = script
+    cleared = AcpServer._clear  # pyright: ignore[reportPrivateUsage] - give the other prompt its turn
+
+    def clear_after_a_chance_for_the_prompt(
+        server: AcpServer, request_id: str | int, session_: _Session
+    ) -> None:
+        # Both wait for the stopped request. With nothing to order them, the prompt may begin
+        # first; this gives it that chance, so the clear then finds a request running.
+        next_began.wait(1.0)
+        cleared(server, request_id, session_)
+
+    monkeypatch.setattr(AcpServer, "_clear", clear_after_a_chance_for_the_prompt)
+    with Client(agent, store=tmp_path / "acp") as client:
+        session = client.start()
+        first = client.prompt(session, text("work"))
+        client.notify("session/cancel", {"sessionId": session})
+        clear = client.prompt(session, text("/clear"))  # sent first, so it goes first
+        after = client.prompt(session, text("next"))
+        try:
+            release.set()
+            assert client.response(first)["result"]["stopReason"] == "cancelled"
+            assert client.response(clear)["result"]["stopReason"] == "end_turn"
+            hold_next.set()
+            assert client.response(after)["result"]["stopReason"] == "end_turn"
+        finally:
+            release.set()
+            hold_next.set()
+    assert forgotten_when_next_ran == [1]  # it ran on the cleared session
+
+
 def test_clear_with_a_picture_is_a_request_not_the_command(tmp_path: Path) -> None:
     agent = ClearableAgent()
     with Client(agent, store=tmp_path / "acp") as client:

@@ -160,7 +160,9 @@ T3 Code treats any error as a failed thread. The chat's privacy settings cover t
 `chat.archive_keep = 0` keeps none and deletes those kept before, and `/forget all` in the chat deletes
 them, also with `chat.archive_keep = 0`, where sessions kept before would otherwise stay until the
 next `jarvis acp` starts. `/clear`, the command the protocol lets a client offer, forgets one session
-without the model.
+without the model. When it has to wait for a stopped request or a declined question to end, a prompt
+sent after it waits for it too (at most `CANCEL_WAIT_S`) and runs on the cleared session: the two are
+ordered by the order they were sent in, not by which thread wakes first.
 
 A running `jarvis acp` still holds its sessions' turns in memory when `/forget all` deletes the files,
 and its next reply would write them back. So `forget_kept` first writes the time to a `forgotten` file in
