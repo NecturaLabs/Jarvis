@@ -333,6 +333,20 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- `/config` in the chat is set as Claude Code's settings screen is: the sections are tabs across the top
+  (Tab and Shift+Tab, or ← → on the tab row), typing anywhere searches every section, and each setting is
+  one line with its value in an aligned column and `❯` on the one the keyboard is on. What it does and when a
+  change applies are said once under the list, a risky setting is marked `⚠` beside its value, and "the
+  voice service restarts when you close settings" shows only while a change waits for it. Enter turns an
+  on-or-off setting over and opens a short list of values for any other (← → still step through them).
+  Times read as 30 s, 10 min or 4 h. The tools are a Tools tab. It works at 80 columns by 24 rows, scrolling
+  the list while the footer stays.
+- The lines under the input are set in the box's columns: hints at the left, the status ending at the box's right
+  edge, and the PC's load and the context on the next line, with fixed-width figures, one quiet `·` between
+  items and whole items dropped, never half a word, in a narrow window. The command menu has a frame of its own
+  in line with the box, and a long description ends in `…`.
+- `config.example.toml` lists `while_working`, `response_format` and `archive_keep`.
+
 - The chat's default `memory_tokens` is now 5700 (was 6200), so the default 24,576-token window
   still holds it beside the new window and screenshot tools.
 - `jarvis doctor` ends with the names of the checks that failed, not only their count, writes every note

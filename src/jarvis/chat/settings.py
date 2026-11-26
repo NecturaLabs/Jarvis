@@ -1,23 +1,28 @@
-"""The chat's `/config` screen: settings in sections, each with its value, what it does and when.
+"""The chat's `/config` screen, set as Claude Code sets its settings.
 
-Each row shows its name, every value it can take with the one in force lit (or the value between
-arrows when there are many), when a change takes effect, and a line on what it does. The row the
-keyboard is on gets the pointer. A risky setting (acting without asking, taking requests from PC
-audio) is marked while it is on, and turning it on asks first: the row says what it will do, and
-only a second Enter turns it on. The tools have a list of their own, one line each.
+Sections are tabs across the top and a search line sits under them; typing anywhere filters the
+settings of every section. Each setting is one line: its name at the left, its value in an aligned
+column, the one the keyboard is on marked with the chevron. What the selected setting does and when
+a change applies are said once, dimmed, in a footer under the list, so the list stays short enough
+to read at a glance.
+
+Enter or space turns an on-or-off setting over; on one with more values it opens a small list of
+them (↑↓ choose, Enter picks, Esc leaves it as it was), and ← → still step through the values. A
+risky setting (acting without asking, taking requests from PC audio) is marked while it is on, and
+turning it on asks first: the footer says what it will do, and only a second Enter turns it on.
 """
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, override
 
-from rich.console import Group, RenderableType
-from rich.padding import Padding
-from rich.rule import Rule
+from rich.cells import cell_len
 from rich.table import Table
 from rich.text import Text
+from textual import events  # ruff: ignore[typing-only-third-party-import] - Textual reads handler annotations
 from textual.binding import Binding
+from textual.containers import Vertical
 from textual.message import Message
-from textual.widgets import OptionList
+from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
 from jarvis.chat.widgets import ACCENT, CHEVRON
@@ -25,30 +30,67 @@ from jarvis.chat.widgets import ACCENT, CHEVRON
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from textual.app import ComposeResult
+
     from jarvis.toolswitch import ToolSetting
 
 WARN = "yellow"
 DANGER = "bold red"
 DIM = "bright_black"
+SIGN = "\N{WARNING SIGN}"
+SEARCH = "⌕"  # the search line's magnifier
 NOW = "now"  # when a change takes effect: at once
 NEXT_CHAT = "next chat"  # ... when the chat opens again
 ON_CLOSE = "on close"  # ... when the screen closes (the voice service restarts)
 NOW_AND_ON_CLOSE = "now, on close"  # ... in this chat at once, and for the voice on close
-SETTINGS_HINT = "↑↓ move · enter or → next value · ← previous · esc closes"
-SETTINGS_LEGEND = (
-    "now: at once · next chat: when the chat opens again · on close: the voice service restarts"
+APPLIES = {
+    NOW: "Applies at once.",
+    NEXT_CHAT: "Applies the next time the chat opens.",
+    ON_CLOSE: "Applies to the voice when you close settings.",
+    NOW_AND_ON_CLOSE: "Applies at once, and to the voice when you close settings.",
+}
+RESTART_NOTE = "The voice service restarts when you close settings."
+TOOL_ROW = "tool:"  # the start of a row's id for one tool
+TOOLS = "Tools"
+HINTS = (
+    "↑↓ select · enter change · ←→ value · tab section · type to search · esc close",
+    "↑↓ select · enter change · tab section · esc close",
+    "↑↓ · enter · tab · esc",
 )
-TOOLS_HINT = "↑↓ move · enter: the next setting · esc: back to the settings"
-TOOLS_LEGEND = "Enter goes from how a tool ships to stricter; `jarvis tools NAME on` lowers one."
+TAB_HINTS = ("←→ section · ↓ settings · type to search · esc close", "←→ section · esc close")
+PICKER_HINTS = ("↑↓ choose · enter pick · esc back", "↑↓ · enter · esc")
+SEARCH_HINTS = (
+    "↑↓ select · enter change · backspace erases · esc clears the search",
+    "↑↓ · enter · esc clears",
+)
+PLACEHOLDER = "Search settings…"
 _TOOL_STYLES = {"on": "green", "asks first": WARN, "needs the confirm key": "magenta", "off": DIM}
+MINUTE = 60
+HOUR = 3600
 
 
-def shown(value: object) -> str:
-    """Return a value as the settings show it: on and off for a yes or no."""
-    if value is True:
-        return "on"
-    if value is False:
-        return "off"
+def _duration(seconds: float) -> str:
+    whole = round(seconds)
+    if whole < MINUTE:
+        return f"{whole} s"
+    if whole < HOUR:
+        return f"{whole / MINUTE:g} min"
+    return f"{whole / HOUR:g} h"
+
+
+def shown(value: object, unit: str = "", zero: str = "") -> str:
+    """Return a value as the settings show it: on and off for a yes or no, a length of time short.
+
+    A `unit` of "seconds" is shown as 30 s, 10 min or 4 h, and `zero` is the word for 0 in a
+    setting where 0 means something ("never", "none").
+    """
+    named = {True: "on", False: "off"}
+    if isinstance(value, bool):
+        return named[value]
+    if zero and value == 0:
+        return zero
+    if unit == "seconds" and isinstance(value, int | float):
+        return _duration(value)
     return str(value)
 
 
@@ -57,7 +99,8 @@ class Row:
     """One setting: its id, name, what it does, its choices and value, and when it applies.
 
     `risky` is what turning it on means, said before it is turned on; while it is on, the row is
-    marked. `summary` replaces the choices for a row that opens a list of its own.
+    marked. `unit` and `zero` say how a number is shown (`shown`). A `tool` row has no choices of
+    its own: Enter moves it to the next stricter setting, and `note` is what is said after it.
     """
 
     id: str
@@ -67,7 +110,24 @@ class Row:
     value: object
     applies: str = NOW
     risky: str = ""
-    summary: str = ""
+    unit: str = ""
+    zero: str = ""
+    tool: bool = False
+    note: str = ""
+
+    @property
+    def toggle(self) -> bool:
+        """Whether it is on or off, which Enter turns over."""
+        return self.choices in {(False, True), (True, False)}
+
+    @property
+    def text(self) -> str:
+        """The value as it is shown."""
+        return self.text_of(self.value)
+
+    def text_of(self, value: object) -> str:
+        """Return `value` as this setting shows its values."""
+        return str(value) if self.tool else shown(value, self.unit, self.zero)
 
     @property
     def dangerous(self) -> bool:
@@ -87,26 +147,10 @@ class Row:
 
 @dataclass(frozen=True, slots=True)
 class Section:
-    """A heading and its rows."""
+    """A tab and its rows."""
 
     title: str
     rows: tuple[Row, ...]
-
-
-def _choices(row: Row, *, chosen: bool) -> Text:
-    """Return every value the row can take, the one in force lit and the others dim."""
-    if row.summary:
-        return Text(row.summary, style=f"bold {ACCENT}" if chosen else "bold")
-    lit = DANGER if row.dangerous else f"bold {ACCENT}" if chosen else "bold"
-    text = Text()
-    for number, choice in enumerate(row.choices):
-        if number:
-            text.append("  ")
-        if choice == row.value:
-            text.append(f"⚠ {shown(choice)}" if row.dangerous else shown(choice), style=lit)
-        else:
-            text.append(shown(choice), style=DIM)
-    return text
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,56 +164,143 @@ class Pending:
     def hint(self, row: Row) -> str:
         """Return how to confirm it: the same step again, to the same value."""
         keys = "enter or → again" if self.by > 0 else "← again"
-        what = "turn it on" if set(row.choices) == {False, True} else f"set {shown(self.value)}"
-        return f"  {keys}: {what} · esc: keep it off"
+        what = "turn it on" if row.toggle else f"set {row.text_of(self.value)}"
+        return f"{keys}: {what} · esc: keep it off"
 
 
-def row_prompt(
-    row: Row, widths: tuple[int, int], *, chosen: bool, pending: Pending | None
-) -> Group:
-    """Draw one setting: pointer, name, choices and when it applies, then what it does.
-
-    The name and when-it-applies columns keep their width on every row, so the choices line up;
-    in a narrow window the choices wrap rather than push the rest out. A `pending` risky
-    setting says what turning it on means, and how to confirm the value asked about.
-    """
-    line = Table.grid(expand=True)
-    line.add_column(width=2, min_width=2, no_wrap=True)
-    line.add_column(width=widths[0], min_width=widths[0], no_wrap=True)
-    line.add_column(ratio=1, overflow="fold")
-    line.add_column(width=widths[1], min_width=widths[1], justify="right", no_wrap=True)
-    line.add_row(
-        Text(f"{CHEVRON} " if chosen else "  ", style=f"bold {ACCENT}"),
-        Text(row.name, style=f"bold {ACCENT}" if chosen else ""),
-        _choices(row, chosen=chosen),
-        Text(row.applies, style=DIM),
-    )
-    if pending is not None:
-        about = Text.assemble(
-            ("⚠ Turn on? ", f"bold {WARN}"),
-            (row.risky, WARN),
-            (pending.hint(row), DIM),
+def tool_rows(tools: Sequence[ToolSetting]) -> tuple[Row, ...]:
+    """Return a row for each tool: its name, its setting, and what it does."""
+    rows: list[Row] = []
+    for tool in tools:
+        note = f"Ships {tool.shipped_label}." if tool.state is not tool.shipped else ""
+        rows.append(
+            Row(
+                f"{TOOL_ROW}{tool.name}",
+                tool.name,
+                f"{tool.summary.rstrip('.')}. Enter moves it to the next setting, never below "
+                "how it ships.",
+                (),
+                tool.label,
+                ON_CLOSE,
+                tool=True,
+                note=note,
+            )
         )
-    else:
-        about = Text(row.about, style="red" if row.dangerous else DIM)
-    return Group(line, Padding(about, (0, 0, 0, 4)))
+    return tuple(rows)
 
 
-def _heading(title: str, *, first: bool) -> RenderableType:
-    rule = Rule(Text(f" {title} ", style="bold"), align="left", style=DIM, characters="─")
-    return rule if first else Group(Text(""), rule)
+def tool_style(label: object) -> str:
+    """Return the colour a tool's setting is shown in."""
+    return _TOOL_STYLES.get(str(label), "")
 
 
-class SettingsList(OptionList):
-    """The settings in sections; Enter, → and space move a value on, ← moves it back."""
+class SettingList(OptionList):
+    """The rows of one section, or of a search, or the values of one setting being picked."""
 
     BINDINGS: ClassVar = [
-        Binding("right,space", "step(1)", "Next value", show=False),
+        Binding("enter,space", "activate", "Change", show=False),
+        Binding("right", "step(1)", "Next value", show=False),
         Binding("left", "step(-1)", "Previous value", show=False),
+        Binding("tab", "section(1)", "Next section", show=False),
+        Binding("shift+tab", "section(-1)", "Previous section", show=False),
+        Binding("backspace", "erase", "Erase", show=False),
     ]
 
+    class Activated(Message):
+        """Enter or space on the row `row_id`."""
+
+        def __init__(self, row_id: str) -> None:
+            """Say that the row `row_id` was asked to change."""
+            super().__init__()
+            self.row_id = row_id
+
     class Stepped(Message):
-        """A setting's value was moved on (`by` 1) or back (`by` -1) with ← → or space."""
+        """← or → on the row `row_id`, `by` places (1 on, -1 back)."""
+
+        def __init__(self, row_id: str, by: int) -> None:
+            """Say that the row `row_id` moved `by` places."""
+            super().__init__()
+            self.row_id = row_id
+            self.by = by
+
+    class Go(Message):
+        """Tab, or ← → on the tab row (`by`), a key typed, Backspace, or ↑ ↓ (`vertical`)."""
+
+        def __init__(
+            self, by: int = 0, typed: str = "", *, erase: bool = False, vertical: int = 0
+        ) -> None:
+            """Say where to go, or what was typed."""
+            super().__init__()
+            self.by = by
+            self.typed = typed
+            self.erase = erase
+            self.vertical = vertical
+
+    @override
+    def action_cursor_up(self) -> None:
+        """↑: the panel decides, as the first row's ↑ goes to the tab row."""
+        self.post_message(self.Go(vertical=-1))
+
+    @override
+    def action_cursor_down(self) -> None:
+        """↓: the panel decides, as ↓ on the tab row goes into the list."""
+        self.post_message(self.Go(vertical=1))
+
+    def move(self, by: int) -> None:
+        """Move the pointer one row, as the keys do."""
+        if by < 0:
+            super().action_cursor_up()
+        else:
+            super().action_cursor_down()
+
+    def _on_row(self) -> str | None:
+        if self.highlighted is None or not self.option_count:
+            return None
+        return self.get_option_at_index(self.highlighted).id
+
+    def action_activate(self) -> None:
+        """Enter or space."""
+        row = self._on_row()
+        if row is not None:
+            self.post_message(self.Activated(row))
+
+    def action_step(self, by: int) -> None:
+        """← →: the value of the row moves; on the tab row, the section does."""
+        row = self._on_row()
+        if row is not None:
+            self.post_message(self.Stepped(row, by))
+
+    def action_section(self, by: int) -> None:
+        """Tab and Shift+Tab."""
+        self.post_message(self.Go(by))
+
+    def action_erase(self) -> None:
+        """Backspace."""
+        self.post_message(self.Go(erase=True))
+
+    def on_key(self, event: events.Key) -> None:
+        """Typing anywhere searches: a printable key that is no command goes to the search line."""
+        if event.is_printable and event.character and event.key != "space":
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.Go(typed=event.character))
+
+
+class SettingsPanel(Vertical):
+    """The settings screen: tabs, a search line, the list, and a footer on the selected setting."""
+
+    class Activated(Message):
+        """Enter or space on a setting, or a value picked: `value` when one was."""
+
+        def __init__(self, row_id: str, value: object = None, *, picked: bool = False) -> None:
+            """Say that the setting `row_id` was changed, to `value` when `picked`."""
+            super().__init__()
+            self.row_id = row_id
+            self.value = value
+            self.picked = picked
+
+    class Stepped(Message):
+        """← or → on a setting."""
 
         def __init__(self, row_id: str, by: int) -> None:
             """Say that the setting `row_id` moved `by` places."""
@@ -177,159 +308,353 @@ class SettingsList(OptionList):
             self.row_id = row_id
             self.by = by
 
+    class Moved(Message):
+        """The keyboard moved to the setting `row_id`."""
+
+        def __init__(self, row_id: str | None) -> None:
+            """Say which setting the keyboard is on (none: it left the list)."""
+            super().__init__()
+            self.row_id = row_id
+
+    class Redrawn(Message):
+        """The panel drew again: its keys may have changed (a search, a picker, the tab row)."""
+
     def __init__(self, *, id: str | None = None) -> None:  # ruff: ignore[builtin-argument-shadowing] - Textual's own name
-        """An empty list; `show` fills it."""
+        """An empty panel; `show` fills it."""
         super().__init__(id=id)
-        self._rows: dict[str, Row] = {}
-        self._widths = (0, 0)
+        self._sections: tuple[Section, ...] = ()
+        self._tab = 0
+        self._search = ""
+        self._tabs_focus = False  # the keyboard is on the tab row
+        self._picking: Row | None = None
         self._pending: Pending | None = None
+        self._restart = False
         self._pointed: int | None = None
+        self._label_width = 0
+
+    @override
+    def compose(self) -> ComposeResult:
+        """The tab row, the search line, the list and the footer."""
+        yield Static("", id="settings-tabs", markup=False)
+        yield Static("", id="settings-search", markup=False)
+        yield SettingList(id="settings-list")
+        yield Static("", id="settings-footer", markup=False)
+
+    @property
+    def options(self) -> SettingList:
+        """The list of settings."""
+        return self.query_one("#settings-list", SettingList)
+
+    @property
+    def sections(self) -> tuple[Section, ...]:
+        """The tabs, in order."""
+        return self._sections
+
+    @property
+    def tab(self) -> Section | None:
+        """The section on show."""
+        return self._sections[self._tab] if self._sections else None
+
+    @property
+    def searched(self) -> str:
+        """What is typed in the search line."""
+        return self._search
+
+    @property
+    def rows(self) -> list[Row]:
+        """The settings on show: the section's, or whatever the search finds in every section."""
+        if self._search:
+            words = self._search.casefold().split()
+            return [
+                row
+                for section in self._sections
+                for row in section.rows
+                if all(w in f"{row.name} {section.title}".casefold() for w in words)
+            ]
+        return list(self._sections[self._tab].rows) if self._sections else []
+
+    @property
+    def row(self) -> Row | None:
+        """The setting the keyboard is on."""
+        found = self._row_at(self.options.highlighted)
+        return None if self._picking is not None else found
+
+    @property
+    def hint(self) -> tuple[str, ...]:
+        """The keys that work now, from the longest wording to the shortest."""
+        if self._picking is not None:
+            return PICKER_HINTS
+        if self._tabs_focus:
+            return TAB_HINTS
+        return SEARCH_HINTS if self._search else HINTS
+
+    def open(self) -> None:
+        """Start on the first tab, with nothing searched for."""
+        self._tab = 0
+        self._search = ""
+        self._tabs_focus = False
+        self._picking = None
+        self._pending = None
+        self._restart = False
 
     def show(
         self,
         sections: Sequence[Section],
         highlighted: str | None = None,
         pending: Pending | None = None,
+        *,
+        restart: bool = False,
     ) -> None:
-        """List `sections`, pointing at the row `highlighted` (else the first one)."""
-        self._rows = {row.id: row for section in sections for row in section.rows}
+        """List `sections`, pointing at the setting `highlighted` (else the first of the tab)."""
+        self._sections = tuple(sections)
+        self._tab = min(self._tab, max(0, len(self._sections) - 1))
         self._pending = pending
-        rows = list(self._rows.values())
-        self._widths = (
-            max((len(row.name) for row in rows), default=0) + 3,
-            max((len(row.applies) for row in rows), default=0) + 1,
-        )
-        self.clear_options()
-        options: list[Option] = []
-        for number, section in enumerate(sections):
-            options.append(Option(_heading(section.title, first=number == 0), disabled=True))
-            options += [Option(self._prompt(row, chosen=False), id=row.id) for row in section.rows]
-        self.add_options(options)
-        target = highlighted if highlighted in self._rows else (rows[0].id if rows else None)
-        if target is not None:
-            self.highlighted = self.get_option_index(target)
+        self._restart = restart
+        self._draw(highlighted)
 
-    @property
-    def rows(self) -> list[Row]:
-        """Every setting listed, in order."""
-        return list(self._rows.values())
+    def pick_from(self, row: Row) -> None:
+        """Open the list of the values `row` can take, with the one in force pointed at."""
+        self._picking = row
+        self._draw(None)
 
-    @property
-    def row(self) -> Row | None:
-        """The setting the keyboard is on."""
-        if self.highlighted is None:
+    def escape(self) -> bool:
+        """Esc: close a picker, else clear the search; whether it did either."""
+        if self._picking is not None:
+            row, self._picking = self._picking, None
+            self._draw(row.id)
+            return True
+        if self._search:
+            self._search = ""
+            self._draw(None)
+            return True
+        if self._tabs_focus:
+            self._tabs_focus = False
+            self._draw(None)
+            return True
+        return False
+
+    def go(self, event: SettingList.Go) -> None:
+        """Move to another section, or edit the search."""
+        if event.vertical:
+            self._vertical(event.vertical)
+        elif event.typed or event.erase:
+            if self._picking is not None:
+                return
+            self._search = self._search[:-1] if event.erase else self._search + event.typed
+            self._tabs_focus = False
+            self._draw(None)
+            self.post_message(self.Moved(None))
+        elif event.by and self._sections and not self._search and self._picking is None:
+            self._tab = (self._tab + event.by) % len(self._sections)
+            self._draw(None)
+            self.post_message(self.Moved(None))
+
+    def _vertical(self, by: int) -> None:
+        """↑ or ↓: move in the list; ↑ from the first setting goes to the tab row, ↓ back."""
+        if self._tabs_focus:
+            if by > 0:
+                self._tabs_focus = False
+                self._draw(None)
+            return
+        if by < 0 and not self.options.highlighted and not self._search and self._picking is None:
+            self._tabs_focus = True
+            self._draw(None)
+            self.post_message(self.Moved(None))
+            return
+        self.options.move(by)
+
+    def on_setting_list_stepped(self, event: SettingList.Stepped) -> None:
+        """← → on a setting moves its value; on the tab row, the section."""
+        event.stop()
+        if self._tabs_focus:
+            self.go(SettingList.Go(event.by))
+        elif self._picking is None:
+            self.post_message(self.Stepped(event.row_id, event.by))
+
+    def on_setting_list_activated(self, event: SettingList.Activated) -> None:
+        """Enter on a setting: a value picked, a setting turned over, or a picker opened."""
+        event.stop()
+        if self._tabs_focus:
+            self._vertical(1)
+            return
+        if self._picking is not None:
+            index = int(event.row_id.removeprefix("pick:"))
+            row, self._picking = self._picking, None
+            self.post_message(self.Activated(row.id, row.choices[index], picked=True))
+            return
+        row = next((r for r in self.rows if r.id == event.row_id), None)
+        if row is None:
+            return
+        if row.tool or row.toggle or self._pending is not None:
+            self.post_message(self.Activated(row.id))
+        else:
+            self.pick_from(row)
+
+    def on_setting_list_go(self, event: SettingList.Go) -> None:
+        """Tab, Shift+Tab, a typed letter or Backspace."""
+        event.stop()
+        self.go(event)
+
+    # Drawing
+
+    def _row_at(self, index: int | None) -> Row | None:
+        if index is None or index >= self.options.option_count:
             return None
-        option = self.get_option_at_index(self.highlighted)
-        return None if option.id is None else self._rows.get(option.id)
+        row_id = self.options.get_option_at_index(index).id
+        return next((r for r in self.rows if r.id == row_id), None)
 
-    def _prompt(self, row: Row, *, chosen: bool) -> Group:
-        pending = self._pending if self._pending and self._pending.key == row.id else None
-        return row_prompt(row, self._widths, chosen=chosen, pending=pending)
-
-    @override
-    def watch_highlighted(self, highlighted: int | None) -> None:
-        """Point at the highlighted setting and redraw the one left."""
-        previous = self._pointed
-        super().watch_highlighted(highlighted)
-        for index in {previous, highlighted} - {None}:
-            if index is None or index >= self.option_count:
-                continue
-            option = self.get_option_at_index(index)
-            row = None if option.id is None else self._rows.get(option.id)
-            if row is not None:
-                self.replace_option_prompt_at_index(
-                    index, self._prompt(row, chosen=index == highlighted)
+    def _draw(self, highlighted: str | None) -> None:
+        listed = self.options
+        self._pointed = None
+        listed.clear_options()
+        rows = self._picking_rows() if self._picking is not None else self.rows
+        names = (
+            [self._picking.text_of(c) for c in self._picking.choices]
+            if self._picking is not None
+            else [r.name for r in rows]
+        )
+        self._label_width = max((cell_len(name) for name in names), default=0) + 3
+        options: list[Option] = []
+        for index, row_id in enumerate(self._ids(rows)):
+            options.append(Option(self._line(rows, index, chosen=False), id=row_id))
+        listed.add_options(options)
+        if options:
+            ids = [str(option.id) for option in options]
+            if self._picking is not None:
+                current = (
+                    self._picking.choices.index(self._picking.value)
+                    if (self._picking.value in self._picking.choices)
+                    else 0
                 )
-        self._pointed = highlighted
+                listed.highlighted = current
+            else:
+                listed.highlighted = ids.index(highlighted) if highlighted in ids else 0
+        self._lit()
+        self._redraw_header()
+        self.post_message(self.Redrawn())
 
-    def action_step(self, by: int) -> None:
-        """Move the highlighted setting's value on or back."""
-        row = self.row
-        if row is not None:
-            self.post_message(self.Stepped(row.id, by))
+    def _picking_rows(self) -> list[Row]:
+        picking = self._picking
+        return [] if picking is None else [picking] * len(picking.choices)
 
+    def _ids(self, rows: Sequence[Row]) -> list[str]:
+        if self._picking is not None:
+            return [f"pick:{index}" for index in range(len(self._picking.choices))]
+        return [row.id for row in rows]
 
-def tools_rows(tools: Sequence[ToolSetting]) -> list[tuple[str, tuple[Text, Text, Text]]]:
-    """Return each tool's cells: name, setting in colour (with how it ships, if changed), use."""
-    lines: list[tuple[str, tuple[Text, Text, Text]]] = []
-    for tool in tools:
-        state = Text(tool.label, style=_TOOL_STYLES.get(tool.label, ""))
-        if tool.state is not tool.shipped:
-            state.append(f" (ships {tool.shipped_label})", style=WARN)
-        lines.append((tool.name, (Text(tool.name), state, Text(tool.summary, style=DIM))))
-    return lines
-
-
-def tools_summary(tools: Sequence[ToolSetting]) -> str:
-    """Return how many tools are at each setting: "30 on · 4 ask first · 1 off"."""
-    counts: dict[str, int] = {}
-    for tool in tools:
-        counts[tool.label] = counts.get(tool.label, 0) + 1
-    order = list(_TOOL_STYLES)
-    ranked = sorted(
-        counts.items(), key=lambda item: order.index(item[0]) if item[0] in order else 9
-    )
-    return " · ".join(f"{count} {label}" for label, count in ranked)
-
-
-class ToolsList(OptionList):
-    """Every tool on one line: name, setting in colour, what it does; the pointed one lit."""
-
-    def __init__(self, *, id: str | None = None) -> None:  # ruff: ignore[builtin-argument-shadowing] - Textual's own name
-        """An empty list; `show` fills it."""
-        super().__init__(id=id)
-        self._cells: dict[str, tuple[Text, Text, Text]] = {}
-        self._widths = (0, 0)
-        self._pointed: int | None = None
-
-    def show(self, tools: Sequence[ToolSetting], highlighted: str | None = None) -> None:
-        """List `tools` under a heading, pointing at the one named `highlighted` or the first."""
-        lines = tools_rows(tools)
-        self._cells = dict(lines)
-        self._widths = (
-            max((cells[0].cell_len for _name, cells in lines), default=0) + 3,
-            max((cells[1].cell_len for _name, cells in lines), default=0) + 3,
-        )
-        heading = (
-            Text("Tool", style=DIM),
-            Text("Setting", style=DIM),
-            Text("What it does", style=DIM),
-        )
-        self.clear_options()
-        self.add_option(Option(self._line(("  ", ""), heading), disabled=True))
-        self.add_options(
-            Option(self._prompt(name, chosen=False), id=name) for name, _cells in lines
-        )
-        names = [name for name, _cells in lines]
-        if names:
-            first = names.index(highlighted) if highlighted in names else 0
-            self.highlighted = first + 1  # after the heading
-
-    def _line(self, pointer: tuple[str, str], cells: tuple[Text, Text, Text]) -> Table:
+    def _line(self, rows: Sequence[Row], index: int, *, chosen: bool) -> Table:
+        """One line: pointer, name, value; a picker line is a value alone."""
+        chosen = chosen and not self._tabs_focus
         line = Table.grid(expand=True)
         line.add_column(width=2, min_width=2, no_wrap=True)
-        line.add_column(width=self._widths[0], min_width=self._widths[0], no_wrap=True)
-        line.add_column(width=self._widths[1], min_width=self._widths[1], no_wrap=True)
+        line.add_column(width=self._label_width, min_width=self._label_width, no_wrap=True)
         line.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
-        line.add_row(Text(*pointer), *cells)
+        mark = Text(f"{CHEVRON} " if chosen else "  ", style=f"bold {ACCENT}")
+        row = rows[index]
+        if self._picking is not None:
+            value = row.choices[index]
+            label = Text(row.text_of(value), style=f"bold {ACCENT}" if chosen else "")
+            line.add_row(mark, label, Text("(now)" if value == row.value else "", style=DIM))
+            return line
+        name = Text(row.name, style=f"bold {ACCENT}" if chosen else "")
+        line.add_row(mark, name, self._value(row, chosen=chosen))
         return line
 
-    def _prompt(self, name: str, *, chosen: bool) -> Table:
-        cells = self._cells[name]
+    @staticmethod
+    def _value(row: Row, *, chosen: bool) -> Text:
+        text = Text(no_wrap=True, overflow="ellipsis")
+        if row.dangerous:
+            text.append(f"{SIGN} ", style=DANGER)
+        if row.tool:
+            text.append(row.text, style=tool_style(row.value))
+            if row.note:
+                text.append(f"  {row.note.removesuffix('.')}", style=DIM)
+            return text
         if chosen:
-            cells = (Text(name, style=f"bold {ACCENT}"), cells[1], cells[2])
-        return self._line((f"{CHEVRON} " if chosen else "  ", f"bold {ACCENT}"), cells)
+            style = f"bold {ACCENT}"
+        elif row.value is False or (row.value == row.choices[0] if row.risky else False):
+            style = DIM
+        else:
+            style = ""
+        text.append(row.text, style=style)
+        return text
 
-    @override
-    def watch_highlighted(self, highlighted: int | None) -> None:
-        """Point at the highlighted tool."""
-        previous = self._pointed
-        super().watch_highlighted(highlighted)
-        for index in {previous, highlighted} - {None}:
-            if index is not None and index < self.option_count:
-                name = self.get_option_at_index(index).id
-                if name is not None and name in self._cells:
-                    self.replace_option_prompt_at_index(
-                        index, self._prompt(name, chosen=index == highlighted)
-                    )
-        self._pointed = highlighted
+    def _lit(self) -> None:
+        """Point at the highlighted row and fill the footer."""
+        listed = self.options
+        if self._pointed is not None and self._pointed < listed.option_count:
+            self._set_line(self._pointed, chosen=False)
+        index = listed.highlighted
+        if index is not None and index < listed.option_count:
+            self._set_line(index, chosen=True)
+        self._pointed = index
+        self._redraw_footer()
+
+    def _set_line(self, index: int, *, chosen: bool) -> None:
+        rows = self._picking_rows() if self._picking is not None else self.rows
+        if index < len(rows):
+            self.options.replace_option_prompt_at_index(
+                index, self._line(rows, index, chosen=chosen)
+            )
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        """Moving to another row points at it and says what it does."""
+        event.stop()
+        self._lit()
+        if self._picking is None and event.option.id is not None:
+            self.post_message(self.Moved(event.option.id))
+
+    def _redraw_header(self) -> None:
+        tabs = Text(no_wrap=True, overflow="ellipsis")
+        for number, section in enumerate(self._sections):
+            if number:
+                tabs.append(" ")
+            if self._search:
+                style = DIM
+            elif number == self._tab:
+                style = f"bold reverse {ACCENT}" if self._tabs_focus else "bold reverse"
+            else:
+                style = ACCENT if self._tabs_focus else ""
+            tabs.append(f" {section.title} ", style=style)
+        self.query_one("#settings-tabs", Static).update(tabs)
+        search = Text(no_wrap=True, overflow="ellipsis")
+        if self._picking is not None:
+            search.append(self._picking.name, style="bold")
+            search.append("  choose a value", style=DIM)
+        elif self._search:
+            search.append(f"{SEARCH} ", style=DIM)
+            search.append(self._search)
+            search.append("▏", style=ACCENT)
+            count = len(self.rows)
+            search.append(f"   {count} found" if count else "   nothing found", style=DIM)
+        else:
+            search.append(f"{SEARCH} {PLACEHOLDER}", style=DIM)
+        self.query_one("#settings-search", Static).update(search)
+
+    def _redraw_footer(self) -> None:
+        """Say what the selected setting does and when, in one place; a warning if it has one."""
+        footer = Text()
+        row = self.row
+        picking = self._picking
+        if picking is not None:
+            footer.append(picking.about, style=DIM)
+            footer.append(f"\n{APPLIES[picking.applies]}", style=DIM)
+        elif row is not None:
+            pending = self._pending if self._pending and self._pending.key == row.id else None
+            if pending is not None:
+                footer.append(f"{SIGN} Turn on? ", style=f"bold {WARN}")
+                footer.append(row.risky, style=WARN)
+                footer.append(f"\n{pending.hint(row)}", style=DIM)
+            else:
+                if row.dangerous:
+                    footer.append(f"{SIGN} ", style=DANGER)
+                    footer.append(row.about, style="red")
+                else:
+                    footer.append(row.about, style=DIM)
+                footer.append(f"\n{APPLIES[row.applies]}", style=DIM)
+            if self._search:
+                section = next((s.title for s in self._sections if row in s.rows), "")
+                footer.append(f"  In {section}.", style=DIM)
+        if self._restart:
+            footer.append(f"\n{RESTART_NOTE}", style=WARN)
+        self.query_one("#settings-footer", Static).update(footer)

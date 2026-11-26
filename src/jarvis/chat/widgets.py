@@ -444,6 +444,10 @@ class PromptArea(TextArea):
         self.move_cursor(self.document.end)
 
 
+SEPARATOR = " · "  # between the items of a line under the input, dim
+GAP = "  "  # the least between a line's left part and its right part
+
+
 def _gib(value: int, *, tenths: bool = True) -> str:
     return f"{value / GIB:.1f}" if tenths else f"{value / GIB:.0f}"
 
@@ -471,11 +475,24 @@ def tokens_short(count: int) -> str:
     return f"{count}" if count < thousand else f"{count / thousand:.1f}k"
 
 
-def _figure(text: Text, label: str, value: str, style: str = "", *, gap: str = "  ·  ") -> None:
-    if text:
-        text.append(gap, style="bright_black")
+def _joined_parts(parts: list[Text]) -> Text:
+    """Join items with the one quiet separator."""
+    line = Text()
+    for part in parts:
+        if line:
+            line.append(SEPARATOR, style="bright_black")
+        line.append_text(part)
+    return line
+
+
+def _item(label: str, value: str, style: str = "", extra: str = "") -> Text:
+    """One figure: a dim label, its value coloured by how loaded it is, a dim extra after."""
+    text = Text()
     text.append(f"{label} ", style="bright_black")
     text.append(value, style=style)
+    if extra:
+        text.append(f" {extra}", style="bright_black")
+    return text
 
 
 @dataclass(frozen=True, slots=True)
@@ -483,71 +500,142 @@ class _Fit:
     """How much the toolbar says; it says less in a narrower window."""
 
     temperatures: bool = True
-    gap: str = "  ·  "
     meter: int = BAR_CELLS
     tenths: bool = True  # memory in tenths of a gigabyte
+    cpu: bool = True
+    gpu: bool = True
+    label: str = "context"
 
 
-# From the widest window down: the temperatures go first, then the dots between figures and half
-# the context meter, then the tenths of a gigabyte.
+# From the widest window down, each step drops the least useful thing left: the temperatures,
+# half the context meter, the tenths of a gigabyte, the processor, the graphics card's load, the
+# meter itself. Whole items go, never part of one, so the line never wraps or ends mid-word.
 FITS = (
     _Fit(),
     _Fit(temperatures=False),
-    _Fit(temperatures=False, gap="  ", meter=BAR_CELLS // 2),
-    _Fit(temperatures=False, gap="  ", meter=BAR_CELLS // 2, tenths=False),
+    _Fit(temperatures=False, meter=BAR_CELLS // 2),
+    _Fit(temperatures=False, meter=BAR_CELLS // 2, tenths=False),
+    _Fit(temperatures=False, meter=BAR_CELLS // 2, tenths=False, cpu=False),
+    _Fit(temperatures=False, meter=BAR_CELLS // 2, tenths=False, cpu=False, gpu=False),
+    _Fit(temperatures=False, meter=0, tenths=False, cpu=False, gpu=False, label="ctx"),
 )
 
 
 def toolbar(
     status: str, stats: Stats | None, use: ContextUse | None, width: int | None = None
 ) -> Text:
-    """Return the toolbar: services, then the PC's load, then how full the context is.
+    """Return the toolbar: the PC's load at the left, how full the context is at the right.
 
-    Given a `width`, it says as much as fits on one line (`FITS`).
+    Given a `width`, it says as much as fits on one line (`FITS`) and the context's right edge
+    is on the last cell, as the status above it ends. Figures have a fixed width, so the line
+    does not move as they change.
     """
     line = Text()
     for fit in FITS:
-        line = _toolbar(status, stats, use, fit)
+        line = _toolbar(status, stats, use, fit, width)
         if width is None or line.cell_len <= width:
             break
     return line
 
 
-def _toolbar(status: str, stats: Stats | None, use: ContextUse | None, fit: _Fit) -> Text:
-    text = Text()
+def _toolbar(
+    status: str, stats: Stats | None, use: ContextUse | None, fit: _Fit, width: int | None
+) -> Text:
+    left = Text()
     if status:
-        text.append(status, style="bright_black")
+        left.append(status, style="bright_black")
     if stats is not None:
-        _load(text, stats, fit)
-    if use is not None and use.window:
-        _figure(text, "context", "", gap=fit.gap)
+        load = _load(stats, fit)
+        if load:
+            if left:
+                left.append(SEPARATOR, style="bright_black")
+            left.append_text(load)
+    right = _context(use, fit) if use is not None and use.window else Text()
+    if not right:
+        return left
+    if width is None or not left:
+        gap = GAP if left else ""
+        return Text.assemble(left, gap, right)
+    pad = max(len(GAP), width - left.cell_len - right.cell_len)
+    return Text.assemble(left, " " * pad, right)
+
+
+def _context(use: ContextUse, fit: _Fit) -> Text:
+    text = Text()
+    text.append(f"{fit.label} ", style="bright_black")
+    if fit.meter:
         text.append_text(meter(use.used / use.window, fit.meter))
-        text.append(f" {tokens_short(use.used)}/{tokens_short(use.window)}", style="bright_black")
-        if use.memory_budget and use.memory >= WARN_AT * use.memory_budget:
-            text.append("  compacts soon", style="yellow")
+        text.append(" ")
+    window = tokens_short(use.window)
+    text.append(f"{tokens_short(use.used):>{len(window)}}/{window}", style="bright_black")
+    if use.memory_budget and use.memory >= WARN_AT * use.memory_budget:
+        text.append(SEPARATOR, style="bright_black")
+        text.append("compacts soon", style="yellow")
     return text
 
 
-def _load(text: Text, stats: Stats, fit: _Fit) -> None:
-    """Add the processor, graphics card and memory figures that are known."""
-    gap, temperatures, tenths = fit.gap, fit.temperatures, fit.tenths
-    if stats.cpu_percent is not None:
-        _figure(text, "CPU", f"{stats.cpu_percent:.0f}%", _level(stats.cpu_percent / 100), gap=gap)
-        if temperatures and stats.cpu_temperature_c is not None:
-            text.append(f" {stats.cpu_temperature_c:.0f}°", style="bright_black")
+def _load(stats: Stats, fit: _Fit) -> Text:
+    """Return the processor, graphics card and memory figures that are known."""
+    parts: list[Text] = []
     gpu = stats.gpu
-    if gpu is not None and gpu.busy_percent is not None:
-        _figure(text, "GPU", f"{gpu.busy_percent}%", _level(gpu.busy_percent / 100), gap=gap)
-        if temperatures and gpu.temperature_c is not None:
-            text.append(f" {gpu.temperature_c:.0f}°", style="bright_black")
+    if fit.cpu and stats.cpu_percent is not None:
+        temperature = stats.cpu_temperature_c
+        parts.append(
+            _item(
+                "CPU",
+                f"{stats.cpu_percent:>3.0f}%",
+                _level(stats.cpu_percent / 100),
+                _degrees(temperature, fit),
+            )
+        )
+    if fit.gpu and gpu is not None and gpu.busy_percent is not None:
+        parts.append(
+            _item(
+                "GPU",
+                f"{gpu.busy_percent:>3}%",
+                _level(gpu.busy_percent / 100),
+                _degrees(gpu.temperature_c, fit),
+            )
+        )
     if gpu is not None and gpu.vram_used is not None and gpu.vram_total:
-        share = gpu.vram_used / gpu.vram_total
-        vram = f"{_gib(gpu.vram_used, tenths=tenths)}/{_gib(gpu.vram_total, tenths=tenths)}G"
-        _figure(text, "VRAM", vram, _level(share), gap=gap)
+        parts.append(_memory("VRAM", gpu.vram_used, gpu.vram_total, fit))
     if stats.ram_used is not None and stats.ram_total:
-        share = stats.ram_used / stats.ram_total
-        ram = f"{_gib(stats.ram_used, tenths=tenths)}/{_gib(stats.ram_total, tenths=tenths)}G"
-        _figure(text, "RAM", ram, _level(share), gap=gap)
+        parts.append(_memory("RAM", stats.ram_used, stats.ram_total, fit))
+    return _joined_parts(parts)
+
+
+def _degrees(temperature: float | None, fit: _Fit) -> str:
+    """Return a temperature in three cells and the sign, or as many blanks when unknown."""
+    if not fit.temperatures:
+        return ""
+    return f"{temperature:>3.0f}°" if temperature is not None else "    "
+
+
+def _memory(label: str, used: int, total: int, fit: _Fit) -> Text:
+    whole = _gib(total, tenths=fit.tenths)
+    value = f"{_gib(used, tenths=fit.tenths):>{len(whole)}}/{whole}G"
+    return _item(label, value, _level(used / total))
+
+
+_FOOTER_STEPS = ((0, 0), (0, 1), (1, 1), (1, 2), (2, 2))
+
+
+def footer_line(hints: Sequence[str], status: str, width: int) -> tuple[str, str]:
+    """Return the hint and the status that fit side by side in `width` cells, as most as can.
+
+    `hints` run from the longest wording to the shortest. The status is "voice inactive · model
+    server not running": its first part is kept when the whole does not fit. What goes first is
+    the status's second part, then the longer hint, then the rest of the status; whole items
+    only, so nothing is cut mid-word.
+    """
+    parts = [part for part in status.split(SEPARATOR) if part]
+    statuses = [status, parts[0] if parts else "", ""]
+    for hint_at, status_at in _FOOTER_STEPS:
+        hint = hints[min(hint_at, len(hints) - 1)]
+        said = statuses[status_at]
+        if cell_len(hint) + (cell_len(said) + len(GAP) if said else 0) <= width:
+            return hint, said
+    return hints[-1], ""
 
 
 class PointerList(OptionList):
@@ -598,7 +686,8 @@ class PointerList(OptionList):
 
     def _prompt(self, index: int, *, chosen: bool) -> Text:
         row = self._rows[index]
-        text = Text.assemble((f"{CHEVRON} " if chosen else "  ", f"bold {ACCENT}"))
+        text = Text(no_wrap=True, overflow="ellipsis")
+        text.append(f"{CHEVRON} " if chosen else "  ", style=f"bold {ACCENT}")
         filtered = self._marks is not None
         for column, cell in enumerate(row):
             last = column == len(row) - 1

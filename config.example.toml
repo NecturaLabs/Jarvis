@@ -60,7 +60,13 @@ browser = true
 resume = true
 verbosity = "replies"
 toolbar = true
+# What Enter does while a request runs: "steer" (the words join it) or "queue" (they run next).
+while_working = "steer"
+# How replies are written: "concise", "normal" or "verbose".
+response_format = "concise"
 history_size = 1000
+# Chat conversations kept for /resume; 0 keeps none.
+archive_keep = 50
 
 # How the jarvis-strata service runs the model; `jarvis setup` writes these into its profile.
 # The model, its engine and its flags come from Strata's own run config: run `strata launch` for

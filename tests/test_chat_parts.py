@@ -18,6 +18,7 @@ from jarvis.chat.widgets import (
     ReplyMarkdown,
     duration,
     entry_renderable,
+    footer_line,
     link_opens,
     meter,
     tokens_short,
@@ -167,9 +168,29 @@ def test_the_toolbar_shows_each_figure_it_has() -> None:
 
     line = _plain(toolbar("", stats, use))
 
-    for part in ("CPU 8% 53°", "GPU 41% 67°", "VRAM 10.0/20.0G", "RAM 33.0/60.0G", "9.1k/24.6k"):
+    # Figures have a fixed width (a percentage is three cells, a temperature three and its sign).
+    for part in (
+        "CPU   8%  53°",
+        "GPU  41%  67°",
+        "VRAM 10.0/20.0G",
+        "RAM 33.0/60.0G",
+        "9.1k/24.6k",
+    ):
         assert part in line
     assert "compacts soon" not in line
+    assert line.count(" · ") == 3  # one quiet separator between the load's figures
+
+
+def test_the_toolbar_keeps_its_width_as_the_figures_change() -> None:
+    use = ContextUse(900, 24576, 5100, 2400, 12000, 1, summarized=False)
+    busy = ContextUse(24000, 24576, 5100, 2400, 12000, 1, summarized=False)
+    low = Stats(0.0, 9.0, 3 * GIB, 60 * GIB, Gpu(0, 1 * GIB, 20 * GIB, 40.0))
+    high = Stats(100.0, 100.0, 59 * GIB, 60 * GIB, Gpu(100, 19 * GIB, 20 * GIB, 100.0))
+
+    quiet, loaded = toolbar("", low, use, 100), toolbar("", high, busy, 100)
+
+    assert quiet.cell_len == loaded.cell_len == 100
+    assert _plain(quiet).index("context") == _plain(loaded).index("context")  # nothing moves
 
 
 def test_the_toolbar_fits_a_narrow_window_on_one_line() -> None:
@@ -177,16 +198,40 @@ def test_the_toolbar_fits_a_narrow_window_on_one_line() -> None:
     use = ContextUse(9100, 24576, 5100, 2400, 12000, 1, summarized=False)
 
     wide = toolbar("", stats, use, width=200)
-    narrow = toolbar("", stats, use, width=74)
-    narrower = toolbar("", stats, use, width=66)
+    narrow = toolbar("", stats, use, width=90)
+    narrower = toolbar("", stats, use, width=76)
+    narrowest = toolbar("", stats, use, width=66)
 
     assert "°" in _plain(wide)
-    assert narrow.cell_len <= 74
-    for part in ("CPU 8%", "GPU 41%", "VRAM 10.0/20.0G", "RAM 33.0/60.0G", "9.1k/24.6k"):
+    assert wide.cell_len == 200
+    assert _plain(wide).endswith("9.1k/24.6k")  # the context ends on the window's last cell
+    assert narrow.cell_len == 90
+    assert "°" not in _plain(narrow)  # the temperatures go first
+    for part in ("CPU   8%", "GPU  41%", "VRAM 10.0/20.0G", "RAM 33.0/60.0G", "9.1k/24.6k"):
         assert part in _plain(narrow)
-    assert narrower.cell_len <= 66
-    for part in ("CPU 8%", "GPU 41%", "VRAM 10/20G", "RAM 33/60G", "9.1k/24.6k"):
+    assert narrower.cell_len == 76  # then half the meter and the tenths of a gigabyte
+    for part in ("CPU   8%", "GPU  41%", "VRAM 10/20G", "RAM 33/60G", "9.1k/24.6k"):
         assert part in _plain(narrower)
+    assert narrowest.cell_len == 66  # whole items go after that, the processor first
+    assert "CPU" not in _plain(narrowest)
+    for part in ("GPU", "VRAM 10/20G", "RAM 33/60G", "context", "9.1k/24.6k"):
+        assert part in _plain(narrowest)
+
+
+def test_the_footer_drops_the_least_useful_part_first_and_never_cuts_a_word() -> None:
+    hints = (
+        "? for shortcuts · every step and its result (ctrl+o)",
+        "? for shortcuts · ctrl+o: steps",
+        "? for shortcuts",
+    )
+    status = "voice inactive · model server not running"
+
+    assert footer_line(hints, status, 120) == (hints[0], status)
+    assert footer_line(hints, status, 90) == (hints[0], "voice inactive")  # the status's end goes
+    assert footer_line(hints, status, 60) == (hints[1], "voice inactive")  # then the longer hint
+    assert footer_line(hints, status, 40) == (hints[1], "")  # then the rest of the status
+    assert footer_line(hints, status, 10) == (hints[2], "")
+    assert footer_line(hints, "", 60) == (hints[0], "")
 
 
 def test_the_toolbar_warns_before_the_conversation_is_compacted() -> None:

@@ -943,9 +943,11 @@ class _Shared:
     key: str
     label: str
     values: tuple[object, ...]
-    heading: str  # the heading /config shows it under
+    heading: str  # the tab /config shows it under
     about: str
     risky: str = ""  # what turning it on means, said before it is turned on
+    unit: str = ""  # "seconds": shown as 30 s, 10 min, 4 h
+    zero: str = ""  # the word /config shows for 0, where 0 means something
 
 
 SHARED_SETTINGS: tuple[_Shared, ...] = (
@@ -963,29 +965,32 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Take requests from PC audio",
         (False, True),
         "Listening",
-        "Jarvis also hears requests spoken in the PC's own audio, such as someone in a call or "
-        "a video. Whatever they ask to be done always needs your yes.",
+        "Jarvis also hears requests spoken in the PC's own audio, such as a call or a video. "
+        "Whatever they ask to be done always needs your yes.",
         "Jarvis will take requests from voices in the PC's audio, such as a call or a video; "
         "each of their actions still needs your yes.",
     ),
     _Shared(
         "audio",
         "pc_audio_recall_s",
-        "Recall PC audio (seconds)",
+        "Recall PC audio",
         (0, 10, 30, 60),
         "Listening",
         "Keep the last seconds of PC audio in memory so Jarvis can hear what was just said "
-        "(needs PC audio on); 0 keeps none.",
+        "(needs PC audio on); none keeps nothing.",
         "Jarvis will keep the last seconds of the PC's audio in memory.",
+        "seconds",
+        "none",
     ),
     _Shared(
         "browser",
         "idle_close_s",
-        "Close the browser after (seconds)",
+        "Close the browser after",
         (30.0, 60.0, 120.0, 300.0),
         "Chat",
         "How long the headless browser stays open after its last use, in the chat and by "
-        "voice; then it closes with its profile and pages. The chat takes it when it opens again.",
+        "voice; the chat takes it when it opens again.",
+        unit="seconds",
     ),
     _Shared(
         "agent",
@@ -1002,19 +1007,21 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Act without asking first",
         (False, True),
         "Safety",
-        "On: Jarvis acts without asking for your yes, even after reading a web page or a file. "
-        "A tool that needs the confirm key still waits for it, and a tool that is off stays off.",
+        "Jarvis acts without asking for your yes, even after reading a web page or a file. "
+        "A tool that needs the confirm key still waits for it.",
         "Jarvis will act without asking you first, even when a web page or a file could have "
         "steered it.",
     ),
     _Shared(
         "coding",
         "back_after_s",
-        "Leave coding mode after (seconds)",
+        "Leave coding mode after",
         (0.0, 600.0, 1800.0, 3600.0, 14400.0),
         "Mode",
-        "Jarvis goes back to normal mode after coding mode went unused this long; 0 stays in "
-        "coding mode until you switch (/model normal).",
+        "After coding mode goes unused this long, Jarvis goes back to normal mode. never: it "
+        "stays until you switch (/model normal).",
+        unit="seconds",
+        zero="never",
     ),
     _Shared(
         "coding.chat",
@@ -1022,9 +1029,8 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Switch mode by itself in the chat",
         (False, True),
         "Mode",
-        "The model moves a request that is programming work to coding mode, and back when you "
-        "say the work is over. Off: only /model and `jarvis model` switch. Takes effect when "
-        "the chat next starts.",
+        "The model moves programming work to coding mode and back. Off: only /model and "
+        "`jarvis model` switch. The chat takes it when it next opens.",
     ),
     _Shared(
         "coding.voice",
@@ -1033,7 +1039,7 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         (False, True),
         "Mode",
         "The same for spoken requests. With a coding model of its own, a switch loads another "
-        "model, so the request that caused it waits in silence for the load.",
+        "model, so the request waits in silence for the load.",
         "Spoken requests that are programming work will switch the mode by themselves, and "
         "Jarvis is silent while a separate coding model loads.",
     ),
@@ -1072,6 +1078,8 @@ def _shared_settings() -> list[SharedSetting]:
             item.heading,
             item.about,
             item.risky,
+            item.unit,
+            item.zero,
         )
         for item in SHARED_SETTINGS
     ]

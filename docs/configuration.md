@@ -123,18 +123,37 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 | `archive_keep` | `50` | 0 to 1000 | Chat conversations kept in `~/.local/state/jarvis/chat-archive/` (0600) for `/resume` and reading back: each with its full log of requests, steps, results and replies. Older ones are deleted; `0` keeps none, deletes those kept before when the chat opens, and turns `/resume` off. `/forget all` deletes them all and forgets the conversation in the window too. A conversation is written once it has a request; opening and closing the chat writes no copy of the one it remembers. |
 | `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, with what was pasted into each, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
 
-`/config` in the chat opens the settings in sections, each setting with its values, when a change applies
-and a line on what it does; ↑↓ move, Enter or → takes the next value, ← the one before, Esc closes. Under
-Chat it changes `verbosity`, `toolbar`, `while_working` and `thinking` at once, and `reply_tokens`,
-`max_steps`, `memory_detail`, `resume` and `browser` from the next time the chat opens, writing them here.
-Under Chat it also sets `browser.idle_close_s` (30, 60, 120 or 300 seconds), under Voice
-`audio.speech_speed` and `agent.browser`, under Listening and Safety `audio.listen_to_pc` (off by default)
-and `boundaries.bypass_consent`, and under Tools each tool's setting; the voice service restarts once to take
-these when the screen closes, and the open chat takes `bypass_consent` at once (what Jarvis says about its
-own setup, `about_jarvis`, follows when the chat next opens).
-Acting without asking and taking requests from PC audio are turned on only by the same step again to the same
-value (a second Enter or →, or ← after ←), after the row says what that means and which value, and are marked in
-red while they are on; a step to another value asks about that one instead. A restart that fails is said in the chat.
+`/config` in the chat opens the settings as Claude Code's own settings screen does. The sections (Chat, Mode,
+Voice, Listening, Safety, Tools) are tabs across the top: Tab and Shift+Tab switch them, and so do ← → on the tab
+row (↑ from the first setting). Typing anywhere searches the settings of every section; Esc clears the search.
+Each setting is one line, its name at the left and only its value in an aligned column, the one the keyboard is on
+marked with `❯`. What the selected setting does, and when a change applies (at once, the next time the chat opens,
+or when the voice service restarts as the screen closes), are said once in the footer under the list. Enter or
+space turns an on-or-off setting over; on one with more values Enter opens a short list of them (↑↓ choose, Enter
+picks, Esc leaves it as it was), and ← → still step through the values. Times are said as 30 s, 10 min or 4 h, and
+a 0 that means something is said as such ("never", "none"). Changes are saved as you make them; when one needs the
+voice service to restart, the footer says "The voice service restarts when you close settings" until you do.
+
+Under Chat it changes `verbosity`, `toolbar`, `while_working`, `response_format` and `thinking` at once, and
+`reply_tokens`, `max_steps`, `memory_detail`, `resume` and `browser` from the next time the chat opens, writing
+them here. Under Chat it also sets `browser.idle_close_s` (30 s, 1, 2 or 5 min), under Mode `coding.back_after_s`
+and the two `auto` switches, under Voice `audio.speech_speed` and `agent.browser`, under Listening
+`audio.listen_to_pc` (off by default) and `audio.pc_audio_recall_s`, under Safety `boundaries.bypass_consent`,
+and under Tools each tool's setting; the voice service restarts once to take these when the screen closes, and
+the open chat takes `bypass_consent` at once (what Jarvis says about its own setup, `about_jarvis`, follows when
+the chat next opens). Acting without asking and taking requests from PC audio are turned on only by the same step
+again to the same value (a second Enter, or → after →, ← after ←), after the footer says what that means and which
+value; they are marked `⚠` next to the value while they are on, and a step to another value asks about that one
+instead. A restart that fails is said in the chat. `max_tool_calls`, `max_seconds`, `tool_text_chars`,
+`memory_tokens`, `memory_idle_s`, `thinking_tokens`, `thinking_max`, `thinking_raised_tokens`, `history_size` and
+`archive_keep` are set in the file only.
+
+The lines under the input are set in its box's columns: hints at the left, from the text's own column, and the
+services' status at the right, ending at the box's right edge; below them the PC's load at the left and the
+context at the right, ending at the same edge. Every figure has a fixed width, so nothing moves as numbers change.
+In a narrow window whole items go, the least useful first (temperatures, half the context meter, the tenths of a
+gigabyte, the processor, the graphics card's load; the status's second part, then the longer hint), never half a
+word. The command menu has a frame of its own, in line with the box.
 
 `/resume` lists the archived conversations, newest first (when, name, how many requests), and `/resume 2`
 continues the second: the model gets that conversation back as it was, so what came from outside text then
@@ -786,7 +805,7 @@ reddit_search = "deny"
 ```
 
 Without editing the file: `jarvis tools` lists every tool with its setting, and `jarvis tools NAME on|ask|key|off`
-sets one (`default` puts it back as shipped); in `jarvis chat`, `/config` has a Tools list where Enter moves a tool
+sets one (`default` puts it back as shipped); in `jarvis chat`, `/config` has a Tools tab where Enter moves a tool
 on to its next setting, from as shipped to stricter and back, never below how it ships (that takes `jarvis tools
 NAME on`). Either way the change is audited (`tool_class_changed`, with the old setting and where it was made).
 The command restarts the voice service at once; the chat restarts it once, when its settings close. An open chat

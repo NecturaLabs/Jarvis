@@ -25,6 +25,7 @@ from jarvis.chat.app import NO_REPLY, SETTINGS, ChatApp, Services
 from jarvis.chat.archive import ChatArchive
 from jarvis.chat.clipboard import Clip, ClipboardError
 from jarvis.chat.history import InputHistory
+from jarvis.chat.settings import SettingsPanel
 from jarvis.chat.widgets import (
     ACCENT,
     CHEVRON,
@@ -142,6 +143,11 @@ class FakeSession:
 
     def set_bypass_consent(self, *, on: bool) -> None:
         self.bypass.append(on)
+
+
+def _stats() -> Stats:
+    gib = 1024**3
+    return Stats(12.0, 53.0, 33 * gib, 60 * gib, Gpu(41, 10 * gib, 20 * gib, 67.0))
 
 
 def _plain(renderable: object) -> str:
@@ -1036,9 +1042,9 @@ def test_config_changes_a_setting_and_saves_it() -> None:
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
-        await pilot.press("enter")
+        await pilot.press("right")  # on Verbosity: the next value
         await _until(pilot, lambda: bool(saved))
-        await pilot.press("down", "enter")
+        await pilot.press("down", "enter")  # Toolbar is on or off: Enter turns it over
         await _until(pilot, lambda: len(saved) == 2)
         await pilot.press("escape")
         await _until(pilot, lambda: app.query_one("#prompt").display)
@@ -1074,12 +1080,10 @@ def test_config_lists_the_tools_and_moves_one_on() -> None:
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
-        await pilot.press("end", "enter")  # the Tools row, last
-        await _until(pilot, lambda: "Tools" in str(app.query_one("#settings").border_title))
+        await _open_tab(pilot, "Tools")
         await pilot.press("enter")  # reddit_search, first
         await _until(pilot, lambda: bool(moved))
-        await pilot.press("escape")
-        await _until(pilot, lambda: app.query_one("#settings").border_title == "Settings")
+        await _until(pilot, lambda: "asks first" in _settings_text(app))
         await pilot.press("escape")
         await _until(pilot, lambda: app.query_one("#prompt").display)
 
@@ -1111,15 +1115,193 @@ def test_config_changes_jarvis_settings_and_restarts_the_voice_service_once_on_c
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
-        await pilot.press("end", "enter")  # Speaking speed, the last row here
+        await _open_tab(pilot, "Voice")
+        assert "restarts when you close settings" not in _settings_text(app)  # nothing changed yet
+        await pilot.press("right")  # Speaking speed
         await _until(pilot, lambda: values["audio.speech_speed"] == 2)
-        await pilot.press("enter")
+        await pilot.press("right")
         await _until(pilot, lambda: values["audio.speech_speed"] == 3)
+        assert "restarts when you close settings" in _settings_text(app)
         assert applied == []  # nothing restarts while the panel is open
         await pilot.press("escape")
         await _until(pilot, lambda: applied == [True])
 
     _run(test, app)
+
+
+BACK_TEN_MINUTES, BACK_AN_HOUR = 600, 3600
+
+
+def _sectioned_services(values: dict[str, object]) -> Services:
+    from jarvis.chat.app import SharedSetting  # ruff: ignore[import-outside-top-level] - only these tests
+
+    def shared() -> list[SharedSetting]:
+        return [
+            SharedSetting(
+                "audio.speech_speed", "Speaking speed", (1, 2, 3), values["speed"], "Voice"
+            ),
+            SharedSetting(
+                "coding.back_after_s",
+                "Leave coding mode after",
+                (0, BACK_TEN_MINUTES, BACK_AN_HOUR),
+                values["back"],
+                "Mode",
+                unit="seconds",
+                zero="never",
+            ),
+        ]
+
+    return Services(
+        shared=shared,
+        set_shared=lambda key, value: values.update({key.split(".")[-1][:4]: value}),
+        apply=lambda: None,
+        save_settings=lambda _c: None,
+    )
+
+
+def test_config_has_a_tab_for_each_section_and_a_search_across_them() -> None:
+    values: dict[str, object] = {"speed": 1, "back": BACK_TEN_MINUTES}
+    app = _app(session=FakeSession(), services=_sectioned_services(values))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        panel = app.query_one("#settings", SettingsPanel)
+        assert [section.title for section in panel.sections] == ["Chat", "Mode", "Voice"]
+        await pilot.press("tab")  # the next tab; Shift+Tab goes back
+        assert panel.tab is not None
+        assert panel.tab.title == "Mode"
+        assert "10 min" in _settings_text(app)  # seconds are said as minutes
+        await pilot.press("shift+tab", "shift+tab")  # round to the last
+        assert panel.tab is not None
+        assert panel.tab.title == "Voice"
+        for letter in "speak":  # typing anywhere searches every section
+            await pilot.press(letter)
+        assert [row.name for row in panel.rows] == ["Speaking speed"]
+        assert "1 found" in _settings_text(app)
+        await pilot.press("escape")  # the first Esc clears the search, not the screen
+        assert not panel.searched
+        assert app.query_one("#settings").display
+        await pilot.press("escape")
+        await _until(pilot, lambda: app.query_one("#prompt").display)
+
+    _run(test, app)
+
+
+def test_config_keeps_its_section_tabs_on_the_keyboard() -> None:
+    values: dict[str, object] = {"speed": 1, "back": BACK_TEN_MINUTES}
+    app = _app(session=FakeSession(), services=_sectioned_services(values))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        panel = app.query_one("#settings", SettingsPanel)
+        await pilot.press("up")  # from the first setting to the tab row
+        await pilot.press("right")  # ← → switch tabs there, and change values in the list
+        assert panel.tab is not None
+        assert panel.tab.title == "Mode"
+        assert values["back"] == BACK_TEN_MINUTES
+        await pilot.press("down", "right")
+        await _until(pilot, lambda: values["back"] == BACK_AN_HOUR)
+
+    _run(test, app)
+
+
+def test_enter_on_a_setting_with_many_values_opens_a_list_that_esc_leaves_alone() -> None:
+    saved: list[ChatConfig] = []
+    app = _app(session=FakeSession(), services=Services(save_settings=saved.append))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await pilot.press("down", "down", "down", "enter")  # Replies: concise, normal, verbose
+        listed = app.query_one("#settings-list", OptionList)
+        await _until(pilot, lambda: listed.option_count == 3)
+        text = _settings_text(app)
+        assert "concise" in text
+        assert "normal" in text
+        assert "(now)" in text  # the value in force is marked
+        await pilot.press("down", "escape")
+        await _until(pilot, lambda: listed.option_count > 3)
+        assert saved == []  # Esc left it as it was, and kept the screen open
+        await pilot.press("enter", "down", "down", "enter")
+        await _until(pilot, lambda: bool(saved))
+        assert listed.option_count > 3  # back in the list
+
+    _run(test, app)
+    assert saved[0].response_format == "verbose"
+
+
+def test_every_setting_says_what_it_does_in_two_lines() -> None:
+    from jarvis.cli import SHARED_SETTINGS  # ruff: ignore[import-outside-top-level] - only this test
+
+    about = [s.about for s in SETTINGS] + [s.about for s in SHARED_SETTINGS]
+    assert all(about)
+    assert max(len(text) for text in about) <= 140  # two lines of the footer at 80 columns
+
+
+def test_the_lines_under_the_input_line_up_with_its_box() -> None:
+    services = Services(status=lambda: "voice inactive · model server not running", stats=_stats)
+
+    async def check(size: tuple[int, int]) -> None:
+        app = _app(session=FakeSession(), services=services)
+        async with app.run_test(size=size) as pilot:
+            status = app.query_one("#status", Static)
+            toolbar = app.query_one("#toolbar", Static)
+            await _until(pilot, lambda: "voice" in _plain(status.content))
+            await _until(pilot, lambda: "CPU" in _plain(toolbar.content))
+            prompt = app.query_one("#prompt")
+            column = prompt.region.x + 2  # the box's border and its padding
+            for name in ("#hints", "#toolbar"):
+                assert app.query_one(name).region.x == column, (size, name)
+            assert status.region.right == prompt.region.right  # the box's right edge
+            assert toolbar.region.right == prompt.region.right
+            line = _plain(toolbar.content).rstrip("\n")
+            assert len(line) <= toolbar.region.width  # never wraps or clips
+            assert line.endswith("k")  # the context ends the line, as the status does
+
+    async def body() -> None:
+        for size in ((80, 24), (120, 40), (200, 60)):
+            await check(size)
+
+    asyncio.run(body())
+
+
+def test_the_command_menu_has_a_surface_of_its_own_in_line_with_the_input_box() -> None:
+    entries: list[dict[str, object]] = [
+        {"event": "reply", "text": f"A line of the transcript, number {n}.", "session": SESSION}
+        for n in range(40)
+    ]
+    app = _app(FakeTail(entries), session=FakeSession())
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.pause(0.1)
+        _input(app).set_text("/")
+        await _until(pilot, lambda: app.query_one("#menu").display)
+        await pilot.pause(0.05)
+        menu, prompt = app.query_one("#menu"), app.query_one("#prompt")
+        assert (menu.region.x, menu.region.right) == (prompt.region.x, prompt.region.right)
+        assert menu.styles.border.top[0] == "round"  # a frame, so transcript lines never join it
+
+    _run(test, app)
+
+
+def test_the_menu_cuts_a_long_description_with_an_ellipsis_at_a_narrow_width() -> None:
+    app = _app(session=FakeSession())
+
+    async def body() -> None:
+        async with app.run_test(size=(60, 24)) as pilot:
+            _input(app).set_text("/")
+            await _until(pilot, lambda: app.query_one("#menu").display)
+            await pilot.pause(0.05)
+            menu = app.query_one("#menu", PointerList)
+            rows = [
+                "".join(seg.text for seg in menu.render_line(y)) for y in range(menu.size.height)
+            ]
+            assert any(row.rstrip().endswith("…") for row in rows)
+            assert all(len(row.rstrip()) <= menu.size.width for row in rows)
+
+    asyncio.run(body())
 
 
 def test_effort_shows_how_hard_the_model_thinks() -> None:
@@ -1240,7 +1422,8 @@ def test_a_voice_restart_that_fails_after_config_is_shown() -> None:
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
-        await pilot.press("end", "enter", "escape")
+        await _open_tab(pilot, "Voice")
+        await pilot.press("right", "escape")
         await _until(pilot, lambda: _has(app, "still runs on the old settings"))
 
     _run(test, app)
@@ -1269,10 +1452,32 @@ def _risky_services(values: dict[str, object]) -> Services:
 
 
 def _settings_text(app: ChatApp) -> str:
+    """Everything the settings screen says: the tabs, the search line, the list and the footer."""
     listed = app.query_one("#settings-list", OptionList)
+    parts = [
+        _plain(app.query_one(f"#settings-{name}", Static).content)
+        for name in ("tabs", "search", "footer")
+    ]
     return "\n".join(
-        _plain(listed.get_option_at_index(index).prompt) for index in range(listed.option_count)
+        [parts[0], parts[1]]
+        + [_plain(listed.get_option_at_index(i).prompt) for i in range(listed.option_count)]
+        + [parts[2]]
     )
+
+
+async def _open_tab(pilot: Pilot[None], title: str) -> None:
+    """Press Tab until the settings screen shows the section `title`.
+
+    Raises:
+        AssertionError: the screen has no such section.
+    """
+    panel = pilot.app.query_one("#settings", SettingsPanel)
+    for _ in range(len(panel.sections)):
+        if panel.tab is not None and panel.tab.title == title:
+            return
+        await pilot.press("tab")
+        await pilot.pause(0.02)
+    raise AssertionError(f"no section {title}")
 
 
 def test_a_risky_setting_is_turned_on_only_after_it_says_what_that_means() -> None:
@@ -1282,7 +1487,8 @@ def test_a_risky_setting_is_turned_on_only_after_it_says_what_that_means() -> No
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
-        await pilot.press("end", "enter")
+        await _open_tab(pilot, "Safety")
+        await pilot.press("enter")
         await _until(pilot, lambda: "Turn on?" in _settings_text(app))
         assert values["boundaries.bypass_consent"] is False
         assert "act without asking you first" in _settings_text(app)
@@ -1303,7 +1509,8 @@ def test_acting_without_asking_changed_in_config_applies_to_this_chat_at_once() 
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
-        await pilot.press("end", "enter")
+        await _open_tab(pilot, "Safety")
+        await pilot.press("enter")
         await _until(pilot, lambda: "Turn on?" in _settings_text(app))
         assert session.bypass == []
         await pilot.press("enter")
@@ -1321,7 +1528,8 @@ def test_esc_or_moving_away_leaves_a_risky_setting_off() -> None:
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
-        await pilot.press("end", "right")
+        await _open_tab(pilot, "Safety")
+        await pilot.press("right")
         await _until(pilot, lambda: "Turn on?" in _settings_text(app))
         await pilot.press("escape")
         await _until(pilot, lambda: "Turn on?" not in _settings_text(app))
@@ -1345,8 +1553,8 @@ def test_config_shows_sections_and_what_each_setting_does_and_left_steps_back() 
         await _type(pilot, "/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
         text = _settings_text(app)
-        assert "Chat" in text
-        assert "How much of the work the transcript shows" in text
+        assert "Chat" in text  # the first tab
+        assert "How much of the work the transcript shows" in text  # said once, in the footer
         assert "Thinking effort" in text
         assert "Earlier requests keep" in text
         assert not app.query_one("#stage").display  # the screen takes the transcript's place
@@ -1368,7 +1576,7 @@ def test_config_switches_the_browser_tools_off_from_the_next_chat() -> None:
         await _type(pilot, "/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
         assert "Headless browser" in _settings_text(app)
-        await pilot.press(*["down"] * row, "enter")
+        await pilot.press(*["down"] * row, "enter")  # on or off: Enter turns it over
         await _until(pilot, lambda: bool(saved))
         await pilot.press("escape")
         await _until(pilot, lambda: app.query_one("#prompt").display)
@@ -1385,7 +1593,7 @@ def test_thinking_effort_set_in_config_reaches_the_agent() -> None:
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
-        await pilot.press("down", "down", "down", "down", "enter")  # past Replies to Thinking
+        await pilot.press("down", "down", "down", "down", "right")  # past Replies to Thinking
         await _until(pilot, lambda: bool(session.thought))
 
     _run(test, app)
@@ -1501,12 +1709,13 @@ def test_a_risky_setting_with_several_values_asks_before_leaving_off() -> None:
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
-        await pilot.press("end", "enter")
+        await _open_tab(pilot, "Listening")
+        await pilot.press("right")
         await _until(pilot, lambda: "Turn on?" in _settings_text(app))
         assert values["audio.recall"] == 0
-        await pilot.press("enter")
+        await pilot.press("enter")  # Enter takes the value it asked about
         await _until(pilot, lambda: values["audio.recall"] == 10)
-        await pilot.press("enter")  # from one on value to another: no question
+        await pilot.press("right")  # from one on value to another: no question
         await _until(pilot, lambda: values["audio.recall"] == 30)
 
     _run(test, app)
@@ -1539,7 +1748,8 @@ def test_a_risky_setting_is_turned_on_only_to_the_value_it_asked_about() -> None
     async def test(pilot: Pilot[None]) -> None:
         await _type(pilot, "/config")
         await _until(pilot, lambda: app.query_one("#settings").display)
-        await pilot.press("end", "right")
+        await _open_tab(pilot, "Listening")
+        await pilot.press("right")
         await _until(pilot, lambda: "set 10" in _settings_text(app))
         await pilot.press("left")  # another value: asked about again, not turned on
         await _until(pilot, lambda: "set 60" in _settings_text(app))
@@ -1587,9 +1797,9 @@ def test_the_toolbar_shows_the_pcs_load_and_the_context() -> None:
 
     async def test(pilot: Pilot[None]) -> None:
         bar = app.query_one("#toolbar", Static)
-        await _until(pilot, lambda: "GPU 41%" in _plain(bar.content))
+        await _until(pilot, lambda: "GPU  41%" in _plain(bar.content))
         line = _plain(bar.content)
-        assert "CPU 12%" in line
+        assert "CPU  12%" in line
         assert "VRAM 10.0/20.0G" in line
         assert "9.1k/24.6k" in line
 
