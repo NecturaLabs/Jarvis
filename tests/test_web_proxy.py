@@ -178,6 +178,27 @@ def test_a_malformed_or_other_request_is_refused(
     assert upstream.received == []
 
 
+@pytest.mark.parametrize(
+    "request_line",
+    [
+        b"GET http://[::1 HTTP/1.1",
+        b"GET http://[::1/x HTTP/1.1",
+        b"GET http://site.example:99999/ HTTP/1.1",
+        b"CONNECT [::1 HTTP/1.1",
+        b"CONNECT site.example:x HTTP/1.1",
+    ],
+)
+def test_an_address_that_does_not_parse_is_answered_403(
+    proxy: EgressProxy, upstream: Upstream, request_line: bytes
+) -> None:
+    # Not dropped without an answer: the browser is told, and the refusal is counted.
+    answer = _ask(proxy, request_line + b"\r\nHost: x\r\n\r\n")
+
+    assert answer.startswith(b"HTTP/1.1 403")
+    assert upstream.received == []
+    assert proxy.refused == 1
+
+
 def test_a_tunnel_to_a_public_address_carries_bytes_both_ways(
     proxy: EgressProxy, upstream: Upstream
 ) -> None:

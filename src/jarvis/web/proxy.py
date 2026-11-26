@@ -267,7 +267,11 @@ class EgressProxy:
         if method == b"CONNECT":
             host, port = _split_target(text, 443)
             return self._reach(host, port), None
-        parts = urlsplit(text)
+        try:
+            parts = urlsplit(text)
+        except ValueError as exc:  # an unclosed `[`, as in `http://[::1`
+            msg = "not an address"
+            raise RefusedError(msg) from exc
         if parts.scheme != "http":
             msg = "only http addresses and CONNECT tunnels are passed on"
             raise RefusedError(msg)
