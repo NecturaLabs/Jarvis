@@ -66,17 +66,6 @@ _TABLE_RULE = re.compile(
     r"^[ \t]*\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?[ \t]*$", re.MULTILINE
 )
 _TABLE_ROW = re.compile(r"^[ \t]*\|(.+?)\|?[ \t]*$", re.MULTILINE)
-# An en dash read "to": unspaced between words or figures (Mon to Fri, 9am to 5pm, $5 to $10), or
-# spaced between a figure, a time or a unit sign and a figure (-5 to -3, 9 a.m. to 5 p.m.).
-_RANGE = re.compile(
-    r"(?<=[\w°%.])[\u2012\u2013](?=[\w$€£\u2212+-])"
-    r"|(?:(?<=[\d%°])|(?<=°[CF])|(?<=[aApP]\.[mM]\.)|(?<=\d[aApP][mM])|(?<=\d [aApP][mM]))"
-    r"\s?[\u2012\u2013]\s?(?=[$€£\u2212+-]?\d)"
-)
-# A long dash anywhere, or a hyphen set off by spaces between words (between numbers it is a minus).
-_DASH = re.compile(r"\s*,?\s*[\u2012-\u2015]\s*|(?<=[^\d\s]),?\s+-{1,2}\s+(?=\D)")
-_ARROW = re.compile(r"\s*(?:\u2192|->)\s*")
-_ABOUT = re.compile(r"(?<![\w/])~(?=\d)")
 # The unit signs Jarvis's own tools write after a number, as the words a voice should say: the
 # speech engine spells the signs out letter by letter ("k m slash h").
 _UNIT_WORDS = {
@@ -92,14 +81,54 @@ _UNIT_WORDS = {
     "MB": "megabytes",
     "GB": "gigabytes",
     "TB": "terabytes",
+    "KB/s": "kilobytes per second",
+    "MB/s": "megabytes per second",
+    "GB/s": "gigabytes per second",
+    "Mbit/s": "megabits per second",
+    "Gbit/s": "gigabits per second",
 }
-_UNIT = re.compile(
-    r"(?<![\w.])(\d+(?:[.,]\d+)*)\s?("
-    + "|".join(re.escape(sign) for sign in sorted(_UNIT_WORDS, key=len, reverse=True))
-    + r")(?![\w/°])"
+_SIGNS = "|".join(re.escape(sign) for sign in sorted(_UNIT_WORDS, key=len, reverse=True))
+# Where a figure with its unit sign ends, as lookbehinds (a lookbehind needs one width each).
+_AFTER_FIGURE = (
+    "|".join(f"(?<=\\d{sign})" for sign in map(re.escape, _UNIT_WORDS))
+    + "|(?<=[\\d%°])|(?<=[aApP]\\.[mM]\\.)|(?<=\\d[aApP][mM])"
 )
+_AFTER_SPACED_FIGURE = (
+    "|".join(f"(?<=\\d {sign})" for sign in map(re.escape, _UNIT_WORDS))
+    + "|(?<=°[CF])|(?<=\\d [aApP][mM])"
+)
+_NUMBER = r"\d+(?:[.,]\d+)*"
+# An en dash read "to" where a figure touches it: after a figure, a time or a unit sign, or before
+# a figure or a currency sign, spaced or not (Open 9am to 5pm, $5 to $10, -5 to -3, 5 km to 10 km).
+_RANGE = re.compile(
+    rf"(?:{_AFTER_FIGURE})[\u2012\u2013](?=[\w$€£\u2212+-])"
+    r"|(?<=[\w°%])[\u2012\u2013](?=[$€£]|[\u2212+-]?\d)"
+    rf"|(?:{_AFTER_FIGURE}|{_AFTER_SPACED_FIGURE})\s?[\u2012\u2013]\s?(?=[$€£\u2212+-]?\d)"
+)
+# An unspaced en dash between two capitalised words (Mon to Fri, Paris to London); between plain
+# words it is a pause.
+_NAMES = re.compile(r"\b([A-Z][^\W\d_]*)[\u2012\u2013]([A-Z][^\W\d_]*)")
+# A hyphen between two figures with a unit sign or a percent after (5-10 km, 10-20%); a date, a
+# phone number or a version has none.
+_HYPHEN_RANGE = re.compile(
+    rf"(?<![\w.:/+\-\u2212$€£])({_NUMBER})-({_NUMBER})(?=\s?(?:{_SIGNS})(?![\w/°])|%)"
+)
+# A dash that takes one thing from another in a sum ends in "=" (3 - 2 = 1).
+_TERM = r"(?:[\d.,()]+|[A-Za-z]\b)"
+_MINUS = re.compile(
+    rf"(?<=[\dA-Za-z)])\s?[\u2012\u2013]\s?(?={_TERM}(?:\s*[-+*/\u00d7\u00f7\u2212\u2013]\s*{_TERM})*\s*=)"
+)
+# A long dash anywhere, or a hyphen set off by spaces between words (between numbers it is a minus).
+_DASH = re.compile(r"\s*,?\s*[\u2012-\u2015]\s*|(?<=[^\d\s]),?\s+-{1,2}\s+(?=\D)")
+_MINUS_BEFORE = re.compile(r"(?<!\w)\d*[A-Za-z]$")
+_MINUS_AFTER = re.compile(r"\d*[A-Za-z](?!\w)")
+_ARROW = re.compile(r"\s*(?:\u2192|->)\s*")
+_ABOUT = re.compile(r"(?<![\w/])~(?=\d)")
+_ABOUT_TILDE = re.compile(r"\b(about\s+)~(?=\d)", re.IGNORECASE)
+_UNIT = re.compile(rf"(?<![\w.])({_NUMBER})\s?({_SIGNS})(?![\w/°])")
 _SINGULAR = re.compile(
-    r"^(degree|kilometre|metre|mile|millimetre|kilobyte|megabyte|gigabyte|terabyte)s"
+    r"^(degree|kilometre|metre|mile|millimetre|kilobyte|megabyte|gigabyte|terabyte"
+    r"|megabit|gigabit)s"
 )
 _QUESTION_MARKS = re.compile(r"[\[\]()`*_]")
 
@@ -120,6 +149,14 @@ def _unit_words(found: re.Match[str]) -> str:
     return f"{number} {_SINGULAR.sub(r'\1', words) if number == '1' else words}"
 
 
+def _pause(found: re.Match[str]) -> str:
+    """Return a dash as a pause; a spaced hyphen between single-letter terms is a minus."""
+    before, after = found.string[: found.start()], found.string[found.end() :]
+    if "-" in found.group() and _MINUS_BEFORE.search(before) and _MINUS_AFTER.match(after):
+        return found.group()
+    return " " if before.endswith((".", ",", ";", ":", "!", "?")) else ", "
+
+
 def _table_row(found: re.Match[str]) -> str:
     return ", ".join(cell.strip() for cell in found.group(1).split("|") if cell.strip())
 
@@ -128,9 +165,9 @@ def speakable(text: str) -> str:
     """Return a reply as the words a voice can say, lines joined as sentences.
 
     Markdown marks, emoji, code fences and a table's rules are left out; a table row is read
-    cell by cell and a web address as its site. A dash becomes a pause (between numbers, "to"),
-    and a unit sign after a number its word, since the speech engine runs on over the first and
-    spells out the second.
+    cell by cell and a web address as its site. A dash becomes a pause (between figures, or
+    capitalised names, "to"; in a sum, "minus"), and a unit sign after a number its word, since
+    the speech engine runs on over the first and spells out the second.
     """
     text = _MD_LINK.sub(r"\1", text[:MAX_SPOKEN_CHARS])
     text = _WEB_ADDRESS.sub(r"\1", text)
@@ -140,9 +177,11 @@ def speakable(text: str) -> str:
     for _ in range(3):
         text = _MD_EMPHASIS.sub(r"\2", text)
     text = _NOT_SPOKEN.sub("", text)
-    text = _UNIT.sub(_unit_words, _RANGE.sub(" to ", text))  # a range before its unit signs
+    text = _RANGE.sub(" to ", _MINUS.sub(" minus ", text))
+    text = _NAMES.sub(r"\1 to \2", _HYPHEN_RANGE.sub(r"\1 to \2", text))
+    text = _UNIT.sub(_unit_words, text)  # a range before its unit signs
     text = _ARROW.sub(" to ", text)
-    text = _ABOUT.sub("about ", _DASH.sub(", ", text))
+    text = _ABOUT.sub("about ", _ABOUT_TILDE.sub(r"\1", _DASH.sub(_pause, text)))
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     joined = " ".join(line if line[-1] in ".!?:;," else f"{line}." for line in lines[:-1])
     return f"{joined} {lines[-1]}".strip() if lines else ""

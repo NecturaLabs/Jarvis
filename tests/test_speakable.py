@@ -47,6 +47,25 @@ def test_a_runaway_reply_is_cut_before_it_is_cleaned() -> None:
         ("Highs of 5\u00b0 \u2013 10\u00b0.", "Highs of 5 degrees to 10 degrees."),
         ("From 22 \u00b0C \u2013 25 \u00b0C.", "From 22 degrees Celsius to 25 degrees Celsius."),
         ("Open 9 AM \u2013 5 PM.", "Open 9 AM to 5 PM."),
+        ("Paris\u2013London takes two hours.", "Paris to London takes two hours."),
+        ("Wait\u2013what?", "Wait, what?"),
+        ("Wait \u2013what.", "Wait, what."),
+        ("That is the end.\u2013Start again.", "That is the end. Start again."),
+        ("He left\u2013slowly.", "He left, slowly."),
+        ("Is x - y the same as y - x?", "Is x - y the same as y - x?"),
+        ("Subtract: a - b.", "Subtract: a - b."),
+        ("So x - 5 is zero.", "So x - 5 is zero."),
+        ("It is 3 \u2013 2 = 1.", "It is 3 minus 2 = 1."),
+        ("It is 3\u20132 = 1.", "It is 3 minus 2 = 1."),
+        ("It is (2 + 3) \u2013 1 = 4.", "It is (2 + 3) minus 1 = 4."),
+        ("It is 9 \u2013 3 \u2013 2 = 4.", "It is 9 minus 3 minus 2 = 4."),
+        ("Then 5 \u2013 10 people came.", "Then 5 to 10 people came."),
+        ("5 km \u2013 10 km.", "5 kilometres to 10 kilometres."),
+        ("3 GB \u2013 4 GB.", "3 gigabytes to 4 gigabytes."),
+        ("12 km/h \u2013 20 km/h.", "12 kilometres per hour to 20 kilometres per hour."),
+        ("Gusts of 5 m/s \u2013 9 m/s.", "Gusts of 5 metres per second to 9 metres per second."),
+        ("5km\u201310km.", "5 kilometres to 10 kilometres."),
+        ("It is 20 \u00b0C \u2013 25 \u00b0C.", "It is 20 degrees Celsius to 25 degrees Celsius."),
     ],
 )
 def test_a_dash_is_a_pause_or_a_range_never_a_run_on(reply: str, spoken: str) -> None:
@@ -69,6 +88,13 @@ def test_a_dash_is_a_pause_or_a_range_never_a_run_on(reply: str, spoken: str) ->
         ("It takes 512 MB.", "It takes 512 megabytes."),
         ("Volume at 47%.", "Volume at 47%."),
         ("The MB and km/h signs alone stay.", "The MB and km/h signs alone stay."),
+        ("Reads at 3.5 GB/s.", "Reads at 3.5 gigabytes per second."),
+        ("Writes at 1 GB/s.", "Writes at 1 gigabyte per second."),
+        ("Copying at 80 MB/s.", "Copying at 80 megabytes per second."),
+        ("Pulling 120 KB/s.", "Pulling 120 kilobytes per second."),
+        ("Link at 1 Gbit/s.", "Link at 1 gigabit per second."),
+        ("Link at 300 Mbit/s.", "Link at 300 megabits per second."),
+        ("Reads at 3 GB/second.", "Reads at 3 GB/second."),
     ],
 )
 def test_a_unit_sign_after_a_number_is_said_as_its_word(reply: str, spoken: str) -> None:
@@ -104,7 +130,31 @@ def test_a_code_fence_is_not_read_aloud() -> None:
     [
         ("From 20 → 1,000.", "From 20 to 1,000."),
         ("It takes ~5 minutes.", "It takes about 5 minutes."),
+        ("It takes about ~5 minutes.", "It takes about 5 minutes."),
+        ("It takes About ~5 minutes.", "It takes About 5 minutes."),
     ],
 )
 def test_a_sign_with_a_plain_word_is_said_as_it(reply: str, spoken: str) -> None:
+    assert speakable(reply) == spoken
+
+
+@pytest.mark.parametrize(
+    ("reply", "spoken"),
+    [
+        ("It is 5-10 km away.", "It is 5 to 10 kilometres away."),
+        ("A 10-20% chance of rain.", "A 10 to 20% chance of rain."),
+        ("Takes 2-3 GB.", "Takes 2 to 3 gigabytes."),
+        ("Gusts of 1.5-2 m/s.", "Gusts of 1.5 to 2 metres per second."),
+        ("Highs of 20-25\u00b0C.", "Highs of 20 to 25 degrees Celsius."),
+        ("Highs of 20-25 \u00b0C.", "Highs of 20 to 25 degrees Celsius."),
+        ("It was 2026-11-26.", "It was 2026-11-26."),
+        ("Call 555-1234.", "Call 555-1234."),
+        ("Version 1.2-3 is out.", "Version 1.2-3 is out."),
+        ("The range 10.0.0.1-10.0.0.9 is free.", "The range 10.0.0.1-10.0.0.9 is free."),
+        ("The tag 5-10-15 km stays.", "The tag 5-10-15 kilometres stays."),
+        ("The date 2026-11-26 km stays.", "The date 2026-11-26 kilometres stays."),
+        ("Opens 9-5.", "Opens 9-5."),
+    ],
+)
+def test_a_hyphen_between_figures_with_a_unit_is_a_range(reply: str, spoken: str) -> None:
     assert speakable(reply) == spoken

@@ -350,7 +350,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   number is said as its word ("22 °C" as "22 degrees Celsius", "12 km/h" as "12 kilometres per hour",
   "48 GB" as "48 gigabytes") instead of spelled out, a web address is said as its site, and a table's
   rules, code fences, "→" and "~5" are no longer read as signs. "a.m." and "p.m." no longer end a
-  sentence, so "11 a.m. on Sunday" is spoken in one breath.
+  sentence, so "11 a.m. on Sunday" is spoken in one breath. A range says "to" after a unit sign too ("5 km – 10 km")
+  and when written with hyphens before a unit or a percent ("5-10 km", "10-20%"; dates, phone numbers and
+  versions are read as written); an en dash between plain lowercase words is a pause, and one in a sum
+  ("3 – 2 = 1") is "minus"; "x - y" keeps its minus; "about ~5" is "about 5"; "GB/s", "MB/s", "KB/s",
+  "Gbit/s" and "Mbit/s" are said as words.
 - With `format.thousands_separator` set to a space or an apostrophe, the voice was told to write "25 000",
   which is read aloud as "twenty-five zero zero zero". The voice now writes such numbers without a mark,
   in its replies and in the calculator's answers; the chat keeps the mark you chose.
