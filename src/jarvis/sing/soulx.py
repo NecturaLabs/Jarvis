@@ -49,7 +49,7 @@ SEED = 2026
 MAX_ERROR_CHARS = 400
 PHONES_CACHED = 1024  # words whose phones are kept; a song has at most 64
 MIN_RATE, MAX_RATE = 8000, 192000
-MAX_SONG_S = 40.0  # the 30 s cap, its edges of silence and room
+LENGTH_SLACK_S = 0.25  # how far a sung song may be from its metadata's length (it is on it)
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,11 +126,12 @@ def _write_wav(path: Path, pcm: NDArray[np.int16]) -> None:
         out.writeframes(np.concatenate([edge, pcm, edge]).tobytes())
 
 
-def _samples(sung: wave.Wave_read) -> tuple[NDArray[np.int16], int]:
-    """Return an open WAV's samples and rate, at most MAX_SONG_S of them.
+def _samples(sung: wave.Wave_read, seconds: float) -> tuple[NDArray[np.int16], int]:
+    """Return an open WAV's samples and rate, checked to hold a song of `seconds` with its edges.
 
     Raises:
-        ValueError: it is not mono 16-bit sound at a usable rate.
+        ValueError: it is not mono 16-bit sound at a usable rate, its length is not the song's,
+            or it holds fewer samples than its header says (a file cut off).
     """
     if sung.getnchannels() != 1 or sung.getsampwidth() != 2:  # ruff: ignore[magic-value-comparison] - mono, 16-bit
         msg = "the singer wrote something other than mono 16-bit sound"
@@ -139,26 +140,36 @@ def _samples(sung: wave.Wave_read) -> tuple[NDArray[np.int16], int]:
     if not MIN_RATE <= rate <= MAX_RATE:
         msg = f"the singer wrote sound at {rate} Hz"
         raise ValueError(msg)
-    frames = min(sung.getnframes(), int(MAX_SONG_S * rate))
-    return np.frombuffer(sung.readframes(frames), dtype=np.int16).copy(), rate
+    frames = sung.getnframes()
+    asked = seconds + 2 * EDGE_S
+    if abs(frames / rate - asked) > LENGTH_SLACK_S:
+        msg = f"the singer wrote {frames / rate:.2f} s of sound for a song of {asked:.2f} s"
+        raise ValueError(msg)
+    data = sung.readframes(frames)
+    if len(data) != 2 * frames:
+        msg = f"the singer's sound file is cut off ({len(data) // 2} of {frames} samples)"
+        raise ValueError(msg)
+    return np.frombuffer(data, dtype=np.int16).copy(), rate
 
 
-def _read_wav(path: Path) -> tuple[NDArray[np.int16], int]:
-    """Return a mono 16-bit WAV's samples and rate.
+def _read_wav(path: Path, seconds: float) -> tuple[NDArray[np.int16], int]:
+    """Return the song of `seconds` in a mono 16-bit WAV, without the edges of silence around it.
+
+    The song starts EDGE_S in, as its metadata asked, and is cut or padded to `seconds`, so it
+    lines up with the score as the speaking voice's song does.
 
     Raises:
-        ValueError: it is not one (another format, a damaged or cut-off file, no sound).
+        ValueError: it is not one (another format, a damaged or cut-off file, another length).
     """
     try:
         with wave.open(str(path), "rb") as sung:
-            pcm, rate = _samples(sung)
+            pcm, rate = _samples(sung, seconds)
     except (wave.Error, EOFError, struct.error) as exc:
         msg = f"the singer wrote a sound file that cannot be read: {exc}"
         raise ValueError(msg) from exc
-    if pcm.size == 0:
-        msg = "the singer wrote no sound"
-        raise ValueError(msg)
-    return pcm, rate
+    edge, length = round(EDGE_S * rate), round(seconds * rate)
+    song = pcm[edge : edge + length]
+    return np.pad(song, (0, length - song.size)), rate
 
 
 def command(found: Files, folder: Path, device: int) -> list[str]:
@@ -272,5 +283,5 @@ class SoulxSinger:
             if code != 0:
                 msg = f"exit {code}: {errors.strip()[-MAX_ERROR_CHARS:]}"
                 raise ValueError(msg)
-            pcm, rate = _read_wav(folder / "sung.wav")
+            pcm, rate = _read_wav(folder / "sung.wav", sung.seconds)
         return pcm, rate

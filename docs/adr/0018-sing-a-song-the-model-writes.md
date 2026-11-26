@@ -54,8 +54,10 @@ CPU singer instead of leaving the owner without a song.
     reference clip is the same song sung first by the CPU singer, so no recording ships and the song comes out in
     Jarvis's own voice.
   - `auto` is `soulx` when its files are installed, else `speech`. The CPU song is made first in every case, so
-    when SoulX-Singer exits with an error, writes a file Jarvis cannot read, or runs past 20 seconds, that song
-    is sung instead and the log says why.
+    when SoulX-Singer exits with an error, writes a file Jarvis cannot read, a file cut short of its own header
+    or a song more than 0.25 s off the score's length, or runs past 20 seconds, that song is sung instead and
+    the log says why. The edges of silence Jarvis asks SoulX-Singer for are taken off, so both singers' songs
+    start on the score's first beat and keep its rests.
   - **Stopping a song being made.** Whatever would silence a song stops it while it is made: the wake word
     (the voice listens for it then, though nothing plays), `jarvis hush`, a pause, or Jarvis stopping. The CPU
     singer stops before its next phrase; SoulX-Singer is not started, or is killed with every process it

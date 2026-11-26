@@ -13,7 +13,7 @@ import threading
 import time
 import wave
 from pathlib import Path
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
 
 import numpy as np
 import pytest
@@ -76,9 +76,16 @@ class Runner:
     """Stands in for `audiocpp_cli`: keeps what it was given and writes a song, or fails."""
 
     def __init__(
-        self, *, exit_code: int = 0, timeout: bool = False, writes: bytes = b"", stop: bool = False
+        self,
+        *,
+        exit_code: int = 0,
+        timeout: bool = False,
+        writes: bytes = b"",
+        stop: bool = False,
+        frames: int | None = None,
     ) -> None:
         super().__init__()
+        self.frames = frames  # how long the song it writes is, when not as long as asked
         self.stop = stop  # the request is cancelled while it runs
         self.cancels: list[Callable[[], bool]] = []
         self.writes = writes  # what it writes instead of a song, when set
@@ -114,11 +121,17 @@ class Runner:
         if self.writes:
             Path(cmd[cmd.index("--out") + 1]).write_bytes(self.writes)
         elif self.exit_code == 0:
+            # The song as SoulX-Singer sings it: as long as its metadata, edges of silence and all.
+            ms = cast("list[int]", self.target[0]["time"])[1]
+            whole = round(ms / 1000 * soulx.RATE)
+            edge = round(soulx.EDGE_S * soulx.RATE)
+            song = np.zeros(whole if self.frames is None else self.frames, dtype=np.int16)
+            song[edge : song.size - edge] = 7
             with wave.open(cmd[cmd.index("--out") + 1], "wb") as out:
                 out.setnchannels(1)
                 out.setsampwidth(2)
                 out.setframerate(soulx.RATE)
-                out.writeframes(np.full(4800, 7, dtype=np.int16).tobytes())
+                out.writeframes(song.tobytes())
         return self.exit_code, "vulkan: out of memory"
 
 
@@ -136,7 +149,8 @@ def test_soulx_sings_in_the_voice_of_the_same_song_sung_by_the_speaking_voice(
     pcm, rate = _singer(tmp_path, runner).render(score, Budget())
 
     assert rate == soulx.RATE
-    assert pcm.tolist() == [7] * 4800  # what SoulX-Singer wrote
+    # What SoulX-Singer wrote, without the edges of silence Jarvis asked it for: the score's length.
+    assert pcm.tolist() == [7] * round(score.seconds * soulx.RATE)
     (cmd,) = runner.commands
     assert cmd[0] == str(soulx.files(tmp_path).binary)
     assert cmd[cmd.index("--backend") + 1] == "vulkan"
@@ -145,6 +159,15 @@ def test_soulx_sings_in_the_voice_of_the_same_song_sung_by_the_speaking_voice(
     assert runner.reference == runner.target  # the reference is the song itself
     assert runner.reference_seconds == pytest.approx(score.seconds + 2 * soulx.EDGE_S)
     assert not list((tmp_path / "run" / "jarvis").iterdir())  # nothing is left behind
+
+
+def _cut_off_wav() -> bytes:
+    """A 16-bit WAV whose header says one second while only a tenth of it follows."""
+    data = np.full(soulx.RATE // 10, 7, dtype=np.int16).tobytes()
+    fmt = struct.pack("<HHIIHH", 1, 1, soulx.RATE, soulx.RATE * 2, 2, 16)
+    body = b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+    body += b"data" + struct.pack("<I", soulx.RATE * 2) + data
+    return b"RIFF" + struct.pack("<I", len(body)) + body
 
 
 def _float_wav() -> bytes:
@@ -164,8 +187,11 @@ def _float_wav() -> bytes:
         Runner(writes=b"not a sound file"),
         Runner(writes=_float_wav()),
         Runner(writes=_float_wav()[:30]),
+        Runner(writes=_cut_off_wav()),
+        Runner(frames=soulx.RATE // 5),
+        Runner(frames=soulx.RATE * 10),
     ],
-    ids=["exit", "timeout", "garbage", "float", "cut-off"],
+    ids=["exit", "timeout", "garbage", "float", "cut-off", "pcm-cut-off", "too-short", "too-long"],
 )
 def test_a_failed_or_stuck_soulx_sings_with_the_speaking_voice_instead(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: Runner
