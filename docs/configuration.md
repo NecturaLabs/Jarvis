@@ -1018,7 +1018,9 @@ coding mode works as the chat does in coding mode: the coding prompt, `[coding.c
 run config, the first request uses the same switch as `/model coding` and reports the result. With a
 shared run config, it keeps the shared mode and uses the normal context limit. While it answers, the
 voice service holds off automatic model restarts. An answer in the shared coding mode refreshes the
-timer set by `coding.back_after_s`.
+timer set by `coding.back_after_s`. Each session's conversation is kept in `~/.local/state/jarvis/acp-sessions/` after every reply (the
+newest 200), so when T3 Code starts a new `jarvis acp` for a thread it already had, after either one
+restarts, the thread opens again with its conversation (`session/load`) and goes on.
 
 `jarvis acp` can show an announcement (a reminder) as soon as it is
 made, once you turn `push_to_t3` on, by sending it into the newest open T3 Code thread of the project a session was opened in whose

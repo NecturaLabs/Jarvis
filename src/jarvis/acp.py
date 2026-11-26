@@ -5,15 +5,23 @@ A coding app that speaks ACP (T3 Code's "Local ACP command") starts `jarvis acp`
 second one: each ACP session is one chat conversation (`build(via="acp")`, its own memory, written
 replies), and the model is the one Strata already serves. Nothing here is spoken.
 
-Owned here: the transport, `initialize`, `session/new`, `session/prompt`, `session/cancel`,
-`session/close` and `session/set_config_option`. Anything else is "method not found".
+Owned here: the transport, `initialize`, `session/new`, `session/load`, `session/prompt`,
+`session/cancel`, `session/close` and `session/set_config_option`. Anything else is "method not
+found".
 
 With `models` (Jarvis's modes, `ModelChoice`) a session offers them as one model list, each by
 the name of the model that serves it and what it is for, and a thinking effort (`thought_level`)
 that starts at the chosen mode's own. Each mode is its own agent in the session, made when it is
 first chosen and kept, so going back to a mode keeps its conversation. Neither changes while a
-request is being answered. Jarvis loads no MCP servers and no sessions are kept across
-runs, so `mcpServers` and `cwd` are ignored and `loadSession` is off.
+request is being answered. Jarvis loads no MCP servers, so `mcpServers` is ignored.
+
+With a `store` folder (0700) each session's conversation is kept there after every reply, one file
+per mode the session used (0600, `Conversation.save`) beside a small file naming its mode and
+effort, and `loadSession` is on: a later `jarvis acp` (the client starts one per run) reopens it by
+its id with `session/load`, sends its remembered turns back as the protocol asks, and goes on from
+them. A well-formed id with nothing kept opens an empty session under that id, so a thread whose
+files were pruned still works; an id Jarvis could not have made is refused. Only the newest
+`MAX_KEPT` sessions are kept.
 
 Announcements (a reminder, a watch alert: `jarvis.announce`) the voice service makes reach every
 open session as "Jarvis: <line>" in the reply. T3 Code drops message chunks that arrive outside a
@@ -41,14 +49,17 @@ import collections
 import json
 import logging
 import queue
+import re
 import secrets
 import threading
+import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, TextIO
+from typing import TYPE_CHECKING, Any, Protocol, TextIO, runtime_checkable
 
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.announce import Announcement
 from jarvis.config import EFFORTS
+from jarvis.files import write_atomic
 from jarvis.jsonutil import obj, objs
 from jarvis.pictures import MAX_FILE_BYTES, Picture, PictureError, prepare
 from jarvis.policy import is_yes
@@ -56,6 +67,7 @@ from jarvis.t3push import Delivery
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Sequence
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +77,8 @@ MAX_BASE64 = MAX_FILE_BYTES * 4 // 3 + 4  # characters of one picture
 MAX_IMAGES = 4
 MAX_TEXT = 100_000  # characters of one prompt
 MAX_SESSIONS = 32
+MAX_KEPT = 200  # sessions kept on disk for `session/load`, the newest
+SESSION_ID = re.compile(r"jarvis-[0-9a-f]{12}")  # what `session/new` makes, and nothing else
 MAX_PUSHES = 8  # announcements waiting to be pushed; a hung `t3` loses the oldest
 MAX_PENDING = 50  # announcements a session keeps for its next prompt
 FEED_RETRY_S = 10.0  # how long to wait before looking again for the running Jarvis
@@ -107,6 +121,23 @@ class AgentSession(Protocol):
 
     def set_effort(self, level: str) -> None:
         """Think at `level` (one of `config.EFFORTS`) from the next request on."""
+        ...
+
+
+@runtime_checkable
+class Kept(Protocol):
+    """An agent whose conversation can be kept across runs (`session/load`)."""
+
+    def save(self, path: Path) -> None:
+        """Write the conversation to `path` (0600)."""
+        ...
+
+    def load(self, path: Path) -> bool:
+        """Read a conversation `save` wrote; return whether one was read."""
+        ...
+
+    def history(self) -> list[tuple[str, str]]:
+        """Return the remembered turns, oldest first, as (request, reply)."""
         ...
 
 
@@ -221,8 +252,11 @@ class AcpServer:
         pusher: Pusher | None = None,
         record: Callable[..., None] | None = None,
         models: Sequence[ModelChoice] = (),
+        store: Path | None = None,
     ) -> None:
         """Serve sessions whose agents `make_agent` makes (it takes the session's id and model).
+
+        With `store`, sessions are kept in that folder and can be loaded by a later run.
 
         With `models` each session starts on the first and may choose another; without, the
         model `make_agent` is given is "".
@@ -249,6 +283,7 @@ class AcpServer:
         self._pusher = pusher
         self._record = record
         self._models = tuple(models)
+        self._store = store
         self._pushes: collections.deque[tuple[Announcement, set[str]]] = collections.deque(
             maxlen=MAX_PUSHES
         )
@@ -461,6 +496,8 @@ class AcpServer:
                 self._result(request_id, self._initialize(params))
             case "session/new":
                 self._result(request_id, self._new_session(params))
+            case "session/load" if self._store is not None:
+                self._result(request_id, self._load_session(params))
             case "session/prompt":
                 self._prompt(request_id, params)
             case "session/close":
@@ -478,7 +515,7 @@ class AcpServer:
         return {
             "protocolVersion": version,
             "agentCapabilities": {
-                "loadSession": False,
+                "loadSession": self._store is not None,
                 "sessionCapabilities": {"close": {}},
                 "promptCapabilities": {"image": True, "audio": False, "embeddedContext": False},
                 "mcpCapabilities": {"http": False, "sse": False},
@@ -511,15 +548,88 @@ class AcpServer:
         return {"sessionId": session_id, **self._offered(session)}
 
     def _agent_for(self, session_id: str, model: str) -> AgentSession:
-        """Make a session's agent for `model`.
+        """Make a session's agent for `model`, with its kept conversation when there is one.
 
         Raises:
             _Rpc: it cannot be made; the message says why.
         """
         try:
-            return self._make_agent(session_id, model)
+            agent = self._make_agent(session_id, model)
         except StartError as exc:
             raise _Rpc(INTERNAL_ERROR, str(exc)) from exc
+        if self._store is not None and isinstance(agent, Kept):
+            agent.load(self._kept_file(self._store, session_id, model))
+        return agent
+
+    # Sessions kept across runs
+
+    @staticmethod
+    def _kept_file(store: Path, session_id: str, model: str) -> Path:
+        return store / f"{session_id}.{model or 'chat'}.memory.json"
+
+    def _keep(self, session: _Session) -> None:
+        """Write the session's conversations and its mode and effort to the store."""
+        store = self._store
+        if store is None:
+            return
+        agents = session.agents or {session.model: session.agent}
+        meta = {"model": session.model, "effort": session.effort, "at": time.time()}
+        try:
+            store.mkdir(mode=0o700, parents=True, exist_ok=True)
+            for model, agent in agents.items():
+                if isinstance(agent, Kept):
+                    agent.save(self._kept_file(store, session.id, model))
+            write_atomic(store / f"{session.id}.json", json.dumps(meta), mode=0o600)
+        except OSError as exc:
+            log.warning("the session could not be kept: %s", exc)
+            return
+        _prune(store)
+
+    @staticmethod
+    def _kept_meta(store: Path, session_id: str) -> dict[str, Any]:
+        try:
+            return obj(json.loads((store / f"{session_id}.json").read_text(encoding="utf-8")))
+        except OSError, ValueError:
+            return {}
+
+    def _load_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Reopen a session a run before made: its mode, effort and remembered turns.
+
+        Raises:
+            _Rpc: the id is not one Jarvis makes, every session is busy, or its agent cannot
+                be made.
+        """
+        session_id = params.get("sessionId")
+        if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
+            raise _Rpc(INVALID_PARAMS, "unknown session")
+        open_one = self._sessions.get(session_id)
+        if open_one is not None:
+            return self._offered(open_one) if self._models else {}
+        full = len(self._sessions) >= MAX_SESSIONS
+        if full and all(session.run is not None for session in self._sessions.values()):
+            raise _Rpc(INTERNAL_ERROR, f"at most {MAX_SESSIONS} sessions at once, all busy")
+        meta = self._kept_meta(self._store, session_id) if self._store is not None else {}
+        choice = next((m for m in self._models if m.id == meta.get("model")), None)
+        choice = choice or (self._models[0] if self._models else None)
+        model = choice.id if choice is not None else ""
+        agent = self._agent_for(session_id, model)
+        effort = meta.get("effort")
+        effort = effort if effort in EFFORTS else (choice.effort if choice is not None else "")
+        if effort:
+            agent.set_effort(str(effort))
+        if full:
+            self._evict_idle()
+        cwd = params.get("cwd")
+        folder = cwd if isinstance(cwd, str) and cwd.startswith("/") and "\0" not in cwd else ""
+        session = _Session(session_id, agent, cwd=folder, model=model, effort=str(effort or ""))
+        if choice is not None:
+            session.agents[model] = agent
+        self._sessions[session_id] = session
+        if isinstance(agent, Kept):
+            for request, reply in agent.history():
+                self._say(session, request, "user_message_chunk")
+                self._say(session, reply)
+        return self._offered(session) if choice is not None else {}
 
     def _offered(self, session: _Session) -> dict[str, Any]:
         """Return the session's options and its model list, as the app shows them."""
@@ -831,6 +941,7 @@ class AcpServer:
         )
         try:
             reply = session.agent.handle(text, hooks, pictures=pictures)
+            self._keep(session)
             if not run.cancel.is_set():
                 self._finish(session, run, reply)
                 self._flush(session, run)  # what came while it was answering
@@ -921,6 +1032,20 @@ class AcpServer:
                 question.answered.set()
 
 
+def _prune(store: Path) -> None:
+    """Keep only the newest `MAX_KEPT` sessions' files in `store`."""
+    try:
+        metas = sorted(
+            (p for p in store.glob("jarvis-*.json") if SESSION_ID.fullmatch(p.stem)),
+            key=lambda p: p.stat().st_mtime,
+        )
+        for old in metas[: max(0, len(metas) - MAX_KEPT)]:
+            for path in store.glob(f"{old.stem}.*"):
+                path.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("old sessions could not be removed: %s", exc)
+
+
 def _words(blocks: list[dict[str, Any]]) -> str:
     """Return the text of a prompt's text blocks, joined."""
     return "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
@@ -999,6 +1124,7 @@ def serve(  # ruff: ignore[too-many-arguments] - what one connection is given
     pusher: Pusher | None = None,
     record: Callable[..., None] | None = None,
     models: Sequence[ModelChoice] = (),
+    store: Path | None = None,
 ) -> int:
     """Serve one ACP connection over `source` and `out`; return the exit code (0 at its end).
 
@@ -1015,6 +1141,7 @@ def serve(  # ruff: ignore[too-many-arguments] - what one connection is given
         pusher=pusher,
         record=record,
         models=models,
+        store=store,
     )
     server.serve(source)
     return 0

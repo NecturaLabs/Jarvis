@@ -1430,6 +1430,18 @@ class _NormalSession:
         """Think at `level` from the next request on."""
         self._agent.set_thinking(_at_effort(self._section, level))
 
+    def save(self, path: Path) -> None:
+        """Keep the conversation in `path`."""
+        self._agent.memory.save(path)
+
+    def load(self, path: Path) -> bool:
+        """Go on from the conversation kept in `path`."""
+        return self._agent.memory.load(path)
+
+    def history(self) -> list[tuple[str, str]]:
+        """Return the remembered turns as (request, reply)."""
+        return [(turn.request, turn.reply) for turn in self._agent.memory.turns]
+
 
 class _CodingSession:
     """An agent whose first request waits for the coding model, and says how that went."""
@@ -1446,6 +1458,18 @@ class _CodingSession:
         """Think at `level` from the next request on."""
         self._effort = level
         self._agent.set_thinking(_at_effort(modes.effective(self._config, "coding").chat, level))
+
+    def save(self, path: Path) -> None:
+        """Keep the conversation in `path`."""
+        self._agent.memory.save(path)
+
+    def load(self, path: Path) -> bool:
+        """Go on from the conversation kept in `path`."""
+        return self._agent.memory.load(path)
+
+    def history(self) -> list[tuple[str, str]]:
+        """Return the remembered turns as (request, reply)."""
+        return [(turn.request, turn.reply) for turn in self._agent.memory.turns]
 
     def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
         """Answer `text` on the coding model; a switch that failed is the answer instead."""
@@ -1495,6 +1519,7 @@ def cmd_acp(args: argparse.Namespace) -> int:
         pusher=pusher,
         record=AuditLog(paths.audit_file(), tags={"via": "acp"}).record,
         models=_acp_models(cfg, coding_first=args.coding),
+        store=paths.state_dir() / "acp-sessions",
     )
 
 
