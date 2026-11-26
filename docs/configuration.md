@@ -10,9 +10,9 @@ Every setting lives in one TOML file, validated when Jarvis reads it. This page 
 | Config file | `~/.config/jarvis/config.toml` (`$XDG_CONFIG_HOME/jarvis/`) | `jarvis setup`, `jarvis pc-audio`, or by hand |
 | Strata profile (generated) | `~/.config/jarvis/strata-profile.json` | `jarvis setup` |
 | Jarvis's own Voxtype settings (generated) | `~/.config/jarvis/voxtype.toml`, and `voxtype-speech-test.toml` for `jarvis speech-test` | `jarvis run`, at each start; `jarvis speech-test` |
-| User units | `~/.config/systemd/user/jarvis.service` and `jarvis-strata.service` | `jarvis setup` |
+| User units | `~/.config/systemd/user/jarvis.service` and `jarvis-strata.service` | `jarvis setup`, `jarvis update` |
 | Strata API key, Spotify tokens, audit log, action count, reminders and scheduled requests, Strata log | `~/.local/state/jarvis/` (`$XDG_STATE_HOME/jarvis/`): `strata.env`, `spotify-token.json`, `audit.jsonl` (and five older `audit.jsonl.1` to `.5`), `actions.json`, `schedule.json` (and its `schedule.json.lock`), `strata.log` | Jarvis; the key, token, log, count and jobs files are mode 0600 |
-| Wake, VAD and voice model files | `data_dir`, default `~/.local/share/jarvis/` | you; see [models.md](models.md) |
+| Wake, VAD and voice model files | `data_dir`; the installer sets it to `$XDG_STATE_HOME/jarvis/models` on a fresh install | `uv run tools/get_models.py` or [manual model setup](models.md) |
 
 [`config.example.toml`](../config.example.toml) in the repository lists every key at its default, with no
 personal values: copy it to `~/.config/jarvis/config.toml` and change what you need. A missing config file
@@ -29,7 +29,7 @@ current file. The running voice service reads it once, when it starts.
   run `jarvis restart`.
 - `strata` keys: run `jarvis restart`. It writes Strata's profile and unit from the config, restarts
   Strata when either changed since Strata started, and otherwise leaves a running Strata, and its loaded
-  model, alone. Only `jarvis setup` writes the voice service's unit, and until it has run, restart writes
+  model, alone. Setup and updates write the voice service's unit. Until setup has run, restart writes
   nothing. A config it cannot read, or a file it cannot write, is said and the voice service restarts
   anyway. An empty `model.base_url` follows
   Strata's port; a saved URL that only repeated that port is dropped when the file is read, and
@@ -47,6 +47,28 @@ changed default in a later version reaches you.
 |---|---|---|---|
 | `schema_version` | `1` | `1` | File format version. Any other value is refused. |
 | `data_dir` | `~/.local/share/jarvis` | path | Where the wake word, VAD and voice model files live. `jarvis setup --data-dir`. |
+
+## Update
+
+| Key in `[update]` | Default | What it does |
+|---|---|---|
+| `branch` | `main` | Release branch. The installed checkout must have this branch checked out, tracking the same branch on a named Git remote. |
+| `auto` | `false` | Allows the automatic update timer to apply updates. Use `jarvis update --auto on` to create and enable it, or `jarvis update --auto off` to disable and remove it. |
+
+Run `jarvis update` to fetch and preview the release commits and file changes.
+`jarvis update --apply` fast-forwards a clean checkout, syncs the checkout's `.venv` from the lockfile,
+and regenerates its Strata profile and user units when needed. It restarts a running voice service
+only when idle, leaves stopped services stopped and keeps a running Strata if its settings are unchanged.
+If validation or service startup fails, it restores the previous commit, environment and generated
+files. If another program edits the checkout during an update, rollback can stop and report the
+previous commit for manual recovery.
+
+The timer checks daily with up to two hours of randomized delay. Update attempts go to the local
+audit log, with errors and applied revisions also in the timer's systemd journal. `jarvis doctor`
+shows availability as of the last fetch, automatic update settings and the last audit result.
+`jarvis doctor --no-service` checks the installation before the services are enabled.
+Use `--essential` to report any Spotify login problems as notes.
+See [ADR 0019](adr/0019-install-and-update.md) for the release trust and rollback boundaries.
 
 ## `[model]`: how Jarvis talks to Strata
 

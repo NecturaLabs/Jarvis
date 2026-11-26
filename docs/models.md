@@ -331,7 +331,8 @@ the sentences before and after it can.
 - Kokoro-82M on ONNX Runtime, 24 kHz output. Jarvis's own `src/jarvis/kokoro.py` runs it; the default voice is
   `bm_george` (a name starting with `b` uses British English phonemes, otherwise American).
 - Files, under `<data_dir>/voices/kokoro/`: `kokoro-v1.0.onnx` and `voices-v1.0.bin` from the kokoro-onnx
-  `model-files-v1.1` release. `jarvis doctor` checks their sha256 against the pinned release.
+  `model-files-v1.1` release. `uv run tools/get_models.py` fetches them and verifies their size and SHA-256.
+  `jarvis doctor` identifies the release by hash.
 - Phonemes come from espeak-ng, whose library and data ship inside the `piper-tts` wheel, so the Piper package
   is installed and imported even when you use Kokoro. Raw espeak symbols are what the kokoro-onnx package feeds
   too. Kokoro was trained on the symbols of misaki, which rewrites espeak's (for example `eɪ` to `A`, `aɪ` to
@@ -343,7 +344,7 @@ the sentences before and after it can.
   public-domain audio, audio under permissive licences (Apache, MIT and the like) and synthetic audio from
   closed TTS models; two of its datasets are CC BY: Koniwa `tnc` (CC BY 3.0) and SIWIS (CC BY 4.0). The ONNX
   export and `voices-v1.0.bin` come from [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx), MIT. Jarvis
-  ships none of these files; you download them.
+  ships none of these files.
 - Time to first audio, measured on 2026-11-21 on the reference machine (Ryzen 7 9800X3D, desktop load about 2.5): one
   first sentence of a typical reply (one to nine words) took a median 0.24 s to synthesize and trim, 0.28 s at
   the 90th percentile and 0.30 s at most, over 23 sentences, with `bm_george` and with `bm_fable` alike. The first
@@ -364,6 +365,11 @@ the sentences before and after it can.
   (`docs/adr/0006-gpl-licence.md`).
 
 ## Wake word and end of speech
+
+`uv run tools/get_models.py` fetches and verifies the default wake word from the LiveKit 2.1.3 release
+and Silero VAD from v6.2.3. It leaves a file at the destination untouched if it differs from the
+pin. Run it again to continue an interrupted download, or check the installed files with
+`jarvis doctor`.
 
 - **Wake word:** the LiveKit `hey_jarvis` model, run by `livekit-wakeword` 2.1.3 on CPU, at
   `<data_dir>/wake/hey_jarvis.onnx`. Threshold: `audio.wake_threshold`, or its own in

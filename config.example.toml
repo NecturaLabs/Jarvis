@@ -6,6 +6,11 @@ schema_version = 1
 # data_dir: default $XDG_DATA_HOME/jarvis (~/.local/share/jarvis); give an absolute path to change it.
 
 # How Jarvis talks to its model, the local Strata server. Empty base_url: Strata's own port.
+[update]
+branch = "main"
+# Use jarvis update --auto on or off to manage the user timer.
+auto = false
+
 [model]
 base_url = ""
 model = "jarvis"

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
 
+from jarvis import modes
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.audio import (
     FRAME,
@@ -353,6 +354,7 @@ class VoiceLoop:
         after_sleep: Callable[[], None] = lambda: None,
         keys: ConfirmKey | None = None,
         due: Callable[[], Sequence[Due]] = tuple,
+        schedule_ready: Callable[[], bool] = lambda: True,
     ) -> None:
         """Wire the loop to its parts.
 
@@ -403,6 +405,7 @@ class VoiceLoop:
         self._locked = locked
         self._keys = keys
         self._due = due
+        self._schedule_ready = schedule_ready
         self._due_failed = False  # the last look at the due jobs failed (logged once)
         self._held: list[tuple[Due, float]] = []  # due jobs waiting for dictation to end, and when
         self._asleep_s = asleep_s
@@ -1045,10 +1048,15 @@ class VoiceLoop:
 
     def _served_due(self) -> bool:
         """Serve each job whose time came, if any; return whether there was one."""
-        due = self._take_due()
-        for item in due:
-            self._requests += 1
-            self._serve(functools.partial(self._run_due, item))
+        if not self._held and not self._schedule_ready():
+            return False
+        with modes.voice_request() as admitted:
+            if not admitted:
+                return False
+            due = self._take_due()
+            for item in due:
+                self._requests += 1
+                self._serve(functools.partial(self._run_due, item))
         if not due:
             return False
         self._mic.drain()
@@ -1349,7 +1357,7 @@ class VoiceLoop:
                 if self._ignored_while_locked("a PC-audio request"):
                     continue
                 self._requests += 1
-                self._serve(functools.partial(self._answer_pc, pc_request))
+                self._serve_if_admitted(functools.partial(self._answer_pc, pc_request))
                 self._mic.drain()
                 continue
             if self._served_due():
@@ -1362,5 +1370,10 @@ class VoiceLoop:
                     continue
                 wake_at = self._clock()
                 log.info("wake word")
-                self._serve(functools.partial(self.handle_wake, wake_at))
+                self._serve_if_admitted(functools.partial(self.handle_wake, wake_at))
                 self._mic.drain()
+
+    def _serve_if_admitted(self, request: Callable[[], None]) -> None:
+        with modes.voice_request() as admitted:
+            if admitted:
+                self._serve(request)

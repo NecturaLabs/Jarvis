@@ -313,11 +313,30 @@ class Answering:
 
 @contextlib.contextmanager
 def _nobody_answering() -> Generator[bool]:
-    """Keep requests from beginning while held; yield False when one is in flight already."""
-    fd = _open_lock(_answering_file())
+    with _try_lock(_answering_file(), fcntl.LOCK_EX) as free:
+        yield free
+
+
+@contextlib.contextmanager
+def voice_request() -> Generator[bool]:
+    """Mark the voice request from capture through playback, unless maintenance is underway."""
+    with _try_lock(paths.state_dir() / "voice-request.lock", fcntl.LOCK_SH) as admitted:
+        yield admitted
+
+
+@contextlib.contextmanager
+def voice_idle() -> Generator[bool]:
+    """Keep voice requests out while applying an update; yield False if one was admitted."""
+    with _try_lock(paths.state_dir() / "voice-request.lock", fcntl.LOCK_EX) as idle:
+        yield idle
+
+
+@contextlib.contextmanager
+def _try_lock(path: Path, mode: int) -> Generator[bool]:
+    fd = _open_lock(path)
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, mode | fcntl.LOCK_NB)
         except BlockingIOError:
             yield False
         else:

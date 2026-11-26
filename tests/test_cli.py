@@ -196,7 +196,7 @@ def voxtype_lists_no_models(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _doctor_config(data: Path) -> None:
-    config.save(config.Config(data_dir=data))
+    config.save(config.Config(data_dir=data, spotify=config.SpotifyConfig(client_id="abc")))
 
 
 def _doctor_lines(capsys: pytest.CaptureFixture[str]) -> list[str]:
@@ -1450,11 +1450,11 @@ def test_restart_clears_a_failed_state_before_starting_anything(
 
 
 def test_a_strata_start_time_is_read_to_the_microsecond() -> None:
-    assert cli.parse_systemd_time("Sat 2026-11-21 04:40:30.157367 UTC") == pytest.approx(
+    assert services.parse_systemd_time("Sat 2026-11-21 04:40:30.157367 UTC") == pytest.approx(
         1795236030.157367
     )
-    assert cli.parse_systemd_time("") is None
-    assert cli.parse_systemd_time("n/a") is None
+    assert services.parse_systemd_time("") is None
+    assert services.parse_systemd_time("n/a") is None
 
 
 def test_files_written_just_before_strata_started_in_the_same_second_are_no_change(
@@ -2545,3 +2545,35 @@ def test_restart_is_made_when_the_modes_lock_cannot_be_opened(
 
     assert ("restart", "jarvis.service") in calls
     assert "lock" in capsys.readouterr().out
+
+
+def test_doctor_treats_unconfigured_spotify_as_optional(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config.save(config.Config())
+    cli.main(["doctor"])
+    lines = _doctor_lines(capsys)
+    assert any(line.startswith("note") and "Spotify" in line for line in lines)
+    assert not any(line.startswith("FAIL") and "Spotify" in line for line in lines)
+
+
+def test_setup_reports_failed_systemd_reload(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing(args: list[str], **_options: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, 1)
+
+    monkeypatch.setattr(cli.subprocess, "run", failing)
+    run = engine_run_config(home)
+    install_engine(home / "data")
+    config.save(config.Config(strata=config.StrataConfig(vram_reserve_mib=12000)))
+
+    assert main(["setup", "--run-config", str(run), "--enable"]) != 0
+
+
+def test_essential_doctor_does_not_require_spotify_login(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config.save(config.Config(spotify=config.SpotifyConfig(client_id="abc")))
+    cli.main(["doctor", "--essential", "--no-service"])
+    lines = _doctor_lines(capsys)
+    assert any(line.startswith("note") and "Spotify login" in line for line in lines)
+    assert not any(line.startswith("FAIL") and "Spotify" in line for line in lines)

@@ -8,6 +8,15 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Install Jarvis with `install.sh` from a terminal or checkout. It checks prerequisites, uses the
+  locked environment, fetches the default wake word, VAD and Kokoro files with SHA-256 verification
+  (`tools/get_models.py`, which you can also run yourself),
+  and starts the user services when requested.
+- Preview and apply release updates with `jarvis update`. It fast-forwards a clean checkout, defers
+  while the voice service is busy and restores the previous version if validation or startup fails. A daily
+  user timer is available with `jarvis update --auto on` ([ADR 0019](docs/adr/0019-install-and-update.md)).
+- Set up Jarvis without Spotify. Tools and background Spotify refresh stay off until a client ID is set.
+
 - Coding mode, for programming work ([ADR 0017](docs/adr/0017-coding-mode.md)): more model calls, longer
   replies, more thinking and a larger context, a part on programming in the prompt, and a model of its own
   when `strata.coding_run_config` names one (`jarvis setup --coding-run-config`). `jarvis model` shows the mode

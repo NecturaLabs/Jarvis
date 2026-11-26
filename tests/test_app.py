@@ -804,3 +804,13 @@ def test_a_setting_for_pc_audio_listen_is_known_while_pc_audio_is_off() -> None:
     config = Config.model_validate({"boundaries": {"classes": {"pc_audio_listen": "deny"}}})
 
     assert unknown_overrides(config, []) == []
+
+
+def test_build_without_spotify_does_not_offer_spotify_tools() -> None:
+    ensure_api_key(strata_key_file())
+    cfg = Config()
+
+    jarvis = build(cfg)
+
+    assert jarvis.ops is None
+    assert not app_module.spotify_operations(cfg)

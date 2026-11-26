@@ -308,7 +308,7 @@ class Jarvis:
     agent: Agent
     model: StrataModel
     audit: AuditLog
-    ops: SpotifyOps
+    ops: SpotifyOps | None
     hint: Callable[[], str]
     switcher: modes.Switcher | None = None
     modes: AgentModes | None = None  # the chat tells it when its settings change (`restyle`)
@@ -638,8 +638,14 @@ def switched_off(config: Config) -> set[str]:
 
 def spotify_operations(config: Config) -> list[Operation]:
     """Return the Spotify operations, without reaching Spotify (for listing what there is)."""
+    return _spotify_ops(config).operations() if config.spotify.client_id else []
+
+
+def _spotify_ops(config: Config) -> SpotifyOps:
     tokens = TokenStore(config.spotify.client_id, spotify_token_file())
-    return SpotifyOps(SpotifyApi(tokens), config.spotify).operations()
+    return SpotifyOps(
+        SpotifyApi(tokens, library_ttl_s=config.spotify.library_refresh_s), config.spotify
+    )
 
 
 def unknown_overrides(config: Config, spotify: list[Operation]) -> list[str]:
@@ -734,29 +740,24 @@ def build(
             `boundaries.classes` names an operation that does not exist (a typo would otherwise
             leave it at its default class) or sets one below its lowest class.
     """
-    if not config.spotify.client_id:
-        msg = "no Spotify client ID in the config; run `jarvis setup`"
-        raise SetupError(msg)
     key = read_api_key(strata_key_file())
     if not key:
         msg = f"no Strata API key at {strata_key_file()}; run `jarvis setup`"
         raise SetupError(msg)
     model = mode_model(config, key)
-    tokens = TokenStore(config.spotify.client_id, spotify_token_file())
-    ops = SpotifyOps(
-        SpotifyApi(tokens, library_ttl_s=config.spotify.library_refresh_s), config.spotify
-    )
+    ops = _spotify_ops(config)
+    available = ops.operations()
     tags = {"via": via} if via else {}
     if session:
         tags["session"] = session
     audit = AuditLog(audit_file(), tags=tags or None)
-    if unknown := unknown_overrides(config, ops.operations()):
+    if unknown := unknown_overrides(config, available):
         msg = (
             f"boundaries.classes names no operation: {', '.join(unknown)}; "
             "fix the name or remove it"
         )
         raise SetupError(msg)
-    if low := overrides_below_floor(config, ops.operations()):
+    if low := overrides_below_floor(config, available):
         allowed = "; ".join(
             f"{name} takes only {' or '.join(f'"{c}"' for c in classes)}"
             for name, classes in low.items()
@@ -782,7 +783,7 @@ def build(
             off.add(SWITCH_MODEL)
         registry = channel_registry(
             cfg,
-            ops.operations(),
+            available if cfg.spotify.client_id else [],
             limits,
             channel,
             voice_running=voice_service_running if elsewhere else lambda: True,
@@ -827,8 +828,10 @@ def build(
         agent,
         model,
         audit,
-        ops,
-        lambda: speech_hint(config, normal.registry, ops.artist_names()),
+        ops if config.spotify.client_id else None,
+        lambda: speech_hint(
+            config, normal.registry, ops.artist_names() if config.spotify.client_id else []
+        ),
         switcher,
         agent_modes,
     )

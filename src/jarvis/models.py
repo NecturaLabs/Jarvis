@@ -2,7 +2,8 @@
 
 `jarvis doctor` hashes each file it locates and looks the digest up here. A digest is listed only
 when it was confirmed against the upstream release itself; a file that matches nothing is not an
-error (a newer release, a different build), only a note.
+error (a newer release, a different build), only a note. A release `tools/get_models.py`
+fetches also names its size and where it goes in `data_dir`; the tool holds where it is published.
 """
 
 import hashlib
@@ -25,6 +26,9 @@ class KnownModel:
     version: str  # the release's version or tag
     sha256: str
     licence: str  # SPDX identifier
+    size: int = 0  # its size in bytes, for a release `tools/get_models.py` fetches
+    file: str = ""  # where it goes under `data_dir`, for a release that tool fetches
+    url: str = ""  # set by that tool from its own table (`get_models.URLS`), never here
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +46,8 @@ KNOWN_MODELS: tuple[KnownModel, ...] = (
         version="2.1.3",
         sha256="8b554c50809888ac14f67fa21acc3bd85e58f5678ee4f2be5d0041f9a2e62843",
         licence="Apache-2.0",
+        size=7_406_177,
+        file="wake/hey_jarvis.onnx",
     ),
     KnownModel(
         role="vad",
@@ -49,6 +55,8 @@ KNOWN_MODELS: tuple[KnownModel, ...] = (
         version="6.2.3",
         sha256="1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
         licence="MIT",
+        size=2_327_524,
+        file="vad/silero_vad.onnx",
     ),
     KnownModel(
         role="kokoro-model",
@@ -56,6 +64,8 @@ KNOWN_MODELS: tuple[KnownModel, ...] = (
         version="model-files-v1.1",
         sha256="beb0d1848dee9a49da392cc3df26958d46cfa35d321edf434f52949153f0df3a",
         licence="Apache-2.0",
+        size=325_505_369,
+        file="voices/kokoro/kokoro-v1.0.onnx",
     ),
     KnownModel(
         role="kokoro-voices",
@@ -63,6 +73,8 @@ KNOWN_MODELS: tuple[KnownModel, ...] = (
         version="model-files-v1.1",
         sha256="bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
         licence="Apache-2.0",
+        size=28_214_398,
+        file="voices/kokoro/voices-v1.0.bin",
     ),
     KnownModel(
         role="vision",

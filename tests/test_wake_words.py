@@ -323,7 +323,7 @@ def test_the_doctor_fails_when_no_wake_word_that_is_on_has_a_file() -> None:
 
     assert not check[0]
     assert check[1] == f"wake word files: none found in {config.load().data_dir / 'wake'}"
-    assert check[2] == "see docs/models.md"
+    assert check[2] == cli.FETCH_MODELS
 
 
 def test_the_speakers_own_voice_check_listens_with_the_same_wake_words(

@@ -12,6 +12,7 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -140,10 +141,20 @@ StartLimitBurst=5
 """
 
 
-def _environment(name: str, value: str) -> str:
+def environment_line(name: str, value: str) -> str:
     """Return an `Environment=` line (specifiers doubled; `$` is literal there)."""
     assignment = f"{name}={_checked(value, name).replace('%', '%%')}"
     return f"Environment={_quoted(assignment) if _NEEDS_QUOTES.search(assignment) else assignment}"
+
+
+def xdg_environment() -> str:
+    """Keep settings, state and model paths consistent between the terminal and user units."""
+    values = {
+        "XDG_CONFIG_HOME": paths.xdg_config_home(),
+        "XDG_DATA_HOME": paths.xdg_data_home(),
+        "XDG_STATE_HOME": paths.state_dir().parent,
+    }
+    return "".join(f"{environment_line(name, str(value))}\n" for name, value in values.items())
 
 
 def _path(value: object, what: str) -> str:
@@ -475,6 +486,26 @@ def strata_profile(config: Config) -> dict[str, object]:
     return profile
 
 
+def parse_systemd_time(text: str) -> float | None:
+    """Return a `systemctl show --timestamp=us+utc` time as Unix time, or None when unset."""
+    stamp = text.strip()
+    if not stamp.endswith(" UTC"):
+        return None
+    try:
+        when = datetime.strptime(
+            stamp.removesuffix(" UTC") + " +0000", "%a %Y-%m-%d %H:%M:%S.%f %z"
+        )
+    except ValueError:
+        return None
+    return when.timestamp()
+
+
+def strata_changed_since(started: float) -> bool:
+    """Return whether Strata's profile or unit was rewritten after it started."""
+    files = (strata_profile_file(), unit_dir() / STRATA_UNIT)
+    return any(path.exists() and path.stat().st_mtime > started for path in files)
+
+
 def _write_if_changed(path: Path, text: str) -> None:
     """Write `text` atomically unless the file already holds it.
 
@@ -542,8 +573,8 @@ After=graphical-session.target
 {_START_LIMIT}{condition}
 [Service]
 Type=exec
-{_environment("STRATA_DATA_DIR", str(s.home))}
-{_environment("XDG_DATA_HOME", str(s.components_parent))}
+{environment_line("STRATA_DATA_DIR", str(s.home))}
+{environment_line("XDG_DATA_HOME", str(s.components_parent))}
 Environment=PIPEWIRE_REMOTE=/nonexistent
 Environment=PULSE_SERVER=unix:/nonexistent
 EnvironmentFile={_path(key_file, "key file")}
@@ -573,7 +604,7 @@ Wants={STRATA_UNIT}
 {_START_LIMIT}
 [Service]
 Type=exec
-ExecStart={exe} run
+{xdg_environment()}ExecStart={exe} run
 Restart=on-failure
 RestartPreventExitStatus={_SETUP_ERROR}
 RestartSec=5

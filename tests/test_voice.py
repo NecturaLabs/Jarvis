@@ -10,7 +10,7 @@ import httpx
 import numpy as np
 import pytest
 
-from jarvis import voice
+from jarvis import modes, voice
 from jarvis.agent import MODEL_MISSING, Declined, NoReason
 from jarvis.agent import Agent as RealAgent
 from jarvis.app import no_action_operation
@@ -3671,3 +3671,26 @@ def test_a_jobs_file_that_cannot_be_read_is_logged_once_and_listening_goes_on(
 
     assert agent.calls == [("pause the music", Origin.OWNER_SPEECH)]
     assert len([r for r in caplog.records if "scheduled requests" in r.getMessage()]) == 1
+
+
+def test_playback_and_capture_are_busy_for_updates() -> None:
+    idle_checks: list[bool] = []
+
+    def probe() -> None:
+        with modes.voice_idle() as idle:
+            idle_checks.append(idle)
+
+    class ProbingSpeaker(Speaker):
+        @override
+        def wait(self) -> None:
+            probe()
+            super().wait()
+
+    speaker = ProbingSpeaker()
+    _run(_loop(Agent(), Mic(WAKE, probe, *REQUEST[1:]), speaker))
+
+    assert speaker.said
+    assert idle_checks
+    assert not any(idle_checks)
+    with modes.voice_idle() as idle:
+        assert idle

@@ -79,51 +79,74 @@ Jarvis is pre-1.0 software; see [Status](#status).
 Not built yet: switching workspaces and running Omarchy's commands. The plan marks each
 as planned.
 
-## Requirements
+## Install
 
-- Omarchy on Arch Linux with PipeWire (`pw-record`, `pw-play`, `pw-dump` to know what else plays, and `wpctl` for the
-  PC's volume) and systemd user services. `playerctl` (`pacman -S playerctl`) for other media players, if wanted.
-- Voxtype as the dictation backend, with the speech model you set in `audio.transcribe_model` downloaded (a
-  Whisper model by default; `audio.transcribe_engine` picks another). Voxtype's GPU build
-  (`sudo voxtype setup gpu --enable`) transcribed a 4.6 s request in 0.74 s against 1.77 s on the CPU build
-  on the reference machine, and spares the CPU while a game runs ([docs/models.md](docs/models.md#speech-to-text-voxtype)).
-- Python 3.14 and uv.
-- Strata and a model it runs, set up with `strata launch` (which writes the run config Jarvis serves).
-  Built and measured on an RX 7900 XT with 64 GB of RAM; what each measured model holds in RAM and VRAM is
-  in [docs/models.md](docs/models.md).
-- Spotify Premium and your own Spotify developer app (a client ID; there is no client secret).
-- The wake word, VAD and voice model files, placed under the data folder ([docs/models.md](docs/models.md)).
+Use an Omarchy desktop session on Arch Linux with PipeWire, WirePlumber, Voxtype, Git, uv and
+system Python 3.14. Prepare the two models the installer leaves to their own tools:
 
-## Set up
+1. Run `voxtype setup model` and download Whisper `small.en`, the default speech model.
+2. Install [Strata](https://github.com/niko1221/strata), run `strata launch`, and choose a model your
+   GPU, RAM and disk can handle. When Strata writes `strata-<model>.json`, stop the server it started
+   with `strata launch --stop`. Jarvis starts its own. See [model sizes and memory](docs/models.md).
 
 ```sh
-uv sync
-strata launch               # once: pick the model; it downloads it and writes its run config
-uv run jarvis setup --run-config <Strata's install folder>/strata-<model>.json \
-    --spotify-client-id <your app's client ID>
-uv run jarvis spotify-login     # prints the redirect URI your Spotify app must list, then opens the login
-uv run jarvis setup --enable    # writes and starts the user units
-uv run jarvis doctor            # one line per check, with its fix; never loads the model
+curl -fsSL https://raw.githubusercontent.com/NecturaLabs/Jarvis/main/install.sh | bash
 ```
 
-`strata launch` starts a server of its own once the model is ready: stop it (`strata launch --stop`), since
-Jarvis runs its own. `jarvis setup` writes the config, the Strata profile, the Strata API key and two systemd user units
-(`jarvis.service` and `jarvis-strata.service`), and keeps every value already set unless you pass it again.
-Use `--data-dir`, `--strata-home`, `--strata-components-parent` and `--mic` for the other locations and the
-microphone. The config file and every key are in [docs/configuration.md](docs/configuration.md);
-[`config.example.toml`](config.example.toml) shows them all at their defaults. Your own config stays in
-`~/.config/jarvis/`, outside the repository.
+The installer checks the required commands and prints how to install any that are missing. It clones
+the `main` release branch, syncs the locked Python environment, and runs `jarvis setup`,
+`uv run tools/get_models.py` and checks the installation with `jarvis doctor`. The tool downloads and checks the SHA-256 of the default
+wake word, Silero VAD and Kokoro files (about 347 MiB combined).
 
-The model server keeps the model out of swap and asks to lock it in RAM (`strata.keep_in_ram`). On a stock
-systemd your user services may lock only 8 MiB, so the lock needs one root drop-in;
-[configuration](docs/configuration.md#keeping-the-model-in-ram) has it, and `jarvis doctor` notes when it is
-missing. `jarvis doctor` also checks every program Jarvis runs and notes a Spotify login that predates a
-permission Jarvis now asks for.
+The default checkout is `${XDG_STATE_HOME:-$HOME/.local/state}/jarvis/checkout`. Set
+`JARVIS_INSTALL_DIR` or pass `--install-dir PATH` to choose another disk or use a clean existing checkout
+of the same repository and branch. New installs put Jarvis's model assets beside it in
+`${XDG_STATE_HOME:-$HOME/.local/state}/jarvis/models`. Use `--data-dir PATH` to change that location.
+A re-run keeps saved settings unless you pass new ones, checks for a release update, and keeps model
+files already present.
 
-The units start with your desktop session and stop with it. Jarvis keeps listening at the lock screen
-(`audio.listen_when_locked` turns that off), opens the microphone again after PipeWire restarts or the
-microphone is unplugged and plugged back, and listens afresh after a suspend. What each change does is in
-[docs/playbook/session-transitions.md](docs/playbook/session-transitions.md).
+Jarvis keeps the model configured on a previous run. On first install, it uses the sole
+`strata-*.json` it finds in Strata's usual `install/` folder. If there are several, or Strata is installed
+elsewhere, use `--run-config PATH` or `JARVIS_RUN_CONFIG`. A prompt uses the terminal when one is
+available. Pass options through `bash -s --` when piping. The same options work with `bash install.sh`
+from a checkout.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/NecturaLabs/Jarvis/main/install.sh |
+  bash -s -- --non-interactive --run-config /path/to/strata-model.json --enable
+```
+
+Use `--dry-run` to print the commands or `--help` for the full list of options and environment
+variables. If Strata's model is set to use all available VRAM (`--expert-cache auto`), pass
+`--strata-vram-reserve-mib MIB` to leave room for the desktop and other programs.
+[Configuration](docs/configuration.md#strata-how-the-jarvis-strata-service-runs-the-model) explains how to choose it.
+
+Pass `--enable` when you want both services to start now and with future desktop sessions. If you
+skipped that flag, use the checkout path printed by the installer and run:
+
+```sh
+cd "${XDG_STATE_HOME:-$HOME/.local/state}/jarvis/checkout"
+.venv/bin/jarvis setup --enable
+.venv/bin/jarvis doctor --wait
+```
+
+Say “Hey Jarvis” and ask a question. Use `.venv/bin/jarvis status` to see whether it is listening
+and `.venv/bin/jarvis logs` if it does not respond. The first model load may take a while.
+[Configuration](docs/configuration.md#keeping-the-model-in-ram) covers the optional memory lock and
+[session transitions](docs/playbook/session-transitions.md) covers sleep and microphone changes.
+
+Spotify is optional. To connect it, use a Spotify Premium account and your own developer app.
+Run `.venv/bin/jarvis setup --spotify-client-id ID`, then `.venv/bin/jarvis spotify-login` and follow
+the printed redirect URI instructions. Run `.venv/bin/jarvis restart` to pick it up in the running
+voice service. Other media players use `playerctl` (`sudo pacman -S playerctl` if wanted).
+
+### Update
+
+Run `.venv/bin/jarvis update` in the checkout for a preview and `.venv/bin/jarvis update --apply` to
+install the update. The updater refuses local edits and divergent branches, defers while Jarvis is
+handling a request, and restores the previous checkout if its checks or service restart fail.
+Automatic daily updates are off by default. Turn them on or off with
+`.venv/bin/jarvis update --auto on|off`. See [update settings](docs/configuration.md#update).
 
 ## Everyday commands
 
@@ -132,6 +155,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | Command | What it does |
 |---|---|
 | `jarvis setup` | Write the config, the Strata profile and the user units (`--enable` also starts them). |
+| `jarvis update` | Preview an update, install it with `--apply`, or manage the daily timer with `--auto on\|off`. |
 | `jarvis spotify-login` | Connect Jarvis to your Spotify account with PKCE (`--no-browser` prints the link to open yourself instead of opening a browser, then waits for the login). |
 | `jarvis start` / `stop` / `restart` | Start Jarvis and its model server, stop both (which frees the model), or restart Jarvis after a config change: the voice service restarts, a stopped model server starts, and a running one restarts only when its settings changed. |
 | `jarvis status` | Show what Jarvis is doing (idle, listening, thinking, speaking, paused, model loading or unavailable) and the model's state; `--json` prints one JSON object for a status bar. |

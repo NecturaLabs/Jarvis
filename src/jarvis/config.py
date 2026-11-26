@@ -640,6 +640,13 @@ class BoundariesConfig(_Section):
     actions_window_s: float = Field(default=600.0, ge=1, le=86400)
 
 
+class UpdateConfig(_Section):
+    """Which release branch Jarvis follows, and whether its timer may apply updates."""
+
+    branch: str = Field(default="main", pattern=r"^[A-Za-z0-9_][A-Za-z0-9_./-]*$")
+    auto: bool = False
+
+
 class Config(_Section):
     """The whole file."""
 
@@ -661,6 +668,7 @@ class Config(_Section):
     apps: AppsConfig = Field(default_factory=AppsConfig)
     shell: ShellConfig = Field(default_factory=ShellConfig)
     boundaries: BoundariesConfig = Field(default_factory=BoundariesConfig)
+    update: UpdateConfig = Field(default_factory=UpdateConfig)
 
     def strata_url(self) -> str:
         """Return the URL of the local Strata server, on its configured port."""

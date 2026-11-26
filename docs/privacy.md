@@ -39,8 +39,14 @@ Jarvis sends no telemetry and checks for no updates.
 
 ## What leaves your PC
 
-Nothing is sent until you ask for something that needs it. Spotify, once you have run
-`jarvis spotify-login` with your own Spotify developer app ([ADR 0005](adr/0005-local-only.md)):
+Installation downloads code from GitHub and locked packages from PyPI. `tools/get_models.py` (run by the installer) fetches
+the pinned GitHub model assets. `jarvis update` contacts the configured Git remote and applying an
+update may download locked packages. The daily timer does this after you opt in. These operations
+send their normal download requests and do not upload your Jarvis settings, audit log, audio or
+requests.
+
+Spotify, once you have run `jarvis spotify-login` with your own Spotify developer app
+([ADR 0005](adr/0005-local-only.md)):
 
 - `accounts.spotify.com`: the login (PKCE) and the token refresh.
 - `api.spotify.com`: playback commands, the volume, the device list, searches built from your words ("play
@@ -80,8 +86,9 @@ from ever running.
 
 ## Removing it
 
-- Delete `~/.local/state/jarvis/` to remove the audit log, the Strata log, the saved chat conversation, the
-  tokens and the key.
+- Disable the update timer with `jarvis update --auto off` and stop Jarvis before removing the
+  installation. The default installer puts the checkout and model assets under
+  `~/.local/state/jarvis/`, alongside the saved state. Remove only the folders you want to delete.
 - The service log is in the systemd journal, which keeps and drops it by its own limits (`journald.conf`, see
   `man journald.conf`). There is no way to remove only Jarvis's lines from it.
 - Remove Jarvis's access to your Spotify account on Spotify's account page, under apps.
