@@ -6,8 +6,9 @@ does not repeat them.
 
 Jarvis is one Python process, `jarvis run`, started as a systemd user unit. One thread owns the
 microphone and runs the whole request path: wake word, speech capture, transcription, the agent, the
-spoken reply. There is one agent and no subagents. The model is a separate service, Strata, on
-loopback. Every tool call goes through a typed operation and a policy decision before it runs, and
+spoken reply. There is one agent and no subagents. Strata runs as a separate service on loopback
+by default. It can also serve the model from another machine you own. Every tool call goes
+through a typed operation and a policy decision before it runs, and
 every step is written to an audit log. The tools are Spotify's, and the time, the weather, web search,
 Reddit and a headless browser (`web/`).
 
@@ -32,6 +33,13 @@ Reddit and a headless browser (`web/`).
  │ audio.py  Speaker ─▶ pw-play             │
  └──────────────────────────────────────────┘
 ```
+
+In remote mode the HTTP arrow leads to the owner's Strata backend, normally through an SSH
+tunnel. The client still owns wake, speech-to-text, the agent loop, policy, tools, audit and
+speech. It sends a bearer key and the model's conversation input, which can include tool results
+and pictures. Backend-only setup installs the Strata unit under the user's `default.target`.
+The remote voice unit has no dependency on Strata. See
+[ADR 0020](adr/0020-model-on-another-machine.md) and [privacy.md](privacy.md).
 
 ## Modules
 
@@ -65,7 +73,7 @@ All paths are under `src/jarvis/`. The tables say what a module owns and what it
 | `audit.py` | `AuditLog`: append-only JSONL, mode 0600, rotated at 5 MiB with five older generations kept (`.1` to `.5`). Every Jarvis process writes it under `flock` on the open log, so the size check, the rotation and the write are one step across processes: a full log is rotated once and no event is lost to another process's write. | Fail the caller; a write error goes to the service log. |
 | `app.py` | `build`: assembles the model client, Spotify, operations, prompt, audit log and agent from the config; the `no_action` operation; `stay_quiet` (voice only), refused in a request that read outside text; `think_harder`, offered when `thinking_max` is above `thinking`; the speech-to-text vocabulary hint. | Hold state of its own beyond the objects it returns. |
 | `prompts/core.md`, `prompts/voice.md`, `prompts/chat.md` | The shipped system prompt: what Jarvis does and how it acts (`core.md`), then how it replies, spoken (`voice.md`) or written in Markdown within the chat's reply budget (`chat.md`). `app.py` fills in the name, tone, skills and word budget. | Be the only guard: boundaries are enforced in code, not in this prompt. |
-| `prompts/skills/*.md`, `skills.py` | Jarvis's own skills: instructions for a kind of task (web research, game look-ups), listed by name and description in the prompt and read whole through the safe `read_skill` operation. | Read anything but the shipped skill files. |
+| `prompts/skills/*.md`, `skills.py` | Jarvis's skills: instructions for a kind of task, the shipped ones (web research, game look-ups) and the owner's own in `~/.config/jarvis/skills/` (the folder and each file theirs alone, no link followed, size-capped, read once per process; never readable or writable through the file operations; [ADR 0024](adr/0024-owner-skills.md)), listed by name and description in the prompt and read whole through the safe `read_skill` operation. | Read anything but the shipped skill files and the owner's skill folder, or widen what an operation may do. |
 | `osskills.py` | Omarchy's guides for agents (`/usr/share/omarchy/default/agents/skills/`): listed at start (real folders and Markdown files only, root's and writable by nobody else, each opened from `/` with no link followed; at most `MAX_CATALOG_CHARS` in all), shown in the prompt by each description's first sentence, and read one file at a time, in parts, through the safe `os_skill` operation as `os_skill` origin text. | Read a path the model wrote, follow a link, or treat the guides' commands as something Jarvis may run. |
 | `memory.py` | `Conversation`: the remembered turns and a summary of older ones, measured in estimated tokens against a budget (a message's tool calls counted with their arguments); with `memory_detail = "full"` a turn keeps its work, the tool calls and results between its request and reply as the model last read them, and the oldest work goes first when room runs short (`shed_work`); a turn that drew on outside text is kept as `<data>`; the chat's conversation is saved 0600 in the state folder between sessions. | Decide what is trusted: the agent marks outside turns and keeps side effects behind a yes while one is remembered. |
 
@@ -307,10 +315,11 @@ song, when SoulX-Singer is installed; `sing/soulx.py` through `audio.run_singer`
 to open (`open_app`, `pc/apps.py`) is started by Hyprland, not by Jarvis: Jarvis sends the command
 through Hyprland's socket.
 
-Strata is a different service, `jarvis-strata.service`. It listens on `127.0.0.1` with an API key
-that Jarvis reads from the state folder, and it serves only Jarvis. `jarvis.service` starts after it
-and loads the model at start. Health checks (`StrataModel.status`) never generate. The service
-units and profile come from `services.py`.
+Strata is a different service, `jarvis-strata.service`. By default it listens on `127.0.0.1` with an API key
+that Jarvis reads from the state folder, and it serves only Jarvis. In local mode `jarvis.service`
+starts after it and loads the model. The remote client uses `GET /v1/models` for health and
+capabilities and leaves model lifecycle control on the backend. Health checks never generate.
+The service units and profile come from `services.py`.
 
 ## Where state lives
 

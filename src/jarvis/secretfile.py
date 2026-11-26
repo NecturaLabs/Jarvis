@@ -3,6 +3,7 @@
 import errno
 import json
 import os
+import re
 import secrets
 import stat
 from typing import TYPE_CHECKING
@@ -56,15 +57,23 @@ def write_private_json(path: Path, value: dict[str, object]) -> None:
 
 
 KEY_VARIABLE = "STRATA_API_KEY"
+_BEARER_TOKEN = re.compile(r"[-a-zA-Z0-9._~+/]+=*")
+_MAX_BEARER_LENGTH = 4096
+MAX_KEY_INPUT = 65536  # the most of a key file `jarvis setup --remote` reads
 
 
-def read_api_key(path: Path) -> str | None:
-    """Return the key from a private `STRATA_API_KEY=...` environment file, or None.
+def remote_key(text: str | None) -> str | None:
+    """Read one bearer token, supplied raw or as the backend's environment line."""
+    value = (text or "").strip().removeprefix(f"{KEY_VARIABLE}=")
+    return value if len(value) <= _MAX_BEARER_LENGTH and _BEARER_TOKEN.fullmatch(value) else None
+
+
+def _key_line(text: str | None) -> str | None:
+    """Return the value of the first `STRATA_API_KEY=...` line of an environment file's text.
 
     A value in one pair of single or double quotes is read without them, as systemd reads the
     same file for Strata, so both send the same key.
     """
-    text = read_private(path)
     for line in (text or "").splitlines():
         name, sep, value = line.partition("=")
         value = value.strip()
@@ -73,6 +82,26 @@ def read_api_key(path: Path) -> str | None:
         if sep and name.strip() == KEY_VARIABLE and value:
             return value
     return None
+
+
+def read_api_key(path: Path) -> str | None:
+    """Return the key from a private `STRATA_API_KEY=...` environment file, or None."""
+    return _key_line(read_private(path))
+
+
+def remote_key_input(text: str) -> str | None:
+    """Read the key from what `jarvis setup --remote` is given: a whole backend key file or a token.
+
+    The backend keeps its key in an environment file whose `STRATA_API_KEY=` line can sit among
+    other lines, so that line is found wherever it is. Without one, a lone token is the key.
+    """
+    if len(text) > MAX_KEY_INPUT:
+        return None
+    value = _key_line(text)
+    if value is not None:
+        return remote_key(value)
+    lines = [line for line in text.splitlines() if line.strip()]
+    return remote_key(lines[0]) if len(lines) == 1 else None
 
 
 def ensure_api_key(path: Path) -> str:

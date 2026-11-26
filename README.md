@@ -57,6 +57,9 @@ Jarvis is pre-1.0 software; see [Status](#status).
   something shows up in a window or on the screen, and while `jarvis run` is up it checks now and
   then (every 20 seconds by default, for two hours by default, two watches at most) and says so;
   each check uses the GPU ([ADR 0021](docs/adr/0021-screen-watch.md)).
+- **Your own skills:** put instructions for a task of yours in `~/.config/jarvis/skills/<name>.md`, opening
+  with a `---` block holding a `description:` line, and Jarvis reads them when a request needs them. They
+  guide what it does and never let it do more than it otherwise could.
 - **Omarchy questions:** Jarvis answers questions about Omarchy (settings, themes, key bindings, crashes,
   building an app) from the guides Omarchy ships in `/usr/share/omarchy/default/agents/skills/`. It reads
   them as reference text and never runs a command they contain.
@@ -165,6 +168,20 @@ install the update. The updater refuses local edits and divergent branches, defe
 handling a request, and restores the previous checkout if its checks or service restart fail.
 Automatic daily updates are off by default. Turn them on or off with
 `.venv/bin/jarvis update --auto on|off`. See [update settings](docs/configuration.md#update).
+
+### Model on another machine
+
+Jarvis runs everything on one PC by default. To move model inference to a machine you own, install
+Strata and prepare its model there. With `jarvis` on both machines and SSH access to the backend,
+run this on the backend, substituting your run-config path and SSH destination:
+
+```sh
+jarvis setup --backend --run-config /path/to/strata-model.json --ssh-target model-box --enable
+```
+
+Run the printed command on the client. It opens an encrypted tunnel, copies the key over SSH and
+starts the voice service. The client still needs its audio files and Spotify setup. See
+[configuration](docs/configuration.md#model-on-another-machine) for direct HTTPS and troubleshooting.
 
 ## Everyday commands
 

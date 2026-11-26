@@ -3,14 +3,18 @@
 import json
 import math
 import queue
+import re
+import ssl
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
+from urllib.parse import urlsplit
 
 import httpx
 
+from jarvis.config import STRATA_CONTEXT_MAX, STRATA_CONTEXT_MIN, private_endpoint
 from jarvis.jsonutil import obj, objs
 
 if TYPE_CHECKING:
@@ -28,6 +32,14 @@ WARM_RETRY_S = 2.0
 RETRY_AFTER_RANGE_S = (1.0, 30.0)  # what a server's `Retry-After` is clamped to while warming
 SERVICE_UNAVAILABLE = 503
 DEFAULT_MAX_TOKENS = 400
+REMOTE_CONNECT_S = 2.0
+# A remote probe is one attempt of at most REMOTE_CONNECT_S + REMOTE_PROBE_READ_S, and its answer,
+# good or bad, is reused for REMOTE_PROBE_CACHE_S, so a backend that is down costs a turn one wait.
+REMOTE_PROBE_READ_S = 1.0
+REMOTE_PROBE_CACHE_S = 5.0
+REMOTE_RETRY_PAUSE_S = 0.5  # before the one retry of a dropped remote connection
+_MODEL_ID = re.compile(r"[a-zA-Z0-9_./:@-]{1,160}")
+_MODEL_STATES = frozenset({"loaded", "unloaded", "loading", "failed"})
 
 
 def _tool_choice(*, require_tool: bool | str) -> str | dict[str, Any]:
@@ -43,6 +55,63 @@ class ModelError(Exception):
 
 class ModelMissingError(ModelError):
     """The model server is down and its model file is not there (its drive not mounted, say)."""
+
+
+class RemoteModelError(ModelError):
+    """The remote model server could not be reached or refused a request."""
+
+
+NOT_PRIVATE = "host resolves outside your own machine or private network"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ModelStatus:
+    """A non-generating observation; absent metadata is kept distinct from an explicit value."""
+
+    reachable: bool
+    latency_ms: int
+    state: str | None = None
+    name: str | None = None
+    context: int | None = None
+    pictures: bool | None = None
+    issue: str = ""
+
+    def report(self, name: str, label: str = "remote model server") -> str:
+        """Describe the probe without exposing the URL, key or a response body."""
+        if not self.reachable:
+            return f"{label} {self.issue or 'unreachable'} ({self.latency_ms} ms)"
+        state = self.state or "state unknown"
+        return f"{label} reachable, {self.name or name} ({state}, {self.latency_ms} ms)"
+
+
+def _model_status(listed: object, latency_ms: int) -> ModelStatus:
+    if listed == []:
+        return ModelStatus(reachable=True, latency_ms=latency_ms, state="unloaded")
+    data = objs(listed)
+    if not data:
+        return ModelStatus(
+            reachable=False, latency_ms=latency_ms, issue="returned an invalid model list"
+        )
+    entry = data[0]
+    state = obj(entry.get("status")).get("value")
+    name = entry.get("id")
+    context = entry.get("context_length")
+    pictures = entry.get("vision")
+    return ModelStatus(
+        reachable=True,
+        latency_ms=latency_ms,
+        state=state if isinstance(state, str) and state in _MODEL_STATES else None,
+        name=name if isinstance(name, str) and _MODEL_ID.fullmatch(name) else None,
+        context=context
+        if type(context) is int and STRATA_CONTEXT_MIN <= context <= STRATA_CONTEXT_MAX
+        else None,
+        pictures=pictures if isinstance(pictures, bool) else None,
+    )
+
+
+def tls_context(ca_file: Path) -> ssl.SSLContext:
+    """Trust a specific CA or self-signed server certificate, with hostname verification."""
+    return ssl.create_default_context(cafile=str(ca_file))
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +332,26 @@ class _Loads:
             return self._asking > 0
 
 
+@dataclass(slots=True)
+class _Probes:
+    """The last remote probe and when it was made, shared by every thread that asks."""
+
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _status: ModelStatus | None = None
+    _at: float = 0.0
+
+    def recent(self, now: float) -> ModelStatus | None:
+        """Return the last probe when it is younger than the cache time."""
+        with self._lock:
+            fresh = self._status is not None and 0.0 <= now - self._at < REMOTE_PROBE_CACHE_S
+            return self._status if fresh else None
+
+    def keep(self, status: ModelStatus, now: float) -> None:
+        """Remember a probe made at `now`."""
+        with self._lock:
+            self._status, self._at = status, now
+
+
 @dataclass(frozen=True, slots=True)
 class StrataModel:
     """Talks to `strata serve` over its OpenAI API."""
@@ -275,7 +364,11 @@ class StrataModel:
     model_file: Path | None = None  # what the server loads (the run config's `--native`)
     # ... as it is now, where what the server loads changes while this client lives (a mode)
     file_of: Callable[[], Path | None] | None = None
+    remote: bool = False
+    tls_ca: Path | None = None
+    resolve: Callable[[str], list[str]] | None = None  # tests answer name lookups in place of DNS
     _loads: _Loads = field(default_factory=_Loads, init=False, repr=False, compare=False)
+    _probes: _Probes = field(default_factory=_Probes, init=False, repr=False, compare=False)
 
     def file_missing(self) -> bool:
         """Return whether the server's model file is known and not there."""
@@ -286,20 +379,79 @@ class StrataModel:
         """Return the model file the server loads now, when known."""
         return self.model_file if self.file_of is None else self.file_of()
 
-    def _client(self, timeout: float) -> httpx.Client:
+    def _client(self, timeout: float, *, connect: float | None = None) -> httpx.Client:
+        """Return a client for one request; a remote one first checks where its host leads.
+
+        Raises:
+            RemoteModelError: the remote host's name does not resolve to private addresses only.
+        """
+        if self.remote:
+            host = urlsplit(self.config.base_url).hostname or ""
+            if not private_endpoint(host, self.resolve):
+                msg = f"remote model server {NOT_PRIVATE}"
+                raise RemoteModelError(msg)
         return httpx.Client(
             base_url=self.config.base_url,
             headers={"Authorization": f"Bearer {self.api_key}"},
-            timeout=timeout,
+            timeout=httpx.Timeout(
+                timeout, connect=min(timeout, REMOTE_CONNECT_S) if connect is None else connect
+            )
+            if self.remote
+            else timeout,
+            verify=tls_context(self.tls_ca) if self.tls_ca is not None else True,
             trust_env=False,
             transport=self.transport,
         )
+
+    def probe(self) -> ModelStatus:
+        """Read /models with a short timeout; a remote server gets one attempt and a cached answer.
+
+        A remote answer, also a failure, is kept for `REMOTE_PROBE_CACHE_S`, so a turn, a status
+        and the voice loop do not each wait out a backend that is down.
+        """
+        if not self.remote:
+            return self._probe_once()
+        if (recent := self._probes.recent(self.clock())) is not None:
+            return recent
+        status = self._probe_once()
+        self._probes.keep(status, self.clock())
+        return status
+
+    def _probe_once(self) -> ModelStatus:
+        began = self.clock()
+        issue = "unreachable"
+        try:
+            with (
+                self._client(REMOTE_PROBE_READ_S, connect=REMOTE_CONNECT_S)
+                if self.remote
+                else self._client(REMOTE_CONNECT_S)
+            ) as client:
+                response = client.get("/models")
+                response.raise_for_status()
+                return _model_status(obj(response.json()).get("data"), self._latency(began))
+        except httpx.HTTPStatusError as exc:
+            issue = f"returned HTTP {exc.response.status_code}"
+        except httpx.TransportError:
+            pass
+        except ValueError:
+            issue = "returned an invalid model list"
+        except RemoteModelError:
+            issue = NOT_PRIVATE
+        except OSError:
+            issue = "could not read the TLS CA"
+        return ModelStatus(reachable=False, latency_ms=self._latency(began), issue=issue)
+
+    def _latency(self, began: float) -> int:
+        return round((self.clock() - began) * 1000)
 
     def _listing(self) -> tuple[bool, str | None]:
         """Return whether the server answered, and the state of the model it lists, if any.
 
         Strata lists no model while its engine is down or restarting: the model is not in memory.
         """
+        if self.remote:
+            probe = self.probe()
+            return probe.reachable, probe.state
         try:
             with self._client(5.0) as client:
                 response = client.get("/models")
@@ -338,6 +490,8 @@ class StrataModel:
         going after that carries on in the server. While a load Jarvis asked for is under way,
         this one joins it instead of queueing a second behind it.
         """
+        if self.remote:
+            return False
         try:
             with self._loads.asking_alone() as alone:
                 if not alone:
@@ -361,6 +515,8 @@ class StrataModel:
         and can take minutes when it is not in the page cache, so the request waits for it. Each
         attempt first asks `keep_going`, so a load nobody wants any more (a pause came) stops.
         """
+        if self.remote:
+            return False
         for _ in range(attempts):
             if not keep_going():
                 return False
@@ -384,6 +540,8 @@ class StrataModel:
 
     def unload(self) -> bool:
         """Ask the server to free the model now; return whether it did."""
+        if self.remote:
+            return False
         try:
             with self._client(30.0) as client:
                 response = client.post("/unload", json={})
@@ -413,9 +571,8 @@ class StrataModel:
         counts the thinking too) is the answer's cap plus the thinking's, so the answer keeps all of
         its room.
 
-        Raises:
-            ModelError: the server refused, failed, stayed unreachable or ran out of time.
-            ModelMissingError: the server is down and its model file is not there.
+        A failed request raises ModelError. A local server that is down with its model file
+        missing raises ModelMissingError.
         """
         body: dict[str, Any] = {
             "model": self.config.model,
@@ -440,28 +597,56 @@ class StrataModel:
         limit = self.config.request_timeout_s + load_s
         if timeout_s is not None:
             limit = min(limit, timeout_s)
-        deadline = self.clock() + limit
+        return self._complete(body, self.clock() + limit, on_delta)
+
+    def _complete(
+        self, body: dict[str, Any], deadline: float, on_delta: Callable[[Delta], None] | None
+    ) -> dict[str, Any]:
         passed_on: list[Delta] = []
         for attempt in (1, 2):
             try:
                 with self._client(max(1.0, deadline - self.clock())) as client:
                     if on_delta is None:
-                        return _message(client.post("/chat/completions", json=body))
+                        return self._answer(client.post("/chat/completions", json=body))
                     body["stream"] = True
                     body["stream_options"] = {"include_usage": True}
                     with client.stream("POST", "/chat/completions", json=body) as response:
                         return self._streamed(response, deadline, on_delta, passed_on)
             except httpx.TransportError as exc:
-                if self.file_missing():  # systemd skips Strata then: nothing to wait for
-                    msg = f"model server down and its model file is missing: {self.served_file()}"
-                    raise ModelMissingError(msg) from exc
                 retry = attempt == 1 and not passed_on and not isinstance(exc, httpx.ReadTimeout)
-                if not retry:
-                    msg = f"model server unreachable: {exc}"
-                    raise ModelError(msg) from exc
-                self._wait_ready(min(30.0, max(0.0, deadline - self.clock())))
+                self._recover_connection(exc, deadline, retry=retry)
+            except OSError as exc:
+                if not self.remote:
+                    raise
+                msg = "remote model server TLS CA could not be read"
+                raise RemoteModelError(msg) from exc
         msg = "unreachable"
         raise ModelError(msg)
+
+    def _recover_connection(
+        self, error: httpx.TransportError, deadline: float, *, retry: bool
+    ) -> None:
+        if self.remote:
+            # A probe that just failed already waited out this server: no second wait for it.
+            down = self._probes.recent(self.clock())
+            if retry and self.clock() < deadline and (down is None or down.reachable):
+                self.sleep(min(REMOTE_RETRY_PAUSE_S, max(0.0, deadline - self.clock())))
+                return
+            msg = "remote model server unreachable or timed out"
+            raise RemoteModelError(msg) from error
+        if self.file_missing():  # systemd skips Strata then: nothing to wait for
+            msg = f"model server down and its model file is missing: {self.served_file()}"
+            raise ModelMissingError(msg) from error
+        if not retry:
+            msg = f"model server unreachable: {error}"
+            raise ModelError(msg) from error
+        self._wait_ready(min(30.0, max(0.0, deadline - self.clock())))
+
+    def _answer(self, response: httpx.Response) -> dict[str, Any]:
+        if self.remote and not response.is_success:
+            msg = f"remote model server returned HTTP {response.status_code}"
+            raise RemoteModelError(msg)
+        return _message(response)
 
     def _streamed(
         self,
@@ -475,6 +660,8 @@ class StrataModel:
         Raises:
             ModelError: the server refused, sent something unreadable or ran out of time.
         """
+        if self.remote and not response.is_success:
+            return self._answer(response)
         if response.is_error:  # httpx: status 400 to 599
             response.read()
             return _message(response)
