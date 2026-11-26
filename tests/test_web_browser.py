@@ -206,6 +206,22 @@ def test_it_starts_headless_through_the_proxy_with_its_own_profile_and_policy(
     assert proxy.started
 
 
+def test_a_download_a_page_starts_has_nowhere_to_be_saved(tmp_path: Path) -> None:
+    # agent-browser lets Chrome save downloads into --download-path; one Chrome cannot write in
+    # is refused there, and never sent elsewhere.
+    fake = FakeAgentBrowser()
+    made, _, _ = _browser(tmp_path, fake)
+
+    made.open("https://site.example/")
+
+    downloads = Path(_option(fake.calls[0][0], "--download-path"))
+    assert downloads.is_dir()
+    assert downloads.stat().st_mode & 0o222 == 0
+    assert list(downloads.iterdir()) == []
+    made.close()
+    assert list((tmp_path / "browser").iterdir()) == []
+
+
 def test_its_environment_has_no_display_no_sound_and_no_outside_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

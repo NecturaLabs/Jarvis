@@ -9,11 +9,13 @@ must see none of it.
 
 from __future__ import annotations
 
+import contextlib
 import http.server
 import shutil
 import socket
 import threading
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
@@ -26,7 +28,6 @@ from jarvis.web.proxy import EgressProxy
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from pathlib import Path
 
 pytestmark = [
     pytest.mark.local,
@@ -35,6 +36,14 @@ pytestmark = [
 
 PUBLIC = "93.184.215.14"
 NAME = "probe.example"
+PAYLOAD = b"jarvis download probe " * 64
+# Unique to this test, so a file of that name anywhere can only be its download.
+SAVED_NAME = "jarvis-download-probe-5b1f0c.bin"
+DOWNLOAD_PAGE = (
+    b"<html><body><h1>Download</h1>"
+    b'<a id=d href="/probe.bin" download="' + SAVED_NAME.encode() + b'">get</a>'
+    b"<script>document.getElementById('d').click();</script></body></html>"
+)
 
 
 def _page(port: int) -> bytes:
@@ -83,6 +92,15 @@ class Server:
                     body = page(port)
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html")
+                elif self.path == "/download-page":
+                    body = DOWNLOAD_PAGE
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                elif self.path in {"/probe.bin", "/attachment"}:
+                    body = PAYLOAD
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Disposition", f'attachment; filename="{SAVED_NAME}"')
                 elif self.path == "/redirect":
                     self.send_response(302)
                     self.send_header("Location", f"http://127.0.0.1:{port}/leak-redirect")
@@ -181,3 +199,29 @@ fetch('https://example.com/').then(() => r.textContent += ' internet')
     assert "reached" not in view.text
     assert "internet" not in view.text
     assert list((tmp_path / "browser").iterdir()) == []
+
+
+def test_a_download_a_page_starts_saves_nothing(tmp_path: Path, server: Server) -> None:
+    program = shutil.which("agent-browser")
+    assert program is not None
+    root = tmp_path / "browser"
+    browser = Browser(program, root, idle_close_s=30, proxy=lambda: _proxy(server))
+    try:
+        browser.open(f"http://{NAME}/download-page")
+        with contextlib.suppress(BrowserError):  # a download opens no page
+            browser.open(f"http://{NAME}/attachment")
+        time.sleep(3)  # the downloads run, or fail
+        saved = [
+            path.name
+            for path in root.rglob("*")
+            if SAVED_NAME in path.name or path.suffix == ".crdownload"
+        ]
+        downloads = [path for folder in root.glob("*/downloads") for path in folder.iterdir()]
+    finally:
+        browser.close()
+
+    assert {"/probe.bin", "/attachment"} <= set(server.hits)  # both downloads were tried
+    assert saved == []
+    assert downloads == []
+    assert not (Path.home() / "Downloads" / SAVED_NAME).exists()
+    assert list(root.iterdir()) == []

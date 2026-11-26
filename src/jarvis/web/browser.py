@@ -5,8 +5,9 @@ after a search box or a button. For those, Jarvis drives a real Chrome through a
 these fences, each in code:
 
 - Headless, muted and with no display variables: it can open no window and make no sound.
-- Its own throwaway profile and download folder in the user's runtime folder, deleted when the
-  browser closes: never the owner's browser, cookies or logins.
+- Its own throwaway profile in the user's runtime folder, deleted when the browser closes: never
+  the owner's browser, cookies or logins. Its download folder is read-only, so a download a page
+  starts fails instead of being saved.
 - Every connection it makes goes through `jarvis.web.proxy`, which reaches only public addresses
   on ports 80 and 443; loopback goes through the proxy too, and Chrome resolves no name itself,
   so page scripts, frames, redirects and WebRTC cannot reach this PC or the home network.
@@ -684,7 +685,9 @@ def _rows(out: str) -> list[dict[str, Any]]:
 
 
 def _new_folder(root: Path) -> Path:
-    """Make a session's folder: agent-browser's empty config, its action policy, a work folder.
+    """Make a session's folder: agent-browser's config and action policy, and two folders.
+
+    One is the work folder; the other the download folder, which no one can write in.
 
     An `OSError` says it could not be made.
     """
@@ -695,6 +698,10 @@ def _new_folder(root: Path) -> Path:
     policy = {"default": "deny", "allow": list(ALLOWED_ACTIONS)}
     (folder / "policy.json").write_text(json.dumps(policy), encoding="utf-8")
     (folder / "work").mkdir(mode=0o700)
+    # agent-browser has Chrome save every download here (`Browser.setDownloadBehavior` "allow",
+    # with this path), so a page can start one itself; Chrome cannot write here, and the
+    # download fails instead of being saved.
+    (folder / "downloads").mkdir(mode=0o500)
     return folder
 
 

@@ -53,7 +53,9 @@ quick commands.
   (`--config` points at an empty file), so no extensions, plugins or saved logins. It runs headless,
   muted, with no display or sound-server variables and no version check, which would fetch past the
   proxy. Its action policy denies everything but the commands Jarvis sends: no scripts (`eval`), uploads,
-  downloads, cookies, saved state, tabs, back or clipboard. Permission prompts are denied.
+  downloads, cookies, saved state, tabs, back or clipboard. Permission prompts are denied. A page can still
+  start a download itself (a link, a redirect, a script); agent-browser has Chrome save every download in
+  the session's download folder, which Jarvis makes read-only, so the download fails and nothing is saved.
 - **Idle means closed.** The browser closes after `[browser] idle_close_s` (60 s) without use, and when
   the conversation is forgotten. agent-browser's own idle timeout, a minute later, ends it if Jarvis dies.
   Closing stops the proxy, which ends every connection still open, so a browser whose own close failed has
