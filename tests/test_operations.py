@@ -244,3 +244,12 @@ def test_time_a_call_waited_for_the_owner_is_taken_once() -> None:
 
         assert request.take_waited() == pytest.approx(42.5)
         assert request.take_waited() == pytest.approx(0.0)
+
+
+def test_a_request_begun_by_jarvis_going_on_alone_is_not_the_owners_own() -> None:
+    wanted = {"": True, "answer": True, "timed_out": False, "closed": False}
+    for noted, expected in wanted.items():
+        with request_scope(foreign=False, noted=noted) as request:
+            assert request.owner_asked is expected, noted
+    with request_scope(foreign=True) as request:
+        assert not request.owner_asked

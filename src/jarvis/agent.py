@@ -1147,7 +1147,7 @@ class Agent:
         self._mode: str = "normal"
         self._switched = False  # this request already moved to another mode
         self._spoken = False  # the request in flight was handed over from speech
-        self._noted = False  # ... or began with Jarvis's own note of an answer
+        self._noted = ""  # ... or began with Jarvis's own note of an answer
         self._ends = 0.0  # when the request in flight runs out of time
         self._shared_pictures = False  # the request in flight came with pictures
         self._follow_mode()
@@ -1441,15 +1441,18 @@ class Agent:
         steered_by: Collection[str] = (),
         scheduled: bool = False,
         spoken: bool = False,
-        noted: bool = False,
+        noted: str = "",
+        typed: str = "",
     ) -> str:
         """Answer one spoken request and return the reply.
 
         With `spoken`, the words are the owner's spoken ones, handed over by the voice service
-        (`chat_hand_off`): the request is audited with that source. With `noted`, the words are
-        Jarvis's own note that an answer came to a question of the model's (or none did), which
-        starts the request when none ran: they are shown to the model as such and are none of
-        the owner's own words (`Request.words`).
+        (`chat_hand_off`): the request is audited with that source. `noted` names the note that
+        starts the request when none ran, an answer to a question of the model's or that none
+        came ("answer", "timed_out", "closed"): the words are shown to the model as Jarvis's
+        own note and are none of the owner's own words (`Request.words`), but for `typed`, what
+        the owner typed under Other. One begun by "timed_out" or "closed" is not the owner's own
+        request (`Request.owner_asked`).
 
         With `hooks.speak` the reply is also spoken through it, the first sentences while the
         model still writes the rest. A request cut short (`hooks.cancelled`) returns only what
@@ -1484,7 +1487,12 @@ class Agent:
         self._noted = noted
         text = f"{NOTED} {text}" if noted else text
         handed_over = foreign or bool(steered_by) or scheduled or noted
-        own = "" if handed_over else _own_words(text, self._outside_pastes(text, pasted))
+        if noted and not (foreign or steered_by or scheduled):
+            own = typed  # what the owner typed under Other is theirs; the note around it is not
+        elif handed_over:
+            own = ""
+        else:
+            own = _own_words(text, self._outside_pastes(text, pasted))
         self._switched = False
         self._ends = self._clock() + self._limits.max_seconds
         turns: list[
@@ -1504,6 +1512,7 @@ class Agent:
                 time_left=time_left,
                 cancelled=hooks.cancelled,
                 scheduled=scheduled,
+                noted=noted,
                 hushed=hooks.hushed,
                 making_sound=hooks.making_sound,
             ) as request,
@@ -1537,7 +1546,7 @@ class Agent:
             origin=origin.value,
             **shown,
             **({"source": "spoken"} if self._spoken else {}),
-            **({"source": "note"} if self._noted else {}),
+            **({"source": "note", "note": self._noted} if self._noted else {}),
         )
         if pictures and not self._pictures:
             self._audit.record("reply", text=PICTURES_OFF, seconds=0.0)
@@ -1774,7 +1783,9 @@ class Agent:
                 text=notice.text[:MAX_AUDIT_TEXT],
             )
             turn.messages.append({"role": "user", "content": f"{NOTED} {notice.text}"})
-            turn.noted.append(notice.text)  # never `request.added`: they are not the owner's words
+            turn.noted.append(notice.text)  # the note is not the owner's words, but `words` are
+            if notice.words and turn.request is not None and not turn.foreign:
+                turn.request.added(notice.words)
             turn.stuck = False
 
     @property

@@ -42,8 +42,14 @@ Chosen option 2.
   status text (`Origin.TOOL_STATUS`), never as typed words. A pick is returned as "the owner picked: <label>",
   with the label (model-written) shown as data: angle brackets spelled out, one line, no control characters. Neither
   is added to the owner's own words (`Request.words`), so a web address in an option the owner picked is not one
-  they wrote and a page still cannot be opened that way. A request begun by a note (`handle(noted=True)`) counts
-  none of its words as the owner's either.
+  they wrote and a page still cannot be opened that way. What the owner types under Other is theirs and is added
+  (`Notice.words`), so an address typed there can be opened.
+- **A request begun by a note.** When no request runs, a pick, a timeout or Esc starts one (`handle(noted=...)`).
+  Its words are the note's, none of them the owner's (but for the typed text). A request begun by a timeout or
+  Esc is not the owner's own: the operations that act only on the owner's own request (`pc_shell`, `open_app`,
+  window changes, screenshots, stopping a process) refuse it (`Request.owner_asked`), as they refuse PC audio.
+  One begun by a pick counts as the owner's, since they chose. The note is not shown as something the owner said,
+  in the window, the log or a resumed conversation.
 - **The timer waits for a confirmation.** While the window asks yes or no about an action, the question's
   countdown stands still and resumes where it was, so a timeout cannot fire while the owner is deciding something
   else, and cannot be used to run out the clock on a question about an action.
@@ -53,7 +59,10 @@ Chosen option 2.
 - **One question at a time**, refused for a request heard in PC audio or run by a schedule (nobody is there to
   answer), and dropped without a word by `/clear`, `/resume` and when the window closes.
 - **Esc closes the picker**; the model is told that, as it is told of a timeout, to go on with its pick. A second
-  Esc stops the request.
+  Esc stops the request, and so does Ctrl+C while a request waits on a question (also with no timeout).
+- **Written after outside text.** A question asked after the request read outside text (a page, a file) is marked
+  in the picker, since a page may have steered its words. It is not refused: choosing between results found on
+  the web is a fair use. Its answer is still never a yes.
 - The todo list belongs to the conversation: kept by `/compact`, emptied by `/clear` and `/resume`.
 
 ## Consequences
@@ -63,8 +72,6 @@ Chosen option 2.
 - **Good:** nothing here depends on matching the owner's or the model's phrasing ([ADR 0013](0013-free-speech-no-new-shortcuts.md)).
 - **Bad:** the picker is modal: while a question is open the input is hidden, so a message is typed only after
   an answer or Esc (the owner types under `Other`).
-- **Bad:** a typed answer under `Other` is not counted as the owner's words of the request, so a web address typed
-  there is not one the web tools accept; the owner sends it as a normal message.
 - **Bad:** the two tools add about 570 tokens to every chat request.
 - **Not measured:** how well the model uses the tools unprompted, and how often it asks when it should decide.
 

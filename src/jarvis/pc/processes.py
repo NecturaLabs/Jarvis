@@ -596,8 +596,10 @@ class ProcessOps:
         if request is None:
             msg = "a process can be stopped only while handling the owner's request"
             raise OperationError(msg)
-        if request.foreign:
-            msg = "a request heard in PC audio cannot stop a process; only the owner can"
+        if not request.owner_asked:
+            msg = (
+                "only the owner's own request can stop a process, not PC audio or Jarvis's own note"
+            )
             raise OperationError(msg)
         outside = request.outside - {Origin.PROCESS.value, REMEMBERED_LISTING}
         if outside:

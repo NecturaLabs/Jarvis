@@ -113,7 +113,7 @@ def operation(todos: TodoList) -> Operation:
         return Result(f"Todo list updated. {short_form(items)}")
 
     return Operation(
-        NAME,
+        "todo_write",
         ABOUT,
         {
             "type": "object",

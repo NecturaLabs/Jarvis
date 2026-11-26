@@ -109,6 +109,8 @@ class Request:
     owner did not ask for it just now. `message` counts the model's messages whose calls have run,
     so an operation can tell a result the model has read (an earlier message) from one written
     beside the call in the same message (`pc_window` acts only on a listing the model has seen).
+    `noted` says which note began the request ("answer", "timed_out", "closed"), none otherwise:
+    `owner_asked` is what the operations that act only on the owner's own request check.
     """
 
     foreign: bool
@@ -120,9 +122,20 @@ class Request:
     hushed: Callable[[], bool] = field(default=lambda: False)
     making_sound: Callable[[], AbstractContextManager[None]] = field(default=nullcontext)
     scheduled: bool = False
+    noted: str = ""
     # Held in lists: the rest is frozen. Messages run, calls in the running message, actions tried.
     _messages: list[int] = field(default_factory=lambda: [0, 1, 0])
     _waited: list[float] = field(default_factory=lambda: [0.0])
+
+    @property
+    def owner_asked(self) -> bool:
+        """Whether the owner asked for this request just now: not PC audio, not begun by a note.
+
+        A request begun by the note that a question went unanswered (`noted` "timed_out" or
+        "closed") has no words of the owner's: Jarvis goes on by itself. One begun by the owner's
+        pick (`noted` "answer") is their choice, so it counts.
+        """
+        return not self.foreign and self.noted not in {"timed_out", "closed"}
 
     @property
     def message(self) -> int:
@@ -178,12 +191,14 @@ class Notice:
     An answer the owner picked from options the model wrote, or Jarvis's own note that a question
     went unanswered. `origin` says whose words they are (Jarvis's own status text unless it
     passes on outside text) and `kind` names what happened, for the audit log. The agent shows
-    them to the model but never counts them as the owner's words (`Request.words`).
+    them to the model but never counts them as the owner's words (`Request.words`), except `words`:
+    what the owner typed under Other, which is theirs.
     """
 
     text: str
     kind: str
     origin: Origin = Origin.TOOL_STATUS
+    words: str = ""
 
 
 _CURRENT: ContextVar[Request | None] = ContextVar("jarvis_request", default=None)
@@ -204,6 +219,7 @@ def request_scope(  # ruff: ignore[too-many-arguments] - the request's fields, k
     scheduled: bool = False,
     hushed: Callable[[], bool] = lambda: False,
     making_sound: Callable[[], AbstractContextManager[None]] = nullcontext,
+    noted: str = "",
 ) -> Generator[Request]:
     """Mark everything run inside as part of one new request; `words` are the owner's own."""
     request = Request(
@@ -214,6 +230,7 @@ def request_scope(  # ruff: ignore[too-many-arguments] - the request's fields, k
         scheduled=scheduled,
         hushed=hushed,
         making_sound=making_sound,
+        noted=noted,
     )
     token = _CURRENT.set(request)
     try:

@@ -384,7 +384,7 @@ class WindowOps:
     @staticmethod
     def _owner_request() -> Request:
         request = current_request()
-        if request is None or request.foreign:
+        if request is None or not request.owner_asked:
             msg = "a window is changed only on the owner's own request, never from PC audio"
             raise OperationError(msg)
         return request

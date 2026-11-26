@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Protocol, override
 
 from rich.cells import cell_len
-from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 from textual import on
@@ -80,6 +79,7 @@ from jarvis.chat.widgets import (
 )
 from jarvis.config import ChatConfig
 from jarvis.handoff import HandoffError, State
+from jarvis.memory import NOTED, STEERED
 from jarvis.pictures import PictureError, newest, pasted_path, prepare, read_file
 
 if TYPE_CHECKING:
@@ -112,7 +112,7 @@ TICK_S = 0.12
 ANNOUNCEMENTS_RETRY_S = 10.0  # how long to wait before looking again for the voice service
 ASK_TICK_S = 0.5  # how often a question's countdown is looked at and drawn
 ARM_S = 0.4  # a choice made sooner than this after a question appears was meant for something else
-ANSWER = "answer"  # the source of a request that began with a note of an answer to a question
+NOTES = frozenset({"answer", "timed_out", "closed"})  # the sources of a request begun by a note
 STILL_WORKING = "I'm still working on the last request; esc stops it."
 NO_REPLY = "The request ended without a reply."
 MAX_RESUME_LISTED = 15
@@ -173,12 +173,14 @@ class Session(Protocol):
         pictures: Sequence[Picture] = (),
         pasted: Sequence[str] = (),
         spoken: bool = False,
-        noted: bool = False,
+        noted: str = "",
+        typed: str = "",
     ) -> str:
         """Answer one request, with any pictures the owner attached, and return the reply.
 
         `spoken` marks words the voice service handed over: the owner's, said aloud. `noted`
-        marks Jarvis's own note of an answer to a question it put to the owner, or of none.
+        names Jarvis's own note of an answer to a question it put to the owner, or of none
+        ("answer", "timed_out", "closed"); `typed` is what the owner typed under Other then.
         """
         ...
 
@@ -410,6 +412,23 @@ SECTIONS = (
 )  # the shared settings' headings, in order
 
 
+def _segments(request: str) -> list[tuple[str, str]]:
+    """Split a remembered request into the owner's words ("you") and Jarvis's notes ("note").
+
+    The conversation keeps the words typed while a request ran, and the notes that joined it,
+    each after a line that names them (`STEERED`, `NOTED`).
+    """
+    found: list[tuple[str, list[str]]] = [("you", [])]
+    for line in request.split("\n"):
+        if line.startswith(NOTED):
+            found.append(("note", [line.removeprefix(NOTED).strip()]))
+        elif line.startswith(STEERED):
+            found.append(("you", [line.removeprefix(STEERED).strip()]))
+        else:
+            found[-1][1].append(line)
+    return [(kind, "\n".join(lines).strip()) for kind, lines in found if "".join(lines).strip()]
+
+
 def _joined(*parts: str) -> str:
     """Return the parts that say something, between dots."""
     return " · ".join(part for part in parts if part)
@@ -570,7 +589,7 @@ class ChatApp(App[None]):
         self._pending: Pending | None = None  # a risky setting asked to be turned on, unconfirmed
         self._changed_jarvis = False  # a setting the voice service reads changed in /config
         # Requests typed while one ran, waiting their turn: words, pictures, pastes.
-        self._queued: list[tuple[str, list[Picture], list[str], str]] = []
+        self._queued: list[tuple[str, list[Picture], list[str], str, str]] = []  # + typed answer
         self._session_id = session_id
         self._poll_s = poll_s
         self._status_s = status_s
@@ -783,9 +802,14 @@ class ChatApp(App[None]):
         if memory.summary:
             self._mount(Note(self._labelled("Earlier, in short", memory.summary)))
         for turn in memory.turns[-RESUMED_TURNS:]:
-            self._mount(Request(turn.request, "earlier"))
+            for kind, words in _segments(turn.request):
+                if kind == "note":  # Jarvis's own note to the model, never what the owner said
+                    self._note(words)
+                else:
+                    self._mount(Request(words, "earlier"))
+                    self._exchanges.append(("you", words))
             self._mount(Reply(turn.reply))
-            self._exchanges += [("you", turn.request), ("jarvis", turn.reply)]
+            self._exchanges.append(("jarvis", turn.reply))
 
     @staticmethod
     def _labelled(label: str, text: str) -> Table:
@@ -1201,7 +1225,16 @@ class ChatApp(App[None]):
             self._tick()
 
     def action_interrupt(self) -> None:
-        """Ctrl+C: clear what is typed; on an empty input, leave when pressed twice."""
+        """Ctrl+C: stop a request waiting on a question; else clear what is typed, or leave.
+
+        On an empty input, a second press within a moment leaves.
+        """
+        work = self._work
+        ask = self._ask
+        if ask is not None and ask.wait and work is not None and not work.stop.is_set():
+            work.stop.set()  # the waiting call sees it and withdraws the question
+            self._tick()
+            return
         prompt = self._input()
         if prompt.text:
             prompt.set_text("")
@@ -1319,7 +1352,7 @@ class ChatApp(App[None]):
             if steer and work is not None:
                 work.steering.append((text, source))
             else:
-                self._queued.append((text, list(pictures), list(pasted), source))
+                self._queued.append((text, list(pictures), list(pasted), source, ""))
         self._mount(Request(text, _joined(source, now, "steering" if steer else "queued")))
         self._exchanges.append(("you", text))
         return steer
@@ -1364,8 +1397,13 @@ class ChatApp(App[None]):
         with self._lock:
             if self._work is not None or not self._queued:
                 return
-            text, pictures, pasted, source = self._queued.pop(0)
-        self._request(text, pictures, pasted, shown=True, source=source)
+            item = self._queued.pop(0)
+        text, pictures, pasted, source, typed = item
+        if not self._request(
+            text, pictures, pasted, shown=True, source=source, warn=False, typed=typed
+        ):
+            with self._lock:  # another request took the window first: this one waits its turn
+                self._queued.insert(0, item)
 
     def _sent_pastes(self, text: str) -> list[str]:
         """Return what was pasted into `text`, once per paste, and forget it.
@@ -2112,7 +2150,7 @@ class ChatApp(App[None]):
         with self._lock:
             return self._work is not None
 
-    def _start(self, label: str) -> bool:
+    def _start(self, label: str, *, warn: bool = True) -> bool:
         with self._lock:
             if self._work is not None:
                 busy = True
@@ -2120,7 +2158,8 @@ class ChatApp(App[None]):
                 busy = False
                 self._work = _Work(self._clock(), label)
         if busy:
-            self._note(STILL_WORKING, "warn")
+            if warn:
+                self._note(STILL_WORKING, "warn")
             return False
         self._ticker = self.set_interval(TICK_S, self._tick)
         self._tick()
@@ -2131,9 +2170,9 @@ class ChatApp(App[None]):
             if work is not None:
                 work.taking = False
                 # Words the request ended before taking run next, ahead of the queue.
-                self._queued[:0] = [(text, [], [], source) for text, source in work.steering] + [
-                    (notice.text, [], [], ANSWER) for notice in work.notices
-                ]
+                self._queued[:0] = [
+                    (text, [], [], source, "") for text, source in work.steering
+                ] + [(notice.text, [], [], notice.kind, notice.words) for notice in work.notices]
                 work.steering = []
                 work.notices = []
             if self._work is work:
@@ -2141,7 +2180,7 @@ class ChatApp(App[None]):
         self._from_worker(self._idle)
         self._from_worker(self._next_queued)
 
-    def _request(
+    def _request(  # ruff: ignore[too-many-arguments] - a request's words and where they came from
         self,
         text: str,
         pictures: Sequence[Picture] = (),
@@ -2149,15 +2188,18 @@ class ChatApp(App[None]):
         *,
         shown: bool = False,
         source: str = "typed",
-    ) -> None:
+        warn: bool = True,
+        typed: str = "",
+    ) -> bool:
+        """Start a request; return False when another one holds the window (nothing was started)."""
         if self._session is None:
             self._note(f"Typed requests are off: {self._unavailable}", "warn")
-            return
-        if not self._start("Thinking"):
-            return
+            return True
+        if not self._start("Thinking", warn=warn):
+            return False
         work = self._work
         if work is None:
-            return
+            return True
         if not shown:  # a queued request was shown when it was typed
             now = datetime.now().astimezone().strftime("%H:%M:%S")
             count = len(pictures)
@@ -2166,11 +2208,18 @@ class ChatApp(App[None]):
             self._exchanges.append(("you", text))
         self.run_worker(
             lambda: self._handle(
-                text, work, pictures, pasted, spoken=source == "spoken", noted=source == ANSWER
+                text,
+                work,
+                pictures,
+                pasted,
+                spoken=source == "spoken",
+                noted=source if source in NOTES else "",
+                typed=typed,
             ),
             thread=True,
             group="request",
         )
+        return True
 
     def _handle(  # ruff: ignore[too-many-arguments] - a request's words and where they came from
         self,
@@ -2180,7 +2229,8 @@ class ChatApp(App[None]):
         pasted: Sequence[str] = (),
         *,
         spoken: bool = False,
-        noted: bool = False,
+        noted: str = "",
+        typed: str = "",
     ) -> None:
         session = self._session
         work.began = True
@@ -2201,7 +2251,13 @@ class ChatApp(App[None]):
         try:
             if session is not None:
                 reply = session.handle(
-                    text, hooks, pictures=pictures, pasted=pasted, spoken=spoken, noted=noted
+                    text,
+                    hooks,
+                    pictures=pictures,
+                    pasted=pasted,
+                    spoken=spoken,
+                    noted=noted,
+                    typed=typed,
                 )
                 rate = session.last_rate()
         except Exception as exc:  # ruff: ignore[blind-except] - shown in the window, never raised
@@ -2386,16 +2442,28 @@ class ChatApp(App[None]):
             self._input().focus()
 
     def _open_ask(self, question: Question) -> None:
-        """Show a question: its words as plain text, the recommended option first."""
-        self._ask = question
+        """Show a question: its words as plain text, the recommended option first.
+
+        The window keeps the question only once the picker is drawn, so a failure here leaves
+        the input as it was.
+        """
+        self.query_one("#ask").border_title = Text(f"{self._name} asks: {question.header}")
+        words = Text(question.text, style="bold")
+        if question.outside:
+            words.append("\nWritten after reading outside text.", style="bright_black")
+        self.query_one("#ask-text", Static).update(words)
+        self.query_one("#ask-other", Input).value = ""
         self._ask_marked = set()
         self._ask_typing = False
-        self._ask_shown = self._clock()
-        self.query_one("#ask").border_title = f"{self._name} asks: {escape(question.header)}"
-        self.query_one("#ask-text", Static).update(Text(question.text, style="bold"))
-        self.query_one("#ask-other", Input).value = ""
-        self._fill_ask(0)
-        self._sync_panels()
+        self._ask = question
+        try:
+            self._fill_ask(0)
+            self._ask_shown = self._clock()
+            self._sync_panels()
+        except Exception:
+            self._ask = None
+            self._sync_panels()
+            raise
         self._focus_main()
         self._draw_ask_hint()
         self._tick()
@@ -2534,10 +2602,9 @@ class ChatApp(App[None]):
             if work is not None and work.taking:
                 work.notices.append(notice)
                 return
-            if work is not None:  # ending: it runs next, ahead of the queue
-                self._queued.insert(0, (notice.text, [], [], ANSWER))
-                return
-        self._request(notice.text, shown=True, source=ANSWER)
+            # Idle or ending: it runs next, ahead of the queue, and is never dropped.
+            self._queued.insert(0, (notice.text, [], [], notice.kind, notice.words))
+        self._next_queued()
 
 
 class _AskView:

@@ -221,7 +221,8 @@ and can be switched off with `todo_write = "deny"` or `ask_owner = "deny"` under
 - **`ask_owner`** puts a question with 2 to 4 options to you as a picker above the input, titled with a header of at
   most 12 characters. The option Jarvis would pick comes first, marked `(Recommended)`; the model must always say
   which. The chat adds `Other (type an answer)`. Keys: ↑ ↓ and Enter, a number picks that row, Esc closes the
-  question (Jarvis then goes on with its own pick; Esc again stops the request). In a multiple-choice question,
+  question (Jarvis then goes on with its own pick; Esc again stops the request, and Ctrl+C stops a request
+  that waits on a question at once). In a multiple-choice question,
   a number, Enter or space marks an option and Enter on `Done` sends. Under `Other`, type your answer and press
   Enter, or Esc to go back. Everything in a question is the model's text, shown as plain text. A key pressed as the
   picker appears (less than 0.4 s) is not a pick.
@@ -234,7 +235,10 @@ and can be switched off with `todo_write = "deny"` or `ask_owner = "deny"` under
   - **An answer is never a yes.** What you pick, or a timeout, reaches the model as a note; it never answers the
     yes or no that an action asks, which is asked on its own, about that exact action, as always, and the
     countdown stops while it waits. Your pick is not counted among your own words either (a web address in an
-    option you picked is not one you wrote). See [ADR 0026](adr/0026-ask-the-owner-never-consent.md).
+    option you picked is not one you wrote), but what you type under Other is. A request that a timeout or
+    Esc starts is not yours either: what acts only on your own request (a shell command, opening a program,
+    changing a window, a screenshot, stopping a process) refuses it. A question written after Jarvis read outside
+    text says so on the picker. See [ADR 0026](adr/0026-ask-the-owner-never-consent.md).
 
 `/config` in the chat opens the settings as Claude Code's own settings screen does. The sections (Chat, Mode,
 Voice, Listening, Safety, Tools) are tabs across the top: Tab and Shift+Tab switch them, and so do ← → on the tab

@@ -76,6 +76,7 @@ class Question:
     opened: float
     deadline: float | None
     limit_s: float
+    outside: bool = False  # written after the request read outside text: the picker says so
     settled: threading.Event = field(default_factory=threading.Event)
     outcome: Outcome | None = None
     picks: tuple[int, ...] = ()
@@ -165,6 +166,7 @@ class Questions:
         multi: bool,
         recommended: int,
         wait: bool,
+        outside: bool = False,
     ) -> Question:
         """Open a question in the window and return it.
 
@@ -193,6 +195,7 @@ class Questions:
                 now,
                 now + self.timeout_s if self.timeout_s > 0 else None,
                 self.timeout_s,
+                outside,
             )
             self._current = question
         try:
@@ -342,7 +345,7 @@ def notice_of(question: Question) -> Notice:
     heading = f'Your question "{_data(question.header)}": '
     text = result_text(question)
     if question.outcome is Outcome.ANSWERED:
-        return Notice(f"{heading}{text}.", "answer")
+        return Notice(f"{heading}{text}.", "answer", words=question.typed)
     kind = question.outcome.value if question.outcome is not None else "dropped"
     return Notice(f"{heading}{text}", kind)
 
@@ -381,7 +384,8 @@ def operation(questions: Questions) -> Operation:
 
     It is refused for a request heard in PC audio or run by a schedule (nobody is there to
     answer), when the options repeat or `recommended` points at none, and while another question
-    is open. Everything the model wrote is shown as plain text.
+    is open. Everything the model wrote is shown as plain text, and a question written after the
+    request read outside text says so, since a page may have steered its words.
     """
 
     def run(args: dict[str, object]) -> Result:
@@ -413,6 +417,7 @@ def operation(questions: Questions) -> Operation:
             multi=args.get("multi_select") is True,
             recommended=recommended,
             wait=wait,
+            outside=bool(request.outside),
         )
         if not wait:
             limit = (
@@ -427,13 +432,15 @@ def operation(questions: Questions) -> Operation:
             )
         questions.wait(question, request.cancelled)
         request.waited(question.waited)
+        if question.outcome is Outcome.ANSWERED and question.typed:
+            request.added(question.typed)  # typed by the owner: theirs, unlike a picked label
         if question.outcome is Outcome.DROPPED:
             msg = "the question was withdrawn before the owner answered"
             raise OperationError(msg)
         return Result(result_text(question))
 
     return Operation(
-        NAME,
+        "ask_owner",  # the scan in test_product_rules reads a literal
         ABOUT,
         {
             "type": "object",

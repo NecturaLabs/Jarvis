@@ -44,7 +44,7 @@ from jarvis.chat.widgets import (
     todo_panel,
 )
 from jarvis.config import ChatConfig, FilesConfig
-from jarvis.memory import Conversation, Turn
+from jarvis.memory import NOTED, STEERED, Conversation, Turn
 from jarvis.operations import Notice, Registry
 from jarvis.pc.files import Boundary, FileOps
 from jarvis.pictures import Picture, PictureCache
@@ -95,7 +95,8 @@ class FakeSession:
     memory: Conversation = field(default_factory=lambda: Conversation(budget=1000))
     asked: list[str] = field(default_factory=list[str])
     spoken: list[bool] = field(default_factory=list[bool])
-    noted: list[bool] = field(default_factory=list[bool])
+    noted: list[str] = field(default_factory=list[str])
+    typed: list[str] = field(default_factory=list[str])
     pictures: list[list[str]] = field(default_factory=list[list[str]])
     pasted: list[list[str]] = field(default_factory=list[list[str]])
     hooks: list[Hooks] = field(default_factory=list[Hooks])
@@ -113,8 +114,10 @@ class FakeSession:
         pictures: Sequence[Picture] = (),
         pasted: Sequence[str] = (),
         spoken: bool = False,
-        noted: bool = False,
+        noted: str = "",
+        typed: str = "",
     ) -> str:
+        self.typed.append(typed)
         self.asked.append(text)
         self.spoken.append(spoken)
         self.noted.append(noted)
@@ -3444,6 +3447,13 @@ def _ask_rows(app: ChatApp) -> list[str]:
     return [_plain(listing.get_option_at_index(i).prompt) for i in range(listing.option_count)]
 
 
+def _ask_title(app: ChatApp) -> str:
+    """Return the picker's title as drawn, in plain words."""
+    title = app.query_one("#ask")._border_title  # pyright: ignore[reportPrivateUsage] - the stored title; the public getter turns it back into markup
+    assert title is not None
+    return title.plain
+
+
 async def _open_question(pilot: Pilot[None], scene: Scene) -> None:
     await _type(pilot, "sort it out")
     await _until(pilot, lambda: scene.app.query_one("#ask").display)
@@ -3459,7 +3469,7 @@ def test_the_picker_lists_the_recommended_option_first_and_adds_other() -> None:
         await _open_question(pilot, scene)
         app = scene.app
         assert "Which one?" in _plain(app.query_one("#ask-text", Static).content)
-        assert app.query_one("#ask").border_title == "Jarvis asks: Pick"
+        assert _ask_title(app) == "Jarvis asks: Pick"
         rows = _ask_rows(app)
         assert [row.strip().lstrip(CHEVRON).strip().split("  ")[0] for row in rows] == [
             "1. Bravo (Recommended)",
@@ -3596,7 +3606,7 @@ def test_what_the_model_wrote_is_shown_as_it_is_written() -> None:
         rows = _ask_rows(scene.app)
         assert "[red]Alpha[/red] (Recommended)" in rows[0]
         assert "[bold]first[/bold]" in rows[0]
-        assert scene.app.query_one("#ask").border_title == "Jarvis asks: \\[b]Pick"
+        assert _ask_title(scene.app) == "Jarvis asks: [b]Pick"
         await pilot.press("1")
         await _until(pilot, lambda: _has(scene.app, "You answered [b]Pick: [red]Alpha[/red]"))
         scene.finish.set()
@@ -3638,7 +3648,7 @@ def test_an_answer_after_the_request_ended_starts_one_with_the_pick_as_a_note() 
 
     _run(test, scene.app)
     assert scene.session.asked[1] == 'Your question "Pick": the owner picked: Charlie.'
-    assert scene.session.noted == [False, True]
+    assert scene.session.noted == ["", "answer"]
 
 
 def test_without_an_answer_the_question_closes_at_the_timeout_and_the_request_is_told() -> None:
@@ -3883,3 +3893,154 @@ def test_the_timeout_is_a_setting_the_next_question_takes() -> None:
     assert setting.live
     assert saved[0].ask_timeout_s == pytest.approx(900.0)
     assert questions.timeout_s == pytest.approx(900.0)
+
+
+@pytest.mark.parametrize("header", ["[/", "[$accent]x", "[b]Pick"])
+def test_a_header_that_looks_like_markup_neither_breaks_nor_locks_the_window(header: str) -> None:
+    scene = _scene(header=header)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _open_question(pilot, scene)
+        assert _ask_title(scene.app) == f"Jarvis asks: {header}"
+        assert not scene.app.query_one("#prompt").display
+        await pilot.press("1")
+        await _until(pilot, lambda: scene.questions.current is None)
+        assert scene.app.query_one("#prompt").display
+        assert not scene.app.query_one("#ask").display
+        scene.finish.set()
+
+    _run(test, scene.app)
+
+
+def test_an_earlier_conversation_shows_a_note_as_a_note_and_never_as_the_owners_request() -> None:
+    note = f'{NOTED} Your question "Pick": the owner picked: Alpha.'
+    memory = Conversation(budget=1000)
+    memory.add(Turn(f"sort it out\n{note}", "Went with Alpha.", "", "", 1.0))
+    memory.add(
+        Turn(f"{NOTED} No answer to your question after 5 minutes.", "Went on.", "", "", 2.0)
+    )
+    memory.add(Turn(f"find it\n{STEERED} the blue one", "Found.", "", "", 3.0))
+    app = _app(session=FakeSession(memory=memory))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _until(pilot, lambda: _has(app, "Went on."))
+        asked = [w.text for w in _transcript(app) if isinstance(w, Request)]
+        assert asked == ["sort it out", "find it", "the blue one"]
+        assert not any(NOTED in line or "(Jarvis's note" in line for line in _shown(app))
+        assert _has(app, 'Your question "Pick": the owner picked: Alpha.')
+        assert _has(app, "No answer to your question after 5 minutes.")
+        assert [who for who, _words in app._exchanges if who == "you"] == ["you"] * 3  # pyright: ignore[reportPrivateUsage] - what /export would write
+
+    _run(test, app)
+
+
+def test_ctrl_c_stops_a_request_waiting_on_a_question_that_never_times_out() -> None:
+    scene = _scene(wait=True, timeout_s=0.0)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _open_question(pilot, scene)
+        await pilot.press("ctrl+c")
+        await _until(pilot, lambda: scene.questions.current is None)
+        await _until(pilot, lambda: bool(scene.results))
+        await _until(pilot, lambda: not scene.app.query_one("#ask").display)
+        assert scene.app.query_one("#prompt").display
+
+    _run(test, scene.app)
+    assert scene.results == ["The question was withdrawn before the owner answered."]
+
+
+def test_ctrl_c_with_a_question_that_does_not_wait_only_clears_the_input() -> None:
+    scene = _scene()
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _open_question(pilot, scene)
+        await pilot.press("ctrl+c")
+        await pilot.pause(0.1)
+        assert scene.questions.current is not None  # the request goes on
+        scene.finish.set()
+
+    _run(test, scene.app)
+
+
+def test_an_answer_that_finds_the_window_taken_waits_its_turn_and_is_not_dropped() -> None:
+    scene = _scene()
+    scene.finish.set()
+    real_start = scene.app._start  # pyright: ignore[reportPrivateUsage] - the window's own gate, made to lose a race
+    lost = [False]
+
+    def start(label: str, *, warn: bool = True) -> bool:
+        if not lost[0] and scene.session.asked == ["sort it out"]:
+            lost[0] = True  # another request took the window between the choice and the start
+            return False
+        return real_start(label, warn=warn)
+
+    scene.app._start = start  # pyright: ignore[reportPrivateUsage] - as above
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "sort it out")
+        await _until(pilot, lambda: _has(scene.app, "Carried on."))
+        scene.clock.now += 1
+        await pilot.press("3")
+        await _until(pilot, lambda: lost[0])
+        await pilot.pause(0.05)
+        assert len(scene.session.asked) == 1  # not started, and not shown as a warning
+        assert not _has(scene.app, "still working")
+        scene.app._next_queued()  # pyright: ignore[reportPrivateUsage] - what the end of the other request does
+        await _until(pilot, lambda: len(scene.session.asked) == 2)
+
+    _run(test, scene.app)
+    assert scene.session.asked[1] == 'Your question "Pick": the owner picked: Charlie.'
+
+
+def test_a_typed_answer_that_starts_a_request_is_the_owners_text() -> None:
+    scene = _scene()
+    scene.finish.set()
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "sort it out")
+        await _until(pilot, lambda: _has(scene.app, "Carried on."))
+        scene.clock.now += 1
+        await pilot.press("4")
+        await _until(pilot, lambda: scene.app.query_one("#ask-other").display)
+        await pilot.press(*"Delta", "enter")
+        await _until(pilot, lambda: len(scene.session.asked) == 2)
+
+    _run(test, scene.app)
+    assert scene.session.noted == ["", "answer"]
+    assert scene.session.typed == ["", "Delta"]
+
+
+def test_a_question_written_after_reading_outside_text_says_so() -> None:
+    scene = _scene()
+    scene.finish.set()
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "sort it out")
+        await _until(pilot, lambda: scene.app.query_one("#ask").display)
+        assert "outside text" not in _plain(scene.app.query_one("#ask-text", Static).content)
+        scene.clock.now += 1
+        await pilot.press("1")
+        await _until(pilot, lambda: scene.questions.current is None)
+
+    _run(test, scene.app)
+
+    flagged = _scene()
+    flagged.finish.set()
+
+    async def test_flagged(pilot: Pilot[None]) -> None:
+        question = flagged.questions.ask(
+            header="Pick",
+            text="Which one?",
+            options=OPTS,
+            multi=False,
+            recommended=1,
+            wait=False,
+            outside=True,
+        )
+        await _until(pilot, lambda: flagged.app.query_one("#ask").display)
+        assert "Written after reading outside text." in _plain(
+            flagged.app.query_one("#ask-text", Static).content
+        )
+        flagged.questions.dismiss(question)
+
+    _run(test_flagged, flagged.app)

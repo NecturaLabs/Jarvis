@@ -613,7 +613,7 @@ def test_a_request_begun_by_a_note_counts_none_of_it_as_the_owners_words() -> No
     agent.handle(
         'Your question "Pick": the owner picked: https://example.com/a.',
         Hooks(confirm=lambda _q: False),
-        noted=True,
+        noted="answer",
     )
 
     assert model.seen[0][1]["content"].startswith(NOTED)
@@ -747,3 +747,124 @@ def test_a_chat_configured_timeout_is_what_the_registry_gives_the_window() -> No
     assert ChatConfig().ask_timeout_s == pytest.approx(300.0)
     with pytest.raises(ValueError, match="greater than or equal to 0"):
         ChatConfig(ask_timeout_s=-1)
+
+
+# Requests begun by a note, and the words the owner typed
+
+
+@pytest.mark.parametrize(
+    ("noted", "owner_asked"), [("answer", True), ("timed_out", False), ("closed", False)]
+)
+def test_a_request_begun_by_a_note_is_the_owners_own_only_when_they_picked(
+    noted: str, owner_asked: bool
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def run(_args: dict[str, Any]) -> Result:
+        request = current_request()
+        assert request is not None
+        seen["asked"] = request.owner_asked
+        return Result("ok")
+
+    probe = Operation("probe", "probe", {"type": "object", "properties": {}}, run)
+    model = ScriptedModel([call("probe"), say("Done.")])
+    agent, _ = _agent(model, Questions(300.0, Clock()), [probe])
+
+    agent.handle("the note", Hooks(confirm=lambda _q: False), noted=noted)
+
+    assert seen["asked"] is owner_asked
+
+
+def test_the_gates_of_operations_that_act_for_the_owner_refuse_a_request_that_went_on_alone() -> (
+    None
+):
+    from jarvis.pc.windows import WindowOps  # ruff: ignore[import-outside-top-level] - only here
+
+    with (
+        request_scope(foreign=False, noted="timed_out"),
+        pytest.raises(OperationError, match="owner's own request"),
+    ):
+        WindowOps._owner_request()  # pyright: ignore[reportPrivateUsage] - the gate every window change goes through
+    with request_scope(foreign=False, noted="answer"):
+        WindowOps._owner_request()  # pyright: ignore[reportPrivateUsage] - their pick is their choice
+
+
+def test_what_the_owner_typed_under_other_is_theirs_and_a_picked_label_is_not() -> None:
+    questions, view, _ = _setup()
+    question = _ask(questions, multi_select=True)
+
+    questions.answer(question, [0], "  https://example.com/x \n")
+    (notice,) = view.notices
+    assert notice.words == "https://example.com/x"
+
+    question = _ask(questions)
+    questions.answer(question, [1])
+    assert not view.notices[1].words
+
+
+def test_a_typed_answer_joins_the_owners_words_of_the_running_request_and_a_label_does_not() -> (
+    None
+):
+    questions = Questions(300.0, Clock())
+    window = Window(questions)
+    questions.attach(_View(window))
+    window.pending.append(
+        Notice("the owner answered: https://example.com/x", "answer", words="https://example.com/x")
+    )
+    window.pending.append(Notice("the owner picked: https://evil.test", "answer"))
+    seen: dict[str, Any] = {}
+    model = ScriptedModel([call("probe"), say("Done.")])
+    agent, _ = _agent(model, questions, [_probe(seen)])
+
+    agent.handle("open it", window.hooks())
+
+    assert seen["words"] == "open it\nhttps://example.com/x"
+
+
+def test_a_request_begun_by_a_typed_answer_counts_that_text_as_the_owners_own() -> None:
+    questions = Questions(300.0, Clock())
+    seen: dict[str, Any] = {}
+    model = ScriptedModel([call("probe"), say("Done.")])
+    agent, _ = _agent(model, questions, [_probe(seen)])
+
+    agent.handle(
+        "note", Hooks(confirm=lambda _q: False), noted="answer", typed="https://example.com/x"
+    )
+
+    assert seen["words"] == "https://example.com/x"
+
+
+def test_a_waiting_question_answered_by_typing_adds_the_owners_words() -> None:
+    questions, _, _ = _setup()
+    seen: dict[str, Any] = {}
+
+    def run_op() -> None:
+        op = operation(questions)
+        with request_scope(foreign=False, words="open it") as request:
+            op.run(validate_args(op, _args(wait=True)))
+            seen["words"] = request.words
+
+    thread = threading.Thread(target=run_op)
+    thread.start()
+    question = _until_open(questions)
+    questions.answer(question, [0], "https://example.com/x")
+    thread.join(5)
+
+    assert seen["words"] == "open it\nhttps://example.com/x"
+
+
+def test_a_question_asked_after_reading_outside_text_is_marked() -> None:
+    questions, view, _ = _setup()
+    op = operation(questions)
+
+    with request_scope(foreign=False) as request:
+        op.run(validate_args(op, _args()))
+        request.saw("web")
+    first = view.opened[0]
+    questions.reset()
+    with request_scope(foreign=False) as request:
+        request.saw("web")
+        op.run(validate_args(op, _args()))
+
+    assert not first.outside
+    assert view.opened[1].outside
