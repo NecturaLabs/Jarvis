@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from jarvis.operations import Operation, OperationError, Result, UncertainOutcomeError, cut_inert
 from jarvis.pictures import SHOWN_SIDE, PictureError, prepare
 from jarvis.policy import OpClass, Origin
-from jarvis.web.browser import MAX_PARTS, TYPABLE, BrowserError, BrowserTimeoutError, Element
+from jarvis.web.browser import MAX_PARTS, TYPABLE, BrowserError, Element, UncertainActionError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -259,8 +259,8 @@ class BrowserOps:
         """Click the element the owner agreed to, or type the words they agreed to into it.
 
         Raises:
-            UncertainOutcomeError: the browser did not answer, so the click or the words may have
-                gone through.
+            UncertainOutcomeError: the click or the words were sent, and may have gone through:
+                the browser did not answer, or the page could not be read afterwards.
             OperationError: the page changed, or the click or typing failed.
         """
         expect = Element(str(args["element"]), str(args["role"]), str(args["name"]))
@@ -273,8 +273,8 @@ class BrowserOps:
             else:
                 goes_to = args.get("goes_to")
                 view = self._browser.click(expect, page, None if goes_to is None else str(goes_to))
-        except BrowserTimeoutError as exc:
-            raise UncertainOutcomeError(f"The browser didn't answer: {exc}.") from exc
+        except UncertainActionError as exc:
+            raise UncertainOutcomeError(f"Not known whether that happened: {exc}.") from exc
         except BrowserError as exc:
             raise OperationError(f"Couldn't do that on the page: {exc}.") from exc
         return self._page(view)

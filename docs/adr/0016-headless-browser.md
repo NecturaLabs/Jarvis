@@ -77,7 +77,10 @@ quick commands.
     The yes is bound to that element on that page, and a link to that address: if the page changed
     meanwhile, or the browser closed while the owner was asked (a question open longer than
     `idle_close_s`), nothing is done and no new browser is started for it. Typing is `outbound`, at most
-    200 characters, never into a password, hidden or file field.
+    200 characters, never into a password, hidden or file field. Once a click or typing is sent, a browser
+    that does not answer, an answer too big or garbled to read, or a later step that fails (typing went in,
+    Enter did not) is an uncertain outcome for the model, never a failure that invites a second yes; a check
+    before acting that times out has done nothing and says so.
   - Everything the browser returns is web text (`Origin.WEB`), cut to the channel's room for one result.
     A page's text is the browser's own (`innerText`, which leaves out what CSS hides), less what
     `web_read` also leaves out: text under `aria-hidden` or the `hidden` attribute, or made transparent or

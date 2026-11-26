@@ -19,6 +19,7 @@ from jarvis.web.browser import (
     BrowserError,
     BrowserTimeoutError,
     Element,
+    UncertainActionError,
 )
 
 if TYPE_CHECKING:
@@ -770,7 +771,7 @@ def test_a_click_that_happened_but_the_page_then_failed_is_uncertain(
     fake.fail = after
     fake.fail_after = "click"
 
-    with pytest.raises(BrowserTimeoutError):
+    with pytest.raises(UncertainActionError):
         made.click(BUTTON, "https://site.example/")
 
     assert ["click", "@e1"] in fake.commands()
@@ -782,7 +783,7 @@ def test_typing_sent_then_an_error_page_is_uncertain(tmp_path: Path) -> None:
     made.open("https://site.example/")
     fake.on["press"] = lambda _c: setattr(fake.page, "url", "chrome-error://chromewebdata/")
 
-    with pytest.raises(BrowserTimeoutError):
+    with pytest.raises(UncertainActionError):
         made.fill(BOX, "https://site.example/", "cats", submit=True)
 
 
@@ -795,7 +796,7 @@ def test_a_click_refused_before_it_happened_is_a_plain_failure(tmp_path: Path) -
     with pytest.raises(BrowserError) as raised:
         made.click(BUTTON, "https://site.example/")
 
-    assert not isinstance(raised.value, BrowserTimeoutError)
+    assert not isinstance(raised.value, UncertainActionError)
 
 
 # --- time -------------------------------------------------------------------------------------

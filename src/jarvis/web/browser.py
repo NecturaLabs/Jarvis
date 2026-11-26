@@ -99,7 +99,15 @@ class BrowserError(Exception):
 
 
 class BrowserTimeoutError(BrowserError):
-    """The browser did not answer in time: an action sent to it may or may not have happened."""
+    """The browser did not answer in time: what was sent to it may or may not have happened."""
+
+
+class BrowserAnswerError(BrowserError):
+    """The browser answered, but its answer could not be read: what was sent to it ran."""
+
+
+class UncertainActionError(BrowserError):
+    """A click or typing was sent, and whether it happened is not known: never retry it blindly."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,8 +351,9 @@ class Browser:
 
         Raises:
             BrowserTimeoutError: it did not finish in time (the browser is then closed).
-            BrowserError: the request has no time left for it (nothing was sent), it could not
-                start, its answer is too big to read, or not what agent-browser writes.
+            BrowserAnswerError: its answer is too big to read, or not what agent-browser writes.
+            BrowserError: the request has no time left for it, or it could not start (nothing
+                was sent either way).
         """
         limit = _time_for_batch()
         if limit < MIN_BATCH_S:
@@ -373,7 +382,7 @@ class Browser:
             raise BrowserError(msg) from exc
         if len(out) > MAX_STDOUT:
             msg = "the page is too big to read"
-            raise BrowserError(msg)
+            raise BrowserAnswerError(msg)
         return _rows(out)
 
     def _idle(self) -> None:
@@ -477,23 +486,32 @@ class Browser:
         """Run commands, let the page settle, and return what it shows then.
 
         Raises:
-            BrowserTimeoutError: `acting` (a click, typing), the commands went through and the page
-                could not be read afterwards: the action happened, so it must not be retried as if
-                it had not.
-            BrowserError: the commands failed, or the page could not be read.
+            UncertainActionError: `acting` (a click, typing), and the commands were sent but the
+                browser did not answer, its answer could not be read, or one of them went
+                through and a later step or the page failed: what was sent may have happened, so
+                it must not be retried as if it had not.
+            BrowserTimeoutError: not `acting`, and the browser did not answer.
+            BrowserAnswerError: not `acting`, and its answer could not be read.
+            BrowserError: the commands failed before any went through, or the page could not be
+                read.
         """
         batch = [*commands, ["wait", str(SETTLE_MS)], *(list(c) for c in self._LOOK)]
         try:
-            rows = self._batch(batch)
-            done = rows[: len(commands)]
-            acted = len(done) == len(commands) and all(r.get("success") is True for r in done)
+            try:
+                rows = self._batch(batch)
+            except (BrowserTimeoutError, BrowserAnswerError) as exc:
+                if acting:
+                    msg = f"it was sent, but the browser's answer couldn't be read ({exc})"
+                    raise UncertainActionError(msg) from exc
+                raise
+            acted = any(row.get("success") is True for row in rows[: len(commands)])
             try:
                 self._done(rows, len(batch), what)
                 return self._read(rows)
             except BrowserError as exc:
                 if acting and acted:
-                    msg = f"it was done, but the page couldn't be read afterwards ({exc})"
-                    raise BrowserTimeoutError(msg) from exc
+                    msg = f"it may have gone through, but the page couldn't be read after ({exc})"
+                    raise UncertainActionError(msg) from exc
                 raise
         finally:
             self._idle()
@@ -573,13 +591,19 @@ class Browser:
     ) -> list[dict[str, Any]]:
         """Check that the page is still at `url` and shows `expect` under its reference.
 
-        `also` runs in the same call, after the page is looked at; their rows are returned.
+        `also` runs in the same call, after the page is looked at; their rows are returned. It
+        only reads the page: nothing has been done when it fails, a timeout included.
 
         Raises:
-            BrowserError: the page moved on or the element changed, so the yes no longer fits.
+            BrowserError: the page moved on or the element changed, so the yes no longer fits, or
+                the browser did not answer (then it is closed).
         """
         look = len(self._LOOK)
-        rows = self._batch([*(list(c) for c in self._LOOK), *also])
+        try:
+            rows = self._batch([*(list(c) for c in self._LOOK), *also])
+        except BrowserTimeoutError as exc:
+            msg = "the browser didn't answer before acting, so nothing was done"
+            raise BrowserError(msg) from exc
         self._done(rows, look + len(also), "look at the page")
         view = self._read(rows[:look])
         if view.url != url or view.element(expect.ref) != expect:
@@ -592,7 +616,7 @@ class Browser:
 
         With `href` (a link's, from `href`), the link must still point there.
 
-        A `BrowserTimeoutError` says the browser did not answer (the click may have happened).
+        An `UncertainActionError` says the click was sent and may have happened.
 
         Raises:
             BrowserError: the page changed, the link points elsewhere now, or the click failed.
@@ -611,7 +635,7 @@ class Browser:
     def fill(self, expect: Element, url: str, text: str, *, submit: bool) -> View:
         """Type `text` into a field the owner agreed to, then press Enter if `submit`.
 
-        A `BrowserTimeoutError` says the browser did not answer (the text may have been sent).
+        An `UncertainActionError` says the text was sent and may have reached the page.
 
         Raises:
             BrowserError: the page changed, the element takes no text, or typing failed.
@@ -696,16 +720,17 @@ def _rows(out: str) -> list[dict[str, Any]]:
     """Return the rows of a `batch --json` answer.
 
     Raises:
-        BrowserError: the answer is not a list of rows (agent-browser failed before the batch).
+        BrowserAnswerError: the answer is not a list of rows (agent-browser failed, perhaps
+            before the batch, perhaps not).
     """
     try:
         parsed: object = json.loads(out)
     except ValueError as exc:
         msg = "the browser gave an answer Jarvis doesn't read"
-        raise BrowserError(msg) from exc
+        raise BrowserAnswerError(msg) from exc
     if not isinstance(parsed, list):
         msg = "the browser couldn't start"
-        raise BrowserError(msg)
+        raise BrowserAnswerError(msg)
     return [
         cast("dict[str, Any]", row) for row in cast("list[object]", parsed) if isinstance(row, dict)
     ]

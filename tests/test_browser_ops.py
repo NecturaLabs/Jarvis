@@ -16,14 +16,22 @@ from jarvis.agent import Agent, Hooks
 from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
 from jarvis.config import Config
-from jarvis.operations import ArgumentError, Registry, request_scope, validate_args
+from jarvis.operations import (
+    ArgumentError,
+    OperationError,
+    Registry,
+    UncertainOutcomeError,
+    request_scope,
+    validate_args,
+)
 from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
-from jarvis.web.browser import Browser
+from jarvis.web.browser import MAX_STDOUT, Browser, BrowserTimeoutError
 from jarvis.web.browserops import NAMES, BrowserOps, act_summary
 from jarvis.web.ops import Clients, WebOps
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
     from jarvis.operations import Operation
@@ -269,6 +277,70 @@ def test_a_yes_holds_only_for_the_element_the_question_named(tmp_path: Path) -> 
 
     agent.handle("press search", Hooks(confirm=swap))
 
+    assert setup.clicks() == []
+
+
+def _too_big(setup: Setup) -> None:
+    setup.fake.on["click"] = lambda _c: setattr(setup.fake.page, "text", "x" * (MAX_STDOUT + 10))
+
+
+def _garbled(setup: Setup) -> None:
+    real = setup.fake.__call__
+
+    def answer(
+        argv: Sequence[str], *, stdin: str, env: Mapping[str, str], cwd: Path, timeout: float
+    ) -> str:
+        out = real(argv, stdin=stdin, env=env, cwd=cwd, timeout=timeout)
+        return "not json" if '"click"' in stdin else out
+
+    setup.browser._run = answer  # pyright: ignore[reportPrivateUsage] - the runner, faked
+
+
+def _enter_fails(setup: Setup) -> None:
+    setup.fake.fail = "press"
+
+
+@pytest.mark.parametrize(
+    ("args", "after"),
+    [
+        ({"element": "e1"}, _too_big),
+        ({"element": "e1"}, _garbled),
+        ({"element": "e2", "text": "cats"}, _enter_fails),
+    ],
+    ids=["too-big", "unreadable", "typed-then-enter-failed"],
+)
+def test_an_action_sent_whose_outcome_is_unknown_is_uncertain(
+    tmp_path: Path, args: dict[str, Any], after: Callable[[Setup], None]
+) -> None:
+    # Said as a failure, it would invite the owner to say yes to the same action again.
+    setup = Setup(tmp_path)
+    _opened(setup)
+    bound = setup.ops.bind(args)
+    after(setup)
+
+    with pytest.raises(UncertainOutcomeError):
+        setup.ops.act(bound)
+
+
+def test_a_browser_that_times_out_before_acting_says_nothing_was_done(tmp_path: Path) -> None:
+    setup = Setup(tmp_path)
+    _opened(setup)
+    bound = setup.ops.bind({"element": "e1"})
+    real = setup.fake.__call__
+
+    def slow_look(
+        argv: Sequence[str], *, stdin: str, env: Mapping[str, str], cwd: Path, timeout: float
+    ) -> str:
+        if stdin.startswith('[["get", "url"]'):
+            raise BrowserTimeoutError("the browser took too long")
+        return real(argv, stdin=stdin, env=env, cwd=cwd, timeout=timeout)
+
+    setup.browser._run = slow_look  # pyright: ignore[reportPrivateUsage] - the runner, faked
+
+    with pytest.raises(OperationError) as raised:
+        setup.ops.act(bound)
+
+    assert not isinstance(raised.value, UncertainOutcomeError)
     assert setup.clicks() == []
 
 
