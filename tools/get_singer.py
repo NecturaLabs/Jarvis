@@ -17,7 +17,7 @@ from typing import IO
 
 import httpx
 
-from jarvis import config
+from jarvis import config, models
 from jarvis.sing import soulx
 
 CHUNK = 1 << 20
@@ -101,12 +101,28 @@ def _copy(item: Download, response: httpx.Response, out: IO[bytes]) -> str:
     return digest.hexdigest()
 
 
+def _in_place(item: Download, target: Path) -> bool:
+    """Whether `target` is already the pinned release: the right size and sha256."""
+    try:
+        return target.stat().st_size == item.size and models.sha256_file(target) == item.sha256
+    except OSError:
+        return False
+
+
 def fetch(item: Download, folder: Path, client: httpx.Client) -> Path:
-    """Download `item` into `folder`, check it, and return its path; a bad file is not kept.
+    """Put `item` in `folder`, checked, and return its path; a bad file is not kept.
+
+    A file already there that is the pinned release is not downloaded again. Nothing but the
+    finished file is left in `folder`, whatever stops the download (a Ctrl-C included).
 
     Raises:
         DownloadError: the server failed, or the size or sha256 is not the release's.
     """
+    target = folder / item.name
+    if _in_place(item, target):
+        print(f"{item.name} is already in place")
+        return target
+    print(f"downloading {item.name} ({item.size:,} bytes)")
     with tempfile.NamedTemporaryFile(dir=folder, prefix=".part-", delete=False) as part:
         partial = Path(part.name)
         try:
@@ -117,16 +133,24 @@ def fetch(item: Download, folder: Path, client: httpx.Client) -> Path:
             partial.unlink(missing_ok=True)
             msg = f"could not download {item.url}: {exc}"
             raise DownloadError(msg) from exc
-        except DownloadError:
+        except BaseException:
             partial.unlink(missing_ok=True)
             raise
     if digest != item.sha256:
         partial.unlink(missing_ok=True)
         msg = f"{item.url} is not the pinned release (sha256 {digest})"
         raise DownloadError(msg)
-    target = folder / item.name
     partial.replace(target)
     return target
+
+
+def runner_in_place(binary: Path) -> bool:
+    """Whether the runner is there as the pinned build, beside at least one of its libraries."""
+    try:
+        known = models.verify("soulx-binary", binary).known
+    except OSError:
+        return False
+    return known is not None and any(binary.parent.glob("libggml*"))
 
 
 def _wanted(name: str) -> bool:
@@ -174,9 +198,10 @@ def install(data_dir: Path) -> str:
     folder.mkdir(parents=True, exist_ok=True)
     with httpx.Client(follow_redirects=True, timeout=TIMEOUT_S) as client:
         for item in MODEL_FILES:
-            print(f"downloading {item.name} ({item.size:,} bytes)")
             fetch(item, folder, client)
-        print(f"downloading the audio.cpp runner ({RUNNER.size:,} bytes)")
+        if runner_in_place(found.binary):
+            print("the audio.cpp runner is already in place")
+            return f"installed {soulx.MODEL}; the runner was already in place in {folder}"
         archive = fetch(RUNNER, folder, client)
     try:
         taken = unpack(archive, found.binary.parent)

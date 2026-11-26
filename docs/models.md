@@ -355,8 +355,10 @@ note against the note asked for, each song's length against the score's, and the
   `LICENSE`, `LICENSE.amphion` and `NOTICE`, and `audiocpp/` holding `audiocpp_cli`, its `libggml*` libraries and
   its `LICENSE`, from the audio.cpp v0.9.6 release `audio-v0.9.6-bin-ubuntu-x64-vulkan-portable.tar.gz`
   (93,520,711 bytes, sha256 `9effac5d…be361`). `uv run tools/get_singer.py` downloads them, checks each against
-  its size and sha256, and keeps only those files; Jarvis never downloads anything when it sings. `jarvis doctor`
-  hashes the model and the runner against the pinned releases.
+  its size and sha256, and keeps only those files; Jarvis never downloads anything when it sings. A file already there
+  with the right sha256 is not downloaded again, so the script can be run again to repair an install. `jarvis doctor`
+  hashes the model and the runner against the pinned releases and checks that the runner is executable with its
+  `libggml*` libraries beside it.
 - Licence: Apache-2.0 for the SoulX-Singer weights (model card and the GGUF repository's `LICENSE`, read
   2026-11-26), with the flow-matching part MIT (Amphion, `LICENSE.amphion`); audio.cpp is Apache-2.0 (its
   `LICENSE`). Both run as separate programs Jarvis starts; Jarvis ships none of their files. The paper says

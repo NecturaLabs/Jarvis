@@ -205,3 +205,53 @@ def test_without_the_kokoro_files_singing_says_what_is_missing(tmp_path: Path) -
 
     with pytest.raises(OperationError, match="Kokoro voice is not installed"):
         singer_for(cfg)()
+
+
+def _installed(data_dir: Path, *, executable: bool = True, libraries: bool = True) -> None:
+    found = soulx.files(data_dir)
+    found.binary.parent.mkdir(parents=True, exist_ok=True)
+    found.binary.write_bytes(b"")
+    found.binary.chmod(0o755 if executable else 0o644)
+    found.model.write_bytes(b"")
+    if libraries:
+        (found.binary.parent / "libggml-vulkan.so").write_bytes(b"")
+
+
+def _singer_checks(data_dir: Path, engine: str = "auto") -> dict[str, bool]:
+    cfg = Config.model_validate({"data_dir": str(data_dir), "sing": {"engine": engine}})
+    checks, _notes = engines.doctor_checks(cfg)
+    return {label.split(" ")[0]: ok for ok, label, _fix in checks}
+
+
+def test_the_doctor_passes_an_installed_runner_that_can_run(tmp_path: Path) -> None:
+    _installed(tmp_path)
+
+    checks = _singer_checks(tmp_path)
+
+    assert checks["executable"]
+    assert checks["libraries"]
+
+
+@pytest.mark.parametrize(
+    ("flaw", "failed"),
+    [({"executable": False}, "executable"), ({"libraries": False}, "libraries")],
+    ids=["not-executable", "no-libraries"],
+)
+def test_the_doctor_fails_a_runner_that_cannot_run(
+    tmp_path: Path, flaw: dict[str, bool], failed: str
+) -> None:
+    _installed(tmp_path, **flaw)
+
+    checks = _singer_checks(tmp_path)
+
+    assert not checks[failed]
+
+
+def test_the_doctor_leaves_the_runner_alone_when_soulx_is_not_used(tmp_path: Path) -> None:
+    _installed(tmp_path, executable=False, libraries=False)
+
+    assert "executable" not in _singer_checks(tmp_path, "speech")
+
+
+def test_the_phoneme_cache_is_bounded() -> None:
+    assert soulx._phones.cache_info().maxsize is not None  # pyright: ignore[reportPrivateUsage]

@@ -15,7 +15,7 @@ import struct
 import tempfile
 import wave
 from dataclasses import dataclass
-from functools import cache
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +43,7 @@ EDGE_S = 0.2  # silence before and after the song in both clips, a rest of SoulX
 TIMEOUT_S = 20.0  # a song of at most 30 s takes about 3 s on the reference GPU
 SEED = 2026
 MAX_ERROR_CHARS = 400
+PHONES_CACHED = 1024  # words whose phones are kept; a song has at most 64
 MIN_RATE, MAX_RATE = 8000, 192000
 MAX_SONG_S = 40.0  # the 30 s cap, its edges of silence and room
 
@@ -66,7 +67,7 @@ def files(data_dir: Path) -> Files:
     return Files(folder / "audiocpp" / BINARY, folder / MODEL)
 
 
-@cache
+@lru_cache(maxsize=PHONES_CACHED)
 def _phones(word: str) -> str:
     return "en_" + "-".join(arpabet.word(word))
 

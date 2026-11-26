@@ -1,6 +1,7 @@
 """Which singer sings: made from the config on the first song (`singer_for`)."""
 
 import logging
+import os
 from typing import TYPE_CHECKING
 
 from jarvis.operations import OperationError
@@ -96,6 +97,19 @@ def doctor_checks(cfg: Config) -> tuple[list[tuple[bool, str, str]], list[str]]:
     notes: list[str] = []
     if cfg.sing.engine == "soulx":
         checks += [(f.is_file(), f"file {f}", fix) for f in (found.binary, found.model)]
+    if cfg.sing.engine != "speech" and found.binary.is_file():
+        checks += [
+            (
+                os.access(found.binary, os.X_OK),
+                f"executable {found.binary}",
+                f"chmod +x {found.binary}",
+            ),
+            (
+                any(found.binary.parent.glob("libggml*")),
+                f"libraries beside {found.binary.name}",
+                "run tools/get_singer.py again",
+            ),
+        ]
     elif cfg.sing.engine == "auto" and not found.installed:
         notes.append(
             "note: Jarvis sings with its speaking voice; SoulX-Singer, a singing voice on the GPU, "
