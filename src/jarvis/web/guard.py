@@ -35,8 +35,7 @@ _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 _IPV4_COMPATIBLE = ipaddress.ip_network("::/96")
 # Deprecated (RFC 3879), and Python calls it global, but a network may still route it as its own.
 _SITE_LOCAL = ipaddress.ip_network("fec0::/10")
-# Linux's routing tables and addresses (`route`, `ipv6_route`, `if_inet6`): which networks this PC
-# reaches without a router.
+# Linux's routing tables and addresses: which networks this PC reaches without a router.
 NET_FILES = Path("/proc/net")
 _RTF_GATEWAY = 0x2
 _RTF_REJECT = 0x200
@@ -93,12 +92,17 @@ def is_public(address: str) -> bool:
 
 
 def _lines(name: str) -> list[list[str]]:
-    """Return the fields of each line of one of `NET_FILES`, none when it cannot be read."""
-    try:
-        text = (NET_FILES / name).read_text(encoding="ascii", errors="replace")
-    except OSError:
-        return []
+    """Return the fields of each line of one of `NET_FILES`."""
+    text = (NET_FILES / name).read_text(encoding="ascii", errors="replace")
     return [line.split() for line in text.splitlines()]
+
+
+def _optional_lines(name: str) -> list[list[str]] | None:
+    """Return IPv6 data, or None if the kernel does not expose this file."""
+    try:
+        return _lines(name)
+    except FileNotFoundError:
+        return None
 
 
 def _ipv4(field: str) -> ipaddress.IPv4Address:
@@ -120,9 +124,21 @@ def _links_v4() -> list[_Network]:
     return found
 
 
-def _links_v6() -> list[_Network]:
+def _own_v4() -> list[_Network]:
+    """Read the /32 host LOCAL entries from the IPv4 forwarding tables."""
+    found: set[ipaddress.IPv4Network] = set()
+    leaf = ""
+    for fields in _lines("fib_trie"):
+        if fields and fields[0] == "|--":
+            _, leaf = fields
+        elif leaf and fields == ["/32", "host", "LOCAL"]:
+            found.add(ipaddress.IPv4Network(leaf))
+    return list(found)
+
+
+def _links_v6(lines: list[list[str]]) -> list[_Network]:
     found: list[_Network] = []
-    for fields in _lines("ipv6_route"):
+    for fields in lines:
         try:
             if int(fields[8], 16) & (_RTF_GATEWAY | _RTF_REJECT) or int(fields[4], 16):
                 continue
@@ -134,9 +150,9 @@ def _links_v6() -> list[_Network]:
     return found
 
 
-def _own_v6() -> list[_Network]:
+def _own_v6(lines: list[list[str]]) -> list[_Network]:
     found: list[_Network] = []
-    for fields in _lines("if_inet6"):
+    for fields in lines:
         try:
             found.append(ipaddress.IPv6Network((int(fields[0], 16), 128)))
         except IndexError, ValueError:
@@ -147,17 +163,36 @@ def _own_v6() -> list[_Network]:
 def own_networks() -> list[_Network]:
     """Return the networks this PC reaches without a router, and each address of its own.
 
-    Read from the routing tables at each call (none where they cannot be read): a route with no
-    router (gateway 0) is a network the PC is on, unless it is wider than `_WIDEST_LINK`.
+    Read from the routing tables at each call. A route with no router (gateway 0) is a
+    network the PC is on, unless it is wider than `_WIDEST_LINK`.
+
+    Raises:
+        BlockedDestinationError: IPv4 data or either file on an IPv6-enabled system is unavailable.
     """
-    return [*_links_v4(), *_links_v6(), *_own_v6()]
+    msg = "couldn't check this PC's own networks"
+    try:
+        ipv4 = [*_links_v4(), *_own_v4()]
+        routes = _optional_lines("ipv6_route")
+        addresses = _optional_lines("if_inet6")
+    except (OSError, ValueError) as exc:
+        raise BlockedDestinationError(msg) from exc
+    if routes is None and addresses is None:
+        return ipv4
+    if routes is None or addresses is None:
+        raise BlockedDestinationError(msg)
+    return [*ipv4, *_links_v6(routes), *_own_v6(addresses)]
 
 
 def _on_own_network(address: str, networks: list[_Network]) -> bool:
     ip = ipaddress.ip_address(address.split("%", 1)[0])
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    return any(ip in net for net in networks)
+    embedded = None
+    if isinstance(ip, ipaddress.IPv6Address):
+        embedded = (
+            ipaddress.IPv4Address(int(ip) & _LOW_32_BITS)
+            if ip in _NAT64
+            else ip.ipv4_mapped or ip.sixtofour
+        )
+    return any(ip in net or (embedded is not None and embedded in net) for net in networks)
 
 
 def _lookup_within(lookup: Resolver, host: str, port: int) -> list[tuple[Any, ...]]:

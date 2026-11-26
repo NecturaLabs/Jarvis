@@ -39,16 +39,19 @@ quick commands.
 - **One way out.** `web/proxy.py` (`EgressProxy`) listens on 127.0.0.1 on a free port for each browser
   session. For every connection it resolves the host, refuses it unless every address is public, none is
   on one of this PC's own networks (its own addresses, and any network it reaches without a router, such
-  as the home network's global IPv6 prefix; read from the routing tables at each connection) and the port
-  is 80 or 443, and connects to the address it checked. Site-local IPv6 (`fec0::/10`), which Python counts
+  as the home network's global IPv6 prefix) and the port is 80 or 443, and connects to the address
+  it checked. The guard reads Linux route and local-address data for every connection and refuses it
+  if that data is unavailable. On IPv4-only systems both IPv6 files may be absent. Embedded IPv4
+  addresses are checked against the same networks. Site-local IPv6 (`fec0::/10`), which Python counts
   as global, is refused too. HTTPS and secure WebSockets are tunnelled
   unread (a `CONNECT` must name a host and a port and nothing else). Plain HTTP goes on with
   `Connection: close`. Anything else is refused. Only the session's own browser may use the proxy: each
   proxy has a random credential, which agent-browser is given in its environment (a program's arguments
   are readable by every user of the PC) and sends after the proxy's `407`, compared in constant time; any
-  other program on the PC is answered `407`. One session moves at most 200 MB. Its connections are capped
-  at 48 at once, a slot taken before a thread is made for one; a request head must arrive whole within
-  10 s, and at most 16 name lookups run at once, counting those the system never answered. A lookup that
+  other program on the PC is answered `407`. One session moves at most 200 MB. The proxy admits up to
+  48 connections at once, including up to eight awaiting authentication, with both limits checked before
+  starting a thread. Request heads are capped at 16 KiB and must arrive within two seconds. At most 16
+  name lookups run at once, including those the system never answered. A lookup that
   ends after the proxy stopped dials nothing. Chrome gets `--proxy-server` with
   `--proxy-bypass-list=<-loopback>`, so loopback goes through the proxy too, and a host-resolver rule that
   resolves no name itself. WebRTC may not send UDP past the proxy, and QUIC is off. A page's scripts,
@@ -67,9 +70,9 @@ quick commands.
   Chrome agent-browser installed (`--executable-path`), which agent-browser would otherwise look for under
   that home. Each launch has its own agent-browser session name and socket folder, so a web and a preview
   session in one Jarvis, or a launch after a close that did not end the last browser, never share one. A
-  browser whose close did not end it keeps its folder until a later start finds it gone (agent-browser's
-  record of it, in the socket folder, says so); the folders of a stopped Jarvis are swept the same way. A
-  folder that could not be made whole is removed. agent-browser reads no config of its own
+  browser whose close did not end it keeps its folder until the exit sweep or a later launch finds it
+  gone, using agent-browser's record in the socket folder. Folders left behind by a stopped Jarvis
+  are swept the same way. A failed startup removes its incomplete folder. agent-browser reads no config of its own
   (`--config` points at an empty file), so no extensions, plugins or saved logins. It runs headless,
   muted, with no display or sound-server variables and no version check, which would fetch past the
   proxy. Its action policy denies everything but the commands Jarvis sends: no scripts (`eval`), uploads,
@@ -95,7 +98,10 @@ quick commands.
     searchbox "Search" on shop.example and press Enter?'), and for a link where it goes, since its name can
     say anything ('Should I click the link "More" on shop.example, which goes to pay.example/checkout?').
     Where a link goes is the browser's own address for it (`this.href`, from `snapshot -u`), resolved
-    against the page's `<base href>` or its frame as a click would be, never joined by Jarvis.
+    against the page's `<base href>` or its frame as a click would be. Jarvis splits snapshot rows
+    on line feed and accepts a link only when its ref appears once and the role matches the structured
+    refs. The confirmation strips quotes and control characters from the element name. Jarvis refuses
+    an action if the page or destination host exceeds 80 characters so it can name the full host.
     The yes is bound to that element on that page, and a link to that address: if the page changed
     meanwhile, or the browser closed while the owner was asked (a question open longer than
     `idle_close_s`), nothing is done and no new browser is started for it. agent-browser keeps one ref for
@@ -104,12 +110,14 @@ quick commands.
     moment for one of the same role and name gets the click (agent-browser then finds the element by role
     and name); binding the click to the node itself would take a script in the page, which the action
     policy keeps off. What a click or a key does on a page is the page's own to decide either way. Typing is
-    `outbound`, at most 200 characters, never into a password, hidden or file field, which is refused
-    before the question (in the accessibility tree a password field is a plain text box, so its input type
-    is read). Enter goes to whatever has focus, so the field is focused again just before it, in the same
+    `outbound`, at most 200 characters. Jarvis refuses password, hidden and file fields before asking and
+    checks again just before typing. The accessibility tree shows a password field as a plain text box,
+    so Jarvis reads its input type in a separate call. A page can still change the type between that
+    check and typing. Enter goes to whatever has focus, so the field is focused again just before it, in the same
     call as the typing. Messages Jarvis writes for the model about an element never carry its name, which
     is the page's words. Once a click or typing is sent, a browser
-    that does not answer, an answer too big or garbled to read, or a later step that fails (typing went in,
+    that does not answer, a broken connection to the command process, an answer too big or garbled to read,
+    or a later step that fails (typing went in,
     Enter did not) is an uncertain outcome for the model, never a failure that invites a second yes; a check
     before acting that times out has done nothing and says so.
   - Everything the browser returns is web text (`Origin.WEB`), cut to the channel's room for one result.
@@ -119,8 +127,11 @@ quick commands.
     This is best effort, and the text stays web text either way: each hidden element's words are taken
     out after the last one taken out, in page order, whatever whitespace `innerText` put between them; a
     hidden text shorter than three characters stays (it could be part of a visible number), where the same
-    words also stand visible before it those are taken instead, and a page whose hidden texts cost more than
-    50 searched characters for each of its own is cut where the search stopped. Elements whose name is the
+    words also stand visible before it those are taken instead. A single pass finds which distinct hidden
+    texts occur in the browser's text. The ordered removal keeps the checked prefix if the search
+    budget runs out. A page whose rendered HTML exceeds 20,000 elements, or whose hidden text exceeds
+    160,000 characters, is too big to check: none of its text or elements is shown, and the model is
+    told so. Elements whose name is the
     words of an element inside a hidden one are not offered (the accessibility tree keeps what is only
     transparent or of no size); a name is at most 80 characters, and the list at most a third of a result.
   - Each call to agent-browser gets at most 40 s and ends 25 s before the request's own time limit
@@ -141,10 +152,12 @@ Coding mode ([ADR 0017](0017-coding-mode.md)) will want to open what it built. T
 page scripts read other files, and never through this web session. A preview is a separate session whose
 proxy allows exactly one loopback port and refuses everything else, the public internet included. Behind
 that port is a read-only file server Jarvis starts over one project folder, which coding mode hands over as
-a resolved path inside the file write roots (`app.files_boundary`). It serves regular files under that
+a resolved path inside the file write roots (`app.files_boundary`). At startup Jarvis opens the folder
+once and verifies the descriptor's path under `/proc/self/fd` against the allowed path. It serves regular files under that
 folder only, each with one name on disk (a hard link could be a file from outside), opened one folder at a
 time from the folder it holds open since it started and following no link, so a file or folder a build
-swaps for a link meanwhile is not followed. A type it does not know is sent as `application/octet-stream`,
+swaps for a link meanwhile is not followed. A directory index uses its slash-terminated URL so relative
+links resolve within the directory. A type it does not know is sent as `application/octet-stream`,
 never as a page, with `X-Content-Type-Options: nosniff`. It answers only its preview proxy: the proxy adds
 a random token of the server's to every request it sends on (replacing any the page sent), and the server
 also wants its own `127.0.0.1:<port>` as the request's host, so neither another program on this PC nor a

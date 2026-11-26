@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import http.server
 import os
 import socket
+from errno import EBADF
 from typing import TYPE_CHECKING
 
 import pytest
@@ -156,6 +158,7 @@ def test_a_file_or_folder_swapped_for_a_link_after_the_check_is_not_followed(
     real = Boundary.secret
 
     def swap_then_check(boundary: Boundary, path: Path) -> bool:
+        secret = real(boundary, path)
         if path.name == "notes.txt" and not (site / "css").is_symlink():
             if swapped == "file":
                 (site / "css" / "notes.txt").unlink()
@@ -163,11 +166,92 @@ def test_a_file_or_folder_swapped_for_a_link_after_the_check_is_not_followed(
             else:
                 (site / "css").rename(site / "css-old")
                 (site / "css").symlink_to(home)
-        return real(boundary, path)
+        return secret
 
     monkeypatch.setattr(Boundary, "secret", swap_then_check)
 
-    assert served.read("/css/notes.txt") in {None, b"project"}
+    assert served.read("/css/notes.txt") is None
+    assert (site / "css" if swapped == "folder" else site / "css" / "notes.txt").is_symlink()
+
+
+def test_the_opened_preview_root_must_still_be_inside_the_boundary(home: Path) -> None:
+    documents = home / "Documents"
+    served = FolderServer(documents / "site", _boundary(home))
+    relocated = home / "relocated"
+    documents.rename(relocated)
+    documents.symlink_to(relocated, target_is_directory=True)
+    assert documents.is_symlink()
+
+    try:
+        with pytest.raises(FileRefusalError):
+            served.start()
+    finally:
+        served.stop()
+
+
+def test_the_root_descriptor_closes_if_setting_up_the_server_fails(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    site = home / "Documents" / "site"
+    served = FolderServer(site, _boundary(home))
+    opened: list[int] = []
+    real_open = os.open
+
+    def remember(path: str | Path, flags: int, *args: int, **kwargs: int) -> int:
+        fd = real_open(path, flags, *args, **kwargs)
+        if path == site:
+            opened.append(fd)
+        return fd
+
+    def fail(*_args: object) -> http.server.ThreadingHTTPServer:
+        msg = "test listener could not start"
+        raise OSError(msg)
+
+    monkeypatch.setattr(os, "open", remember)
+    monkeypatch.setattr(http.server, "ThreadingHTTPServer", fail)
+    try:
+        with pytest.raises(OSError, match="test listener could not start"):
+            served.start()
+        (fd,) = opened
+        with pytest.raises(OSError, check=lambda exc: exc.errno == EBADF):
+            os.fstat(fd)
+    finally:
+        served.stop()
+
+
+def test_a_directory_without_its_slash_redirects_and_serves_html(
+    home: Path,
+    served: FolderServer,
+) -> None:
+    (home / "Documents" / "site" / "css" / "index.html").write_text("Directory", encoding="utf-8")
+    request = _from_proxy(served, b"GET /css?v=2 HTTP/1.0\r\n\r\n")
+    reply = _get(served.port, request)
+
+    assert reply.startswith(b"HTTP/1.0 308")
+    assert b"Location: /css/?v=2\r\n" in reply
+    page = _get(served.port, _from_proxy(served, b"GET /css/?v=2 HTTP/1.0\r\n\r\n"))
+    assert b"Content-Type: text/html\r\n" in page
+    assert page.endswith(b"Directory")
+
+
+def test_preview_file_opens_cannot_acquire_a_controlling_terminal(
+    served: FolderServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flags_used: list[int] = []
+    real_open = os.open
+
+    def remember(path: str | Path, flags: int, *args: int, **kwargs: int) -> int:
+        if path == "a.css":
+            flags_used.append(flags)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", remember)
+
+    assert served.read("/css/a.css") == b"h1{}"
+    (flags,) = flags_used
+    assert flags & os.O_NOCTTY
 
 
 def test_a_file_with_a_second_name_elsewhere_is_not_served(

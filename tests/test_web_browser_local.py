@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import http.server
+import os
 import shutil
 import socket
 import tempfile
@@ -20,6 +21,7 @@ import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, override
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -150,9 +152,14 @@ class Server:
 def root() -> Iterator[Path]:
     """A short folder for the sessions: a socket's path may be at most 103 bytes, and pytest's
     own folders are longer than Jarvis's runtime folder."""
-    made = Path(tempfile.mkdtemp(prefix="jb-"))
-    yield made / "browser"
-    shutil.rmtree(made, ignore_errors=True)
+    with tempfile.TemporaryDirectory(prefix="jb-") as made:
+        fd = os.open(made, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            # The scratch directory can have a long path. Use a short name for the same
+            # directory so agent-browser's session socket fits in a sockaddr_un.
+            yield Path(f"/proc/{os.getpid()}/fd/{fd}") / "browser"
+        finally:
+            os.close(fd)
 
 
 @pytest.fixture
@@ -177,6 +184,49 @@ def _proxy(server: Server, made: list[EgressProxy] | None = None) -> EgressProxy
     if made is not None:
         made.append(proxy)
     return proxy
+
+
+def _session_commands(folder: Path) -> list[bytes]:
+    """Return argv for this session's daemon, Chrome, and their descendants."""
+    roots = {int(path.read_text(encoding="ascii")) for path in (folder / "s").glob("*.pid")}
+    assert roots, "agent-browser did not record a daemon for this test"
+    children: dict[int, list[int]] = {}
+    for path in Path("/proc").glob("[0-9]*/stat"):
+        with contextlib.suppress(FileNotFoundError, ProcessLookupError, PermissionError):
+            parent = int(path.read_text(encoding="utf-8").rsplit(")", 1)[1].split()[1])
+            children.setdefault(parent, []).append(int(path.parent.name))
+    pids = list(roots)
+    commands: list[bytes] = []
+    while pids:
+        pid = pids.pop()
+        pids.extend(children.get(pid, ()))
+        with contextlib.suppress(FileNotFoundError, ProcessLookupError):
+            commands.append(Path(f"/proc/{pid}/cmdline").read_bytes())
+    return commands
+
+
+def test_the_proxy_password_stays_out_of_the_session_process_arguments(
+    root: Path,
+    server: Server,
+) -> None:
+    program = shutil.which("agent-browser")
+    assert program is not None
+    proxy = _proxy(server)
+    browser = Browser(program, root, idle_close_s=30, proxy=lambda: proxy)
+    try:
+        view = browser.open(f"http://{NAME}/download-page")
+        (link,) = (element for element in view.elements if element.role == "link")
+        assert view.goes_to(link.ref) == f"http://{NAME}/probe.bin"
+        password = urlsplit(proxy.url(proxy.port)).password
+        assert password
+        (folder,) = root.iterdir()
+        commands = _session_commands(folder)
+        assert any(b"agent-browser" in command for command in commands)
+        assert any(b"--user-data-dir=" in command for command in commands), "Chrome was not scanned"
+        if any(password.encode() in command for command in commands):
+            pytest.fail("the session's proxy password was present in process arguments")
+    finally:
+        browser.close()
 
 
 def test_page_scripts_frames_and_redirects_reach_nothing_on_this_pc(

@@ -11,8 +11,10 @@ import threading
 import time
 import warnings
 import zlib
+from collections import deque
 from dataclasses import dataclass
 from http import HTTPStatus
+from itertools import islice
 from typing import TYPE_CHECKING, Protocol, cast
 from urllib.parse import urljoin, urlsplit
 
@@ -38,6 +40,8 @@ MIN_HIDDEN_CHARS = 3
 # At most this many characters searched, for each of the page's own, to take hidden text out of
 # it; past that, the rest of the page is left out unchecked.
 SEARCH_WORK = 50
+# Cap the size of the search index for pathological pages with long hidden texts.
+MAX_HIDDEN_KEY_CHARS = 160_000
 # The first import of trafilatura changes the warning filters for a moment; two reads at once must
 # not, or the filter one sets can be left in place for good.
 _IMPORTING = threading.Lock()
@@ -246,8 +250,9 @@ class Hidden:
 
     `keys` are the words of each hidden element, without whitespace, in page order (one element
     for nested ones, none shorter than `MIN_HIDDEN_CHARS`). `names` are the one-line starts of
-    every element inside a hidden one, as an accessibility tree names them; None when the page
-    has more such elements than `MAX_ELEMENTS`, too many to tell.
+    every element inside a hidden one, as an accessibility tree names them; None when the
+    page has more than `MAX_ELEMENTS` elements or more than `MAX_HIDDEN_KEY_CHARS` of hidden
+    text, too much to check; nothing of such a page is shown.
     """
 
     keys: tuple[str, ...]
@@ -264,7 +269,10 @@ def hidden_parts(html: str, name_chars: int) -> Hidden:
     tree = _trafilatura().load_html(f"<html><body>{html}</body></html>")
     if tree is None:
         return Hidden((), frozenset())
-    found = cast("_Element", tree).xpath(_HIDDEN)
+    root = cast("_Element", tree)
+    if next(islice(root.iter(), MAX_ELEMENTS, None), None) is not None:
+        return Hidden((), None)
+    found = root.xpath(_HIDDEN)
     marked = set(found)
     outer = [e for e in found if not any(parent in marked for parent in e.iterancestors())]
     keys = tuple(
@@ -272,11 +280,11 @@ def hidden_parts(html: str, name_chars: int) -> Hidden:
         for element in outer
         if len(key := "".join("".join(element.itertext()).split())) >= MIN_HIDDEN_CHARS
     )
+    if sum(map(len, keys)) > MAX_HIDDEN_KEY_CHARS:
+        return Hidden((), None)  # too much hidden text to take out of the page's text
     names: set[str] = set()
     for element in outer:
         for inner in element.iter():
-            if len(names) >= MAX_ELEMENTS:
-                return Hidden(keys, None)
             if name := _start(inner, name_chars):
                 names.add(name)
     return Hidden(keys, frozenset(names))
@@ -294,28 +302,89 @@ def _start(element: _Element, chars: int) -> str:
     return " ".join("".join(pieces).split())[:chars]
 
 
+def _keys_in_text(text: str, keys: set[str]) -> set[str]:
+    """Find which distinct keys occur, with one pass through the text.
+
+    A trie with links to the longest suffix that is also a trie prefix (Aho-Corasick).
+    Record visited states, then mark their suffixes in reverse breadth-first order: even
+    when many keys end at the same character, each state is marked at most once.
+    """
+    edges: list[dict[str, int]] = [{}]
+    ends: dict[str, int] = {}
+    for key in keys:
+        state = 0
+        for char in key:
+            child = edges[state].get(char)
+            if child is None:
+                child = len(edges)
+                edges[state][char] = child
+                edges.append({})
+            state = child
+        ends[key] = state
+
+    suffixes = [0] * len(edges)
+    pending = deque(edges[0].values())
+    order: list[int] = []
+    while pending:
+        state = pending.popleft()
+        order.append(state)
+        for char, child in edges[state].items():
+            suffix = suffixes[state]
+            while suffix and char not in edges[suffix]:
+                suffix = suffixes[suffix]
+            suffixes[child] = edges[suffix].get(char, 0)
+            pending.append(child)
+
+    visited = bytearray(len(edges))
+    state = 0
+    for char in text:
+        while state and char not in edges[state]:
+            state = suffixes[state]
+        state = edges[state].get(char, 0)
+        visited[state] = 1
+    for state in reversed(order):
+        visited[suffixes[state]] |= visited[state]
+    return {key for key, end in ends.items() if visited[end]}
+
+
 def without_hidden(text: str, hidden: Hidden) -> str:
     """Return a browser's text of a page (`innerText`) without what the page hides from view.
 
     `innerText` already leaves out what CSS hides (`display: none`, `visibility: hidden`). What
     `web_read` also drops (`hidden`) is taken out of `text`, best effort: each hidden element's
     words in page order, each found after the one before it, whatever whitespace `innerText` put
-    between them. A hidden text the browser left out already costs a search of the rest of the
-    page; past `SEARCH_WORK` for each character, the rest is left out unchecked.
+    between them. Texts omitted by the browser are discarded in one pass. If an ordered search
+    would exceed the remaining work budget, leave out the unchecked suffix of the page.
     """
+    if hidden.names is None:
+        return ""
+    if not hidden.keys:
+        return text
     squeezed = "".join(text.split())
+    keys = {key for key in hidden.keys if len(key) <= len(squeezed)}
+    if not keys:
+        return text
+    if sum(map(len, keys)) > MAX_HIDDEN_KEY_CHARS:
+        return ""
+    present = _keys_in_text(squeezed, keys)
     budget = SEARCH_WORK * len(squeezed)
     gone: list[tuple[int, int]] = []
-    cursor = work = 0
+    cursor = 0
     for key in hidden.keys:
-        at = squeezed.find(key, cursor)
-        work += (at + len(key) if at >= 0 else len(squeezed)) - cursor
-        if work > budget:
+        if key not in present:
+            continue
+        limit = min(cursor + budget, len(squeezed))
+        at = squeezed.find(key, cursor, limit)
+        if at == -1 and limit < len(squeezed):
             gone.append((cursor, len(squeezed)))
             break
-        if at >= 0:  # else CSS hid it already, and `innerText` left it out
-            gone.append((at, at + len(key)))
-            cursor = at + len(key)
+        if at == -1:
+            budget -= limit - cursor
+            continue
+        end = at + len(key)
+        gone.append((at, end))
+        budget -= end - cursor
+        cursor = end
     return _cut_out(text, gone) if gone else text
 
 

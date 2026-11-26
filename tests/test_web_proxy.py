@@ -411,6 +411,46 @@ def test_a_request_head_sent_slowly_is_cut_at_one_deadline(
     assert upstream.received == []
 
 
+def test_an_oversized_request_head_is_refused_even_in_one_read() -> None:
+    sender, receiver = socket.socketpair()
+    with sender, receiver:
+        sender.sendall(
+            b"GET / HTTP/1.1\r\nX-Example: " + b"a" * proxy_module.MAX_HEAD + b"\r\n\r\n"
+        )
+        with pytest.raises(proxy_module.RefusedError, match="too long"):
+            proxy_module._head(receiver)  # pyright: ignore[reportPrivateUsage] - head framing
+
+
+def test_a_request_head_at_the_limit_can_arrive_with_a_body() -> None:
+    sender, receiver = socket.socketpair()
+    prefix = b"POST / HTTP/1.1\r\nX-Example: "
+    head = prefix + b"a" * (proxy_module.MAX_HEAD - len(prefix) - 4)
+    with sender, receiver:
+        sender.sendall(head + b"\r\n\r\nbody")
+        assert proxy_module._head(receiver) == (head, b"body")  # pyright: ignore[reportPrivateUsage]
+        assert receiver.gettimeout() == proxy_module.CONNECT_TIMEOUT_S
+
+
+def test_pending_connections_have_their_own_smaller_limit(
+    proxy: EgressProxy,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(proxy_module, "MAX_PENDING", 1, raising=False)
+    request = b"GET http://site.example/ HTTP/1.1\r\n\r\n"
+    with socket.create_connection(("127.0.0.1", proxy.port), timeout=5) as first:
+        # Accept the first socket before testing the pending limit. The test proxy has 48
+        # total slots, so a 503 here can only come from the separate limit.
+        deadline = time.monotonic() + 1
+        while not proxy.connections and time.monotonic() < deadline:
+            threading.Event().wait(0.005)
+        assert proxy.connections == 1
+        assert _ask(proxy, request).startswith(b"HTTP/1.1 503")
+        first.sendall(_signed(proxy, b"CONNECT site.example:443 HTTP/1.1\r\n\r\n"))
+        with first.makefile("rb") as response:
+            assert response.readline().startswith(b"HTTP/1.1 200")
+        assert _ask(proxy, request, signed=False).startswith(b"HTTP/1.1 407")
+
+
 def test_lookups_at_once_are_bounded(upstream: Upstream, monkeypatch: pytest.MonkeyPatch) -> None:
     # A lookup the system never answers outlives its caller; past the bound, more are refused.
     monkeypatch.setattr(proxy_module, "MAX_LOOKUPS", 2)

@@ -47,9 +47,10 @@ REFUSED_KEPT = (
     64  # hosts and ports last refused, so a page refused at its own address is told apart
 )
 MAX_CONNECTIONS = 48  # at once; Chrome opens about six per site
+MAX_PENDING = 8  # connections still waiting to authenticate
 # Name lookups at once, those the system never answered (each outlives its caller) included.
 MAX_LOOKUPS = 16
-HEAD_TIMEOUT_S = 10.0  # for a whole request head, however it trickles in
+HEAD_TIMEOUT_S = 2.0  # for a whole request head, however it trickles in
 CONNECT_TIMEOUT_S = 5.0
 IDLE_TIMEOUT_S = 60.0  # a tunnel with no byte either way for this long is closed
 _CHUNK = 64 * 1024
@@ -116,11 +117,9 @@ def _head(sock: socket.socket) -> tuple[bytes, bytes]:
         RefusedError: the head is too long, took too long, or the connection closed first.
     """
     deadline = time.monotonic() + HEAD_TIMEOUT_S
-    data = b""
-    while b"\r\n\r\n" not in data:
-        if len(data) > MAX_HEAD:
-            msg = "the request head is too long"
-            raise RefusedError(msg)
+    data = bytearray()
+    separator = b"\r\n\r\n"
+    while len(data) < MAX_HEAD:
         left = deadline - time.monotonic()
         if left <= 0:
             msg = "the request head took too long"
@@ -134,9 +133,18 @@ def _head(sock: socket.socket) -> tuple[bytes, bytes]:
         if not chunk:
             msg = "the connection closed before the request"
             raise RefusedError(msg)
-        data += chunk
-    head, _, rest = data.partition(b"\r\n\r\n")
-    return head, rest
+        scan_from = max(0, len(data) - len(separator) + 1)
+        data.extend(chunk)
+        end = data.find(separator, scan_from)
+        if end == -1:
+            continue
+        after = end + len(separator)
+        if after <= MAX_HEAD:
+            sock.settimeout(CONNECT_TIMEOUT_S)
+            return bytes(data[:end]), bytes(data[after:])
+        break
+    msg = "the request head is too long"
+    raise RefusedError(msg)
 
 
 def _forwarded_head(
@@ -178,33 +186,56 @@ class _Budget:
 
 
 class _Server(socketserver.ThreadingTCPServer):
-    """Takes a connection slot before a thread is made for a connection; past the cap, none."""
+    """Takes a pending slot and a total slot before making a connection thread."""
 
     daemon_threads = True
 
     def __init__(
         self,
         handler: type[socketserver.BaseRequestHandler],
-        slots: threading.BoundedSemaphore,
-        on_full: Callable[[socket.socket], None],
+        max_connections: int,
     ) -> None:
-        self.slots = slots
-        self._on_full = on_full
+        self._limit = max_connections
+        self._pending: set[socket.socket] = set()
+        self._authenticated: set[socket.socket] = set()
+        self._lock = threading.Lock()
         super().__init__((LOOPBACK, 0), handler)
+
+    def _admit(self, client: socket.socket) -> bool:
+        with self._lock:
+            if (
+                len(self._pending) >= MAX_PENDING
+                or len(self._pending) + len(self._authenticated) >= self._limit
+            ):
+                return False
+            self._pending.add(client)
+            return True
+
+    def authenticated(self, client: socket.socket) -> None:
+        """Release the pending slot once the credential has been checked."""
+        with self._lock:
+            self._pending.remove(client)
+            self._authenticated.add(client)
+
+    def _release(self, client: socket.socket) -> None:
+        with self._lock:
+            self._pending.discard(client)
+            self._authenticated.discard(client)
 
     @override
     def process_request(
         self, request: socket.socket | tuple[bytes, socket.socket], client_address: object
     ) -> None:
-        if not self.slots.acquire(blocking=False):
-            if isinstance(request, socket.socket):
-                self._on_full(request)
+        if not isinstance(request, socket.socket):
+            return
+        if not self._admit(request):
+            _turn_away(request)
             self.shutdown_request(request)
             return
         try:
             super().process_request(request, client_address)
         except BaseException:
-            self.slots.release()
+            self._release(request)
             raise
 
     @override
@@ -214,7 +245,8 @@ class _Server(socketserver.ThreadingTCPServer):
         try:
             super().process_request_thread(request, client_address)
         finally:
-            self.slots.release()
+            if isinstance(request, socket.socket):
+                self._release(request)
 
 
 class EgressProxy:
@@ -245,7 +277,6 @@ class EgressProxy:
         self._resolve = resolve
         self._connect = connect
         self._budget = _Budget(max_bytes)
-        self._slots = threading.BoundedSemaphore(max_connections)
         self._max_connections = max_connections
         self._lookups = threading.BoundedSemaphore(MAX_LOOKUPS)
         self._server: socketserver.ThreadingTCPServer | None = None
@@ -300,9 +331,9 @@ class EgressProxy:
         class Handler(socketserver.BaseRequestHandler):
             @override
             def handle(self) -> None:
-                proxy.serve(self.request)
+                proxy.serve(self.request, server.authenticated)
 
-        server = _Server(Handler, self._slots, _turn_away)
+        server = _Server(Handler, self._max_connections)
         thread = threading.Thread(
             target=server.serve_forever, args=(0.1,), name="jarvis-proxy", daemon=True
         )
@@ -346,13 +377,13 @@ class EgressProxy:
             self._open_sockets.discard(sock)
             self._clients.discard(sock)
 
-    def serve(self, client: socket.socket) -> None:
+    def serve(self, client: socket.socket, authenticated: Callable[[socket.socket], None]) -> None:
         """Handle one connection from the browser (its slot already taken): check, then pass on."""
         try:
             if self._track(client):
                 with self._lock:
                     self._clients.add(client)
-                self._serve(client)
+                self._serve(client, authenticated)
         except OSError:
             pass  # either side went away; nothing is left to tell
         finally:
@@ -360,12 +391,11 @@ class EgressProxy:
             with contextlib.suppress(OSError):
                 client.close()
 
-    def _serve(self, client: socket.socket) -> None:
+    def _serve(self, client: socket.socket, authenticated: Callable[[socket.socket], None]) -> None:
         """Read and check the request, then pass it on; a refused one is answered `403`.
 
         An `OSError` from either side comes through.
         """
-        client.settimeout(HEAD_TIMEOUT_S)
         try:
             head, rest = _head(client)
         except RefusedError as exc:
@@ -374,6 +404,7 @@ class EgressProxy:
         if not self._signed(head):
             _reply(client, b"407 Proxy Authentication Required", headers=_CHALLENGE)
             return
+        authenticated(client)
         try:
             upstream, first = self._open(head, rest)
         except (RefusedError, BlockedDestinationError) as exc:

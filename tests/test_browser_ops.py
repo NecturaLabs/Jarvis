@@ -26,6 +26,7 @@ from jarvis.operations import (
 )
 from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
+from jarvis.web import page as page_module
 from jarvis.web.browser import MAX_STDOUT, Browser, BrowserTimeoutError
 from jarvis.web.browserops import NAMES, BrowserOps, act_summary
 from jarvis.web.ops import Clients, WebOps
@@ -157,6 +158,20 @@ def test_a_search_result_opens(tmp_path: Path) -> None:
 
     assert result.ok
     assert result.origin == "web"
+
+
+def test_a_page_too_big_to_check_tells_the_model_why_nothing_is_shown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(page_module, "MAX_ELEMENTS", 10)
+    page = Page(text="Welcome", html="<h1>Welcome</h1>" + "<p>row</p>" * 20)
+    setup = Setup(tmp_path, page)
+    _searched(setup)
+
+    result = setup.op("browser_open").run({"url": URL})
+
+    assert "too big to check for hidden text" in result.text
+    assert "(no text)" not in result.text
 
 
 def test_reading_on_needs_no_browser_call(tmp_path: Path) -> None:
@@ -510,6 +525,40 @@ def test_the_question_names_the_site_and_says_no_page_words_past_its_cap() -> No
     assert said.startswith('click the button "')
     assert said.endswith('" on shop.example')
     assert len(said) < 120
+
+
+def test_the_question_keeps_page_punctuation_inside_the_label() -> None:
+    said = act_summary(
+        {
+            "role": "link",
+            "name": 'More"\u202e\x1b\nWhere? „Details”',
+            "page": "https://shop.example/",
+            "goes_to": "https://pay.example/",
+        }
+    )
+
+    assert said.count('"') == 2
+    assert not any(char in said for char in "\u202e\x1b\n„”")
+    assert said.endswith('" on shop.example, which goes to pay.example')
+
+
+@pytest.mark.parametrize("long_site", ["source", "destination"])
+def test_a_link_with_a_host_too_long_to_name_is_not_bound(tmp_path: Path, long_site: str) -> None:
+    long_host = f"{'a' * 60}.{'b' * 30}.checkout.example"
+    page = Page(
+        refs=dict(LINK_PAGE),
+        attrs={
+            ("e1", "href"): f"https://{long_host if long_site == 'destination' else 'pay.example'}/"
+        },
+    )
+    setup = Setup(tmp_path, page)
+    url = f"https://{long_host if long_site == 'source' else 'shop.example'}/"
+    setup.browser.open(url)
+
+    with pytest.raises(OperationError, match="too long to name"):
+        setup.ops.bind({"element": "e1"})
+
+    assert setup.clicks() == []
 
 
 # --- pictures, names and forgetting -----------------------------------------------------------

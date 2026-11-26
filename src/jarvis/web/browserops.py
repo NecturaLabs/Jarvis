@@ -10,6 +10,7 @@ bypassed (`Operation.always_ask`). Typing is `outbound` as well. The fences arou
 itself are in `jarvis.web.browser`.
 """
 
+import unicodedata
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -92,7 +93,15 @@ def _listed(elements: tuple[Element, ...], room: int) -> tuple[str, int]:
 
 def _where(args: dict[str, Any]) -> str:
     """Name a bound element and its site for a question."""
-    name = " ".join(str(args.get("name", "")).split())[:_SAID_NAME]
+    name = "".join(
+        char
+        if char.isprintable()
+        and char not in "\"'\u201e\u201a\uff02\uff07\uff1f?"
+        and unicodedata.category(char) not in {"Pi", "Pf"}
+        else " "
+        for char in str(args.get("name", ""))
+    )
+    name = " ".join(name.split())[:_SAID_NAME]
     role = str(args.get("role", "element"))
     host = urlsplit(str(args.get("page", ""))).hostname or "the page"
     label = f' "{name}"' if name else ""
@@ -106,10 +115,11 @@ def _goes_to(args: dict[str, Any]) -> str:
     parts = urlsplit(str(args["goes_to"]))
     if parts.scheme not in {"http", "https"} or not parts.hostname:
         return ", which goes to no web address"
-    address = parts.hostname + (parts.path if parts.path != "/" else "")
+    path = parts.path if parts.path != "/" else ""
     if parts.query:
-        address += f"?{parts.query}"
-    return f", which goes to {' '.join(address.split())[:_SAID_ADDRESS]}"
+        path += f"?{parts.query}"
+    shown_path = " ".join(path.split())[: max(0, _SAID_ADDRESS - len(parts.hostname))]
+    return f", which goes to {parts.hostname}{shown_path}"
 
 
 def act_summary(args: dict[str, Any]) -> str:
@@ -162,7 +172,13 @@ class BrowserOps:
         lines = [head]
         if len(parts) > 1:
             lines.append(f"Text, part {number} of {len(parts)} (browser_open with part for more):")
-        lines.append(parts[number - 1] or "(no text)")
+        if view.withheld:
+            lines.append(
+                "(Nothing of this page is shown: it is too big to check for hidden text. Try"
+                " another page or web_read.)"
+            )
+        else:
+            lines.append(parts[number - 1] or "(no text)")
         if view.elements:
             total = len(view.elements)
             more = f", the first {count} of {total}" if count < total else ""
@@ -245,6 +261,9 @@ class BrowserOps:
         if view is None or element is None:
             msg = "The page shows no such element now; open the page again."
             raise OperationError(msg)
+        if len(view.host) > _SAID_ADDRESS:
+            msg = "The page's host is too long to name in the confirmation."
+            raise OperationError(msg)
         typing = bool(str(args.get("text", "")).strip())
         if typing and element.role not in TYPABLE:
             # Not the element's name: that is the page's words, and this message is Jarvis's own.
@@ -267,9 +286,13 @@ class BrowserOps:
         }
         if element.role == "link" and not typing:
             try:
-                bound["goes_to"] = self._browser.href(ref)
+                destination = self._browser.href(ref)
             except BrowserError as exc:
                 raise OperationError(f"Couldn't read that link: {exc}.") from exc
+            if len(urlsplit(destination).hostname or "") > _SAID_ADDRESS:
+                msg = "The link's destination host is too long to name in the confirmation."
+                raise OperationError(msg)
+            bound["goes_to"] = destination
         return bound
 
     def act(self, args: dict[str, Any]) -> Result:

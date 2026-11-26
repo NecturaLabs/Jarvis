@@ -590,6 +590,13 @@ def _terminal_confirm(question: str) -> bool | Declined:
     return answer.strip().casefold() == "y" or is_yes(answer)
 
 
+def _terminal_confirm_always(question: str) -> bool | Declined:
+    """Require an answer from an interactive terminal, even when ordinary consent is bypassed."""
+    if not sys.stdin.isatty():
+        return Declined(NoReason.NO_ANSWER)
+    return _terminal_confirm(question)
+
+
 def cmd_ask(args: argparse.Namespace) -> int:
     """Answer one typed request and print the reply."""
     try:
@@ -601,7 +608,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
         (lambda q: print(q, "-> yes") is None) if args.yes else _terminal_confirm
     )
     # `--yes` cannot answer for a click or typing in the browser, which always asks (ADR 0016).
-    always = _terminal_confirm if args.yes else None
+    always = _terminal_confirm_always if args.yes else None
     reply = jarvis.agent.handle(
         " ".join(args.text),
         Hooks(confirm=confirm, confirm_always=always, waking=lambda: print("(waking up)")),

@@ -574,13 +574,16 @@ with no Chrome to drive. The tools:
 - `browser_screenshot` (the chat only) shows you one screen of the page. It asks nothing.
 - `browser_act` clicks something on the page, or types up to 200 characters into a text box (never a
   password field) and presses Enter. It always asks first, naming the element, the site and the words (and
-  where a link goes), even with `bypass_consent` on, and `jarvis ask --yes` asks it on the terminal. `[boundaries.classes]` can switch it off (`deny`) or
+  where a link goes), even with `bypass_consent` on. With `jarvis ask --yes`, browser actions require
+  an answer on an interactive terminal. Jarvis refuses actions when it cannot identify the link
+  or fit the full host in the question. `[boundaries.classes]` can switch it off (`deny`) or
   ask for the confirm key (`strong`), never set it to run unasked.
 
 The browser runs headless and muted, opens no window, and uses a throwaway profile and home folder in
 `$XDG_RUNTIME_DIR/jarvis/browser/`: none of your browsers, cookies, logins or Downloads. Every connection it makes goes
 through a proxy Jarvis runs on loopback, which reaches only public addresses on ports 80 and 443, so a
-page cannot reach this PC (Strata, SearXNG) or your home network. Downloads, uploads, page scripts run by
+page cannot reach this PC (Strata, SearXNG) or your home network. The browser and `web_read` both
+refuse connections when they cannot check this PC's own networks. Downloads, uploads, page scripts run by
 Jarvis, cookies and other tabs are refused. It closes after `idle_close_s`, and when the conversation is
 forgotten, so it uses nothing between requests. A yes given after it closed (a question left open longer
 than `idle_close_s`) does nothing; ask again and Jarvis opens the page anew.

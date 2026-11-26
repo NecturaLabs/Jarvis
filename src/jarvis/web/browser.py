@@ -62,12 +62,13 @@ MAX_PARTS = 20
 TYPABLE = frozenset({"textbox", "searchbox", "combobox"})
 # Input types never typed into; a password field's role is a plain `textbox`.
 UNTYPABLE = frozenset({"password", "hidden", "file"})
-# A link's line in `snapshot -i -u`'s text: its name (a JSON string, so nothing the page wrote can
-# end it), then `[…ref=eN, url=…]`. The address is the browser's own (`this.href`), which has no
-# whitespace when it is http or https; the `]` after it closes the brackets.
-_LINK_LINE = re.compile(
-    r'\s*- link(?: "(?:[^"\\]|\\.)*")? \[(?:[a-z]+(?:=[^,\]]*)?, )*ref=(e\d+), url=(\S*)'
+# A snapshot row starts with a role and an optional quoted name. Only metadata after the name
+# can supply a ref. A link's address is the browser's own (`this.href`).
+_REF_LINE = re.compile(
+    r'\s*- ([a-z][a-z0-9]*)(?: "(?:[^"\\]|\\.)*")?'
+    r" \[(?:[a-z]+(?:=[^,\]]*)?, )*ref=(e[0-9]+)(?=[,\]])"
 )
+_LINK_ADDRESS = re.compile(r"(?:, url=(\S*))?\]")
 # agent-browser's action names: only the commands this module sends, nothing else.
 ALLOWED_ACTIONS = (
     "navigate",
@@ -110,6 +111,7 @@ _KEPT_ENVIRONMENT = ("PATH", "XDG_RUNTIME_DIR", "LANG", "TZ")
 # The session folders in use in this process, so one Browser's sweep never takes another's.
 _IN_USE: set[Path] = set()
 _IN_USE_LOCK = threading.Lock()
+_SWEEP_AT_EXIT: set[Path] = set()
 _CHROME_ERROR = "chrome-error:"
 
 
@@ -121,8 +123,12 @@ class BrowserTimeoutError(BrowserError):
     """The browser did not answer in time: what was sent to it may or may not have happened."""
 
 
+class BrowserStartError(BrowserError):
+    """The command process could not start, so it sent nothing."""
+
+
 class BrowserAnswerError(BrowserError):
-    """The browser answered, but its answer could not be read: what was sent to it ran."""
+    """The browser's answer is unavailable: what was sent to it may have run."""
 
 
 class UncertainActionError(BrowserError):
@@ -147,6 +153,7 @@ class View:
     text: str
     elements: tuple[Element, ...]
     links: tuple[tuple[str, str], ...] = ()  # each link's ref and where the browser has it go
+    withheld: bool = False  # too big to check for hidden text, so none of it is shown
 
     def goes_to(self, ref: str) -> str:
         """Return the full address a link goes to, as the browser resolved it ("" for none)."""
@@ -181,24 +188,31 @@ def run_program(
     to its error stream is dropped. A `BrowserTimeoutError` says it did not finish in `timeout`
     seconds, and a `BrowserAnswerError` that it wrote more than `MAX_STDOUT`; it is stopped then.
 
+    An OSError after launch reports a communication failure.
+
     Raises:
-        OSError: it could not be started, or its pipes could not be made.
+        BrowserStartError: it could not be started, or its pipes could not be made.
     """
     import subprocess  # ruff: ignore[import-outside-top-level] - only a browser in use starts one, and a typed request may never need it
 
     deadline = time.monotonic() + timeout
-    with subprocess.Popen(
-        list(argv),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        env=dict(env),
-        cwd=cwd,
-    ) as process:
+    try:
+        process = subprocess.Popen(
+            list(argv),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=dict(env),
+            cwd=cwd,
+        )
+    except OSError as exc:
+        msg = f"the browser couldn't be started: {exc.strerror or type(exc).__name__}"
+        raise BrowserStartError(msg) from exc
+    with process:
         try:
             if process.stdin is None or process.stdout is None:  # both are piped
                 msg = "the browser's pipes are missing"
-                raise OSError(msg)
+                raise BrowserStartError(msg)
             return _read_capped(process.stdin, process.stdout, stdin.encode(), deadline)
         finally:
             if process.poll() is None:
@@ -254,18 +268,31 @@ def _elements(snapshot: Mapping[str, Any]) -> tuple[Element, ...]:
     return tuple(found)
 
 
-def _shown(snapshot: Mapping[str, Any], hidden: Hidden) -> tuple[Element, ...]:
-    """Return the elements a snapshot row lists, less those named by text the page hides.
+def _shown(
+    snapshot: Mapping[str, Any], hidden: Hidden
+) -> tuple[tuple[Element, ...], tuple[tuple[str, str], ...]]:
+    """Return usable elements and link destinations, excluding hidden and ambiguous refs.
 
     The accessibility tree keeps what is only made transparent or of no size. When the page
     hides too many elements to tell (`Hidden.names` is None), none is offered.
     """
     result = snapshot.get("result")
     if hidden.names is None or not isinstance(result, dict):
-        return ()
+        return (), ()
     names = hidden.names
-    found = _elements(cast("dict[str, Any]", result))
-    return tuple(element for element in found if element.name not in names)
+    data = cast("dict[str, Any]", result)
+    found = _elements(data)
+    links, invalid = _links(data, found)
+    linked = {ref for ref, _ in links}
+    shown = tuple(
+        element
+        for element in found
+        if element.name not in names
+        and element.ref not in invalid
+        and (element.role != "link" or element.ref in linked)
+    )
+    shown_refs = {element.ref for element in shown}
+    return shown, tuple(link for link in links if link[0] in shown_refs)
 
 
 def _field(row: Mapping[str, Any], key: str) -> str:
@@ -340,13 +367,17 @@ class Browser:
         except OSError as exc:
             msg = f"the browser's folder couldn't be made: {exc.strerror or type(exc).__name__}"
             raise BrowserError(msg) from exc
-        proxy = self._make_proxy()
+        started = False
         try:
+            proxy = self._make_proxy()
             proxy.start()
+            started = True
         except OSError as exc:
-            _release(folder, remove=True)
             msg = f"the browser's proxy couldn't start: {exc.strerror or type(exc).__name__}"
             raise BrowserError(msg) from exc
+        finally:
+            if not started:
+                _release(folder, remove=True)
         self._dir, self._proxy = folder, proxy
         self._session = f"jarvis-{secrets.token_hex(4)}"
         # The real home's: agent-browser no longer finds its own Chrome under the session's home.
@@ -428,6 +459,7 @@ class Browser:
         Raises:
             BrowserTimeoutError: it did not finish in time (the browser is then closed).
             BrowserAnswerError: its answer is too big to read, or not what agent-browser writes.
+            BrowserStartError: the command process could not start.
             BrowserError: the request has no time left for it, or it could not start (nothing
                 was sent either way).
         """
@@ -449,13 +481,13 @@ class Browser:
                 cwd=folder / "work",
                 timeout=limit,
             )
-        except BrowserTimeoutError, BrowserAnswerError:
+        except BrowserTimeoutError, BrowserAnswerError, BrowserStartError:
             self._shut()
             raise
         except OSError as exc:
             self._shut()
-            msg = f"the browser couldn't be started: {exc.strerror or type(exc).__name__}"
-            raise BrowserError(msg) from exc
+            msg = "communication with the browser failed"
+            raise BrowserAnswerError(msg) from exc
         if len(out) > MAX_STDOUT:  # a runner that read it whole
             self._shut()
             msg = "the page is too big to read"
@@ -574,12 +606,14 @@ class Browser:
             raise BrowserError(msg)
         hidden = hidden_parts(_field(html, "html"), MAX_NAME)
         page_text = without_hidden(_field(text, "text"), hidden)[:MAX_OUTPUT]
+        elements, links = _shown(snapshot, hidden)
         view = View(
             address,
             _one_line(_field(title, "title"), 160),
             page_text,
-            _shown(snapshot, hidden),
-            _links(snapshot),
+            elements,
+            links,
+            withheld=hidden.names is None,
         )
         self._view = view
         return view
@@ -611,7 +645,7 @@ class Browser:
                 rows = self._batch(batch)
             except (BrowserTimeoutError, BrowserAnswerError) as exc:
                 if acting:
-                    msg = f"it was sent, but the browser's answer couldn't be read ({exc})"
+                    msg = f"the action may have gone through, but its reply was lost ({exc})"
                     raise UncertainActionError(msg) from exc
                 raise
             acted = any(row.get("success") is True for row in rows[: len(commands)])
@@ -822,18 +856,28 @@ class Browser:
             return data
 
 
-def _links(snapshot: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
-    """Return each link's ref and address from a `snapshot -i -u` row's text."""
-    result = snapshot.get("result")
-    tree = cast("dict[str, object]", result).get("snapshot") if isinstance(result, dict) else None
+def _links(
+    snapshot: Mapping[str, Any], elements: tuple[Element, ...]
+) -> tuple[tuple[tuple[str, str], ...], set[str]]:
+    """Return link destinations and refs that are duplicated or have conflicting roles."""
+    tree = snapshot.get("snapshot")
     if not isinstance(tree, str):
-        return ()
+        return (), set()
+    roles = {e.ref: e.role for e in elements}
+    seen: set[str] = set()
+    invalid: set[str] = set()
     found: list[tuple[str, str]] = []
-    for line in tree.splitlines():
-        match = _LINK_LINE.match(line)
-        if match is not None and match.group(2).endswith("]"):
-            found.append((match.group(1), match.group(2)[:-1]))
-    return tuple(found)
+    for line in tree.split("\n"):
+        match = _REF_LINE.match(line)
+        if match is None:
+            continue
+        role, ref = match.groups()
+        if ref in seen or role != roles.get(ref):
+            invalid.add(ref)
+        seen.add(ref)
+        if role == "link" and (address := _LINK_ADDRESS.fullmatch(line, match.end())):
+            found.append((ref, address.group(1) or ""))
+    return tuple(link for link in found if link[0] not in invalid), invalid
 
 
 def _time_for_batch() -> float:
@@ -881,8 +925,11 @@ def _new_folder(root: Path) -> Path:
     """
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     _sweep(root)
-    folder = Path(tempfile.mkdtemp(prefix=f"session-{os.getpid()}-", dir=root))
     with _IN_USE_LOCK:
+        if root not in _SWEEP_AT_EXIT:
+            _SWEEP_AT_EXIT.add(root)
+            atexit.register(_sweep, root)
+        folder = Path(tempfile.mkdtemp(prefix=f"session-{os.getpid()}-", dir=root))
         _IN_USE.add(folder)
     try:
         _fill_folder(folder)

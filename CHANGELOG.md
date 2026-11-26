@@ -184,8 +184,15 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 - Web reads and the browser no longer reach a public address on one of this PC's own networks: its own
   addresses, and a network it reaches without a router, such as the home network's global IPv6 prefix
-  (read from the routing tables at each connection). Site-local IPv6 (`fec0::/10`), which Python counts as
-  global, is refused too.
+  (checked at each connection, including for embedded IPv4 addresses). Missing route or local-address
+  data now blocks the connection. Site-local IPv6 (`fec0::/10`) is refused too.
+- Browser confirmations reject ambiguous links, name the full host and require interactive input under
+  `jarvis ask --yes`. A lost browser reply after sending an action is reported as uncertain. Pages keep
+  their visible text when Chrome has already omitted hidden text; a page too big to check for hidden text
+  shows nothing, and the model is told why.
+- The browser proxy caps unauthenticated connections and request headers. Preview startup verifies its
+  open folder before serving and closes it if startup fails. Directory URLs redirect to the correct
+  index URL.
 - The chat archive survives a write that was cut short: moving a conversation kept in the first format is
   made again from that file, a half-written log line no longer swallows the next entry, and files no
   listed conversation owns are deleted once they are an hour old. `/forget all` that cannot delete says so

@@ -1632,9 +1632,13 @@ def test_jarvis_ask_with_yes_has_no_confirm_key(
     assert "I can't." in capsys.readouterr().out
 
 
-@pytest.mark.parametrize(("typed", "allowed"), [("y", True), ("n", False), (None, False)])
+@pytest.mark.parametrize(
+    ("terminal", "typed", "allowed"),
+    [(True, "y", True), (True, "n", False), (True, None, False), (False, "y", False)],
+    ids=["yes", "no", "eof", "piped-yes"],
+)
 def test_jarvis_ask_with_yes_still_asks_here_about_a_browser_click_or_typing(
-    monkeypatch: pytest.MonkeyPatch, typed: str | None, *, allowed: bool
+    monkeypatch: pytest.MonkeyPatch, typed: str | None, *, terminal: bool, allowed: bool
 ) -> None:
     # `--yes` cannot know which element a page will offer: an action that always asks is asked
     # on the terminal, and with no terminal to answer on it is refused.
@@ -1658,12 +1662,13 @@ def test_jarvis_ask_with_yes_still_asks_here_about_a_browser_click_or_typing(
 
     monkeypatch.setattr(cli, "build", build)
     monkeypatch.setattr("builtins.input", typing)
+    monkeypatch.setattr(cli.sys, "stdin", types.SimpleNamespace(isatty=lambda: terminal))
 
     assert main(["ask", "--yes", "buy", "it"]) == 0
 
     assert answers[0] is True
     assert (answers[1] is True) == allowed
-    assert asked == ['Should I click the button "Buy"? [y/n] ']
+    assert asked == (['Should I click the button "Buy"? [y/n] '] if terminal else [])
 
 
 @pytest.mark.parametrize(
