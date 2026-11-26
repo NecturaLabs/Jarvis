@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
 
-from jarvis import modes
+from jarvis import announce, modes
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.audio import (
     FRAME,
@@ -1098,6 +1098,8 @@ class VoiceLoop:
                 steered_by=steered_by,
                 scheduled=scheduled,
             )
+            if scheduled:
+                announce.publish(reply, announce.SCHEDULE)  # the request ran on its own: say so
             if not reply.strip() and self._first_words is None:
                 self._said_nothing = True
             return time.perf_counter() - started
@@ -1265,8 +1267,10 @@ class VoiceLoop:
             self._audit.record("schedule_due", **fields)
         if job.action == "remind":
             self.state = State.SPEAK
+            words = reminder_words(due)
+            announce.publish(words, announce.REMINDER)  # a text front end shows it too
             self._chime()
-            self._say(reminder_words(due))
+            self._say(words)
             return
         origin = Origin.PC_AUDIO if job.foreign else Origin.OWNER_SPEECH
         self._think(scheduled_request(job), origin, job.outside, scheduled=True)

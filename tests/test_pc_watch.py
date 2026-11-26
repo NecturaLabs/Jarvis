@@ -1,18 +1,20 @@
 """The screen watch tools: capture, clock and model faked, the compositor never asked to act."""
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 import pytest
+from test_pc_processes import OWNER, TICKS, FakeProc
 from test_pc_screenshot import Grim
 from test_pc_windows import FakeDesktop, make_window, seen
 
 from jarvis.agent import PICTURES_OFF
 from jarvis.audit import AuditLog
 from jarvis.operations import ArgumentError, OperationError, Result, request_scope, validate_args
+from jarvis.pc.processes import ProcessOps
 from jarvis.pc.screenshot import ScreenshotOps
 from jarvis.pc.watch import MAX_SAY, MAX_WATCHES, NEEDS_PICTURES, ScreenWatch
 from jarvis.pc.windows import WindowOps
@@ -50,13 +52,27 @@ class Time:
         return self.now
 
 
+class Frames(Grim):
+    """Vary raw PNG bytes independently of the decoded picture."""
+
+    frame: int | None = None
+
+    @override
+    def __call__(self, args: list[str]) -> bytes:
+        data = super().__call__(args)
+        frame = len(self.calls) if self.frame is None else self.frame
+        return data + frame.to_bytes(4)
+
+
 @dataclass
 class Rig:
     desktop: FakeDesktop
-    grim: Grim
+    grim: Frames
+    proc: FakeProc
     windows: WindowOps
     judge: FakeJudge
     clock: Time
+    awake: Time
     audit: AuditLog
     watch: ScreenWatch
 
@@ -66,6 +82,18 @@ class Rig:
 
     def stop(self, **args: Any) -> Result:  # ruff: ignore[any-type] - the arguments a test sets
         return self.watch.stop(args)
+
+    def prepare(self, **args: Any) -> dict[str, Any]:  # ruff: ignore[any-type] - the arguments a test sets
+        op = next(o for o in self.watch.operations() if o.name == "pc_watch")
+        assert op.prepare is not None
+        return op.prepare(validate_args(op, args))
+
+    def tick(self, seconds: float = 20, *, frame: int | None = None) -> list[str]:
+        self.clock.now += seconds
+        self.awake.now += seconds
+        if frame is not None:
+            self.grim.frame = frame
+        return self.watch.check_due()
 
     def events(self) -> list[str]:
         return [str(e["event"]) for e in self.audit.events]
@@ -80,15 +108,17 @@ def rig(tmp_path: Path) -> Rig:
         ],
         showing="1",
     )
-    grim = Grim(desktop)
+    grim = Frames(desktop)
+    proc = FakeProc(tmp_path / "proc")
+    processes = ProcessOps(proc=proc.root, uid=OWNER, ticks_per_s=TICKS)
     windows = WindowOps(desktop)
     shots = ScreenshotOps(
         windows, tmp_path, capture=grim, copy=lambda _d: True, now=lambda: datetime.now(UTC)
     )
-    judge, clock, audit = FakeJudge(), Time(), AuditLog(None)
-    watch = ScreenWatch(windows, shots, clock=clock, audit=audit)
+    judge, clock, awake, audit = FakeJudge(), Time(), Time(), AuditLog(None)
+    watch = ScreenWatch(windows, shots, processes, clock=clock, freeze_clock=awake, audit=audit)
     watch.attach(judge)
-    return Rig(desktop, grim, windows, judge, clock, audit, watch)
+    return Rig(desktop, grim, proc, windows, judge, clock, awake, audit, watch)
 
 
 def _listed_start(rig: Rig, **args: Any) -> Result:  # ruff: ignore[any-type] - the arguments a test sets
@@ -116,6 +146,40 @@ def test_the_window_must_come_from_a_listing_the_model_read(rig: Rig) -> None:
         with pytest.raises(OperationError, match="not read yet"):
             rig.start(of="window", window=1, condition="x")
     assert rig.watch.ready() is False
+
+
+@pytest.mark.parametrize(
+    ("args", "refusal"),
+    [
+        ({"of": "process"}, "Say which process"),
+        ({"of": "window", "condition": "x"}, "Say which window"),
+        ({"of": "window", "window": 1, "condition": "x"}, "not listed"),
+        ({"of": "workspace", "condition": "x"}, "Say which workspace"),
+        ({"of": "screen", "condition": "..."}, "Say what to look for"),
+    ],
+)
+def test_a_watch_that_would_be_refused_is_refused_before_the_question(
+    rig: Rig, args: dict[str, Any], refusal: str
+) -> None:
+    """Regression: a doomed watch reached the owner's question, then failed after the yes."""
+    with request_scope(foreign=False), pytest.raises(OperationError, match=refusal):
+        rig.prepare(**args)
+
+
+def test_a_screen_watch_is_refused_before_the_question_when_the_model_cannot_see(
+    rig: Rig,
+) -> None:
+    rig.judge.sight = False
+    with request_scope(foreign=False), pytest.raises(OperationError, match="picture"):
+        rig.prepare(of="screen", condition="a dialog")
+
+
+def test_a_watch_that_can_start_passes_its_arguments_through_unchanged(rig: Rig) -> None:
+    with request_scope(foreign=False):
+        seen(rig.windows)
+        bound = rig.prepare(of="window", window=1, condition="the build finished")
+    assert bound["window"] == 1
+    assert bound["condition"] == "the build finished"
 
 
 def test_a_listing_of_another_request_does_not_bind(rig: Rig) -> None:
@@ -538,3 +602,392 @@ def test_the_listing_shows_the_line_a_watch_will_say(rig: Rig) -> None:
     _listed_start(rig, say="go check the build")
 
     assert "go check the build" in rig.watch.list_watches({}).text
+
+
+WINDOW_PID = 4242
+
+
+def _window_process(rig: Rig, *, ticks: int = 0, state: str = "S") -> None:
+    rig.proc.add(
+        WINDOW_PID,
+        "worker",
+        argv=["/opt/worker"],
+        state=state,
+        utime=ticks // 2,
+        stime=ticks - ticks // 2,
+    )
+
+
+def _freeze_target(rig: Rig) -> None:
+    original = rig.desktop.open[0]
+    rig.desktop.open = [
+        replace(original, pid=WINDOW_PID, klass="window-class", title="outside title")
+    ]
+    rig.desktop.showing = original.workspace
+    _window_process(rig)
+
+
+def _freeze_start(rig: Rig, **args: Any) -> Result:  # ruff: ignore[any-type] - the arguments a test sets
+    _freeze_target(rig)
+    rig.grim.frame = 0
+    with request_scope(foreign=False):
+        seen(rig.windows)
+        return rig.start(of="window", window=1, frozen=True, **args)
+
+
+def _motion(rig: Rig) -> None:
+    assert rig.watch.check_due() == []
+    assert rig.tick(10, frame=1) == []
+    assert rig.tick(10, frame=2) == []
+
+
+def _frozen_for(seconds: int) -> list[str]:
+    return [f"Heads up: worker seems frozen: its picture has not changed for {seconds} seconds."]
+
+
+@pytest.mark.parametrize("changes", [0, 1])
+def test_a_freeze_watch_needs_two_changes_after_its_first_frame(rig: Rig, changes: int) -> None:
+    _freeze_start(rig, every_s=10)
+    assert rig.watch.check_due() == []
+    if changes:
+        assert rig.tick(10, frame=1) == []
+
+    for _ in range(5):
+        assert rig.tick(60) == []
+
+
+@pytest.mark.parametrize("elapsed", [59, 60])
+def test_a_freeze_watch_needs_sixty_seconds_even_after_three_identical_checks(
+    rig: Rig, elapsed: int
+) -> None:
+    _freeze_start(rig, every_s=10)
+    _motion(rig)
+
+    assert rig.tick(20) == []
+    assert rig.tick(20) == []
+    assert rig.tick(elapsed - 40) == (_frozen_for(60) if elapsed == 60 else [])
+
+
+def test_a_freeze_watch_needs_three_identical_checks_even_after_sixty_seconds(rig: Rig) -> None:
+    _freeze_start(rig, every_s=10)
+    _motion(rig)
+
+    assert rig.tick(30) == []
+    assert rig.tick(30) == []  # 60 seconds, only two identical checks
+    assert rig.tick(10) == _frozen_for(70)
+
+
+@pytest.mark.parametrize(("ticks", "alarmed"), [(114, True), (120, False), (126, False)])
+def test_a_freeze_at_sixty_seconds_requires_under_two_percent_cpu(
+    rig: Rig, ticks: int, alarmed: bool
+) -> None:
+    _freeze_start(rig, every_s=10)
+    _motion(rig)
+    assert rig.tick() == []
+    assert rig.tick() == []
+
+    _window_process(rig, ticks=ticks)  # 1.9%, 2.0%, or 2.1% of one core over 60 s
+    assert rig.tick() == (_frozen_for(60) if alarmed else [])
+
+
+@pytest.mark.parametrize("elapsed", [179, 180])
+def test_a_freeze_watch_can_alarm_at_180_seconds_even_with_high_cpu(rig: Rig, elapsed: int) -> None:
+    _freeze_start(rig, every_s=10)
+    _motion(rig)
+    _window_process(rig, ticks=20_000)
+    assert rig.tick(90) == []
+    assert rig.tick(elapsed - 90) == (_frozen_for(180) if elapsed == 180 else [])
+
+
+def test_a_hidden_workspace_pauses_freeze_time_and_cpu_without_resetting_the_streak(
+    rig: Rig,
+) -> None:
+    _freeze_start(rig, every_s=10)
+    _motion(rig)
+    assert rig.tick() == []
+    assert rig.tick() == []
+    captured = len(rig.grim.calls)
+    rig.desktop.showing = "1"
+    assert rig.tick(150) == []
+    assert rig.tick(150) == []
+    assert len(rig.grim.calls) == captured
+    _window_process(rig, ticks=20_000)  # CPU spent while hidden is not part of the shown streak
+    rig.desktop.showing = "2"
+
+    assert rig.tick() == []
+    assert rig.tick() == _frozen_for(60)
+
+
+def test_a_freeze_is_said_once_and_motion_rearms_only_after_two_changes(rig: Rig) -> None:
+    _freeze_start(rig, every_s=10)
+    _motion(rig)
+    assert rig.tick() == []
+    assert rig.tick() == []
+    assert rig.tick() == _frozen_for(60)
+    assert rig.tick(180) == []
+    assert rig.tick(10, frame=3) == ["worker is moving again."]
+    assert rig.tick(180) == []
+    assert rig.tick(10, frame=4) == []
+    assert rig.tick() == []
+    assert rig.tick() == []
+    assert rig.tick() == _frozen_for(60)
+    assert rig.tick() == []
+    assert [e["frozen"] for e in rig.audit.events] == [True] * 4
+    assert rig.events().count("watch_announced") == 3
+    assert rig.judge.shown == []
+    assert rig.desktop.ran == []
+
+
+@pytest.mark.parametrize(
+    ("state", "fact"), [("T", "is stopped"), ("D", "has been stuck"), ("Z", "has exited")]
+)
+def test_process_facts_take_precedence_over_a_freeze_on_the_same_streak(
+    rig: Rig, state: str, fact: str
+) -> None:
+    _freeze_start(rig, every_s=10)
+    _motion(rig)
+    if state == "D":
+        _window_process(rig, state=state)
+    assert rig.tick() == []
+    assert rig.tick() == []
+    _window_process(rig, state=state)
+    if state == "Z":
+        rig.desktop.open = []  # process exit takes precedence even if its window is gone
+
+    (line,) = rig.tick()
+    assert line.startswith("Heads up: worker (PID 4242)")
+    assert fact in line
+    assert rig.tick() == []
+    if state != "Z":
+        _window_process(rig)
+        assert rig.tick() == ["worker (PID 4242) is running again."]
+        assert rig.tick(180) == []  # first sample after recovery
+        assert rig.tick(180) == []  # the same streak was already explained
+        assert rig.tick(10, frame=3) == []
+
+
+def test_unchanged_condition_frames_keep_both_verdicts_and_skip_the_model(rig: Rig) -> None:
+    _listed_start(rig)
+    rig.grim.frame = 0
+    rig.judge.answers = [False, True, True, False, True]
+
+    assert rig.watch.check_due() == []
+    assert rig.tick() == []
+    assert len(rig.judge.shown) == 1
+    assert rig.tick(frame=1) == ["Heads up: the build finished."]
+    assert rig.tick(60) == []  # still YES after the cool-down
+    assert len(rig.judge.shown) == 2
+    assert rig.tick(frame=2) == []  # changed picture, still YES
+    assert rig.tick(frame=3) == []  # NO
+    assert rig.tick() == []
+    assert len(rig.judge.shown) == 4
+    assert rig.tick(frame=4) == ["Heads up: the build finished."]
+
+
+def test_a_combined_watch_captures_once_and_checks_the_condition_only_on_changes(rig: Rig) -> None:
+    _freeze_start(rig, condition="a dialog", every_s=10)
+    _motion(rig)
+    assert rig.tick() == []
+    assert rig.tick() == []
+    assert rig.tick() == _frozen_for(60)
+    assert len(rig.grim.calls) == 6
+    assert len(rig.judge.shown) == 3
+
+
+def test_a_freeze_only_watch_needs_no_picture_reader_and_explains_its_cost(rig: Rig) -> None:
+    rig.judge.sight = False
+    result = _freeze_start(rig)
+    assert "freeze" in result.text
+    assert "capture and a hash" in result.text
+    assert "no model call" in result.text
+    assert "freeze" in rig.watch.list_watches({}).text
+    assert rig.watch.check_due() == []
+    assert len(rig.grim.calls) == 1
+    assert rig.judge.shown == []
+
+
+def test_a_freeze_watch_binds_the_read_window_before_confirming(rig: Rig) -> None:
+    _freeze_target(rig)
+    op = next(o for o in rig.watch.operations() if o.name == "pc_watch")
+    assert op.prepare is not None
+    assert op.spoken_summary is not None
+    args = validate_args(op, {"of": "window", "window": 1, "frozen": True})
+    with request_scope(foreign=False):
+        rig.windows.list_windows({})
+        with pytest.raises(OperationError, match="not read yet"):
+            op.prepare(args)
+        seen(rig.windows)
+        bound = op.prepare(args)
+        question = op.spoken_summary(bound)
+        assert "freeze" in question
+        assert "outside title" not in question
+        another = make_window("0xa2", "a different class", "2", focused=True)
+        rig.desktop.open.append(another)
+        seen(rig.windows)
+        op.run(bound)
+
+    assert rig.watch.check_due() == []
+    assert rig.grim.calls == [["-T", "a1"]]
+
+
+@pytest.mark.parametrize("kind", ["screen", "workspace", "process"])
+def test_frozen_is_only_available_for_a_window(rig: Rig, kind: str) -> None:
+    with request_scope(foreign=False), pytest.raises(OperationError, match="window"):
+        rig.start(of=kind, frozen=True)
+
+
+def test_a_combined_watch_keeps_a_new_condition_edge_through_cooldown(rig: Rig) -> None:
+    _freeze_start(rig, condition="a dialog", every_s=10)
+    rig.judge.answers = [True, False, True]
+    line = ["Heads up: a dialog."]
+
+    assert rig.watch.check_due() == line
+    assert rig.tick(10, frame=1) == []
+    assert rig.tick(10, frame=2) == []
+    assert len(rig.judge.shown) == 3  # the last changed frame has already been judged
+    assert rig.tick(40) == line
+    assert rig.tick(10) == []
+    assert rig.tick(20) == _frozen_for(70)
+    assert len(rig.judge.shown) == 3
+
+
+def test_a_freeze_watch_expires_even_if_its_window_is_hidden(rig: Rig) -> None:
+    _freeze_start(rig, for_min=1)
+    rig.desktop.showing = "1"
+    assert rig.watch.check_due() == []
+    assert rig.tick(61) == ["My watch for a freeze is over."]
+    assert rig.events() == ["watch_started", "watch_stopped"]
+    assert rig.grim.calls == []
+
+
+@pytest.mark.parametrize("foreign", [True, False])
+def test_a_freeze_watch_only_accepts_the_owners_immediate_request(rig: Rig, foreign: bool) -> None:
+    op = next(o for o in rig.watch.operations() if o.name == "pc_watch")
+    assert op.prepare is not None
+    with (
+        request_scope(foreign=foreign, scheduled=not foreign),
+        pytest.raises(OperationError, match="own request"),
+    ):
+        op.prepare(validate_args(op, {"of": "window", "frozen": True, "window": 1}))
+    assert rig.grim.calls == []
+
+
+def test_freeze_watches_share_the_screen_watch_cap(rig: Rig) -> None:
+    _freeze_start(rig)
+    with request_scope(foreign=False):
+        rig.start(of="screen", condition="a dialog")
+        with pytest.raises(OperationError, match="Two watches"):
+            rig.start(of="screen", condition="a login")
+
+
+def test_a_combined_watch_keeps_checking_the_condition_when_hidden_during_cooldown(
+    rig: Rig,
+) -> None:
+    _freeze_start(rig, condition="a dialog", every_s=10)
+    rig.judge.answers = [True, False, True]
+    line = ["Heads up: a dialog."]
+
+    assert rig.watch.check_due() == line
+    rig.desktop.showing = "1"
+    assert rig.tick(10, frame=1) == []
+    assert rig.tick(10, frame=0) == []
+    assert rig.tick(40) == line
+    assert len(rig.judge.shown) == 3
+
+
+def test_a_suspend_does_not_count_as_time_with_a_shown_frozen_frame(rig: Rig) -> None:
+    _freeze_start(rig, every_s=10)
+    _motion(rig)
+
+    rig.clock.now += 180  # expiry and scheduling use wall time, even while asleep
+    assert rig.watch.check_due() == []
+    assert rig.tick() == []
+    assert rig.tick() == []
+    assert rig.tick() == _frozen_for(60)
+
+
+def test_an_unreadable_proc_sample_does_not_claim_the_process_exited(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _freeze_start(rig, every_s=10)
+    original = Path.read_text
+    unreadable = rig.proc.root / str(WINDOW_PID) / "stat"
+
+    def read(path: Path, *args: Any, **kwargs: Any) -> str:  # ruff: ignore[any-type] - Path.read_text's arguments
+        if path == unreadable:
+            msg = "fake proc read error"
+            raise OSError(msg)
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", read)
+        assert rig.watch.check_due() == []
+    assert rig.events() == ["watch_started", "watch_check_failed"]
+    assert rig.tick() == []
+    assert len(rig.grim.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("condition", "cost"),
+    [("", "capture and a hash"), ("a dialog", "a model call with a picture only when")],
+)
+def test_a_freeze_watch_discloses_its_cost_in_the_question_and_list(
+    rig: Rig, condition: str, cost: str
+) -> None:
+    _freeze_target(rig)
+    op = next(o for o in rig.watch.operations() if o.name == "pc_watch")
+    assert op.spoken_summary is not None
+    args = {"condition": condition} if condition else {}
+    with request_scope(foreign=False):
+        seen(rig.windows)
+        bound = rig.prepare(of="window", window=1, frozen=True, repeat=False, **args)
+        assert cost in op.spoken_summary(bound)
+        op.run(bound)
+    listing = rig.watch.list_watches({}).text
+    assert cost in listing
+    assert ("once" in listing) is bool(condition)
+
+
+def test_a_process_recovery_does_not_hide_a_combined_watch_condition_edge(rig: Rig) -> None:
+    _freeze_start(rig, condition="a dialog", every_s=10)
+    rig.judge.answers = [True, False, True]
+
+    assert rig.watch.check_due() == ["Heads up: a dialog."]
+    _window_process(rig, state="T")
+    assert "is stopped" in rig.tick(10)[0]
+    _window_process(rig)
+    assert rig.tick(10, frame=1) == ["worker (PID 4242) is running again."]
+    assert rig.tick(10, frame=0) == []
+    assert rig.tick(30) == ["Heads up: a dialog."]
+    assert len(rig.judge.shown) == 3
+
+
+def test_a_failed_combined_capture_does_not_drop_a_process_fact(rig: Rig) -> None:
+    _freeze_start(rig, condition="a dialog", every_s=10)
+    _window_process(rig, state="T")
+    rig.grim.fails = True
+
+    (line,) = rig.watch.check_due()
+
+    assert "is stopped" in line
+    assert "watch_check_failed" in rig.events()
+
+
+def test_a_missed_proc_read_breaks_an_unconfirmed_disk_wait(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _freeze_start(rig, every_s=10)
+    _window_process(rig, state="D")
+    assert rig.watch.check_due() == []
+
+    def unavailable(*_args: object) -> tuple[str, int]:
+        msg = "fake proc read error"
+        raise OSError(msg)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(rig.watch.processes, "sample", unavailable)
+        assert rig.tick() == []
+    assert rig.tick() == []  # first confirmed wait after the missed read
+    assert rig.tick() == []  # 20 seconds since that first read
+    (line,) = rig.tick()
+    assert "stuck for 40 seconds" in line

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from jarvis import __version__, paths, services
 from jarvis.operations import Operation, OperationError, Result
+from jarvis.pc.workspace import workspace_path, workspace_problem
 from jarvis.policy import Origin
 
 if TYPE_CHECKING:
@@ -146,6 +147,18 @@ def _model_lines(config: Config) -> list[str]:
     return [served, f"Strata run config: {run.path}."]
 
 
+def _workspace_fact(config: Config) -> str:
+    """Say what the workspace is now: always readable and writable only while it is in use."""
+    folder = config.files.workspace
+    problem = workspace_problem(workspace_path(config.files, Path.home()), create=False)
+    if problem:
+        return f"Your workspace {folder} is not in use: it {problem}."
+    return (
+        f"Your workspace {folder} is always readable and writable, and a bare file name is"
+        " saved there."
+    )
+
+
 def facts(config: Config, channel: str, limits: Limits) -> str:
     """Return what Jarvis is and how it is set up, one fact per line."""
     audio, bounds, files = config.audio, config.boundaries, config.files
@@ -183,8 +196,8 @@ def facts(config: Config, channel: str, limits: Limits) -> str:
         ),
         (
             f"Files: read in {', '.join(files.read_roots) or 'nowhere'}; written in"
-            f" {', '.join(files.write_roots) or 'nowhere'}. Shell command:"
-            f" {_yes(config.shell.enabled)}."
+            f" {', '.join(files.write_roots) or 'nowhere'}. {_workspace_fact(config)}"
+            f" Shell command: {_yes(config.shell.enabled)}."
         ),
         (
             f"Limits here: {limits.max_steps} model calls and {limits.max_tool_calls} tool calls"

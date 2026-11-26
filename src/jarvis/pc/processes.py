@@ -30,6 +30,7 @@ from jarvis.operations import (
     OperationError,
     Result,
     current_request,
+    inert,
 )
 from jarvis.pc import hyprland
 from jarvis.pc.hyprland import HYPR_TIMEOUT_S
@@ -52,6 +53,7 @@ COMM_MAX = 15  # a command name is cut to this many characters
 PF_KTHREAD = 0x00200000
 KTHREADD = 2
 STAT_PPID, STAT_FLAGS, STAT_START = 1, 6, 19  # fields 4, 9 and 22, counted after the comm
+STAT_UTIME, STAT_STIME = 11, 12  # fields 14 and 15
 MINUTE_S, HOUR_S, DAY_S = 60, 3600, 86400
 
 # Programs never listed or stopped, by the casefolded name of their command, executable or
@@ -144,6 +146,7 @@ class _Proc:
     start: int
     kernel: bool
     state: str
+    cpu_ticks: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,20 +290,22 @@ class ProcessOps:
 
     # --- reading /proc --------------------------------------------------------------------
 
-    def _text(self, pid: int, name: str) -> str:
+    def _text(self, pid: int, name: str, *, strict: bool = False) -> str:
         try:
             return (self._proc / str(pid) / name).read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        except OSError as exc:
+            if strict and not isinstance(exc, FileNotFoundError):
+                raise
             return ""
 
-    def _read(self, pid: int) -> _Proc | None:
-        stat = self._text(pid, "stat")
+    def _read(self, pid: int, *, strict: bool = False) -> _Proc | None:
+        stat = self._text(pid, "stat", strict=strict)
         head, sep, tail = stat.rpartition(")")
         fields = tail.split()
         if not sep or len(fields) <= STAT_START:
             return None
         uids: tuple[int, ...] = ()
-        for line in self._text(pid, "status").splitlines():
+        for line in self._text(pid, "status", strict=strict).splitlines():
             if line.startswith("Uid:"):
                 with contextlib.suppress(ValueError):
                     uids = tuple(int(value) for value in line.split()[1:])
@@ -308,11 +313,12 @@ class ProcessOps:
             return None
         try:
             ppid, flags, start = (int(fields[i]) for i in (STAT_PPID, STAT_FLAGS, STAT_START))
+            cpu_ticks = int(fields[STAT_UTIME]) + int(fields[STAT_STIME])
         except ValueError:
             return None
         comm = head.partition("(")[2]
         kernel = bool(flags & PF_KTHREAD) or KTHREADD in {pid, ppid}
-        return _Proc(pid, ppid, uids, comm, start, kernel, fields[0])
+        return _Proc(pid, ppid, uids, comm, start, kernel, fields[0], cpu_ticks)
 
     def _table(self) -> dict[int, _Proc]:
         table: dict[int, _Proc] = {}
@@ -562,7 +568,25 @@ class ProcessOps:
                 )
         if protected:
             lines.append("Also matching, but never stopped: " + "; ".join(protected) + ".")
-        return Result("\n".join(lines), Origin.PROCESS)
+        rows = {item.proc.pid: inert(self._line(item)) for item in shown}
+        return Result("\n".join(lines), Origin.PROCESS, delivered=self._reached(request, rows))
+
+    def _reached(self, request: Request | None, rows: dict[int, str]) -> Callable[[str], None]:
+        """Return what keeps only the PIDs whose whole row reached the model.
+
+        The agent cuts a long result to its cap: a PID in a row it cut, or cut short, was never
+        read, so it may not be stopped or watched.
+        """
+
+        def reached(body: str) -> None:
+            with self._lock:
+                if self._shown.request is not request:
+                    return
+                for pid, row in rows.items():
+                    if f"\n{row}" not in body:
+                        self._shown.targets.pop(pid, None)
+
+        return reached
 
     # --- stop_process ---------------------------------------------------------------------
 
@@ -585,13 +609,28 @@ class ProcessOps:
             raise OperationError(msg)
         return request
 
-    def _listed(self, request: Request, pid: int) -> tuple[str, int, str]:
+    def _listed(self, request: Request, pid: int, verb: str = "stop") -> tuple[str, int, str]:
+        """Return what `find_processes` listed for `pid` in `request`, read by the model.
+
+        A PID written beside its listing, in the same model message, is a guess: refused, as a
+        window number is.
+
+        Raises:
+            OperationError: the PID was not listed in this request, or not read yet.
+        """
         with self._lock:
             target = self._shown.targets.get(pid) if self._shown.request is request else None
+            unread = target is not None and request.message <= self._shown.message
         if target is None:
             msg = (
-                f"PID {pid} was not listed by find_processes in this request. Call "
-                "find_processes with the name the owner said first, and stop only a PID it lists."
+                f"PID {pid} was not listed by find_processes in this request. Call find_processes "
+                f"with the name the owner said first, and {verb} only a PID it lists."
+            )
+            raise OperationError(msg)
+        if unread:
+            msg = (
+                "The process list was not read yet: call find_processes alone, read it, then use "
+                "a PID from it."
             )
             raise OperationError(msg)
         return target
@@ -636,22 +675,7 @@ class ProcessOps:
                 "say which program to watch in a request of its own."
             )
             raise OperationError(msg)
-        with self._lock:
-            target = self._shown.targets.get(pid) if self._shown.request is request else None
-            unread = target is not None and request.message <= self._shown.message
-        if target is None:
-            msg = (
-                f"PID {pid} was not listed by find_processes in this request. Call "
-                "find_processes with the name the owner said first, and watch only a PID it lists."
-            )
-            raise OperationError(msg)
-        if unread:
-            msg = (
-                "The process list was not read yet: call find_processes alone, read it, then use "
-                "a PID from it."
-            )
-            raise OperationError(msg)
-        program, start, _ = target
+        program, start, _ = self._listed(request, pid, "watch")
         proc = self._read(pid)
         if proc is None or proc.start != start:
             msg = f"PID {pid} is no longer the {program} that was listed"
@@ -663,16 +687,42 @@ class ProcessOps:
 
         None once it is gone: another process may have its PID by then.
         """
-        proc = self._read(pid)
+        sample = self.sample(pid, start, strict=False)
+        return sample[0] if sample is not None else None
+
+    def window_target(self, pid: int) -> tuple[str, int]:
+        """Return the program and start time of a PID from a bound window.
+
+        Raises:
+            OperationError: the PID cannot be read or does not belong to the owner.
+        """
+        proc = self._read(pid) if pid > 1 else None
+        if proc is None or not self._owned(proc):
+            msg = "I can't read the process for that window."
+            raise OperationError(msg)
+        return self._program(proc), proc.start
+
+    @property
+    def ticks_per_s(self) -> int:
+        """The clock tick rate used by the process stat counters."""
+        return self._ticks
+
+    def sample(self, pid: int, start: int, *, strict: bool = True) -> tuple[str, int] | None:
+        """Return the process state and CPU ticks, or None if that process ended.
+
+        In strict mode an I/O error other than a missing file is a failed check.
+        """
+        proc = self._read(pid, strict=strict)
         if proc is None or proc.start != start:
             return None
-        if proc.state == "Z" and self._threads(pid) > 1:
-            return "S"  # its first thread ended, the others run: the program has not exited
-        return proc.state
+        state = proc.state
+        if proc.state == "Z" and self._threads(pid, strict=strict) > 1:
+            state = "S"  # its first thread ended, the others run: the program has not exited
+        return state, proc.cpu_ticks
 
-    def _threads(self, pid: int) -> int:
+    def _threads(self, pid: int, *, strict: bool) -> int:
         """Return how many threads the process has, from its `status` (1 when it does not say)."""
-        for line in self._text(pid, "status").splitlines():
+        for line in self._text(pid, "status", strict=strict).splitlines():
             if line.startswith("Threads:"):
                 with contextlib.suppress(ValueError, IndexError):
                     return int(line.split()[1])

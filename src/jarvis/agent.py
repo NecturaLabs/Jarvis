@@ -37,6 +37,7 @@ from jarvis.model import ModelMissingError, RemoteModelError, Thinking
 from jarvis.operations import (
     REMEMBERED,
     REMEMBERED_LISTING,
+    UNASKED_ARG,
     ArgumentError,
     OperationError,
     OperationStoppedError,
@@ -502,6 +503,13 @@ def _wrapped(origin: str, text: str, cap: int) -> str:
             cut = cut[:amp]
         body = cut
     return f"{head}{body}{tail}"
+
+
+def _handed(result: Result, body: str) -> str:
+    """Return `body`, the result as the model gets it, once the operation was told (`delivered`)."""
+    if result.delivered is not None:
+        result.delivered(body)
+    return body
 
 
 def _text(message: Mapping[str, Any]) -> str:
@@ -1108,7 +1116,7 @@ class Agent:
         self._audit = audit
         self._overrides = overrides
         self._limits = limits or Limits()
-        self._schemas = tokens(json.dumps(registry.tool_schemas()))
+        self._schemas = tokens(json.dumps(registry.tool_schemas(every=True)))
         self._fixed = tokens(system_prompt) + self._schemas
         self._memory = Conversation(self._memory_budget(), self._limits.memory_idle_s)
         self._memory_file = memory_file
@@ -1127,6 +1135,7 @@ class Agent:
         self._modes: Modes = modes or _OneMode()
         self._mode: str = "normal"
         self._switched = False  # this request already moved to another mode
+        self._spoken = False  # the request in flight was handed over from speech
         self._ends = 0.0  # when the request in flight runs out of time
         self._shared_pictures = False  # the request in flight came with pictures
         self._follow_mode()
@@ -1143,7 +1152,7 @@ class Agent:
         self._limits = setup.limits
         self._pictures = setup.pictures
         self._model = setup.model or self._model
-        self._schemas = tokens(json.dumps(setup.registry.tool_schemas()))
+        self._schemas = tokens(json.dumps(setup.registry.tool_schemas(every=True)))
         self._fixed = tokens(setup.system_prompt) + self._schemas
         self._memory.budget = self._memory_budget()
         self._last_used = 0
@@ -1419,8 +1428,12 @@ class Agent:
         *,
         steered_by: Collection[str] = (),
         scheduled: bool = False,
+        spoken: bool = False,
     ) -> str:
         """Answer one spoken request and return the reply.
+
+        With `spoken`, the words are the owner's spoken ones, handed over by the voice service
+        (`chat_hand_off`): the request is audited with that source.
 
         With `hooks.speak` the reply is also spoken through it, the first sentences while the
         model still writes the rest. A request cut short (`hooks.cancelled`) returns only what
@@ -1451,6 +1464,7 @@ class Agent:
         request from the next and a request heard in PC audio from the owner's.
         """
         foreign = origin not in TRUSTED_ORIGINS
+        self._spoken = spoken
         handed_over = foreign or bool(steered_by) or scheduled
         own = "" if handed_over else _own_words(text, self._outside_pastes(text, pasted))
         self._switched = False
@@ -1499,7 +1513,13 @@ class Agent:
         if outside:
             whole = outside == [text]
             shown["pasted"] = len(text) if whole else sum(len(paste) for paste in pasted)
-        self._audit.record("request", text=text, origin=origin.value, **shown)
+        self._audit.record(
+            "request",
+            text=text,
+            origin=origin.value,
+            **shown,
+            **({"source": "spoken"} if self._spoken else {}),
+        )
         if pictures and not self._pictures:
             self._audit.record("reply", text=PICTURES_OFF, seconds=0.0)
             return PICTURES_OFF
@@ -1833,6 +1853,9 @@ class Agent:
                 hooks.hush()
             hooks.quiet()
             return ""
+        if len(results) == 1 and results[0].ends and results[0].ok and results[0].spoken:
+            self._cut(stream)  # the work went elsewhere: the operation's line is the whole reply
+            return results[0].spoken
         answer = self._no_action_reply(calls, results)
         if answer is None:
             self._cut(stream)  # the model answers again; what it said here was not its reply
@@ -2094,7 +2117,9 @@ class Agent:
         """
         taint = (turn.untrusted, turn.private)
         if turn.request is not None:
-            turn.request.next_message()  # these calls were written before any of their results
+            turn.request.next_message(
+                len(calls)
+            )  # these calls were written before any of their results
         results: list[Result] = []
         if any(_name(call) == SWITCH_MODEL for call in calls) and self._offers_switch():
             ran = self._run_switch(calls, hooks, turn, taint=taint, cut=cut)
@@ -2123,6 +2148,13 @@ class Agent:
             hooks.play(result.sound)
             turn.played = True
         return replace(result, sound=None)  # played: the conversation keeps only its words
+
+    @staticmethod
+    def _note_tried(turn: _Turn) -> None:
+        """Note that a call that could change something was tried, in the turn and the request."""
+        turn.tried = True
+        if turn.request is not None:
+            turn.request.note_action()
 
     def _with_look(self, result: Result, turn: _Turn) -> str:
         """Return a result's text, saying whether the model sees the screenshot it brought.
@@ -2162,7 +2194,7 @@ class Agent:
                 turn.looked.append(f"{name} {asked}")
                 del turn.looked[:-MAX_LOOK_UPS_KEPT]  # the newest are what a follow-up asks about
         if tried and not going_on and (op is None or op.side_effect):
-            turn.tried = True
+            self._note_tried(turn)
             if op is not None and (result.ok or result.acted):
                 turn.succeeded = True
                 if result.spoken:
@@ -2179,7 +2211,11 @@ class Agent:
             turn.private = turn.private or result.origin in PRIVATE_ORIGINS
             body = _wrapped(result.origin.value, text, self._limits.tool_text_chars)
         turn.messages.append(
-            {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": body}
+            {
+                "role": "tool",
+                "tool_call_id": str(call.get("id", "")),
+                "content": _handed(result, body),
+            }
         )
         return result
 
@@ -2522,8 +2558,11 @@ class Agent:
             self._overrides,
             untrusted_in_context=tainted,
             private_in_context=private and op.sends_words(args),
+            unasked=self._unasked(op, args),
         )
         decision, consent = self._consent(decision, op)
+        if decision.unasked:  # the operation holds the call to what it judged, as it runs
+            args = {**args, UNASKED_ARG: decision.unasked}
         stopped = _REFUSALS.get(decision.verdict)
         if decision.verdict is Verdict.STRONG and hooks.confirm_key is None:
             stopped = _NO_KEY
@@ -2531,6 +2570,9 @@ class Agent:
             bound = self._attempt(op.prepare, op, args, asked_for)
             if isinstance(bound, _Failed):
                 stopped = bound.result
+                # Nothing ran: the same call may be made again once what refused it changed
+                # (a listing read, say); the step and call caps still bound the retries.
+                turn.seen.discard(asked_for)
             else:
                 args = bound
         digest = action_hash(op.name, args)
@@ -2606,6 +2648,20 @@ class Agent:
             spoken=f"That's {limit} actions in {span}, the most I take, so I didn't do that one. "
             "Ask again in a few minutes.",
         )
+
+    @staticmethod
+    def _unasked(op: Operation, args: dict[str, Any]) -> str:
+        """Return why this call needs no question for the operation's own sake, or "".
+
+        The operation's check reads the disk, so a failure of it is a question, never a run.
+        """
+        if op.unasked is None:
+            return ""
+        try:
+            return op.unasked(args)
+        except Exception:
+            log.exception("%s could not tell whether to ask; it will ask", op.name)
+            return ""
 
     def _consent(self, decision: Decision, op: Operation) -> tuple[Decision, dict[str, str]]:
         """Return the decision to act on, and the audit fields of a question that was bypassed.

@@ -24,6 +24,38 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   the same model asks for the groups it needs with `use_tools`. A tool of a group it has not asked for is
   not run. It stays off by default until a live run shows it as accurate and not slower
   ([ADR 0022](docs/adr/0022-tool-router.md)).
+- `jarvis acp` serves Jarvis to coding apps that speak the Agent Client Protocol, T3 Code's "Local ACP
+  command" among them. Each session is a chat conversation of its own with the same agent and the model
+  Strata already serves, answered in text. Pictures work as in the chat. A question about an action is asked
+  in the reply and your next message is the answer; a permission button in the app never stands for your yes
+  ([ADR 0023](docs/adr/0023-acp-front-end.md)). `jarvis doctor` says how to add it when T3 Code is set up.
+- `jarvis acp` lists Jarvis's normal and coding modes as the app's models, each under the name of the model
+  that serves it and what it is for, with a thinking effort that starts at the mode's own (`none` and
+  `medium` by default), so T3 Code shows Jarvis once. A thread in coding mode works with the coding prompt,
+  `[coding.chat]` limits, tools and write roots; `--coding` makes coding mode the first choice. Where
+  coding mode has a model of its own, a thread's first request in it loads that model as `/model coding`
+  does and says so in the reply. A pushed announcement goes to the newest open thread that runs Jarvis.
+- Reminders also reach open text front ends: the voice service publishes each line it says as an
+  announcement, the control socket streams them to a subscriber (`subscribe`), and `jarvis acp` writes each as
+  `Jarvis: <line>` into every session's next reply, since T3 Code shows nothing that arrives between requests.
+  Still no desktop notifications. The reply to a scheduled request is announced too, and the chat window shows
+  each announcement as a dim `Jarvis:` line.
+- `jarvis acp` can show an announcement in T3 Code at once: it sends the line into the newest open T3 Code
+  thread that runs Jarvis with T3 Code's own `t3 thread send`, and answers that turn with the line itself, no
+  model and no tool, for a tag only Jarvis can make (`[acp]` in the configuration: `push_to_t3`, off until you turn it on, `t3_command`,
+  `t3_provider`). A message with Jarvis's mark and no valid tag is dropped. Without `t3` or such a thread the line waits for the next reply.
+- Give Jarvis a workspace folder, `files.workspace` (default `~/Documents/Jarvis`, made mode 0700), that is
+  always readable and writable whatever the roots say. A file written with a bare name or relative path goes
+  there, `/export` in the chat saves there, `pc_shell` starts there and the prompt tells the model where it
+  is. A new file in it, or a later write to a file Jarvis made there, needs no yes unless outside text is in
+  the request; replacing a file you put there still asks. A folder that is a link, another user's or writable
+  by others, or below a folder others can write to, is not used and `jarvis doctor` says why; hidden names there always ask. See [ADR 0025](docs/adr/0025-workspace-folder.md).
+- The voice service and the chat work as two channels that cooperate ([ADR 0028](docs/adr/0028-voice-and-chat-as-two-channels.md)).
+  A spoken request no longer shows in an open chat window. `chat_hand_off`, offered to speech only while a chat window is open,
+  hands your spoken words for the chat's own work to that window as your own input: it joins the request the window is running
+  or starts one, marked as spoken, and Jarvis says one short line. The words are always your own transcript, never the model's; PC audio,
+  scheduled requests, a request that read outside text and one that holds other work are refused, and only the
+  voice service process itself can hand words to a window.
 - Your own skills: Markdown files in `~/.config/jarvis/skills/` are listed in the prompt and read with
   `read_skill` like the shipped ones. A file is read only when it and its folder are yours alone, it is no
   link, and it fits the size limits. `jarvis doctor` names any file it left out. Jarvis's file operations
@@ -67,8 +99,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   720; `repeat`), said by voice in a fixed line built from what you asked for, never words read off the
   screen. `pc_watches` lists and `pc_watch_stop` stops. Two at most, only in `jarvis run`, only
   between requests (a check under way gives way to the wake word), said when it starts to show (a line that
-  stays up is said once), optionally in the model's own short `say` line, and each check is one model call
-  with a picture ([ADR 0021](docs/adr/0021-screen-watch.md), proposed).
+  stays up is said once), optionally in the model's own short `say` line. A condition uses a model call
+  only when the capture changes ([ADR 0021](docs/adr/0021-screen-watch.md), proposed).
+- Window freeze watches: set `frozen=true` on a listed window to hear when its picture seems frozen
+  and when it moves again. A hidden workspace pauses the check for a freeze. The watch reports
+  process exits, stops and waits on a disk or device before guessing from the picture. The
+  `condition` is optional, and a freeze-only watch uses no model calls.
 - Every `jarvis` command answers a script or an AI agent in one line of JSON with `--agent` (or
   `--agent-format`, or `JARVIS_AGENT_FORMAT=1`): `command`, `ok` and `exit`, then its own keys (`doctor`,
   `status`, `tools`, `speed`, `consent`) or its output lines, even for a wrong argument or a crash. Interactive
@@ -261,6 +297,22 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- With a shared Strata run config, the ACP coding provider keeps the current model mode and
+  uses the normal context budget. Coding requests hold off automatic model restarts while they answer.
+- ACP cancel and close stop deferred prompts and suppress late chunks. Confirmation answers are
+  accepted only after the question is written. Announcements rejected as busy stay queued even if
+  T3 Code delivers them before the push command returns.
+- T3 Code announcement key creation refuses a lock file with the wrong type, owner or permissions.
+- A PID or window number counts as read only when its whole row reached the model: a listing the
+  agent cut to fit its cap no longer lets a later call take a row the model never saw. A call that
+  was refused before it could run (a listing not read yet) may be made again in a later step, and a
+  watch that would fail for want of a target, a condition or pictures is refused before the question.
+
+- `stop_process` and a process watch take only a PID from a `find_processes` listing the model has
+  read, as a window number must be: one written beside its listing, in the same message, is refused.
+  A process watch that would be refused (outside text, a PID not listed) is refused before the
+  owner is asked about it.
+
 - Web reads and the browser no longer reach a public address on one of this PC's own networks: its own
   addresses, and a network it reaches without a router, such as the home network's global IPv6 prefix
   (checked at each connection, including for embedded IPv4 addresses). Missing route or local-address
@@ -367,13 +419,30 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- `/config` in the chat is set as Claude Code's settings screen is: the sections are tabs across the top
+  (Tab and Shift+Tab, or ← → on the tab row), typing anywhere searches every section, and each setting is
+  one line with its value in an aligned column and `❯` on the one the keyboard is on. What it does and when a
+  change applies are said once under the list, a risky setting is marked `⚠` beside its value, and "the
+  voice service restarts when you close settings" shows only while a change waits for it. Enter turns an
+  on-or-off setting over and opens a short list of values for any other (← → still step through them).
+  A space typed into the search is part of it. Times read as 30 s, 10 min or 4 h. The tools are a Tools tab
+  (Enter or → moves one on, ← back). The footer grows to hold the longest text, and in a narrow window the tab
+  row scrolls (`‹ ›`) so the active tab stays in view. The restart note is never cut: the text on
+  what a setting does is shortened first. It works at 80 columns by 24 rows, scrolling
+  the list while the footer stays.
+- The lines under the input are set in the box's columns: hints at the left, the status ending at the box's right
+  edge, and the PC's load and the context on the next line, with fixed-width figures, one quiet `·` between
+  items and whole items dropped, never half a word, in a narrow window. The command menu has a frame of its own
+  in line with the box, and a long description ends in `…`.
+- `config.example.toml` lists `while_working`, `response_format` and `archive_keep`.
 - The chat's remembered conversation takes what the context window leaves (`chat.memory_tokens` unset
   by default, was 5,700): a longer prompt or more tools take from it instead of failing the defaults.
   The defaults leave it at least 5,000 tokens. A set number still caps it.
 - Jarvis puts the choice it recommends first, and marks it with its reason, whenever it offers choices.
-
-- The chat's default `memory_tokens` is now 5700 (was 6200), so the default 24,576-token window
-  still holds it beside the new window and screenshot tools.
+- The opt-in pre-commit hook runs only the non-local tests affected by staged files. CI runs the
+  full non-local suite. Rerun `tools/install-hooks.sh` to update an installed hook.
+- A setting changed in the chat's `/config` restarts the voice service only once the voice loop is idle (a note the voice service acts on, even if the window closed), and `jarvis pause`
+  frees the model only once no request anywhere (a chat window's included) is being answered.
 - `jarvis doctor` ends with the names of the checks that failed, not only their count, writes every note
   the same way (`note …`), and colours its status words on a terminal (never in a pipe or with `NO_COLOR`).
 - Speech keeps a short memory for quick commands: `agent.memory_idle_s` is now `300.0` (was `1800.0`), so the

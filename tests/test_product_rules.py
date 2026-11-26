@@ -55,6 +55,9 @@ SUBPROCESS_FILES = {
     "pc/shell.py": "`pc_shell`, the opt-in `strong` shell ADR 0002 allows (#19): "
     "`systemd-run --user --scope` with fixed limits and `setpriv --no-new-privs`, and "
     "`systemctl --user stop` of that scope",
+    "t3push.py": "T3 Code's own `t3 thread list` and `t3 thread send`, with fixed argument lists "
+    "and the words on standard input, to show an announcement in the thread that runs `jarvis "
+    "acp` (ADR 0023, the owner's request, 2026-11-26)",
     "web/browser.py": "`agent-browser`, headless, with fixed options and only the commands its "
     "action policy allows, every connection through web/proxy.py (ADR 0016)",
 }

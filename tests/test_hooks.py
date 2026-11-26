@@ -1,8 +1,7 @@
 """The opt-in git hooks in tools/hooks and tools/install-hooks.sh, driven in throwaway repositories.
 
-A fake `uv` first on PATH records its arguments, so no real check or test run starts. Each repo
-lives in `tmp_path` with HOME and the global git config pointed there, so nothing of the real
-repository or the maintainer's git configuration is read or changed.
+A fake `uv` first on PATH records its arguments and runs the selector. Lint and pytest are stubbed.
+Each repo lives in `tmp_path` with its own HOME and git config.
 """
 
 import json
@@ -36,7 +35,13 @@ record = {{
 }}
 with Path(os.environ["FAKE_UV_LOG"]).open("a", encoding="utf-8") as log:
     log.write(json.dumps(record) + "\\n")
-sys.exit(1 if os.environ.get("FAKE_UV_FAIL") in sys.argv[1:] else 0)
+if os.environ.get("FAKE_UV_FAIL") in sys.argv[1:]:
+    sys.exit(1)
+if "tools/affected_tests.py" in sys.argv[1:]:
+    args = sys.argv[sys.argv.index("tools/affected_tests.py"):]
+    os.execv(sys.executable, [sys.executable, *args])
+if "pytest" in sys.argv[1:]:
+    sys.exit(int(os.environ.get("FAKE_UV_PYTEST_STATUS", "0")))
 """
 
 _PROBE = """#!/usr/bin/env bash
@@ -64,6 +69,9 @@ class Sandbox:
         self.root = root
         self.repo = root / "repo"
         self.repo.mkdir()
+        tools = self.repo / "tools"
+        tools.mkdir()
+        shutil.copyfile(TOOLS / "affected_tests.py", tools / "affected_tests.py")
         self.uv_log = root / "uv.log"
         bin_dir = root / "bin"
         bin_dir.mkdir()
@@ -134,6 +142,9 @@ def sandbox(tmp_path: Path) -> Sandbox:
 
 
 PRIVATE = ["run", "--quiet", "python", "tools/check_private.py", "--staged"]
+SELECTOR = ["run", "--quiet", "python", "tools/affected_tests.py", "--staged", "--null"]
+LINT = ["run", ".lint/check.sh"]
+PYTEST = ["run", "pytest", "-q", "-m", "not local"]
 
 
 def _uv_commands(box: Sandbox) -> list[list[str]]:
@@ -173,25 +184,28 @@ def test_pre_commit_skips_when_nothing_is_staged(sandbox: Sandbox) -> None:
         "src/jarvis/new.py",
         "src/jarvis/new.pyi",
         "tools/run.sh",
+        "tools/data.json",
         "pyproject.toml",
         "docs/plan.md",
+        "docs/image.png",
         ".github/workflows/ci.yml",
+        ".github/labels.json",
+        ".github/CODEOWNERS",
         "uv.lock",
         "tools/hooks/extra-hook",
         "docs/with space.md",
     ],
 )
-def test_pre_commit_runs_the_checks_for_a_relevant_file(sandbox: Sandbox, name: str) -> None:
+def test_pre_commit_lints_a_relevant_file_without_affected_tests(
+    sandbox: Sandbox, name: str
+) -> None:
     sandbox.stage(name)
 
     done = sandbox.run(PRE_COMMIT)
 
     assert done.returncode == 0, done.stderr
-    assert _uv_commands(sandbox) == [
-        PRIVATE,
-        ["run", ".lint/check.sh"],
-        ["run", "pytest", "-q", "-m", "not local"],
-    ]
+    assert "skipped pytest" in done.stderr
+    assert _uv_commands(sandbox) == [PRIVATE, SELECTOR, LINT]
 
 
 def test_pre_commit_runs_the_checks_for_a_deleted_python_file(sandbox: Sandbox) -> None:
@@ -202,17 +216,45 @@ def test_pre_commit_runs_the_checks_for_a_deleted_python_file(sandbox: Sandbox) 
     done = sandbox.run(PRE_COMMIT)
 
     assert done.returncode == 0, done.stderr
-    assert len(_check_calls(sandbox)) == 2
+    assert _uv_commands(sandbox) == [PRIVATE, SELECTOR, LINT]
+
+
+def test_pre_commit_lints_a_worktree_without_the_selector(sandbox: Sandbox) -> None:
+    (sandbox.repo / "tools/affected_tests.py").unlink()
+    sandbox.stage("tests/test_changed.py")
+
+    done = sandbox.run(PRE_COMMIT)
+
+    assert done.returncode == 0, done.stderr
+    assert "this worktree has no affected-test selector" in done.stderr
+    assert _uv_commands(sandbox) == [PRIVATE, LINT]
 
 
 def test_pre_commit_runs_the_tests_silently(sandbox: Sandbox) -> None:
-    sandbox.stage("a.py")
+    test_file = "tests/test_changed\nname.py"
+    sandbox.stage(test_file)
 
-    sandbox.run(PRE_COMMIT)
+    done = sandbox.run(PRE_COMMIT)
 
-    pytest_call = _check_calls(sandbox)[1]
+    assert done.returncode == 0, done.stderr
+    assert _uv_commands(sandbox) == [PRIVATE, SELECTOR, LINT, [*PYTEST, test_file]]
+    pytest_call = _check_calls(sandbox)[-1]
     assert pytest_call["pipewire_remote"] == "/nonexistent"
     assert pytest_call["pulse_server"] == "unix:/nonexistent"
+
+
+def test_pre_commit_runs_tests_for_packaged_data(sandbox: Sandbox) -> None:
+    sandbox.stage("tests/test_data.py")
+    test_file = sandbox.repo / "tests/test_data.py"
+    test_file.write_text('name = "example.json"\n', encoding="utf-8")
+    sandbox.git("add", "--", "tests/test_data.py")
+    sandbox.git("commit", "-q", "-m", "chore: add fixture")
+    sandbox.stage("src/jarvis/data/example.json")
+
+    done = sandbox.run(PRE_COMMIT)
+
+    assert done.returncode == 0, done.stderr
+    assert _uv_commands(sandbox) == [PRIVATE, SELECTOR, LINT, [*PYTEST, "tests/test_data.py"]]
 
 
 def test_pre_commit_reads_a_file_name_with_a_newline_as_one_name(sandbox: Sandbox) -> None:
@@ -221,7 +263,7 @@ def test_pre_commit_reads_a_file_name_with_a_newline_as_one_name(sandbox: Sandbo
     done = sandbox.run(PRE_COMMIT)
 
     assert done.returncode == 0, done.stderr
-    assert len(_check_calls(sandbox)) == 2
+    assert _uv_commands(sandbox) == [PRIVATE, SELECTOR, LINT]
 
 
 def test_pre_commit_does_not_split_a_file_name_at_a_newline(sandbox: Sandbox) -> None:
@@ -242,17 +284,27 @@ def test_pre_commit_refuses_when_the_checks_fail(sandbox: Sandbox) -> None:
 
     assert done.returncode == 1
     assert "the checks found problems" in done.stderr
-    assert _uv_commands(sandbox) == [PRIVATE, ["run", ".lint/check.sh"]]
+    assert _uv_commands(sandbox) == [PRIVATE, SELECTOR, LINT]
 
 
 def test_pre_commit_refuses_when_a_test_fails(sandbox: Sandbox) -> None:
-    sandbox.stage("a.py")
+    sandbox.stage("tests/test_changed.py")
 
     done = sandbox.run(PRE_COMMIT, env={"FAKE_UV_FAIL": "pytest"})
 
     assert done.returncode == 1
     assert "a test failed" in done.stderr
-    assert len(_check_calls(sandbox)) == 2
+    assert _uv_commands(sandbox) == [PRIVATE, SELECTOR, LINT, [*PYTEST, "tests/test_changed.py"]]
+
+
+def test_pre_commit_accepts_when_no_non_local_tests_are_collected(sandbox: Sandbox) -> None:
+    sandbox.stage("tests/test_local.py")
+
+    done = sandbox.run(PRE_COMMIT, env={"FAKE_UV_PYTEST_STATUS": "5"})
+
+    assert done.returncode == 0, done.stderr
+    assert "no non-local tests collected" in done.stderr
+    assert _uv_commands(sandbox) == [PRIVATE, SELECTOR, LINT, [*PYTEST, "tests/test_local.py"]]
 
 
 def _hooks_path(sandbox: Sandbox, path: Path) -> None:
@@ -279,16 +331,29 @@ def test_git_exports_repository_variables_to_a_hook(sandbox: Sandbox, tmp_path: 
 
 def test_pre_commit_unsets_the_variables_git_exports(sandbox: Sandbox) -> None:
     _hooks_path(sandbox, HOOKS)
-    sandbox.stage("a.py")
+    sandbox.stage("tests/test_selected.py", "tests/test_still_staged.py")
 
-    done = sandbox.git("commit", "-q", "-m", "chore: add a", "-s", check=False)
+    done = sandbox.git(
+        "commit",
+        "-q",
+        "-m",
+        "chore: add selected test",
+        "-s",
+        "--",
+        "tests/test_selected.py",
+        check=False,
+    )
 
     assert done.returncode == 0, done.stderr
     local_vars = set(sandbox.git("rev-parse", "--local-env-vars").stdout.split())
     assert {"GIT_DIR", "GIT_INDEX_FILE"} <= local_vars
-    # commit-msg's own private-details check follows; only the checks and tests are counted here.
-    calls = [c for c in _check_calls(sandbox) if "tools/check_private.py" not in c["args"]]
-    assert len(calls) == 2
+    # The selector sees the partial commit's index. Lint and pytest run with Git's context cleared.
+    selector, *calls = [
+        c for c in _check_calls(sandbox) if "tools/check_private.py" not in c["args"]
+    ]
+    assert selector["args"] == SELECTOR
+    assert "GIT_INDEX_FILE" in selector["git_vars"]
+    assert [call["args"] for call in calls] == [LINT, [*PYTEST, "tests/test_selected.py"]]
     for call in calls:
         # GIT_DIR, GIT_INDEX_FILE, GIT_PREFIX and the rest of the repository context are gone; the
         # test's own GIT_CONFIG_* and git's author and editor settings are not that context.
@@ -447,7 +512,12 @@ def test_commit_msg_refuses_a_real_commit(sandbox: Sandbox) -> None:
 @pytest.fixture
 def installable(sandbox: Sandbox) -> Sandbox:
     """The sandbox repository with its own copy of tools/, as a checkout has it."""
-    shutil.copytree(TOOLS, sandbox.repo / "tools", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(
+        TOOLS,
+        sandbox.repo / "tools",
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
     return sandbox
 
 

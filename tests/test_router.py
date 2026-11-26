@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from test_pc_windows import FakeDesktop
 
 from jarvis.agent import Agent, Hooks, Limits
 from jarvis.app import (
@@ -22,6 +23,9 @@ from jarvis.config import Config
 from jarvis.memory import tokens
 from jarvis.operations import Operation, Registry, Result, validate_args
 from jarvis.osskills import OsSkill
+from jarvis.pc.screenshot import ScreenshotOps
+from jarvis.pc.watch import ScreenWatch
+from jarvis.pc.windows import WindowOps
 from jarvis.policy import Origin
 from jarvis.router import toolbox_section, use_tools_operation
 from jarvis.shortcuts import Shortcut
@@ -70,14 +74,19 @@ def _registry(
     monkeypatch.setattr("jarvis.app.osskills.catalog", lambda: (guide,))
     config = _full_config()
     mode: ToolMode = "routed" if routed else "all"
+    watch = None
     if channel == "voice":
+        windows = WindowOps(FakeDesktop())
+        watch = ScreenWatch(windows, ScreenshotOps(windows, tmp_path))
         config = config.model_copy(
             update={"agent": config.agent.model_copy(update={"tools": mode})}
         )
     else:
         config = config.model_copy(update={"chat": config.chat.model_copy(update={"tools": mode})})
     spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
-    return channel_registry(config, spotify.operations(), channel_limits(config, channel), channel)
+    return channel_registry(
+        config, spotify.operations(), channel_limits(config, channel), channel, watching=watch
+    )
 
 
 def _no_program(_name: str) -> None:
@@ -141,8 +150,8 @@ def test_a_group_with_no_tool_in_this_registry_is_not_in_the_toolbox() -> None:
 # the router (`{toolbox}` empty). Changing the prompt's own text changes these on purpose: replace
 # them with the new digests; they exist so that routing never changes what "all" mode sends.
 _PROMPT_SHA256 = {
-    "voice": "38dc138946bcfb39dbc0d99de5d09889ddb869904ed61e80f24bbbc2e85fc68b",
-    "chat": "bf7d913231c38d2158a856f6cd46c29afad3d499139de34a06e00c973ec51ddf",
+    "voice": "467eeb45bdea2548e4269b1ecc6133e445ab79eaf15f4ef11aa82829407e36b3",
+    "chat": "195ade8393e9b80da870eebae6915fe08dc9e36889b4c568b7347ad6da4f80c3",
 }
 
 

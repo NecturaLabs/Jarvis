@@ -44,7 +44,7 @@ arrow keys and Enter.
   has not been tested.
 - The window uses the terminal's own colours (an ANSI theme), so it follows the Omarchy theme.
 - Colour only reinforces meaning. A request starts with `>` on a shaded band and says who asked ("typed",
-  "you, by voice", "PC audio:"); each step and the reply start with `●`, and a step's result sits under it
+  "spoken" for words handed over from speech, "PC audio:"); each step and the reply start with `●`, and a step's result sits under it
   after `⎿`. Words, not colour, say when something was refused, not done or failed. The toolbar under the
   input gives the PC's load and how full the model's context is as numbers; the coloured bars repeat them.
 - Text from outside, such as song names and PC speech, is shown as plain characters, with control

@@ -230,7 +230,7 @@ class ScreenshotOps:
         return self._window(window), f"the {window.app} window{visible}", True
 
     def capture(self, kind: str, *, workspace: str = "", window: Win | None = None) -> bytes:
-        """Return a PNG of the screen, a workspace (`workspace`) or one window, saved nowhere.
+        """Return the raw PNG of the screen, a workspace or one window for a watch to hash.
 
         The same capture as `pc_screenshot`, for a screen watch: only `grim` reads frames (a
         window by `-T`, a monitor by `-o`), so nothing is focused, moved or resized.
@@ -248,7 +248,6 @@ class ScreenshotOps:
             data = self._workspace(workspace, desktop.monitors(), desktop.windows())
         else:
             data = self._capture([])
-        _decoded(data)
         return data
 
     def _save(self, data: bytes) -> Path:

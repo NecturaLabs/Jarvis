@@ -31,8 +31,9 @@ Chosen option 3, as a setting: `tools = "all" | "routed"` in `[agent]` and `[cha
   the **core**. A group has a one-line summary written from what its tools do. Membership is one list of
   names in one place and a test fails for an operation no group names, so a new tool cannot be left out.
   Nothing matches the owner's words against a group: the model reads the summaries and decides.
-- **Core** is what every request may need: `no_action` and `stay_quiet` (how Jarvis answers), `think_harder`
-  and `switch_model` (ways to go on; `switch_model` must be the first and only call of its reply, so a
+- **Core** is what every request may need: `no_action`, `stay_quiet` and `chat_hand_off` (how Jarvis
+  answers; the hand-off only while a chat window is open, [ADR 0028](0028-voice-and-chat-as-two-channels.md)),
+  `think_harder` and `switch_model` (ways to go on; `switch_model` must be the first and only call of its reply, so a
   detour through `use_tools` would only cost a call) and `use_tools`. Everything else is a group.
 - **The toolbox** (`Registry.groups()`, `router.toolbox_section`): in the system prompt of a routed agent, each
   group, its summary and its tool names, then Jarvis's own skills and Omarchy's guides as before (their tools

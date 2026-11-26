@@ -25,7 +25,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 from jarvis.jsonutil import obj
-from jarvis.operations import Operation, OperationError, Request, Result, current_request
+from jarvis.operations import (
+    Operation,
+    OperationError,
+    Request,
+    Result,
+    current_request,
+    inert,
+)
 from jarvis.pc import hyprland
 from jarvis.pc.apps import BACKGROUND, SPECIAL, WORKSPACES
 from jarvis.policy import OpClass, Origin
@@ -62,6 +69,7 @@ class Win:
     focused: bool = False
     fullscreen: bool = False
     floating: bool = False
+    pid: int = 0
 
     @property
     def app(self) -> str:
@@ -130,7 +138,7 @@ def _win(client: dict[str, object]) -> Win | None:
     ):
         return None
     stable, klass, title = client.get("stableId"), client.get("class"), client.get("title")
-    monitor = client.get("monitor")
+    monitor, pid = client.get("monitor"), client.get("pid")
     x, y = _pair(client.get("at")) or (0, 0)
     width, height = _pair(client.get("size")) or (0, 0)
     return Win(
@@ -148,6 +156,7 @@ def _win(client: dict[str, object]) -> Win | None:
         fullscreen=_above_zero(client.get("fullscreen"))
         or _above_zero(client.get("fullscreenClient")),
         floating=client.get("floating") is True,
+        pid=pid if isinstance(pid, int) else 0,
     )
 
 
@@ -299,7 +308,7 @@ class WindowOps:
         request = current_request()
         with self._lock:
             message = request.message if request is not None else 0
-            self._listed = _Listed(request, message, listed)
+            self._listed = record = _Listed(request, message, listed)
         if not listed:
             scope = f" {where(SPECIAL if wanted == BACKGROUND else str(wanted))}" if wanted else ""
             return Result(f"No windows are open{scope}.", Origin.PROCESS)
@@ -310,9 +319,25 @@ class WindowOps:
             marks += [word for on, word in flags if on]
             title = printable(w.title, MAX_TITLE)
             lines.append(f'{number}. {w.app}: "{title}" ({", ".join(marks)})')
+        rows = dict(zip(listed, lines[1:], strict=True))
         if len(windows) > len(listed):
             lines.append(f"{len(windows) - len(listed)} more are not listed; name a workspace.")
-        return Result("\n".join(lines), Origin.PROCESS)
+        return Result("\n".join(lines), Origin.PROCESS, delivered=self._reached(record, rows))
+
+    def _reached(self, record: _Listed, rows: dict[int, str]) -> Callable[[str], None]:
+        """Return what keeps only the numbers whose whole row reached the model.
+
+        The agent cuts a long result to its cap: a number in a row it cut, or cut short, was
+        never read, so no window tool takes it.
+        """
+
+        def reached(body: str) -> None:
+            with self._lock:
+                for number, row in rows.items():
+                    if f"\n{inert(row)}" not in body:
+                        record.windows.pop(number, None)
+
+        return reached
 
     def listed(self, number: int) -> Win:
         """Return the window the latest `pc_windows` of this request listed as `number`.

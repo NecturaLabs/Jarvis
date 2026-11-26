@@ -75,6 +75,8 @@ class OperationError(Exception):
         self.origin = origin
 
 
+UNASKED_ARG = "unasked"  # the argument that hands an operation its own `unasked` reason back
+
 REMEMBERED = "memory"  # the origin of outside text a request remembers from earlier turns
 REMEMBERED_LISTING = "memory-process"  # ... when all of it was process listings
 
@@ -110,16 +112,32 @@ class Request:
     hushed: Callable[[], bool] = field(default=lambda: False)
     making_sound: Callable[[], AbstractContextManager[None]] = field(default=nullcontext)
     scheduled: bool = False
-    _messages: list[int] = field(default_factory=lambda: [0])  # held in a list: the rest is frozen
+    # Held in lists: the rest is frozen. Messages run, calls in the running message, actions tried.
+    _messages: list[int] = field(default_factory=lambda: [0, 1, 0])
 
     @property
     def message(self) -> int:
         """How many of the model's messages have had their calls run, the running one included."""
         return self._messages[0]
 
-    def next_message(self) -> None:
-        """Note that the calls of the model's next message are about to run."""
+    @property
+    def beside(self) -> int:
+        """How many calls the running message holds, this one included."""
+        return self._messages[1]
+
+    @property
+    def acted(self) -> bool:
+        """Whether a call that could change something was already tried in this request."""
+        return self._messages[2] > 0
+
+    def next_message(self, calls: int = 1) -> None:
+        """Note that the `calls` of the model's next message are about to run."""
         self._messages[0] += 1
+        self._messages[1] = calls
+
+    def note_action(self) -> None:
+        """Note that a call that could change something was tried."""
+        self._messages[2] += 1
 
     @property
     def words(self) -> str:
@@ -215,7 +233,10 @@ class Result:
     `groups` asks the agent to offer those tool groups for the rest of the request (`use_tools`).
     `look` is a picture the model is to see next (a screenshot just taken), when it can see
     pictures; the agent adds it to the conversation as outside data, and says in the result's
-    text whether it did.
+    text whether it did. `delivered` is told the result as the model got it, cut to the agent's
+    cap (and wrapped, for outside text), so an operation can hold to what was really read.
+    `ends` closes the request with `spoken` as its reply, without another model call, when
+    the call ran alone in its message (`chat_hand_off`: the work went to the chat).
     """
 
     text: str
@@ -229,8 +250,10 @@ class Result:
     effort: str = ""
     sound: Sound | None = None
     mode: str = ""
+    ends: bool = False
     groups: tuple[str, ...] = ()
     look: Picture | None = None
+    delivered: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +278,13 @@ class Operation:
     may set it. With `always_ask`, a call that needs a yes is asked about even while the owner
     has consent bypassed (`boundaries.bypass_consent`): it can send the owner's words to whoever
     wrote a page, so a page must not be able to make it happen unseen.
+    `offered` says whether the model is offered the operation now (`chat_hand_off`, only while a
+    chat window is open); without it the operation is always offered.
+    `unasked` says, for one call's validated arguments, why that call needs no question although
+    the operation is `confirm` ("a new file in the workspace"), or "" to ask as usual. The owner's
+    own class for the operation, and outside text in the conversation, still win over it.
+    A call that runs on that reason gets it back in its arguments (`UNASKED_ARG`) for `prepare`
+    and `run`, which must then do only what the reason said (a "new file" fails if one appeared).
     """
 
     name: str
@@ -274,6 +304,8 @@ class Operation:
     audit_text: bool = True
     concurrent: bool = False
     always_ask: bool = False
+    offered: Callable[[], bool] | None = None
+    unasked: Callable[[dict[str, Any]], str] | None = None
 
     def __post_init__(self) -> None:
         """Refuse an operation that acts yet claims to run beside others.
@@ -422,18 +454,23 @@ class Registry:
         kept = [op for name, op in self._ops.items() if name not in dropped]
         return Registry(kept, resets=self._resets)
 
-    def tool_schemas(self, loaded: Collection[str] | None = None) -> list[dict[str, Any]]:
-        """Return the operations as OpenAI tools: every one, or the core and the `loaded` groups.
+    def tool_schemas(
+        self, loaded: Collection[str] | None = None, *, every: bool = False
+    ) -> list[dict[str, Any]]:
+        """Return the operations offered now as OpenAI tools: all, or the core and `loaded` groups.
 
         Given `loaded`, the order is fixed whatever order the groups were loaded in: the core
         tools, then each loaded group's in the order the groups first appear in this registry, so
         calls with the same groups share their whole start. An operation no group names is never
-        offered that way (a test makes sure there is none).
+        offered that way (a test makes sure there is none). An operation whose `offered` says no
+        is left out, unless `every` asks for all of them (what the context budget counts).
         """
         if loaded is None:
-            return [op.tool_schema() for op in self._ops.values()]
-        wanted = [CORE_NAME, *(g.name for g in self.groups() if g.name in loaded)]
-        return [op.tool_schema() for name in wanted for op in self._by_group.get(name, [])]
+            ops = list(self._ops.values())
+        else:
+            wanted = [CORE_NAME, *(g.name for g in self.groups() if g.name in loaded)]
+            ops = [op for name in wanted for op in self._by_group.get(name, [])]
+        return [op.tool_schema() for op in ops if every or op.offered is None or op.offered()]
 
     def groups(self) -> list[ToolGroup]:
         """Return the tool groups this registry has, apart from the core, as it has them.

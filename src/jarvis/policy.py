@@ -92,11 +92,16 @@ class Verdict(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Decision:
-    """A verdict and the reason for it, as recorded in the audit log."""
+    """A verdict and the reason for it, as recorded in the audit log.
+
+    `unasked` is set when the call runs only because the operation said it needs no question:
+    the agent hands it back to the operation, which then holds the write to what it judged.
+    """
 
     verdict: Verdict
     reason: str
     op_class: OpClass | None
+    unasked: str = ""
 
 
 def action_hash(op_name: str, args: Mapping[str, object]) -> str:
@@ -115,37 +120,45 @@ def effective_class(op: Classified, overrides: Mapping[str, str]) -> OpClass:
     return max(cls, op.lowest_class, key=_RANK.__getitem__)
 
 
-def decide(
+def decide(  # ruff: ignore[too-many-arguments] - the call's facts, keyword-only after the first four
     op: Classified | None,
     name: str,
     overrides: Mapping[str, str],
     *,
     untrusted_in_context: bool,
     private_in_context: bool = False,
+    unasked: str = "",
 ) -> Decision:
     """Decide whether a validated tool call may run, needs confirmation or is refused.
 
     `private_in_context` says text read from the owner's files is in the conversation.
+    `unasked` is the operation's reason this one call needs no question: it lowers a `confirm`
+    the owner did not set themselves to `safe` and whose `lowest_class` allows it, and outside
+    text in the conversation raises it back to `confirm` below, as it does any side effect.
     """
     if op is None:
         return Decision(Verdict.DENY, f"unknown operation {name!r}", None)
     cls = effective_class(op, overrides)
+    reason = f"class {cls.value}"
+    lowered = ""
+    floor = _RANK[op.lowest_class] <= _RANK[OpClass.SAFE]
+    if unasked and cls is OpClass.CONFIRM and name not in overrides and floor:
+        cls, lowered = OpClass.SAFE, unasked
+        reason = f"class safe: {unasked}"
     below_confirm = _RANK[cls] < _RANK[OpClass.CONFIRM]
     if untrusted_in_context and op.side_effect and below_confirm:
-        cls = OpClass.CONFIRM
+        cls, lowered = OpClass.CONFIRM, ""
         reason = "side effect while untrusted text is in the conversation"
     elif private_in_context and op.outbound and below_confirm:
-        cls = OpClass.CONFIRM
+        cls, lowered = OpClass.CONFIRM, ""
         reason = "sends text off the PC while file text is in the conversation"
-    else:
-        reason = f"class {cls.value}"
     verdict = {
         OpClass.SAFE: Verdict.RUN,
         OpClass.CONFIRM: Verdict.CONFIRM,
         OpClass.STRONG: Verdict.STRONG,
         OpClass.DENY: Verdict.DENY,
     }[cls]
-    return Decision(verdict, reason, cls)
+    return Decision(verdict, reason, cls, lowered)
 
 
 _YES = frozenset(

@@ -1,5 +1,6 @@
 """Builds Jarvis from its config: model, operations, prompt, audit log and agent."""
 
+import logging
 import os
 import shutil
 from dataclasses import dataclass, replace
@@ -7,7 +8,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from jarvis import __version__, calc, modes, osskills, paths, plugins, services, skills
+from jarvis import __version__, calc, handoff, modes, osskills, paths, plugins, services, skills
 from jarvis.about import AboutOps
 from jarvis.agent import SWITCH_MODEL, Agent, Limits, Setup
 from jarvis.audit import AuditLog
@@ -35,6 +36,7 @@ from jarvis.pc.stats import StatsOps
 from jarvis.pc.volume import VolumeOps
 from jarvis.pc.watch import ScreenWatch
 from jarvis.pc.windows import WindowOps
+from jarvis.pc.workspace import Ledger, workspace_in_use, workspace_path, workspace_problem
 from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
@@ -62,6 +64,8 @@ if TYPE_CHECKING:
     from jarvis.config import ChatConfig, Config
     from jarvis.model import ModelStatus
 
+
+log = logging.getLogger(__name__)
 
 MAX_REPLY_CHARS = 4000
 CHARS_PER_REPLY_TOKEN = 8  # generous: the token cap, not this, keeps a reply to length
@@ -256,6 +260,7 @@ def system_prompt(
         .read_text(encoding="utf-8")
         .rstrip("\n"),
         "pc_audio": _pc_audio_rule(config, channel),
+        "workspace": _workspace_rule(config),
     }
     text = core + "\n" + style
     if coding:
@@ -352,15 +357,19 @@ class AgentModes:
     """The modes as an agent uses them (`agent.Modes`): the state file, the switch, each setup."""
 
     def __init__(
-        self, switcher: modes.Switcher, make: Callable[[modes.Mode, ChatConfig | None], Setup]
+        self,
+        switcher: modes.Switcher | None,
+        make: Callable[[modes.Mode, ChatConfig | None], Setup],
+        *,
+        fixed: modes.Mode | None = None,
     ) -> None:
-        """Follow and switch the mode through `switcher`; `make` builds a mode's setup, once.
+        """Follow the shared mode through `switcher` or keep the agent in `fixed` mode.
 
-        `make` takes the chat's settings as they are now, when the chat changed them since it
-        started (`restyle`).
+        `make` builds and caches each mode's setup with any settings changed through `restyle`.
         """
         super().__init__()
         self._switcher = switcher
+        self._fixed = fixed
         self._make = make
         self._made: dict[str, Setup] = {}
         self._chat: ChatConfig | None = None
@@ -375,14 +384,13 @@ class AgentModes:
         self._chat = chat
         self._made.clear()
 
-    @staticmethod
-    def current() -> str:
-        """Return the mode Jarvis is in now."""
-        return modes.current()
+    def current(self) -> str:
+        """Return the agent's fixed mode or the shared mode it follows."""
+        return self._fixed or modes.current()
 
     def rest(self, say: Callable[[str], None]) -> None:
         """Go back to normal when coding mode idled too long; `say` gets the line for the owner."""
-        if not self._switcher.idle():
+        if self._switcher is None or not self._switcher.idle():
             return  # the request keeps its mark: no other switch slips in before it
         self._answering.release()
         try:
@@ -401,6 +409,8 @@ class AgentModes:
         """Switch to `to` for the model; return "" when done, else what to tell the owner."""
         if to not in modes.MODES:
             return f"There is no {to} mode."
+        if self._switcher is None:
+            return f"This Jarvis stays in {self.current()} mode."
         self._answering.release()  # this request's own mark would refuse its switch
         try:
             # Held again before another switch can begin: the request goes on in this mode.
@@ -485,11 +495,20 @@ def files_boundary(config: Config, home: Path | None = None) -> Boundary:
     Jarvis's own state and config folders are never in it, nor its plugins' folder: its settings,
     the owner's skills and the plugins' skills there steer Jarvis, so no request may rewrite them
     through a file operation.
+
+    Jarvis's workspace is made here, mode 0700, if it is missing. One that exists but is not a
+    folder of the owner's alone (a link, another user's, writable by others) is left as it is
+    and not used; `jarvis doctor` says so.
     """
+    base = home or Path.home()
+    problem = workspace_problem(workspace_path(config.files, base), create=True)
+    if problem:
+        log.warning("files.workspace %s: it is not used until that is fixed", problem)
     return Boundary.of(
         config.files,
-        home or Path.home(),
+        base,
         protected=(paths.state_dir(), paths.config_dir(), plugins.plugins_root(config.data_dir)),
+        workspace=not problem,
     )
 
 
@@ -546,7 +565,9 @@ def pc_operations(
         *StatsOps(Sampler()).operations(),
         *VolumeOps(_wpctl).operations(),
         *MediaOps(_playerctl).operations(),
-        *FileOps(boundary, max_chars=limits.tool_text_chars).operations(),
+        *FileOps(
+            boundary, max_chars=limits.tool_text_chars, made=Ledger(paths.workspace_ledger_file())
+        ).operations(),
         *(ProcessOps() if watching is None else watching.processes).operations(),
         *windows.operations(),
         *ScreenshotOps(
@@ -554,8 +575,23 @@ def pc_operations(
         ).operations(),
         *([] if watching is None else watching.operations()),
         *AppOps(config.apps.programs).operations(),
-        *ShellOps(config.shell, home or Path.home(), max_chars=limits.tool_text_chars).operations(),
+        *ShellOps(
+            config.shell,
+            home or Path.home(),
+            max_chars=limits.tool_text_chars,
+            workspace=boundary.workspace,
+        ).operations(),
     ]
+
+
+def _workspace_rule(config: Config) -> str:
+    """Tell the model where its workspace folder is, unless that folder cannot be used.
+
+    A sentence that begins with a space, to follow the line it ends.
+    """
+    if not workspace_in_use(config.files, Path.home()):
+        return ""
+    return f" Bare file names save in your workspace, {config.files.workspace} (always writable)."
 
 
 def _number_rule(separator: str) -> str:
@@ -702,6 +738,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
             else []
         ),
         *([quiet_operation()] if channel == "voice" else []),
+        *([handoff.operation()] if channel == "voice" else []),
         *(SingOps(singer_for(config)).operations() if channel == "voice" else []),
         *([think] if (think := think_operation(limits)) is not None else []),
         *([switch_operation(config, coding=coding)] if switches_itself(config, channel) else []),
@@ -724,15 +761,27 @@ def switches_itself(config: Config, channel: Channel) -> bool:
 # Operations offered only when their files or programs are installed (and the browser switched on),
 # known to `boundaries.classes` either way.
 INSTALLED_ONLY = frozenset({"read_skill", "os_skill", *browserops.NAMES})
-# ... and only while a setting turns them on (`audio.listen_to_pc`, `tools = "routed"`) or in
-# the voice service (the screen watches).
+# ... and only while a setting or a window turns them on (`audio.listen_to_pc`, `tools = "routed"`;
+# an open chat) or in the voice service (the screen watches).
 SETTING_ONLY = frozenset(
-    {"pc_audio_listen", SWITCH_MODEL, USE_TOOLS, "pc_watch", "pc_watches", "pc_watch_stop"}
+    {
+        "pc_audio_listen",
+        SWITCH_MODEL,
+        USE_TOOLS,
+        "pc_watch",
+        "pc_watches",
+        "pc_watch_stop",
+        handoff.NAME,
+    }
 )
 # Tools whose result is a sound, and the voice-channel callers that cannot play one (`jarvis ask`
 # prints its reply): they are not offered there, so nothing is made only to be thrown away.
 MAKES_SOUND = frozenset({"sing"})
-SOUNDLESS = frozenset({"ask", "speech-test"})
+SOUNDLESS = frozenset({"ask", "speech-test", "acp"})
+# Chat-style callers: typed requests answered in writing, with the chat's limits.
+WRITTEN = frozenset({"chat", "acp"})
+# Tools that show the owner a picture in the chat window, which `jarvis acp` has no place for.
+SHOWS_PICTURES = frozenset({"image_search", "show_image"})
 # How Jarvis answers, not tools: never switched off.
 ALWAYS_OFFERED = frozenset({"no_action", "think_harder", "stay_quiet", USE_TOOLS})
 
@@ -849,13 +898,15 @@ def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; 
     """Return the operations an agent offers in a mode, without what is switched off.
 
     `config` is the mode's own (`modes.effective`). A tool switched off is not offered at all:
-    by `boundaries.classes`, by coding mode's `tools_off`, `sing` where the caller cannot play a
-    sound (`via`), and `switch_model` where there is no model server to switch (`can_switch`).
+    by `boundaries.classes`, by coding mode's `tools_off`, `sing` and `chat_hand_off` where the
+    caller cannot play a sound (`via`), the picture tools where it cannot show one (`jarvis acp`),
+    and `switch_model` where there is no model server to switch (`can_switch`).
     """
     off: set[str] = {
         *switched_off(config),
         *(config.coding.tools_off if coding else ()),
-        *(MAKES_SOUND if via in SOUNDLESS else ()),
+        *(MAKES_SOUND | {handoff.NAME} if via in SOUNDLESS else ()),
+        *(SHOWS_PICTURES if via == "acp" else ()),
     }
     if not can_switch:
         off.add(SWITCH_MODEL)
@@ -945,22 +996,27 @@ def _screen_watch(audit: AuditLog) -> ScreenWatch:
     return ScreenWatch(windows, shots, ProcessOps(), audit=audit)
 
 
-def build(
+def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each front end sets, and the setup of both modes
     config: Config,
     *,
     via: str | None = None,
     session: str = "",
     units: modes.Units | None = None,
     listening: Listening | None = None,
+    mode: modes.Mode | None = None,
 ) -> Jarvis:
     """Assemble the agent from the config.
 
     `via` marks every audit event of this agent with where its requests come from ("chat",
-    "ask"); the voice service leaves it out. The chat gets the chat's limits and written replies,
-    and keeps its conversation across sessions when `chat.resume` is on. `session` marks the
-    agent's audit events too, so a window can tell its own from others'. With `units` (the
+    "ask", "acp", `VOICE_VIA` for the voice service, which the chat does not show). The chat and
+    `jarvis acp` get the chat's limits and written replies; only the chat keeps its conversation
+    across sessions (`chat.resume`; an ACP session has its own, and none is kept). `session`
+    marks the agent's audit events too, so a window can tell its own from others'. With `units` (the
     model server's systemd unit) the agent follows the mode Jarvis is in and can switch it;
-    without, it stays in the normal mode. `listening` is how the voice service hears PC audio for
+    without, it stays in the normal mode. With `mode` it stays in that mode whatever Jarvis is in
+    (`jarvis acp --coding`): it holds the answering mark and notes use of the shared model,
+    with mode switches disabled.
+    `listening` is how the voice service hears PC audio for
     `pc_audio_listen`.
 
     Raises:
@@ -971,14 +1027,17 @@ def build(
     if config.strata.mode == "backend":
         msg = "backend mode only serves the model. Run this command on the Jarvis client."
         raise SetupError(msg)
+    if mode is not None:
+        units = None
     config, key, model = _agent_model(config)
     ops = _spotify_ops(config)
     available = ops.operations()
     audit = _tagged_audit(via, session)
     _check_overrides(config, available)
-    channel: Channel = "chat" if via == "chat" else "voice"
+    channel: Channel = "chat" if via in WRITTEN else "voice"
     watch = _screen_watch(audit) if via is None else None  # only the voice service runs watches
-    elsewhere = via in {"chat", "ask"}  # the voice service says reminders; is one running?
+    elsewhere = via in {*WRITTEN, "ask"}  # the voice service says reminders; is one running?
+    shared_profile = mode is not None and not modes.own_model(config)
 
     def setup(
         mode: modes.Mode,
@@ -988,6 +1047,8 @@ def build(
         coding = mode == "coding"
         base = config if chat is None else config.model_copy(update={"chat": chat})
         cfg = modes.effective(base, mode)
+        if shared_profile:
+            cfg = cfg.model_copy(update={"strata": base.strata})
         limits = channel_limits(cfg, channel)
         registry = offered_registry(
             cfg,
@@ -1002,10 +1063,10 @@ def build(
             watching=watch,
         )
         prompt = system_prompt(cfg, channel, coding=coding, registry=registry)
-        return Setup(prompt, registry, limits, reads_pictures(cfg), strata_model(cfg, key))
+        client = model if shared_profile and model.remote else strata_model(cfg, key)
+        return Setup(prompt, registry, limits, reads_pictures(cfg), client)
 
-    normal = setup("normal")
-    remembered = chat_memory_file() if channel == "chat" else None
+    remembered = chat_memory_file() if via == "chat" else None  # an ACP session has its own
     if remembered is not None and not config.chat.resume:
         remembered.unlink(missing_ok=True)
     switcher = (
@@ -1019,9 +1080,15 @@ def build(
             busy=voice_busy if elsewhere else lambda: False,
         )
     )
-    agent_modes = None if switcher is None else AgentModes(switcher, setup)
+    agent_modes = (
+        AgentModes(switcher, setup, fixed=mode)
+        if switcher is not None or mode is not None
+        else None
+    )
+    normal = agent_modes.setup(mode) if mode is not None and agent_modes else setup("normal")
     agent = Agent(
-        model,
+        # A fixed mode talks to the server as that mode's config sets it, not as the mode file says.
+        (normal.model or model) if mode is not None and not model.remote else model,
         normal.registry,
         normal.system_prompt,
         audit,

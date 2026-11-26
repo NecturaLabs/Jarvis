@@ -91,7 +91,7 @@ def test_a_failed_command_says_so_and_carries_its_errors(
     assert any("no_such_tool" in line for line in answer["errors"])
 
 
-@pytest.mark.parametrize("command", ["chat", "logs", "run", "spotify-login"])
+@pytest.mark.parametrize("command", ["acp", "chat", "logs", "run", "spotify-login"])
 def test_an_interactive_command_refuses_the_agent_format(
     command: str, capsys: pytest.CaptureFixture[str]
 ) -> None:

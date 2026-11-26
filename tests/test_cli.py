@@ -12,6 +12,7 @@ import tomllib
 import types
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self, cast
 
@@ -37,7 +38,7 @@ from jarvis.voice import PcListener
 
 if TYPE_CHECKING:
     import argparse
-    from pathlib import Path
+    from collections.abc import Generator
 
     from numpy.typing import NDArray
 
@@ -223,6 +224,373 @@ def test_doctor_lines_up_its_checks_and_ends_with_a_count(
     total = sum(line[:5] in {"ok   ", "FAIL "} for line in lines)
     assert not any(line.startswith("ok  ") and line[4] != " " for line in lines)
     assert lines[-1].startswith(f"{total} checks, {failed or 'none'} failed")
+
+
+def test_doctor_says_how_to_add_jarvis_to_t3_code_only_where_t3_code_is_set_up(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli.main(["doctor"])
+    assert not any("T3" in line for line in _doctor_output(capsys))
+
+    (cli.Path.home() / ".t3").mkdir()
+
+    def which(_name: str) -> str:
+        return "/opt/bin/jarvis"
+
+    monkeypatch.setattr(cli.shutil, "which", which)
+    cli.main(["doctor"])
+
+    said = [line for line in _doctor_output(capsys) if "T3 Code" in line]
+    assert len(said) == 1
+    assert said[0].startswith("note ")
+    assert "Local ACP command" in said[0]
+    assert "/opt/bin/jarvis" in said[0]
+    assert "and the argument acp;" in said[0]
+    assert said[0].rstrip().endswith("it lists the normal and coding modes as models")
+
+
+def test_doctor_looks_for_t3_code_where_t3code_home_says(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setenv("T3CODE_HOME", str(elsewhere))
+
+    cli.main(["doctor"])
+
+    assert any("T3 Code" in line for line in _doctor_output(capsys))
+
+
+def test_doctor_says_why_nothing_is_pushed_when_the_t3_provider_does_not_run_jarvis(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "t3"
+    (home / "userdata").mkdir(parents=True)
+    settings = {
+        "providerInstances": {
+            "jarvis": {"config": {"commandPath": "/usr/bin/jarvis", "commandArgs": ["acp"]}},
+            "other": {"config": {"commandPath": "/usr/bin/other", "commandArgs": ["acp"]}},
+        }
+    }
+    (home / "userdata" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    monkeypatch.setenv("T3CODE_HOME", str(home))
+    config.save(config.Config(acp=config.AcpConfig(push_to_t3=True, t3_provider="other")))
+
+    cli.main(["doctor"])
+
+    said = [line for line in _doctor_output(capsys) if "t3_provider" in line]
+    assert len(said) == 1
+    assert "other" in said[0]
+    assert "nothing is pushed" in said[0]
+
+
+class _Said:
+    """The agent a fake `build` hands out, and what was asked of it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.asked: list[str] = []
+        self.thinking: list[tuple[str, str]] = []
+
+    def set_thinking(self, section: config.AgentConfig) -> None:
+        self.thinking.append((section.thinking, section.thinking_max))
+
+    def handle(self, text: str, hooks: Hooks, *, pictures: object = ()) -> str:  # ruff: ignore[unused-method-argument] - the agent's call
+        self.asked.append(text)
+        return "answer"
+
+
+@dataclass
+class _Acp:
+    """`jarvis acp` with the built agent, the model switch and the serve loop replaced."""
+
+    built: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
+    configs: list[config.Config] = field(default_factory=list[config.Config])
+    switched: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
+    switch_configs: list[config.Config] = field(default_factory=list[config.Config])
+    reply: str = "Now in coding mode: flash-coder, loaded in 3 s."
+    agent: _Said = field(default_factory=_Said)
+    made: Callable[..., Any] | None = None
+    models: list[Any] = field(default_factory=list[Any])
+
+    def run(self, monkeypatch: pytest.MonkeyPatch, *args: str) -> None:
+        def build(cfg: config.Config, **kwargs: object) -> SimpleNamespace:
+            self.configs.append(cfg)
+            self.built.append(kwargs)
+            return SimpleNamespace(agent=self.agent)
+
+        def switch(
+            cfg: config.Config, to: str, _say: object, source: str, *, only_if: Callable[[], bool]
+        ) -> str:
+            assert only_if()
+            self.switch_configs.append(cfg)
+            self.switched.append((to, source))
+            return self.reply
+
+        def serve(_source: object, _out: object, make: Callable[..., Any], **kw: object) -> int:
+            self.made = make
+            self.models = list(cast("list[Any]", kw["models"]))
+            return 0
+
+        def claim() -> tuple[None, None]:
+            return None, None
+
+        monkeypatch.setattr(cli, "build", build)
+        monkeypatch.setattr(cli, "switch_model", switch)
+        monkeypatch.setattr(cli.acp, "serve", serve)
+        monkeypatch.setattr(cli, "_claim_stdio", claim)
+        assert main(["acp", *args]) == 0
+
+
+def _own_coding_model(tmp_path: Path) -> None:
+    install_engine(tmp_path / "components")
+    run = engine_run_config(tmp_path)
+    coder = tmp_path / "coder.json"
+    coder.write_text(run.read_text(encoding="utf-8"), encoding="utf-8")
+    strata = config.StrataConfig.model_validate(
+        {
+            "home": tmp_path / "strata-home",
+            "components_parent": tmp_path / "components",
+            "run_config": run,
+            "coding_run_config": coder,
+        }
+    )
+    config.save(config.Config(strata=strata))
+
+
+def test_acp_builds_the_normal_agent_that_follows_the_owners_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    acp = _Acp()
+    acp.run(monkeypatch)
+    assert acp.made is not None
+    acp.made("s1")
+
+    assert acp.built[0].get("mode") is None
+    assert acp.built[0]["units"] is not None
+    assert acp.switched == []
+
+
+def test_acp_lists_both_modes_by_their_models_name_purpose_and_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def model_name(_cfg: config.Config, mode: str) -> str:
+        return f"{mode}-model"
+
+    monkeypatch.setattr(modes, "model_name", model_name)
+    acp = _Acp()
+    acp.run(monkeypatch)
+
+    assert [(m.id, m.name, m.effort) for m in acp.models] == [
+        ("normal", "normal-model", "none"),
+        ("coding", "coding-model", "medium"),
+    ]
+    assert all(m.description for m in acp.models)
+    assert acp.models[0].description != acp.models[1].description
+
+
+def test_acp_coding_lists_coding_mode_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+
+    assert [m.id for m in acp.models] == ["coding", "normal"]
+
+
+def test_acp_makes_each_sessions_agent_for_the_mode_it_chose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    acp = _Acp()
+    acp.run(monkeypatch)
+    assert acp.made is not None
+    hooks = Hooks(confirm=lambda _q: False)
+
+    normal, coding = acp.made("s1", "normal"), acp.made("s1", "coding")
+
+    assert normal.handle("one", hooks) == "answer"
+    assert coding.handle("two", hooks) == "answer"
+    assert acp.built[0].get("mode") is None
+    assert acp.built[0]["units"] is not None
+    assert acp.built[1]["mode"] == "coding"
+
+
+@pytest.mark.parametrize("mode", ["normal", "coding"])
+def test_acp_sets_a_sessions_effort_raising_the_ceiling_with_it(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    config.save(config.Config(chat=config.ChatConfig(thinking_max="low")))
+    if mode == "coding":
+        config.save(
+            config.Config(
+                chat=config.ChatConfig(thinking_max="low"),
+                coding=config.CodingConfig(
+                    chat=config.CodingChatConfig(thinking="none", thinking_max="low")
+                ),
+            )
+        )
+    acp = _Acp()
+    acp.run(monkeypatch)
+    assert acp.made is not None
+    session = acp.made("s1", mode)
+
+    session.set_effort("high")
+    session.set_effort("none")
+
+    assert acp.agent.thinking == [("high", "high"), ("none", "low")]
+
+
+def test_acp_coding_keeps_the_chosen_effort_on_the_agent_made_for_a_new_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+    assert acp.made is not None
+    session = acp.made("s1")
+    session.set_effort("high")
+    _own_coding_model(tmp_path)
+
+    assert session.handle("hello", Hooks(confirm=lambda _q: False)) == "answer"
+
+    assert len(acp.built) == 2  # the agent was made again for the coding model's config
+    assert acp.agent.thinking[-1][0] == "high"
+
+
+def test_acp_coding_builds_agents_fixed_in_coding_mode_without_touching_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+    assert acp.made is not None
+    session = acp.made("s1")
+    hooks = Hooks(confirm=lambda _q: False)
+
+    assert session.handle("hello", hooks) == "answer"
+
+    assert acp.built[0]["mode"] == "coding"
+    assert acp.built[0].get("units") is None
+    assert acp.switched == []  # the same model: nothing to switch
+
+
+def test_acp_coding_loads_the_coding_model_once_before_the_first_request_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _own_coding_model(tmp_path)
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+    assert acp.made is not None
+    first, second = acp.made("s1"), acp.made("s2")
+    drafts: list[str] = []
+    hooks = Hooks(confirm=lambda _q: False, draft=drafts.append)
+
+    first.handle("one", hooks)
+    second.handle("two", hooks)
+
+    assert acp.switched == [("coding", "acp")]
+    assert drafts == [acp.reply]
+    assert acp.agent.asked == ["one", "two"]
+
+
+def test_acp_coding_answers_with_the_failed_switch_and_tries_again_next_time(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _own_coding_model(tmp_path)
+    acp = _Acp(reply="The voice service is busy; try again.")
+    acp.run(monkeypatch, "--coding")
+    assert acp.made is not None
+    session = acp.made("s1")
+    hooks = Hooks(confirm=lambda _q: False)
+
+    assert session.handle("one", hooks) == acp.reply
+    acp.reply = "Already in coding mode (flash-coder)."
+    assert session.handle("two", hooks) == "answer"
+
+    assert acp.switched == [("coding", "acp"), ("coding", "acp")]
+    assert acp.agent.asked == ["two"]  # the first never reached the model
+
+
+def test_acp_coding_rechecks_the_model_when_its_run_config_is_removed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _own_coding_model(tmp_path)
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+    assert acp.made is not None
+    session = acp.made("s1")
+    cfg = config.load()
+    config.save(
+        cfg.model_copy(
+            update={"strata": cfg.strata.model_copy(update={"coding_run_config": Path()})}
+        )
+    )
+
+    assert session.handle("hello", Hooks(confirm=lambda _q: False)) == "answer"
+    assert acp.switched == []
+    assert acp.configs[-1].strata.coding_run_config == Path()
+
+
+def test_acp_coding_does_not_switch_after_waiting_cancelled_for_the_first_switch_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _own_coding_model(tmp_path)
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+    first = cli._CodingFirst()  # pyright: ignore[reportPrivateUsage] - exercise the shared switch gate
+    cancelled = threading.Event()
+
+    @contextlib.contextmanager
+    def wait_for_busy_switch() -> Generator[None]:
+        cancelled.set()  # the request was stopped before the busy switch let go of the lock
+        yield
+
+    monkeypatch.setattr(first, "_lock", wait_for_busy_switch())
+    first.ready(Hooks(confirm=lambda _q: False, cancelled=cancelled.is_set))
+
+    assert acp.switched == []
+
+
+def test_acp_coding_uses_the_first_requests_snapshot_for_the_new_model_and_agent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+    assert acp.made is not None
+    session = acp.made("s1")
+    _own_coding_model(tmp_path)
+
+    assert session.handle("hello", Hooks(confirm=lambda _q: False)) == "answer"
+    assert acp.switched == [("coding", "acp")]
+    assert acp.switch_configs[0] is acp.configs[-1]
+
+
+def test_acp_coding_rechecks_cancellation_under_the_shared_mode_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _own_coding_model(tmp_path)
+    cancelled = threading.Event()
+    switched: list[str] = []
+
+    class SharedSwitcher:
+        @staticmethod
+        def switch(
+            to: modes.Mode,
+            _by: modes.By,
+            _say: Callable[[str], None],
+            *,
+            only_if: Callable[[], bool] = lambda: True,
+        ) -> modes.Switched:
+            cancelled.set()  # cancelled by the time the shared mode lock is available
+            if only_if():
+                switched.append(to)
+                return modes.Switched(to, changed=True)
+            return modes.Switched("normal")
+
+    def switcher(_cfg: config.Config, _source: str) -> SharedSwitcher:
+        return SharedSwitcher()
+
+    monkeypatch.setattr(cli, "_switcher", switcher)
+    first = cli._CodingFirst()  # pyright: ignore[reportPrivateUsage] - use the real switch wrapper
+    first.ready(Hooks(confirm=lambda _q: False, cancelled=cancelled.is_set))
+
+    assert not switched
 
 
 def test_doctor_names_the_release_of_a_model_file_it_recognises(
@@ -901,6 +1269,7 @@ class _Run:
     loops: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
     audit: AuditLog = field(default_factory=lambda: AuditLog(None))
     listening: list[Listening | None] = field(default_factory=list[Listening | None])
+    vias: list[object] = field(default_factory=list[object])
     watch: object = field(default_factory=object)  # the service's screen watches, as built
 
     def part(self, *args: object, **kwargs: object) -> _Part:
@@ -961,6 +1330,7 @@ def _cmd_run(
         _cfg: config.Config, *, listening: Listening | None = None, **_kwargs: object
     ) -> SimpleNamespace:
         run.listening.append(listening)
+        run.vias.append(_kwargs.get("via"))
         return jarvis
 
     monkeypatch.setattr(cli, "build", build)
@@ -2476,6 +2846,21 @@ def test_a_tool_changed_from_the_chat_is_audited_as_such_and_restarts_nothing_ye
     (event,) = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
     assert (event["was"], event["to"], event["source"]) == ("confirm", "strong", "chat")
     assert restarts == []
+
+
+def test_a_tool_stepped_back_from_the_chat_goes_the_other_way_round_its_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config.save(config.Config(spotify=config.SpotifyConfig(client_id="id")))
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: None)
+
+    back = cli._next_tool_setting("write_file", -1)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    on = cli._next_tool_setting("write_file")  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    assert back.label == "off"  # asks first, back round the ring: never lowered to on
+    assert on.label == "asks first"  # and on again from off
+    events = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
+    assert [(e["was"], e["to"]) for e in events] == [("confirm", "deny"), ("deny", "confirm")]
 
 
 def test_the_chat_sets_jarvis_settings_and_audits_them(monkeypatch: pytest.MonkeyPatch) -> None:

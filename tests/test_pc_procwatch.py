@@ -271,3 +271,13 @@ def test_a_main_thread_that_ended_while_others_run_is_not_an_exit(rig: Rig) -> N
     assert rig.tick() == []
     rig.set_state("Z", threads=1)
     assert "has exited" in rig.tick()[0]
+
+
+def test_outside_text_refuses_a_process_watch_before_any_question(rig: Rig) -> None:
+    op = next(o for o in rig.watch.operations() if o.name == "pc_watch")
+    assert op.prepare is not None
+    with request_scope(foreign=False) as request:
+        request.saw("web")
+        _read(rig.processes, "somegame")
+        with pytest.raises(OperationError, match="outside"):
+            op.prepare(validate_args(op, {"of": "process", "pid": GAME}))

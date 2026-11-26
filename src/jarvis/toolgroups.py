@@ -24,13 +24,14 @@ class ToolGroup:
 
 
 # What every request may need, so it is always offered: the ways to answer and to go on (answer
-# with no tool, stay silent, think harder, move to coding mode, load a group). `switch_model` must
+# with no tool, stay silent, hand a spoken request to the open chat, think harder, move to coding
+# mode, load a group). `switch_model` must
 # be the first and only call of its reply, so a detour through `use_tools` would only cost a call.
 CORE = ToolGroup(
     CORE_NAME,
-    "How you answer and go on: answer without a tool, stay quiet, think harder, switch modes, "
-    "load more tools.",
-    ("no_action", "stay_quiet", "think_harder", "switch_model", USE_TOOLS),
+    "How you answer and go on: answer without a tool, stay quiet, hand the request to the open "
+    "chat, think harder, switch modes, load more tools.",
+    ("no_action", "stay_quiet", "chat_hand_off", "think_harder", "switch_model", USE_TOOLS),
 )
 
 GROUPS = (
@@ -63,8 +64,17 @@ GROUPS = (
     ),
     ToolGroup(
         "screen",
-        "Windows and the screen: list, focus, move and close windows, and take a screenshot.",
-        ("pc_windows", "pc_window", "pc_window_close", "pc_screenshot"),
+        "Windows and the screen: list, focus, move and close windows, take screenshots, "
+        "and watch for screen conditions, window freezes or process trouble.",
+        (
+            "pc_windows",
+            "pc_window",
+            "pc_window_close",
+            "pc_screenshot",
+            "pc_watch",
+            "pc_watches",
+            "pc_watch_stop",
+        ),
     ),
     ToolGroup(
         "apps",
