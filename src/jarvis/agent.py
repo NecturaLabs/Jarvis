@@ -971,6 +971,7 @@ class _Turn:
     loaded: tuple[str, ...] = ()  # tool groups the model asked for (`use_tools`), in that order
     offered: tuple[str, ...] = ()  # ... of which the last model call was offered the tools
     plain: bool = False  # a plain command runs (`_shortcut`): the owner's own words, no model call
+    refused: int = 0  # calls to tools the model was not offered: no actions, but tries all the same
     switch: str = ""  # the mode this request was moved to (`switch_model`): it is answered again
 
 
@@ -1660,7 +1661,11 @@ class Agent:
                 if self._clock() - turn.started > turn.limit_s:
                     return _out_of_time(turn)
                 self._take_steering(turn, hooks)
-                if step == self._limits.max_steps - 1 and step > 0 and turn.actions:
+                if (
+                    step == self._limits.max_steps - 1
+                    and step > 0
+                    and (turn.actions or turn.refused)
+                ):
                     # Rather than stop with nothing, the last call answers from what was found.
                     turn.last = True
                     turn.messages.append({"role": "user", "content": LAST_STEP_REMINDER})
@@ -2032,6 +2037,7 @@ class Agent:
         # ask for the group and call it, or switch modes.
         refused = op is not None and self._unoffered(op, turn)
         going_on = op is not None and (name in _WAYS_TO_GO_ON or refused)
+        turn.refused += refused
         if going_on:
             # How hard to think, and in which mode, is not an action: the request still needs
             # its own tools.

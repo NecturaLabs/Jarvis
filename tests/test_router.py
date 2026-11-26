@@ -573,6 +573,22 @@ def test_a_forced_answer_keeps_the_groups_loaded_so_far() -> None:
     assert "web_search" in model.offered[2]
 
 
+def test_calls_to_tools_not_offered_still_end_in_a_forced_answer() -> None:
+    # A refused call is no action tried, but the last step must still answer, not give up.
+    model = _Model(
+        [
+            _call(("stop_process", {})),
+            _call(("stop_process", {})),
+            _call(("no_action", {"reply": "I could not do that."})),
+        ]
+    )
+    agent, _, _ = _routed_agent(model, [], limits=Limits(tools="routed", max_steps=3))
+
+    assert agent.handle("stop it", NO_CONFIRM) == "I could not do that."
+
+    assert model.required[2] == "no_action"
+
+
 def test_a_stuck_request_is_forced_to_answer_with_the_same_routed_tools() -> None:
     model = _Model(
         [
