@@ -38,7 +38,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
 - **Your PC:** ask how the PC is doing, in any words, for its CPU, graphics card, VRAM, memory,
   temperatures and disks. Jarvis can list and read your files (your home folder by default, hidden ones
   only for the desktop's own settings) and create or change text files in `~/Documents`, asking first unless you turned questions
-  off. Keys, tokens, shell history and browser profiles are never read ([`[files]`](docs/configuration.md)).
+  off. It has a workspace folder of its own (`~/Documents/Jarvis`, `files.workspace`), where what it makes goes by default and
+  where a new file never waits on a question. Keys, tokens, shell history and browser profiles are never read ([`[files]`](docs/configuration.md)).
   Ask it in any words to close, end or kill a program: Jarvis lists the programs of yours that
   match, asks which one when there are several, and stops only that one once you press the confirm key. It
   never stops the desktop, the sound server, dictation or itself, and nothing heard from PC audio can stop a
@@ -260,8 +261,9 @@ uv run pytest -q -m "not local"   # unit tests
 ```
 
 Tests marked `local` need real hardware and services and never run in CI (`uv run pytest -m local`).
-`tools/check.sh` runs everything CI runs, in one command; `tools/install-hooks.sh` adds opt-in git hooks (lint,
-tests, the commit subject and a private-details check).
+`tools/check.sh` runs everything CI runs in one command. `tools/install-hooks.sh` adds opt-in git hooks
+for lint, affected non-local tests, the commit subject and private details. Rerun the installer to
+refresh an existing copy of the hooks.
 
 ## Project layout
 

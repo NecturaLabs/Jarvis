@@ -2185,6 +2185,40 @@ def test_an_operation_that_cannot_bind_its_target_does_not_run() -> None:
     assert model.seen[1][-1]["content"] == "Failed: Nothing is playing."
 
 
+def test_a_call_refused_before_it_could_run_may_be_made_again_in_a_later_message() -> None:
+    """Regression: a stop refused as written beside its listing was refused as a repeat after."""
+    counter = Counter()
+    tries: list[int] = []
+
+    def not_yet(args: dict[str, Any]) -> dict[str, Any]:
+        tries.append(1)
+        if len(tries) == 1:
+            raise OperationError("The list was not read yet: read it, then call this again.")
+        return args
+
+    model = ScriptedModel(
+        [_call("like", {"q": "x"}), _call("like", {"q": "x"}, "c2"), _say("Liked.")]
+    )
+    agent, _ = _agent(model, [counter.op("like", prepare=not_yet)])
+
+    agent.handle("like this", NO_CONFIRM)
+
+    assert counter.runs == [{"op": "like", "q": "x"}]
+
+
+def test_a_call_that_ran_is_still_refused_as_a_repeat() -> None:
+    counter = Counter()
+    model = ScriptedModel(
+        [_call("like", {"q": "x"}), _call("like", {"q": "x"}, "c2"), _say("Liked.")]
+    )
+    agent, _ = _agent(model, [counter.op("like")])
+
+    agent.handle("like this", NO_CONFIRM)
+
+    assert len(counter.runs) == 1
+    assert model.seen[2][-1]["content"] == "Error: this exact call was already made."
+
+
 def test_a_denied_operation_never_reads_its_target() -> None:
     prepared: list[bool] = []
     op = Counter().op("like", cls=OpClass.DENY, prepare=lambda a: prepared.append(True) or a)
@@ -3622,6 +3656,26 @@ def test_an_outside_result_reaches_the_model_within_its_cap_once_wrapped(text: s
     assert "<" not in body
     assert ">" not in body
     assert text.startswith(body.replace("&lt;", "<").replace("&gt;", ">"))
+
+
+def test_an_operation_is_told_which_text_reached_the_model() -> None:
+    """An operation that binds what the model read is told the result as the model got it."""
+    got: list[str] = []
+    text = "row " * 2000
+    op = Operation(
+        "read",
+        "Read.",
+        {"type": "object", "properties": {}},
+        lambda _a: Result(text, Origin.PROCESS, delivered=got.append),
+    )
+    model = ScriptedModel([_call("read", {}), _say("Done.")])
+    agent, _ = _agent(model, [op], limits=Limits(tool_text_chars=600))
+
+    agent.handle("read it", NO_CONFIRM)
+
+    sent = next(m["content"] for m in model.seen[-1] if m["role"] == "tool")
+    assert got == [sent]
+    assert len(sent) <= 600
 
 
 def test_a_request_that_fits_keeps_its_results_whole() -> None:

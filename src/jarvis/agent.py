@@ -37,6 +37,7 @@ from jarvis.model import ModelMissingError, RemoteModelError, Thinking
 from jarvis.operations import (
     REMEMBERED,
     REMEMBERED_LISTING,
+    UNASKED_ARG,
     ArgumentError,
     OperationError,
     OperationStoppedError,
@@ -502,6 +503,13 @@ def _wrapped(origin: str, text: str, cap: int) -> str:
             cut = cut[:amp]
         body = cut
     return f"{head}{body}{tail}"
+
+
+def _handed(result: Result, body: str) -> str:
+    """Return `body`, the result as the model gets it, once the operation was told (`delivered`)."""
+    if result.delivered is not None:
+        result.delivered(body)
+    return body
 
 
 def _text(message: Mapping[str, Any]) -> str:
@@ -2179,7 +2187,11 @@ class Agent:
             turn.private = turn.private or result.origin in PRIVATE_ORIGINS
             body = _wrapped(result.origin.value, text, self._limits.tool_text_chars)
         turn.messages.append(
-            {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": body}
+            {
+                "role": "tool",
+                "tool_call_id": str(call.get("id", "")),
+                "content": _handed(result, body),
+            }
         )
         return result
 
@@ -2522,8 +2534,11 @@ class Agent:
             self._overrides,
             untrusted_in_context=tainted,
             private_in_context=private and op.sends_words(args),
+            unasked=self._unasked(op, args),
         )
         decision, consent = self._consent(decision, op)
+        if decision.unasked:  # the operation holds the call to what it judged, as it runs
+            args = {**args, UNASKED_ARG: decision.unasked}
         stopped = _REFUSALS.get(decision.verdict)
         if decision.verdict is Verdict.STRONG and hooks.confirm_key is None:
             stopped = _NO_KEY
@@ -2531,6 +2546,9 @@ class Agent:
             bound = self._attempt(op.prepare, op, args, asked_for)
             if isinstance(bound, _Failed):
                 stopped = bound.result
+                # Nothing ran: the same call may be made again once what refused it changed
+                # (a listing read, say); the step and call caps still bound the retries.
+                turn.seen.discard(asked_for)
             else:
                 args = bound
         digest = action_hash(op.name, args)
@@ -2606,6 +2624,20 @@ class Agent:
             spoken=f"That's {limit} actions in {span}, the most I take, so I didn't do that one. "
             "Ask again in a few minutes.",
         )
+
+    @staticmethod
+    def _unasked(op: Operation, args: dict[str, Any]) -> str:
+        """Return why this call needs no question for the operation's own sake, or "".
+
+        The operation's check reads the disk, so a failure of it is a question, never a run.
+        """
+        if op.unasked is None:
+            return ""
+        try:
+            return op.unasked(args)
+        except Exception:
+            log.exception("%s could not tell whether to ask; it will ask", op.name)
+            return ""
 
     def _consent(self, decision: Decision, op: Operation) -> tuple[Decision, dict[str, str]]:
         """Return the decision to act on, and the audit fields of a question that was bypassed.

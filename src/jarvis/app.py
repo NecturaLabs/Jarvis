@@ -1,5 +1,6 @@
 """Builds Jarvis from its config: model, operations, prompt, audit log and agent."""
 
+import logging
 import os
 import shutil
 from dataclasses import dataclass, replace
@@ -35,6 +36,7 @@ from jarvis.pc.stats import StatsOps
 from jarvis.pc.volume import VolumeOps
 from jarvis.pc.watch import ScreenWatch
 from jarvis.pc.windows import WindowOps
+from jarvis.pc.workspace import Ledger, workspace_in_use, workspace_path, workspace_problem
 from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
@@ -62,6 +64,8 @@ if TYPE_CHECKING:
     from jarvis.config import ChatConfig, Config
     from jarvis.model import ModelStatus
 
+
+log = logging.getLogger(__name__)
 
 MAX_REPLY_CHARS = 4000
 CHARS_PER_REPLY_TOKEN = 8  # generous: the token cap, not this, keeps a reply to length
@@ -251,6 +255,7 @@ def system_prompt(
         .read_text(encoding="utf-8")
         .rstrip("\n"),
         "pc_audio": _pc_audio_rule(config, channel),
+        "workspace": _workspace_rule(config),
     }
     text = core + "\n" + style
     if coding:
@@ -478,9 +483,20 @@ def files_boundary(config: Config, home: Path | None = None) -> Boundary:
 
     Jarvis's own state and config folders are never in it: its settings and the owner's skills
     there steer Jarvis, so no request may rewrite them through a file operation.
+
+    Jarvis's workspace is made here, mode 0700, if it is missing. One that exists but is not a
+    folder of the owner's alone (a link, another user's, writable by others) is left as it is
+    and not used; `jarvis doctor` says so.
     """
+    base = home or Path.home()
+    problem = workspace_problem(workspace_path(config.files, base), create=True)
+    if problem:
+        log.warning("files.workspace %s: it is not used until that is fixed", problem)
     return Boundary.of(
-        config.files, home or Path.home(), protected=(paths.state_dir(), paths.config_dir())
+        config.files,
+        base,
+        protected=(paths.state_dir(), paths.config_dir()),
+        workspace=not problem,
     )
 
 
@@ -537,7 +553,9 @@ def pc_operations(
         *StatsOps(Sampler()).operations(),
         *VolumeOps(_wpctl).operations(),
         *MediaOps(_playerctl).operations(),
-        *FileOps(boundary, max_chars=limits.tool_text_chars).operations(),
+        *FileOps(
+            boundary, max_chars=limits.tool_text_chars, made=Ledger(paths.workspace_ledger_file())
+        ).operations(),
         *(ProcessOps() if watching is None else watching.processes).operations(),
         *windows.operations(),
         *ScreenshotOps(
@@ -545,8 +563,23 @@ def pc_operations(
         ).operations(),
         *([] if watching is None else watching.operations()),
         *AppOps(config.apps.programs).operations(),
-        *ShellOps(config.shell, home or Path.home(), max_chars=limits.tool_text_chars).operations(),
+        *ShellOps(
+            config.shell,
+            home or Path.home(),
+            max_chars=limits.tool_text_chars,
+            workspace=boundary.workspace,
+        ).operations(),
     ]
+
+
+def _workspace_rule(config: Config) -> str:
+    """Tell the model where its workspace folder is, unless that folder cannot be used.
+
+    A sentence that begins with a space, to follow the line it ends.
+    """
+    if not workspace_in_use(config.files, Path.home()):
+        return ""
+    return f" Bare file names save in your workspace, {config.files.workspace} (always writable)."
 
 
 def _number_rule(separator: str) -> str:

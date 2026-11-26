@@ -1,9 +1,10 @@
 """`config.toml`: versioned, validated settings with documented defaults."""
 
+import os
 import re
 import socket
 import tomllib
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, Iterable, MutableMapping
 from ipaddress import ip_address, ip_network
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal, Self, cast
@@ -651,6 +652,34 @@ def _check_deny(entry: str) -> str:
 
 DenyEntry = Annotated[SafeText, AfterValidator(_check_deny)]
 
+DEFAULT_WORKSPACE = "~/Documents/Jarvis"
+SYSTEM_FOLDER_NAMES = ("/proc", "/sys", "/dev", "/run")  # never read or written, nor a workspace
+
+
+def workspace_refusal(workspace: str, home: Path, protected: Iterable[Path]) -> str:
+    """Return why a path may not be Jarvis's workspace, or "" when it may.
+
+    It may not be home or a folder holding it, a hidden folder under home or one inside it
+    (where programs keep settings), hold or lie inside a protected folder (Jarvis's own state
+    and configuration), or use `..`. Links are resolved first, as every path is.
+    """
+    text = str(home) + workspace[1:] if workspace.startswith("~") else workspace
+    if ".." in PurePosixPath(text).parts:
+        return "must not contain '..'"
+    path = Path(os.path.realpath(text))
+    real_home = Path(os.path.realpath(home))
+    if real_home == path or real_home.is_relative_to(path):
+        return "must be a folder of its own, not your home folder or one that holds it"
+    if path.is_relative_to(real_home) and any(
+        part.startswith(".") for part in path.relative_to(real_home).parts
+    ):
+        return "must not be a hidden folder under home, or inside one (~/.config, ~/.local)"
+    for folder in protected:
+        shut = Path(os.path.realpath(folder))
+        if path == shut or path.is_relative_to(shut) or shut.is_relative_to(path):
+            return f"must not be, hold or lie inside {shut}, which Jarvis keeps for itself"
+    return ""
+
 
 class FilesConfig(_Section):
     """The folders Jarvis may read and write (`~` is the owner's home).
@@ -661,13 +690,24 @@ class FilesConfig(_Section):
     and folders under home (shell history, app logins and caches live there) are not read
     unless `hidden_allow` names them; by default it opens the desktop's own settings. Writing
     asks first, unless `boundaries.bypass_consent` is on, and never touches a hidden file or
-    folder.
+    folder. The `workspace` is Jarvis's own folder, always readable and writable (ADR 0025): what
+    Jarvis makes without a path goes there, and it never asks before making a new file in it.
     """
 
     read_roots: list[RootPath] = Field(default_factory=lambda: ["~"])
     write_roots: list[RootPath] = Field(default_factory=lambda: ["~/Documents"])
     deny: list[DenyEntry] = Field(default_factory=list[str])
     hidden_allow: list[SafeText] = Field(default_factory=lambda: list(DESKTOP_SETTINGS))
+    workspace: RootPath = DEFAULT_WORKSPACE
+
+    @model_validator(mode="after")
+    def _workspace_is_not_protected(self) -> Self:
+        shut = (paths.state_dir(), paths.config_dir(), *map(Path, SYSTEM_FOLDER_NAMES))
+        refusal = workspace_refusal(self.workspace, Path.home(), shut)
+        if refusal:
+            msg = f"files.workspace {refusal}"
+            raise ValueError(msg)
+        return self
 
 
 def _check_window(pattern: str) -> str:

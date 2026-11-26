@@ -75,6 +75,8 @@ class OperationError(Exception):
         self.origin = origin
 
 
+UNASKED_ARG = "unasked"  # the argument that hands an operation its own `unasked` reason back
+
 REMEMBERED = "memory"  # the origin of outside text a request remembers from earlier turns
 REMEMBERED_LISTING = "memory-process"  # ... when all of it was process listings
 
@@ -215,7 +217,8 @@ class Result:
     `groups` asks the agent to offer those tool groups for the rest of the request (`use_tools`).
     `look` is a picture the model is to see next (a screenshot just taken), when it can see
     pictures; the agent adds it to the conversation as outside data, and says in the result's
-    text whether it did.
+    text whether it did. `delivered` is told the result as the model got it, cut to the agent's
+    cap (and wrapped, for outside text), so an operation can hold to what was really read.
     """
 
     text: str
@@ -231,6 +234,7 @@ class Result:
     mode: str = ""
     groups: tuple[str, ...] = ()
     look: Picture | None = None
+    delivered: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +259,11 @@ class Operation:
     may set it. With `always_ask`, a call that needs a yes is asked about even while the owner
     has consent bypassed (`boundaries.bypass_consent`): it can send the owner's words to whoever
     wrote a page, so a page must not be able to make it happen unseen.
+    `unasked` says, for one call's validated arguments, why that call needs no question although
+    the operation is `confirm` ("a new file in the workspace"), or "" to ask as usual. The owner's
+    own class for the operation, and outside text in the conversation, still win over it.
+    A call that runs on that reason gets it back in its arguments (`UNASKED_ARG`) for `prepare`
+    and `run`, which must then do only what the reason said (a "new file" fails if one appeared).
     """
 
     name: str
@@ -274,6 +283,7 @@ class Operation:
     audit_text: bool = True
     concurrent: bool = False
     always_ask: bool = False
+    unasked: Callable[[dict[str, Any]], str] | None = None
 
     def __post_init__(self) -> None:
         """Refuse an operation that acts yet claims to run beside others.

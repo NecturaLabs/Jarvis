@@ -67,6 +67,11 @@ class Rig:
     def stop(self, **args: Any) -> Result:  # ruff: ignore[any-type] - the arguments a test sets
         return self.watch.stop(args)
 
+    def prepare(self, **args: Any) -> dict[str, Any]:  # ruff: ignore[any-type] - the arguments a test sets
+        op = next(o for o in self.watch.operations() if o.name == "pc_watch")
+        assert op.prepare is not None
+        return op.prepare(validate_args(op, args))
+
     def events(self) -> list[str]:
         return [str(e["event"]) for e in self.audit.events]
 
@@ -116,6 +121,40 @@ def test_the_window_must_come_from_a_listing_the_model_read(rig: Rig) -> None:
         with pytest.raises(OperationError, match="not read yet"):
             rig.start(of="window", window=1, condition="x")
     assert rig.watch.ready() is False
+
+
+@pytest.mark.parametrize(
+    ("args", "refusal"),
+    [
+        ({"of": "process"}, "Say which process"),
+        ({"of": "window", "condition": "x"}, "Say which window"),
+        ({"of": "window", "window": 1, "condition": "x"}, "not listed"),
+        ({"of": "workspace", "condition": "x"}, "Say which workspace"),
+        ({"of": "screen", "condition": "..."}, "Say what to look for"),
+    ],
+)
+def test_a_watch_that_would_be_refused_is_refused_before_the_question(
+    rig: Rig, args: dict[str, Any], refusal: str
+) -> None:
+    """Regression: a doomed watch reached the owner's question, then failed after the yes."""
+    with request_scope(foreign=False), pytest.raises(OperationError, match=refusal):
+        rig.prepare(**args)
+
+
+def test_a_screen_watch_is_refused_before_the_question_when_the_model_cannot_see(
+    rig: Rig,
+) -> None:
+    rig.judge.sight = False
+    with request_scope(foreign=False), pytest.raises(OperationError, match="picture"):
+        rig.prepare(of="screen", condition="a dialog")
+
+
+def test_a_watch_that_can_start_passes_its_arguments_through_unchanged(rig: Rig) -> None:
+    with request_scope(foreign=False):
+        seen(rig.windows)
+        bound = rig.prepare(of="window", window=1, condition="the build finished")
+    assert bound["window"] == 1
+    assert bound["condition"] == "the build finished"
 
 
 def test_a_listing_of_another_request_does_not_bind(rig: Rig) -> None:

@@ -79,3 +79,8 @@ def schedule_file() -> Path:
 def actions_file() -> Path:
     """Return the file that counts recent side-effecting actions across Jarvis's processes."""
     return state_dir() / "actions.json"
+
+
+def workspace_ledger_file() -> Path:
+    """Return the file that lists the files Jarvis made in its workspace (ADR 0025)."""
+    return state_dir() / "workspace-files.json"
