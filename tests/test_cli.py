@@ -570,12 +570,14 @@ def test_acp_coding_keeps_a_reopened_sessions_talk_when_it_builds_the_new_models
     assert acp.made is not None
     session = acp.made("s1")
     acp.agent.memory.add(Turn("earlier question", "earlier answer", outside="web"))
+    acp.agent.memory.summary, acp.agent.memory.summary_private = "older talk", True
     rebuilt = acp.agent = _Said()  # the next build hands out a new agent
     _own_coding_model(tmp_path)
 
     assert session.handle("hello", Hooks(confirm=lambda _q: False)) == "answer"
     assert rebuilt.asked == ["hello"]
     assert [(t.request, t.outside) for t in rebuilt.memory.turns] == [("earlier question", "web")]
+    assert (rebuilt.memory.summary, rebuilt.memory.summary_private) == ("older talk", True)
 
 
 def test_acp_coding_rechecks_cancellation_under_the_shared_mode_lock(

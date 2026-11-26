@@ -3013,6 +3013,25 @@ def test_forget_all_deletes_the_kept_t3_code_sessions_too(tmp_path: Path) -> Non
     assert not list(kept.iterdir())
 
 
+def test_forget_all_that_cannot_delete_the_t3_code_sessions_forgets_nothing(tmp_path: Path) -> None:
+    kept = acp_sessions_dir()
+    (kept / "jarvis-0123456789ab.json").mkdir(parents=True)  # a folder: it cannot be unlinked
+    archive = ChatArchive(tmp_path / "archive", keep=10)
+    memory = Conversation(budget=1000)
+    archive.record({"event": "request", "text": "hello"})
+    memory.add(Turn("hello", "Hi.", "", "", 1.0))
+    archive.save(memory)
+    archive.start()
+    app = _app(session=FakeSession(), services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/forget all")
+        await _until(pilot, lambda: _has(app, "nothing was forgotten"))
+
+    _run(test, app)
+    assert archive.listed()  # the chat's archive is left whole
+
+
 def test_forget_all_also_forgets_this_conversation_so_none_of_it_is_archived_again(
     tmp_path: Path,
 ) -> None:

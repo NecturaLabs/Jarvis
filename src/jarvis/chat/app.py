@@ -1698,9 +1698,18 @@ class ChatApp(App[None]):
             self._note("Wait for the request to finish, or press esc to stop it.", "warn")
             return
         self._poll()  # the log's last events are forgotten too, not recorded into the next one
+        kept = acp_sessions_dir()
         try:
-            gone = archive.forget()
-            gone += forget_kept(acp_sessions_dir())  # T3 Code's sessions are archived too
+            t3 = forget_kept(kept)  # T3 Code's sessions are archived too; first, so a failure
+        except OSError as exc:  # leaves everything in place
+            self._note(
+                f"Couldn't delete T3 Code's kept sessions ({type(exc).__name__}); nothing was "
+                f"forgotten. Their folder is {kept}.",
+                "error",
+            )
+            return
+        try:
+            gone = archive.forget() + t3
         except OSError as exc:
             self._note(
                 f"Couldn't delete the archive ({type(exc).__name__}); nothing was forgotten. "
