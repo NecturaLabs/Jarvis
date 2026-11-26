@@ -242,9 +242,11 @@ class Controls:
             self._sleep(IDLE_POLL_S)
         # A request in a chat window may run for minutes (or wait for the owner's yes): the
         # unload waits for it for as long as this pause stands, and is made while holding off
-        # any request that would begin, so no model call is ever cut.
+        # any request that would begin, so no model call is ever cut. The model's turn is taken
+        # first, as `_warm` does before its prompt read takes the Answering mark: the other
+        # order would deadlock, and would hold requests off for the length of a model load.
         while pause == self._pauses and self._mic.paused:
-            with self._nobody_answering() as free, self._model_turn:
+            with self._model_turn, self._nobody_answering() as free:
                 if free and pause == self._pauses and self._mic.paused:
                     log.info("paused: unloading the model")
                     self._model.unload()

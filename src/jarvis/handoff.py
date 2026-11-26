@@ -21,6 +21,7 @@ import socket
 import stat
 import threading
 import time
+import unicodedata
 from enum import StrEnum
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -149,19 +150,34 @@ def send(words: str, folder: Path | None = None, timeout: float = TIMEOUT_S) -> 
     for path in windows:
         if (conn := _connect(path, timeout)) is None:
             continue
-        line = json.dumps({"spoken": words[:MAX_CHARS]}, ensure_ascii=False).encode() + b"\n"
+        line = (
+            json.dumps({"spoken": _plain(words)[:MAX_CHARS]}, ensure_ascii=False).encode() + b"\n"
+        )
         with conn:
             try:
                 conn.sendall(line)
                 reply = obj(json.loads(_read_line(conn)))
+                sent = (
+                    Sent(State(str(reply.get("state"))), len(windows))
+                    if reply.get("ok") is True
+                    else None
+                )
             except (OSError, ValueError) as exc:
                 msg = "the chat window did not answer in time, so it may or may not have the words"
                 raise UncertainOutcomeError(msg) from exc
-        if reply.get("ok") is True:
-            return Sent(State(str(reply.get("state"))), len(windows))
+        if sent is not None:
+            return sent
         raise HandoffError(str(reply.get("error", "the chat window refused")))
     msg = "no chat window is open"
     raise HandoffError(msg)
+
+
+def _plain(words: str) -> str:
+    """Return `words` with each control character but the line break a space.
+
+    JSON writes one as a six-byte escape, which would let a transcript of them outgrow the line.
+    """
+    return "".join(" " if unicodedata.category(ch) == "Cc" and ch != "\n" else ch for ch in words)
 
 
 def _read_line(conn: socket.socket) -> bytes:
@@ -275,12 +291,12 @@ class ChatListener:
         from jarvis.control import peer_credentials  # ruff: ignore[import-outside-top-level] - the socket server, kept out of programs that only ask
 
         conn.settimeout(TIMEOUT_S)
+        too_long = False
         try:
             line = _read_line(conn)
         except ValueError:
-            conn.sendall(b'{"ok": false, "error": "too long"}\n')
-            return
-        if not line:
+            line, too_long = b"", True
+        if not line and not too_long:
             return  # a probe
         creds = peer_credentials(conn)
         if creds is None or creds[1] != os.getuid():
@@ -288,6 +304,10 @@ class ChatListener:
             return
         if not self._allowed(creds[0]):
             self._refuse(conn, f"not the voice service (PID {creds[0]})")
+            return
+        if too_long:
+            self._refused("too long")
+            conn.sendall(b'{"ok": false, "error": "too long"}\n')
             return
         reply: dict[str, object]
         try:

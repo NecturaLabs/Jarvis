@@ -265,7 +265,8 @@ class _Work:
     label: str = "Thinking"
     stop: threading.Event = field(default_factory=threading.Event)
     draft: str = ""
-    steering: list[str] = field(default_factory=list[str])  # typed meanwhile, not yet taken
+    # (words, source) typed or spoken meanwhile, not yet taken
+    steering: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
     taking: bool = True  # the request still takes steering; once it ends, the words wait
     running: bool = True  # the agent still works on the conversation: it is not archived now
     began: bool = False  # its worker started: it archives at close, once the agent is done
@@ -518,7 +519,7 @@ class ChatApp(App[None]):  # ruff: ignore[too-many-public-methods] - Textual's h
         self._pending: Pending | None = None  # a risky setting asked to be turned on, unconfirmed
         self._changed_jarvis = False  # a setting the voice service reads changed in /config
         # Requests typed while one ran, waiting their turn: words, pictures, pastes.
-        self._queued: list[tuple[str, list[Picture], list[str]]] = []
+        self._queued: list[tuple[str, list[Picture], list[str], str]] = []
         self._session_id = session_id
         self._poll_s = poll_s
         self._status_s = status_s
@@ -1158,9 +1159,9 @@ class ChatApp(App[None]):  # ruff: ignore[too-many-public-methods] - Textual's h
                 and not pasted
             )
             if steer and work is not None:
-                work.steering.append(text)
+                work.steering.append((text, source))
             else:
-                self._queued.append((text, list(pictures), list(pasted)))
+                self._queued.append((text, list(pictures), list(pasted), source))
         self._mount(Request(text, _joined(source, now, "steering" if steer else "queued")))
         self._exchanges.append(("you", text))
         return steer
@@ -1193,15 +1194,15 @@ class ChatApp(App[None]):  # ruff: ignore[too-many-public-methods] - Textual's h
     def _take_steering(self, work: _Work) -> list[str]:
         with self._lock:
             taken, work.steering = work.steering, []
-        return taken
+        return [text for text, _source in taken]
 
     def _next_queued(self) -> None:
         """Start the next queued request, if any, once the window is idle."""
         with self._lock:
             if self._work is not None or not self._queued:
                 return
-            text, pictures, pasted = self._queued.pop(0)
-        self._request(text, pictures, pasted, shown=True)
+            text, pictures, pasted, source = self._queued.pop(0)
+        self._request(text, pictures, pasted, shown=True, source=source)
 
     def _sent_pastes(self, text: str) -> list[str]:
         """Return what was pasted into `text`, once per paste, and forget it.
@@ -1967,7 +1968,7 @@ class ChatApp(App[None]):  # ruff: ignore[too-many-public-methods] - Textual's h
             if work is not None:
                 work.taking = False
                 # Words the request ended before taking run next, ahead of the queue.
-                self._queued[:0] = [(text, [], []) for text in work.steering]
+                self._queued[:0] = [(text, [], [], source) for text, source in work.steering]
                 work.steering = []
             if self._work is work:
                 self._work = None

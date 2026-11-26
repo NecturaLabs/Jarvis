@@ -1121,6 +1121,7 @@ APPLIES_WHEN_IDLE = (
     "even if this window is closed."
 )
 PENDING_CHECK_S = 5.0  # how often the voice service looks for a restart that waits for it
+RESTART_WAIT_S = 30.0  # how long it waits to be stopped by a restart systemd accepted
 
 
 def _apply_from_chat() -> str:
@@ -1148,7 +1149,6 @@ def _apply_from_chat() -> str:
 
 def _watch_for_restart_note(loop: VoiceLoop, stop: threading.Event) -> None:
     """Start the thread that restarts the voice service for settings the chat changed."""
-    paths.restart_pending_file().unlink(missing_ok=True)  # this start takes the settings in force
     threading.Thread(
         target=_restart_when_pending, args=(loop, stop), name="jarvis-restart-pending", daemon=True
     ).start()
@@ -1157,20 +1157,31 @@ def _watch_for_restart_note(loop: VoiceLoop, stop: threading.Event) -> None:
 def _restart_when_pending(loop: VoiceLoop, stop: threading.Event) -> None:
     """Restart the voice service for settings the chat changed, once no request is under way.
 
-    A look is one `stat` of the note every `PENDING_CHECK_S`; the restart is made while no voice
-    request can begin, so a request starting at that moment is never cut.
+    A look is one `stat` of the note every `PENDING_CHECK_S`. The restart is asked of systemd
+    without waiting for it, while no voice request can begin; once systemd accepted it the note
+    goes, and the lock is kept until this process is stopped, so no request begins in the
+    moments before. A restart that was refused leaves the note for the next look. Whatever goes
+    wrong is logged and the thread goes on.
     """
     note = paths.restart_pending_file()
     while not stop.wait(PENDING_CHECK_S):
-        if not note.exists() or str(loop.state) != "idle":
-            continue
-        with modes.voice_idle() as idle:
-            if not idle:
-                continue
+        try:
+            if note.exists() and str(loop.state) == "idle":
+                _restart_now(note, stop)
+        except Exception:
+            log.exception("could not restart for the settings the chat changed")
+
+
+def _restart_now(note: Path, stop: threading.Event) -> None:
+    with modes.voice_idle() as idle:
+        if not idle:
+            return
+        log.info("restarting for the settings the chat changed")
+        if _restart_if_running(no_block=True):
             note.unlink(missing_ok=True)
-            log.info("restarting for the settings the chat changed")
-            if not _restart_if_running():
-                log.warning("the voice service did not restart: %s", RESTART_FAILED)
+            stop.wait(RESTART_WAIT_S)  # the unit stops this process: no request begins meanwhile
+        else:
+            log.warning("the voice service did not restart: %s", RESTART_FAILED)
 
 
 def chat_archive_dir() -> Path:
@@ -1429,6 +1440,16 @@ def _remote_status(
     return lambda: _probe_fields(model.probe(), model.config.model)
 
 
+def _load_for_run() -> config.Config:
+    """Load the config for the voice service, after dropping the restart note it makes true.
+
+    What a note stood for is saved in the config already; one written after the drop is kept
+    for the watcher.
+    """
+    paths.restart_pending_file().unlink(missing_ok=True)
+    return _load_client()
+
+
 def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] - the voice service's parts, wired together here
     """Run the voice loop until stopped."""
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
@@ -1445,7 +1466,7 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
     from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, which loads numpy and ONNX Runtime
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    cfg = _load_client()
+    cfg = _load_for_run()
     # The hint is the agent's, built after the transcribers that `pc_audio_listen` needs; it is
     # first asked for once a request is heard.
     request, answer = _transcribers(cfg, lambda: jarvis.hint())  # ruff: ignore[unnecessary-lambda] - `jarvis` is built below
@@ -2718,14 +2739,18 @@ class RestartError(RuntimeError):
     """The voice service did not restart after a change, so it runs on the old settings."""
 
 
-def _restart_if_running() -> bool:
-    """Restart the voice service if it runs; return False when that restart failed."""
+def _restart_if_running(*, no_block: bool = False) -> bool:
+    """Restart the voice service if it runs; return False when that restart failed.
+
+    With `no_block` the call returns once systemd has accepted the restart, which is what the
+    voice service itself needs: the unit's own SIGTERM cannot then read as a failure.
+    """
     if _unit_state(JARVIS_UNIT) != "active":
         return True
     # A restart counts against the start limit (5 in 15 min): clear it first, so a few
     # config changes in a row do not leave the voice service stopped.
     _systemctl("reset-failed", JARVIS_UNIT)
-    if _systemctl("restart", JARVIS_UNIT) != 0:
+    if _systemctl(*(["--no-block"] if no_block else []), "restart", JARVIS_UNIT) != 0:
         print(f"jarvis: {RESTART_FAILED}", file=sys.stderr)
         return False
     return True

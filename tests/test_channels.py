@@ -61,6 +61,18 @@ _until = test_chat._until  # pyright: ignore[reportPrivateUsage]
 SPOKEN = "add a test for the parser to what you are doing"
 
 
+def _restart_recorder(done: list[bool]) -> Callable[..., bool]:
+    def restart(**_kwargs: bool) -> bool:
+        done.append(True)
+        return True
+
+    return restart
+
+
+def _restart_refused(**_kwargs: bool) -> bool:
+    return False
+
+
 def _any_peer(_pid: int) -> bool:
     """The test is the sender and the window at once, so any peer counts as the voice service."""
     return True
@@ -688,7 +700,7 @@ def test_the_voice_service_restarts_for_the_note_once_it_is_idle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     restarts: list[bool] = []
-    monkeypatch.setattr(cli, "_restart_if_running", lambda: restarts.append(True) or True)
+    monkeypatch.setattr(cli, "_restart_if_running", _restart_recorder(restarts))
     monkeypatch.setattr(cli, "PENDING_CHECK_S", 0.01)
     paths.restart_pending_file().parent.mkdir(parents=True, exist_ok=True)
     paths.restart_pending_file().write_text("x", encoding="utf-8")
@@ -953,3 +965,269 @@ def test_the_chat_says_when_a_pause_keeps_the_model_loaded_for_its_request(
     line = cli._chat_status(Config())  # pyright: ignore[reportPrivateUsage] - the toolbar's line
 
     assert "paused: it unloads when no request is running" in line
+
+
+# The second review
+
+
+def test_a_pause_during_a_warm_up_neither_deadlocks_nor_holds_requests_off() -> None:
+    """The unload and the warm-up take the model's turn before the modes' lock, both ways."""
+    inside = threading.Event()
+    release = threading.Event()
+    model = Model()
+
+    def prime() -> None:  # as `Agent.prime` is: a model call under the shared Answering mark
+        inside.set()
+        release.wait(5)
+        with modes.Answering():
+            pass
+
+    controls = control.Controls(Loop(), Mic(), model, prime=prime)
+    controls.warm_at_start()
+    assert inside.wait(5)  # the warm-up holds the model's turn and is about to read its prompt
+    controls("pause")  # its unload waits for the turn, not holding the lock a request needs
+    threading.Event().wait(0.3)
+    entered = threading.Event()
+
+    def request() -> None:
+        with modes.Answering():
+            entered.set()
+
+    threading.Thread(target=request, daemon=True).start()
+    assert entered.wait(2)  # no request is held off while the model loads
+
+    release.set()
+    for _ in range(500):
+        if model.unloads:
+            break
+        threading.Event().wait(0.01)
+
+    assert model.unloads == 1  # and the warm-up finished, so the pause got its unload
+
+
+def test_the_voice_service_starts_its_watcher_for_the_restart_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started: list[object] = []
+    ready = threading.Event()
+
+    def watcher(loop: object, stop: threading.Event) -> None:
+        started.append(loop)
+        assert not stop.is_set()
+        ready.set()
+
+    monkeypatch.setattr(cli, "_restart_when_pending", watcher)
+
+    def body(run: test_cli._Run, _stop: object) -> None:  # pyright: ignore[reportPrivateUsage]
+        assert ready.wait(5)
+        run.handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    _run, code = _cmd_run(monkeypatch, body)
+
+    assert code == 0
+    assert len(started) == 1
+
+
+def test_a_note_left_before_the_start_is_dropped_before_the_config_is_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    note = paths.restart_pending_file()
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("x", encoding="utf-8")
+    seen: list[bool] = []
+
+    def load() -> Config:
+        seen.append(note.exists())
+        raise SystemExit(0)  # enough: the order is what is under test
+
+    monkeypatch.setattr(cli, "_load_client", load)
+
+    with pytest.raises(SystemExit):
+        cli.cmd_run(SimpleNamespace())  # pyright: ignore[reportArgumentType] - the command takes no arguments
+
+    assert seen == [False]
+
+
+def test_a_restart_for_the_note_is_not_blocking_and_the_note_goes_once_it_was_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, bool]] = []
+    notes: list[bool] = []
+
+    def restart(**kwargs: bool) -> bool:
+        calls.append(kwargs)
+        notes.append(paths.restart_pending_file().exists())
+        return True
+
+    monkeypatch.setattr(cli, "_restart_if_running", restart)
+    monkeypatch.setattr(cli, "PENDING_CHECK_S", 0.01)
+    paths.restart_pending_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.restart_pending_file().write_text("x", encoding="utf-8")
+    stop = threading.Event()
+    watcher = threading.Thread(
+        target=cli._restart_when_pending,  # pyright: ignore[reportPrivateUsage] - the voice service's watcher
+        args=(SimpleNamespace(state="idle"), stop),
+    )
+    watcher.start()
+    for _ in range(300):
+        if calls:
+            break
+        threading.Event().wait(0.01)
+    stop.set()
+    watcher.join(5)
+
+    assert calls == [{"no_block": True}]  # the unit's own SIGTERM must not read as a failure
+    assert notes == [True]  # the note is still there when the restart is asked for
+    assert not paths.restart_pending_file().exists()
+
+
+def test_a_restart_that_was_refused_keeps_the_note(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_restart_if_running", _restart_refused)
+    monkeypatch.setattr(cli, "PENDING_CHECK_S", 0.01)
+    paths.restart_pending_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.restart_pending_file().write_text("x", encoding="utf-8")
+    stop = threading.Event()
+    watcher = threading.Thread(
+        target=cli._restart_when_pending,  # pyright: ignore[reportPrivateUsage] - the voice service's watcher
+        args=(SimpleNamespace(state="idle"), stop),
+    )
+    watcher.start()
+    threading.Event().wait(0.1)
+    stop.set()
+    watcher.join(5)
+
+    assert paths.restart_pending_file().exists()
+
+
+def test_a_failure_in_the_watcher_is_logged_and_it_goes_on(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    attempts: list[bool] = []
+
+    def restart(**_k: bool) -> bool:
+        attempts.append(True)
+        raise OSError("systemctl is gone")
+
+    monkeypatch.setattr(cli, "_restart_if_running", restart)
+    monkeypatch.setattr(cli, "PENDING_CHECK_S", 0.01)
+    paths.restart_pending_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.restart_pending_file().write_text("x", encoding="utf-8")
+    stop = threading.Event()
+    watcher = threading.Thread(
+        target=cli._restart_when_pending,  # pyright: ignore[reportPrivateUsage] - the voice service's watcher
+        args=(SimpleNamespace(state="idle"), stop),
+    )
+    watcher.start()
+    for _ in range(300):
+        if len(attempts) >= 2:
+            break
+        threading.Event().wait(0.01)
+    stop.set()
+    watcher.join(5)
+
+    assert len(attempts) >= 2  # it tried again: the thread did not die
+    assert "systemctl is gone" in caplog.text
+
+
+def test_words_handed_over_and_queued_run_later_still_marked_as_spoken() -> None:
+    release = threading.Event()
+
+    def answer(text: str, _hooks: Hooks) -> str:
+        if text == "pause":
+            release.wait(5)
+        return "Done."
+
+    session = FakeSession(answer)
+    app = _app(session=session, settings=ChatConfig(while_working="queue"))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "pause")
+        await _until(pilot, lambda: session.asked == ["pause"])
+        assert await _handed(app) is State.QUEUED
+        release.set()
+        await _until(pilot, lambda: session.asked == ["pause", SPOKEN])
+
+    _run(test, app)
+    assert session.spoken == [False, True]
+
+
+def test_words_handed_over_to_a_request_that_ended_before_taking_them_stay_spoken() -> None:
+    release = threading.Event()
+
+    def answer(text: str, _hooks: Hooks) -> str:
+        if text == "pause":
+            release.wait(5)  # ends without taking the steering
+        return "Done."
+
+    session = FakeSession(answer)
+    app = _app(session=session)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "pause")
+        await _until(pilot, lambda: session.asked == ["pause"])
+        assert await _handed(app) is State.STEERED
+        release.set()
+        await _until(pilot, lambda: session.asked == ["pause", SPOKEN])
+
+    _run(test, app)
+    assert session.spoken == [False, True]
+
+
+def test_a_window_that_answers_with_a_state_nobody_knows_has_the_words_all_the_same() -> None:
+    path = handoff.socket_path("odd")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.bind(str(path))
+        sock.listen(1)
+
+        def answer() -> None:
+            while True:  # the first connection is the probe for an open window
+                conn, _ = sock.accept()
+                with conn:
+                    if conn.recv(65536):
+                        conn.sendall(b'{"ok": true, "state": "sideways"}\n')
+                        return
+
+        threading.Thread(target=answer, daemon=True).start()
+        with pytest.raises(UncertainOutcomeError):
+            handoff.send(SPOKEN)
+
+
+def test_control_characters_in_the_transcript_cannot_blow_up_the_line() -> None:
+    chat = Chat()
+    listener = ChatListener("w1", chat.take, allowed=_any_peer)
+    listener.start()
+    try:
+        handoff.send("do this" + "\x01" * handoff.MAX_CHARS)
+    finally:
+        listener.close()
+
+    assert chat.words == ["do this"]  # the controls became spaces and the line stayed short
+
+
+def test_a_line_that_is_too_long_is_audited_after_the_peer_is_known() -> None:
+    refused: list[str] = []
+    listener = ChatListener("w1", Chat().take, allowed=_any_peer, refused=refused.append)
+    listener.start()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.connect(str(handoff.socket_path("w1")))
+            conn.sendall(b"x" * (handoff.MAX_LINE + 10))
+            reply = conn.recv(4096)
+    finally:
+        listener.close()
+
+    assert b"too long" in reply
+    assert refused == ["too long"]
+
+
+def test_a_probe_is_not_a_refusal() -> None:
+    refused: list[str] = []
+    listener = ChatListener("w1", Chat().take, allowed=_no_peer, refused=refused.append)
+    listener.start()
+    try:
+        assert handoff.chat_open()
+    finally:
+        listener.close()
+
+    assert refused == []
