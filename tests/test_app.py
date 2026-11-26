@@ -147,8 +147,10 @@ def test_the_default_context_holds_the_whole_remembered_conversation(
     tmp_path: Path, channel: Channel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The prompt, every tool schema, one reply and two tool results at their cap leave room for
-    # the configured memory, so the defaults never squeeze it, even with a full Omarchy catalog.
+    # the configured memory, so the defaults never squeeze it, even with a full Omarchy catalog
+    # and the headless browser's tools, which the chat offers wherever agent-browser is installed.
     _full_catalog(tmp_path / "skills")
+    _browser_installed(monkeypatch, installed=True)
     monkeypatch.setattr("jarvis.osskills.ROOT", tmp_path / "skills")
     monkeypatch.setattr("jarvis.osskills.OWNER", os.getuid())
     full = osskills.catalog()
@@ -170,8 +172,9 @@ def test_the_chat_memory_gives_way_when_thinking_needs_more_room(
 ) -> None:
     # The defaults keep room for the most the chat may think once raised; a bigger cap's room
     # comes out of the remembered conversation rather than squeezing the window, even with a
-    # full Omarchy catalog.
+    # full Omarchy catalog and the headless browser's tools.
     _full_catalog(tmp_path / "skills")
+    _browser_installed(monkeypatch, installed=True)
     monkeypatch.setattr("jarvis.osskills.ROOT", tmp_path / "skills")
     monkeypatch.setattr("jarvis.osskills.OWNER", os.getuid())
     budgets: list[int] = []
