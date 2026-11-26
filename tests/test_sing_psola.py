@@ -14,6 +14,7 @@ import pytest
 
 from jarvis.kokoro import FRAME_SAMPLES, Timed
 from jarvis.sing import psola
+from jarvis.sing.budget import Budget, OutOfTimeError, SongStoppedError
 from jarvis.sing.psola import RATE, PsolaSinger, octave_shift, syllables
 from jarvis.sing.score import Kind, Score, parse
 
@@ -176,3 +177,31 @@ def test_a_word_is_split_into_syllables_at_its_vowels(
 
 def test_a_word_without_a_vowel_is_one_syllable_held_whole() -> None:
     assert syllables(("ʃ", "ʃ"), 2) == [(0, 0, 2, 2)]
+
+
+def test_a_song_stopped_while_it_is_made_stops_before_its_next_phrase() -> None:
+    voice = Voice()
+
+    with pytest.raises(SongStoppedError):
+        PsolaSinger(voice).render(parse(TUNE, 120), Budget(stopped=lambda: bool(voice.said)))
+
+    assert voice.said == [f"pa ta {psola.TRAILER}"]  # the second phrase was never said
+
+
+def test_a_song_stopped_before_it_starts_says_nothing() -> None:
+    voice = Voice()
+
+    with pytest.raises(SongStoppedError):
+        PsolaSinger(voice).render(parse(TUNE, 120), Budget(stopped=lambda: True))
+
+    assert not voice.said
+
+
+def test_a_song_whose_request_runs_out_of_time_stops_too() -> None:
+    voice = Voice()
+    left = iter([5.0, 0.0])
+
+    with pytest.raises(OutOfTimeError):
+        PsolaSinger(voice).render(parse(TUNE, 120), Budget(time_left=lambda: next(left, 0.0)))
+
+    assert len(voice.said) == 1

@@ -55,8 +55,14 @@ CPU singer instead of leaving the owner without a song.
     Jarvis's own voice.
   - `auto` is `soulx` when its files are installed, else `speech`. The CPU song is made first in every case, so
     when SoulX-Singer exits with an error, writes a file Jarvis cannot read, or runs past 20 seconds, that song
-    is sung instead and the log says why. A request cut short ends the program at once (it is polled against the
-    request's cancel signal, killed, and its private folder removed).
+    is sung instead and the log says why.
+  - **Stopping a song being made.** Whatever would silence a song stops it while it is made: the wake word
+    (the voice listens for it then, though nothing plays), `jarvis hush`, a pause, or Jarvis stopping. The CPU
+    singer stops before its next phrase; SoulX-Singer is not started, or is killed with every process it
+    started and its private folder removed. The call is reported as stopped (`tool_stopped` in the audit,
+    "Stopped:" to the model), never as a song. The request's time left bounds it as well: the CPU singer stops
+    when it runs out, and SoulX-Singer is given no more than it and is not started with under 5 s left, when
+    the CPU song is sung.
 - **SoulX-Singer is optional and never downloaded at run time.** `uv run tools/get_singer.py` is the only way
   the files arrive, run by the owner. It fetches each file from its pinned upstream release, checks its size and
   sha256 before keeping it, and takes only the runner, its libraries and licences out of the archive. The pins

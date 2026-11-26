@@ -1,5 +1,6 @@
 """The agent loop against a scripted model: what runs, what is asked, what is remembered."""
 
+import contextlib
 import hashlib
 import json
 import threading
@@ -45,6 +46,7 @@ from jarvis.operations import (
     REMEMBERED_LISTING,
     Operation,
     OperationError,
+    OperationStoppedError,
     Registry,
     Result,
     Sound,
@@ -58,7 +60,7 @@ from jarvis.ratelimit import ActionRate
 from jarvis.shortcuts import Shortcut
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator, Iterator
     from pathlib import Path
     from typing import Self
 
@@ -702,6 +704,81 @@ def test_an_operation_can_ask_whether_the_request_was_cancelled() -> None:
     agent.handle("wait for it", Hooks(confirm=lambda _q: False, cancelled=lambda: stopped[0]))
 
     assert seen == [False, True]
+
+
+def test_the_time_an_operation_is_told_is_left_leaves_out_the_wait_for_a_yes() -> None:
+    clock = Clock()
+    seen: list[float] = []
+    counter = Counter()
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        seen.append(request.time_left())
+
+    def answer(_question: str) -> bool:
+        clock.now += 30  # the owner takes their time to say yes
+        return True
+
+    ops = [counter.op("wait", cls=OpClass.CONFIRM, then=note)]
+    agent, _ = _agent(
+        ScriptedModel([_call("wait"), _say("Done.")]),
+        ops,
+        clock=clock,
+        limits=Limits(max_seconds=90.0),
+    )
+
+    agent.handle("wait for it", Hooks(confirm=answer))
+
+    assert seen == [90.0]  # the request's own time, as its calls are admitted by
+
+
+def test_an_operation_can_ask_whether_anything_more_can_be_heard_and_say_it_makes_sound() -> None:
+    hushed = [False]
+    seen: list[bool] = []
+    entered: list[str] = []
+    counter = Counter()
+
+    @contextlib.contextmanager
+    def making_sound() -> Generator[None]:
+        entered.append("in")
+        try:
+            yield
+        finally:
+            entered.append("out")
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        with request.making_sound():
+            seen.append(request.hushed())
+            hushed[0] = True
+            seen.append(request.hushed())
+
+    ops = [counter.op("wait", side_effect=False, then=note)]
+    agent, _ = _agent(ScriptedModel([_call("wait"), _say("Done.")]), ops)
+
+    agent.handle(
+        "wait for it",
+        Hooks(confirm=lambda _q: False, hushed=lambda: hushed[0], making_sound=making_sound),
+    )
+
+    assert seen == [False, True]
+    assert entered == ["in", "out"]
+
+
+def test_an_operation_stopped_part_way_is_audited_as_stopped_not_failed() -> None:
+    counter = Counter()
+    ops = [counter.op("wait", error=OperationStoppedError("the song was stopped"))]
+    model = ScriptedModel([_call("wait"), _say("Stopped.")])
+    agent, audit = _agent(model, ops)
+
+    agent.handle("wait for it", NO_CONFIRM)
+
+    stopped = next(e for e in audit.events if e["event"] == "tool_stopped")
+    assert stopped["op"] == "wait"
+    assert "tool_failed" not in _events(audit)
+    assert model.seen[1][-1]["content"] == "Stopped: the song was stopped."
 
 
 def test_a_search_after_only_web_text_runs_without_a_yes() -> None:

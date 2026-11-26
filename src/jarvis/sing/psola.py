@@ -6,7 +6,9 @@ syllables at its vowels, each syllable is matched to its notes, and Praat's over
 (PSOLA, through `praat-parselmouth`) stretches the vowel to the note's length and moves the voice
 to the note's pitch. Consonants keep their own length, so the words stay clear; each note starts
 on its beat. The whole song is moved by whole octaves to sit near the voice's own pitch.
-It runs on the CPU in a fraction of the song's length, and holds nothing while idle.
+It runs on the CPU in a fraction of the song's length, and holds nothing while idle. Between each
+phrase's speech and each phrase's singing it checks its `Budget`, so a song that was stopped, or
+whose request ran out of time, stops there.
 """
 
 import itertools
@@ -17,10 +19,11 @@ from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
+from jarvis.sing.budget import Budget
 from jarvis.sing.score import HIGHEST, LOWEST, Kind, Note, Score, hertz
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
 
     from numpy.typing import NDArray
 
@@ -438,6 +441,9 @@ def octave_shift(score: Score, voice_midi: float | None) -> int:
     return shift
 
 
+_ANY = Budget()  # a song nothing stops, with all the time it needs
+
+
 class PsolaSinger:
     """Sings a score with the speaking voice (see the module's docstring)."""
 
@@ -448,18 +454,22 @@ class PsolaSinger:
         super().__init__()
         self._speech = speech
 
-    def render(
-        self, score: Score, _cancelled: Callable[[], bool] = lambda: False, /
-    ) -> tuple[NDArray[np.int16], int]:
-        """Return the song as int16 samples at RATE, and RATE; it is made too fast to stop."""
-        pcm, _ = self.sing(score)
+    def render(self, score: Score, budget: Budget = _ANY, /) -> tuple[NDArray[np.int16], int]:
+        """Return the song as int16 samples at RATE, and RATE (`sing` says what stops it)."""
+        pcm, _ = self.sing(score, budget)
         return pcm, RATE
 
-    def sing(self, score: Score) -> tuple[NDArray[np.int16], Score]:
-        """Return the song as int16 samples at RATE, and the score as sung (moved by octaves)."""
+    def sing(self, score: Score, budget: Budget = _ANY) -> tuple[NDArray[np.int16], Score]:
+        """Return the song as int16 samples at RATE, and the score as sung (moved by octaves).
+
+        `budget.check()` runs before each phrase is said and before each is sung, so a stopped
+        song raises `SongStoppedError` there, and one whose request ran out of time
+        `OutOfTimeError`.
+        """
         phrases = _phrases(score)
         spoken: list[list[_Word]] = []
         for phrase in phrases:
+            budget.check()
             if phrase[0].kind is Kind.REST:
                 spoken.append([])
                 continue
@@ -476,6 +486,7 @@ class PsolaSinger:
             if not words:
                 parts.append(np.zeros(round(phrase[0].seconds * RATE), dtype=np.float32))
                 continue
+            budget.check()
             source = np.concatenate([w.audio for w in words])
             pieces = _trimmed(source, _pieces(phrase, words, phrase[0].word))
             parts.append(_sing_phrase(source[: pieces[-1].end], pieces))

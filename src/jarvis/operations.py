@@ -1,7 +1,7 @@
 """Typed operations: a name, a JSON schema for its arguments, a class and an executor."""
 
 import math
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
@@ -53,6 +53,13 @@ class ArgumentError(ValueError):
     """A tool call's arguments do not match the operation's schema."""
 
 
+class OperationStoppedError(Exception):
+    """An operation stopped part way because its request was cut short or silenced (`sing`).
+
+    Nothing it would have done was done; the message says what was stopped.
+    """
+
+
 class OperationError(Exception):
     """An operation could not do what was asked; the message is what the model is told.
 
@@ -83,7 +90,10 @@ class Request:
     typed into it while it ran (`steered`). `time_left` says how many seconds the request has left
     before its time limit (`agent.max_seconds`), for an operation that waits as long as it is asked
     (`pc_audio_listen`). `cancelled` turns true when the request is cut short (the owner spoke over
-    Jarvis or hushed it), for an operation that runs long (`sing`).
+    Jarvis, Jarvis was paused or is stopping), for an operation that runs long, and `hushed` when
+    nothing more of it can be heard (`jarvis hush` too), for one that makes a sound (`sing`). An
+    operation making a sound runs inside `making_sound()`, so the voice listens for the wake word
+    meanwhile, as it does while it speaks.
     """
 
     foreign: bool
@@ -92,6 +102,8 @@ class Request:
     steered: list[str] = field(default_factory=list[str])
     time_left: Callable[[], float] = field(default=lambda: math.inf)
     cancelled: Callable[[], bool] = field(default=lambda: False)
+    hushed: Callable[[], bool] = field(default=lambda: False)
+    making_sound: Callable[[], AbstractContextManager[None]] = field(default=nullcontext)
 
     @property
     def words(self) -> str:
@@ -116,15 +128,24 @@ def current_request() -> Request | None:
 
 
 @contextmanager
-def request_scope(
+def request_scope(  # ruff: ignore[too-many-arguments] - the request's fields, keyword-only
     *,
     foreign: bool,
     words: str = "",
     time_left: Callable[[], float] = lambda: math.inf,
     cancelled: Callable[[], bool] = lambda: False,
+    hushed: Callable[[], bool] = lambda: False,
+    making_sound: Callable[[], AbstractContextManager[None]] = nullcontext,
 ) -> Generator[Request]:
     """Mark everything run inside as part of one new request; `words` are the owner's own."""
-    request = Request(foreign, typed=words, time_left=time_left, cancelled=cancelled)
+    request = Request(
+        foreign,
+        typed=words,
+        time_left=time_left,
+        cancelled=cancelled,
+        hushed=hushed,
+        making_sound=making_sound,
+    )
     token = _CURRENT.set(request)
     try:
         yield request

@@ -43,8 +43,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   (but not a stretch of about 3 seconds that sounds like the wake word), hushed and paused like a reply. It
   sings with the Kokoro voice moved to each note (Praat, through the new `praat-parselmouth` dependency), or
   with SoulX-Singer on the GPU once `tools/get_singer.py` has installed it (it skips files already in place);
-  `[sing] engine` chooses. A song being made on the GPU stops at once when you speak over Jarvis or hush it.
-  `jarvis doctor` checks the singer, including that SoulX-Singer's runner is executable with its libraries
+  `[sing] engine` chooses. A song still being made stops at once when you speak over Jarvis, hush or pause
+  it, and making one never takes longer than the request's time. `jarvis doctor` checks the singer,
+  including that SoulX-Singer's runner is executable with its libraries
   ([ADR 0018](docs/adr/0018-sing-a-song-the-model-writes.md)).
 - The chat's `/config` also sets Jarvis's speaking speed, whether it acts without asking first and whether it
   takes requests from PC audio. Changes there restart the voice service once, when the settings close, instead of

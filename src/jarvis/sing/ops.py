@@ -3,20 +3,24 @@
 The song is the model's own score (`jarvis.sing.score`), never a stored tune or phrase. It is
 checked before any sound is made, rendered by the configured singer, and handed back as the
 result's `sound`, which the voice plays like a reply: after the words before it, spoken over by
-the wake word, ended by `jarvis hush` and silent while Jarvis is paused.
+the wake word, ended by `jarvis hush` and silent while Jarvis is paused. The same signals stop a
+song while it is still being made, and the voice listens for the wake word meanwhile.
 """
 
 import logging
 import threading
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Protocol
 
 from jarvis.operations import (
     Operation,
     OperationError,
+    OperationStoppedError,
     Result,
     Sound,
     current_request,
 )
+from jarvis.sing.budget import Budget, OutOfTimeError, SongStoppedError
 from jarvis.sing.score import (
     DEFAULT_TEMPO,
     MAX_NOTES,
@@ -35,6 +39,8 @@ if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
 
+    from jarvis.operations import Request
+
 log = logging.getLogger(__name__)
 
 MAX_SUMMARY_WORDS = 6
@@ -45,14 +51,28 @@ class Singer(Protocol):
 
     name: str
 
-    def render(
-        self, score: Score, cancelled: Callable[[], bool], /
-    ) -> tuple[NDArray[np.int16], int]:
+    def render(self, score: Score, budget: Budget, /) -> tuple[NDArray[np.int16], int]:
         """Return the song as int16 mono samples and their sample rate.
 
-        `cancelled` turns true when the request ends early; a singer that runs long stops then.
+        It checks `budget` between its pieces of work and stops as soon as it says so.
+
+        Raises:
+            SongStoppedError: the song was stopped while it was being made.
+            OutOfTimeError: the request ran out of time first.
         """
         ...
+
+
+STOPPED = "the song was stopped before it played (the owner spoke over Jarvis, hushed or paused it)"
+
+
+def _budget(request: Request | None) -> Budget:
+    """Return what a song made in `request` may spend: it stops once nothing more can be heard."""
+    if request is None:
+        return Budget()
+    return Budget(
+        stopped=lambda: request.cancelled() or request.hushed(), time_left=request.time_left
+    )
 
 
 def _summary(args: dict[str, Any]) -> str:
@@ -100,24 +120,36 @@ class SingOps:
         """Check the score, render it and hand the song back to be played.
 
         Raises:
-            OperationError: the score cannot be sung as written (the model can fix it), or no
-                singer can run.
+            OperationError: the score cannot be sung as written (the model can fix it), no
+                singer can run, or the request ran out of time.
+            OperationStoppedError: the song was stopped before it could be played.
         """
         try:
             score = parse(str(args["notes"]), int(args.get("tempo_bpm", DEFAULT_TEMPO)))
         except ScoreError as exc:
             msg = f"Nothing was sung: {exc}."
             raise OperationError(msg) from exc
-        singer = self._get()
         request = current_request()
+        budget = _budget(request)
+        if budget.stopped():
+            raise OperationStoppedError(STOPPED)
+        singer = self._get()
         try:
-            pcm, rate = singer.render(score, request.cancelled if request else lambda: False)
+            with request.making_sound() if request is not None else nullcontext():
+                pcm, rate = singer.render(score, budget)
+        except SongStoppedError as exc:
+            raise OperationStoppedError(STOPPED) from exc
+        except OutOfTimeError as exc:
+            msg = "I couldn't sing that: the request ran out of time while the song was made."
+            raise OperationError(msg) from exc
         except OperationError:
             raise
         except Exception as exc:
             log.exception("the %s singer failed", singer.name)
             msg = "I couldn't sing that: the singing voice failed."
             raise OperationError(msg) from exc
+        if budget.stopped():  # stopped as it was finished: it is not played
+            raise OperationStoppedError(STOPPED)
         seconds = pcm.size / rate
         return Result(
             f"Singing now ({len(score.notes)} notes, {seconds:.0f} seconds): it plays after what"

@@ -1,5 +1,6 @@
 """The `sing` operation: its arguments, its policy class, its singer and where it is offered."""
 
+import contextlib
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -12,17 +13,19 @@ from jarvis.operations import (
     ArgumentError,
     Operation,
     OperationError,
+    OperationStoppedError,
     request_scope,
     validate_args,
 )
 from jarvis.policy import OpClass
 from jarvis.sing import engines, soulx
+from jarvis.sing.budget import Budget, OutOfTimeError, SongStoppedError
 from jarvis.sing.engines import kokoro_voice, singer_for
 from jarvis.sing.ops import SingOps
 from jarvis.sing.psola import PsolaSinger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Generator
     from pathlib import Path
 
     from jarvis.sing.score import Score
@@ -32,21 +35,27 @@ LINE = "Morn- E4 1, ing G4 1, light C5 2"
 
 
 class Singer:
-    """Renders one second of quiet sound per song and keeps the scores it was given."""
+    """Renders one second of quiet sound per song and keeps the scores it was given.
+
+    `raises` is raised instead of a song; `during` runs while the song is being made.
+    """
 
     name = "test"
 
-    def __init__(self, *, fails: bool = False) -> None:
+    def __init__(
+        self, *, raises: Exception | None = None, during: Callable[[], object] = lambda: None
+    ) -> None:
         super().__init__()
-        self.fails = fails
+        self.raises = raises
+        self.during = during
         self.scores: list[Score] = []
-        self.cancels: list[Callable[[], bool]] = []
+        self.budgets: list[Budget] = []
 
-    def render(self, score: Score, cancelled: Callable[[], bool], /) -> tuple[np.ndarray, int]:
-        self.cancels.append(cancelled)
-        if self.fails:
-            msg = "no GPU"
-            raise RuntimeError(msg)
+    def render(self, score: Score, budget: Budget, /) -> tuple[np.ndarray, int]:
+        self.budgets.append(budget)
+        self.during()
+        if self.raises is not None:
+            raise self.raises
         self.scores.append(score)
         return np.ones(16000, dtype=np.int16), 16000
 
@@ -76,27 +85,100 @@ def test_a_song_is_rendered_and_handed_back_as_sound_with_its_words() -> None:
     assert "Do not repeat the lyrics" in result.text
 
 
-def test_the_singer_is_given_the_requests_cancel_signal() -> None:
+@pytest.mark.parametrize("signal", ["cancelled", "hushed"])
+def test_the_song_stops_when_its_request_is_cut_short_or_hushed(signal: str) -> None:
     singer = Singer()
     op = _op(singer)
     stopped = [False]
 
-    with request_scope(foreign=False, cancelled=lambda: stopped[0]):
+    with request_scope(foreign=False, **{signal: lambda: stopped[0]}):  # pyright: ignore[reportArgumentType]
         op.run(validate_args(op, {"notes": LINE}))
-    (cancelled,) = singer.cancels
-    before = cancelled()
+    (budget,) = singer.budgets
+    before = budget.stopped()
     stopped[0] = True
 
-    assert (before, cancelled()) == (False, True)
+    assert (before, budget.stopped()) == (False, True)
 
 
-def test_a_song_outside_a_request_cannot_be_cancelled() -> None:
+def test_the_song_is_given_the_requests_time_left() -> None:
+    singer = Singer()
+    op = _op(singer)
+
+    with request_scope(foreign=False, time_left=lambda: 12.5):
+        op.run(validate_args(op, {"notes": LINE}))
+
+    assert singer.budgets[0].time_left() == pytest.approx(12.5)
+
+
+def test_a_song_outside_a_request_cannot_be_stopped() -> None:
     singer = Singer()
     op = _op(singer)
 
     op.run(validate_args(op, {"notes": LINE}))
 
-    assert not singer.cancels[0]()
+    assert not singer.budgets[0].stopped()
+
+
+def test_a_song_is_made_while_the_voice_listens_for_the_wake_word() -> None:
+    inside: list[bool] = []
+    listening = [False]
+
+    @contextlib.contextmanager
+    def making_sound() -> Generator[None]:
+        listening[0] = True
+        try:
+            yield
+        finally:
+            listening[0] = False
+
+    op = _op(Singer(during=lambda: inside.append(listening[0])))
+
+    with request_scope(foreign=False, making_sound=making_sound):
+        op.run(validate_args(op, {"notes": LINE}))
+
+    assert inside == [True]
+    assert not listening[0]
+
+
+def test_a_song_stopped_while_it_is_made_is_stopped_not_sung() -> None:
+    op = _op(Singer(raises=SongStoppedError()))
+
+    with pytest.raises(OperationStoppedError, match="stopped before it played"):
+        op.run(validate_args(op, {"notes": LINE}))
+
+
+def test_a_song_stopped_as_it_was_finished_is_not_handed_back() -> None:
+    hushed = [False]
+    singer = Singer(during=lambda: hushed.__setitem__(0, True))
+    op = _op(singer)
+
+    with (
+        request_scope(foreign=False, hushed=lambda: hushed[0]),
+        pytest.raises(OperationStoppedError),
+    ):
+        op.run(validate_args(op, {"notes": LINE}))
+
+
+def test_a_song_already_stopped_is_not_made_at_all() -> None:
+    made: list[int] = []
+    singer = Singer()
+    op = _op(singer, made)
+
+    with (
+        request_scope(foreign=False, cancelled=lambda: True),
+        pytest.raises(OperationStoppedError),
+    ):
+        op.run(validate_args(op, {"notes": LINE}))
+
+    assert not made  # the voice was not even loaded
+    assert not singer.budgets
+
+
+def test_a_song_whose_request_ran_out_of_time_is_an_error() -> None:
+    op = _op(Singer(raises=OutOfTimeError()))
+
+    with pytest.raises(OperationError, match="ran out of time"):
+        op.run(validate_args(op, {"notes": LINE}))
 
 
 def test_the_tempo_defaults_and_the_singer_is_made_once_on_the_first_song() -> None:
@@ -137,7 +219,7 @@ def test_a_score_that_cannot_be_sung_is_an_error_the_model_can_fix() -> None:
 
 
 def test_a_failing_singer_is_an_error_not_a_crash() -> None:
-    op = _op(Singer(fails=True))
+    op = _op(Singer(raises=RuntimeError("no GPU")))
 
     with pytest.raises(OperationError, match="singing voice failed"):
         op.run(validate_args(op, {"notes": LINE}))

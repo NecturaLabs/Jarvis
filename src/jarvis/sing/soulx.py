@@ -6,7 +6,8 @@ clip too. The reference is the same song sung first by the speaking-voice singer
 recording ships with Jarvis, and the song comes out in Jarvis's own voice. Both scores are
 written as SoulX-Singer's metadata (ARPAbet words, `jarvis.sing.arpabet`), and one process runs
 per song and exits, so nothing holds the GPU or the CPU while Jarvis is idle. When the process
-fails or runs too long, the speaking-voice song made for the reference is sung instead.
+fails or runs too long, or the request has too little time left to start it, the speaking-voice
+song made for the reference is sung instead; a song that is stopped ends the process at once.
 """
 
 import json
@@ -24,6 +25,7 @@ import numpy as np
 from jarvis import paths
 from jarvis.audio import AudioError, SingerStoppedError, run_singer
 from jarvis.sing import arpabet
+from jarvis.sing.budget import SongStoppedError
 from jarvis.sing.score import Kind, Score
 
 if TYPE_CHECKING:
@@ -31,6 +33,7 @@ if TYPE_CHECKING:
 
     from numpy.typing import NDArray
 
+    from jarvis.sing.budget import Budget
     from jarvis.sing.psola import PsolaSinger
 
 log = logging.getLogger(__name__)
@@ -41,6 +44,7 @@ MODEL = "soulx-singer-q8_0.gguf"
 RATE = 24000
 EDGE_S = 0.2  # silence before and after the song in both clips, a rest of SoulX's own
 TIMEOUT_S = 20.0  # a song of at most 30 s takes about 3 s on the reference GPU
+MIN_GPU_S = 5.0  # the least of the request's time left that SoulX-Singer is started with
 SEED = 2026
 MAX_ERROR_CHARS = 400
 PHONES_CACHED = 1024  # words whose phones are kept; a song has at most 64
@@ -211,30 +215,44 @@ class SoulxSinger:
         self._timeout_s = timeout_s
         self._runner = run
 
-    def render(
-        self, score: Score, cancelled: Callable[[], bool], /
-    ) -> tuple[NDArray[np.int16], int]:
+    def render(self, score: Score, budget: Budget, /) -> tuple[NDArray[np.int16], int]:
         """Return the song sung by SoulX-Singer, or by the speaking voice if that fails.
 
-        When `cancelled` turns true the program is ended at once and the speaking voice's song
-        is returned without waiting; the caller does not play a cancelled request's sound.
+        SoulX-Singer is not started when the request has less than MIN_GPU_S left, and is given
+        no more than the time left. When `budget` is stopped, the program is ended at once. The
+        reference raises `OutOfTimeError` when the time runs out while it is made.
+
+        Raises:
+            SongStoppedError: the song was stopped while it was being made.
         """
-        reference, sung = self._speech.sing(score)
-        try:
-            return self._sing(reference, sung, cancelled)
-        except SingerStoppedError:
+        reference, sung = self._speech.sing(score, budget)
+        if budget.stopped():
+            raise SongStoppedError
+        left = min(self._timeout_s, budget.time_left())
+        if left < MIN_GPU_S:
+            log.info(
+                "%.1f s left: too little for SoulX-Singer; singing with the speaking voice", left
+            )
             return reference, RATE
+        try:
+            return self._sing(reference, sung, left, budget.stopped)
+        except SingerStoppedError as exc:
+            raise SongStoppedError from exc
         except (OSError, ValueError, AudioError) as exc:
             log.warning("SoulX-Singer failed (%s); singing with the speaking voice", exc)
             return reference, RATE
 
     def _sing(
-        self, reference: NDArray[np.int16], sung: Score, cancelled: Callable[[], bool]
+        self,
+        reference: NDArray[np.int16],
+        sung: Score,
+        timeout_s: float,
+        stopped: Callable[[], bool],
     ) -> tuple[NDArray[np.int16], int]:
-        """Run SoulX-Singer once on the song.
+        """Run SoulX-Singer once on the song, for at most `timeout_s`.
 
         An OSError (a file that could not be written) and the runner's AudioError (it could not
-        start, ran past its time and was killed, or was stopped as `cancelled` turned true) come
+        start, ran past its time and was killed, or was stopped as `stopped` turned true) come
         through as they are.
 
         Raises:
@@ -249,7 +267,7 @@ class SoulxSinger:
             (folder / "reference.json").write_text(meta, encoding="utf-8")
             (folder / "target.json").write_text(meta, encoding="utf-8")
             code, errors = self._runner(
-                command(self._files, folder, self._device), self._timeout_s, cancelled
+                command(self._files, folder, self._device), timeout_s, stopped
             )
             if code != 0:
                 msg = f"exit {code}: {errors.strip()[-MAX_ERROR_CHARS:]}"

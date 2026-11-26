@@ -12,6 +12,7 @@ import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
@@ -37,6 +38,7 @@ from jarvis.operations import (
     REMEMBERED_LISTING,
     ArgumentError,
     OperationError,
+    OperationStoppedError,
     Result,
     UncertainOutcomeError,
     inert,
@@ -50,6 +52,7 @@ from jarvis.sentences import sentence_end
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping, Sequence
+    from contextlib import AbstractContextManager
     from pathlib import Path
 
     from jarvis.audit import AuditLog
@@ -696,7 +699,10 @@ class Hooks:
     saying the remembered conversation was condensed to make room, after the reply (a window
     shows it; a voice need not say it). With `play`, a sound an operation made (a song) is
     played through it, queued after the words passed to `speak`; without it, such an
-    operation's result is a failure, since nothing could be heard.
+    operation's result is a failure, since nothing could be heard. `hushed` turns true once
+    nothing more of the request can be heard (hushed, spoken over, paused), and an operation
+    making a sound runs inside `making_sound()`, so a voice can listen for its wake word
+    meanwhile (`Request.hushed`, `Request.making_sound`).
     """
 
     confirm: Callable[[str], bool | Declined]
@@ -711,6 +717,8 @@ class Hooks:
     preview: bool = False
     steer: Callable[[], list[str]] = list
     play: Callable[[Sound], None] | None = None
+    hushed: Callable[[], bool] = lambda: False
+    making_sound: Callable[[], AbstractContextManager[None]] = nullcontext
     condensed: Callable[[str], None] = lambda _note: None
 
 
@@ -1243,22 +1251,31 @@ class Agent:
         handed_over = foreign or bool(steered_by) or scheduled
         own = "" if handed_over else _own_words(text, self._outside_pastes(text, pasted))
         ends = self._clock() + self._limits.max_seconds
+        turns: list[_Turn] = []  # the request's turn once `_answer` makes it: it keeps the time
+
+        def time_left() -> float:
+            if turns:
+                return turns[0].started + turns[0].limit_s - self._clock()
+            return ends - self._clock()
+
         with request_scope(
             foreign=foreign,
             words=own,
-            time_left=lambda: ends - self._clock(),
+            time_left=time_left,
             cancelled=hooks.cancelled,
+            hushed=hooks.hushed,
+            making_sound=hooks.making_sound,
         ) as request:
             for seen in sorted(steered_by):
                 request.saw(seen)
-            source = (origin, request, frozenset(steered_by))
+            source = (origin, request, frozenset(steered_by), turns)
             return self._answer(text, hooks, source, (pictures, pasted))
 
     def _answer(
         self,
         text: str,
         hooks: Hooks,
-        source: tuple[Origin, Request, frozenset[str]],
+        source: tuple[Origin, Request, frozenset[str], list[_Turn]],
         shared: tuple[Sequence[Picture], Sequence[str]],
     ) -> str:
         origin, request = source[0], source[1]
@@ -1308,6 +1325,7 @@ class Agent:
             request=request,
             thinking=self._limits.thinking,
         )
+        source[3].append(turn)  # the request's time left is now the turn's (`handle`)
         if pictures:
             turn.untrusted = True
             turn.outside = Origin.PICTURE.value
@@ -2201,6 +2219,12 @@ class Agent:
             return _Failed(
                 Result("Uncertain: it may not have gone through; do not retry it.", ok=False)
             )
+        except OperationStoppedError as exc:
+            self._audit.record(
+                "tool_stopped", op=op.name, action=digest, reason=str(exc)[:MAX_AUDIT_TEXT]
+            )
+            log.info("%s was stopped: %s", op.name, exc)
+            return _Failed(Result(f"Stopped: {exc}.", ok=False))
         except OperationError as exc:
             self._audit.record(
                 "tool_failed", op=op.name, action=digest, error=str(exc)[:MAX_AUDIT_TEXT]

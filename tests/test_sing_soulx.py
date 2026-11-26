@@ -4,11 +4,16 @@
 The program is never run here: a stand-in runner reads what Jarvis wrote and writes a song.
 """
 
+import contextlib
 import json
+import os
+import signal
 import struct
+import threading
+import time
 import wave
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import numpy as np
 import pytest
@@ -16,11 +21,14 @@ from test_sing_psola import Voice
 
 from jarvis.audio import AudioError, SingerStoppedError
 from jarvis.sing import arpabet, soulx
+from jarvis.sing.budget import Budget, SongStoppedError
 from jarvis.sing.psola import PsolaSinger
 from jarvis.sing.score import parse
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from jarvis.sing.score import Score
 
 # An original line, written for these tests.
 LINE = "Ri- C4 1, ver E4 1, ~ G4 1, _ 0.5, flow D4 2"
@@ -77,6 +85,7 @@ class Runner:
         self.exit_code = exit_code
         self.timeout = timeout
         self.commands: list[list[str]] = []
+        self.timeouts: list[float] = []
         self.reference: list[dict[str, object]] = []
         self.target: list[dict[str, object]] = []
         self.reference_seconds = 0.0
@@ -86,6 +95,7 @@ class Runner:
     ) -> tuple[int, str]:
         self.commands.append(cmd)
         self.cancels.append(cancelled)
+        self.timeouts.append(timeout_s)
         if self.stop:
             msg = "stopped"
             raise SingerStoppedError(msg)
@@ -123,7 +133,7 @@ def test_soulx_sings_in_the_voice_of_the_same_song_sung_by_the_speaking_voice(
     runner = Runner()
     score = parse(LINE, 120)
 
-    pcm, rate = _singer(tmp_path, runner).render(score, lambda: False)
+    pcm, rate = _singer(tmp_path, runner).render(score, Budget())
 
     assert rate == soulx.RATE
     assert pcm.tolist() == [7] * 4800  # what SoulX-Singer wrote
@@ -163,35 +173,121 @@ def test_a_failed_or_stuck_soulx_sings_with_the_speaking_voice_instead(
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     score = parse(LINE, 120)
 
-    pcm, rate = _singer(tmp_path, runner).render(score, lambda: False)
+    pcm, rate = _singer(tmp_path, runner).render(score, Budget())
 
     assert rate == soulx.RATE
     assert pcm.size == round(score.seconds * soulx.RATE)  # the speaking voice's song
     assert np.any(pcm)
 
 
-def test_a_cancelled_render_ends_at_once_with_the_reference_and_leaves_nothing(
+def test_a_song_stopped_while_soulx_is_launched_is_stopped_and_leaves_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     runner = Runner(stop=True)
+
+    with pytest.raises(SongStoppedError):
+        _singer(tmp_path, runner).render(parse(LINE, 120), Budget())
+
+    assert not list((tmp_path / "run" / "jarvis").iterdir())
+    assert not caplog.records  # a stop is no failure to log
+
+
+class _Then(PsolaSinger):
+    """The speaking-voice singer, calling `after` once it has sung the reference."""
+
+    def __init__(self, after: Callable[[], object]) -> None:
+        super().__init__(Voice())
+        self._after = after
+
+    @override
+    def sing(self, score: Score, budget: Budget = Budget()) -> tuple[np.ndarray, Score]:  # ruff: ignore[function-call-in-default-argument] - a frozen default, as in PsolaSinger
+        out = super().sing(score, budget)
+        self._after()
+        return out
+
+
+def test_a_song_stopped_before_soulx_starts_never_launches_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    runner = Runner()
+    stopped = [False]
+    singer = soulx.SoulxSinger(
+        _files(tmp_path), _Then(lambda: stopped.__setitem__(0, True)), run=runner
+    )
+
+    with pytest.raises(SongStoppedError):
+        singer.render(parse(LINE, 120), Budget(stopped=lambda: stopped[0]))
+
+    assert not runner.commands
+
+
+def test_a_song_stopped_while_soulx_runs_ends_the_program_and_leaves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    found = _files(tmp_path)
+    pid_file = tmp_path / "pid"
+    found.binary.write_text(f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep 60\n", encoding="ascii")
+    found.binary.chmod(0o755)
+    singer = soulx.SoulxSinger(found, PsolaSinger(Voice()))  # the real runner
+    stop = threading.Event()
+    threading.Thread(target=lambda: (_wait_for(pid_file.exists), stop.set()), daemon=True).start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(SongStoppedError):
+            singer.render(parse(LINE, 120), Budget(stopped=stop.is_set))
+
+        assert time.monotonic() - started < 5.0
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(pid_file.read_text(encoding="ascii")), 0)
+        assert not list((tmp_path / "run" / "jarvis").iterdir())
+    finally:
+        with contextlib.suppress(OSError, ValueError):
+            os.kill(int(pid_file.read_text(encoding="ascii")), signal.SIGKILL)
+
+
+def _wait_for(condition: Callable[[], bool]) -> None:
+    pause = threading.Event()
+    for _ in range(1000):
+        if condition():
+            return
+        pause.wait(0.005)
+
+
+def test_without_time_left_for_soulx_the_speaking_voice_sings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    runner = Runner()
     score = parse(LINE, 120)
 
-    pcm, _ = _singer(tmp_path, runner).render(score, lambda: True)
+    pcm, _ = _singer(tmp_path, runner).render(score, Budget(time_left=lambda: 2.0))
 
-    assert pcm.size == round(score.seconds * soulx.RATE)  # the speaking voice's song, unplayed
-    assert not list((tmp_path / "run" / "jarvis").iterdir())
-    assert not caplog.records  # a cancel is no failure to log
+    assert not runner.commands  # SoulX-Singer could not finish in the time left
+    assert pcm.size == round(score.seconds * soulx.RATE)
 
 
-def test_the_runner_is_given_the_cancel_signal_of_the_render(
+def test_soulx_is_given_no_more_than_the_requests_time_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    runner = Runner()
+
+    _singer(tmp_path, runner).render(parse(LINE, 120), Budget(time_left=lambda: 8.0))
+
+    assert runner.timeouts == [8.0]
+
+
+def test_the_runner_is_given_the_stop_signal_of_the_render(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     runner = Runner()
     stopped = [False]
 
-    _singer(tmp_path, runner).render(parse(LINE, 120), lambda: stopped[0])
+    _singer(tmp_path, runner).render(parse(LINE, 120), Budget(stopped=lambda: stopped[0]))
     stopped[0] = True
 
     assert runner.cancels[0]()
