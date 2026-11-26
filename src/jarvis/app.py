@@ -1,5 +1,6 @@
 """Builds Jarvis from its config: model, operations, prompt, audit log and agent."""
 
+import shutil
 from dataclasses import dataclass, replace
 from importlib.resources import files
 from pathlib import Path
@@ -35,10 +36,13 @@ from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
 from jarvis.schedule import JobStore, ScheduleOps
 from jarvis.services import StrataSetupError, read_run_config, reads_pictures
+from jarvis.sing.engines import singer_for
+from jarvis.sing.ops import SingOps
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
 from jarvis.sysinfo import Sampler
+from jarvis.web import browser, browserops
 from jarvis.web.arctic import ArcticShift
 from jarvis.web.guard import public_client
 from jarvis.web.openmeteo import OpenMeteo
@@ -314,7 +318,7 @@ class Jarvis:
     agent: Agent
     model: StrataModel
     audit: AuditLog
-    ops: SpotifyOps
+    ops: SpotifyOps | None
     hint: Callable[[], str]
     switcher: modes.Switcher | None = None
     modes: AgentModes | None = None  # the chat tells it when its settings change (`restyle`)
@@ -422,6 +426,34 @@ def web_ops(config: Config, shown: PictureCache | None = None) -> WebOps:
 def web_operations(config: Config, shown: PictureCache | None = None) -> list[Operation]:
     """Return the time, weather, web and Reddit operations (`web_ops`)."""
     return web_ops(config, shown).operations()
+
+
+def browser_ops(  # ruff: ignore[too-many-arguments] - what the browser is made from; all but three keyword-only
+    config: Config,
+    online: WebOps,
+    channel: Channel,
+    *,
+    page_chars: int,
+    shown: PictureCache | None = None,
+    sessions: dict[str, browser.Browser] | None = None,
+) -> browserops.BrowserOps | None:
+    """Return the headless browser's operations, or None when the channel does not offer them.
+
+    A channel offers them when its `browser` key is on and agent-browser is installed. The
+    browser opens only what `online` would read (`WebOps.admit`), and starts on first use.
+    `sessions` keeps the browser made here by its program, and one already kept is driven
+    instead of a new one: the modes of one Jarvis share their browser.
+    """
+    section = config.chat if channel == "chat" else config.agent
+    program = shutil.which(browser.PROGRAM) if section.browser else None
+    if program is None:
+        return None
+    kept = {} if sessions is None else sessions
+    if program not in kept:
+        kept[program] = browser.Browser(
+            program, paths.runtime_dir() / "browser", idle_close_s=config.browser.idle_close_s
+        )
+    return browserops.BrowserOps(kept[program], online.admit, page_chars=page_chars, shown=shown)
 
 
 def files_boundary(config: Config, home: Path | None = None) -> Boundary:
@@ -561,6 +593,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     *,
     coding: bool = False,
     listening: Listening | None = None,
+    browsers: dict[str, browser.Browser] | None = None,
 ) -> Registry:
     """Return every operation a channel's agent is offered, sized to its limits.
 
@@ -579,11 +612,16 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     )
     shipped = skills.shipped()
     guides = osskills.catalog()
-    online = web_ops(web, chat_pictures() if channel == "chat" else None)
+    shown = chat_pictures() if channel == "chat" else None
+    online = web_ops(web, shown)
+    browsing = browser_ops(
+        config, online, channel, page_chars=pages, shown=shown, sessions=browsers
+    )
     return Registry(
         [
             *spotify,
             *online.operations(),
+            *(browsing.operations() if browsing is not None else []),
             *pc_operations(config, limits),
             *calc.operations(config.format),
             *AboutOps(config, channel, limits, refused=files_boundary(config).secret).operations(),
@@ -613,6 +651,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
                 else []
             ),
             *([quiet_operation()] if channel == "voice" else []),
+            *(SingOps(singer_for(config)).operations() if channel == "voice" else []),
             *([think] if (think := think_operation(limits)) is not None else []),
             *(
                 [switch_operation(config, coding=coding)]
@@ -621,7 +660,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
             ),
             no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
         ],
-        resets=(online.reset,),
+        resets=(online.reset, *((browsing.reset,) if browsing is not None else ())),
     )
 
 
@@ -630,10 +669,15 @@ def switches_itself(config: Config, channel: Channel) -> bool:
     return config.coding.chat.auto if channel == "chat" else config.coding.voice.auto
 
 
-# Operations offered only when their files are installed, known to `boundaries.classes` either way.
-INSTALLED_ONLY = frozenset({"read_skill", "os_skill"})
+# Operations offered only when their files or programs are installed (and the browser switched on),
+# known to `boundaries.classes` either way.
+INSTALLED_ONLY = frozenset({"read_skill", "os_skill", *browserops.NAMES})
 # ... and only while a setting turns them on (`audio.listen_to_pc`).
 SETTING_ONLY = frozenset({"pc_audio_listen", SWITCH_MODEL})
+# Tools whose result is a sound, and the voice-channel callers that cannot play one (`jarvis ask`
+# prints its reply): they are not offered there, so nothing is made only to be thrown away.
+MAKES_SOUND = frozenset({"sing"})
+SOUNDLESS = frozenset({"ask", "speech-test"})
 # How Jarvis answers, not tools: never switched off.
 ALWAYS_OFFERED = frozenset({"no_action", "think_harder", "stay_quiet"})
 
@@ -645,8 +689,14 @@ def switched_off(config: Config) -> set[str]:
 
 def spotify_operations(config: Config) -> list[Operation]:
     """Return the Spotify operations, without reaching Spotify (for listing what there is)."""
+    return _spotify_ops(config).operations() if config.spotify.client_id else []
+
+
+def _spotify_ops(config: Config) -> SpotifyOps:
     tokens = TokenStore(config.spotify.client_id, spotify_token_file())
-    return SpotifyOps(SpotifyApi(tokens), config.spotify).operations()
+    return SpotifyOps(
+        SpotifyApi(tokens, library_ttl_s=config.spotify.library_refresh_s), config.spotify
+    )
 
 
 def unknown_overrides(config: Config, spotify: list[Operation]) -> list[str]:
@@ -811,38 +861,42 @@ def build(
     if config.strata.mode == "backend":
         msg = "backend mode only serves the model. Run this command on the Jarvis client."
         raise SetupError(msg)
-    if not config.spotify.client_id:
-        msg = "no Spotify client ID in the config; run `jarvis setup`"
-        raise SetupError(msg)
     config, key, model = _agent_model(config)
-    tokens = TokenStore(config.spotify.client_id, spotify_token_file())
-    ops = SpotifyOps(
-        SpotifyApi(tokens, library_ttl_s=config.spotify.library_refresh_s), config.spotify
-    )
+    ops = _spotify_ops(config)
+    available = ops.operations()
     tags = {"via": via} if via else {}
     if session:
         tags["session"] = session
     audit = AuditLog(audit_file(), tags=tags or None)
-    _check_overrides(config, ops.operations())
+    _check_overrides(config, available)
     channel: Channel = "chat" if via == "chat" else "voice"
     elsewhere = via in {"chat", "ask"}  # the voice service says reminders; is one running?
 
-    def setup(mode: modes.Mode, chat: ChatConfig | None = None) -> Setup:
+    def setup(
+        mode: modes.Mode,
+        chat: ChatConfig | None = None,
+        browsers: dict[str, browser.Browser] = {},  # ruff: ignore[mutable-argument-default] - kept across calls on purpose: one browser for both modes
+    ) -> Setup:
         coding = mode == "coding"
         base = config if chat is None else config.model_copy(update={"chat": chat})
         cfg = modes.effective(base, mode)
         limits = channel_limits(cfg, channel)
-        off: set[str] = {*switched_off(cfg), *(cfg.coding.tools_off if coding else ())}
+        off: set[str] = {
+            *switched_off(cfg),
+            *(cfg.coding.tools_off if coding else ()),
+            *(MAKES_SOUND if via in SOUNDLESS else ()),
+        }
         if units is None:
             off.add(SWITCH_MODEL)
         registry = channel_registry(
             cfg,
-            ops.operations(),
+            available if cfg.spotify.client_id else [],
             limits,
             channel,
             voice_running=voice_service_running if elsewhere else lambda: True,
             coding=coding,
             listening=listening,
+            browsers=browsers,
         ).without(off)  # a tool switched off is not offered at all
         prompt = system_prompt(cfg, channel, coding=coding)
         return Setup(prompt, registry, limits, reads_pictures(cfg), strata_model(cfg, key))
@@ -882,8 +936,10 @@ def build(
         agent,
         model,
         audit,
-        ops,
-        lambda: speech_hint(config, normal.registry, ops.artist_names()),
+        ops if config.spotify.client_id else None,
+        lambda: speech_hint(
+            config, normal.registry, ops.artist_names() if config.spotify.client_id else []
+        ),
         switcher,
         agent_modes,
         normal.pictures,

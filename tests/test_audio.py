@@ -2247,3 +2247,130 @@ def test_a_wpctl_that_fails_raises_an_audio_error(
 
     with pytest.raises(audio_module.AudioError, match="sound server"):
         audio_module.wpctl(["set-volume", "@DEFAULT_AUDIO_SINK@", "0.40"])
+
+
+def test_a_singer_program_runs_to_its_end_and_gives_its_exit_code_and_errors() -> None:
+    code, errors = audio_module.run_singer(
+        ["sh", "-c", "echo out of memory >&2; exit 3"], 5.0, lambda: False
+    )
+
+    assert code == 3
+    assert errors.strip() == "out of memory"
+
+
+def test_a_singer_is_stopped_at_once_when_the_request_is_cancelled(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pid"
+    stopped = threading.Event()
+    threading.Timer(0.3, stopped.set).start()
+    started = time.monotonic()
+
+    with pytest.raises(audio_module.SingerStoppedError):
+        audio_module.run_singer(
+            ["sh", "-c", f"echo $$ > {pid_file}; exec sleep 60"], 30.0, stopped.is_set
+        )
+
+    assert time.monotonic() - started < 3.0
+    pid = int(pid_file.read_text(encoding="ascii"))
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)  # that child is gone, reaped
+
+
+def test_a_singer_that_is_already_cancelled_is_not_waited_for() -> None:
+    with pytest.raises(audio_module.SingerStoppedError):
+        audio_module.run_singer(["sleep", "60"], 30.0, lambda: True)
+
+
+def test_a_singer_that_writes_a_flood_to_stderr_keeps_only_the_end_of_it() -> None:
+    code, errors = audio_module.run_singer(
+        ["sh", "-c", "yes noise | head -c 3000000 >&2; echo the end >&2"], 30.0, lambda: False
+    )
+
+    assert code == 0
+    assert len(errors) <= audio_module.SINGER_STDERR_BYTES
+    assert errors.endswith("the end\n")
+
+
+def test_a_singer_that_runs_too_long_is_stopped_and_one_that_cannot_start_is_an_error(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(AudioError, match="ran past"):
+        audio_module.run_singer(["sleep", "5"], 0.2, lambda: False)
+    with pytest.raises(AudioError, match="could not start"):
+        audio_module.run_singer([str(tmp_path / "missing")], 1.0, lambda: False)
+
+
+def _gone(pid: int) -> bool:
+    """Wait until process `pid` no longer exists (reaped, not a zombie); True if it went."""
+    pause = threading.Event()
+    for _ in range(500):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        with contextlib.suppress(OSError):
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+            if stat.rsplit(")", 1)[1].split()[0] == "Z":
+                return True  # dead, waiting for whoever adopted it to reap it
+        pause.wait(0.01)
+    return False
+
+
+def _singing_in_a_thread(
+    cmd: list[str], timeout_s: float, cancelled: Callable[[], bool]
+) -> tuple[threading.Thread, list[object]]:
+    """Run `run_singer` on a thread; its result or exception lands in the list."""
+    out: list[object] = []
+
+    def run() -> None:
+        try:
+            out.append(audio_module.run_singer(cmd, timeout_s, cancelled))
+        except AudioError as exc:
+            out.append(exc)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, out
+
+
+def _kill_recorded(pid_file: Path) -> None:
+    """End the process this test started and recorded, if the code under test did not."""
+    with contextlib.suppress(OSError, ValueError):
+        os.kill(int(pid_file.read_text(encoding="ascii")), signal.SIGKILL)
+
+
+def test_a_singer_whose_own_child_keeps_its_errors_open_is_not_waited_for(
+    tmp_path: Path,
+) -> None:
+    pid_file = tmp_path / "pid"
+    script = f"sleep 60 & echo $! > {pid_file}; echo bye >&2; exit 0"
+
+    thread, out = _singing_in_a_thread(["sh", "-c", script], 30.0, lambda: False)
+    thread.join(5.0)
+    try:
+        assert not thread.is_alive()  # neither the read nor the close of its stderr hung
+        assert out == [(0, "bye\n")]
+        assert _gone(int(pid_file.read_text(encoding="ascii")))  # its child went with it
+    finally:
+        _kill_recorded(pid_file)
+
+
+@pytest.mark.parametrize("how", ["cancelled", "timeout"])
+def test_a_stopped_singer_ends_with_every_process_it_started(tmp_path: Path, how: str) -> None:
+    pid_file = tmp_path / "pid"
+    script = f"sleep 60 & echo $! > {pid_file}; wait"
+    stopped = threading.Event()
+    if how == "cancelled":
+        threading.Timer(0.3, stopped.set).start()
+
+    thread, out = _singing_in_a_thread(
+        ["sh", "-c", script], 0.3 if how == "timeout" else 30.0, stopped.is_set
+    )
+    thread.join(5.0)
+    try:
+        assert not thread.is_alive()
+        (error,) = out
+        assert isinstance(error, AudioError)
+        assert isinstance(error, audio_module.SingerStoppedError) == (how == "cancelled")
+        assert _gone(int(pid_file.read_text(encoding="ascii")))
+    finally:
+        _kill_recorded(pid_file)

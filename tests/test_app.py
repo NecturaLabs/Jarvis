@@ -147,8 +147,10 @@ def test_the_default_context_holds_the_whole_remembered_conversation(
     tmp_path: Path, channel: Channel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The prompt, every tool schema, one reply and two tool results at their cap leave room for
-    # the configured memory, so the defaults never squeeze it, even with a full Omarchy catalog.
+    # the configured memory, so the defaults never squeeze it, even with a full Omarchy catalog
+    # and the headless browser's tools, which the chat offers wherever agent-browser is installed.
     _full_catalog(tmp_path / "skills")
+    _browser_installed(monkeypatch, installed=True)
     monkeypatch.setattr("jarvis.osskills.ROOT", tmp_path / "skills")
     monkeypatch.setattr("jarvis.osskills.OWNER", os.getuid())
     full = osskills.catalog()
@@ -170,8 +172,9 @@ def test_the_chat_memory_gives_way_when_thinking_needs_more_room(
 ) -> None:
     # The defaults keep room for the most the chat may think once raised; a bigger cap's room
     # comes out of the remembered conversation rather than squeezing the window, even with a
-    # full Omarchy catalog.
+    # full Omarchy catalog and the headless browser's tools.
     _full_catalog(tmp_path / "skills")
+    _browser_installed(monkeypatch, installed=True)
     monkeypatch.setattr("jarvis.osskills.ROOT", tmp_path / "skills")
     monkeypatch.setattr("jarvis.osskills.OWNER", os.getuid())
     budgets: list[int] = []
@@ -724,6 +727,16 @@ def test_a_registry_without_some_operations_keeps_the_others_and_their_resets() 
     assert resets == [True]
 
 
+@pytest.mark.parametrize(("via", "offered"), [(None, True), ("ask", False), ("speech-test", False)])
+def test_sing_is_offered_only_where_its_song_can_be_heard(via: str | None, offered: bool) -> None:
+    ensure_api_key(strata_key_file())
+    config = Config(spotify=SpotifyConfig(client_id="id"))
+
+    names = build(config, via=via).agent._registry.names()  # pyright: ignore[reportPrivateUsage] - what the model is given
+
+    assert ("sing" in names) is offered
+
+
 def test_the_chat_prompt_follows_the_response_format() -> None:
     prompts = {
         name: system_prompt(Config(chat=ChatConfig(response_format=name)), "chat")
@@ -804,3 +817,119 @@ def test_a_setting_for_pc_audio_listen_is_known_while_pc_audio_is_off() -> None:
     config = Config.model_validate({"boundaries": {"classes": {"pc_audio_listen": "deny"}}})
 
     assert unknown_overrides(config, []) == []
+
+
+def test_build_without_spotify_does_not_offer_spotify_tools() -> None:
+    ensure_api_key(strata_key_file())
+    cfg = Config()
+
+    jarvis = build(cfg)
+
+    assert jarvis.ops is None
+    assert not app_module.spotify_operations(cfg)
+
+
+# The headless browser (ADR 0016): offered per channel, only when agent-browser is installed.
+
+
+def _browser_installed(monkeypatch: pytest.MonkeyPatch, *, installed: bool) -> None:
+    program = "/usr/bin/agent-browser" if installed else None
+
+    def which(_name: str) -> str | None:
+        return program
+
+    monkeypatch.setattr("jarvis.app.shutil.which", which)
+
+
+def test_the_chat_offers_the_browser_and_the_voice_does_not_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _browser_installed(monkeypatch, installed=True)
+    config = Config()
+    chat = channel_registry(config, [], channel_limits(config, "chat"), "chat")
+    voice = channel_registry(config, [], channel_limits(config, "voice"), "voice")
+
+    assert {"browser_open", "browser_act", "browser_screenshot"} <= set(chat.names())
+    assert not any(name.startswith("browser_") for name in voice.names())
+
+
+def test_the_voice_offers_the_browser_without_pictures_when_switched_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _browser_installed(monkeypatch, installed=True)
+    config = Config()
+    config = config.model_copy(update={"agent": config.agent.model_copy(update={"browser": True})})
+    voice = channel_registry(config, [], channel_limits(config, "voice"), "voice")
+
+    assert {"browser_open", "browser_act"} <= set(voice.names())
+    assert voice.get("browser_screenshot") is None
+
+
+@pytest.mark.parametrize("installed", [True, False], ids=["switched-off", "missing"])
+def test_no_browser_tool_is_offered_when_off_or_missing(
+    monkeypatch: pytest.MonkeyPatch, *, installed: bool
+) -> None:
+    _browser_installed(monkeypatch, installed=installed)
+    config = Config()
+    if installed:
+        config = config.model_copy(
+            update={"chat": config.chat.model_copy(update={"browser": False})}
+        )
+    chat = channel_registry(config, [], channel_limits(config, "chat"), "chat")
+
+    assert not any(name.startswith("browser_") for name in chat.names())
+
+
+def test_a_browser_override_is_known_even_without_agent_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _browser_installed(monkeypatch, installed=False)
+    config = Config(boundaries=BoundariesConfig(classes={"browser_act": "deny"}))
+
+    assert unknown_overrides(config, []) == []
+
+
+def test_acting_in_the_browser_cannot_be_set_below_asking(monkeypatch: pytest.MonkeyPatch) -> None:
+    _browser_installed(monkeypatch, installed=True)
+    config = Config(boundaries=BoundariesConfig(classes={"browser_act": "safe"}))
+
+    assert overrides_below_floor(config, []) == {"browser_act": ["confirm", "strong", "deny"]}
+
+
+@pytest.mark.parametrize("channel", ["voice", "chat"])
+def test_the_default_context_holds_the_remembered_conversation_with_the_browser(
+    tmp_path: Path, channel: Channel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # As above, with agent-browser installed: the chat offers its tools by default.
+    _browser_installed(monkeypatch, installed=True)
+    _full_catalog(tmp_path / "skills")
+    monkeypatch.setattr("jarvis.osskills.ROOT", tmp_path / "skills")
+    monkeypatch.setattr("jarvis.osskills.OWNER", os.getuid())
+    config = Config()
+    spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
+    limits = channel_limits(config, channel)
+    registry = channel_registry(config, spotify.operations(), limits, channel)
+    agent = Agent(
+        _Model([]), registry, system_prompt(config, channel), AuditLog(None), {}, limits=limits
+    )
+
+    assert (registry.get("browser_open") is not None) == (channel == "chat")
+    assert agent.memory.budget == limits.memory_tokens
+
+
+def test_forgetting_the_conversation_closes_the_chat_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _browser_installed(monkeypatch, installed=True)
+    closed: list[bool] = []
+
+    def close(_self: object) -> None:
+        closed.append(True)
+
+    monkeypatch.setattr("jarvis.web.browser.Browser.close", close)
+    config = Config()
+    chat = channel_registry(config, [], channel_limits(config, "chat"), "chat")
+
+    chat.reset()
+
+    assert closed == [True]

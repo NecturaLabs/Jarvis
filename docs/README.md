@@ -5,6 +5,7 @@ here; `tools/check_docs.py` fails when one is not.
 
 | You want to know | Read |
 |---|---|
+| Install Jarvis, start the services or update it | [README installation](../README.md#install) |
 | Every config key, its range and what needs a restart | [configuration.md](configuration.md) |
 | The model, speech to text, voices, the wake word, latency and licences | [models.md](models.md) |
 | How the code is laid out: modules, threads, one request end to end | [architecture.md](architecture.md) |

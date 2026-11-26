@@ -52,6 +52,8 @@ SUBPROCESS_FILES = {
     "pc/shell.py": "`pc_shell`, the opt-in `strong` shell ADR 0002 allows (#19): "
     "`systemd-run --user --scope` with fixed limits and `setpriv --no-new-privs`, and "
     "`systemctl --user stop` of that scope",
+    "web/browser.py": "`agent-browser`, headless, with fixed options and only the commands its "
+    "action policy allows, every connection through web/proxy.py (ADR 0016)",
 }
 
 # Files that may build a path with a `voxtype` component other than the config directory.

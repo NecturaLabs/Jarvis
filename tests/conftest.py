@@ -37,6 +37,7 @@ FORBIDDEN_PROGRAMS = frozenset(
         "hyprctl",
         "xdg-open",
         "unshare",
+        "agent-browser",
     }
 )
 _LOOPBACK_NAMES = frozenset({"localhost", "ip6-localhost"})

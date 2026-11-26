@@ -961,3 +961,32 @@ def test_the_idle_return_a_request_makes_leaves_it_holding_its_mark(
 
     assert modes.current() == "normal"  # gone back, and the request still keeps switches out
     assert after == modes.BUSY
+
+
+def test_both_modes_of_one_jarvis_drive_the_same_browser(
+    installed: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A page opened before a switch is still open in the request begun anew, and no second
+    # browser is left running beside it.
+    made: list[object] = []
+
+    class Session:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            super().__init__()
+            made.append(self)
+
+    def which(_name: str) -> str:
+        return "/usr/bin/agent-browser"
+
+    monkeypatch.setattr("jarvis.app.voice_busy", lambda: False)
+    monkeypatch.setattr("jarvis.app.shutil.which", which)
+    monkeypatch.setattr("jarvis.app.browser.Browser", Session)
+    cfg = installed.model_copy(update={"spotify": config.SpotifyConfig(client_id="id")})
+
+    built = build(cfg, via="chat", units=_Unit())
+    assert built.modes is not None
+    before = len(made)  # the normal mode's, and those of the checks of the config (never started)
+    coding = built.modes.setup("coding")
+
+    assert coding.registry.get("browser_open") is not None
+    assert len(made) == before  # coding mode made none of its own

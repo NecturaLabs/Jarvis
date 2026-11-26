@@ -13,7 +13,7 @@ import types
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Self, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import numpy as np
 import pytest
@@ -196,18 +196,25 @@ def voxtype_lists_no_models(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _doctor_config(data: Path) -> None:
-    config.save(config.Config(data_dir=data))
+    config.save(config.Config(data_dir=data, spotify=config.SpotifyConfig(client_id="abc")))
+
+
+def _doctor_output(capsys: pytest.CaptureFixture[str]) -> list[str]:
+    return capsys.readouterr().out.splitlines()
 
 
 def _doctor_lines(capsys: pytest.CaptureFixture[str]) -> list[str]:
-    return capsys.readouterr().out.splitlines()
+    """The doctor's check and note lines, without its closing count (which names what failed)."""
+    *lines, closing = _doctor_output(capsys)
+    assert " check" in closing, closing
+    return lines
 
 
 def test_doctor_lines_up_its_checks_and_ends_with_a_count(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     cli.main(["doctor"])
-    lines = _doctor_lines(capsys)
+    lines = _doctor_output(capsys)
 
     checks = [line for line in lines if line[:5] in {"ok   ", "FAIL ", "note "}]
     assert checks
@@ -215,7 +222,7 @@ def test_doctor_lines_up_its_checks_and_ends_with_a_count(
     failed = sum(line.startswith("FAIL") for line in lines)
     total = sum(line[:5] in {"ok   ", "FAIL "} for line in lines)
     assert not any(line.startswith("ok  ") and line[4] != " " for line in lines)
-    assert lines[-1] == f"{total} checks, {failed} failed"
+    assert lines[-1].startswith(f"{total} checks, {failed or 'none'} failed")
 
 
 def test_doctor_names_the_release_of_a_model_file_it_recognises(
@@ -229,13 +236,13 @@ def test_doctor_names_the_release_of_a_model_file_it_recognises(
 
     cli.main(["doctor"])
 
-    out = _doctor_lines(capsys)
+    out = _doctor_output(capsys)
     assert any(
         line.startswith("ok   hey_jarvis.onnx: ") and "Example wake 9.9" in line and "MIT" in line
         for line in out
     )
     assert not any("not a known release" in line for line in out)
-    assert out[-1].endswith(" failed")
+    assert " failed" in out[-1]
     total = sum(line[:5] in {"ok   ", "FAIL "} for line in out)
     assert out[-1].startswith(f"{total} checks, ")
 
@@ -529,13 +536,24 @@ def test_doctor_checks_the_kokoro_files_only_for_a_kokoro_voice(
     piper = data / "voices"
     (piper / "en_GB-alan-medium.onnx").write_bytes(b"piper")
     (piper / "en_GB-alan-medium.onnx.json").write_bytes(b"{}")
-    config.save(config.Config(data_dir=data, audio=config.AudioConfig(voice="en_GB-alan-medium")))
+    piper_voice = config.AudioConfig(voice="en_GB-alan-medium")
+    singing_off = config.BoundariesConfig(classes={"sing": "deny"})
+    config.save(config.Config(data_dir=data, audio=piper_voice, boundaries=singing_off))
 
     cli.main(["doctor"])
 
     out = _doctor_lines(capsys)
     assert not any("Example kokoro" in line or "kokoro-v1.0" in line for line in out)
     assert not any("not a known release" in line and "alan" in line for line in out)
+
+    # Jarvis sings in a Kokoro voice whatever voice speaks, so singing on checks its files.
+    config.save(config.Config(data_dir=data, audio=piper_voice))
+
+    cli.main(["doctor"])
+
+    out = _doctor_lines(capsys)
+    assert any("Example kokoro-model 9.9" in line for line in out)
+    assert any("ok   singing voice kokoro:bm_george" in line for line in out)
 
 
 def test_doctor_fails_a_model_file_it_cannot_read(
@@ -1450,11 +1468,11 @@ def test_restart_clears_a_failed_state_before_starting_anything(
 
 
 def test_a_strata_start_time_is_read_to_the_microsecond() -> None:
-    assert cli.parse_systemd_time("Sat 2026-11-21 04:40:30.157367 UTC") == pytest.approx(
+    assert services.parse_systemd_time("Sat 2026-11-21 04:40:30.157367 UTC") == pytest.approx(
         1795236030.157367
     )
-    assert cli.parse_systemd_time("") is None
-    assert cli.parse_systemd_time("n/a") is None
+    assert services.parse_systemd_time("") is None
+    assert services.parse_systemd_time("n/a") is None
 
 
 def test_files_written_just_before_strata_started_in_the_same_second_are_no_change(
@@ -1630,6 +1648,45 @@ def test_jarvis_ask_with_yes_has_no_confirm_key(
 
     assert seen[0].confirm_key is None
     assert "I can't." in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("terminal", "typed", "allowed"),
+    [(True, "y", True), (True, "n", False), (True, None, False), (False, "y", False)],
+    ids=["yes", "no", "eof", "piped-yes"],
+)
+def test_jarvis_ask_with_yes_still_asks_here_about_a_browser_click_or_typing(
+    monkeypatch: pytest.MonkeyPatch, typed: str | None, *, terminal: bool, allowed: bool
+) -> None:
+    # `--yes` cannot know which element a page will offer: an action that always asks is asked
+    # on the terminal, and with no terminal to answer on it is refused.
+    answers: list[object] = []
+    asked: list[str] = []
+
+    def handle(_text: str, hooks: Hooks) -> str:
+        assert hooks.confirm_always is not None
+        answers.append(hooks.confirm("Should I pause?"))
+        answers.append(hooks.confirm_always('Should I click the button "Buy"?'))
+        return "ok"
+
+    def typing(prompt: str) -> str:
+        asked.append(prompt)
+        if typed is None:
+            raise EOFError
+        return typed
+
+    def build(_cfg: object, **_kwargs: object) -> object:
+        return types.SimpleNamespace(agent=types.SimpleNamespace(handle=handle))
+
+    monkeypatch.setattr(cli, "build", build)
+    monkeypatch.setattr("builtins.input", typing)
+    monkeypatch.setattr(cli.sys, "stdin", types.SimpleNamespace(isatty=lambda: terminal))
+
+    assert main(["ask", "--yes", "buy", "it"]) == 0
+
+    assert answers[0] is True
+    assert (answers[1] is True) == allowed
+    assert asked == (['Should I click the button "Buy"? [y/n] '] if terminal else [])
 
 
 @pytest.mark.parametrize(
@@ -2144,6 +2201,79 @@ def test_doctor_notes_a_missing_media_player_tool_without_failing(
     assert "pacman -S playerctl" in line
 
 
+def test_doctor_fails_a_missing_browser(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The browser is part of Jarvis: with it switched on (the chat's default), it must be there.
+    _doctor_config(home / "models")
+    lines = _doctor_with_tools(monkeypatch, capsys, {"agent-browser"})
+    (line,) = [line for line in lines if "agent-browser" in line]
+    assert line.startswith("FAIL tool agent-browser")
+    assert "install.sh" in line or "README" in line
+
+
+def test_doctor_says_nothing_of_the_browser_when_it_is_switched_off(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _doctor_config(home / "models")
+    cfg = config.load()
+    config.save(cfg.model_copy(update={"chat": cfg.chat.model_copy(update={"browser": False})}))
+    lines = _doctor_with_tools(monkeypatch, capsys, {"agent-browser"})
+    assert not [line for line in lines if "agent-browser" in line]
+
+
+def _doctor_with_agent_browser(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> list[str]:
+    """Run doctor with agent-browser on PATH and no system Chrome, Chromium or Brave."""
+    real = shutil.which
+
+    def which(name: str) -> str | None:
+        if name == "agent-browser":
+            return "/usr/bin/agent-browser"
+        if "chrom" in name or "brave" in name:
+            return None
+        return real(name)
+
+    monkeypatch.setattr(cli.shutil, "which", which)
+    cli.main(["doctor"])
+    return [line for line in _doctor_lines(capsys) if "agent-browser" in line]
+
+
+def test_doctor_fails_agent_browser_without_a_chrome_to_drive(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _doctor_config(home / "models")
+
+    found, chrome = _doctor_with_agent_browser(monkeypatch, capsys)
+
+    assert found.startswith("ok   tool agent-browser")
+    assert chrome.startswith("FAIL Chrome for agent-browser")
+    assert "agent-browser install" in chrome
+
+
+@pytest.mark.parametrize(
+    "chrome",
+    [
+        ".agent-browser/browsers/chrome-158.0.1/chrome-linux64/chrome",
+        ".agent-browser/browsers/chrome-158.0.1/chrome",
+        ".cache/puppeteer/chrome/linux-158.0.1/chrome-linux64/chrome",
+        ".cache/ms-playwright/chromium-1200/chrome-linux/chrome",
+    ],
+)
+def test_doctor_passes_agent_browser_with_its_chrome(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], chrome: str
+) -> None:
+    _doctor_config(home / "models")
+    (home / chrome).parent.mkdir(parents=True)
+    (home / chrome).write_bytes(b"")
+
+    lines = _doctor_with_agent_browser(monkeypatch, capsys)
+
+    assert len(lines) == 2
+    assert all(line.startswith("ok ") for line in lines)
+
+
 @pytest.mark.parametrize(
     ("audio", "checked"),
     [
@@ -2345,8 +2475,41 @@ def test_the_chat_sets_jarvis_settings_and_audits_them(monkeypatch: pytest.Monke
     assert shown["audio.speech_speed"] == pytest.approx(1.5)
 
 
+def test_the_chat_sets_the_voice_browser_and_when_the_browser_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config.save(config.Config())
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: None)
+
+    cli._set_shared("agent.browser", True)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    cli._set_shared("browser.idle_close_s", 300.0)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    loaded = config.load()
+    assert loaded.agent.browser is True
+    assert loaded.browser.idle_close_s == pytest.approx(300.0)
+    events = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
+    assert [(e["event"], e.get("setting"), e["source"]) for e in events] == [
+        ("setting_changed", "agent.browser", "chat"),
+        ("setting_changed", "browser.idle_close_s", "chat"),
+    ]
+    shown = {s.key: s for s in cli._shared_settings()}  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    assert shown["agent.browser"].value is True
+    assert shown["agent.browser"].section == "Voice"
+    assert shown["browser.idle_close_s"].value == pytest.approx(300.0)
+    assert shown["browser.idle_close_s"].section == "Chat"
+    for value in shown["browser.idle_close_s"].values:  # each one the config takes
+        config.BrowserConfig(idle_close_s=cast("float", value))
+
+
 @pytest.mark.parametrize(
-    ("key", "value"), [("audio.voice", "x"), ("audio.speech_speed", 9.0), ("strata.port", 1)]
+    ("key", "value"),
+    [
+        ("audio.voice", "x"),
+        ("audio.speech_speed", 9.0),
+        ("strata.port", 1),
+        ("browser.idle_close_s", 45.0),
+        ("chat.browser", False),  # the chat's own setting, not one of Jarvis's
+    ],
 )
 def test_the_chat_cannot_set_what_it_does_not_offer(key: str, value: object) -> None:
     config.save(config.Config())
@@ -2545,3 +2708,78 @@ def test_restart_is_made_when_the_modes_lock_cannot_be_opened(
 
     assert ("restart", "jarvis.service") in calls
     assert "lock" in capsys.readouterr().out
+
+
+def test_doctor_treats_unconfigured_spotify_as_optional(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config.save(config.Config())
+    cli.main(["doctor"])
+    lines = _doctor_lines(capsys)
+    assert any(line.startswith("note") and "Spotify" in line for line in lines)
+    assert not any(line.startswith("FAIL") and "Spotify" in line for line in lines)
+
+
+def test_setup_reports_failed_systemd_reload(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing(args: list[str], **_options: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, 1)
+
+    monkeypatch.setattr(cli.subprocess, "run", failing)
+    run = engine_run_config(home)
+    install_engine(home / "data")
+    config.save(config.Config(strata=config.StrataConfig(vram_reserve_mib=12000)))
+
+    assert main(["setup", "--run-config", str(run), "--enable"]) != 0
+
+
+def test_essential_doctor_does_not_require_spotify_login(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config.save(config.Config(spotify=config.SpotifyConfig(client_id="abc")))
+    cli.main(["doctor", "--essential", "--no-service"])
+    lines = _doctor_lines(capsys)
+    assert any(line.startswith("note") and "Spotify login" in line for line in lines)
+    assert not any(line.startswith("FAIL") and "Spotify" in line for line in lines)
+
+
+def _agent_answer(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
+    out = capsys.readouterr().out
+    assert out.count("\n") == 1, out  # one line, nothing else around it
+    return json.loads(out)
+
+
+def test_the_doctor_gives_an_agent_each_check_and_fails_as_it_does_for_people(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config.save(config.Config(data_dir=tmp_path / "missing"))
+
+    code = main(["doctor", "--agent", "--no-service"])
+
+    answer = _agent_answer(capsys)
+    assert code == 1
+    assert answer["ok"] is False
+    assert answer["exit"] == 1
+    failed = [c for c in answer["checks"] if c["status"] == "fail"]
+    assert failed
+    assert all(set(c) == {"status", "what", "fix"} for c in answer["checks"])
+    assert all(c["fix"] for c in failed)
+    assert answer["summary"].startswith(f"{len(answer['checks'])} checks")
+
+
+def test_the_doctor_tells_people_what_failed_in_its_last_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config.save(config.Config(data_dir=tmp_path / "missing"))
+
+    assert main(["doctor", "--no-service"]) == 1
+
+    lines = capsys.readouterr().out.splitlines()
+    assert ", failed" not in lines[-1]
+    assert " failed: " in lines[-1]
+    assert all(line[:5] in {"ok   ", "FAIL ", "note "} for line in lines[:-1])
+
+
+def test_colour_never_reaches_a_pipe(capsys: pytest.CaptureFixture[str]) -> None:
+    main(["doctor", "--no-service"])
+
+    assert "\x1b[" not in capsys.readouterr().out

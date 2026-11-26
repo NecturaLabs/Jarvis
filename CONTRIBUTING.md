@@ -71,9 +71,10 @@ run.
 
 1. Install [uv](https://docs.astral.sh/uv/) and Python 3.14. `pyproject.toml` sets uv to use the system
    Python only, so install 3.14 with your package manager.
-2. Install the environment: `uv sync`.
+2. Install the environment: `uv sync --locked`.
 3. Running Jarvis itself needs Omarchy, PipeWire, Voxtype, Strata and model files; the unit tests and the
-   checks need none of them. [README.md](README.md) and [docs/models.md](docs/models.md) list the rest.
+   checks need none of them. See [Install](README.md#install) for the runtime setup and
+   [models](docs/models.md) for the downloads and hardware requirements.
 
 Run anything that could make a sound silently, with
 `PIPEWIRE_REMOTE=/nonexistent PULSE_SERVER=unix:/nonexistent`. Tests feed recorded fixtures instead of the

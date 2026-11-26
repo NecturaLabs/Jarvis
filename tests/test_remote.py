@@ -4,6 +4,7 @@ Nothing here reaches a real server: the client's requests are answered by httpx 
 and systemd by stand-ins. The SSH recipe is inspected as text.
 """
 
+import argparse
 import io
 import json
 import sys
@@ -186,6 +187,9 @@ StartLimitBurst=5
 
 [Service]
 Type=exec
+Environment=XDG_CONFIG_HOME=<home>/config
+Environment=XDG_DATA_HOME=<home>/data
+Environment=XDG_STATE_HOME=<home>/state
 ExecStart=<bin>/jarvis run
 Restart=on-failure
 RestartPreventExitStatus=2
@@ -697,3 +701,83 @@ def test_setup_rejects_an_unusable_tls_ca(
     )
     assert not paths.config_file().exists()
     assert not paths.remote_strata_key_file().exists()
+
+
+_DOCTOR_ARGS = argparse.Namespace(essential=False, wait=False, no_service=False)
+
+
+def _no_models(_engine: str) -> None:
+    return
+
+
+def _no_checks(_cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[str]]:
+    return [], []
+
+
+def test_a_remote_client_has_no_run_config_to_ask_for() -> None:
+    config.save(_remote())
+    assert cli.main(["setup", "--has-run-config"]) == 0
+
+
+def test_the_doctor_report_carries_the_remote_server_line_and_the_plain_http_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_subprocess(monkeypatch)
+    monkeypatch.setattr(audio, "installed_models", _no_models)
+    config.save(_remote(url="http://192.168.1.20:8080", allow_plain_http=True))
+    services.write_remote_key(config.load(), KEY)
+    _fake_strata(
+        monkeypatch,
+        httpx.MockTransport(lambda _request: httpx.Response(200, json={"data": [LISTED]})),
+    )
+    report = cli.doctor_report(_DOCTOR_ARGS)
+    served = [check for check in report.checks if "flash" in check[1]]
+    assert len(served) == 1
+    assert served[0][0]
+    assert not any("Strata server" in what for _, what, _ in report.checks)
+    assert any("unencrypted" in note for note in report.notes)
+    assert not any("Strata run config" in what for _, what, _ in report.checks)
+
+
+def test_the_doctor_report_on_a_backend_leaves_out_the_client_checks(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_subprocess(monkeypatch)
+    install_engine(home / "data")
+    config.save(
+        config.Config(
+            strata=config.StrataConfig.model_validate(
+                {"mode": "backend", "run_config": engine_run_config(home)}
+            )
+        )
+    )
+    write_private(paths.backend_strata_key_file(), f"STRATA_API_KEY={KEY}\n")
+    _fake_strata(
+        monkeypatch,
+        httpx.MockTransport(lambda _request: httpx.Response(200, json={"data": [LISTED]})),
+    )
+    report = cli.doctor_report(_DOCTOR_ARGS)
+    text = " ".join(what for _, what, _ in report.checks) + " ".join(report.notes)
+    assert "flash" in text
+    assert not any(word in text for word in ("Spotify", "wake", "Voxtype"))
+
+
+@pytest.mark.parametrize(
+    ("mode", "voice", "strata"), [("remote", True, False), ("backend", False, True)]
+)
+def test_the_update_health_step_writes_only_the_files_of_its_role(
+    home: Path, monkeypatch: pytest.MonkeyPatch, mode: str, *, voice: bool, strata: bool
+) -> None:
+    install_engine(home / "data")
+    settings: dict[str, object] = {"mode": mode}
+    if mode == "remote":
+        settings["url"] = TUNNEL
+    else:
+        settings["run_config"] = engine_run_config(home)
+    config.save(config.Config(strata=config.StrataConfig.model_validate(settings)))
+    monkeypatch.setattr(sys, "argv", ["jarvis", "health"])
+    monkeypatch.setattr(cli, "essential_checks", _no_checks)
+    cli.finish_update()
+    assert (services.unit_dir() / services.JARVIS_UNIT).exists() is voice
+    assert (services.unit_dir() / services.STRATA_UNIT).exists() is strata
+    assert services.strata_profile_file().exists() is strata

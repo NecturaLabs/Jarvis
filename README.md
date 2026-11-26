@@ -27,6 +27,9 @@ Jarvis is pre-1.0 software; see [Status](#status).
   only, with no desktop notifications.
   Tell Jarvis to be quiet, in any words, and it stops without a word. Say the wake word while it speaks
   to stop it and ask something else.
+- **Singing:** ask Jarvis to sing, in any words, and the model writes the song as notes, up to 30 seconds,
+  that Jarvis sings in its own voice: with Kokoro's voice moved to each note, or with SoulX-Singer, a local
+  singing-voice model on the GPU, once you install it ([Singing](docs/models.md#singing)).
 - **Spotify:** play a track, album, artist, playlist or your liked songs; pause, resume, next, previous; jump
   within a song or restart it; move playback to another device; set or change the volume; shuffle; repeat; queue
   songs; like or unlike the current song, or add it to one of your playlists (after a yes); say what is playing,
@@ -66,6 +69,10 @@ Jarvis is pre-1.0 software; see [Status](#status).
   reads their top comments from the Arctic Shift archive. Start the search container once as
   [`[research]`](docs/configuration.md) says. What these send, and to whom, is in
   [docs/privacy.md](docs/privacy.md).
+- **Browser:** through [agent-browser](https://github.com/vercel-labs/agent-browser), which the installer requires, the chat opens
+  pages that need a real browser (built by scripts, or used through a search box), reads them and shows you a
+  picture of one. It runs headless with its own throwaway profile, reaches only public addresses, and asks
+  before it clicks or types anything ([`[browser]`](docs/configuration.md#browser-the-headless-browser)).
 - **Listening to PC audio (off by default):** Jarvis can also take requests heard in what the PC plays, such as
   a Discord call. That speech is treated as someone else's, so you are asked to confirm before it changes
   anything. See [the ADR](docs/adr/0003-pc-audio-is-not-the-owner.md). Ask it what is being said there and it
@@ -79,51 +86,75 @@ Jarvis is pre-1.0 software; see [Status](#status).
 Not built yet: switching workspaces and running Omarchy's commands. The plan marks each
 as planned.
 
-## Requirements
+## Install
 
-- Omarchy on Arch Linux with PipeWire (`pw-record`, `pw-play`, `pw-dump` to know what else plays, and `wpctl` for the
-  PC's volume) and systemd user services. `playerctl` (`pacman -S playerctl`) for other media players, if wanted.
-- Voxtype as the dictation backend, with the speech model you set in `audio.transcribe_model` downloaded (a
-  Whisper model by default; `audio.transcribe_engine` picks another). Voxtype's GPU build
-  (`sudo voxtype setup gpu --enable`) transcribed a 4.6 s request in 0.74 s against 1.77 s on the CPU build
-  on the reference machine, and spares the CPU while a game runs ([docs/models.md](docs/models.md#speech-to-text-voxtype)).
-- Python 3.14 and uv.
-- Strata and a model it runs, set up with `strata launch` (which writes the run config Jarvis serves).
-  Built and measured on an RX 7900 XT with 64 GB of RAM; what each measured model holds in RAM and VRAM is
-  in [docs/models.md](docs/models.md).
-- Spotify Premium and your own Spotify developer app (a client ID; there is no client secret).
-- The wake word, VAD and voice model files, placed under the data folder ([docs/models.md](docs/models.md)).
+Use an Omarchy desktop session on Arch Linux with PipeWire, WirePlumber, Voxtype, Git, uv,
+system Python 3.14 and [agent-browser](https://github.com/vercel-labs/agent-browser) (`yay -S agent-browser`). Prepare the two models the installer leaves to their own tools:
 
-## Set up
+1. Run `voxtype setup model` and download Whisper `small.en`, the default speech model.
+2. Install [Strata](https://github.com/niko1221/strata), run `strata launch`, and choose a model your
+   GPU, RAM and disk can handle. When Strata writes `strata-<model>.json`, stop the server it started
+   with `strata launch --stop`. Jarvis starts its own. See [model sizes and memory](docs/models.md).
 
 ```sh
-uv sync
-strata launch               # once: pick the model; it downloads it and writes its run config
-uv run jarvis setup --run-config <Strata's install folder>/strata-<model>.json \
-    --spotify-client-id <your app's client ID>
-uv run jarvis spotify-login     # prints the redirect URI your Spotify app must list, then opens the login
-uv run jarvis setup --enable    # writes and starts the user units
-uv run jarvis doctor            # one line per check, with its fix; never loads the model
+curl -fsSL https://raw.githubusercontent.com/NecturaLabs/Jarvis/main/install.sh | bash
 ```
 
-`strata launch` starts a server of its own once the model is ready: stop it (`strata launch --stop`), since
-Jarvis runs its own. `jarvis setup` writes the config, the Strata profile, the Strata API key and two systemd user units
-(`jarvis.service` and `jarvis-strata.service`), and keeps every value already set unless you pass it again.
-Use `--data-dir`, `--strata-home`, `--strata-components-parent` and `--mic` for the other locations and the
-microphone. The config file and every key are in [docs/configuration.md](docs/configuration.md);
-[`config.example.toml`](config.example.toml) shows them all at their defaults. Your own config stays in
-`~/.config/jarvis/`, outside the repository.
+The installer checks the required commands and prints how to install any that are missing. It clones
+the `main` release branch, syncs the locked Python environment, and runs `jarvis setup`,
+`uv run tools/get_models.py`, has agent-browser download its Chrome when it has none (`agent-browser
+install`, into your home folder), and checks the installation with `jarvis doctor`. The tool downloads and
+checks the SHA-256 of the default wake word, Silero VAD and Kokoro files (about 347 MiB combined).
 
-The model server keeps the model out of swap and asks to lock it in RAM (`strata.keep_in_ram`). On a stock
-systemd your user services may lock only 8 MiB, so the lock needs one root drop-in;
-[configuration](docs/configuration.md#keeping-the-model-in-ram) has it, and `jarvis doctor` notes when it is
-missing. `jarvis doctor` also checks every program Jarvis runs and notes a Spotify login that predates a
-permission Jarvis now asks for.
+The default checkout is `${XDG_STATE_HOME:-$HOME/.local/state}/jarvis/checkout`. Set
+`JARVIS_INSTALL_DIR` or pass `--install-dir PATH` to choose another disk or use a clean existing checkout
+of the same repository and branch. New installs put Jarvis's model assets beside it in
+`${XDG_STATE_HOME:-$HOME/.local/state}/jarvis/models`. Use `--data-dir PATH` to change that location.
+A re-run keeps saved settings unless you pass new ones, checks for a release update, and keeps model
+files already present.
 
-The units start with your desktop session and stop with it. Jarvis keeps listening at the lock screen
-(`audio.listen_when_locked` turns that off), opens the microphone again after PipeWire restarts or the
-microphone is unplugged and plugged back, and listens afresh after a suspend. What each change does is in
-[docs/playbook/session-transitions.md](docs/playbook/session-transitions.md).
+Jarvis keeps the model configured on a previous run. On first install, it uses the sole
+`strata-*.json` it finds in Strata's usual `install/` folder. If there are several, or Strata is installed
+elsewhere, use `--run-config PATH` or `JARVIS_RUN_CONFIG`. A prompt uses the terminal when one is
+available. Pass options through `bash -s --` when piping. The same options work with `bash install.sh`
+from a checkout.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/NecturaLabs/Jarvis/main/install.sh |
+  bash -s -- --non-interactive --run-config /path/to/strata-model.json --enable
+```
+
+Use `--dry-run` to print the commands or `--help` for the full list of options and environment
+variables. If Strata's model is set to use all available VRAM (`--expert-cache auto`), pass
+`--strata-vram-reserve-mib MIB` to leave room for the desktop and other programs.
+[Configuration](docs/configuration.md#strata-how-the-jarvis-strata-service-runs-the-model) explains how to choose it.
+
+Pass `--enable` when you want both services to start now and with future desktop sessions. If you
+skipped that flag, use the checkout path printed by the installer and run:
+
+```sh
+cd "${XDG_STATE_HOME:-$HOME/.local/state}/jarvis/checkout"
+.venv/bin/jarvis setup --enable
+.venv/bin/jarvis doctor --wait
+```
+
+Say “Hey Jarvis” and ask a question. Use `.venv/bin/jarvis status` to see whether it is listening
+and `.venv/bin/jarvis logs` if it does not respond. The first model load may take a while.
+[Configuration](docs/configuration.md#keeping-the-model-in-ram) covers the optional memory lock and
+[session transitions](docs/playbook/session-transitions.md) covers sleep and microphone changes.
+
+Spotify is optional. To connect it, use a Spotify Premium account and your own developer app.
+Run `.venv/bin/jarvis setup --spotify-client-id ID`, then `.venv/bin/jarvis spotify-login` and follow
+the printed redirect URI instructions. Run `.venv/bin/jarvis restart` to pick it up in the running
+voice service. Other media players use `playerctl` (`sudo pacman -S playerctl` if wanted).
+
+### Update
+
+Run `.venv/bin/jarvis update` in the checkout for a preview and `.venv/bin/jarvis update --apply` to
+install the update. The updater refuses local edits and divergent branches, defers while Jarvis is
+handling a request, and restores the previous checkout if its checks or service restart fail.
+Automatic daily updates are off by default. Turn them on or off with
+`.venv/bin/jarvis update --auto on|off`. See [update settings](docs/configuration.md#update).
 
 ### Model on another machine
 
@@ -146,6 +177,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | Command | What it does |
 |---|---|
 | `jarvis setup` | Write the config, the Strata profile and the user units (`--enable` also starts them). |
+| `jarvis update` | Preview an update, install it with `--apply`, or manage the daily timer with `--auto on\|off`. |
 | `jarvis spotify-login` | Connect Jarvis to your Spotify account with PKCE (`--no-browser` prints the link to open yourself instead of opening a browser, then waits for the login). |
 | `jarvis start` / `stop` / `restart` | Start Jarvis and its model server, stop both (which frees the model), or restart Jarvis after a config change: the voice service restarts, a stopped model server starts, and a running one restarts only when its settings changed. |
 | `jarvis status` | Show what Jarvis is doing (idle, listening, thinking, speaking, paused, model loading or unavailable) and the model's state; `--json` prints one JSON object for a status bar. |
@@ -154,10 +186,10 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis confirm` | Allow the one action Jarvis is waiting on with "Press the confirm key". Bind it to a key ([configuration](docs/configuration.md#the-confirm-key-jarvis-confirm)). |
 | `jarvis unload` | Free the model's memory now, for example before a game. |
 | `jarvis model` | Show the mode (normal or coding), each mode's model and whether it is loaded; `jarvis model coding` and `jarvis model normal` switch ([configuration](docs/configuration.md#coding-coding-mode)). |
-| `jarvis doctor` | Check every part without loading the model: one line per check (`ok`, `FAIL` with its fix, or `note`), then how many failed. |
+| `jarvis doctor` | Check every part without loading the model: one line per check (`ok`, `FAIL` with its fix, or `note`), then how many checks ran and which failed. |
 | `jarvis logs` | Follow the live log (Ctrl+C to leave). |
 | `jarvis help` | List the commands by group, each with what it does (the same as `jarvis --help`); `jarvis <command> --help` explains one command and its options, and a mistyped command gets a suggestion when one is close. |
-| `jarvis ask <text>` | Send one typed request as if spoken; a question is answered `y` or `n` on the terminal, and `--yes` answers yes to confirmations. |
+| `jarvis ask <text>` | Send one typed request as if spoken; a question is answered `y` or `n` on the terminal, and `--yes` answers yes to confirmations, except a browser click or typing, which it still asks on the terminal (and refuses with no terminal to answer on). |
 | `jarvis chat` | Open a Textual window where you type requests and watch what Jarvis does, live. |
 | `jarvis consent [ask\|bypass]` | Show or set whether Jarvis asks for a yes before a risky action or one after outside text; a `strong` action still waits for the confirm key either way. |
 | `jarvis wake [livekit\|azure]` | Show or switch the wake word model; `--model FILE` names the Azure `.table` file; `--words hey_jarvis,yo_jarvis` picks the LiveKit models that listen. |
@@ -165,6 +197,10 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis run` | Run the voice loop in the foreground. This is what `jarvis.service` runs. |
 | `jarvis speech-test record\|score\|compare` | Record a private set of your own requests, score how well speech-to-text hears them (word errors, names, time), and compare two scores for a difference beyond chance. |
 | `jarvis --version` | Print the version. |
+
+For a script or an AI agent, add `--agent` (or `--agent-format`) to any command, or set `JARVIS_AGENT_FORMAT=1`:
+the answer is then one line of JSON with `command`, `ok` and `exit`, plus the command's own keys or its output
+lines. Colour appears only on a terminal, and never with `NO_COLOR` set. The `jarvis-cli` skill lists the keys.
 
 ## Docs
 
@@ -234,7 +270,8 @@ holds the product rules, commands, workflow and boundaries.
 - **Agents** (`.claude/agents/`, mirrored for Codex in `.codex/agents/`): `jarvis-reviewer` (read-only review of a
   finished change) and `jarvis-slop-check` (the words of a pull request, docs and spoken replies).
 - **Skills** (`.claude/skills/`, mirrored in `.agents/skills/`): `add-operation` (a new thing Jarvis can do),
-  `add-dependency-or-voice` (licence and pin checks) and `run-silent` (running Jarvis without sound or windows).
+  `add-dependency-or-voice` (licence and pin checks), `run-silent` (running Jarvis without sound or windows) and
+  `jarvis-cli` (reading a command's answer with `--agent`, and changing what a command prints).
 - **Tools** (`tools/`): `tools/check.sh` is the one command an agent runs before calling work done.
 
 ## Community

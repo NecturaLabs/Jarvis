@@ -345,6 +345,14 @@ SETTINGS = (
         live=False,
         about="Open the chat on the conversation it had last time.",
     ),
+    _Setting(
+        "browser",
+        "Headless browser",
+        (True, False),
+        live=False,
+        about="Open and read pages that need a real browser, and show you a picture of one; "
+        "every click or typing there asks you first. Needs agent-browser.",
+    ),
 )
 SECTIONS = (
     "Chat",

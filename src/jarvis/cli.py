@@ -2,6 +2,7 @@
 
 import argparse
 import contextlib
+import io
 import json
 import logging
 import math
@@ -16,13 +17,13 @@ import subprocess
 import sys
 import termios
 import threading
+import traceback
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from jarvis import __version__, config, control, models, modes, paths, services
+from jarvis import __version__, cliout, config, control, models, modes, paths, services, update
 from jarvis.activity import AuditTail
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.app import (
@@ -50,11 +51,12 @@ from jarvis.pc.hearing import Listening, PcHearing
 from jarvis.policy import OpClass, is_yes
 from jarvis.schedule import JobStore
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private, remote_key
-from jarvis.services import JARVIS_UNIT, STRATA_UNIT, reads_pictures
+from jarvis.services import JARVIS_UNIT, STRATA_UNIT, parse_systemd_time, reads_pictures
 from jarvis.spotify.auth import SCOPES, SpotifyAuthError, TokenStore, login, redirect_uri
 from jarvis.sysinfo import Sampler
 from jarvis.toolswitch import WORDS as TOOL_WORDS
 from jarvis.toolswitch import ToolSetting, tool_settings, with_class
+from jarvis.web import browser
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -192,6 +194,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("logs", "follow Jarvis's live log (Ctrl+C to leave)"),
             ("unload", "free the model's memory now"),
             ("doctor", "check every part without loading the model"),
+            ("update", "check for updates, apply them, or manage automatic updates"),
         ),
     ),
     (
@@ -346,6 +349,15 @@ def build_parser() -> argparse.ArgumentParser:
         for _group, commands in COMMAND_GROUPS
         for name, summary in commands
     }
+    for each in (parser, *made.values()):  # before or after the command, as an agent writes it
+        each.add_argument(
+            "--agent",
+            "--agent-format",
+            dest="agent",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help=f"answer in one line of JSON for an agent (or set {cliout.AGENT_ENV}=1)",
+        )
 
     setup = made["setup"]
     _setup_role_arguments(setup)
@@ -395,6 +407,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     setup.add_argument("--enable", action="store_true", help="enable and start the user units")
 
+    _setup_options(made)
+
     made["model"].add_argument(
         "mode", nargs="?", choices=modes.MODES, metavar="MODE", help="normal or coding"
     )
@@ -442,7 +456,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes",
         action="store_true",
         help="answer yes to Jarvis's questions (default: ask here); it cannot press the "
-        "confirm key a strong action waits for",
+        "confirm key a strong action waits for, and a browser click or typing is still asked here",
     )
 
     made["status"].add_argument(
@@ -499,6 +513,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="listen to all PC audio, not only named apps (anything playing can speak to Jarvis)",
     )
     return parser
+
+
+def _setup_options(made: Mapping[str, argparse.ArgumentParser]) -> None:
+    setup = made["setup"]
+    setup.add_argument("--has-run-config", action="store_true", help=argparse.SUPPRESS)
+    setup.add_argument("--update-branch", metavar="NAME", help="release branch for jarvis update")
+    setup.add_argument(
+        "--strata-vram-reserve-mib",
+        type=int,
+        metavar="MIB",
+        help="VRAM to leave free for other programs",
+    )
+
+    made["doctor"].add_argument(
+        "--no-service", action="store_true", help="check the installation without a running service"
+    )
+    made["doctor"].add_argument(
+        "--essential", action="store_true", help="report Spotify login problems as notes"
+    )
+    made["doctor"].add_argument(
+        "--wait", action="store_true", help="wait for the model server to start"
+    )
+    update_args = made["update"]
+    change = update_args.add_mutually_exclusive_group()
+    change.add_argument("--apply", action="store_true", help="install the available update")
+    change.add_argument("--auto", choices=("on", "off"), help="enable or disable the daily timer")
+    update_args.add_argument(
+        "--quiet", action="store_true", help="print only failures and updates applied"
+    )
 
 
 def _load() -> config.Config:
@@ -560,6 +603,8 @@ def _remote_setup_settings(
 def cmd_setup(args: argparse.Namespace) -> int:
     """Write the config, key and units for the selected role."""
     current = _load()
+    if args.has_run_config:
+        return int(current.strata.mode == "local" and current.strata.run_config == Path())
     try:
         role = _setup_role(args, current)
     except config.ConfigError as exc:
@@ -575,6 +620,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
             "components_parent": args.strata_components_parent,
             "run_config": args.run_config,
             "coding_run_config": args.coding_run_config,
+            "vram_reserve_mib": args.strata_vram_reserve_mib,
         }.items()
         if value is not None
     }
@@ -587,6 +633,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
             "model": current.model.model_copy(update={"base_url": ""})
             if role["mode"] != "local"
             else current.model,
+            "update": current.update.model_copy(update={"branch": args.update_branch})
+            if args.update_branch is not None
+            else current.update,
             **({"data_dir": args.data_dir} if args.data_dir is not None else {}),
         }
     )
@@ -615,7 +664,7 @@ def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
             "next: run `strata launch` for the model, then "
             "`jarvis setup --run-config <the strata-<model>.json it writes>`"
         )
-        return 0
+        return 2 if args.enable else 0
     try:
         services.strata_profile(
             modes.effective(updated, "coding")
@@ -629,29 +678,38 @@ def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
         return 2
     print(f"config: {paths.config_file()}\nstrata profile: {profile}")
     print("units: " + ", ".join(str(u) for u in units))
-    _setup_units(STRATA_UNIT, JARVIS_UNIT, enable=args.enable)
-    _setup_spotify(updated)
-    return 0
+    result = _setup_units(STRATA_UNIT, JARVIS_UNIT, enable=args.enable)
+    _setup_spotify(updated, failed=result)
+    return result
 
 
 def _setup_units(*units: str, enable: bool) -> int:
-    def call(*args: str) -> int:
-        return subprocess.run(
-            ["systemctl", "--user", *args], check=False, timeout=SYSTEMCTL_S
-        ).returncode
-
-    code = call("daemon-reload")
-    if code == 0 and enable:
+    commands = [["daemon-reload"]]
+    if enable:
         # A unit stopped by its start limit refuses to start until its failed state is cleared.
-        call("reset-failed", *units)
-        code = call("enable", "--now", *units)
-    return code
+        commands.extend((["reset-failed", *units], ["enable", "--now", *units]))
+    for args in commands:
+        try:
+            done = subprocess.run(
+                ["systemctl", "--user", *args],
+                check=False,
+                timeout=SYSTEMCTL_S,
+                capture_output=args[0] == "reset-failed",
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"jarvis: could not reach the systemd user manager: {exc}", file=sys.stderr)
+            return 1
+        if done.returncode and args[0] != "reset-failed":
+            print(
+                f"jarvis: systemd could not {args[0]} user units; check jarvis logs",
+                file=sys.stderr,
+            )
+            return 1
+    return 0
 
 
-def _setup_spotify(updated: config.Config) -> None:
-    if not updated.spotify.client_id:
-        print("next: jarvis setup --spotify-client-id <your app's client ID>")
-    elif read_private(spotify_token_file()) is None:
+def _setup_spotify(updated: config.Config, *, failed: int) -> None:
+    if not failed and updated.spotify.client_id and read_private(spotify_token_file()) is None:
         print("next: jarvis spotify-login")
 
 
@@ -727,7 +785,7 @@ def _setup_remote(args: argparse.Namespace, cfg: config.Config) -> int:
     code = _setup_units(JARVIS_UNIT, enable=args.enable)
     if code == 0 and active:
         code = _systemctl("restart", JARVIS_UNIT)
-    _setup_spotify(cfg)
+    _setup_spotify(cfg, failed=code)
     return code
 
 
@@ -791,6 +849,13 @@ def _terminal_confirm(question: str) -> bool | Declined:
     return answer.strip().casefold() == "y" or is_yes(answer)
 
 
+def _terminal_confirm_always(question: str) -> bool | Declined:
+    """Require an answer from an interactive terminal, even when ordinary consent is bypassed."""
+    if not sys.stdin.isatty():
+        return Declined(NoReason.NO_ANSWER)
+    return _terminal_confirm(question)
+
+
 def cmd_ask(args: argparse.Namespace) -> int:
     """Answer one typed request and print the reply."""
     try:
@@ -801,8 +866,11 @@ def cmd_ask(args: argparse.Namespace) -> int:
     confirm: Callable[[str], bool | Declined] = (
         (lambda q: print(q, "-> yes") is None) if args.yes else _terminal_confirm
     )
+    # `--yes` cannot answer for a click or typing in the browser, which always asks (ADR 0016).
+    always = _terminal_confirm_always if args.yes else None
     reply = jarvis.agent.handle(
-        " ".join(args.text), Hooks(confirm=confirm, waking=lambda: print("(waking up)"))
+        " ".join(args.text),
+        Hooks(confirm=confirm, confirm_always=always, waking=lambda: print("(waking up)")),
     )
     print(reply)
     return 0
@@ -878,6 +946,24 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Keep the last seconds of PC audio in memory so Jarvis can hear what was just said "
         "(needs PC audio on); 0 keeps none.",
         "Jarvis will keep the last seconds of the PC's audio in memory.",
+    ),
+    _Shared(
+        "browser",
+        "idle_close_s",
+        "Close the browser after (seconds)",
+        (30.0, 60.0, 120.0, 300.0),
+        "Chat",
+        "How long the headless browser stays open after its last use, in the chat and by "
+        "voice; then it closes with its profile and pages. The chat takes it when it opens again.",
+    ),
+    _Shared(
+        "agent",
+        "browser",
+        "Headless browser by voice",
+        (False, True),
+        "Voice",
+        "Spoken requests can open and read pages in the headless browser too; every click or "
+        "typing there asks you first. Needs agent-browser.",
     ),
     _Shared(
         "boundaries",
@@ -1207,6 +1293,31 @@ def _serve_controls(handler: control.Controls, audit: AuditLog) -> control.Contr
     return controls
 
 
+def _load_client() -> config.Config:
+    """Load the config for a command that needs the whole client.
+
+    Raises:
+        SystemExit: this machine is a backend only, which has no client.
+    """
+    cfg = _load()
+    if cfg.strata.mode == "backend":
+        print(
+            "jarvis: backend mode only serves the model. Run this command on the Jarvis client.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return cfg
+
+
+def _remote_status(
+    cfg: config.Config, model: StrataModel
+) -> Callable[[], dict[str, object]] | None:
+    """What the control server reports about a remote model (a probe, never a generation)."""
+    if cfg.strata.mode != "remote":
+        return None
+    return lambda: _probe_fields(model.probe(), model.config.model)
+
+
 def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] - the voice service's parts, wired together here
     """Run the voice loop until stopped."""
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
@@ -1223,13 +1334,7 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
     from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, which loads numpy and ONNX Runtime
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    cfg = _load()
-    if cfg.strata.mode == "backend":
-        print(
-            "jarvis: backend mode only serves the model. Run this command on the Jarvis client.",
-            file=sys.stderr,
-        )
-        return 2
+    cfg = _load_client()
     # The hint is the agent's, built after the transcribers that `pc_audio_listen` needs; it is
     # first asked for once a request is heard.
     request, answer = _transcribers(cfg, lambda: jarvis.hint())  # ruff: ignore[unnecessary-lambda] - `jarvis` is built below
@@ -1265,7 +1370,8 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
     signal.signal(signal.SIGINT, stop)
     # Off the request path: the Spotify login and library (for the hint and matching) are kept
     # warm, so the first request does not wait for them.
-    jarvis.ops.start_refresh(refresh_stop)
+    if jarvis.ops is not None:
+        jarvis.ops.start_refresh(refresh_stop)
     speech_model = FileWarmer(_speech_model_file(cfg.audio))
     mic.start()
     wakes = [wake_word(cfg), *([wake_word(cfg)] if pc_audio is not None else [])]
@@ -1280,6 +1386,7 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
     keys = ConfirmKey(audit=jarvis.audit)  # pressed through the socket, waited on by the loop
 
     voxtype = VoxtypeWatch()  # started with the loop, so nothing before can leave it running
+    jobs = JobStore(paths.schedule_file())
     loop = VoiceLoop(
         jarvis.agent,
         mic,
@@ -1309,7 +1416,8 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
         locked=_never if cfg.audio.listen_when_locked else screen_locked,
         after_sleep=after_sleep,
         keys=keys,
-        due=JobStore(paths.schedule_file()).take_due,
+        due=jobs.take_due,
+        schedule_ready=jobs.may_be_due,
     )
     handler = control.Controls(
         loop,
@@ -1318,9 +1426,7 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
         jarvis.audit,
         keys=keys,
         prime=jarvis.agent.prime,
-        remote_status=(lambda: _probe_fields(jarvis.model.probe(), jarvis.model.config.model))
-        if cfg.strata.mode == "remote"
-        else None,
+        remote_status=_remote_status(cfg, jarvis.model),
     )
     handler.warm_at_start()  # the model loads now, so the first request does not wait for it
     if jarvis.switcher is not None:
@@ -1379,11 +1485,13 @@ def _run_until_stopped(
 def _model_files(cfg: config.Config) -> list[tuple[str, Path]]:
     """Return the (role, file) pairs the doctor can check against a known release."""
     from jarvis.audio import KOKORO_PREFIX, voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
+    from jarvis.sing.engines import singer_files  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, as above
 
     found = [*(("wake", path) for path in wake_files(cfg)), ("vad", cfg.data_dir / VAD_MODEL)]
     if cfg.audio.voice.startswith(KOKORO_PREFIX):
         model, voices = voice_files(cfg.data_dir, cfg.audio.voice)
         found += [("kokoro-model", model), ("kokoro-voices", voices)]
+    found += singer_files(cfg)
     if cfg.strata.mode == "local":
         with contextlib.suppress(services.StrataSetupError):  # `_model_checks` reports it
             reader = services.read_run_config(cfg).picture_reader
@@ -1571,13 +1679,30 @@ def _tool_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[
             "pw-dump"
         )  # who is playing: PC audio's source, and follow-ups shut over audio
     checks = [(shutil.which(t) is not None, f"tool {t}", f"install {t}") for t in needed]
-    if shutil.which("playerctl"):
-        return checks, []
-    note = (
-        "note tool playerctl missing: other media players can't be paused or skipped "
-        "(`pacman -S playerctl`)"
-    )
-    return checks, [note]
+    notes: list[str] = []
+    if not shutil.which("playerctl"):
+        notes.append(
+            "note tool playerctl missing: other media players can't be paused or skipped "
+            "(`pacman -S playerctl`)"
+        )
+    if cfg.chat.browser or cfg.agent.browser:  # the headless browser is part of Jarvis
+        program = shutil.which(browser.PROGRAM) is not None
+        checks.append(
+            (
+                program,
+                f"tool {browser.PROGRAM}",
+                "install it as the README's Set up says (install.sh)",
+            )
+        )
+        if program:
+            checks.append(
+                (
+                    browser.chrome_found(Path.home()),
+                    f"Chrome for {browser.PROGRAM}",
+                    f"run `{browser.PROGRAM} install` (it downloads one into your home folder)",
+                )
+            )
+    return checks, notes
 
 
 def _user_memlock_limit() -> str:
@@ -1619,105 +1744,234 @@ def _memlock_notes(cfg: config.Config) -> list[str]:
     return [note]
 
 
-def cmd_doctor(_args: argparse.Namespace) -> int:
-    """Print one line per check with its fix; never loads the model.
+def essential_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[str]]:
+    """Return the local checks shared by doctor and the update health check."""
+    from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
+    from jarvis.sing.engines import doctor_checks  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, as above
 
-    Model files found on disk are also hashed and named by the release they match; a file that
-    matches no known release is only a note.
-    """
-    cfg = _load()
     config_check = (
-        paths.config_file().exists(),
+        paths.config_file().is_file(),
         f"config {paths.config_file()}",
         "run jarvis setup",
     )
-    if cfg.strata.mode == "backend":
+    key_check = (_has_key(cfg), "Strata API key", _setup_fix(cfg))
+    if cfg.strata.mode == "backend":  # only the model service lives here: check just that
         unit = services.unit_dir() / STRATA_UNIT
-        return _print_doctor(
-            [
-                config_check,
-                (unit.is_file(), f"backend unit {unit}", "run jarvis setup --backend"),
-                *_model_checks(cfg),
-                _split_model_check(cfg),
-            ],
-            _memlock_notes(cfg),
-            [],
-        )
-    from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
-
+        unit_check = (unit.is_file(), f"backend unit {unit}", "run jarvis setup --backend")
+        return [config_check, key_check, unit_check, *_model_checks(cfg)], []
     wake_checks, wake_notes = _wake_checks(cfg)
     tool_checks, tool_notes = _tool_checks(cfg)
-    files = [
-        cfg.data_dir / VAD_MODEL,
-        *voice_files(cfg.data_dir, cfg.audio.voice),
-    ]
+    sing_checks, sing_notes = doctor_checks(cfg)
+    files = [cfg.data_dir / VAD_MODEL, *voice_files(cfg.data_dir, cfg.audio.voice)]
     local = cfg.strata.mode == "local"
-    release_lines, unreadable = _release_lines(cfg)
-    checks: list[tuple[bool, str, str]] = [
+    return [
         config_check,
-        (bool(cfg.spotify.client_id), "Spotify client ID", "jarvis setup --spotify-client-id <id>"),
-        _spotify_login(cfg),
+        key_check,
         *wake_checks,
-        *((f.exists(), f"file {f}", "see docs/models.md") for f in files),
-        *unreadable,
+        *((f.is_file(), f"file {f}", FETCH_MODELS) for f in files),
         *_whisper_model(cfg),
-        *(_local_model_checks(cfg) if local else [_split_model_check(cfg)]),
+        *(_model_url(cfg) if local else []),
+        *(_model_checks(cfg) if local else []),
+        *(_coding_checks(cfg) if local else []),
         *tool_checks,
+        *sing_checks,
         *_source_checks(cfg),
         *_azure_checks(cfg),
         *_lock_checks(cfg),
-    ]
-    notes = [
-        *wake_notes,
-        *tool_notes,
-        *_spotify_scope_notes(cfg),
-        *(_memlock_notes(cfg) if local else []),
-    ]
-    if cfg.strata.plain_lan():
-        notes.append("warning: unencrypted HTTP sends the model's key and requests in cleartext")
-    return _print_doctor(checks, notes, release_lines)
+    ], [*wake_notes, *tool_notes, *sing_notes]
 
 
-def _local_model_checks(cfg: config.Config) -> list[tuple[bool, str, str]]:
-    state = _strata(cfg).status() if read_api_key(strata_key_file()) else None
-    return [
-        *_model_url(cfg),
-        *_model_checks(cfg),
-        *_coding_checks(cfg),
-        (
-            state is not None,
-            f"Strata server ({state or 'unreachable'})",
-            "jarvis start (it clears a start limit first)",
-        ),
-    ]
+def _has_key(cfg: config.Config) -> bool:
+    try:
+        return bool(services.read_key(cfg))
+    except OSError, ValueError:
+        return False
+
+
+def _setup_fix(cfg: config.Config) -> str:
+    return {
+        "local": "run jarvis setup",
+        "remote": "run jarvis setup --remote <url>",
+        "backend": "run jarvis setup --backend",
+    }[cfg.strata.mode]
+
+
+def strata_status(cfg: config.Config) -> str | None:
+    """Read Strata's state without generating tokens or loading its model."""
+    if cfg.strata.mode != "local":
+        probe = _probe_strata(cfg)
+        return (probe.state or "unknown") if probe.reachable else None
+    return _strata(cfg).status() if read_api_key(strata_key_file()) else None
 
 
 def _split_model_check(cfg: config.Config) -> tuple[bool, str, str]:
+    """The reachability, model name and latency of a Strata that runs on another machine."""
     probe = _probe_strata(cfg)
     if cfg.strata.mode == "remote":
         return (
-            probe.reachable,
+            probe.reachable and probe.state != "failed",
             probe.report(cfg.model.model),
             "check the backend, tunnel or TLS settings and the key from jarvis setup --remote",
         )
     return (
-        probe.reachable,
+        probe.reachable and probe.state != "failed",
         probe.report(services.model_name(cfg), "Strata backend"),
         "check the key, then run jarvis start on the backend",
     )
 
 
-def _print_doctor(
-    checks: list[tuple[bool, str, str]], notes: list[str], release_lines: list[str]
-) -> int:
+def print_checks(checks: Sequence[tuple[bool, str, str]]) -> int:
+    """Print the checks and return their failure count."""
     for ok, what, fix in checks:
-        print(f"{'ok' if ok else 'FAIL':4} {what}" + ("" if ok else f"  -> {fix}"))
-    for line in [*notes, *release_lines]:
-        print(line)
-    failed = sum(not ok for ok, _, _ in checks)
-    verified = sum(line.startswith("ok ") for line in release_lines)
-    print(f"{len(checks) + verified} checks, {failed} failed")
-    return 0 if not failed else 1
+        print(cliout.check(what, fix, ok=ok))
+    return sum(not ok for ok, _, _ in checks)
+
+
+@dataclass(frozen=True, slots=True)
+class DoctorReport:
+    """What `jarvis doctor` found: its checks, its notes, and how many releases it verified."""
+
+    checks: list[tuple[bool, str, str]]
+    notes: list[str]
+    verified: list[str]  # "name: release, sha256 verified", one per file it matched
+
+    @property
+    def failed(self) -> int:
+        """How many checks failed."""
+        return sum(not ok for ok, _, _ in self.checks)
+
+    @property
+    def summary(self) -> str:
+        """The closing line: how many checks ran and which failed."""
+        return cliout.summary(self.checks, extra=len(self.verified))
+
+
+def doctor_report(args: argparse.Namespace) -> DoctorReport:
+    """Run every check `jarvis doctor` runs; print nothing."""
+    cfg = _load()
+    checks, notes = essential_checks(cfg)
+    if cfg.strata.mode == "backend":
+        return _backend_report(cfg, checks, wait=args.wait, no_service=args.no_service)
+    if cfg.spotify.client_id:
+        login = _spotify_login(cfg)
+        if not login[0] and args.essential:
+            notes.append(f"note {login[1]}: {login[2]}")
+        else:
+            checks.append(login)
+        notes.extend(_spotify_scope_notes(cfg))
+    else:
+        notes.append(
+            "note Spotify is off; set a client ID and run jarvis spotify-login to connect it"
+        )
+    if not args.no_service:
+        if cfg.strata.mode == "remote":
+            if args.wait:
+                update.wait_for(lambda: strata_status(cfg))
+            checks.append(_split_model_check(cfg))
+        else:
+            state = update.wait_for(lambda: strata_status(cfg)) if args.wait else strata_status(cfg)
+            checks.append(
+                (
+                    state is not None and state != "failed",
+                    f"Strata server ({state or 'unreachable'})",
+                    "jarvis start (it clears a start limit first)",
+                )
+            )
+    release_lines, unreadable = _release_lines(cfg)
+    checks.extend(unreadable)
+    if cfg.strata.mode == "local":
+        notes.extend(_memlock_notes(cfg))
+    elif cfg.strata.plain_lan():
+        notes.append("warning: unencrypted HTTP sends the model's key and requests in cleartext")
+    notes.extend(update.doctor_notes(cfg, launch_for_update))
+    verified = [line.removeprefix("ok").strip() for line in release_lines if line.startswith("ok ")]
+    notes.extend(line for line in release_lines if not line.startswith("ok "))
+    return DoctorReport(checks, notes, verified)
+
+
+def _backend_report(
+    cfg: config.Config, checks: list[tuple[bool, str, str]], *, wait: bool, no_service: bool
+) -> DoctorReport:
+    """The doctor on a backend-only machine: its unit, key, model files and server, nothing else."""
+    if not no_service:
+        if wait:
+            update.wait_for(lambda: strata_status(cfg))
+        checks.append(_split_model_check(cfg))
+    return DoctorReport(checks, _memlock_notes(cfg), [])
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Print one line per check with its fix, then the notes; never loads the model."""
+    report = doctor_report(args)
+    print_checks(report.checks)
+    for line in report.verified:
+        print(cliout.check(line, ok=True))
+    for line in report.notes:
+        print(cliout.note(line))
+    print(report.summary)
+    return int(bool(report.failed))
+
+
+FETCH_MODELS = "uv run tools/get_models.py (or see docs/models.md)"  # the fix for a missing model
+
+
+def launch_for_update(
+    args: tuple[str, ...],
+    *,
+    cwd: Path,
+    timeout: float,
+    env: Mapping[str, str],
+    show: bool,
+) -> subprocess.CompletedProcess[str]:
+    """Start one program `jarvis update` needs (git, uv, systemctl, the updated Jarvis).
+
+    Raises:
+        update.UpdateError: it ran past `timeout` and was stopped.
+    """
+    try:
+        return subprocess.run(
+            args,
+            cwd=cwd,
+            check=False,
+            capture_output=not show,
+            text=True,
+            env=dict(env),
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        msg = f"{Path(args[0]).name} ran past {timeout:g} s and was stopped"
+        raise update.UpdateError(msg) from exc
+
+
+def finish_update() -> int:
+    """Run the health work in the checkout's newly synced environment."""
+    cfg = _load()
+    if sys.argv[1] == "ready":
+        if "strata" in sys.argv[2:]:
+            state = update.wait_for(lambda: strata_status(cfg))
+            if state is None or state == "failed":
+                print(f"jarvis: model server is {state or 'unreachable'}", file=sys.stderr)
+                return 1
+        if "voice" in sys.argv[2:]:
+            reply = update.wait_for(lambda: control.send("status", timeout=1))
+            if not reply or not reply.get("ok"):
+                print("jarvis: voice service did not open its control socket", file=sys.stderr)
+                return 1
+        return 0
+    if sys.argv[1] != "health":
+        return 2
+    match cfg.strata.mode:
+        case "remote":
+            services.write_voice_unit()
+        case "backend":
+            services.write_strata_profile(cfg)
+            services.write_strata_unit(cfg, services.key_file(cfg))
+        case _:
+            served = modes.effective(cfg, modes.current())
+            services.write_strata_profile(served)
+            services.write_units(served, paths.strata_key_file())
+    checks, _notes = essential_checks(cfg)
+    return int(bool(print_checks([check for check in checks if not check[0]])))
 
 
 def _wake_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[str]]:
@@ -1736,7 +1990,7 @@ def _wake_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[
     check = (
         bool(found),
         f"wake word files ({names})" if found else f"wake word files: none found in {folder}",
-        "see docs/models.md",
+        FETCH_MODELS,
     )
     checks: list[tuple[bool, str, str]] = [check]
     if found:
@@ -2193,20 +2447,6 @@ def _prepare_split_unit(cfg: config.Config, action: str) -> int:
     return _systemctl("daemon-reload")
 
 
-def parse_systemd_time(text: str) -> float | None:
-    """Return a `systemctl show --timestamp=us+utc` time as Unix time, or None when unset."""
-    stamp = text.strip()
-    if not stamp.endswith(" UTC"):
-        return None
-    try:
-        when = datetime.strptime(
-            stamp.removesuffix(" UTC") + " +0000", "%a %Y-%m-%d %H:%M:%S.%f %z"
-        )
-    except ValueError:
-        return None
-    return when.timestamp()
-
-
 def _started_at(unit: str) -> float | None:
     """Return when `unit` last became active (Unix time, to the microsecond), or None if stopped.
 
@@ -2227,12 +2467,6 @@ def _started_at(unit: str) -> float | None:
     if _unit_state(unit) != "active":
         return None
     return parse_systemd_time(done.stdout)
-
-
-def _strata_changed_since(started: float) -> bool:
-    """Return whether Strata's profile or unit was rewritten after it started."""
-    files = (services.strata_profile_file(), services.unit_dir() / services.STRATA_UNIT)
-    return any(path.exists() and path.stat().st_mtime > started for path in files)
 
 
 def _refresh_strata() -> None:
@@ -2288,7 +2522,7 @@ def cmd_restart(_args: argparse.Namespace) -> int:
             free = True
         _refresh_strata()
         started = _started_at(STRATA_UNIT)
-        changed = started is not None and _strata_changed_since(started)
+        changed = started is not None and services.strata_changed_since(started)
         cut = changed and not free
         code = _systemctl("restart" if changed else "start", STRATA_UNIT)
     code = code or _systemctl("restart", JARVIS_UNIT)
@@ -2672,12 +2906,13 @@ def cmd_speech_test(args: argparse.Namespace) -> int:
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
-    jarvis.ops.refresh()  # your artists, for the cards and the hint
+    if jarvis.ops is not None:
+        jarvis.ops.refresh()  # your artists, for the cards and the hint
     if args.action == "record" and _listening():
         print("jarvis: Jarvis is listening; `jarvis pause` it first, then record", file=sys.stderr)
         return 1
     heard_with = f"{audio.transcribe_engine or 'default'} {audio.transcribe_model}".strip()
-    artists = jarvis.ops.artist_names()
+    artists = jarvis.ops.artist_names() if jarvis.ops is not None else []
     if args.action == "record" and not artists:
         print("No artists from Spotify, so every card is an open request.")
     try:
@@ -2745,6 +2980,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "chat": cmd_chat,
     "run": cmd_run,
     "doctor": cmd_doctor,
+    "update": lambda args: update.command(args, launch_for_update),
     "status": cmd_status,
     "pause": cmd_pause,
     "resume": cmd_resume,
@@ -2763,7 +2999,137 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the `jarvis` command and return its exit code."""
-    args = build_parser().parse_args(argv)
+    words = sys.argv[1:] if argv is None else list(argv)
+    if cliout.agent_mode(asked=any(word in AGENT_FLAGS for word in words)):
+        return _agent_main(words)
+    args = build_parser().parse_args(words)
     if args.command is None:
         return cmd_overview(args)
     return COMMANDS[args.command](args)
+
+
+AGENT_FLAGS = frozenset({"--agent", "--agent-format"})
+
+
+def _agent_main(words: list[str]) -> int:
+    """`main` for an agent: even a mistyped command line is answered in one line of JSON."""
+    out, err = io.StringIO(), io.StringIO()
+    args: argparse.Namespace | None = None
+    code = 2
+    with cliout.captured(out, err):
+        try:
+            args = build_parser().parse_args(words)
+        except SystemExit as exc:  # --help, or arguments argparse refused
+            code = exc.code if isinstance(exc.code, int) else 2
+    if args is not None:
+        return answer_agent(args)
+    command = next((word for word in words if word in COMMANDS), None)
+    cliout.emit(
+        {
+            "command": command,
+            "ok": code == 0,
+            "exit": code,
+            "output": _lines(out.getvalue()),
+            "errors": _lines(err.getvalue()),
+        }
+    )
+    return code
+
+
+# Commands that wait on a person or follow a live stream: they have no one-line answer.
+INTERACTIVE = frozenset({"chat", "logs", "run", "ask", "speech-test", "spotify-login"})
+
+
+def _lines(text: str) -> list[str]:
+    return [cliout.strip(line) for line in text.splitlines() if line.strip()]
+
+
+def _agent_speed(_args: argparse.Namespace) -> dict[str, object]:
+    return {"speech_speed": config.load().audio.speech_speed}
+
+
+def _agent_consent(_args: argparse.Namespace) -> dict[str, object]:
+    bypass = config.load().boundaries.bypass_consent
+    return {"consent": "bypassed" if bypass else "asks", "said": CONSENT_SAID[bypass]}
+
+
+def _tool_entry(s: ToolSetting) -> dict[str, object]:
+    return {
+        "name": s.name,
+        "setting": s.label,
+        "state": s.state.value,
+        "shipped": s.shipped.value,
+        "changed": s.state is not s.shipped,
+        "description": s.description or s.summary,
+    }
+
+
+def _agent_tools(args: argparse.Namespace) -> dict[str, object]:
+    rows = _tool_settings(config.load())
+    if args.name is not None:
+        return {"tool": next((_tool_entry(s) for s in rows if s.name == args.name), None)}
+    return {"tools": [_tool_entry(s) for s in rows]}
+
+
+# Commands whose answer has fields of its own; any other command's answer carries its lines.
+AGENT_FIELDS: dict[str, Callable[[argparse.Namespace], dict[str, object]]] = {
+    "speed": _agent_speed,
+    "consent": _agent_consent,
+    "tools": _agent_tools,
+}
+
+
+def answer_agent(args: argparse.Namespace) -> int:
+    """Run the command and write its answer as one line of JSON (`jarvis.cliout`)."""
+    name = args.command or "status"
+    if name in INTERACTIVE:
+        said = f"{name} is interactive: run it in a terminal, without --agent"
+        cliout.emit({"command": name, "ok": False, "exit": 2, "errors": [said]})
+        return 2
+    out, err = io.StringIO(), io.StringIO()
+    answer: dict[str, object] = {"command": name}
+    with cliout.captured(out, err):
+        try:
+            code = _run_for_agent(name, args, answer)
+        except SystemExit as exc:  # a command that gives up the way argparse does
+            code = exc.code if isinstance(exc.code, int) else 1
+            if isinstance(exc.code, str):
+                print(exc.code, file=sys.stderr)
+        except Exception:  # ruff: ignore[blind-except] - the agent still gets its one line, and the traceback
+            code = 1
+            traceback.print_exc()
+    answer |= {"ok": code == 0, "exit": code}
+    printed, errors = _lines(out.getvalue()), _lines(err.getvalue())
+    if name == "status" and printed:
+        answer |= json.loads(printed[-1])
+    elif name not in AGENT_FIELDS and name != "doctor":
+        answer["output"] = printed
+    if errors or (name not in AGENT_FIELDS and name not in {"doctor", "status"}):
+        answer["errors"] = errors
+    cliout.emit(answer)
+    return code
+
+
+def _run_for_agent(name: str, args: argparse.Namespace, answer: dict[str, object]) -> int:
+    """Run command `name`, adding its own fields to `answer`; return its exit code."""
+    if name == "doctor":
+        report = doctor_report(args)
+        answer |= _doctor_fields(report)
+        return int(bool(report.failed))
+    if name == "status":
+        args.json = True
+        return cmd_status(args)
+    code = COMMANDS[name](args)
+    if code == 0 and name in AGENT_FIELDS:
+        answer |= AGENT_FIELDS[name](args)
+    return code
+
+
+def _doctor_fields(report: DoctorReport) -> dict[str, object]:
+    checks = [
+        {"status": "ok" if ok else "fail", "what": what, "fix": "" if ok else fix}
+        for ok, what, fix in report.checks
+    ]
+    checks += [{"status": "ok", "what": line, "fix": ""} for line in report.verified]
+    notes = [cliout.strip(cliout.note(line))[len("note ") :] for line in report.notes]
+    return {"checks": checks, "notes": notes, "summary": report.summary}

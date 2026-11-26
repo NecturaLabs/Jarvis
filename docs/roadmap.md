@@ -11,8 +11,9 @@ says which parts are built.
   the model service (#2), the wake word and transcription (#3), the policy engine (#4), configuration and
   setup (#5), the agent loop (#6) and Spotify control (#7). Whether the local model can drive Jarvis's tools
   is measured in #17, and which speech-to-text model serves Jarvis best in #28.
-- **Install and maintenance**: one install command and a doctor that names the fix for each problem (#16);
-  update, rollback and uninstall (#21); commands for desktop session changes such as lock and suspend (#22).
+- **Install and maintenance**: the one-line installer (#16), updater and failed-update rollback (#21)
+  await a clean install and update with real services. Uninstall is manual. Desktop session commands
+  live in #22.
 - **Operating the PC**: typed PC operations (#9; stats, files, stopping and opening programs, the PC's volume and
   other media players are built; workspaces and Omarchy's commands are not), and an off-by-default shell
   operation behind strong confirmation (#19, built).
@@ -26,7 +27,7 @@ says which parts are built.
 - **Accessibility** (not filed as issues yet): a text-only way to use Jarvis and a screen-reader check of
   the chat window; see [ACCESSIBILITY.md](../ACCESSIBILITY.md).
 
-Everyone who runs Jarvis creates their own Spotify developer app (the maintainer's was #8, now done).
+Anyone who connects Spotify creates their own Spotify developer app (the maintainer's was #8, now done).
 
 ## Not planned
 

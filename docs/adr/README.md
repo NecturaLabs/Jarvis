@@ -20,5 +20,8 @@ edited once accepted; a later decision supersedes it with a new record that link
 | [0013](0013-free-speech-no-new-shortcuts.md) | Understand free speech with typed tools; add no new shortcuts | accepted |
 | [0014](0014-model-raises-its-own-thinking.md) | Let the model raise its own thinking within a request | accepted |
 | [0015](0015-listen-to-pc-audio.md) | Listen to PC audio for the owner through the wake-word watcher's frames, kept in memory only | accepted |
+| [0016](0016-headless-browser.md) | Give Jarvis a headless browser, fenced by a local proxy and a yes for every click and typing | accepted |
 | [0017](0017-coding-mode.md) | A coding mode with its own model on the one model server, switched by the owner or by the model with a typed tool | accepted |
+| [0018](0018-sing-a-song-the-model-writes.md) | Sing a song the model writes as notes, with a speaking-voice singer and an optional GPU one | proposed |
+| [0019](0019-install-and-update.md) | Install and update Jarvis from a release branch | proposed |
 | [0020](0020-model-on-another-machine.md) | Optionally serve Strata on another machine owned by the user, with the Jarvis client on the PC it controls | proposed |

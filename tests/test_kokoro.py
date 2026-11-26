@@ -3,7 +3,7 @@
 
 import json
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 import numpy as np
 import pytest
@@ -267,3 +267,62 @@ def test_the_table_follows_the_voices_dialect(
         heard[name] = "".join(as_text[i] for i in voice.tokens("x")[0])
 
     assert heard == {"am_adam": "ɡˈOt ɡˈəʊ", "bm_george": "ɡˈɔʊt ɡˈQ"}
+
+
+class _TimedSession(_Session):
+    """A model that also gives each token's length, as kokoro-v1.0.onnx does."""
+
+    @override
+    def run(self, _outputs: None, feed: dict[str, Any]) -> list[Any]:
+        self.feeds.append(feed)
+        count = feed["input_ids"].shape[1]
+        steps = np.arange(1, count + 1, dtype=np.int64)
+        audio = np.zeros(int(steps.sum()) * kokoro.FRAME_SAMPLES, dtype=np.float32)
+        return [audio, steps]
+
+
+def test_timed_speech_gives_each_symbol_and_its_length_without_the_pads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    voice, _ = _kokoro(tmp_path, monkeypatch)
+    session = _TimedSession({"input_ids": "", "style": "", "speed": ""})
+    voice._session = session  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue] - the stand-in model
+    _say(monkeypatch, ["ab ba"])
+
+    (chunk,) = voice.timed("ab ba", speed=0.8)
+
+    assert chunk.symbols == ("a", "b", " ", "b", "a")
+    assert chunk.frames.tolist() == [2, 3, 4, 5, 6]  # the pads' 1 and 7 are left out
+    assert chunk.lead == kokoro.FRAME_SAMPLES  # the start pad's one step
+    assert chunk.audio.size == 28 * kokoro.FRAME_SAMPLES
+    assert session.feeds[0]["speed"].tolist() == [pytest.approx(0.8)]
+
+
+def test_a_model_without_lengths_cannot_give_timed_speech(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    voice, _ = _kokoro(tmp_path, monkeypatch)
+    _say(monkeypatch, ["ab"])
+
+    with pytest.raises(ValueError, match="no duration"):
+        voice.timed("ab")
+
+
+def test_the_model_file_is_loaded_once_for_every_voice_that_uses_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loads: list[str] = []
+    session = _Session({"input_ids": "", "style": "", "speed": ""})
+
+    def load(path: str, **_kwargs: object) -> _Session:
+        loads.append(path)
+        return session
+
+    monkeypatch.setattr(kokoro.ort, "InferenceSession", load)
+    voices = tmp_path / "voices.bin"
+    with voices.open("wb") as handle:
+        np.savez(handle, a=np.zeros((MAX_PHONEMES, 1, STYLE_WIDTH), dtype=np.float32))
+    for _ in range(2):
+        Kokoro(tmp_path / "shared.onnx", voices, "a")
+
+    assert loads == [str(tmp_path / "shared.onnx")]

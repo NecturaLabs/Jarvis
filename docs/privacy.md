@@ -49,8 +49,14 @@ proxy you set up can read the request; check how those services log and retain d
 loopback connection travels through SSH. Direct HTTP requires explicit opt-in and relies on your
 network for confidentiality.
 
-Spotify, once you have run
-`jarvis spotify-login` with your own Spotify developer app ([ADR 0005](adr/0005-local-only.md)):
+Installation downloads code from GitHub and locked packages from PyPI. `tools/get_models.py` (run by the installer) fetches
+the pinned GitHub model assets. `jarvis update` contacts the configured Git remote and applying an
+update may download locked packages. The daily timer does this after you opt in. These operations
+send their normal download requests and do not upload your Jarvis settings, audit log, audio or
+requests.
+
+Spotify, once you have run `jarvis spotify-login` with your own Spotify developer app
+([ADR 0005](adr/0005-local-only.md)):
 
 - `accounts.spotify.com`: the login (PKCE) and the token refresh.
 - `api.spotify.com`: playback commands, the volume, the device list, searches built from your words ("play
@@ -70,11 +76,20 @@ Questions that need the outside world ([ADR 0007](adr/0007-outside-services-for-
   answered; others were rate-limited). They see the search and your public IP address.
 - **Web pages**: Jarvis opens only a page a search in the same conversation returned, or an address you wrote
   yourself in a request of the conversation, exactly as written (never one in a page, a file, or a long paste while Jarvis asks before acting),
-  and only on a public address. The site sees your IP address and a generic user agent.
+  and only on a public address. Jarvis checks the PC's own addresses and connected networks before
+  opening a connection. If it cannot read that information, it refuses the connection. The site sees
+  your IP address and a generic user agent.
 - **Pictures in the chat**: a picture search goes through SearXNG like a web search. A picture Jarvis shows
   is fetched from the site that holds it, which sees your IP address, and only when an image search or a
   read page in the same conversation offered it. The chat keeps the newest 50 shown pictures, 0600, in
   `~/.local/state/jarvis/chat-pictures/`; delete the folder to remove them.
+- **The headless browser** (when agent-browser is installed; [ADR 0016](adr/0016-headless-browser.md)): it
+  opens the same pages `web_read` may, and the links they show. Each site sees what any visit by Chrome shows
+  it (your public IP address, the browser and what the page itself loads), and gets words only when you said
+  yes to typing them there. An interactive terminal is required to confirm browser actions under
+  `jarvis ask --yes`. It carries none of your browsers' cookies or logins, uses a home folder of its
+  own (never your Downloads), its own profile is deleted once it has ended, and it reaches nothing on this PC
+  or your network.
 - **Reddit**: thread searches go through SearXNG the same way, with `site:reddit.com` added; the
   `arctic-shift.photon-reddit.com` archive gets the ids of the threads Jarvis reads.
 
@@ -90,8 +105,9 @@ from ever running.
 
 ## Removing it
 
-- Delete `~/.local/state/jarvis/` to remove the audit log, the Strata log, the saved chat conversation, the
-  tokens and the key.
+- Disable the update timer with `jarvis update --auto off` and stop Jarvis before removing the
+  installation. The default installer puts the checkout and model assets under
+  `~/.local/state/jarvis/`, alongside the saved state. Remove only the folders you want to delete.
 - The service log is in the systemd journal, which keeps and drops it by its own limits (`journald.conf`, see
   `man journald.conf`). There is no way to remove only Jarvis's lines from it.
 - Remove Jarvis's access to your Spotify account on Spotify's account page, under apps.

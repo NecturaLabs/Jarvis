@@ -15,6 +15,7 @@ import os
 import queue
 import re
 import select
+import signal
 import stat
 import struct
 import subprocess
@@ -69,6 +70,10 @@ def quiet_session_options() -> ort.SessionOptions:
 
 class AudioError(Exception):
     """The microphone, transcriber or speaker failed."""
+
+
+class SingerStoppedError(AudioError):
+    """A singing program was ended because the request it sang for was cancelled."""
 
 
 class ControlTimeoutError(AudioError):
@@ -1852,6 +1857,94 @@ def make_synthesizer(
     return run
 
 
+SINGER_STDERR_BYTES = 4096  # the end of a singing program's error output kept for the log
+SINGER_POLL_S = 0.05  # how often a running singing program is checked against its cancel signal
+SINGER_END_S = 1.0  # how long the end of a singing program and of its stderr is waited for
+
+
+def _keep_end(fd: int, kept: bytearray) -> bool:
+    """Read what `fd` holds now, keeping only its last SINGER_STDERR_BYTES; False at its end."""
+    try:
+        chunk = os.read(fd, 65536)
+    except BlockingIOError:
+        return True
+    kept += chunk
+    del kept[:-SINGER_STDERR_BYTES]
+    return bool(chunk)
+
+
+def _end_group(proc: subprocess.Popen[bytes], fd: int, kept: bytearray, *, open_: bool) -> None:
+    """Kill a singing program's process group, reap it and read the rest of its stderr.
+
+    Each wait is bounded: a child that left the group and holds the pipe open, or a program
+    stuck in the kernel, is given SINGER_END_S and then left, never waited for.
+    """
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)  # the program and everything it started
+    try:
+        proc.wait(timeout=SINGER_END_S)
+    except subprocess.TimeoutExpired:
+        log.warning("a singing program (pid %d) did not end after it was killed", proc.pid)
+    ends = time.monotonic() + SINGER_END_S
+    while open_ and (left := ends - time.monotonic()) > 0:
+        if select.select([fd], [], [], left)[0]:
+            open_ = _keep_end(fd, kept)
+
+
+def run_singer(cmd: list[str], timeout_s: float, cancelled: Callable[[], bool]) -> tuple[int, str]:
+    """Run a singing program (`jarvis.sing.soulx`) to its end; return its exit code and stderr.
+
+    It reads nothing and makes no sound itself: it writes a file the speaker then plays. It runs
+    in a process group of its own, which is killed when `cancelled()` turns true, after
+    `timeout_s`, and once it has exited, so nothing it started outlives it. Only the last
+    `SINGER_STDERR_BYTES` of its stderr are kept, read without blocking.
+
+    Raises:
+        SingerStoppedError: `cancelled()` turned true and the program was killed.
+        AudioError: it could not start, or ran past `timeout_s` and was killed.
+    """
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        msg = f"could not start {cmd[0]}: {exc}"
+        raise AudioError(msg) from exc
+    assert proc.stderr is not None  # ruff: ignore[assert] - started with a pipe
+    fd = proc.stderr.fileno()
+    kept = bytearray()
+    open_ = True
+    pidfd = -1
+    ends = time.monotonic() + timeout_s
+    try:
+        os.set_blocking(fd, False)
+        pidfd = os.pidfd_open(proc.pid)  # readable once it exits; it stays unreaped till then
+        while True:
+            if cancelled():
+                msg = f"{Path(cmd[0]).name} was stopped: the request was cancelled"
+                raise SingerStoppedError(msg)
+            left = ends - time.monotonic()
+            if left <= 0:
+                msg = f"{Path(cmd[0]).name} ran past {timeout_s:g} s and was stopped"
+                raise AudioError(msg)
+            watched = [pidfd, fd] if open_ else [pidfd]
+            ready = select.select(watched, [], [], min(SINGER_POLL_S, left))[0]
+            if fd in ready:
+                open_ = _keep_end(fd, kept)
+            if pidfd in ready:
+                break
+    finally:
+        _end_group(proc, fd, kept, open_=open_)
+        if pidfd >= 0:
+            os.close(pidfd)
+        proc.stderr.close()
+    return proc.returncode, kept.decode("utf-8", errors="replace")
+
+
 def pw_play_command(rate: int) -> list[str]:
     """Return the `pw-play` command for raw mono 16-bit PCM on standard input."""
     return ["pw-play", "--raw", "--rate", str(rate), "--channels", "1", "--format", "s16", "-"]
@@ -1866,6 +1959,22 @@ TAIL_KEEP_S = 0.2  # silence kept after each sentence (the voice pads about 0.35
 # How long after a wake-like sentence ends the wake word stays ignored: the player's buffer and
 # the wake model's own lag, so the end of the sentence heard late does not wake Jarvis.
 GUARD_TAIL_S = 1.0
+# A song is checked for its own wake word in chunks, so a hit guards only its own stretch; each
+# chunk is checked together with the second before it, so a phrase across two is still heard whole.
+SONG_CHUNK_S = 2.5
+SONG_OVERLAP_S = 1.0
+LYRIC_SLACK_S = (
+    0.1  # a word is read with a chunk it is sung this close to (its timing is the score's)
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _Sound:
+    """A sound made elsewhere, queued to be played: int16 mono samples, and its timed words."""
+
+    pcm: bytes
+    rate: int
+    lyrics: tuple[tuple[float, float, str], ...]
 
 
 def trim_silence(pcm: bytes, rate: int, *, lead_s: float | None, tail_s: float) -> bytes:
@@ -1985,8 +2094,9 @@ class Speaker:
     """Speaks through `pw-play` with a synthesizer from `make_synthesizer`.
 
     Sentences are queued and spoken in order by one worker thread, each synthesized while the
-    one before it plays, through one player for as long as sentences keep coming. `hush` drops
-    what has not been heard yet, so the owner can speak over Jarvis.
+    one before it plays, through one player for as long as sentences keep coming. A sound made
+    elsewhere (a song) takes its place in the same queue (`queue_sound`) and plays the same way.
+    `hush` drops what has not been heard yet, so the owner can speak over Jarvis.
     """
 
     def __init__(  # ruff: ignore[too-many-arguments] - the player's settings, keyword-only
@@ -2012,7 +2122,7 @@ class Speaker:
         self._linger_s = linger_s
         self._clock = clock
         self._lock = threading.Condition()
-        self._items: queue.Queue[tuple[int, str]] = queue.Queue()
+        self._items: queue.Queue[tuple[int, str, _Sound | None]] = queue.Queue()
         self._pending = 0  # sentences queued, being synthesized or being handed to the player
         self._run = 0  # raised by `hush`: sentences queued before it are dropped
         self._error: AudioError | None = None
@@ -2056,7 +2166,24 @@ class Speaker:
 
     def queue(self, text: str) -> None:
         """Have `text` spoken after what is already queued, and return at once."""
-        if self._stopped.is_set() or not text.strip():
+        if not text.strip():
+            return
+        self._put(text, None)
+
+    def queue_sound(
+        self, pcm: bytes, rate: int, lyrics: Sequence[tuple[float, float, str]] = ()
+    ) -> None:
+        """Have int16 mono `pcm` at `rate` played after what is already queued; return at once.
+
+        It plays as it is, its silences included (a song's rests are part of it). `lyrics` are
+        the words it says, each with the seconds it is heard in, for the check that it would
+        not trigger the wake word itself: each chunk is checked with the words heard in it.
+        """
+        if pcm:
+            self._put("", _Sound(pcm, rate, tuple(lyrics)))
+
+    def _put(self, text: str, sound: _Sound | None) -> None:
+        if self._stopped.is_set():
             return
         with self._lock:
             self._pending += 1
@@ -2065,7 +2192,7 @@ class Speaker:
                     target=self._work, name="jarvis-speech", daemon=True
                 )
                 self._worker.start()
-            self._items.put((self._run, text))
+            self._items.put((self._run, text, sound))
 
     def wait(self) -> None:
         """Return once everything queued has played or was hushed.
@@ -2100,12 +2227,12 @@ class Speaker:
     def _work(self) -> None:
         while True:
             try:
-                run, text = self._items.get(timeout=self._linger_s if self._proc else None)
+                run, text, sound = self._items.get(timeout=self._linger_s if self._proc else None)
             except queue.Empty:
                 self._close()
                 continue
             try:
-                self._speak(run, text)
+                self._speak(run, text, sound)
             except AudioError as exc:
                 self._failed(exc)
             except Exception as exc:
@@ -2124,19 +2251,25 @@ class Speaker:
     def _current(self, run: int) -> bool:
         return run == self._run and not self._stopped.is_set()
 
-    def _speak(self, run: int, text: str) -> None:
+    def _speak(self, run: int, text: str, sound: _Sound | None = None) -> None:
         if not self._current(run):
             return
-        pcm, rate = self._synthesize(text)
+        pcm, rate = (sound.pcm, sound.rate) if sound is not None else self._synthesize(text)
         if not self._current(run):
             return
         if self._proc is not None and (rate != self._rate or self._player_run != run):
             self._close()  # another rate, or a player a hush has ended
-        first = self._proc is None
-        pcm = trim_silence(pcm, rate, lead_s=LEAD_KEEP_S if first else None, tail_s=TAIL_KEEP_S)
+        if sound is None:  # a sentence's padding is the voice's; a sound's silence is its own
+            first = self._proc is None
+            lead_s = LEAD_KEEP_S if first else None
+            pcm = trim_silence(pcm, rate, lead_s=lead_s, tail_s=TAIL_KEEP_S)
         if not pcm:
             return
-        wake_like = self._sounds_like_wake(pcm, rate, text)
+        spans = (
+            self._song_spans(pcm, rate, sound.lyrics, run)
+            if sound is not None
+            else self._sentence_spans(pcm, rate, text)
+        )
         with self._lock:
             if run != self._run:  # hushed during the check: it will not be played
                 return
@@ -2144,13 +2277,46 @@ class Speaker:
             # it now. Kept before the player opens, so the guard is never late.
             start = max(self._clock(), self._ends if self._proc is not None else 0.0)
             self._ends = start + len(pcm) / (2 * rate)
-            if wake_like:
-                self._guards.append((start, self._ends + GUARD_TAIL_S))
-        if wake_like:
+            self._guards.extend((start + a, start + b + GUARD_TAIL_S) for a, b in spans)
+        if spans:
             log.info("a sentence sounds like the wake word; it cannot be spoken over")
         proc = self._proc or self._open(rate, run)
         if proc is not None:
             self._write(proc, pcm, run)
+
+    def _sentence_spans(self, pcm: bytes, rate: int, text: str) -> list[tuple[float, float]]:
+        """Return the seconds of a sentence (start, end) that would trigger the wake word.
+
+        It is checked whole, so that is all of it or none.
+        """
+        return [(0.0, len(pcm) / (2 * rate))] if self._sounds_like_wake(pcm, rate, text) else []
+
+    def _song_spans(
+        self, pcm: bytes, rate: int, lyrics: Sequence[tuple[float, float, str]], run: int
+    ) -> list[tuple[float, float]]:
+        """Return the seconds of a song (start, end) that would trigger the wake word.
+
+        It is checked in chunks of `SONG_CHUNK_S`, each with the second before it, against the
+        sound of the chunk and only the words sung in it, so one word that sounds like the wake
+        word guards its own stretch and not the whole song.
+        """
+        total = len(pcm) // 2
+        step = int(SONG_CHUNK_S * rate)
+        spans: list[tuple[float, float]] = []
+        for first in range(0, total, step):
+            if not self._current(run):
+                break
+            end = min(total, first + step)
+            back = max(0, first - int(SONG_OVERLAP_S * rate))
+            a, b = back / rate, end / rate
+            words = " ".join(
+                text
+                for start, stop, text in lyrics
+                if start < b + LYRIC_SLACK_S and stop > a - LYRIC_SLACK_S
+            )
+            if self._sounds_like_wake(pcm[2 * back : 2 * end], rate, words):
+                spans.append((a, b))
+        return spans
 
     def _sounds_like_wake(self, pcm: bytes, rate: int, text: str) -> bool:
         """Return whether `pcm` would trigger the wake word; a check that fails counts as yes."""

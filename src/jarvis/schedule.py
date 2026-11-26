@@ -413,18 +413,25 @@ class JobStore:
                 self._write(free, [job for job in jobs if job not in gone])
             return gone
 
+    def may_be_due(self) -> bool:
+        """Check whether taking due jobs could find work, without taking any."""
+        now = self._clock()
+        if now - self._looked < POLL_S:
+            return False
+        if self._changed() or (self._soonest is not None and now >= self._soonest):
+            return True
+        self._looked = now
+        return False
+
     def take_due(self) -> list[Due]:
         """Return the jobs whose time came, moving each on to its next time or removing it.
 
         It reads the file at most every `POLL_S` and only when it changed, so it is cheap to call
         between every two frames of sound.
         """
-        now = self._clock()
-        if now - self._looked < POLL_S:
+        if not self.may_be_due():
             return []
-        self._looked = now
-        if not self._changed() and (self._soonest is None or now < self._soonest):
-            return []
+        now = self._looked = self._clock()
         with self._locked() as (free, jobs):
             due = [Due(job, now - job.next) for job in jobs if job.next <= now]
             kept: list[Job] = []
