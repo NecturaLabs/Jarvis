@@ -15,7 +15,7 @@ import pytest
 from PIL import Image
 from test_pictures import claimed_png
 
-from jarvis import acp, cli, t3push
+from jarvis import acp, acpstore, cli, t3push
 from jarvis.acp import AcpServer, StartError
 from jarvis.agent import Declined, Hooks
 from jarvis.announce import Announcement
@@ -1910,7 +1910,7 @@ def test_without_a_store_sessions_are_not_loadable() -> None:
 
 
 def test_only_the_newest_sessions_are_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(acp, "MAX_KEPT", 1)
+    monkeypatch.setattr(acpstore, "MAX_KEPT", 1)
     store = tmp_path / "acp"
     with Client(KeptAgent(), store=store) as client:
         first = client.start()
@@ -2033,19 +2033,3 @@ def test_a_session_that_cannot_be_kept_still_gives_its_reply(tmp_path: Path) -> 
         answer = client.response(client.prompt(session, text("hello")))
         assert answer["result"]["stopReason"] == "end_turn"
         assert "reply to hello" in client.said()
-
-
-def test_forget_kept_deletes_only_the_sessions_files(tmp_path: Path) -> None:
-    store = tmp_path / "acp"
-    store.mkdir()
-    for name in (
-        "jarvis-0123456789ab.json",
-        "jarvis-0123456789ab.chat.memory.json",
-        "jarvis-ba9876543210.json",
-        "notes.txt",
-    ):
-        (store / name).write_text("{}", encoding="utf-8")
-
-    assert acp.forget_kept(store) == 2
-    assert [p.name for p in store.iterdir()] == ["notes.txt"]
-    assert acp.forget_kept(tmp_path / "none") == 0

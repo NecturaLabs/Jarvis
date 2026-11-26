@@ -49,13 +49,13 @@ import collections
 import json
 import logging
 import queue
-import re
 import secrets
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, TextIO, runtime_checkable
 
+from jarvis.acpstore import SESSION_ID, prune
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.announce import Announcement
 from jarvis.config import EFFORTS
@@ -78,8 +78,6 @@ MAX_BASE64 = MAX_FILE_BYTES * 4 // 3 + 4  # characters of one picture
 MAX_IMAGES = 4
 MAX_TEXT = 100_000  # characters of one prompt
 MAX_SESSIONS = 32
-MAX_KEPT = 200  # sessions kept on disk for `session/load`, the newest
-SESSION_ID = re.compile(r"jarvis-[0-9a-f]{12}")  # what `session/new` makes, and nothing else
 MAX_PUSHES = 8  # announcements waiting to be pushed; a hung `t3` loses the oldest
 MAX_PENDING = 50  # announcements a session keeps for its next prompt
 FEED_RETRY_S = 10.0  # how long to wait before looking again for the running Jarvis
@@ -632,7 +630,7 @@ class AcpServer:
         except Exception:  # a reply already given is never failed by keeping it
             log.exception("the session could not be kept")
             return
-        _prune(store)
+        prune(store)
 
     @staticmethod
     def _kept_meta(store: Path, session_id: str) -> dict[str, Any]:
@@ -1117,32 +1115,6 @@ class AcpServer:
             if question is not None and not question.answered.is_set():
                 question.answer = Declined(NoReason.CLOSED)
                 question.answered.set()
-
-
-def forget_kept(store: Path) -> int:
-    """Delete every session kept in `store`; return how many there were (an `OSError` passes)."""
-    if not store.is_dir():
-        return 0
-    gone = 0
-    for path in store.glob("jarvis-*"):
-        if SESSION_ID.fullmatch(path.name.split(".", 1)[0]):
-            gone += path.name.count(".") == 1  # the meta file, one per session
-            path.unlink(missing_ok=True)
-    return gone
-
-
-def _prune(store: Path) -> None:
-    """Keep only the newest `MAX_KEPT` sessions' files in `store`."""
-    try:
-        metas = sorted(
-            (p for p in store.glob("jarvis-*.json") if SESSION_ID.fullmatch(p.stem)),
-            key=lambda p: p.stat().st_mtime,
-        )
-        for old in metas[: max(0, len(metas) - MAX_KEPT)]:
-            for path in store.glob(f"{old.stem}.*"):
-                path.unlink(missing_ok=True)
-    except OSError as exc:
-        log.warning("old sessions could not be removed: %s", exc)
 
 
 def _is_clear(blocks: list[dict[str, Any]]) -> bool:

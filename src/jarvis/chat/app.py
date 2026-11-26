@@ -38,7 +38,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Input, OptionList, Static
 
-from jarvis.acp import forget_kept
+from jarvis.acpstore import forget_kept
 from jarvis.activity import VOICE_VIA, Shown, call_target, describe, full_text, working_label
 from jarvis.agent import MAX_TRUSTED_PASTE, PICTURES_OFF, Declined, Hooks, NoReason
 from jarvis.chat import commands
