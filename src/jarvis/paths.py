@@ -76,6 +76,11 @@ def schedule_file() -> Path:
     return state_dir() / "schedule.json"
 
 
+def restart_pending_file() -> Path:
+    """Return the note that the voice service should restart once it is idle (settings changed)."""
+    return state_dir() / "voice-restart-pending"
+
+
 def actions_file() -> Path:
     """Return the file that counts recent side-effecting actions across Jarvis's processes."""
     return state_dir() / "actions.json"

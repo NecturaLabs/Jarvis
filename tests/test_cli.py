@@ -901,6 +901,7 @@ class _Run:
     loops: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
     audit: AuditLog = field(default_factory=lambda: AuditLog(None))
     listening: list[Listening | None] = field(default_factory=list[Listening | None])
+    vias: list[object] = field(default_factory=list[object])
 
     def part(self, *args: object, **kwargs: object) -> _Part:
         made = _Part(*args, **kwargs)
@@ -954,6 +955,7 @@ def _cmd_run(
         _cfg: config.Config, *, listening: Listening | None = None, **_kwargs: object
     ) -> SimpleNamespace:
         run.listening.append(listening)
+        run.vias.append(_kwargs.get("via"))
         return jarvis
 
     monkeypatch.setattr(cli, "build", build)

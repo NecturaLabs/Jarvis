@@ -17,7 +17,6 @@ import subprocess
 import sys
 import termios
 import threading
-import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -925,7 +924,11 @@ def _chat_status(cfg: config.Config) -> str:
     if cfg.strata.mode == "remote":
         return f"voice {voice} · {_probe_strata(cfg).report(cfg.model.model)}"
     model = _strata(cfg).status() if _unit_state(STRATA_UNIT) == "active" else None
-    return f"voice {voice} · model {model or 'server not running'}"
+    line = f"voice {voice} · model {model or 'server not running'}"
+    answer = control.send("status", timeout=1.0)
+    if model == "loaded" and answer is not None and answer.get("paused") is True:
+        line += " · paused: it unloads when no request is running"
+    return line
 
 
 def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
@@ -1114,53 +1117,60 @@ def _set_shared(key: str, value: object) -> None:
 
 
 APPLIES_WHEN_IDLE = (
-    "Settings saved. They apply when Jarvis is idle: the voice service restarts then."
+    "Settings saved. They apply when Jarvis is idle: the voice service restarts then, "
+    "even if this window is closed."
 )
-IDLE_POLL_S = 0.5
-IDLE_GIVE_UP_S = 900.0  # a restart queued behind a request that never ends is dropped
-_queued_restart = threading.Lock()  # held while one restart waits for the voice service
+PENDING_CHECK_S = 5.0  # how often the voice service looks for a restart that waits for it
 
 
-def _restart_when_idle(
-    busy: Callable[[], bool], restart: Callable[[], bool], sleep: Callable[[float], None]
-) -> None:
-    """Wait until no spoken request is in flight, then restart the voice service."""
-    waited = 0.0
-    while busy() and waited < IDLE_GIVE_UP_S:
-        sleep(IDLE_POLL_S)
-        waited += IDLE_POLL_S
-    if busy():
-        log.warning("the voice service stayed busy: the chat's settings apply at its next restart")
-    elif not restart():
-        log.warning(
-            "the voice service did not restart after the chat's settings: %s", RESTART_FAILED
-        )
-
-
-def _apply_from_chat(sleep: Callable[[float], None] = time.sleep) -> str:
+def _apply_from_chat() -> str:
     """Restart the voice service so it takes what the chat's settings changed; never cut a request.
 
-    A restart ends a spoken request in flight, so with one under way it is queued and made once
-    the voice loop is idle; the answer is then the line that says so, else "". `sleep` times
-    the wait.
+    A restart ends a spoken request in flight. It is made while no voice request can begin
+    (`modes.voice_idle`); with one under way, a note is left (`paths.restart_pending_file`) and
+    the voice service restarts itself once it is idle (`_restart_when_pending`), whether this
+    window is still open or not, and later changes ride on the same restart. The answer is the
+    line that says so, else "".
 
     Raises:
         RestartError: the restart failed, so the voice service runs on the old settings.
     """
-    if not voice_busy():
-        if not _restart_if_running():
-            raise RestartError(RESTART_FAILED)
-        return ""
-    if _queued_restart.acquire(blocking=False):
-
-        def later() -> None:
-            try:
-                _restart_when_idle(voice_busy, _restart_if_running, sleep)
-            finally:
-                _queued_restart.release()
-
-        threading.Thread(target=later, name="jarvis-restart-when-idle", daemon=True).start()
+    note = paths.restart_pending_file()
+    with modes.voice_idle() as idle:
+        if idle:
+            note.unlink(missing_ok=True)
+            if not _restart_if_running():
+                raise RestartError(RESTART_FAILED)
+            return ""
+    write_atomic(note, "settings changed\n", 0o600)
     return APPLIES_WHEN_IDLE
+
+
+def _watch_for_restart_note(loop: VoiceLoop, stop: threading.Event) -> None:
+    """Start the thread that restarts the voice service for settings the chat changed."""
+    paths.restart_pending_file().unlink(missing_ok=True)  # this start takes the settings in force
+    threading.Thread(
+        target=_restart_when_pending, args=(loop, stop), name="jarvis-restart-pending", daemon=True
+    ).start()
+
+
+def _restart_when_pending(loop: VoiceLoop, stop: threading.Event) -> None:
+    """Restart the voice service for settings the chat changed, once no request is under way.
+
+    A look is one `stat` of the note every `PENDING_CHECK_S`; the restart is made while no voice
+    request can begin, so a request starting at that moment is never cut.
+    """
+    note = paths.restart_pending_file()
+    while not stop.wait(PENDING_CHECK_S):
+        if not note.exists() or str(loop.state) != "idle":
+            continue
+        with modes.voice_idle() as idle:
+            if not idle:
+                continue
+            note.unlink(missing_ok=True)
+            log.info("restarting for the settings the chat changed")
+            if not _restart_if_running():
+                log.warning("the voice service did not restart: %s", RESTART_FAILED)
 
 
 def chat_archive_dir() -> Path:
@@ -1269,11 +1279,15 @@ def cmd_chat(_args: argparse.Namespace) -> int:
     audit = AuditLog(paths.audit_file(), tags={"via": "chat", "session": session_id})
 
     def take(words: str) -> handoff.State:
+        # Written first: the request it starts follows it in the log, marked as spoken.
+        audit.record("chat_handoff_received", text=words)
         state = window.take_handoff(words)
-        audit.record("chat_handoff_received", text=words, state=state.value)
+        audit.record("chat_handoff_placed", state=state.value)
         return state
 
-    listener = handoff.ChatListener(session_id, take)
+    listener = handoff.ChatListener(
+        session_id, take, refused=lambda why: audit.record("chat_handoff_refused", reason=why)
+    )
     try:
         listener.start()  # the voice service hands spoken instructions over here
     except OSError as exc:
@@ -1564,6 +1578,7 @@ def _run_until_stopped(
     from jarvis.audio import FallbackWake  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     try:
+        _watch_for_restart_note(loop, stop_requested)
         voxtype.start()
         loop.run(stop_requested.is_set)
     except Exception:

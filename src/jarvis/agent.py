@@ -1087,6 +1087,7 @@ class Agent:
         self._modes: Modes = modes or _OneMode()
         self._mode: str = "normal"
         self._switched = False  # this request already moved to another mode
+        self._spoken = False  # the request in flight was handed over from speech
         self._ends = 0.0  # when the request in flight runs out of time
         self._shared_pictures = False  # the request in flight came with pictures
         self._follow_mode()
@@ -1376,8 +1377,12 @@ class Agent:
         *,
         steered_by: Collection[str] = (),
         scheduled: bool = False,
+        spoken: bool = False,
     ) -> str:
         """Answer one spoken request and return the reply.
+
+        With `spoken`, the words are the owner's spoken ones, handed over by the voice service
+        (`chat_hand_off`): the request is audited with that source.
 
         With `hooks.speak` the reply is also spoken through it, the first sentences while the
         model still writes the rest. A request cut short (`hooks.cancelled`) returns only what
@@ -1408,6 +1413,7 @@ class Agent:
         request from the next and a request heard in PC audio from the owner's.
         """
         foreign = origin not in TRUSTED_ORIGINS
+        self._spoken = spoken
         handed_over = foreign or bool(steered_by) or scheduled
         own = "" if handed_over else _own_words(text, self._outside_pastes(text, pasted))
         self._switched = False
@@ -1456,7 +1462,13 @@ class Agent:
         if outside:
             whole = outside == [text]
             shown["pasted"] = len(text) if whole else sum(len(paste) for paste in pasted)
-        self._audit.record("request", text=text, origin=origin.value, **shown)
+        self._audit.record(
+            "request",
+            text=text,
+            origin=origin.value,
+            **shown,
+            **({"source": "spoken"} if self._spoken else {}),
+        )
         if pictures and not self._pictures:
             self._audit.record("reply", text=PICTURES_OFF, seconds=0.0)
             return PICTURES_OFF
@@ -1963,7 +1975,9 @@ class Agent:
         """
         taint = (turn.untrusted, turn.private)
         if turn.request is not None:
-            turn.request.next_message()  # these calls were written before any of their results
+            turn.request.next_message(
+                len(calls)
+            )  # these calls were written before any of their results
         results: list[Result] = []
         if any(_name(call) == SWITCH_MODEL for call in calls) and self._offers_switch():
             ran = self._run_switch(calls, hooks, turn, taint=taint, cut=cut)
@@ -1993,6 +2007,13 @@ class Agent:
             turn.played = True
         return replace(result, sound=None)  # played: the conversation keeps only its words
 
+    @staticmethod
+    def _note_tried(turn: _Turn) -> None:
+        """Note that a call that could change something was tried, in the turn and the request."""
+        turn.tried = True
+        if turn.request is not None:
+            turn.request.note_action()
+
     def _record(
         self, call: dict[str, Any], result: Result, turn: _Turn, *, tried: bool = True
     ) -> Result:
@@ -2015,7 +2036,7 @@ class Agent:
                 turn.looked.append(f"{name} {asked}")
                 del turn.looked[:-MAX_LOOK_UPS_KEPT]  # the newest are what a follow-up asks about
         if tried and not going_on and (op is None or op.side_effect):
-            turn.tried = True
+            self._note_tried(turn)
             if op is not None and (result.ok or result.acted):
                 turn.succeeded = True
                 if result.spoken:

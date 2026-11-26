@@ -37,21 +37,34 @@ Chosen option 3, with these parts.
 - **It takes no arguments.** The code sends the request's own words, `Request.words`: what the owner said,
   never text the model wrote. It is refused for a request heard in PC audio, one run by a schedule, and one that
   read outside text this request (remembered text from earlier turns does not count), so a page cannot make the
-  voice pass words to the chat. It is audited like any call, and the window audits what it received.
+  voice pass words to the chat. It is also refused when the message holds other calls or the request already
+  tried an action, since the owner's words would carry that other work into the chat too. It counts as the
+  request's action. It is audited like any call; the window audits `chat_handoff_received` before the request
+  starts (and the request carries the source "spoken") and `chat_handoff_refused` for each refusal.
 - **The voice request ends** after a successful hand-off with one short spoken line (`Result.ends`): the work
-  is the chat's now, and no second model call is spent on it. A failed hand-off ends nothing; the model is told
-  and answers itself.
-- **Delivery** is a Unix socket per chat window in the runtime folder (folder 0700, socket 0600, same-user peers
-  by `SO_PEERCRED`), like the control socket. The newest window that answers gets the words. The voice loop does
-  not wait on the window beyond a few seconds, and the window takes the words on its own thread.
+  is the chat's now, and no second model call is spent on it. A hand-off that was refused or never reached a window
+  ends nothing: the model is told and answers itself. One that was sent and not answered in 5 seconds is an
+  uncertain outcome (`UncertainOutcomeError`): the model is told not to retry, so the words are neither sent twice
+  nor done by the voice as well. With two windows open the spoken line says the newest took them.
+- **Delivery** is a Unix socket per chat window in the runtime folder (folders 0700, socket 0600). The window
+  takes words only from the voice service process itself: the peer's PID (`SO_PEERCRED`) must be the one holding
+  the control socket's lock, which the kernel lists in `/proc/locks`, so a program the voice service started
+  (`pc_shell`, an app) cannot send words. The newest window that answers gets them. Whether a window is open
+  is looked at at most every 3 seconds and with a 0.2 s probe, so a window that is stuck never stalls the voice
+  loop; a socket nobody answers on is skipped and never removed by the sender (a window removes its own stale
+  one when it starts).
 - **The chat receives them as the owner's own typed input**, marked "spoken": they join the running request
   before its next model call (steering) or queue behind it when `chat.while_working` is `queue`, or start a
   request when the window is idle. Typing or speaking never pauses the work in progress.
-- **No cutting.** Strata has one slot (`parallel` 1) and answers calls in the order they arrive, so a typed and
-  a spoken request already interleave call by call; no request holds the server for its whole run. A cross-process
-  gate was drafted and dropped: nothing measured justifies it. The two waits that were not the owner's words are
-  removed: a restart of the voice service that the chat's `/config` asks for is made once the voice loop is idle,
-  and `jarvis pause` unloads the model only once no request anywhere is answering.
+- **No cutting.** Strata has one slot (`parallel` 1), so a typed and a spoken request share it; no Jarvis
+  request holds it for its whole run, only each model call occupies it. The order Strata serves waiting calls in
+  has not been measured. A cross-process gate was drafted and dropped: nothing measured justifies it. The two
+  waits that were not the owner's words are removed. A restart of the voice service that the chat's `/config`
+  asks for is made while no voice request can begin, or, with one under way, left as a note
+  (`voice-restart-pending`) that the voice service acts on itself once idle, also when the window has closed.
+  `jarvis pause` unloads the model only while holding off every request that would begin, once none is answering
+  in any process; a chat request, or a question it waits for the owner to answer, therefore keeps the model
+  loaded until it ends (Esc or an answer ends it), and the chat's status line says so.
 
 ### Against "never add delegation"
 
@@ -61,7 +74,7 @@ its request when it calls the tool and does not wait for, read or steer the chat
 asked to do a subtask and report back; it receives the owner's own transcribed words as if they had been typed,
 and handles them with its own tools, its own boundaries (`boundaries.classes`, the action cap, consent) and its
 own audit, exactly as for typing. The model cannot put its own words into the chat, and outside text cannot reach
-the tool. What the hand-off adds is routing the owner's words, which is what the owner asked for.
+the tool; no program the voice service started can reach the window either. What the hand-off adds is routing the owner's words, which is what the owner asked for.
 
 ## Consequences
 

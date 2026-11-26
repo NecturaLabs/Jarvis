@@ -158,8 +158,12 @@ class Session(Protocol):
         *,
         pictures: Sequence[Picture] = (),
         pasted: Sequence[str] = (),
+        spoken: bool = False,
     ) -> str:
-        """Answer one request, with any pictures the owner attached, and return the reply."""
+        """Answer one request, with any pictures the owner attached, and return the reply.
+
+        `spoken` marks words the voice service handed over: the owner's, said aloud.
+        """
         ...
 
     def forget(self) -> None:
@@ -1994,7 +1998,9 @@ class ChatApp(App[None]):  # ruff: ignore[too-many-public-methods] - Textual's h
             self._mount(Request(text, _joined(source, now, shared)))
             self._exchanges.append(("you", text))
         self.run_worker(
-            lambda: self._handle(text, work, pictures, pasted), thread=True, group="request"
+            lambda: self._handle(text, work, pictures, pasted, spoken=source == "spoken"),
+            thread=True,
+            group="request",
         )
 
     def _handle(
@@ -2003,6 +2009,8 @@ class ChatApp(App[None]):  # ruff: ignore[too-many-public-methods] - Textual's h
         work: _Work,
         pictures: Sequence[Picture] = (),
         pasted: Sequence[str] = (),
+        *,
+        spoken: bool = False,
     ) -> None:
         session = self._session
         work.began = True
@@ -2021,7 +2029,7 @@ class ChatApp(App[None]):  # ruff: ignore[too-many-public-methods] - Textual's h
         rate: float | None = None
         try:
             if session is not None:
-                reply = session.handle(text, hooks, pictures=pictures, pasted=pasted)
+                reply = session.handle(text, hooks, pictures=pictures, pasted=pasted, spoken=spoken)
                 rate = session.last_rate()
         except Exception as exc:  # ruff: ignore[blind-except] - shown in the window, never raised
             self._from_worker(self._note, f"Something went wrong: {type(exc).__name__}", "error")

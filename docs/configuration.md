@@ -120,7 +120,9 @@ A spoken request is the voice agent's own: it is done and spoken, and does not s
 `chat_hand_off` (class `safe`, offered to spoken requests only while a chat window is open) hands the owner's
 spoken words to the open window instead, for work that belongs to the chat's own request or conversation: see
 [ADR 0028](adr/0028-voice-and-chat-as-two-channels.md). `boundaries.classes` can name it like any tool
-(`chat_hand_off = "deny"` switches it off).
+(`chat_hand_off = "deny"` switches it off). `jarvis pause` frees the model only once no request in any process is
+being answered, so a chat request (or a question it waits on: answer it or press Esc) keeps the model loaded
+until it ends; the chat's status line says so.
 
 ## `[chat]`: the same for typed requests in `jarvis chat`
 
@@ -804,7 +806,7 @@ Without editing the file: `jarvis tools` lists every tool with its setting, and 
 sets one (`default` puts it back as shipped); in `jarvis chat`, `/config` has a Tools list where Enter moves a tool
 on to its next setting, from as shipped to stricter and back, never below how it ships (that takes `jarvis tools
 NAME on`). Either way the change is audited (`tool_class_changed`, with the old setting and where it was made).
-The command restarts the voice service at once; the chat restarts it once, when its settings close, and waits first until the voice loop is idle (the window says "They apply when Jarvis is idle"). An open chat
+The command restarts the voice service at once; the chat restarts it once, when its settings close, and, while a spoken request is under way, leaves a note that the voice service acts on once it is idle, also when the window has closed (the window says "They apply when Jarvis is idle"). An open chat
 takes the change the next time it opens.
 
 `/config` in the chat also sets the speaking speed (`audio.speech_speed`), whether Jarvis acts without asking

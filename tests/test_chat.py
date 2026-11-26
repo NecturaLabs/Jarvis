@@ -86,6 +86,7 @@ class FakeSession:
     answer: Callable[[str, Hooks], str] = lambda _text, _hooks: "Done."
     memory: Conversation = field(default_factory=lambda: Conversation(budget=1000))
     asked: list[str] = field(default_factory=list[str])
+    spoken: list[bool] = field(default_factory=list[bool])
     pictures: list[list[str]] = field(default_factory=list[list[str]])
     pasted: list[list[str]] = field(default_factory=list[list[str]])
     hooks: list[Hooks] = field(default_factory=list[Hooks])
@@ -102,8 +103,10 @@ class FakeSession:
         *,
         pictures: Sequence[Picture] = (),
         pasted: Sequence[str] = (),
+        spoken: bool = False,
     ) -> str:
         self.asked.append(text)
+        self.spoken.append(spoken)
         self.pictures.append([p.name for p in pictures])
         self.pasted.append(list(pasted))
         self.hooks.append(hooks)

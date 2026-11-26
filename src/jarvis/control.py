@@ -26,11 +26,14 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from jarvis import modes
 from jarvis.jsonutil import obj
 from jarvis.paths import runtime_dir
+
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
 
 log = logging.getLogger(__name__)
 
@@ -98,12 +101,6 @@ class _Model(Protocol):
     def load(self) -> bool: ...
 
 
-def _anyone_answering() -> bool:
-    """Whether any Jarvis process (a chat window, `jarvis ask`) is answering a request."""
-    with modes.nobody_answering() as free:
-        return not free
-
-
 def _in_background(work: Callable[[], object]) -> None:
     threading.Thread(target=work, name="jarvis-control-work", daemon=True).start()
 
@@ -163,7 +160,7 @@ class Controls:
         prime: Callable[[], object] = lambda: None,
         remote_status: Callable[[], dict[str, object]] | None = None,
         background: Callable[[Callable[[], object]], None] = _in_background,
-        answering: Callable[[], bool] = _anyone_answering,
+        nobody_answering: Callable[[], AbstractContextManager[bool]] = modes.nobody_answering,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -184,7 +181,7 @@ class Controls:
         self._model_turn = threading.Lock()  # an unload and a load never overlap
         self._commands = threading.Lock()
         self._background = background
-        self._answering = answering
+        self._nobody_answering = nobody_answering
         self._clock = clock
         self._sleep = sleep
         self._pauses = 0
@@ -243,14 +240,16 @@ class Controls:
         deadline = self._clock() + IDLE_WAIT_S
         while self._in_flight() and self._clock() < deadline:
             self._sleep(IDLE_POLL_S)
-        # A request in a chat window may run for minutes: unloading waits for it for as long as
-        # this pause stands, never cutting its model call.
-        while self._answering() and pause == self._pauses and self._mic.paused:
+        # A request in a chat window may run for minutes (or wait for the owner's yes): the
+        # unload waits for it for as long as this pause stands, and is made while holding off
+        # any request that would begin, so no model call is ever cut.
+        while pause == self._pauses and self._mic.paused:
+            with self._nobody_answering() as free, self._model_turn:
+                if free and pause == self._pauses and self._mic.paused:
+                    log.info("paused: unloading the model")
+                    self._model.unload()
+                    return
             self._sleep(IDLE_POLL_S)
-        with self._model_turn:
-            if pause == self._pauses and self._mic.paused:
-                log.info("paused: unloading the model")
-                self._model.unload()
 
     def _in_flight(self) -> bool:
         return str(self._loop.state) not in {"idle", NO_MIC}
@@ -329,6 +328,39 @@ def peer_credentials(conn: socket.socket) -> tuple[int, int] | None:
 
 
 _PROC = Path("/proc")
+LOCK_FIELDS = 6  # in a line of /proc/locks that names a lock: through the device and inode
+
+
+def serving_pid(path: Path | None = None, *, proc: Path = _PROC) -> int | None:
+    """Return the PID of the process serving the control socket, or None when none does.
+
+    The serving process holds an `flock` on the socket's lock file (`ControlServer.start`); the
+    kernel lists the holder in `/proc/locks`, so a program that process started cannot pass for it.
+    """
+    try:
+        info = _lock_path(path or socket_path()).stat()
+        listed = (proc / "locks").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in listed:
+        parts = line.split()  # "3: FLOCK  ADVISORY  WRITE 4242 fd:01:7890 0 EOF"
+        if (
+            len(parts) < LOCK_FIELDS or parts[1] != "FLOCK"
+        ):  # a waiter's line has "->" in that place
+            continue
+        try:
+            major, minor, inode = parts[5].split(":")
+            if (int(major, 16), int(minor, 16), int(inode)) == (
+                os.major(info.st_dev),
+                os.minor(info.st_dev),
+                info.st_ino,
+            ):
+                return int(parts[4])
+        except ValueError:
+            continue
+    return None
+
+
 _MAX_DEPTH = 4096  # more parents than this is a loop in a broken /proc: refuse
 
 

@@ -6,38 +6,53 @@ work except where the owner's words call for it (a pause, a mode switch).
 """
 
 import asyncio
+import contextlib
 import json
 import os
+import signal
 import socket
 import stat
+import subprocess
+import sys
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, override
 
 import pytest
 import test_chat
+import test_cli
 from test_chat import FakeSession, FakeTail
 from test_control import Loop, Mic, Model
 
-from jarvis import cli, control, handoff, modes
+from jarvis import cli, control, handoff, modes, paths
+from jarvis.activity import VOICE_VIA
 from jarvis.agent import Agent, Hooks
 from jarvis.app import build, no_action_operation
 from jarvis.audit import AuditLog
+from jarvis.cli import main
 from jarvis.config import ChatConfig, Config, SpotifyConfig
-from jarvis.handoff import ChatListener, HandoffError, State
-from jarvis.operations import Operation, OperationError, Registry, Result, request_scope
+from jarvis.handoff import ChatListener, HandoffError, Sent, State
+from jarvis.operations import (
+    Operation,
+    OperationError,
+    Registry,
+    Result,
+    UncertainOutcomeError,
+    request_scope,
+)
 from jarvis.paths import audit_file, strata_key_file
 from jarvis.secretfile import ensure_api_key
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator, Iterator
 
     from textual.pilot import Pilot
 
-    from jarvis.chat.app import ChatApp
-
 # The chat tests' own fixtures for a window, a transcript and a typed line.
 _app = test_chat._app  # pyright: ignore[reportPrivateUsage]
+_cmd_run = test_cli._cmd_run  # pyright: ignore[reportPrivateUsage]
+_opened_chat = test_cli._opened_chat  # pyright: ignore[reportPrivateUsage]
 _has = test_chat._has  # pyright: ignore[reportPrivateUsage]
 _run = test_chat._run  # pyright: ignore[reportPrivateUsage]
 _type = test_chat._type  # pyright: ignore[reportPrivateUsage]
@@ -46,8 +61,12 @@ _until = test_chat._until  # pyright: ignore[reportPrivateUsage]
 SPOKEN = "add a test for the parser to what you are doing"
 
 
-def _not_ours(_pid: int) -> bool:
-    """The test is the sender and the window at once, so no peer is a program the window started."""
+def _any_peer(_pid: int) -> bool:
+    """The test is the sender and the window at once, so any peer counts as the voice service."""
+    return True
+
+
+def _no_peer(_pid: int) -> bool:
     return False
 
 
@@ -68,7 +87,7 @@ class Chat:
 @pytest.fixture
 def window() -> Iterator[Chat]:
     chat = Chat()
-    listener = ChatListener("w1", chat.take, started_by_jarvis=_not_ours)
+    listener = ChatListener("w1", chat.take, allowed=_any_peer)
     listener.start()
     yield chat
     listener.close()
@@ -81,7 +100,7 @@ def test_an_open_chat_takes_spoken_words_and_says_what_it_did(window: Chat) -> N
     window.answer = State.STEERED
 
     assert handoff.chat_open()
-    assert handoff.send(SPOKEN) is State.STEERED
+    assert handoff.send(SPOKEN).state is State.STEERED
     assert window.words == [SPOKEN]
 
 
@@ -99,15 +118,88 @@ def test_without_a_chat_window_nothing_is_open_and_a_send_is_refused() -> None:
         handoff.send(SPOKEN)
 
 
-def test_a_socket_left_by_a_window_that_was_killed_is_not_an_open_chat() -> None:
+def test_a_socket_nobody_answers_on_is_not_an_open_chat_and_is_left_alone() -> None:
     path = handoff.socket_path("gone")
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.bind(str(path))  # the file stays when the process dies; nobody listens on it
+        sock.bind(str(path))  # a window between bind and listen looks the same: never removed
 
-    assert path.exists()
     assert not handoff.chat_open()
-    assert not path.exists()
+    assert path.exists()
+
+
+def test_a_window_cleans_up_its_own_stale_socket_when_it_starts() -> None:
+    path = handoff.socket_path("w1")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.bind(str(path))
+    listener = ChatListener("w1", Chat().take, allowed=_any_peer)
+    listener.start()
+    try:
+        assert handoff.chat_open()
+    finally:
+        listener.close()
+
+
+def test_the_runtime_folder_above_the_sockets_is_the_owners_alone_too() -> None:
+    listener = ChatListener("w1", Chat().take, allowed=_any_peer)
+    listener.start()
+    try:
+        assert stat.S_IMODE(handoff.chats_dir().parent.stat().st_mode) == 0o700
+    finally:
+        listener.close()
+
+
+def test_the_probe_for_an_open_chat_is_remembered_for_a_few_seconds() -> None:
+    now = [100.0]
+    handoff.forget_chat_probe()
+    assert not handoff.chat_open(clock=lambda: now[0])
+    listener = ChatListener("w1", Chat().take, allowed=_any_peer)
+    path = handoff.socket_path("w1")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.bind(str(path))
+        sock.listen(1)
+        assert not handoff.chat_open(clock=lambda: now[0])  # remembered: not asked again
+        handoff.forget_chat_probe()
+        assert handoff.chat_open(clock=lambda: now[0])
+        assert handoff.chat_open(clock=lambda: now[0] + handoff.CACHE_S / 2)
+    del listener
+
+
+def test_non_ascii_speech_is_not_refused_as_too_long() -> None:
+    chat = Chat()
+    listener = ChatListener("w1", chat.take, allowed=_any_peer)
+    listener.start()
+    words = "ü" * handoff.MAX_CHARS
+    try:
+        handoff.send(words)
+    finally:
+        listener.close()
+
+    assert chat.words == [words]
+
+
+def test_a_window_that_accepts_and_never_answers_leaves_the_outcome_uncertain() -> None:
+    path = handoff.socket_path("silent")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    held: list[socket.socket] = []
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.bind(str(path))
+        sock.listen(4)
+
+        def accept() -> None:
+            while True:
+                try:
+                    held.append(sock.accept()[0])  # taken and never answered
+                except OSError:
+                    return
+
+        threading.Thread(target=accept, daemon=True).start()
+        with pytest.raises(UncertainOutcomeError):
+            handoff.send(SPOKEN, timeout=0.3)
+        for conn in held:
+            conn.close()
 
 
 def test_a_refusal_by_the_window_reaches_the_sender(window: Chat) -> None:
@@ -119,7 +211,7 @@ def test_a_refusal_by_the_window_reaches_the_sender(window: Chat) -> None:
 
 def test_with_two_windows_the_newest_gets_the_words(window: Chat) -> None:
     second = Chat()
-    listener = ChatListener("w2", second.take, started_by_jarvis=_not_ours)
+    listener = ChatListener("w2", second.take, allowed=_any_peer)
     listener.start()
     os.utime(handoff.socket_path("w1"), (1, 1))
     try:
@@ -138,7 +230,7 @@ def test_the_tool_is_offered_only_while_a_chat_window_is_open() -> None:
     registry = Registry([handoff.operation()])
     assert registry.tool_schemas() == []
 
-    listener = ChatListener("w1", Chat().take, started_by_jarvis=_not_ours)
+    listener = ChatListener("w1", Chat().take, allowed=_any_peer)
     listener.start()
     try:
         names = [t["function"]["name"] for t in registry.tool_schemas()]
@@ -162,7 +254,7 @@ def test_the_tool_takes_no_words_of_the_models() -> None:
 def _run_tool(
     sent: list[str], *, foreign: bool = False, scheduled: bool = False, words: str = SPOKEN
 ) -> Result:
-    op = handoff.operation(lambda said: sent.append(said) or State.STARTED)
+    op = handoff.operation(lambda said: sent.append(said) or Sent(State.STARTED))
     with request_scope(foreign=foreign, words=words, scheduled=scheduled):
         return op.run({})
 
@@ -180,7 +272,7 @@ def test_the_tool_passes_on_the_owners_own_words() -> None:
 def _refused(words: str = SPOKEN, *, foreign: bool = False, scheduled: bool = False) -> list[str]:
     sent: list[str] = []
     with request_scope(foreign=foreign, words=words, scheduled=scheduled):
-        run = handoff.operation(lambda said: sent.append(said) or State.STARTED).run
+        run = handoff.operation(lambda said: sent.append(said) or Sent(State.STARTED)).run
         with pytest.raises(OperationError):
             run({})
     return sent
@@ -200,7 +292,7 @@ def test_the_tool_is_refused_without_the_owners_words() -> None:
 
 def test_the_tool_is_refused_once_the_request_read_outside_text() -> None:
     sent: list[str] = []
-    op = handoff.operation(lambda said: sent.append(said) or State.STARTED)
+    op = handoff.operation(lambda said: sent.append(said) or Sent(State.STARTED))
     with request_scope(foreign=False, words=SPOKEN) as request:
         request.saw("web_page")
         with pytest.raises(OperationError):
@@ -216,7 +308,7 @@ def test_the_tool_is_refused_outside_a_request() -> None:
 
 def test_remembered_outside_text_does_not_refuse_the_owners_own_request() -> None:
     sent: list[str] = []
-    op = handoff.operation(lambda said: sent.append(said) or State.QUEUED)
+    op = handoff.operation(lambda said: sent.append(said) or Sent(State.QUEUED))
 
     with request_scope(foreign=False, words=SPOKEN) as request:
         request.saw("memory")
@@ -227,7 +319,7 @@ def test_remembered_outside_text_does_not_refuse_the_owners_own_request() -> Non
 
 
 def test_a_window_that_cannot_be_reached_is_told_to_the_model() -> None:
-    def deliver(_words: str) -> State:
+    def deliver(_words: str) -> Sent:
         raise HandoffError("no chat window is open")
 
     op = handoff.operation(deliver)
@@ -239,12 +331,14 @@ def test_a_window_that_cannot_be_reached_is_told_to_the_model() -> None:
 class _Model:
     replies: list[dict[str, Any]]
     calls: int = 0
+    offered: list[list[str]] = field(default_factory=list[list[str]])
     loaded: bool = True
 
     def chat(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **_: object
     ) -> dict[str, Any]:
-        del messages, tools
+        del messages
+        self.offered.append([t["function"]["name"] for t in tools])
         self.calls += 1
         return self.replies.pop(0)
 
@@ -260,7 +354,7 @@ def _call(name: str) -> dict[str, Any]:
 def test_the_voice_request_ends_with_one_short_line_after_a_hand_off() -> None:
     sent: list[str] = []
     model = _Model([_call(handoff.NAME)])
-    op = handoff.operation(lambda said: sent.append(said) or State.STEERED)
+    op = handoff.operation(lambda said: sent.append(said) or Sent(State.STEERED))
     agent = Agent(model, Registry([op, no_action_operation()]), "system", AuditLog(None), {})
     spoken: list[str] = []
 
@@ -272,7 +366,7 @@ def test_the_voice_request_ends_with_one_short_line_after_a_hand_off() -> None:
 
 
 def test_a_failed_hand_off_does_not_end_the_request() -> None:
-    def deliver(_words: str) -> State:
+    def deliver(_words: str) -> Sent:
         raise HandoffError("no chat window is open")
 
     model = _Model([_call(handoff.NAME), {"role": "assistant", "content": "I did it myself."}])
@@ -318,7 +412,7 @@ def test_the_voice_service_marks_its_audit_events_as_its_own() -> None:
 # The chat window
 
 
-async def _handed(app: ChatApp, words: str = SPOKEN) -> State:
+async def _handed(app: test_chat.ChatApp, words: str = SPOKEN) -> State:
     return await asyncio.to_thread(app.take_handoff, words)
 
 
@@ -419,14 +513,16 @@ def test_a_voice_request_never_shows_in_the_open_chat_but_typed_and_ask_still_do
 # Neither channel cuts the other
 
 
+@contextlib.contextmanager
+def _busy_then_free(looks: list[bool]) -> Generator[bool]:
+    yield looks.pop(0) if looks else True
+
+
 def test_a_pause_frees_the_model_only_once_a_chat_request_has_ended() -> None:
-    answering = [True, True, True]  # a chat window's request, for three looks
+    looks = [False, False, False]  # a chat window's request, for three looks
     sleeps = 0
     model = Model()
     work: list[Callable[[], object]] = []
-
-    def asked() -> bool:
-        return answering.pop(0) if answering else False
 
     def sleep(_seconds: float) -> None:
         nonlocal sleeps
@@ -434,12 +530,64 @@ def test_a_pause_frees_the_model_only_once_a_chat_request_has_ended() -> None:
         assert model.unloads == 0
 
     controls = control.Controls(
-        Loop(), Mic(), model, background=work.append, answering=asked, sleep=sleep
+        Loop(),
+        Mic(),
+        model,
+        background=work.append,
+        nobody_answering=lambda: _busy_then_free(looks),
+        sleep=sleep,
     )
     controls("pause")
     work.pop()()
 
     assert sleeps == 3
+    assert model.unloads == 1
+
+
+def test_the_unload_is_made_while_no_request_can_begin() -> None:
+    held: list[bool] = []
+
+    @contextlib.contextmanager
+    def nobody() -> Generator[bool]:
+        held.append(True)
+        try:
+            yield True
+        finally:
+            held.append(False)
+
+    class Unloading(Model):
+        @override
+        def unload(self) -> bool:
+            held.append(held[-1])  # still inside the lock when the server is asked
+            return super().unload()
+
+    work: list[Callable[[], object]] = []
+    controls = control.Controls(
+        Loop(), Mic(), Unloading(), background=work.append, nobody_answering=nobody
+    )
+    controls("pause")
+    work.pop()()
+
+    assert held == [True, True, False]
+
+
+def test_a_request_that_holds_the_modes_lock_holds_the_unload_back() -> None:
+    model = Model()
+    work: list[Callable[[], object]] = []
+    seen: list[int] = []
+    answering = modes.Answering()
+
+    def sleep(_seconds: float) -> None:
+        seen.append(model.unloads)
+        if len(seen) == 2:
+            answering.__exit__()  # the chat's request ends
+
+    controls = control.Controls(Loop(), Mic(), model, background=work.append, sleep=sleep)
+    with answering:
+        controls("pause")
+        work.pop()()
+
+    assert seen == [0, 0]
     assert model.unloads == 1
 
 
@@ -451,7 +599,12 @@ def test_a_resume_while_a_chat_request_runs_drops_the_waiting_unload() -> None:
         controls("resume")
 
     controls = control.Controls(
-        Loop(), mic, model, background=work.append, answering=lambda: True, sleep=sleep
+        Loop(),
+        mic,
+        model,
+        background=work.append,
+        nobody_answering=lambda: _busy_then_free([False] * 5),
+        sleep=sleep,
     )
     controls("pause")
     work.pop(0)()
@@ -459,59 +612,56 @@ def test_a_resume_while_a_chat_request_runs_drops_the_waiting_unload() -> None:
     assert model.unloads == 0
 
 
-def test_any_process_answering_is_seen_through_the_modes_lock() -> None:
-    assert control._anyone_answering() is False  # pyright: ignore[reportPrivateUsage] - the default look
-    with modes.Answering():
-        assert control._anyone_answering() is True  # pyright: ignore[reportPrivateUsage] - the default look
+def test_the_voice_service_is_the_process_serving_the_control_socket() -> None:
+    sock = control.socket_path()
+    assert control.serving_pid(sock) is None
+    server = control.ControlServer(lambda _c: {})
+    server.start()
+    try:
+        assert control.serving_pid(sock) == os.getpid()
+    finally:
+        server.close()
 
 
-def test_a_setting_changed_in_the_chat_waits_for_a_spoken_request_before_restarting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    restarted = threading.Event()
-    looks = iter([True, True, False])  # the first look is the chat's own, the rest the waiting
-
-    def busy() -> bool:
-        return next(looks, False)
-
-    monkeypatch.setattr(cli, "voice_busy", busy)
-    monkeypatch.setattr(cli, "_restart_if_running", lambda: restarted.set() or True)
-
-    said = cli._apply_from_chat(lambda _s: None)  # pyright: ignore[reportPrivateUsage] - the chat's hook
-
-    assert said == cli.APPLIES_WHEN_IDLE
-    assert restarted.wait(5)
-
-
-def test_a_setting_changed_in_the_chat_restarts_at_once_when_nothing_is_spoken(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    restarts: list[bool] = []
-    monkeypatch.setattr(cli, "voice_busy", lambda: False)
-    monkeypatch.setattr(cli, "_restart_if_running", lambda: restarts.append(True) or True)
-
-    assert not cli._apply_from_chat()  # pyright: ignore[reportPrivateUsage] - the chat's hook
-    assert restarts == [True]
-
-
-def test_a_queued_restart_is_dropped_behind_a_request_that_never_ends() -> None:
-    restarts: list[bool] = []
-    slept: list[float] = []
-
-    cli._restart_when_idle(  # pyright: ignore[reportPrivateUsage] - the queued restart
-        lambda: True, lambda: restarts.append(True) or True, slept.append
-    )
-
-    assert restarts == []
-    assert sum(slept) >= cli.IDLE_GIVE_UP_S
-
-
-def test_a_program_the_chat_started_cannot_hand_it_words() -> None:
+def test_a_program_the_voice_service_started_cannot_hand_the_chat_words() -> None:
+    refused: list[str] = []
     chat = Chat()
-    listener = ChatListener("w9", chat.take, started_by_jarvis=lambda _pid: True)
+    server = control.ControlServer(lambda _c: {})
+    server.start()  # this process plays the voice service
+    listener = ChatListener("w1", chat.take, refused=refused.append)
+    listener.start()
+    code = (
+        "from jarvis import handoff\n"
+        "try:\n"
+        "    handoff.send('do this')\n"
+        "except handoff.HandoffError as e:\n"
+        "    print(e)\n"
+    )
+    try:
+        assert handoff.send(SPOKEN).state is State.STARTED  # the service itself
+        child = subprocess.run(
+            [sys.executable, "-I", "-c", code],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+            env={**os.environ},
+        )
+    finally:
+        listener.close()
+        server.close()
+
+    assert "only the voice service" in child.stdout
+    assert chat.words == [SPOKEN]
+    assert len(refused) == 1
+
+
+def test_without_a_voice_service_the_chat_takes_no_hand_off() -> None:
+    chat = Chat()
+    listener = ChatListener("w1", chat.take)
     listener.start()
     try:
-        with pytest.raises(HandoffError, match="not from a program"):
+        with pytest.raises(HandoffError, match="only the voice service"):
             handoff.send(SPOKEN)
     finally:
         listener.close()
@@ -519,33 +669,79 @@ def test_a_program_the_chat_started_cannot_hand_it_words() -> None:
     assert chat.words == []
 
 
-def test_only_a_refused_or_missing_socket_counts_as_a_dead_window(
+def test_a_setting_changed_in_the_chat_leaves_a_note_while_a_spoken_request_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connect = handoff._connect  # pyright: ignore[reportPrivateUsage] - the probe's verdict
-    folder = handoff.chats_dir()
-    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    restarts: list[bool] = []
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: restarts.append(True) or True)
 
-    assert connect(folder / "none.sock", 0.1) == (None, True)
+    with modes.voice_request() as admitted:
+        assert admitted
+        said = cli._apply_from_chat()  # pyright: ignore[reportPrivateUsage] - the chat's hook
 
-    class Slow:
-        timeout = TimeoutError
+    assert said == cli.APPLIES_WHEN_IDLE
+    assert paths.restart_pending_file().exists()
+    assert restarts == []
 
-        def settimeout(self, _s: float) -> None:
-            pass
 
-        def connect(self, _path: str) -> None:
-            raise self.timeout
+def test_the_voice_service_restarts_for_the_note_once_it_is_idle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    restarts: list[bool] = []
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: restarts.append(True) or True)
+    monkeypatch.setattr(cli, "PENDING_CHECK_S", 0.01)
+    paths.restart_pending_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.restart_pending_file().write_text("x", encoding="utf-8")
+    stop = threading.Event()
+    busy = SimpleNamespace(state="think")
+    watcher = threading.Thread(
+        target=cli._restart_when_pending,  # pyright: ignore[reportPrivateUsage] - the voice service's watcher
+        args=(busy, stop),
+    )
+    watcher.start()
+    try:
+        threading.Event().wait(0.1)
+        assert restarts == []  # a request is under way
+        busy.state = "idle"
+        for _ in range(300):
+            if restarts:
+                break
+            threading.Event().wait(0.01)
+    finally:
+        stop.set()
+        watcher.join(5)
 
-        def close(self) -> None:
-            pass
+    assert restarts == [True]
+    assert not paths.restart_pending_file().exists()
 
-    def slow(*_args: object) -> Slow:
-        return Slow()
 
-    monkeypatch.setattr(handoff.socket, "socket", slow)
+def test_a_request_beginning_at_the_moment_of_the_restart_is_not_admitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admitted_during: list[bool] = []
 
-    assert connect(folder / "slow.sock", 0.1) == (None, False)
+    def restart() -> bool:
+        with modes.voice_request() as admitted:
+            admitted_during.append(admitted)
+        return True
+
+    monkeypatch.setattr(cli, "_restart_if_running", restart)
+
+    assert not cli._apply_from_chat()  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    assert admitted_during == [False]
+
+
+def test_a_setting_changed_in_the_chat_restarts_at_once_when_nothing_is_spoken(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    restarts: list[bool] = []
+    paths.restart_pending_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.restart_pending_file().write_text("x", encoding="utf-8")
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: restarts.append(True) or True)
+
+    assert not cli._apply_from_chat()  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    assert restarts == [True]
+    assert not paths.restart_pending_file().exists()
 
 
 def test_a_hand_off_beside_other_calls_does_not_end_the_request() -> None:
@@ -567,10 +763,193 @@ def test_a_hand_off_beside_other_calls_does_not_end_the_request() -> None:
             {"role": "assistant", "content": "The volume is 40."},
         ]
     )
-    op = handoff.operation(lambda said: sent.append(said) or State.STARTED)
+    op = handoff.operation(lambda said: sent.append(said) or Sent(State.STARTED))
     agent = Agent(model, Registry([op, other, no_action_operation()]), "system", AuditLog(None), {})
 
     reply = agent.handle(SPOKEN, Hooks(confirm=lambda _q: False))
 
     assert model.calls == 2
     assert "40" in reply
+    assert sent == []  # not sent: the owner's words would carry the other work into the chat
+
+
+# The wiring, as the services use it
+
+
+def test_the_voice_service_is_built_with_the_voice_tag(monkeypatch: pytest.MonkeyPatch) -> None:
+    run, code = _cmd_run(
+        monkeypatch, lambda r, _stop: r.handlers[signal.SIGTERM](signal.SIGTERM, None)
+    )
+
+    assert code == 0
+    assert run.vias == [VOICE_VIA]
+
+
+def _hand_off_model(model: _Model) -> Agent:
+    return Agent(
+        model, Registry([handoff.operation(), no_action_operation()]), "system", AuditLog(None), {}
+    )
+
+
+def test_the_model_is_offered_the_tool_only_while_a_chat_answers() -> None:
+    model = _Model([_reply_of("No."), _reply_of("Still no."), _reply_of("Now.")])
+    agent = _hand_off_model(model)
+    handoff.forget_chat_probe()
+
+    agent.handle("hello", Hooks(confirm=lambda _q: False))
+    listener = ChatListener("w1", Chat().take, allowed=_any_peer)
+    listener.start()  # forgets what the probe saw
+    try:
+        agent.handle("hello again", Hooks(confirm=lambda _q: False))
+    finally:
+        listener.close()
+
+    assert [handoff.NAME in names for names in model.offered] == [False, True]
+
+
+def _reply_of(text: str) -> dict[str, Any]:
+    return {"role": "assistant", "content": text}
+
+
+def test_a_hand_off_the_window_may_have_taken_is_neither_resent_nor_done_by_the_model() -> None:
+    audit = AuditLog(None)
+
+    def deliver(_words: str) -> Sent:
+        raise UncertainOutcomeError("the window did not answer")
+
+    model = _Model([_call(handoff.NAME), _reply_of("I can't tell if it arrived.")])
+    agent = Agent(
+        model,
+        Registry([handoff.operation(deliver), no_action_operation()]),
+        "system",
+        audit,
+        {},
+    )
+
+    reply = agent.handle(SPOKEN, Hooks(confirm=lambda _q: False))
+
+    assert reply == "I can't tell if it arrived."
+    assert any(e["event"] == "tool_uncertain" for e in audit.events)
+
+
+def test_a_request_that_already_tried_an_action_cannot_be_handed_over() -> None:
+    sent: list[str] = []
+    play = Operation(
+        "play_probe",
+        "Play.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        lambda _a: Result("Playing."),
+    )
+    model = _Model([_call("play_probe"), _call(handoff.NAME), _reply_of("The music is on.")])
+    op = handoff.operation(lambda said: sent.append(said) or Sent(State.STARTED))
+    agent = Agent(model, Registry([play, op, no_action_operation()]), "system", AuditLog(None), {})
+
+    agent.handle("play jazz and add tests in the chat", Hooks(confirm=lambda _q: False))
+
+    assert sent == []
+
+
+def test_the_tool_counts_as_the_requests_action() -> None:
+    assert handoff.operation().side_effect
+
+
+def test_the_spoken_line_names_the_newest_window_when_two_are_open() -> None:
+    op = handoff.operation(lambda _words: Sent(State.STEERED, windows=2))
+    with request_scope(foreign=False, words=SPOKEN):
+        result = op.run({})
+
+    assert result.spoken == "Added to what the chat is working on, in the newest chat window."
+
+
+def test_a_handed_over_request_is_audited_with_its_source() -> None:
+    audit = AuditLog(None)
+    agent = Agent(_Model([_reply_of("Done.")]), Registry([no_action_operation()]), "s", audit, {})
+
+    agent.handle(SPOKEN, Hooks(confirm=lambda _q: False), spoken=True)
+    agent.handle("typed", Hooks(confirm=lambda _q: False))
+
+    requests = [e for e in audit.events if e["event"] == "request"]
+    assert requests[0]["source"] == "spoken"
+    assert "source" not in requests[1]
+
+
+def _audited() -> list[dict[str, Any]]:
+    lines = audit_file().read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines]
+
+
+def test_the_chat_command_serves_hand_offs_and_audits_them_before_they_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = _opened_chat(monkeypatch)
+    del opened
+    taken: list[str] = []
+    answers: list[Sent] = []
+
+    def take(_self: object, words: str) -> State:
+        taken.append(words)
+        assert [e["event"] for e in _audited()][-1] == "chat_handoff_received"  # before it starts
+        return State.STARTED
+
+    def run(*_a: object, **_k: object) -> None:
+        answers.append(handoff.send(SPOKEN))
+        assert handoff.chat_open()
+
+    monkeypatch.setattr("jarvis.chat.app.ChatApp.take_handoff", take)
+    monkeypatch.setattr("jarvis.chat.app.ChatApp.run", run)
+    monkeypatch.setattr(handoff, "_from_the_voice_service", _any_peer)
+    handoff.forget_chat_probe()
+
+    assert main(["chat"]) == 0
+
+    assert taken == [SPOKEN]
+    assert answers[0].state is State.STARTED
+    events = [e for e in _audited() if e["event"].startswith("chat_handoff")]
+    assert [e["event"] for e in events] == ["chat_handoff_received", "chat_handoff_placed"]
+    assert all(e["via"] == "chat" and e["session"] for e in events)
+    assert events[0]["text"] == SPOKEN
+    assert not handoff.chat_open()  # the window's socket goes with it
+
+
+def test_the_chat_command_refuses_and_audits_a_hand_off_that_is_not_the_voice_services(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refusals: list[str] = []
+
+    def run(*_a: object, **_k: object) -> None:
+        try:
+            handoff.send(SPOKEN)
+        except HandoffError as exc:
+            refusals.append(str(exc))
+
+    monkeypatch.setattr("jarvis.chat.app.ChatApp.run", run)
+    monkeypatch.setattr(handoff, "_from_the_voice_service", _no_peer)
+    handoff.forget_chat_probe()
+
+    assert main(["chat"]) == 0
+
+    assert refusals
+    assert [e["event"] for e in _audited() if e["event"].startswith("chat_handoff")] == [
+        "chat_handoff_refused"
+    ]
+
+
+def test_the_chat_says_when_a_pause_keeps_the_model_loaded_for_its_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def active(_unit: str) -> str:
+        return "active"
+
+    def strata(_cfg: Config) -> SimpleNamespace:
+        return SimpleNamespace(status=lambda: "loaded")
+
+    def paused(*_a: object, **_k: object) -> dict[str, object]:
+        return {"ok": True, "paused": True}
+
+    monkeypatch.setattr(cli, "_unit_state", active)
+    monkeypatch.setattr(cli, "_strata", strata)
+    monkeypatch.setattr(control, "send", paused)
+
+    line = cli._chat_status(Config())  # pyright: ignore[reportPrivateUsage] - the toolbar's line
+
+    assert "paused: it unloads when no request is running" in line

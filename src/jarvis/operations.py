@@ -108,16 +108,32 @@ class Request:
     hushed: Callable[[], bool] = field(default=lambda: False)
     making_sound: Callable[[], AbstractContextManager[None]] = field(default=nullcontext)
     scheduled: bool = False
-    _messages: list[int] = field(default_factory=lambda: [0])  # held in a list: the rest is frozen
+    # Held in lists: the rest is frozen. Messages run, calls in the running message, actions tried.
+    _messages: list[int] = field(default_factory=lambda: [0, 1, 0])
 
     @property
     def message(self) -> int:
         """How many of the model's messages have had their calls run, the running one included."""
         return self._messages[0]
 
-    def next_message(self) -> None:
-        """Note that the calls of the model's next message are about to run."""
+    @property
+    def beside(self) -> int:
+        """How many calls the running message holds, this one included."""
+        return self._messages[1]
+
+    @property
+    def acted(self) -> bool:
+        """Whether a call that could change something was already tried in this request."""
+        return self._messages[2] > 0
+
+    def next_message(self, calls: int = 1) -> None:
+        """Note that the `calls` of the model's next message are about to run."""
         self._messages[0] += 1
+        self._messages[1] = calls
+
+    def note_action(self) -> None:
+        """Note that a call that could change something was tried."""
+        self._messages[2] += 1
 
     @property
     def words(self) -> str:
