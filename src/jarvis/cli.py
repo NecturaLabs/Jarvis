@@ -1442,6 +1442,10 @@ class _NormalSession:
         """Return the remembered turns as (request, reply)."""
         return [(turn.request, turn.reply) for turn in self._agent.memory.turns]
 
+    def forget(self) -> None:
+        """Start the conversation afresh (`/clear`)."""
+        self._agent.forget()
+
 
 class _CodingSession:
     """An agent whose first request waits for the coding model, and says how that went."""
@@ -1470,6 +1474,10 @@ class _CodingSession:
     def history(self) -> list[tuple[str, str]]:
         """Return the remembered turns as (request, reply)."""
         return [(turn.request, turn.reply) for turn in self._agent.memory.turns]
+
+    def forget(self) -> None:
+        """Start the conversation afresh (`/clear`)."""
+        self._agent.forget()
 
     def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
         """Answer `text` on the coding model; a switch that failed is the answer instead."""

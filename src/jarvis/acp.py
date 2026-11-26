@@ -141,6 +141,20 @@ class Kept(Protocol):
         ...
 
 
+@runtime_checkable
+class Forgets(Protocol):
+    """An agent that can start its conversation afresh (`/clear`)."""
+
+    def forget(self) -> None:
+        """Forget the conversation."""
+        ...
+
+
+CLEAR = "/clear"
+COMMANDS = [{"name": "clear", "description": "Forget this conversation and start afresh"}]
+CLEARED = "Started afresh: I've forgotten this conversation."
+
+
 @dataclass(frozen=True, slots=True)
 class ModelChoice:
     """One of Jarvis's modes as the app lists it: its id, its model's name, its use, its effort."""
@@ -495,9 +509,12 @@ class AcpServer:
             case "initialize":
                 self._result(request_id, self._initialize(params))
             case "session/new":
-                self._result(request_id, self._new_session(params))
+                answer = self._new_session(params)
+                self._result(request_id, answer)
+                self._offer_commands(str(answer["sessionId"]))
             case "session/load" if self._store is not None:
                 self._result(request_id, self._load_session(params))
+                self._offer_commands(str(params["sessionId"]))
             case "session/prompt":
                 self._prompt(request_id, params)
             case "session/close":
@@ -546,6 +563,34 @@ class AcpServer:
         if first is None:
             return {"sessionId": session_id}
         return {"sessionId": session_id, **self._offered(session)}
+
+    def _offer_commands(self, session_id: str) -> None:
+        """Tell the client the commands a session takes (`/clear`), as the protocol does."""
+        update = {"sessionUpdate": "available_commands_update", "availableCommands": COMMANDS}
+        self._send(
+            {"method": "session/update", "params": {"sessionId": session_id, "update": update}}
+        )
+
+    def _clear(self, request_id: str | int, session: _Session) -> None:
+        """Forget the session's conversations and their kept files; the model is not asked.
+
+        Refused (`_idle`) while the session is closed or a request is being answered.
+        """
+        with session.lock:
+            self._idle(session)
+            self._forget(session)
+        self._say(session, CLEARED)
+        self._result(request_id, {"stopReason": "end_turn"})
+
+    def _forget(self, session: _Session) -> None:
+        agents = session.agents or {session.model: session.agent}
+        for agent in agents.values():
+            if isinstance(agent, Forgets):
+                agent.forget()
+        if self._store is not None:
+            for path in self._store.glob(f"{session.id}.*.memory.json"):
+                path.unlink(missing_ok=True)
+        self._audit("acp_cleared", session=session.id)
 
     def _agent_for(self, session_id: str, model: str) -> AgentSession:
         """Make a session's agent for `model`, with its kept conversation when there is one.
@@ -765,16 +810,7 @@ class AcpServer:
         blocks = objs(params.get("prompt"))
         if not isinstance(params.get("prompt"), list):
             raise _Rpc(INVALID_PARAMS, "prompt is a list of content blocks")
-        if (note := self._announced(blocks)) is not None:
-            # Jarvis's own message, pushed into the thread: shown, never given to the model, and
-            # never taken for the owner's answer to a question that waits. One that starts as
-            # such a message but has no valid tag is dropped, also never given to the model.
-            if note == FORGED:
-                self._audit("acp_refused", reason="forged_announcement", session=session.id)
-            with session.lock:
-                self._spawn(
-                    self._show, request_id, session, note, session.stops, name="acp-announcement"
-                )
+        if self._answered_here(request_id, session, blocks):
             return
         answering: _Question | None = None
         with session.lock:
@@ -815,6 +851,26 @@ class AcpServer:
         self._flush(session, run)  # before the request goes on and writes
         answering.answered.set()
         self._spawn(self._wait, request_id, run, name="acp-answer")
+
+    def _answered_here(
+        self, request_id: str | int, session: _Session, blocks: list[dict[str, Any]]
+    ) -> bool:
+        """Answer a prompt the model never sees: Jarvis's own pushed message, or `/clear`."""
+        if (note := self._announced(blocks)) is not None:
+            # Jarvis's own message, pushed into the thread: shown, never given to the model, and
+            # never taken for the owner's answer to a question that waits. One that starts as
+            # such a message but has no valid tag is dropped, also never given to the model.
+            if note == FORGED:
+                self._audit("acp_refused", reason="forged_announcement", session=session.id)
+            with session.lock:
+                self._spawn(
+                    self._show, request_id, session, note, session.stops, name="acp-announcement"
+                )
+            return True
+        if _words(blocks).strip().casefold() == CLEAR:
+            self._clear(request_id, session)
+            return True
+        return False
 
     def _prompt_later(
         self, request_id: str | int, params: dict[str, Any], old: _Run, stops: int

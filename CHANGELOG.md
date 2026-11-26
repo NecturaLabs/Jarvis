@@ -304,6 +304,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - A T3 Code thread goes on after Jarvis or T3 Code restarts. `jarvis acp` keeps each session's
   conversation and answers `session/load`, so the app reopens the thread instead of failing with
   "Provider session failed to open"; the remembered turns are sent back and the conversation goes on.
+- `/clear` in a T3 Code thread starts the conversation afresh. T3 Code sends it to Jarvis as text, and the
+  model answered that it could not clear; `jarvis acp` now offers the command and runs it itself.
 - Coding mode no longer lowers the chat's memory: `[coding.chat] memory_tokens` is unset by default, so it
   keeps `chat.memory_tokens` unless set. `[coding]` can now set `kv_resident`, `keep_in_ram`, `pictures` and
   `effort_position` for coding mode, like `[strata]` (#57).

@@ -78,6 +78,7 @@ class Client:
         self._to_server = os.fdopen(write_in, "w", encoding="utf-8")
         self._from_server = os.fdopen(read_out, "r", encoding="utf-8")
         self.raw: list[str] = []
+        self.commands: list[dict[str, Any]] = []
         self.messages: queue.Queue[dict[str, Any]] = queue.Queue()
         self.seen: list[dict[str, Any]] = []
         self._out = os.fdopen(write_out, "w", encoding="utf-8")
@@ -110,7 +111,12 @@ class Client:
     def _read(self) -> None:
         for line in self._from_server:
             self.raw.append(line)
-            self.messages.put(json.loads(line))
+            message = json.loads(line)
+            update = obj(obj(message.get("params")).get("update"))
+            if update.get("sessionUpdate") == "available_commands_update":
+                self.commands.append(update)  # the session's commands: kept apart, as an app does
+                continue
+            self.messages.put(message)
 
     def __enter__(self) -> Self:
         return self
@@ -1426,7 +1432,7 @@ def test_a_chunk_waiting_to_write_is_dropped_after_cancel(
         session: _Session | None = None,
         run: _Run | None = None,
     ) -> bool:
-        if message.get("method") == "session/update":
+        if message.get("method") == "session/update" and run is not None:  # a request's chunk
             reached_writer.set()
             assert write.wait(WAIT_S)
         return send(server, message, session=session, run=run)
@@ -1915,3 +1921,42 @@ def test_only_the_newest_sessions_are_kept(tmp_path: Path, monkeypatch: pytest.M
 
     kept = {p.name.split(".")[0] for p in store.iterdir()}
     assert kept == {second}
+
+
+class ClearableAgent(KeptAgent):
+    """A kept agent that can forget its conversation."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.forgotten = 0
+
+    def forget(self) -> None:
+        self.forgotten += 1
+        self.turns = []
+
+
+def test_a_session_offers_the_clear_command(tmp_path: Path) -> None:
+    with Client(ClearableAgent(), store=tmp_path / "acp") as client:
+        client.start()
+        client.ask("session/new", {"cwd": "/", "mcpServers": []})  # the first advert has come
+        update = client.commands[0]
+
+    assert update["sessionUpdate"] == "available_commands_update"
+    assert [c["name"] for c in update["availableCommands"]] == ["clear"]
+
+
+def test_clear_forgets_the_conversation_without_the_model(tmp_path: Path) -> None:
+    agent = ClearableAgent()
+    store = tmp_path / "acp"
+    with Client(agent, store=store) as client:
+        session = client.start()
+        _finished(client, client.prompt(session, {"type": "text", "text": "hello"}))
+        assert any(store.glob(f"{session}.*.memory.json"))
+
+        answer = client.response(client.prompt(session, {"type": "text", "text": "/clear"}))
+
+        assert answer["result"]["stopReason"] == "end_turn"
+        assert "afresh" in client.said()
+    assert agent.forgotten == 1
+    assert [text for text, _ in agent.calls] == ["hello"]  # the model never saw /clear
+    assert not any(store.glob(f"{session}.*.memory.json"))
