@@ -21,6 +21,7 @@ from jarvis.audit import AuditLog
 from jarvis.config import Config
 from jarvis.memory import tokens
 from jarvis.operations import Operation, Registry, Result, validate_args
+from jarvis.osskills import OsSkill
 from jarvis.policy import Origin
 from jarvis.router import toolbox_section, use_tools_operation
 from jarvis.shortcuts import Shortcut
@@ -64,6 +65,9 @@ def _registry(
         return "/usr/bin/agent-browser"
 
     monkeypatch.setattr("jarvis.app.shutil.which", which)
+    # Omarchy's skills are offered only where they are installed: one, whatever this machine has.
+    guide = OsSkill("example", "An example skill.", ("SKILL.md",))
+    monkeypatch.setattr("jarvis.app.osskills.catalog", lambda: (guide,))
     config = _full_config()
     mode: ToolMode = "routed" if routed else "all"
     if channel == "voice":
