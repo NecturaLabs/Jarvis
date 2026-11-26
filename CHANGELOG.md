@@ -8,6 +8,16 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Skill plugins: skills from marketplaces in the Claude Code format, enabled with `jarvis plugins install
+  PLUGIN@MARKETPLACE` and kept at the newest commit of their repository (no pinned version), by
+  `jarvis plugins update` and `jarvis update --apply`. Only a plugin's skills are used; its hooks, commands,
+  agents, MCP servers and scripts never run. A skill named under `[plugins.always_on]` is in every request of
+  that channel between a heading and a closing line Jarvis writes; the others are listed as third-party and read
+  with `read_skill`, which gives them as outside text, so an action after it asks for a yes. Updates are swapped in
+  whole (only when the remote moved, and an interrupted swap is undone at the next start), a repository over 50 MB is stopped while it downloads, and a plugin is read only from folders and files that are yours alone. Nothing is
+  downloaded while no plugin is enabled. Jarvis keeps its own copies under `<data_dir>/plugins/`, closed to the
+  file operations. Each update is audited with the old and new commit, and `jarvis doctor` shows each
+  marketplace's commit and date. See [ADR 0027](docs/adr/0027-skill-plugins.md).
 - A tool router, `tools = "routed"` in `[agent]` and `[chat]` (default `all`, nothing changes). Every tool
   belongs to a group (music, sound, screen, apps, system, files, everyday, web, browser, schedule, guides,
   jarvis); a routed request starts with only the core tools and a toolbox of the groups in the prompt, and

@@ -11,6 +11,20 @@ branch = "main"
 # Use jarvis update --auto on or off to manage the user timer.
 auto = false
 
+# Skill plugins from marketplaces in the Claude Code format. Nothing is downloaded until a plugin is
+# enabled (`jarvis plugins install PLUGIN@MARKETPLACE` does it); Jarvis uses only a plugin's skills.
+[plugins]
+marketplaces = ["NecturaLabs/jarvis-plugins"]
+enabled = []
+auto_update = true
+# Skills whose whole text is in every request of a channel, named plugin:skill; others are listed
+# and read when needed.
+# [plugins.always_on]
+# chat = ["some-plugin:some-skill"]
+# voice = []
+# [plugins.always_on_args]  # one line said under a skill's heading, such as its level
+# "some-plugin:some-skill" = "full"
+
 [model]
 base_url = ""
 model = "jarvis"

@@ -45,6 +45,7 @@ _PRIVATE_NETWORKS = tuple(
     for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7")
 )
 _DNS_HOST = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.ASCII)
+_NUMBER_LABEL = re.compile(r"[0-9]+|0x[0-9a-f]*")  # a part of a short-form IPv4 address
 _URL_PATH = re.compile(r"(?:/[a-zA-Z0-9_.~-]+)*/?")
 
 
@@ -881,6 +882,105 @@ class UpdateConfig(_Section):
     auto: bool = False
 
 
+# A name in a plugin marketplace or plugin: lowercase letters, digits and hyphens.
+_PLUGIN_NAME = r"[a-z0-9][a-z0-9-]{0,39}"
+GITHUB_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9._-]{1,100}")
+_PRIVATE_SUFFIXES = (".local", ".internal", ".lan", ".localhost", ".home.arpa")
+MAX_PLUGIN_URL_CHARS = 300
+MIN_HOST_LABELS = 2
+
+
+def _public_host(source: str) -> None:
+    """Check that `source` is a plain https address of a public host.
+
+    Raises:
+        ValueError: it is not.
+    """
+    parts = urlsplit(source)
+    host = (parts.hostname or "").lower()
+    plain = (
+        len(source) <= MAX_PLUGIN_URL_CHARS and parts.scheme == "https" and parts.port is None
+    ) and (
+        parts.username is None and parts.password is None and not parts.query and not parts.fragment
+    )
+    if not plain:
+        msg = "must be owner/repo on GitHub or a plain https:// address of a Git repository"
+        raise ValueError(msg)
+    if not _URL_PATH.fullmatch(parts.path) or ".." in parts.path.split("/") or parts.path == "/":
+        msg = "must name a repository on its host"
+        raise ValueError(msg)
+    try:
+        ip_address(host)
+    except ValueError:
+        pass
+    else:
+        msg = "must name a host, not an IP address"
+        raise ValueError(msg)
+    labels = host.split(".")
+    if (
+        len(labels) < MIN_HOST_LABELS
+        or not all(_DNS_HOST.fullmatch(label) for label in labels)
+        or _NUMBER_LABEL.fullmatch(labels[-1])  # 127.1 and 0x7f.1 are addresses to the resolver
+    ):
+        msg = "must name a public host (a name with a dot and a top-level name that is no number)"
+        raise ValueError(msg)
+    if host.endswith(_PRIVATE_SUFFIXES):
+        msg = "must be a public host, not one on this machine or its network"
+        raise ValueError(msg)
+
+
+def marketplace_url(source: str) -> str:
+    """Return the HTTPS address Git clones for a marketplace or plugin source.
+
+    A source is `owner/repo` (on github.com) or an `https://` address of a public host: no user
+    name, no port, query or fragment, and no address or name that is plainly this machine or its
+    network (an IP address, a name without a dot, `.local`, `.lan` and the like). Anything else
+    raises `ValueError`.
+    """
+    _no_control(source)
+    if GITHUB_REPO.fullmatch(source):
+        return f"https://github.com/{source.removesuffix('.git')}.git"
+    _public_host(source)
+    return source
+
+
+def _check_marketplace(source: str) -> str:
+    marketplace_url(source)
+    return source
+
+
+MarketplaceSource = Annotated[str, AfterValidator(_check_marketplace)]
+PluginRef = Annotated[str, StringConstraints(pattern=rf"^{_PLUGIN_NAME}@{_PLUGIN_NAME}$")]
+SkillRef = Annotated[str, StringConstraints(pattern=rf"^{_PLUGIN_NAME}:{_PLUGIN_NAME}$")]
+SkillArgument = Annotated[
+    str, StringConstraints(max_length=40, pattern=r"^[A-Za-z0-9][A-Za-z0-9 ._,:=+/-]*$")
+]
+
+
+class PluginsAlwaysOn(_Section):
+    """The plugin skills whose whole text is in a channel's instructions on every request."""
+
+    chat: Annotated[list[SkillRef], Field(max_length=5)] = Field(default_factory=list[str])
+    voice: Annotated[list[SkillRef], Field(max_length=5)] = Field(default_factory=list[str])
+
+
+class PluginsConfig(_Section):
+    """Skills from plugin marketplaces in the Claude Code format (docs/adr/0027).
+
+    Jarvis reads only a plugin's skills, never its code: see `plugins.py`. With no plugin
+    `enabled` nothing is downloaded, whatever `marketplaces` lists.
+    """
+
+    marketplaces: Annotated[list[MarketplaceSource], Field(max_length=10)] = Field(
+        default_factory=lambda: ["NecturaLabs/jarvis-plugins"]
+    )
+    enabled: Annotated[list[PluginRef], Field(max_length=20)] = Field(default_factory=list[str])
+    always_on: PluginsAlwaysOn = Field(default_factory=PluginsAlwaysOn)
+    # A skill's own setting, said under its heading: "ponytail:ponytail active: full".
+    always_on_args: dict[SkillRef, SkillArgument] = Field(default_factory=dict[str, str])
+    auto_update: bool = True
+
+
 class Config(_Section):
     """The whole file."""
 
@@ -908,6 +1008,7 @@ class Config(_Section):
     acp: AcpConfig = Field(default_factory=AcpConfig)
     boundaries: BoundariesConfig = Field(default_factory=BoundariesConfig)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
+    plugins: PluginsConfig = Field(default_factory=PluginsConfig)
 
     @model_validator(mode="after")
     def _model_endpoint(self) -> Self:

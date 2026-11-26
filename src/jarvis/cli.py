@@ -17,6 +17,7 @@ import subprocess
 import sys
 import termios
 import threading
+import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,7 @@ from jarvis import (
     models,
     modes,
     paths,
+    pluginsync,
     services,
     skills,
     t3push,
@@ -231,6 +233,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("tools", "list the tools, or switch one on, off or to asking first"),
             ("speed", "show or set how fast Jarvis speaks (1.0 is normal)"),
             ("pc-audio", "let Jarvis take requests from PC audio (Discord by default)"),
+            ("plugins", "list, install, uninstall and update skill plugins"),
         ),
     ),
     (
@@ -289,6 +292,13 @@ _DETAILS = {
         "transcribes the set again with the current speech-to-text settings, and compare says "
         "whether two saved scores differ beyond chance. The set stays in its folder, "
         "readable by you only."
+    ),
+    "plugins": (
+        "With no argument, lists the marketplaces set under [plugins] in the config and what "
+        "each holds. `install` enables a plugin (downloading its marketplace first), `uninstall` "
+        "disables it, and `update` moves what is enabled to the newest commit of its "
+        "repository. Nothing is downloaded while no plugin is enabled. Jarvis uses only a "
+        "plugin's skills; its hooks, commands, agents, MCP servers and scripts are never run."
     ),
     "pc-audio": (
         "With no argument and no option, shows the settings. --apps and --all-output change "
@@ -538,6 +548,16 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[*TOOL_WORDS, "default"],
         help="on: runs; ask: asks first; key: needs the confirm key; off: not offered; "
         "default: as Jarvis ships it",
+    )
+    made["plugins"].add_argument(
+        "action",
+        nargs="?",
+        choices=["list", "install", "uninstall", "update"],
+        default="list",
+        help="what to do",
+    )
+    made["plugins"].add_argument(
+        "target", nargs="?", metavar="PLUGIN@MARKETPLACE", help="install and uninstall: the plugin"
     )
     pc = made["pc-audio"]
     pc.add_argument("state", nargs="?", choices=["on", "off"], help="turn listening on or off")
@@ -2319,6 +2339,7 @@ def doctor_report(args: argparse.Namespace) -> DoctorReport:
         notes.extend(_remote_notes(cfg, no_service=args.no_service))
     notes.extend([*_t3_notes(cfg), *update.doctor_notes(cfg, launch_for_update)])
     notes.extend(skills.doctor_notes())
+    notes.extend(pluginsync.doctor_notes(cfg, launch_for_update))
     verified = [line.removeprefix("ok").strip() for line in release_lines if line.startswith("ok ")]
     notes.extend(line for line in release_lines if not line.startswith("ok "))
     return DoctorReport(checks, notes, verified)
@@ -2351,19 +2372,22 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 FETCH_MODELS = "uv run tools/get_models.py (or see docs/models.md)"  # the fix for a missing model
 
 
-def launch_for_update(
+def launch_for_update(  # ruff: ignore[too-many-arguments] - the launcher's own keyword options
     args: tuple[str, ...],
     *,
     cwd: Path,
     timeout: float,
     env: Mapping[str, str],
     show: bool,
+    abort_when: Callable[[], bool] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Start one program `jarvis update` needs (git, uv, systemctl, the updated Jarvis).
 
     Raises:
-        update.UpdateError: it ran past `timeout` and was stopped.
+        update.UpdateError: it ran past `timeout` or `abort_when` said yes, and it was stopped.
     """
+    if abort_when is not None:
+        return _launch_watched(args, cwd=cwd, timeout=timeout, env=env, abort_when=abort_when)
     try:
         return subprocess.run(
             args,
@@ -2377,6 +2401,49 @@ def launch_for_update(
     except subprocess.TimeoutExpired as exc:
         msg = f"{Path(args[0]).name} ran past {timeout:g} s and was stopped"
         raise update.UpdateError(msg) from exc
+
+
+def _update_plugins(cfg: config.Config, audit: AuditLog) -> None:
+    """Bring the plugins up to date as part of `jarvis update --apply`."""
+    pluginsync.update_all(cfg, launch_for_update, audit)
+
+
+def _launch_watched(
+    args: tuple[str, ...],
+    *,
+    cwd: Path,
+    timeout: float,
+    env: Mapping[str, str],
+    abort_when: Callable[[], bool],
+) -> subprocess.CompletedProcess[str]:
+    """Run a program, asking `abort_when` twice a second and stopping it once it says yes.
+
+    Raises:
+        update.UpdateError: it ran past `timeout` or `abort_when` said yes, and it was stopped.
+    """
+    deadline = time.monotonic() + timeout
+    with subprocess.Popen(
+        args,
+        cwd=cwd,
+        env=dict(env),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as proc:
+        while True:
+            try:
+                out, err = proc.communicate(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                reason = "was stopped" if abort_when() else ""
+                if not reason and time.monotonic() > deadline:
+                    reason = f"ran past {timeout:g} s and was stopped"
+                if reason:
+                    proc.kill()
+                    proc.communicate()
+                    msg = f"{Path(args[0]).name} {reason}"
+                    raise update.UpdateError(msg) from None
+            else:
+                return subprocess.CompletedProcess(args, proc.returncode, out, err)
 
 
 def finish_update() -> int:
@@ -3434,7 +3501,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "chat": cmd_chat,
     "run": cmd_run,
     "doctor": cmd_doctor,
-    "update": lambda args: update.command(args, launch_for_update),
+    "update": lambda args: update.command(args, launch_for_update, _update_plugins),
     "status": cmd_status,
     "pause": cmd_pause,
     "resume": cmd_resume,
@@ -3444,6 +3511,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "pc-audio": cmd_pc_audio,
     "consent": cmd_consent,
     "tools": cmd_tools,
+    "plugins": lambda args: pluginsync.command(args, launch_for_update),
     "speed": cmd_speed,
     "wake": cmd_wake,
     "model": cmd_model,
@@ -3526,7 +3594,12 @@ def _agent_tools(args: argparse.Namespace) -> dict[str, object]:
 
 
 # Commands whose answer has fields of its own; any other command's answer carries its lines.
+def _agent_plugins(_args: argparse.Namespace) -> dict[str, object]:
+    return {"marketplaces": pluginsync.inventory(config.load(), launch_for_update)}
+
+
 AGENT_FIELDS: dict[str, Callable[[argparse.Namespace], dict[str, object]]] = {
+    "plugins": _agent_plugins,
     "speed": _agent_speed,
     "consent": _agent_consent,
     "tools": _agent_tools,

@@ -67,6 +67,11 @@ Jarvis is pre-1.0 software; see [Status](#status).
 - **Your own skills:** put instructions for a task of yours in `~/.config/jarvis/skills/<name>.md`, opening
   with a `---` block holding a `description:` line, and Jarvis reads them when a request needs them. They
   guide what it does and never let it do more than it otherwise could.
+- **Skill plugins:** skills from marketplaces in the Claude Code format, enabled by name and kept at their
+  newest commit (`jarvis plugins`, [configuration](docs/configuration.md#plugins-skills-from-plugin-marketplaces)).
+  Only a plugin's skills are used: its hooks, commands, agents and MCP servers never run. Nothing is
+  downloaded until you enable a plugin. The configuration page shows how to put
+  [ponytail](https://github.com/DietrichGebert/ponytail) (MIT, by Dietrich Gebert) in every chat request.
 - **Omarchy questions:** Jarvis answers questions about Omarchy (settings, themes, key bindings, crashes,
   building an app) from the guides Omarchy ships in `/usr/share/omarchy/default/agents/skills/`. It reads
   them as reference text and never runs a command they contain.
@@ -214,6 +219,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis acp` | Serve Jarvis to a coding app over the Agent Client Protocol on stdin and stdout; the app starts it, see [Using Jarvis in T3 Code](#using-jarvis-in-t3-code). |
 | `jarvis consent [ask\|bypass]` | Show or set whether Jarvis asks for a yes before a risky action or one after outside text; a `strong` action still waits for the confirm key either way. |
 | `jarvis wake [livekit\|azure]` | Show or switch the wake word model; `--model FILE` names the Azure `.table` file; `--words hey_jarvis,yo_jarvis` picks the LiveKit models that listen. |
+| `jarvis plugins [list\|install\|uninstall\|update]` | List the skill plugin marketplaces and what each plugin holds; `install PLUGIN@MARKETPLACE` enables a plugin (downloading its marketplace), `uninstall` disables it, `update` moves what is enabled to the newest commit. Nothing downloads while none is enabled. |
 | `jarvis pc-audio [on\|off]` | Show or set listening to PC audio; `--apps discord,firefox` names the apps, `--all-output` listens to everything the PC plays. |
 | `jarvis run` | Run the voice loop in the foreground. This is what `jarvis.service` runs. |
 | `jarvis speech-test record\|score\|compare` | Record a private set of your own requests, score how well speech-to-text hears them (word errors, names, time), and compare two scores for a difference beyond chance. |
