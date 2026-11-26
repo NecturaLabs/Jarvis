@@ -151,6 +151,8 @@ class EgressProxy:
         self._lock = threading.Lock()
         self._refused = 0
         self._refused_hosts: deque[tuple[str, int]] = deque(maxlen=REFUSED_KEPT)
+        self._stopped = False
+        self._open_sockets: set[socket.socket] = set()  # both ends of every connection served
 
     @property
     def refused(self) -> int:
@@ -189,19 +191,44 @@ class EgressProxy:
         thread = threading.Thread(
             target=server.serve_forever, args=(0.1,), name="jarvis-proxy", daemon=True
         )
+        with self._lock:
+            self._stopped = False
         self._server, self._thread = server, thread
         thread.start()
         return self.port
 
     def stop(self) -> None:
-        """Stop listening; open tunnels end as their browser goes."""
+        """Stop listening and end every connection still open, tunnels included.
+
+        A browser whose own close failed is then left with no way out, rather than keeping its
+        tunnels until it goes.
+        """
         server, thread = self._server, self._thread
         self._server = self._thread = None
         if server is not None:
             server.shutdown()
             server.server_close()
+        with self._lock:
+            self._stopped = True
+            still_open = list(self._open_sockets)
+        for sock in still_open:
+            # Its serving thread is woken by the end of the stream, and closes it itself.
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
         if thread is not None:
             thread.join(timeout=5.0)
+
+    def _track(self, sock: socket.socket) -> bool:
+        """Note a connection as open, so `stop` can end it; False once the proxy is stopped."""
+        with self._lock:
+            if self._stopped:
+                return False
+            self._open_sockets.add(sock)
+            return True
+
+    def _untrack(self, sock: socket.socket) -> None:
+        with self._lock:
+            self._open_sockets.discard(sock)
 
     def serve(self, client: socket.socket) -> None:
         """Handle one connection from the browser: check it, then tunnel or forward it."""
@@ -209,10 +236,12 @@ class EgressProxy:
             _reply(client, b"503 Service Unavailable")
             return
         try:
-            self._serve(client)
+            if self._track(client):
+                self._serve(client)
         except OSError:
             pass  # either side went away; nothing is left to tell
         finally:
+            self._untrack(client)
             self._slots.release()
             with contextlib.suppress(OSError):
                 client.close()
@@ -235,12 +264,23 @@ class EgressProxy:
             _reply(client, b"502 Bad Gateway")
             return
         with upstream:
-            if first is None:
-                client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-                first = rest
-            if first and self._budget.take(len(first)):
-                upstream.sendall(first)
-            self._relay(client, upstream)
+            if not self._track(upstream):
+                return
+            try:
+                self._pass_on(client, upstream, first, rest)
+            finally:
+                self._untrack(upstream)
+
+    def _pass_on(
+        self, client: socket.socket, upstream: socket.socket, first: bytes | None, rest: bytes
+    ) -> None:
+        """Answer a tunnel `200` (or send a plain request on), then relay both ways."""
+        if first is None:
+            client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            first = rest
+        if first and self._budget.take(len(first)):
+            upstream.sendall(first)
+        self._relay(client, upstream)
 
     def _open(self, head: bytes, rest: bytes) -> tuple[socket.socket, bytes | None]:
         """Connect to the checked destination of a request head.

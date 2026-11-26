@@ -220,6 +220,26 @@ def test_a_tunnel_to_a_public_address_carries_bytes_both_ways(
     assert reply.endswith(b"ok")
 
 
+def test_stopping_ends_the_tunnels_still_open(upstream: Upstream) -> None:
+    # A browser that outlives its session must not keep a way out through an open tunnel.
+    def connect(_address: str, _port: int, timeout: float) -> socket.socket:
+        return socket.create_connection(("127.0.0.1", upstream.port), timeout=timeout)
+
+    egress = EgressProxy(resolve=_resolve, connect=connect)
+    egress.start()
+    with socket.create_connection(("127.0.0.1", egress.port), timeout=5) as client:
+        client.sendall(b"CONNECT site.example:443 HTTP/1.1\r\n\r\n")
+        head = b""
+        while b"\r\n\r\n" not in head:
+            head += client.recv(4096)
+        assert head.startswith(b"HTTP/1.1 200")
+
+        egress.stop()
+
+        client.settimeout(3)
+        assert client.recv(4096) == b""  # closed, not left waiting for its idle timeout
+
+
 def test_a_plain_request_goes_on_in_origin_form_without_proxy_headers(
     proxy: EgressProxy, upstream: Upstream
 ) -> None:

@@ -56,6 +56,8 @@ quick commands.
   downloads, cookies, saved state, tabs, back or clipboard. Permission prompts are denied.
 - **Idle means closed.** The browser closes after `[browser] idle_close_s` (60 s) without use, and when
   the conversation is forgotten. agent-browser's own idle timeout, a minute later, ends it if Jarvis dies.
+  Closing stops the proxy, which ends every connection still open, so a browser whose own close failed has
+  no way out while it waits for that timeout.
   Between requests it uses no CPU and holds no memory.
 - **Operations.**
   - `browser_open` opens only an address `web_read` would open: one a search in the conversation returned,
