@@ -26,9 +26,10 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
 
 - Jarvis never uses the owner's coding-agent setup: it loads no global agent instructions, skills, plugins
   or MCP servers, and calls none of their tools. Whatever Jarvis needs is written for Jarvis, in this
-  repository. It reads three kinds of instructions: its own shipped skills, the owner's own skills in Jarvis's config
-  folder (`~/.config/jarvis/skills/`, ADR 0024), and the Omarchy OS skills in
-  `/usr/share/omarchy/default/agents/skills/`.
+  repository. It reads four kinds of instructions: its own shipped skills, the owner's own skills in Jarvis's config
+  folder (`~/.config/jarvis/skills/`, ADR 0024), the Omarchy OS skills in
+  `/usr/share/omarchy/default/agents/skills/`, and the skills (never the code) of plugins the owner enabled
+  under `[plugins]`, kept in Jarvis's own folder (ADR 0027).
 - One agent does all the work. Never add a subagent, delegation or second-agent tool to Jarvis.
 - Boundaries are enforced in code before any tool runs, never only in the prompt: typed operations,
   default deny, provenance on every message part, confirmation bound to one exact action, an audit log.
