@@ -955,7 +955,9 @@ def test_a_pushed_prompt_during_a_running_request_is_busy_and_never_written_into
 
         assert busy["error"]["code"] == acp.BUSY
         assert client.response(running)["result"] == {"stopReason": "end_turn"}
-        assert "Reminder: tea" not in client.said()
+        said = client.said()
+        assert said.startswith("Streaming done.")  # the note is not written into the reply
+        assert "Reminder: tea" in said  # it follows it instead
 
 
 def test_a_hung_push_never_piles_up_threads_and_closing_does_not_wait_for_it() -> None:
@@ -1095,6 +1097,172 @@ def test_waiting_for_a_cancelled_request_does_not_stop_the_connection_reading() 
         release.set()
         assert client.response(first)["result"] == {"stopReason": "cancelled"}
         assert client.response(second)["result"] == {"stopReason": "end_turn"}
+
+
+# Re-check fixes
+
+
+def test_a_line_nested_past_the_parsers_depth_is_a_parse_error_and_the_server_goes_on() -> None:
+    with Client() as client:
+        client.line("[" * 200_000)
+        refused = client.next()
+        later = client.ask("initialize", {"protocolVersion": 1})
+
+    assert refused["error"]["code"] == acp.PARSE_ERROR
+    assert later["result"]["protocolVersion"] == 1
+
+
+def test_a_pushed_line_answered_busy_goes_back_to_wait_for_the_next_reply() -> None:
+    feed, pusher = FakeFeed(), FakePusher()
+    release = threading.Event()
+
+    def script(_text: str, _hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        release.wait(WAIT_S)
+        return "Done."
+
+    with Client(FakeAgent(script), follow=lambda: feed, pusher=pusher) as client:
+        session = client.start("/work/a")
+        feed.push("Reminder: tea")
+        assert pusher.done.wait(WAIT_S)
+        until(lambda: pending(client, session) == [], "the pushed line was let go")
+        running = client.prompt(session, text("go"))
+        until(lambda: bool(client.agent.calls), "the request began")
+
+        busy = client.response(client.prompt(session, text("PUSHED:ok:Reminder: tea")))
+        release.set()
+        client.response(running)
+
+        assert busy["error"]["code"] == acp.BUSY
+        assert "Jarvis: Reminder: tea" in client.said()  # not lost: it follows the reply
+
+
+def test_a_forged_prompt_answered_busy_is_audited_all_the_same() -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    release = threading.Event()
+
+    def record(event: str, **fields: object) -> None:
+        events.append((event, fields))
+
+    def script(_text: str, _hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        release.wait(WAIT_S)
+        return "Done."
+
+    with Client(FakeAgent(script), pusher=FakePusher(), record=record) as client:
+        session = client.start()
+        running = client.prompt(session, text("go"))
+        until(lambda: bool(client.agent.calls), "the request began")
+        busy = client.response(client.prompt(session, text("PUSHED:secret words")))
+        release.set()
+        client.response(running)
+
+    assert busy["error"]["code"] == acp.BUSY
+    assert [e for e, _ in events] == ["acp_refused"]
+    assert "secret" not in json.dumps(events)
+    assert "secret" not in client.said()
+
+
+def test_nothing_is_written_for_a_request_that_was_cancelled() -> None:
+    cancelled = threading.Event()
+    release = threading.Event()
+
+    def script(_text: str, hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        assert hooks.draft is not None
+        hooks.draft("First")
+        cancelled.wait(WAIT_S)
+        hooks.draft("First, and then more")  # written after the owner stopped it
+        assert hooks.condensed is not None
+        hooks.condensed("A late note")
+        release.set()
+        return "First, and then more."
+
+    with Client(FakeAgent(script)) as client:
+        session = client.start()
+        request = client.prompt(session, text("go"))
+        until(lambda: client.said() == "First" or "First" in "".join(client.raw), "a chunk")
+        client.notify("session/cancel", {"sessionId": session})
+        assert client.response(request)["result"] == {"stopReason": "cancelled"}
+        cancelled.set()
+        assert release.wait(WAIT_S)
+        time.sleep(0.1)
+        client.ask("initialize", {"protocolVersion": 1})  # everything before it has been written
+
+        assert "more" not in "".join(client.raw)
+        assert "late note" not in "".join(client.raw)
+
+
+def test_a_session_that_fails_to_start_does_not_cost_the_oldest_one_its_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(acp, "MAX_SESSIONS", 1)
+    with Client() as client:
+        first = client.start()
+
+        def broken(_session: str) -> FakeAgent:
+            msg = "no model"
+            raise StartError(msg)
+
+        client.server._make_agent = broken  # pyright: ignore[reportPrivateUsage] - the agent's factory
+        failed = client.ask("session/new", {"cwd": "/", "mcpServers": []})
+        kept = client.ask("session/prompt", {"sessionId": first, "prompt": [text("hi")]})
+
+        assert failed["error"]["message"] == "no model"
+        assert kept["result"]["stopReason"] == "end_turn"
+
+
+def test_a_cancel_while_a_prompt_waits_for_the_stopped_request_stops_that_prompt_too() -> None:
+    release = threading.Event()
+    calls: list[str] = []
+
+    def script(text_: str, _hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        calls.append(text_)
+        if text_ == "stubborn":
+            release.wait(WAIT_S)  # ignores the cancel for a while
+        return "done"
+
+    with Client(FakeAgent(script)) as client:
+        session = client.start()
+        first = client.prompt(session, text("stubborn"))
+        until(lambda: bool(calls), "the request began")
+        client.notify("session/cancel", {"sessionId": session})
+        second = client.prompt(session, text("next"))
+        client.notify("session/cancel", {"sessionId": session})  # the owner stopped that one too
+        client.ask("initialize", {"protocolVersion": 1})  # both cancels were read
+        release.set()
+
+        answers: dict[int, object] = {}
+        while len(answers) < 2:  # they may end in either order
+            message = client.next()
+            if message.get("id") in {first, second}:
+                answers[message["id"]] = message["result"]
+        assert answers == {first: {"stopReason": "cancelled"}, second: {"stopReason": "cancelled"}}
+        assert calls == ["stubborn"]  # "next" never reached the model
+
+
+def test_a_pushed_line_is_written_whole_before_a_prompt_starts_answering() -> None:
+    inside = threading.Event()
+    go = threading.Event()
+    with Client(pusher=FakePusher()) as client:
+        session = client.start()
+        real = client.server._send  # pyright: ignore[reportPrivateUsage] - the one write
+
+        def slow(message: dict[str, Any]) -> None:
+            update = obj(obj(message.get("params")).get("update"))
+            if obj(update.get("content")).get("text") == "Reminder: tea":
+                inside.set()
+                go.wait(WAIT_S)
+            real(message)
+
+        client.server._send = slow  # type: ignore[method-assign]  # pyright: ignore[reportPrivateUsage]
+        shown = client.prompt(session, text("PUSHED:ok:Reminder: tea"))
+        assert inside.wait(WAIT_S)
+        later = client.prompt(session, text("question"))
+        time.sleep(0.3)
+
+        assert client.agent.calls == []  # it waits for the note to be written
+        go.set()
+        assert client.response(shown)["result"] == {"stopReason": "end_turn"}
+        assert client.response(later)["result"] == {"stopReason": "end_turn"}
+        assert client.said().startswith("Reminder: tea")
 
 
 # The command

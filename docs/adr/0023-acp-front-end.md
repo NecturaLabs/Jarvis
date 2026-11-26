@@ -87,8 +87,10 @@ Add `jarvis acp`, a front end to the agent `jarvis chat` already has.
   one of them pushes nothing (`jarvis doctor` says so), so no announcement or model text reaches another
   agent's thread.
 - A pushed prompt that arrives while a request of the same session is being written is answered as busy, like
-  any other prompt, so it never lands in a streaming reply. A refused forged prompt is audited
-  (`acp_refused`, without its words).
+  any other prompt, so it never lands in a streaming reply; its words go back to wait for the next reply, so
+  they are not lost. One that arrives between requests is written whole under the session's lock, so a prompt
+  that follows cannot begin its reply in the middle of it. A refused forged prompt is audited
+  (`acp_refused`, without its words), busy or not.
 - Announcements wait for the push on one worker with a short queue (the oldest is dropped when full), so a
   hung `t3` holds one thread and closing does not wait for it.
 - When the 32 sessions are all in use the oldest idle one makes room; `session/close` ends one.
@@ -115,3 +117,15 @@ Add `jarvis acp`, a front end to the agent `jarvis chat` already has.
 
 Showing tool steps (`tool_call` updates) needs step events from the agent; showing a picture Jarvis
 fetched needs the client to take an image content block in a reply.
+
+## Coding mode: `jarvis acp --coding`
+
+T3 Code can list the program twice, so there are two providers: `jarvis acp` and `jarvis acp --coding`. Both are
+the same front end and the one agent. In a `--coding` process every session is built in coding mode
+(`build(..., mode="coding")`): the chat's coding prompt part and `[coding.chat]` over `[chat]`, `coding.tools_off` and
+`coding.write_roots`, as the chat gets in coding mode. It is fixed: it neither follows nor writes the global mode
+file the voice service and the chat share, and it has no `switch_model` tool. Where coding mode has its own model
+(`strata.coding_run_config`), the first request of the process does what `/model coding` does in the chat
+(`switch_model`, from source `acp`) and says so in its reply, and a switch that fails (the voice service is busy)
+is the answer instead, with the request not run, tried again on the next one. Where the model is the same, the
+server and the mode file are untouched. The push finds the newest open thread of either provider.

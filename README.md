@@ -214,7 +214,11 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 [T3 Code](https://github.com/pingdotgg/t3code) takes any [Agent Client Protocol](https://agentclientprotocol.com)
 agent. In T3 Code open Settings, Providers, Add provider, Show more, Local ACP command. Set the executable
 to the path of `jarvis` (`which jarvis`; `jarvis doctor` prints it when T3 Code is set up on this PC), add
-one argument, `acp`, and give it a name.
+one argument, `acp`, and give it a name. Add the provider a second time with two arguments, `acp` and
+`--coding`, and a name such as "Jarvis coding": every thread there works in coding mode (the coding prompt,
+more room to think and write, and the coding model when you set one with `strata.coding_run_config`, which
+the first request loads and says so). The two providers share Jarvis's one agent and model; neither changes
+the mode the voice service is in unless the coding model is a different one.
 
 - Each thread is a chat conversation of its own with the same agent `jarvis chat` talks to and the model
   Strata already serves. Jarvis answers in text; nothing is spoken, and the voice service keeps speaking

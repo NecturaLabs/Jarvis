@@ -168,6 +168,7 @@ class _Session:
     run: _Run | None = None
     pending: list[str] = field(default_factory=list[str])  # announcements for the next prompt
     cwd: str = ""  # the project folder the client opened it in, when it said
+    stops: int = 0  # how many times the client stopped it (`session/cancel`)
 
 
 class AcpServer:
@@ -321,6 +322,8 @@ class AcpServer:
     def _flush(self, session: _Session, run: _Run) -> None:
         """Write the announcements that came while no reply was being written."""
         with session.lock:
+            if not run.attached or run.cancel.is_set():
+                return  # they wait for a reply that can be written
             lines, session.pending = session.pending, []
         for line in lines:
             self._write(session, run, (SEPARATOR if run.total else "") + line)
@@ -365,7 +368,7 @@ class AcpServer:
     def _message(self, line: str) -> None:
         try:
             message: object = json.loads(line)
-        except ValueError:
+        except ValueError, RecursionError:  # not JSON, or nested past what the parser reads
             self._error(None, PARSE_ERROR, "not JSON")
             return
         body = obj(message)
@@ -427,12 +430,15 @@ class AcpServer:
             idle = next((sid for sid, s in self._sessions.items() if s.run is None), None)
             if idle is None:
                 raise _Rpc(INTERNAL_ERROR, f"at most {MAX_SESSIONS} sessions at once, all busy")
-            del self._sessions[idle]  # the oldest session nothing is running in makes room
+        else:
+            idle = None
         session_id = f"jarvis-{secrets.token_hex(6)}"
         try:
             agent = self._make_agent(session_id)
         except StartError as exc:
             raise _Rpc(INTERNAL_ERROR, str(exc)) from exc
+        if idle is not None:
+            del self._sessions[idle]  # the oldest session nothing is running in makes room
         cwd = params.get("cwd")
         folder = cwd if isinstance(cwd, str) and cwd.startswith("/") and "\0" not in cwd else ""
         self._sessions[session_id] = _Session(session_id, agent, cwd=folder)
@@ -470,11 +476,6 @@ class AcpServer:
             # Jarvis's own message, pushed into the thread: shown, never given to the model, and
             # never taken for the owner's answer to a question that waits. One that starts as
             # such a message but has no valid tag is dropped, also never given to the model.
-            with session.lock:
-                running = session.run
-                if running is not None and running.attached:
-                    # A reply is being written: nothing may be written into it.
-                    raise _Rpc(BUSY, "a request is still being answered")
             if note == FORGED:
                 self._audit("acp_refused", reason="forged_announcement", session=session.id)
             self._spawn(self._show, request_id, session, note, name="acp-announcement")
@@ -482,7 +483,9 @@ class AcpServer:
         old = session.run
         if not waited and old is not None and old.cancel.is_set() and not old.finished.is_set():
             # A request just stopped ends at its next check; the reader goes on meanwhile.
-            self._spawn(self._prompt_later, request_id, params, old, name="acp-prompt-wait")
+            with session.lock:
+                stops = session.stops
+            self._spawn(self._prompt_later, request_id, params, old, stops, name="acp-prompt-wait")
             return
         answering: _Question | None = None
         with session.lock:
@@ -503,10 +506,18 @@ class AcpServer:
         answering.answered.set()
         self._spawn(self._wait, request_id, run, name="acp-answer")
 
-    def _prompt_later(self, request_id: str | int, params: dict[str, Any], old: _Run) -> None:
-        """Begin a prompt once the request that was stopped has ended (or after `CANCEL_WAIT_S`)."""
+    def _prompt_later(
+        self, request_id: str | int, params: dict[str, Any], old: _Run, stops: int
+    ) -> None:
+        """Begin a prompt once the request that was stopped has ended (or after `CANCEL_WAIT_S`).
+
+        A stop that came meanwhile (`stops` is how many there were when it waited) stops it too.
+        """
         old.finished.wait(CANCEL_WAIT_S)
         try:
+            if self._session(params).stops != stops:
+                self._result(request_id, {"stopReason": "cancelled"})
+                return
             self._prompt(request_id, params, waited=True)
         except _Rpc as exc:
             self._error(request_id, exc.code, exc.message)
@@ -536,19 +547,37 @@ class AcpServer:
         return self._pusher.verified(_words(blocks).strip()) or FORGED
 
     def _show(self, request_id: str | int, session: _Session, note: str) -> None:
-        """Answer a pushed announcement with its words, and drop the copy that was waiting."""
-        if note == FORGED:
-            self._say(session, FORGED)
-            self._result(request_id, {"stopReason": "refusal"})
-            return
+        """Answer a pushed announcement with its words, and drop the copy that was waiting.
+
+        Under the session's lock, so the words are written whole before a prompt that comes
+        next can begin its reply, and never into a reply that is being written: then it is
+        refused as busy and the announcement waits for the next reply instead.
+        """
         with session.lock:
+            if self._sessions.get(session.id) is not session:
+                self._error(request_id, INVALID_PARAMS, "unknown session")
+                return
+            running = session.run
+            if running is not None and running.attached:
+                if note != FORGED and not any(
+                    announce.plain(line.removeprefix("Jarvis: ")) == note
+                    for line in session.pending
+                ):
+                    session.pending.append(f"Jarvis: {note}")
+                    del session.pending[:-MAX_PENDING]
+                self._error(request_id, BUSY, "a request is still being answered")
+                return
+            if note == FORGED:
+                self._say(session, FORGED)
+                self._result(request_id, {"stopReason": "refusal"})
+                return
             session.pending = [
                 line
                 for line in session.pending
                 if announce.plain(line.removeprefix("Jarvis: ")) != note
             ]
-        self._say(session, note)
-        self._result(request_id, {"stopReason": "end_turn"})
+            self._say(session, note)
+            self._result(request_id, {"stopReason": "end_turn"})
 
     def _begin(
         self, request_id: str | int, session: _Session, run: _Run, blocks: list[dict[str, Any]]
@@ -620,8 +649,8 @@ class AcpServer:
             self._say(session, text, "agent_thought_chunk")
 
     def _write(self, session: _Session, run: _Run, piece: str) -> None:
-        if not run.attached or not piece:
-            return
+        if not run.attached or run.cancel.is_set() or not piece:
+            return  # nothing is written for a request that was stopped
         self._say(session, piece)
         run.total += piece
 
@@ -683,6 +712,7 @@ class AcpServer:
     def _cancel(session: _Session) -> None:
         """Stop the request in flight; a question it waits on is answered no."""
         with session.lock:
+            session.stops += 1
             run = session.run
             if run is None:
                 return

@@ -903,9 +903,17 @@ jobs in it and refuses to add one, rather than writing over the newer jobs. Why 
 
 ## `[acp]`: Jarvis in T3 Code
 
-`jarvis acp` ([ADR 0023](adr/0023-acp-front-end.md)) can show an announcement (a reminder) as soon as it is
+`jarvis acp` ([ADR 0023](adr/0023-acp-front-end.md)) is what T3 Code starts for a Jarvis provider; add it
+twice, as `jarvis acp` and as `jarvis acp --coding` (every session in that one works in coding mode: the
+coding prompt, `[coding.chat]` over `[chat]`, `coding.tools_off` and `coding.write_roots`, as the chat has them
+in coding mode). When coding mode has a model of its own (`strata.coding_run_config`), the first request of a
+`--coding` process does what `/model coding` does in the chat, loads that model, and says so in its reply; a
+`--coding` process on the same model changes nothing outside itself, and never writes the mode the voice
+service and the chat share. It has no `switch_model` tool and never leaves coding mode.
+
+`jarvis acp` can show an announcement (a reminder) as soon as it is
 made, once you turn `push_to_t3` on, by sending it into the newest open T3 Code thread of the project a session was opened in whose
-provider runs `jarvis acp`, with T3 Code's own `t3 thread send`. The thread's turn comes back to `jarvis acp`
+provider runs `jarvis acp` or `jarvis acp --coding`, with T3 Code's own `t3 thread send`. The thread's turn comes back to `jarvis acp`
 carrying a tag only Jarvis can make, and Jarvis answers it with the line itself: no model, no tool.
 
 ```toml
@@ -918,8 +926,10 @@ t3_provider = ""     # the provider's id in T3 Code; empty finds it in T3 Code's
 A message that starts with Jarvis's mark but whose tag is not valid is dropped (answered with a fixed refusal, never given
 to the model), whether `push_to_t3` is on or not. Nothing happens, and nothing fails, when `t3` is not installed or no such thread exists: the line then
 waits for the session's next reply. What of T3 Code's own files Jarvis reads: only `userdata/settings.json` under `$T3CODE_HOME` (else `~/.t3`), and in it only
-`providerInstances` (each one's `config.commandPath` and `commandArgs`), to find the providers that run `jarvis acp`
-(`t3_provider`, when set, only picks one of them: a name that is not a provider running `jarvis acp` pushes nothing, and `jarvis doctor` says so); `jarvis doctor` looks only whether `~/.t3` exists. `t3` itself reads and
+`providerInstances` (each one's `config.commandPath` and `commandArgs`), to find the providers that run `jarvis acp` or `jarvis acp --coding`
+(`t3_provider`, when set, only picks one of them: a name that is not a provider running `jarvis acp` pushes nothing, and `jarvis doctor` says so).
+`jarvis doctor` looks whether `$T3CODE_HOME` (else `~/.t3`) is a folder, to say how to add Jarvis, and, with `push_to_t3` on,
+reads the same `providerInstances` to check that `t3_provider` names a provider that runs Jarvis. `t3` itself reads and
 writes what it needs, started only as `t3 thread list --project <folder> --json` and `t3 thread send <thread> -`. Nothing else of
 `~/.t3` is opened. The tag's key is a
 private file in Jarvis's state folder. A change takes effect the next time T3 Code starts `jarvis acp`.

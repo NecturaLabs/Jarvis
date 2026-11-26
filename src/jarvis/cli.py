@@ -89,6 +89,7 @@ if TYPE_CHECKING:
     from jarvis.audio import FallbackWake, Speaker, VoxtypeWatch, WakeWord
     from jarvis.chat.app import SharedSetting
     from jarvis.model import StrataModel
+    from jarvis.pictures import Picture
     from jarvis.voice import VoiceLoop
 
 log = logging.getLogger(__name__)
@@ -255,7 +256,8 @@ _DETAILS = {
         "with the one Jarvis agent, answered in text. A question about an action is asked in "
         "the reply and your next message is the answer: a clear yes runs it, anything else "
         "cancels it. In T3 Code: Settings, Providers, Add provider, Local ACP command, with "
-        "this program and the argument acp."
+        "this program and the argument acp; add it a second time with the arguments acp "
+        "--coding for programming work (coding mode in every session)."
     ),
     "restart": (
         "Restarts the voice service. A stopped model server is started; a running one is "
@@ -489,6 +491,12 @@ def build_parser() -> argparse.ArgumentParser:
         "confirm key a strong action waits for, and a browser click or typing is still asked here",
     )
 
+    made["acp"].add_argument(
+        "--coding",
+        action="store_true",
+        help="every session works in coding mode: the coding prompt, limits and tools, and the "
+        "coding model when it has one of its own",
+    )
     made["status"].add_argument(
         "--json", action="store_true", help="print one JSON object (for a status bar)"
     )
@@ -1202,16 +1210,59 @@ def _claim_stdio() -> tuple[TextIO, TextIO]:
     return source, out
 
 
-def cmd_acp(_args: argparse.Namespace) -> int:
+class _CodingFirst:
+    """Puts the model server on the coding model once, before a `jarvis acp --coding` request."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._done = False
+
+    def ready(self, hooks: Hooks) -> str:
+        """Return what to tell the owner: the switch's line when it ran, "" once it is done."""
+        with self._lock:
+            if self._done:
+                return ""
+            hooks.waking()
+            # The same switch as the chat's /model coding, for the owner; nothing is said aloud.
+            line = switch_model(config.load(), "coding", lambda _line: None, "acp")
+            self._done = line.startswith(("Now in", "Already in"))
+            return line
+
+
+class _CodingSession:
+    """An agent whose first request waits for the coding model, and says how that went."""
+
+    def __init__(self, agent: acp.AgentSession, first: _CodingFirst) -> None:
+        super().__init__()
+        self._agent = agent
+        self._first = first
+
+    def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
+        """Answer `text` on the coding model; a switch that failed is the answer instead."""
+        line = self._first.ready(hooks)
+        if line and not line.startswith(("Now in", "Already in")):
+            return line
+        if line and hooks.draft is not None:
+            hooks.draft(line)
+        return self._agent.handle(text, hooks, pictures=pictures)
+
+
+def cmd_acp(args: argparse.Namespace) -> int:
     """Speak the Agent Client Protocol on standard input and output, for a coding app."""
     cfg = _load()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    coding = bool(args.coding)
+    first = _CodingFirst() if coding and modes.own_model(cfg) else None
 
     def make(session_id: str) -> acp.AgentSession:
         try:
-            return build(cfg, via="acp", session=session_id, units=StrataUnits()).agent
+            if not coding:
+                return build(cfg, via="acp", session=session_id, units=StrataUnits()).agent
+            agent = build(cfg, via="acp", session=session_id, mode="coding").agent
         except SetupError as exc:
             raise acp.StartError(str(exc)) from exc
+        return agent if first is None else _CodingSession(agent, first)
 
     # Also made when nothing is pushed: it tells a forged message from a real one.
     pusher = t3push.T3Push(cfg.acp.t3_command, cfg.acp.t3_provider, enabled=cfg.acp.push_to_t3)
@@ -1968,7 +2019,12 @@ def _t3_notes(cfg: config.Config) -> list[str]:
     head = (
         f"note T3 Code is set up here: to talk to Jarvis in it, add a Local ACP command ({where})"
     )
-    notes = [f"{head} with the executable {program} and the argument acp"]
+    notes = [
+        (
+            f"{head} with the executable {program} and the argument acp; "
+            "add it again with the arguments acp --coding for programming work"
+        )
+    ]
     pusher = t3push.T3Push(cfg.acp.t3_command, cfg.acp.t3_provider)
     if cfg.acp.push_to_t3 and (problem := pusher.provider_problem()):
         notes.append(f"note {problem}")

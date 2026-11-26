@@ -4,9 +4,9 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis import __version__, control, osskills, paths
+from jarvis import __version__, control, modes, osskills, paths
 from jarvis import app as app_module
-from jarvis.agent import THINK_HARDER, Agent, Hooks
+from jarvis.agent import SWITCH_MODEL, THINK_HARDER, Agent, Hooks
 from jarvis.app import (
     MAX_HINT_CHARS,
     PAGE_HEADROOM,
@@ -33,6 +33,7 @@ from jarvis.config import (
     AudioConfig,
     BoundariesConfig,
     ChatConfig,
+    CodingConfig,
     Config,
     FilesConfig,
     OpClassName,
@@ -750,6 +751,41 @@ def test_an_acp_session_is_a_chat_of_its_own_that_shows_no_pictures_and_keeps_no
     assert chat._memory_file == app_module.chat_memory_file()  # pyright: ignore[reportPrivateUsage] - the chat's own
     assert not {"sing", "show_image", "image_search"} & set(names)
     assert {"show_image", "image_search"} <= set(chat._registry.names())  # pyright: ignore[reportPrivateUsage] - the chat keeps them
+
+
+def test_a_fixed_coding_agent_is_the_coding_chat_and_leaves_the_mode_file_alone() -> None:
+    ensure_api_key(strata_key_file())
+    config = Config(spotify=SpotifyConfig(client_id="id"))
+    assert not modes.state_file().exists()
+
+    coding = build(config, via="acp", session="s1", mode="coding").agent
+    plain = build(config, via="acp", session="s2").agent
+
+    code = system_prompt(modes.effective(config, "coding"), "chat", coding=True)
+    assert coding._system == code  # pyright: ignore[reportPrivateUsage] - the coding prompt part
+    assert "You are in coding mode" in code
+    assert plain._system == system_prompt(config, "chat")  # pyright: ignore[reportPrivateUsage] - none for the normal one
+    limits = coding._limits  # pyright: ignore[reportPrivateUsage] - the coding overlay on [chat]
+    assert limits.max_steps == config.coding.chat.max_steps
+    assert limits.reply_tokens == config.coding.chat.reply_tokens
+    assert coding._memory_file is None  # pyright: ignore[reportPrivateUsage] - still its own conversation
+    assert SWITCH_MODEL not in coding._registry.names()  # pyright: ignore[reportPrivateUsage] - it stays put
+    assert modes.current() == "normal"
+    assert not modes.state_file().exists()  # building and asking never wrote the owner's mode
+
+
+def test_a_fixed_coding_agent_drops_what_coding_mode_switches_off() -> None:
+    ensure_api_key(strata_key_file())
+    config = Config(spotify=SpotifyConfig(client_id="id"))
+    names = build(config, via="acp", session="s1").agent._registry.names()  # pyright: ignore[reportPrivateUsage] - what the model is given
+    victim = next(name for name in names if name.startswith(("web", "fetch", "search")))
+    coding = config.model_copy(update={"coding": CodingConfig(tools_off=[victim])})
+
+    fixed = build(coding, via="acp", session="s2", mode="coding").agent
+    plain = build(coding, via="acp", session="s3").agent
+
+    assert victim not in fixed._registry.names()  # pyright: ignore[reportPrivateUsage] - switched off in coding mode
+    assert victim in plain._registry.names()  # pyright: ignore[reportPrivateUsage] - the normal mode keeps it
 
 
 def test_the_chat_prompt_follows_the_response_format() -> None:

@@ -42,6 +42,8 @@ if TYPE_CHECKING:
 MIN_KEY = 32  # characters of a usable key
 MAX_WORDS = 500  # characters of an announcement passed on
 MAX_SETTINGS_BYTES = 1024 * 1024
+# The arguments T3 Code runs Jarvis with: the regular provider, and the coding one.
+ACP_ARGS = (["acp"], ["acp", "--coding"])
 TIMEOUT_S = 20.0
 KEPT_TAGS = 200  # pushed announcements remembered, so two Jarvis processes send one
 MARK = "⟲ Jarvis: "
@@ -92,16 +94,30 @@ def _usable(key: str | None) -> bool:
 
 
 def _make_key(path: Path) -> None:
-    """Make the key file if it is not there: complete and private at once, never replacing one."""
-    mine = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}")
-    write_private(mine, secrets.token_hex(32))
+    """Make the key file when it is missing or broken, once, whichever Jarvis process gets here.
+
+    Under an exclusive lock on a file beside it, so two processes never each replace a broken key
+    with their own; the new key is written whole and private to a temporary file and moved into
+    place, so a reader sees the old file or the complete new one, and no hard link is needed.
+    """
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock = os.open(
+        path.with_name(f"{path.name}.lock"),
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+    )
     try:
-        os.link(mine, path)  # fails when another process made it first
-    except FileExistsError:
-        if not _usable(read_private(path)):  # a broken file: replaced
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if _usable(read_private(path)):  # another process made it while this waited
+            return
+        mine = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}")
+        try:
+            write_private(mine, secrets.token_hex(32))
             mine.replace(path)
+        finally:
+            mine.unlink(missing_ok=True)
     finally:
-        mine.unlink(missing_ok=True)
+        os.close(lock)  # releases the lock
 
 
 def _key() -> bytes:
@@ -156,7 +172,7 @@ def t3_home() -> Path:
 
 
 def jarvis_providers() -> frozenset[str]:
-    """Return the ids of T3 Code's providers that run `jarvis acp`, from its settings file."""
+    """Return the ids of T3 Code's providers that run `jarvis acp` (or `jarvis acp --coding`)."""
     path = t3_home() / "userdata" / "settings.json"
     try:
         if path.stat().st_size > MAX_SETTINGS_BYTES:
@@ -169,7 +185,7 @@ def jarvis_providers() -> frozenset[str]:
         config = obj(obj(entry).get("config"))
         program = config.get("commandPath")
         if (
-            config.get("commandArgs") == ["acp"]
+            config.get("commandArgs") in ACP_ARGS
             and isinstance(program, str)
             and Path(program).name.startswith("jarvis")
         ):

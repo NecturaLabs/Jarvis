@@ -1,7 +1,11 @@
 """Pushing announcements into T3 Code threads: the tag, the thread lookup and the commands run."""
 
+import errno
+import fcntl
 import json
+import os
 import subprocess
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -146,6 +150,48 @@ def test_the_key_made_by_another_process_meanwhile_is_kept_not_replaced(
     assert t3push.verified(first) == "Reminder: tea"
 
 
+def test_a_broken_key_is_replaced_only_by_the_process_that_holds_the_lock() -> None:
+    state = paths.state_dir()
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (state / "t3-push.key").write_text("short", encoding="utf-8")
+    (state / "t3-push.key").chmod(0o600)
+    lock = state / "t3-push.key.lock"
+    done: list[str] = []
+    held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(held, fcntl.LOCK_EX)  # another process is making the key
+    try:
+        worker = threading.Thread(target=lambda: done.append(t3push.message(item())), daemon=True)
+        worker.start()
+        worker.join(0.3)
+
+        assert worker.is_alive()  # it waits; it does not replace the key meanwhile
+        assert (state / "t3-push.key").read_text(encoding="utf-8") == "short"
+    finally:
+        os.close(held)  # the lock goes with the descriptor
+    worker.join(10)
+
+    assert done
+    assert t3push.verified(done[0]) == "Reminder: tea"
+    assert t3push.message(item()) == done[0]  # one key, kept
+
+
+def test_the_key_is_made_whole_and_private_where_a_hard_link_is_not_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_link(_source: object, _target: object) -> None:
+        raise PermissionError(errno.EPERM, "no hard links here")
+
+    monkeypatch.setattr(t3push.os, "link", no_link)
+
+    first = t3push.message(item())
+
+    assert t3push.verified(first) == "Reminder: tea"
+    key = paths.state_dir() / "t3-push.key"
+    assert key.stat().st_mode & 0o777 == 0o600
+    assert t3push.message(item()) == first
+    assert not list(paths.state_dir().glob("t3-push.key.*.*"))  # no temporary file is left
+
+
 def test_ordinary_words_are_not_an_announcement() -> None:
     assert t3push.verified("what is the weather") is None
     assert t3push.verified("") is None
@@ -179,13 +225,19 @@ def test_the_jarvis_providers_are_found_in_t3_codes_settings(
             "mine": {"config": {"commandPath": "/opt/bin/jarvis-x", "commandArgs": ["acp"]}},
             "other": {"config": {"commandPath": "/usr/bin/other", "commandArgs": ["acp"]}},
             "chat": {"config": {"commandPath": "/usr/bin/jarvis", "commandArgs": ["chat"]}},
+            "coder": {
+                "config": {"commandPath": "/usr/bin/jarvis", "commandArgs": ["acp", "--coding"]}
+            },
+            "loose": {
+                "config": {"commandPath": "/usr/bin/jarvis", "commandArgs": ["acp", "--other"]}
+            },
             "odd": 3,
         }
     }
     (home / "userdata" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
     monkeypatch.setenv("T3CODE_HOME", str(home))
 
-    assert t3push.jarvis_providers() == {"jarvis", "mine"}
+    assert t3push.jarvis_providers() == {"jarvis", "mine", "coder"}
 
 
 @pytest.mark.parametrize("content", [None, "not json", "[]", '{"providerInstances": 3}'])
@@ -234,6 +286,14 @@ def test_a_thread_id_that_is_not_plain_is_skipped_never_sent_to(ident: str) -> N
 
     assert pusher(runner).push(item(), ["/p"]) == {"/p"}
     assert [args[3] for args, _ in runner.sent()] == ["t-ok"]
+
+
+def test_the_newest_open_thread_of_either_jarvis_provider_gets_the_message() -> None:
+    runner = Runner([thread("t-new", "coder"), thread("t-old", "jarvis")])
+    both = T3Push("t3", "", runner, providers=lambda: frozenset({"jarvis", "coder"}))
+
+    assert both.push(item(), ["/p"]) == {"/p"}
+    assert [args[3] for args, _ in runner.sent()] == ["t-new"]
 
 
 def test_a_set_provider_must_be_one_that_runs_jarvis_or_nothing_is_pushed() -> None:

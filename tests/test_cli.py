@@ -244,7 +244,8 @@ def test_doctor_says_how_to_add_jarvis_to_t3_code_only_where_t3_code_is_set_up(
     assert said[0].startswith("note ")
     assert "Local ACP command" in said[0]
     assert "/opt/bin/jarvis" in said[0]
-    assert said[0].rstrip().endswith("acp")
+    assert "and the argument acp;" in said[0]
+    assert said[0].rstrip().endswith("acp --coding for programming work")
 
 
 def test_doctor_looks_for_t3_code_where_t3code_home_says(
@@ -280,6 +281,133 @@ def test_doctor_says_why_nothing_is_pushed_when_the_t3_provider_does_not_run_jar
     assert len(said) == 1
     assert "other" in said[0]
     assert "nothing is pushed" in said[0]
+
+
+class _Said:
+    """The agent a fake `build` hands out, and what was asked of it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.asked: list[str] = []
+
+    def handle(self, text: str, hooks: Hooks, *, pictures: object = ()) -> str:  # ruff: ignore[unused-method-argument] - the agent's call
+        self.asked.append(text)
+        return "answer"
+
+
+@dataclass
+class _Acp:
+    """`jarvis acp` with the built agent, the model switch and the serve loop replaced."""
+
+    built: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
+    switched: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
+    reply: str = "Now in coding mode: flash-coder, loaded in 3 s."
+    agent: _Said = field(default_factory=_Said)
+    made: Callable[[str], Any] | None = None
+
+    def run(self, monkeypatch: pytest.MonkeyPatch, *args: str) -> None:
+        def build(_cfg: config.Config, **kwargs: object) -> SimpleNamespace:
+            self.built.append(kwargs)
+            return SimpleNamespace(agent=self.agent)
+
+        def switch(_cfg: config.Config, to: str, _say: object, source: str) -> str:
+            self.switched.append((to, source))
+            return self.reply
+
+        def serve(_source: object, _out: object, make: Callable[[str], Any], **_kw: object) -> int:
+            self.made = make
+            return 0
+
+        def claim() -> tuple[None, None]:
+            return None, None
+
+        monkeypatch.setattr(cli, "build", build)
+        monkeypatch.setattr(cli, "switch_model", switch)
+        monkeypatch.setattr(cli.acp, "serve", serve)
+        monkeypatch.setattr(cli, "_claim_stdio", claim)
+        assert main(["acp", *args]) == 0
+
+
+def _own_coding_model(tmp_path: Path) -> None:
+    install_engine(tmp_path / "components")
+    run = engine_run_config(tmp_path)
+    coder = tmp_path / "coder.json"
+    coder.write_text(run.read_text(encoding="utf-8"), encoding="utf-8")
+    strata = config.StrataConfig.model_validate(
+        {
+            "home": tmp_path / "strata-home",
+            "components_parent": tmp_path / "components",
+            "run_config": run,
+            "coding_run_config": coder,
+        }
+    )
+    config.save(config.Config(strata=strata))
+
+
+def test_acp_builds_the_normal_agent_that_follows_the_owners_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    acp = _Acp()
+    acp.run(monkeypatch)
+    assert acp.made is not None
+    acp.made("s1")
+
+    assert acp.built[0].get("mode") is None
+    assert acp.built[0]["units"] is not None
+    assert acp.switched == []
+
+
+def test_acp_coding_builds_agents_fixed_in_coding_mode_without_touching_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+    assert acp.made is not None
+    session = acp.made("s1")
+    hooks = Hooks(confirm=lambda _q: False)
+
+    assert session.handle("hello", hooks) == "answer"
+
+    assert acp.built[0]["mode"] == "coding"
+    assert acp.built[0].get("units") is None
+    assert acp.switched == []  # the same model: nothing to switch
+
+
+def test_acp_coding_loads_the_coding_model_once_before_the_first_request_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _own_coding_model(tmp_path)
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+    assert acp.made is not None
+    first, second = acp.made("s1"), acp.made("s2")
+    drafts: list[str] = []
+    hooks = Hooks(confirm=lambda _q: False, draft=drafts.append)
+
+    first.handle("one", hooks)
+    second.handle("two", hooks)
+
+    assert acp.switched == [("coding", "acp")]
+    assert drafts == [acp.reply]
+    assert acp.agent.asked == ["one", "two"]
+
+
+def test_acp_coding_answers_with_the_failed_switch_and_tries_again_next_time(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _own_coding_model(tmp_path)
+    acp = _Acp(reply="The voice service is busy; try again.")
+    acp.run(monkeypatch, "--coding")
+    assert acp.made is not None
+    session = acp.made("s1")
+    hooks = Hooks(confirm=lambda _q: False)
+
+    assert session.handle("one", hooks) == acp.reply
+    acp.reply = "Already in coding mode (flash-coder)."
+    assert session.handle("two", hooks) == "answer"
+
+    assert acp.switched == [("coding", "acp"), ("coding", "acp")]
+    assert acp.agent.asked == ["two"]  # the first never reached the model
 
 
 def test_doctor_names_the_release_of_a_model_file_it_recognises(

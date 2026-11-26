@@ -856,13 +856,14 @@ def _check_overrides(config: Config, operations: list[Operation]) -> None:
         raise SetupError(msg)
 
 
-def build(
+def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each front end sets, and the setup of both modes
     config: Config,
     *,
     via: str | None = None,
     session: str = "",
     units: modes.Units | None = None,
     listening: Listening | None = None,
+    mode: modes.Mode | None = None,
 ) -> Jarvis:
     """Assemble the agent from the config.
 
@@ -872,7 +873,9 @@ def build(
     ACP session has its own, and none is kept). `session` marks the
     agent's audit events too, so a window can tell its own from others'. With `units` (the
     model server's systemd unit) the agent follows the mode Jarvis is in and can switch it;
-    without, it stays in the normal mode. `listening` is how the voice service hears PC audio for
+    without, it stays in the normal mode. With `mode` it stays in that mode whatever Jarvis is in
+    (`jarvis acp --coding`): it neither follows nor writes the owner's mode, and has no `units`.
+    `listening` is how the voice service hears PC audio for
     `pc_audio_listen`.
 
     Raises:
@@ -883,6 +886,8 @@ def build(
     if config.strata.mode == "backend":
         msg = "backend mode only serves the model. Run this command on the Jarvis client."
         raise SetupError(msg)
+    if mode is not None:
+        units = None
     config, key, model = _agent_model(config)
     ops = _spotify_ops(config)
     available = ops.operations()
@@ -924,7 +929,7 @@ def build(
         prompt = system_prompt(cfg, channel, coding=coding)
         return Setup(prompt, registry, limits, reads_pictures(cfg), strata_model(cfg, key))
 
-    normal = setup("normal")
+    normal = setup(mode or "normal")
     remembered = chat_memory_file() if via == "chat" else None  # an ACP session has its own
     if remembered is not None and not config.chat.resume:
         remembered.unlink(missing_ok=True)
@@ -941,7 +946,8 @@ def build(
     )
     agent_modes = None if switcher is None else AgentModes(switcher, setup)
     agent = Agent(
-        model,
+        # A fixed mode talks to the server as that mode's config sets it, not as the mode file says.
+        (normal.model or model) if mode is not None and not model.remote else model,
         normal.registry,
         normal.system_prompt,
         audit,
