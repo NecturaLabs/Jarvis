@@ -27,8 +27,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   `/config` saves is now audited, and the chat's activity feed shows setting and tool changes.
 - The chat's `/config` is a settings screen: sections (Chat, Voice, Listening, Safety, Tools), every value a
   setting takes with the one in force lit, when a change applies, and a line on what it does; ← and → step a
-  value. Acting without asking and taking requests from PC audio turn on only after a second Enter, once the
-  row says what that means, and are marked while they are on. The Tools list shows each tool's setting in
+  value. Acting without asking and taking requests from PC audio turn on only after the same step again to
+  the same value, once the row says what that means and which value, and are marked while they are on.
+  Acting without asking changed there applies to the open chat at once too, on or off. The Tools list shows each tool's setting in
   colour, how it ships when changed, and what it does.
 - `memory_detail` in `[agent]` and `[chat]` says what later requests keep of one: `condensed` (the request, the
   reply, what was done and what was looked up) or `full` (also its tool calls and their results). The chat keeps

@@ -138,6 +138,11 @@ class FakeSession:
     def resume(self, path: Path) -> bool:
         return self.memory.load(path)
 
+    bypass: list[bool] = field(default_factory=list[bool])
+
+    def set_bypass_consent(self, *, on: bool) -> None:
+        self.bypass.append(on)
+
 
 def _plain(renderable: object) -> str:
     console = Console(width=200, record=True, color_system=None, file=io.StringIO())
@@ -1243,6 +1248,25 @@ def test_a_risky_setting_is_turned_on_only_after_it_says_what_that_means() -> No
     _run(test, app)
 
 
+def test_acting_without_asking_changed_in_config_applies_to_this_chat_at_once() -> None:
+    values: dict[str, object] = {"boundaries.bypass_consent": False}
+    session = FakeSession()
+    app = _app(session=session, services=_risky_services(values))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await pilot.press("end", "enter")
+        await _until(pilot, lambda: "Turn on?" in _settings_text(app))
+        assert session.bypass == []
+        await pilot.press("enter")
+        await _until(pilot, lambda: session.bypass == [True])
+        await pilot.press("enter")
+        await _until(pilot, lambda: session.bypass == [True, False])
+
+    _run(test, app)
+
+
 def test_esc_or_moving_away_leaves_a_risky_setting_off() -> None:
     values: dict[str, object] = {"boundaries.bypass_consent": False}
     app = _app(session=FakeSession(), services=_risky_services(values))
@@ -1418,6 +1442,45 @@ def test_a_risky_setting_with_several_values_asks_before_leaving_off() -> None:
         await _until(pilot, lambda: values["audio.recall"] == 10)
         await pilot.press("enter")  # from one on value to another: no question
         await _until(pilot, lambda: values["audio.recall"] == 30)
+
+    _run(test, app)
+
+
+def test_a_risky_setting_is_turned_on_only_to_the_value_it_asked_about() -> None:
+    from jarvis.chat.app import SharedSetting  # ruff: ignore[import-outside-top-level] - only this test
+
+    values: dict[str, object] = {"audio.recall": 0}
+
+    def shared() -> list[SharedSetting]:
+        return [
+            SharedSetting(
+                "audio.recall",
+                "Recall",
+                (0, 10, 30, 60),
+                values["audio.recall"],
+                "Listening",
+                "",
+                "Jarvis will keep audio.",
+            )
+        ]
+
+    def change(key: str, value: object) -> None:
+        values[key] = value
+
+    services = Services(shared=shared, set_shared=change, apply=lambda: None)
+    app = _app(session=FakeSession(), services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await pilot.press("end", "right")
+        await _until(pilot, lambda: "set 10" in _settings_text(app))
+        await pilot.press("left")  # another value: asked about again, not turned on
+        await _until(pilot, lambda: "set 60" in _settings_text(app))
+        assert values["audio.recall"] == 0
+        assert "Turn on?" in _settings_text(app)
+        await pilot.press("left")
+        await _until(pilot, lambda: values["audio.recall"] == 60)
 
     _run(test, app)
 

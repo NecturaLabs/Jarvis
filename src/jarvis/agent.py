@@ -978,6 +978,14 @@ class Agent:
         self._limits = replace(self._limits, thinking=fresh.thinking, raised=fresh.raised)
         self._memory.budget = self._memory_budget()  # an answer's room includes its thinking
 
+    def set_bypass_consent(self, *, on: bool) -> None:
+        """Ask before acting again (`on` False), or stop asking, from the next decision on.
+
+        For a chat whose `/config` changed `boundaries.bypass_consent`: the change is audited
+        where it is saved.
+        """
+        self._bypass_consent = on
+
     @property
     def memory(self) -> Conversation:
         """The remembered conversation (read it; change it through `forget` and `compact`)."""

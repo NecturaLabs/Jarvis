@@ -2582,6 +2582,22 @@ def test_with_consent_bypassed_outside_text_does_not_stop_a_side_effect() -> Non
     assert [run["op"] for run in counter.runs] == ["search", "pause"]
 
 
+def test_consent_bypassed_or_not_takes_effect_from_the_next_decision() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    replies = [_call("pause"), _say("Left it."), _call("pause", call_id="c2"), _say("Paused.")]
+    model = ScriptedModel(replies)
+    agent, _ = _bypassing(model, [counter.op("pause", cls=OpClass.CONFIRM)])
+
+    agent.set_bypass_consent(on=False)
+    agent.handle("pause", Hooks(confirm=lambda q: asked.append(q) or False))
+    agent.set_bypass_consent(on=True)
+    agent.handle("pause", Hooks(confirm=_never_asked))
+
+    assert len(asked) == 1
+    assert counter.runs == [{"op": "pause"}]
+
+
 def test_with_consent_bypassed_pc_audio_runs_unasked() -> None:
     counter = Counter()
     model = ScriptedModel([_call("pause"), _say("Paused.")])

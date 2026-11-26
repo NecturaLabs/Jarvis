@@ -2381,6 +2381,20 @@ def test_a_setting_the_chat_could_not_save_is_not_audited(monkeypatch: pytest.Mo
     assert not paths.audit_file().exists() or not paths.audit_file().read_text()
 
 
+def test_a_setting_saved_from_the_chat_is_not_said_to_have_failed_when_its_audit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config.save(config.Config())
+
+    def broken(_self: AuditLog, _path: Path, _line: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(AuditLog, "_append", broken)
+    cli._set_shared("boundaries.bypass_consent", False)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    assert config.load().boundaries.bypass_consent is False
+
+
 def test_the_chats_own_settings_are_audited_once_saved() -> None:
     config.save(config.Config())
 
