@@ -139,13 +139,25 @@ def _head(sock: socket.socket) -> tuple[bytes, bytes]:
     return head, rest
 
 
-def _forwarded_head(lines: list[bytes], method: bytes, path: str, version: bytes) -> bytes:
-    """Return a plain-HTTP request head for the site: origin-form, no proxy or hop headers."""
+def _forwarded_head(
+    lines: list[bytes],
+    method: bytes,
+    path: str,
+    version: bytes,
+    extra: tuple[str, str] | None = None,
+) -> bytes:
+    """Return a plain-HTTP request head for the site: origin-form, no proxy or hop headers.
+
+    `extra` (a name and a value) is added, and any header of that name the browser sent dropped.
+    """
     out = [b" ".join((method, path.encode("ascii", "strict"), version))]
+    dropped = {*_HOP_HEADERS, *([extra[0].lower().encode()] if extra else [])}
     for line in lines[1:]:
         name = line.split(b":", 1)[0].strip().lower()
-        if name not in _HOP_HEADERS:
+        if name not in dropped:
             out.append(line)
+    if extra is not None:
+        out.append(f"{extra[0]}: {extra[1]}".encode("ascii"))
     out.append(b"Connection: close")
     return b"\r\n".join(out) + b"\r\n\r\n"
 
@@ -212,7 +224,7 @@ class EgressProxy:
     server Jarvis started over the owner's own project) and nothing else, not the internet either.
     """
 
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-arguments] - fakes for tests, and a preview's port and header
         self,
         *,
         resolve: Resolver | None = None,
@@ -220,10 +232,16 @@ class EgressProxy:
         max_bytes: int = MAX_BYTES,
         max_connections: int = MAX_CONNECTIONS,
         local_port: int | None = None,
+        local_header: tuple[str, str] | None = None,
     ) -> None:
-        """Resolve with `resolve` and connect with `connect` (both real by default; for tests)."""
+        """Resolve with `resolve` and connect with `connect` (both real by default; for tests).
+
+        With `local_port`, `local_header` (a name and a value) is put on every request sent on to
+        that port, in place of any the browser sent: the preview's server answers only those.
+        """
         super().__init__()
         self._local_port = local_port
+        self._local_header = local_header
         self._resolve = resolve
         self._connect = connect
         self._budget = _Budget(max_bytes)
@@ -433,7 +451,7 @@ class EgressProxy:
         if parts.query:
             path += f"?{parts.query}"
         upstream = self._reach(host, port)
-        return upstream, _forwarded_head(lines, method, path, version) + rest
+        return upstream, _forwarded_head(lines, method, path, version, self._local_header) + rest
 
     def _reach(self, host: str, port: int) -> socket.socket:
         """Connect to the first checked public address of `host` that answers.

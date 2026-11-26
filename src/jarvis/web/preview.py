@@ -2,14 +2,22 @@
 
 A page Jarvis built is opened neither as `file://` (its scripts could then read other files) nor in
 the web session. `FolderServer` serves one folder on a free port of 127.0.0.1: only regular files
-inside it, never through a link that leads out, never a hidden or private one, and only GET and
-HEAD. `preview_browser` gives it a browser session of its own whose proxy reaches that one port
-and nothing else, not the internet either (ADR 0016). The folder must be one Jarvis may write
-(`Boundary.writable`), the same rule as `write_file`.
+inside it with no second name on disk, opened one folder at a time from the folder held open since
+the start and never through a link (so a file or folder swapped for one meanwhile is not followed),
+never a hidden or private one, and only GET and HEAD. It answers only its preview proxy: a request
+must carry the token the proxy adds and name the server itself as its host, so neither another
+program on this PC nor a page in the owner's own browser renamed to 127.0.0.1 (DNS rebinding)
+reads the project. `preview_browser` gives it a browser session of its own whose proxy reaches
+that one port and nothing else, not the internet either (ADR 0016). The folder must be one Jarvis
+may write (`Boundary.writable`), the same rule as `write_file`.
 """
 
+import hmac
 import http.server
 import mimetypes
+import os
+import secrets
+import stat
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, cast, override
@@ -24,6 +32,10 @@ if TYPE_CHECKING:
 
 MAX_FILE_BYTES = 20_000_000
 INDEX = "index.html"
+HEADER = "X-Jarvis-Preview"  # carries the server's token, added by its proxy alone
+_UNKNOWN_TYPE = "application/octet-stream"  # never sniffed into a page
+_DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
 
 
 class FolderServer:
@@ -42,6 +54,9 @@ class FolderServer:
             raise NotADirectoryError(msg)
         self._boundary = boundary
         self._server: http.server.ThreadingHTTPServer | None = None
+        self._root: int | None = None  # the folder, held open while it is served
+        self.header = HEADER
+        self.token = secrets.token_urlsafe(24)
 
     @property
     def origin(self) -> str:
@@ -62,38 +77,43 @@ class FolderServer:
             return 0
         return int(cast("tuple[str, int]", self._server.server_address)[1])
 
-    def file(self, target: str) -> Path | None:
-        """Return the file a request's path names, or None when it may not be served."""
+    def _relative(self, target: str) -> tuple[str, ...] | None:
+        """Return the parts of the path a request names, or None when it may not be served."""
         path = unquote(urlsplit(target).path)
-        relative = Path(path.lstrip("/"))
-        if any(part in {"..", ""} or part.startswith(".") for part in relative.parts):
+        if "\0" in path:
             return None
-        try:
-            found = (self.folder / relative).resolve(strict=True)
-            if found.is_dir():
-                found = (found / INDEX).resolve(strict=True)
-        except OSError:
+        parts = Path(path.lstrip("/")).parts
+        if any(part in {"..", ""} or part.startswith(".") for part in parts):
             return None
-        if not found.is_relative_to(self.folder) or not found.is_file():
+        if self._boundary.secret(self.folder.joinpath(*parts)):
             return None
-        if self._boundary.secret(found):
-            return None
-        below = found.relative_to(self.folder).parts
-        if any(part.startswith(".") for part in below):
-            return None
-        return found
+        return parts
 
     def read(self, target: str) -> bytes | None:
-        """Return the bytes of the file a request names, or None when it may not be served."""
-        found = self.file(target)
-        if found is None:
+        """Return the bytes of the file a request names, or None when it may not be served.
+
+        It is opened one folder at a time from the served folder without following a link, and
+        must be a regular file with one name, no bigger than `MAX_FILE_BYTES`; a folder serves
+        its `index.html`.
+        """
+        parts = self._relative(target)
+        root = self._root
+        if parts is None or root is None:
             return None
+        opened: list[int] = []
         try:
-            if found.stat().st_size > MAX_FILE_BYTES:
-                return None
-            return found.read_bytes()
+            return _bounded(_open_inside(root, parts, opened))
         except OSError:
             return None
+        finally:
+            for fd in opened:
+                os.close(fd)
+
+    def allowed(self, host: str | None, token: str | None) -> bool:
+        """Return whether a request came through the preview's proxy, for this server."""
+        own_host = host == f"{LOOPBACK}:{self.port}"
+        own_token = hmac.compare_digest((token or "").encode(), self.token.encode())
+        return own_host and own_token
 
     def start(self) -> str:
         """Listen on a free port of 127.0.0.1 and return the origin."""
@@ -111,19 +131,26 @@ class FolderServer:
                 self._send(body=False)
 
             def _send(self, *, body: bool) -> None:
+                if not server.allowed(self.headers.get("Host"), self.headers.get(HEADER)):
+                    self.send_error(403)
+                    return
                 data = server.read(self.path)
                 if data is None:
                     self.send_error(404)
                     return
-                kind = mimetypes.guess_type(urlsplit(self.path).path)[0] or "text/html"
+                kind = mimetypes.guess_type(urlsplit(self.path).path)[0] or _UNKNOWN_TYPE
+                if urlsplit(self.path).path.endswith("/"):
+                    kind = "text/html"  # a folder's index.html
                 self.send_response(200)
                 self.send_header("Content-Type", kind)
+                self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 if body:
                     self.wfile.write(data)
 
+        self._root = os.open(self.folder, _DIRECTORY)
         made = http.server.ThreadingHTTPServer((LOOPBACK, 0), Handler)
         made.daemon_threads = True
         self._server = made
@@ -138,6 +165,9 @@ class FolderServer:
         if made is not None:
             made.shutdown()
             made.server_close()
+        root, self._root = self._root, None
+        if root is not None:
+            os.close(root)
 
 
 def preview_browser(
@@ -157,7 +187,42 @@ def preview_browser(
         root,
         idle_close_s=idle_close_s,
         run=run,
-        proxy=lambda: EgressProxy(local_port=server.port),
+        proxy=lambda: EgressProxy(
+            local_port=server.port, local_header=(server.header, server.token)
+        ),
         origin=server.origin,
         on_close=server.stop,
     )
+
+
+def _open_inside(root: int, parts: tuple[str, ...], opened: list[int]) -> int:
+    """Open `parts` below the folder `root`, one at a time and following no link.
+
+    Every descriptor opened is put in `opened`, for the caller to close. A folder opens its
+    `index.html`. An `OSError` says a part is missing, a link, or not a folder where one must be.
+    """
+    folder = root
+    for part in parts[:-1]:
+        folder = os.open(part, _DIRECTORY, dir_fd=folder)
+        opened.append(folder)
+    fd = os.open(parts[-1], _FILE, dir_fd=folder) if parts else os.dup(root)
+    opened.append(fd)
+    if stat.S_ISDIR(os.fstat(fd).st_mode):
+        fd = os.open(INDEX, _FILE, dir_fd=fd)
+        opened.append(fd)
+    return fd
+
+
+def _bounded(fd: int) -> bytes | None:
+    """Return an open file's bytes: a regular file with one name, of `MAX_FILE_BYTES` at most."""
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_FILE_BYTES:
+        return None
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := os.read(fd, 1 << 20):
+        size += len(chunk)
+        if size > MAX_FILE_BYTES:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)

@@ -122,7 +122,15 @@ page scripts read other files, and never through this web session. A preview is 
 proxy allows exactly one loopback port and refuses everything else, the public internet included. Behind
 that port is a read-only file server Jarvis starts over one project folder, which coding mode hands over as
 a resolved path inside the file write roots (`app.files_boundary`). It serves regular files under that
-folder only, follows no symbolic link out, and stops when the session is closed. Its text, errors and screenshots are
+folder only, each with one name on disk (a hard link could be a file from outside), opened one folder at a
+time from the folder it holds open since it started and following no link, so a file or folder a build
+swaps for a link meanwhile is not followed. A type it does not know is sent as `application/octet-stream`,
+never as a page, with `X-Content-Type-Options: nosniff`. It answers only its preview proxy: the proxy adds
+a random token of the server's to every request it sends on (replacing any the page sent), and the server
+also wants its own `127.0.0.1:<port>` as the request's host, so neither another program on this PC nor a
+page in the owner's own browser renamed to 127.0.0.1 (DNS rebinding) reads the project. A program running
+as the owner could still read the token from Jarvis's memory; only OS isolation would stop that. It stops
+when the session is closed. Its text, errors and screenshots are
 web text too. Built: `web/preview.py` (`FolderServer`, `preview_browser`), `EgressProxy(local_port=…)` and
 `Browser(origin=…)`; the operation that asks for a preview comes with coding mode.
 
