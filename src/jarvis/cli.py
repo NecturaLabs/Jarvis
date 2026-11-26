@@ -23,7 +23,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from jarvis import __version__, cliout, config, control, models, modes, paths, services, update
+from jarvis import (
+    __version__,
+    cliout,
+    config,
+    control,
+    models,
+    modes,
+    paths,
+    services,
+    skills,
+    update,
+)
 from jarvis.activity import AuditTail
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.app import (
@@ -1953,6 +1964,7 @@ def doctor_report(args: argparse.Namespace) -> DoctorReport:
     else:
         notes.extend(_remote_notes(cfg, no_service=args.no_service))
     notes.extend(update.doctor_notes(cfg, launch_for_update))
+    notes.extend(skills.doctor_notes())
     verified = [line.removeprefix("ok").strip() for line in release_lines if line.startswith("ok ")]
     notes.extend(line for line in release_lines if not line.startswith("ok "))
     return DoctorReport(checks, notes, verified)

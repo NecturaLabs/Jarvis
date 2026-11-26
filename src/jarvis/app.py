@@ -238,7 +238,7 @@ def system_prompt(
         "toolbox": toolbox_section(registry)
         if registry is not None and registry.get(USE_TOOLS) is not None
         else "",
-        "skills": skills.prompt_section(skills.shipped())
+        "skills": skills.prompt_section(skills.available())
         + osskills.prompt_section(osskills.catalog()),
         "name": config.persona.name,
         "version": __version__,
@@ -472,8 +472,14 @@ def browser_ops(  # ruff: ignore[too-many-arguments] - what the browser is made 
 
 
 def files_boundary(config: Config, home: Path | None = None) -> Boundary:
-    """Return where the file operations may read and write; Jarvis's own state is never in it."""
-    return Boundary.of(config.files, home or Path.home(), protected=(paths.state_dir(),))
+    """Return where the file operations may read and write.
+
+    Jarvis's own state and config folders are never in it: its settings and the owner's skills
+    there steer Jarvis, so no request may rewrite them through a file operation.
+    """
+    return Boundary.of(
+        config.files, home or Path.home(), protected=(paths.state_dir(), paths.config_dir())
+    )
 
 
 def _wpctl(args: Sequence[str]) -> str:
@@ -633,7 +639,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     web = config.model_copy(
         update={"research": config.research.model_copy(update={"page_chars": pages})}
     )
-    shipped = skills.shipped()
+    shipped = skills.available()
     guides = osskills.catalog()
     shown = chat_pictures() if channel == "chat" else None
     online = web_ops(web, shown)
