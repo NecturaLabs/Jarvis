@@ -36,7 +36,7 @@ type By = Literal["owner", "model", "idle"]
 
 READY_S = 60.0  # how long a restarted model server may take to answer
 READY_POLL_S = 0.5
-BUSY = "Jarvis is answering a request right now; switch once it has finished."
+BUSY = "Jarvis is answering a request. Try again when it has finished."
 _LIMITS = tuple(name for name in CodingChatConfig.model_fields if name != "auto")
 
 
@@ -340,11 +340,11 @@ def announcement(config: Config, to: Mode, *, restart: bool) -> str:
     waited = read_state().load_s.get(to)
     model = model_name(config, to)
     wait = (
-        f"about {max(5, round(waited / 5) * 5):.0f} seconds"
+        f"It takes about {max(5, round(waited / 5) * 5):.0f} seconds"
         if waited
-        else "this can take a minute or two"
+        else "It can take a minute or two"
     )
-    return f"Switching to the {name} model, {model}: {wait}."
+    return f"Switching to the {name} model, {model}. {wait}."
 
 
 class Switcher:
@@ -494,6 +494,6 @@ class Switcher:
     def _failed(self, to: Mode, state: State) -> str:
         self._audit.record("mode_switch_failed", to=to, was=state.mode)
         return (
-            f"The model server did not come back in {to} mode, so Jarvis is in {state.mode} "
-            "mode still; `jarvis doctor` and `jarvis logs` say more."
+            f"The model server did not come back in {to} mode, so Jarvis stays in {state.mode} "
+            "mode. See jarvis doctor and jarvis logs."
         )

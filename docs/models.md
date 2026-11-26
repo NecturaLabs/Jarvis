@@ -50,7 +50,7 @@ Coding mode ([configuration](configuration.md#coding-coding-mode)) serves the ru
 `strata.coding_run_config` names. The choice for the reference machine is **Qwen3.8-Flash-Next Coder**
 IQ1_M (ISTA-DASLab, Strata's `coder` family): Qwen3.8-Flash-Next with 256 of each layer's 512 experts
 kept, the ones code, tool use and pictures route to, stored at about 3.5 bits. Chosen on 2026-11-26 from
-what the sources below say; **not yet downloaded or measured on this PC**.
+what the sources below say; **not yet downloaded or measured on the reference machine**.
 
 Strata runs only the architectures its engines implement (`qwen4exp`, `qwen35moe`, Inkling's two and
 Hy4-Flash), so a general coding GGUF is not a candidate

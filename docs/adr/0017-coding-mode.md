@@ -5,11 +5,11 @@
 
 ## Context and problem statement
 
-The owner uses Jarvis for programming too, mostly in the chat ("build me a site", going on with a project).
-The everyday setup is sized for quick spoken commands: short replies, no thinking, a 2-bit model picked for
-picking tools fast beside a game. A request to build a game ran into the reply and step limits. The owner
-asked for a coding mode on the best programming model Strata can run here, set up for programming, that
-Jarvis moves to by itself when a request is programming work, with a manual switch as well. Three rules bound
+Jarvis is also used for programming, mostly in the chat. The everyday setup is sized for quick spoken
+commands: short replies, no thinking, a small quantised model chosen for fast tool use beside a game. A
+request to build a program can run into the reply and step limits. The goal is a coding mode on the best
+programming model Strata can run on the PC, set up for programming, that Jarvis moves to by itself when a
+request is programming work, with a manual switch as well. Three rules bound
 it: one model in memory at a time beside a game, nothing model-specific in the code, and no list of phrases
 that mean "programming".
 
@@ -36,7 +36,7 @@ Option 3, with the owner's switch and a typed tool.
 - **The switch** (`modes.Switcher`) holds a lock, checks that the mode's run config can be served, writes
   the model server's profile and unit, and restarts the server only when either changed. The old engine has
   ended before the new one starts, so two models are never in memory together. It then waits for the server
-  and loads the model. A server that does not come back gets the profile before again. Every switch is
+  and loads the model. If the server does not come back, the previous profile is restored. Every switch is
   audited (`mode_switched`: from, to, by whom, the model, the seconds). A switch is refused while any
   Jarvis process answers a request: requests are held off first (the shared lock below), then the voice
   service is asked whether it is hearing or saying one. Asking for the mode Jarvis is already in changes
@@ -80,15 +80,15 @@ list is ruled out by ADR 0013.
 - Good: programming work gets the model and the room it needs without the owner setting anything per request.
 - Good: one server, one profile, one model in memory; the usual model and its settings are untouched.
 - Bad: a switch between two models costs a model load each way, and the system file cache cannot hold both
-  models on a 64 GB PC, so the load reads the disk.
-- Good: a switch never cuts a request. Every Jarvis process (the voice service, a chat window, `jarvis ask`)
+  models on a 64 GB PC, so a load probably reads the disk (not measured).
+- Good: a switch does not cut a request, by design (tested with fakes, not with a real server). Every Jarvis process (the voice service, a chat window, `jarvis ask`)
   holds a shared lock on one small file while it answers a request, and a switch is made only while it can
   take that lock alone; a request that begins during a switch waits until the model server is back. A
   request's own switch (`switch_model`) sets its own hold aside for it.
 - Bad: the model can call a request programming work when it is not; `coding.chat.auto = false` leaves the
   switch to the owner.
-- The headless browser tool (ADR 0016, on its own branch) can show the model a page it
-  built; it takes a project folder inside the file write roots, and the operation is added once both are in.
+- Once the headless browser tool of ADR 0016 is in, it can show the model a page it built, from a project
+  folder inside the file write roots.
 
 ### Confirmation
 
@@ -96,4 +96,4 @@ list is ruled out by ADR 0013.
 change, the refusal while busy or while another process answers a request, a config that cannot be served, the way back when the server stays down,
 idle return), `tests/test_coding_mode.py` (the agent answering again in the new mode, the refusals,
 following a switch made elsewhere, `jarvis model`, the doctor) and `tests/test_chat.py` (`/model`). Not
-measured: the coding model on this PC, and how often the model calls the tool when it should.
+measured: the coding model on the reference machine, and how often the model calls the tool when it should.

@@ -710,8 +710,8 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Mode",
         "The same for spoken requests. With a coding model of its own, a switch loads another "
         "model, so the request that caused it waits in silence for the load.",
-        "A spoken request that is programming work will switch the mode by itself; with a "
-        "coding model of its own, Jarvis is silent while that model loads.",
+        "Spoken requests that are programming work will switch the mode by themselves, and "
+        "Jarvis is silent while a separate coding model loads.",
     ),
 )
 

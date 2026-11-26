@@ -1189,7 +1189,7 @@ def test_model_switches_the_mode_and_says_what_is_loading() -> None:
 
     def switch(to: str, say: Callable[[str], None]) -> str:
         asked.append(to)
-        say("Switching to the coding model, flash-coder: about 20 seconds.")
+        say("Switching to the coding model, flash-coder. It takes about 20 seconds.")
         return "Now in coding mode: flash-coder, loaded in 21 s."
 
     services = Services(model_report=list, switch_model=switch)

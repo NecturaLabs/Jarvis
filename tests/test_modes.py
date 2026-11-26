@@ -238,7 +238,7 @@ def test_a_switch_serves_the_coding_model_restarts_the_server_and_is_audited(
     assert units.restarts == 1
     assert server.loads == 1
     assert modes.current() == "coding"
-    assert said == ["Switching to the coding model, flash-coder: this can take a minute or two."]
+    assert said == ["Switching to the coding model, flash-coder. It can take a minute or two."]
     event, fields = audit.events[-1]
     assert event == "mode_switched"
     assert (fields["to"], fields["was"], fields["by"]) == ("coding", "normal", "owner")
@@ -267,7 +267,7 @@ def test_the_next_switch_says_how_long_the_model_took_to_load(tmp_path: Path) ->
 
     switcher.switch("coding", "owner", said.append)
 
-    assert said == ["Switching to the coding model, flash-coder: about 20 seconds."]
+    assert said == ["Switching to the coding model, flash-coder. It takes about 20 seconds."]
 
 
 def test_a_switch_to_the_mode_jarvis_is_in_changes_nothing(tmp_path: Path) -> None:

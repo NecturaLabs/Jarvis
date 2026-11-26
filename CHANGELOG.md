@@ -15,13 +15,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   chat the model moves a request that is programming work to coding mode by itself (`switch_model`,
   `coding.chat.auto`), and back when you say the work is over; Jarvis also goes back after 30 minutes unused
   (`coding.back_after_s`). With two models the model server restarts for a switch, so one model is in
-  memory at a time, and Jarvis says first how long the load takes. A switch waits for requests: none is
-  made while the voice service, a chat window or `jarvis ask` answers one, and a request that begins during
-  a switch waits for the model server. The model's own switch is made only by a call that stands alone in
-  its reply, before any action of the request was tried, and one that cannot be made leaves the request
-  going on in the mode it is in. Every switch is audited, and `jarvis doctor` checks the coding
-  model's files; a missing model file is named for the mode Jarvis is in. Settings: `[coding]`, `[coding.chat]` (laid over `[chat]`) and
+  memory at a time, and Jarvis says first how long the load took the last time. Every switch is audited,
+  and `jarvis doctor` checks the coding model's files; a missing model file is named for the mode Jarvis is
+  in. Settings: `[coding]`, `[coding.chat]` (laid over `[chat]`) and
   `[coding.voice]` (laid over `[agent]`).
+- A mode switch waits for requests: none is made while the voice service, a chat window or `jarvis ask`
+  answers one, and a request that begins during a switch waits for the model server. The model's own switch
+  is made only by a call that stands alone in its reply, before any action of the request was tried, and
+  one that cannot be made leaves the request going on in the mode it is in.
 - `/config` in the chat has a "Mode" section: how long coding mode may go unused before Jarvis leaves it
   (`coding.back_after_s`), and whether the model switches the mode by itself in the chat (`coding.chat.auto`)
   and for speech (`coding.voice.auto`, asked about before it is turned on).
