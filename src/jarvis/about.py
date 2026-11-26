@@ -178,7 +178,8 @@ def facts(config: Config, channel: str, limits: Limits) -> str:
         ),
         (
             f"Files: read in {', '.join(files.read_roots) or 'nowhere'}; written in"
-            f" {', '.join(files.write_roots) or 'nowhere'}. Shell command:"
+            f" {', '.join(files.write_roots) or 'nowhere'}. Your workspace {files.workspace} is"
+            " always readable and writable, and a bare file name is saved there. Shell command:"
             f" {_yes(config.shell.enabled)}."
         ),
         (

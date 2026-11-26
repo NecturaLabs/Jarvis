@@ -234,12 +234,23 @@ class ShellOps:
     """`pc_shell` over the owner's `[shell]` settings; nothing when it is off."""
 
     def __init__(
-        self, config: ShellConfig, home: Path, *, max_chars: int, runner: Runner = run_in_scope
+        self,
+        config: ShellConfig,
+        home: Path,
+        *,
+        max_chars: int,
+        runner: Runner = run_in_scope,
+        workspace: Path | None = None,
     ) -> None:
-        """Run commands as `config` limits them, in `home`, keeping `max_chars` of output."""
+        """Run commands as `config` limits them, keeping `max_chars` of output.
+
+        A command's home is `home`; it starts in `workspace` (Jarvis's own folder) when there is
+        one, so what it makes without a path lands there, else in `home`.
+        """
         super().__init__()
         self._config = config
         self._home = home
+        self._start = workspace or home
         self._max_chars = max_chars
         self._runner = runner
 
@@ -263,7 +274,7 @@ class ShellOps:
             "--expand-environment=no",
             f"--unit={unit}",
             f"--description={DESCRIPTION}",
-            f"--working-directory={self._home}",
+            f"--working-directory={self._start}",
             *[part for key, value in limits.items() for part in ("-p", f"{key}={value}")],
             "--",
             SETPRIV,

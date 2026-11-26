@@ -8,6 +8,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Give Jarvis a workspace folder, `files.workspace` (default `~/Documents/Jarvis`, made mode 0700), that is
+  always readable and writable whatever the roots say. A file written with a bare name or relative path goes
+  there, `/export` in the chat saves there, `pc_shell` starts there and the prompt tells the model where it
+  is. A new file in it, or a later write to a file Jarvis made there, needs no yes unless outside text is in
+  the request; replacing a file you put there still asks. A folder that is a link, another user's or writable
+  by others is not used and `jarvis doctor` says why. See [ADR 0025](docs/adr/0025-workspace-folder.md).
+
 - Serve the model from another machine you own with `jarvis setup --backend` and
   `jarvis setup --remote`. The client keeps speech, tools and policy on the PC it controls.
   The default remains all-local. Remote `doctor` and `status` show the model and connection

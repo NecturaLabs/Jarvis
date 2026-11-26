@@ -12,6 +12,7 @@ Every setting lives in one TOML file, validated when Jarvis reads it. This page 
 | Jarvis's own Voxtype settings (generated) | `~/.config/jarvis/voxtype.toml`, and `voxtype-speech-test.toml` for `jarvis speech-test` | `jarvis run`, at each start; `jarvis speech-test` |
 | User units | `~/.config/systemd/user/jarvis.service` and `jarvis-strata.service` | `jarvis setup`, `jarvis update` |
 | Strata API key, Spotify tokens, audit log, action count, reminders and scheduled requests, Strata log | `~/.local/state/jarvis/` (`$XDG_STATE_HOME/jarvis/`): `strata.env`, `spotify-token.json`, `audit.jsonl` (and five older `audit.jsonl.1` to `.5`), `actions.json`, `schedule.json` (and its `schedule.json.lock`), `strata.log` | Jarvis; the key, token, log, count and jobs files are mode 0600 |
+| Jarvis's workspace: what it makes without a path, exported chats | `~/Documents/Jarvis` (`files.workspace`), mode 0700; its `workspace-files.json` list of files Jarvis made is in the state folder | Jarvis makes it (when it starts, at `jarvis setup`); you may use it too |
 | Wake, VAD and voice model files | `data_dir`; the installer sets it to `$XDG_STATE_HOME/jarvis/models` on a fresh install | `uv run tools/get_models.py` or [manual model setup](models.md) |
 
 [`config.example.toml`](../config.example.toml) in the repository lists every key at its default, with no
@@ -713,8 +714,12 @@ than `idle_close_s`) does nothing; ask again and Jarvis opens the page anew.
 |---|---|---|---|
 | `read_roots` | `["~"]` | `~`, paths under `~/`, absolute paths | Folders whose files Jarvis may list and read (`list_dir`, `read_file`). |
 | `write_roots` | `["~/Documents"]` | the same | Folders Jarvis may create files in, or replace or add to them (`write_file`, asked first unless `bypass_consent` is on). |
+| `workspace` | `~/Documents/Jarvis` | `~`, a path under `~/`, an absolute path | Jarvis's own folder: always readable and writable whatever the roots say, and where a file written with a bare name or relative path goes. It is made mode 0700 if missing. It must be a real folder (not a link) of yours that nobody else can write to, else it is not used and `jarvis doctor` says why; it may not be home, hold or lie inside Jarvis's state or config folders, or use `..`. Inside it, hidden names are allowed (secret names and `.git`, `.hg`, `.svn` still are not), and Jarvis does not ask before making a new file or changing one it made, unless outside text is in the request or you set `write_file`'s class yourself. Replacing or adding to a file you put there asks as usual ([ADR 0025](adr/0025-workspace-folder.md)). Also the folder `/export` in the chat saves to and where `pc_shell` starts. |
 | `deny` | `[]` | shell-style patterns | More names (`diary*`), paths under home (`.config/app`, `~/Documents/private`) or absolute paths (`/data/finance`) never read or written, with what is inside them. A trailing slash or a leading `./` makes no difference. An entry that could never match (`..` in it, `~` alone, another user's `~name`) is refused when the config loads. |
 | `hidden_allow` | the desktop's settings: `.config/hypr`, `omarchy`, `waybar`, `walker`, `mako`, `swayosd`, `kitty`, `alacritty`, `ghostty`, `foot`, `btop`, `fastfetch`, `jarvis` | paths under home, shell-style | The hidden files and folders directly under home Jarvis may read (`.config/app` and the like). Everything else hidden there (shell history, app logins, cookies, caches) stays shut; `[]` shuts them all. A hidden folder deeper down (`~/Projects/site/.git`) is not shut by this; secret names still are. |
+
+A relative path (`notes.md`, `drafts/a.md`) means the workspace: `write_file` always writes it there, and
+`list_dir` and `read_file` look there first and under home if nothing of that name is in the workspace.
 
 Whatever the roots say, Jarvis never reads or writes keys, tokens, password stores, browser profiles
 and its own state: `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.netrc`, `.env` files, `*.pem`,

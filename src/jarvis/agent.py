@@ -2294,6 +2294,7 @@ class Agent:
             self._overrides,
             untrusted_in_context=tainted,
             private_in_context=private and op.sends_words(args),
+            unasked=self._unasked(op, args),
         )
         decision, consent = self._consent(decision, op)
         stopped = _REFUSALS.get(decision.verdict)
@@ -2378,6 +2379,20 @@ class Agent:
             spoken=f"That's {limit} actions in {span}, the most I take, so I didn't do that one. "
             "Ask again in a few minutes.",
         )
+
+    @staticmethod
+    def _unasked(op: Operation, args: dict[str, Any]) -> str:
+        """Return why this call needs no question for the operation's own sake, or "".
+
+        The operation's check reads the disk, so a failure of it is a question, never a run.
+        """
+        if op.unasked is None:
+            return ""
+        try:
+            return op.unasked(args)
+        except Exception:
+            log.exception("%s could not tell whether to ask; it will ask", op.name)
+            return ""
 
     def _consent(self, decision: Decision, op: Operation) -> tuple[Decision, dict[str, str]]:
         """Return the decision to act on, and the audit fields of a question that was bypassed.

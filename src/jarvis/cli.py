@@ -49,6 +49,7 @@ from jarvis.operations import OperationError
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.pc.hearing import Listening, PcHearing
 from jarvis.pc.screenshot import folders as screenshot_folders
+from jarvis.pc.workspace import workspace_path, workspace_problem
 from jarvis.policy import OpClass, is_yes
 from jarvis.schedule import JobStore
 from jarvis.secretfile import (
@@ -666,6 +667,7 @@ def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
             return 2
     config.save(updated)
     ensure_api_key(strata_key_file())
+    _setup_workspace(updated)
     if updated.strata.run_config == Path():
         print(f"config: {paths.config_file()}")
         print(
@@ -689,6 +691,34 @@ def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
     result = _setup_units(STRATA_UNIT, JARVIS_UNIT, enable=args.enable)
     _setup_spotify(updated, failed=result)
     return result
+
+
+def _setup_workspace(cfg: config.Config) -> None:
+    """Make Jarvis's workspace folder if it is missing, and say if it cannot be used."""
+    folder = workspace_path(cfg.files, Path.home())
+    problem = workspace_problem(folder, create=True)
+    if problem:
+        print(
+            f"jarvis: files.workspace {folder} {problem}; fix that or point it elsewhere",
+            file=sys.stderr,
+        )
+    else:
+        print(f"workspace: {folder}")
+
+
+def _workspace_check(cfg: config.Config) -> tuple[bool, str, str]:
+    """The doctor's check of Jarvis's workspace: a folder of the owner's alone, or not made yet."""
+    folder = workspace_path(cfg.files, Path.home())
+    problem = workspace_problem(folder, create=False)
+    if problem:
+        return (
+            False,
+            f"workspace {folder} {problem}",
+            "fix the folder, or set files.workspace to another one",
+        )
+    if not folder.is_dir():
+        return True, f"workspace {folder} (made when Jarvis starts)", ""
+    return True, f"workspace {folder}", ""
 
 
 def _setup_units(*units: str, enable: bool) -> int:
@@ -809,6 +839,7 @@ def _setup_remote(args: argparse.Namespace, cfg: config.Config) -> int:
         if args.remote is not None:
             services.write_remote_key(cfg, key)
         config.save(cfg)
+    _setup_workspace(cfg)
     print(f"config: {paths.config_file()}\nvoice unit: {unit}")
     active = args.enable and _unit_state(JARVIS_UNIT) == "active"
     code = _setup_units(JARVIS_UNIT, enable=args.enable)
@@ -1163,6 +1194,15 @@ def _chat_prompt(chat: config.ChatConfig) -> str:
     return system_prompt(cfg, "chat", coding=mode == "coding")
 
 
+def _export_folder(cfg: config.Config) -> Path:
+    """Where the chat saves an exported conversation: the workspace, else ~/Documents or home."""
+    folder = workspace_path(cfg.files, Path.home())
+    if not workspace_problem(folder, create=True):
+        return folder
+    documents = Path.home() / "Documents"
+    return documents if documents.is_dir() else Path.home()
+
+
 def cmd_chat(_args: argparse.Namespace) -> int:
     """Open the chat window: typed requests, and everything Jarvis does, live."""
     from jarvis.chat.app import ChatApp, Services
@@ -1180,7 +1220,6 @@ def cmd_chat(_args: argparse.Namespace) -> int:
             pictures = built.pictures
     except SetupError as exc:
         unavailable = str(exc)
-    documents = Path.home() / "Documents"
     services = Services(
         status=lambda: _chat_status(cfg),
         details=lambda: _chat_details(cfg),
@@ -1197,7 +1236,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         apply=_apply_from_chat,
         history=InputHistory(paths.state_dir() / "chat-history", cfg.chat.history_size),
         archive=_chat_archive(cfg.chat.archive_keep),
-        export_dir=documents if documents.is_dir() else Path.home(),
+        export_dir=_export_folder(cfg),
         paste=clipboard.read,
         pictures=pictures,
         screenshots=_screenshot_folders(Path.home(), os.environ),
@@ -1807,6 +1846,7 @@ def essential_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], l
         *(_model_url(cfg) if local else []),
         *(_model_checks(cfg) if local else []),
         *(_coding_checks(cfg) if local else []),
+        _workspace_check(cfg),
         *tool_checks,
         *sing_checks,
         *_source_checks(cfg),

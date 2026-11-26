@@ -247,6 +247,9 @@ class Operation:
     may set it. With `always_ask`, a call that needs a yes is asked about even while the owner
     has consent bypassed (`boundaries.bypass_consent`): it can send the owner's words to whoever
     wrote a page, so a page must not be able to make it happen unseen.
+    `unasked` says, for one call's validated arguments, why that call needs no question although
+    the operation is `confirm` ("a new file in the workspace"), or "" to ask as usual. The owner's
+    own class for the operation, and outside text in the conversation, still win over it.
     """
 
     name: str
@@ -266,6 +269,7 @@ class Operation:
     audit_text: bool = True
     concurrent: bool = False
     always_ask: bool = False
+    unasked: Callable[[dict[str, Any]], str] | None = None
 
     def __post_init__(self) -> None:
         """Refuse an operation that acts yet claims to run beside others.
