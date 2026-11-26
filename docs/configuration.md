@@ -88,16 +88,16 @@ remembered is marked the same way, so that holds after the turn that read it is 
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `7000` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger; with a larger `strata.context` a larger value has room for more of the earlier requests' work), `memory_detail` `full`, `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
+`memory_tokens` `6700` (what the default 24,576-token window holds beside the raised thinking's room; less when a thinking cap is larger; with a larger `strata.context` a larger value has room for more of the earlier requests' work), `memory_detail` `full`, `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
 | `resume` | `true` | `true`, `false` | Open the chat on the conversation it had last time, kept 0600 in `~/.local/state/jarvis/chat-conversation.json`. `false` starts each session fresh and deletes the file. |
 | `verbosity` | `replies` | `replies`, `steps`, `everything` | How much of Jarvis's work the chat shows: requests and replies only, plus each step and its result, or plus every model call and detail. Ctrl+O and `/verbosity` change it and save it here. |
 | `toolbar` | `true` | `true`, `false` | The line under the input with the PC's CPU, GPU, VRAM and RAM use, temperatures, and how full the model's context is. In a narrow window it leaves out the temperatures first, so it stays on one line. |
-| `while_working` | `steer` | `steer`, `queue` | What Enter does while a request runs. `steer`: the words join that request as yours, before the model's next call; words it ended before taking run next. `queue`: they wait and run as the next request. Words sent with a picture or a long paste are always queued. Esc still stops the request; queued words then run. `/config` changes it. |
+| `while_working` | `steer` | `steer`, `queue` | What Enter does while a request runs. `steer`: the words join that request as yours, before the model's next call; words it ended before taking run next. `queue`: they wait and run as the next request. Words sent with a picture or with anything pasted into them, however short, are always queued. Esc still stops the request; queued words then run. `/config` changes it. |
 | `response_format` | `concise` | `concise`, `normal`, `verbose` | How the model writes chat replies: briefly, in a few sentences and without headings; as much as the request needs; or explained in full, with headings for a long answer. `/format` and `/config` change it, from the next request on. The voice keeps its own short spoken style. |
-| `archive_keep` | `50` | 0 to 1000 | Chat conversations kept in `~/.local/state/jarvis/chat-archive/` (0600) for `/resume` and reading back: each with its full log of requests, steps, results and replies. Older ones are deleted; `0` keeps none and turns `/resume` off. `/forget all` deletes them all. |
+| `archive_keep` | `50` | 0 to 1000 | Chat conversations kept in `~/.local/state/jarvis/chat-archive/` (0600) for `/resume` and reading back: each with its full log of requests, steps, results and replies. Older ones are deleted; `0` keeps none, deletes those kept before when the chat opens, and turns `/resume` off. `/forget all` deletes them all and forgets the conversation in the window too. A conversation is written once it has a request; opening and closing the chat writes no copy of the one it remembers. |
 | `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, with what was pasted into each, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
 
 `/config` in the chat opens the settings in sections, each setting with its values, when a change applies
@@ -105,9 +105,12 @@ and a line on what it does; ↑↓ move, Enter or → takes the next value, ← 
 Chat it changes `verbosity`, `toolbar`, `while_working` and `thinking` at once, and `reply_tokens`,
 `max_steps`, `memory_detail` and `resume` from the next time the chat opens, writing them here. Under Voice, Listening and
 Safety it sets `audio.speech_speed`, `audio.listen_to_pc` (off by default) and `boundaries.bypass_consent`,
-and under Tools each tool's setting; the voice service restarts once to take these when the screen closes.
-Acting without asking and taking requests from PC audio are turned on only by a second Enter, after the row
-says what that means, and are marked in red while they are on. A restart that fails is said in the chat.
+and under Tools each tool's setting; the voice service restarts once to take these when the screen closes,
+and the open chat takes `bypass_consent` at once (what Jarvis says about its own setup, `about_jarvis`,
+follows when the chat next opens).
+Acting without asking and taking requests from PC audio are turned on only by the same step again to the same
+value (a second Enter or →, or ← after ←), after the row says what that means and which value, and are marked in
+red while they are on; a step to another value asks about that one instead. A restart that fails is said in the chat.
 
 `/resume` lists the archived conversations, newest first (when, name, how many requests), and `/resume 2`
 continues the second: the model gets that conversation back as it was, so what came from outside text then
@@ -158,6 +161,7 @@ These are written into the Strata profile and unit by `jarvis setup`. Strata ser
 | `home` | `~/.local/share/strata` | path | Strata's data folder (`STRATA_DATA_DIR`). `--strata-home`. |
 | `components_parent` | `~/.local/share` | path | The `XDG_DATA_HOME` Strata runs with. `--strata-components-parent`. |
 | `run_config` | unset | path | Strata's own run config for the model: the `strata-<model>.json` that `strata launch` writes in Strata's `install` folder. The model, its engine, its flags, its tokenizer, its name and its picture reader all come from it; Jarvis sets only the limits in this table. Once set, the Strata unit starts only if the model file it names exists, and `jarvis setup` refuses a run config naming a file that is gone (mount the drive, or run `strata launch` for the model again). A model whose drive is not mounted is still known by its path, so Jarvis says the file is missing at once and keeps pictures on for when it is back. A run config with its own `--host` or `--port` is refused: Jarvis serves on `127.0.0.1` at `port`. Unset, `jarvis setup` saves the config and stops there; `jarvis doctor` fails until it is set. `--run-config`. |
+| `coding_run_config` | unset | path | Strata's run config for coding mode's own model ([`[coding]`](#coding-coding-mode)); unset: coding mode keeps `run_config`. `--coding-run-config`. |
 | `port` | `8080` | 1024 to 65535 | Strata's port on `127.0.0.1`. |
 | `context` | `24576` | 2048 to 262144 | Context window in tokens (`--max-context`). With `vram_reserve_mib` set, the engine's VRAM stays at its limit and a larger context takes the room from expert slots on the card instead; without it, each 1,000 tokens more costs about 0.05 GiB of VRAM ([models.md](models.md#context-size)). It holds the prompt and the tool schemas (about 5,000 tokens together), the remembered conversation (`agent.memory_tokens` or `chat.memory_tokens`), one reply and the request's tool results; when a long request outgrows it, its oldest tool results are cleared down to their start. |
 | `expert_vram_gib` | `1.0` | 0 to 64 | Expert weights kept in VRAM, for an engine that takes a size: passed as `--expert-vram` or `--vram-experts-gb`, whichever the run config has; the planner keeps the other experts in RAM (Jarvis drops the run config's `--ram-experts-gb`). An engine whose expert cache fills the card (`--expert-cache auto`, Qwen3.8-Flash-Next) ignores it: limit that one with `vram_reserve_mib`. |
@@ -280,6 +284,66 @@ config loads; off, it leaves the vector out without touching the run config. Jar
 depend on the model declining anything: every action still passes the policy, its confirmation and the
 audit log in code. How the vector changes Jarvis's tool calls has not been measured.
 
+## `[coding]`: coding mode
+
+Jarvis is in one of two modes, `normal` or `coding` ([ADR 0017](adr/0017-coding-mode.md)). Coding mode is for
+programming work: more model calls, longer replies, more thinking, a larger context, a part on programming
+added to the prompt, and, when you set one, a model of its own.
+
+- **Switching.** `jarvis model` shows the mode, each mode's model and whether it is loaded; `jarvis model
+  coding` and `jarvis model normal` switch, and so does `/model` in the chat. Where `auto` is on, the model
+  switches by itself when a request is programming work, and back when you say that work is over
+  (`switch_model`; switch it off like any tool with `jarvis tools switch_model off`). After
+  `back_after_s` without a request in coding mode Jarvis goes back to normal. In the chat, `/config` has
+  these under Mode: `back_after_s`, `coding.chat.auto` and `coding.voice.auto`. What the chat changed since
+  it started (`/effort`, `/format`, `/config`) is kept when the mode changes; coding mode still starts at
+  its own `[coding.chat]` values where it sets them.
+- **The model.** `strata.coding_run_config` names Strata's run config for the coding model, as
+  `strata.run_config` does for the usual one: run `strata launch` for it once, then `jarvis setup
+  --coding-run-config <its strata-<model>.json>`. Unset, coding mode keeps the usual model. With two
+  models, a switch restarts the model server: the first model is out of memory before the second loads, so
+  only one is ever in memory, and Jarvis says before it starts how long the load took the last time. A
+  switch is refused while Jarvis is answering a request anywhere (the voice service, a chat window or
+  `jarvis ask`), and a request that begins during a switch waits for the model server to come back. `jarvis doctor` checks the coding
+  model's files too.
+- **Every switch is audited** (`mode_switched`: from, to, by the owner, the model or the idle time, the
+  model's name, whether the server restarted, the seconds).
+
+| Key | Default | What it does |
+|---|---|---|
+| `back_after_s` | `1800.0` | Back to normal after this long without a request in coding mode; `0` never |
+| `context` | `65536` | The model server's context in coding mode (`strata.context` in normal mode) |
+| `temperature` | unset | The sampling temperature in coding mode; unset: `model.temperature` |
+| `vram_reserve_mib`, `expert_vram_gib`, `memory_max` | unset | The same keys of `[strata]`, for coding mode only; unset (`0`, absent, `""`): `[strata]`'s |
+| `reasoning_budget_tokens` | `4096` | Strata's cap on thinking in coding mode |
+| `tools_off` | `[]` | Tools not offered in coding mode |
+| `write_roots` | `[]` | Folders Jarvis may also write in coding mode, besides `files.write_roots` |
+| `prompt` | `""` | Your own instructions for programming work, added to the prompt in coding mode |
+
+`[coding.chat]` is laid over `[chat]` and `[coding.voice]` over `[agent]` while Jarvis is in coding mode. Each
+holds only what coding changes; a key you take out keeps the channel's own value, and everything else
+(`chat.resume`, `chat.verbosity`, the voice's `memory_idle_s` and so on) is never touched.
+
+| Key | `[coding.chat]` | `[coding.voice]` |
+|---|---|---|
+| `max_steps` | `60` | `20` |
+| `max_tool_calls` | `120` | `40` |
+| `max_seconds` | `1800.0` | `300.0` |
+| `reply_tokens` | `8192` | `4096` |
+| `tool_text_chars` | `20000` | unset |
+| `memory_tokens` | `20000` | unset |
+| `thinking` | `medium` | `low` |
+| `thinking_tokens` | `1024` | `512` |
+| `thinking_max` | unset | unset |
+| `thinking_raised_tokens` | `4096` | `2048` |
+| `auto` | `true` | `false` |
+
+The chat's overlay is for long, written work. The voice's is small on purpose: a spoken, `jarvis ask` or
+scheduled request stays a quick command with its short memory, and only gets room to write a file. `auto` is
+off there because a model load in the middle of a spoken request is a long silence, and every spoken request
+after it would be answered by the coding model; set `coding.voice.auto = true` to let spoken requests switch
+too. `memory_tokens` is still held to what the context leaves, as in `[chat]`.
+
 ## `[spotify]`: your own Spotify developer app
 
 | Key | Default | Allowed | What it does |
@@ -332,7 +396,7 @@ the playlist ones: everything else works, and adding to a playlist says to run `
 | `transcribe_short_window` | `true` | true or false | Size Whisper's window to the clip (`context_window_optimization`); much faster for short commands. |
 | `vocabulary_hint` | `true` | true or false | Prime speech-to-text with Jarvis's name, its actions and your artist names. |
 | `hint_names` | `40` | 0 to 200 | Most artist names put in the hint (the hint also stops at 800 characters). |
-| `listen_to_pc` | `false` | true or false | Also take requests heard in PC audio. `jarvis pc-audio on`. The voice prompt tells the model either way whether it hears PC audio, whose (`pc_audio_apps`) and how such a request is treated; the chat never hears it and its prompt leaves it out. On, the voice service also has `pc_audio_listen` (`safe`): asked what is said or played there, it listens (see `pc_audio_recall_s`) and gets the words as PC-audio data, so with `bypass_consent` off a later action or a search waits for your yes, as after a file's text; a stopped program or a shell command after them is refused whatever it is set to. Only your own request can use it, and only the voice service hears: in `jarvis ask` every listen is refused. |
+| `listen_to_pc` | `false` | true or false | Also take requests heard in PC audio. `jarvis pc-audio on`. The voice prompt tells the model either way whether it hears PC audio, whose (`pc_audio_apps`) and how such a request is treated; the chat never hears it and its prompt leaves it out. On, the voice service also has `pc_audio_listen` (`safe`): asked what is said or played there, it listens (see `pc_audio_recall_s`) and gets the words as PC-audio data, so with `bypass_consent` off a later action or a search waits for your yes, as after a file's text; a stopped program or a shell command after them is refused whatever it is set to. Only your own request can use it, never a scheduled one, and only the voice service hears: in `jarvis ask` every listen is refused. A stop or speaking over Jarvis ends a listen at once. |
 | `pc_audio_apps` | `["discord"]` | list of app or process names | Whose audio to listen to: every stream they play is recorded and heard mixed. An empty list means all PC output. `--apps`, `--all-output`. |
 | `pc_audio_grant_s` | `600.0` | 0 to 86400 | After you say yes to a PC-audio request, how long further PC-audio requests run without asking. 0 asks every time. Time the PC spends asleep counts. |
 | `confirm_blocks_on_pc_speech` | `true` | true or false | A yes counts as no if speech was heard in PC audio while Jarvis waited for it. |
@@ -595,8 +659,9 @@ takes the change the next time it opens.
 
 `/config` in the chat also sets the speaking speed (`audio.speech_speed`), whether Jarvis acts without asking
 first (`boundaries.bypass_consent`) and whether it takes requests from PC audio (`audio.listen_to_pc`), marked
-"voice too": each change is saved and audited (`setting_changed`), and the voice service takes them when the
-settings close.
+"voice too": each change is saved and audited (`setting_changed`; acting without asking as `consent_changed`,
+as `jarvis consent` records it), and the voice service takes them when the settings close. Acting without
+asking also applies to the open chat at once, turned on or off.
 
 ## The confirm key (`jarvis confirm`)
 

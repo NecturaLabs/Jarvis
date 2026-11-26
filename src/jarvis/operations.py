@@ -93,7 +93,8 @@ class Request:
     Jarvis, Jarvis was paused or is stopping), for an operation that runs long, and `hushed` when
     nothing more of it can be heard (`jarvis hush` too), for one that makes a sound (`sing`). An
     operation making a sound runs inside `making_sound()`, so the voice listens for the wake word
-    meanwhile, as it does while it speaks.
+    meanwhile, as it does while it speaks. `scheduled` marks a request run when a job fell due: the
+    owner did not ask for it just now.
     """
 
     foreign: bool
@@ -104,6 +105,7 @@ class Request:
     cancelled: Callable[[], bool] = field(default=lambda: False)
     hushed: Callable[[], bool] = field(default=lambda: False)
     making_sound: Callable[[], AbstractContextManager[None]] = field(default=nullcontext)
+    scheduled: bool = False
 
     @property
     def words(self) -> str:
@@ -134,6 +136,7 @@ def request_scope(  # ruff: ignore[too-many-arguments] - the request's fields, k
     words: str = "",
     time_left: Callable[[], float] = lambda: math.inf,
     cancelled: Callable[[], bool] = lambda: False,
+    scheduled: bool = False,
     hushed: Callable[[], bool] = lambda: False,
     making_sound: Callable[[], AbstractContextManager[None]] = nullcontext,
 ) -> Generator[Request]:
@@ -143,6 +146,7 @@ def request_scope(  # ruff: ignore[too-many-arguments] - the request's fields, k
         typed=words,
         time_left=time_left,
         cancelled=cancelled,
+        scheduled=scheduled,
         hushed=hushed,
         making_sound=making_sound,
     )
@@ -193,6 +197,7 @@ class Result:
     model think that hard for the rest of the request (`think_harder`); the agent decides.
     `sound` is played to the owner in the reply, after the words spoken before it; a channel
     that cannot play sound turns the result into a failure the model is told about.
+    `mode` asks the agent to go on in that mode, on that mode's model (`switch_model`).
     """
 
     text: str
@@ -205,6 +210,7 @@ class Result:
     quiet: bool = False
     effort: str = ""
     sound: Sound | None = None
+    mode: str = ""
 
 
 @dataclass(frozen=True, slots=True)

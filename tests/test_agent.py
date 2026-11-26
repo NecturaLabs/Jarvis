@@ -2327,6 +2327,25 @@ def test_a_question_that_cannot_be_asked_counts_as_no() -> None:
     assert counter.runs == []
 
 
+def test_a_question_that_cannot_be_worded_counts_as_no() -> None:
+    # Regression: an operation whose summary raised ended the whole request with the error.
+    counter = Counter()
+
+    def broken(_args: dict[str, Any]) -> str:
+        msg = "no words for this"
+        raise ValueError(msg)
+
+    op = replace(counter.op("play", cls=OpClass.CONFIRM), spoken_summary=broken)
+    model = ScriptedModel([_call("play"), _say("I couldn't check with you.")])
+    agent, audit = _agent(model, [op])
+
+    reply = agent.handle("play", Hooks(confirm=lambda _question: True))
+
+    assert reply == "I couldn't check with you."
+    assert counter.runs == []
+    assert _confirmation(audit)["reason"] == "failed"
+
+
 def test_a_no_action_reply_is_spoken_without_a_second_model_call() -> None:
     model = ScriptedModel([_call("no_action", {"reply": "Hey. What are we listening to?"})])
     agent, _ = _agent(model, [])
@@ -2685,6 +2704,22 @@ def test_with_consent_bypassed_outside_text_does_not_stop_a_side_effect() -> Non
     agent.handle("look it up then pause", Hooks(confirm=_never_asked))
 
     assert [run["op"] for run in counter.runs] == ["search", "pause"]
+
+
+def test_consent_bypassed_or_not_takes_effect_from_the_next_decision() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    replies = [_call("pause"), _say("Left it."), _call("pause", call_id="c2"), _say("Paused.")]
+    model = ScriptedModel(replies)
+    agent, _ = _bypassing(model, [counter.op("pause", cls=OpClass.CONFIRM)])
+
+    agent.set_bypass_consent(on=False)
+    agent.handle("pause", Hooks(confirm=lambda q: asked.append(q) or False))
+    agent.set_bypass_consent(on=True)
+    agent.handle("pause", Hooks(confirm=_never_asked))
+
+    assert len(asked) == 1
+    assert counter.runs == [{"op": "pause"}]
 
 
 def test_with_consent_bypassed_pc_audio_runs_unasked() -> None:
@@ -4122,6 +4157,21 @@ def test_kept_work_ends_after_the_last_call_whose_results_all_came_back() -> Non
     assert kept == [answered, result]
 
 
+def test_in_full_detail_what_was_heard_in_pc_audio_is_not_kept_past_its_request() -> None:
+    heard = "they said the door code is 4321"
+    listen = Counter().op("pc_audio_listen", origin=Origin.PC_AUDIO, side_effect=False, text=heard)
+    model = ScriptedModel([_call("pc_audio_listen"), _say("They gave a code.")])
+    agent, _ = _agent(model, [listen], limits=FULL)
+
+    agent.handle("what are they saying", NO_CONFIRM)
+
+    assert heard in json.dumps(model.seen[1])  # the request itself read it
+    (turn,) = agent.memory.turns
+    assert heard not in json.dumps(agent.memory.messages())
+    assert [m["role"] for m in turn.work] == ["assistant", "tool"]
+    assert (turn.outside, turn.private, turn.reply) == ("pc_audio", True, "They gave a code.")
+
+
 def test_condensing_the_conversation_says_so_and_the_meter_shows_what_is_left() -> None:
     notes: list[str] = []
     page = "x" * 900
@@ -4224,6 +4274,24 @@ def test_a_request_answered_while_outside_text_was_remembered_keeps_that_mark() 
     assert agent.memory.turns[0].outside == "memory"
     assert agent.memory.holds_outside_text_but(Origin.PROCESS.value)
     assert agent.memory.messages()[-1]["content"].endswith("</data>")
+
+
+def test_a_request_stopped_mid_stream_while_outside_text_was_remembered_keeps_that_mark() -> None:
+    quote = _call("no_action", {"reply": "They are a band. They come from Leeds."})
+    model = ScriptedModel([_call("search"), _say("Found it."), quote])
+    ops = [Counter().op("search", origin=Origin.WEB, side_effect=False)]
+    agent, _ = _agent(model, ops, limits=FULL)
+    agent.handle("find inkwell", NO_CONFIRM)
+    heard: list[str] = []
+    hooks = Hooks(confirm=lambda _q: False, speak=heard.append, cancelled=lambda: bool(heard))
+
+    assert agent.handle("so what is it", hooks) == "They are a band."
+
+    del agent.memory.turns[0]  # the turn that read the page is forgotten
+    (stopped,) = agent.memory.turns
+    assert stopped.reply.startswith("They are a band.")
+    assert stopped.outside == "memory"
+    assert agent.memory.holds_outside_text_but(Origin.PROCESS.value)
 
 
 def test_in_full_detail_remembered_file_text_puts_a_search_behind_a_yes() -> None:

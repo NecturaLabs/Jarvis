@@ -281,11 +281,12 @@ class Conversation:
     def load(self, path: Path) -> bool:
         """Read a conversation saved by `save`; return whether one was read.
 
-        A missing, unreadable or foreign file leaves the conversation empty.
+        A missing, unreadable or foreign file, or one nested too deep to read, leaves the
+        conversation empty.
         """
         try:
             saved = _read(path)
-        except (OSError, ValueError, TypeError) as exc:
+        except (OSError, ValueError, TypeError, RecursionError) as exc:
             if not isinstance(exc, FileNotFoundError):
                 log.warning("the saved conversation could not be read: %s", exc)
             return False

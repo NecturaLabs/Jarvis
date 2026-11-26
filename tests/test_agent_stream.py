@@ -202,6 +202,19 @@ def test_a_cancelled_request_stops_the_stream_and_keeps_only_what_was_said() -> 
     assert audit.events[-1]["event"] == "reply"
 
 
+def test_a_reply_written_whole_is_not_remembered_as_stopped_when_spoken_over() -> None:
+    reply = "First part. Second part. Third part."
+    model = ScriptedModel([_call("no_action", {"reply": reply})])
+    ear = Ear(model, stop_after="Third part.")  # the owner speaks over its last words
+    agent, audit = _agent(model, [])
+
+    assert agent.handle("talk", ear.hooks()) == reply
+
+    assert ear.cancelled
+    assert [turn.reply for turn in agent.memory.turns] == [reply]
+    assert "stopped" not in audit.events[-1]
+
+
 def test_nothing_past_the_stream_cap_is_spoken_before_the_answer_is_whole() -> None:
     counter = Counter()
     sentence = "This is a sentence of words. "

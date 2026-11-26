@@ -482,6 +482,7 @@ _LABELS = {
     "os_skill": "Reading Omarchy's guide",
     "no_action": "Writing",
     "think_harder": "Thinking harder",
+    "switch_model": "Switching the model",
 }
 
 

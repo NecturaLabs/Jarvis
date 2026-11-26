@@ -42,7 +42,7 @@ max_tool_calls = 40
 max_seconds = 600.0
 reply_tokens = 2048
 tool_text_chars = 8000
-memory_tokens = 7000
+memory_tokens = 6700
 memory_idle_s = 0.0
 memory_detail = "full"
 thinking = "none"
@@ -74,6 +74,48 @@ memory_max = "40G"  # MemoryHigh of the Strata unit; MemoryMax is 10% above it
 kv_resident = 0  # context cells kept in VRAM (20480 or more), the whole context in RAM; 0: all in VRAM
 pictures = true  # use the picture reader the run config names; false: no pictures
 vision_idle_s = 120
+
+# Coding mode: what changes while Jarvis does programming work (`jarvis model coding`, the chat's
+# /model, or the model itself where auto allows it). The model server then runs
+# strata.coding_run_config when one is set (in [strata]: coding_run_config = "/path/to/strata/
+# install/strata-<coding model>.json"; unset, coding mode keeps the usual model).
+[coding]
+back_after_s = 1800.0  # back to the normal mode after this long unused; 0 never
+context = 65536
+# temperature: default [model]'s; expert_vram_gib: default [strata]'s.
+vram_reserve_mib = 0  # 0: [strata]'s
+memory_max = ""  # "": [strata]'s
+reasoning_budget_tokens = 4096
+tools_off = []  # tools not offered in coding mode
+write_roots = []  # folders Jarvis may also write in coding mode, besides files.write_roots
+prompt = ""  # your own instructions for programming work
+
+# What coding mode changes for a typed request, laid over [chat]: only these limits; take one out
+# to keep [chat]'s. auto: the model moves a request that is programming work to coding mode
+# itself, and back when that work is over.
+[coding.chat]
+max_steps = 60
+max_tool_calls = 120
+max_seconds = 1800.0
+reply_tokens = 8192
+tool_text_chars = 20000
+memory_tokens = 20000
+thinking = "medium"
+thinking_tokens = 1024
+thinking_raised_tokens = 4096
+auto = true
+
+# The same for a spoken, `jarvis ask` or scheduled request, laid over [agent]: room to write a
+# file, and the short memory of a quick command kept.
+[coding.voice]
+max_steps = 20
+max_tool_calls = 40
+max_seconds = 300.0
+reply_tokens = 4096
+thinking = "low"
+thinking_tokens = 512
+thinking_raised_tokens = 2048
+auto = false
 
 # Your own Spotify developer app (docs/configuration.md): paste its client ID, or run
 # `jarvis setup --spotify-client-id <id>`.

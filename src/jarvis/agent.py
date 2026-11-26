@@ -4,6 +4,7 @@ A request that is nothing but a plain command ("pause", "volume 40") takes the s
 call the model writes (validation, policy, confirmation, audit) without waiting for the model.
 """
 
+import contextlib
 import contextvars
 import copy
 import hashlib
@@ -15,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from jarvis import shortcuts
 from jarvis.config import EFFORTS, MemoryDetail
@@ -86,12 +87,14 @@ STILL_WAITING_S = 15.0
 MAX_STREAMED_CHARS = 4000  # no more is spoken before an answer is whole (no_action's reply cap)
 NO_ACTION = "no_action"
 THINK_HARDER = "think_harder"
+SWITCH_MODEL = "switch_model"
 _UNKNOWN = "unknown operation"
 # What a remembered turn keeps of its look-ups, so a follow-up can go back to the same page.
 MAX_LOOK_UPS_KEPT = 6
 MAX_ASKED = 160  # characters of one argument
 MAX_LOOKED = 900  # characters of them all
-_NOT_LOOK_UPS = frozenset({NO_ACTION, THINK_HARDER, "stay_quiet"})
+_NOT_LOOK_UPS = frozenset({NO_ACTION, THINK_HARDER, SWITCH_MODEL, "stay_quiet"})
+_WAYS_TO_GO_ON = frozenset({THINK_HARDER, SWITCH_MODEL})
 _THINKING: tuple[Literal["low", "medium", "high"], ...] = ("low", "medium", "high")
 
 MODEL_DOWN = "My model isn't answering right now."
@@ -627,6 +630,104 @@ class Limits:
 
 
 @dataclass(frozen=True, slots=True)
+class Setup:
+    """What an agent works with in one mode: its prompt, its operations and its limits."""
+
+    system_prompt: str
+    registry: Registry
+    limits: Limits
+    pictures: bool = False  # the mode's model can see pictures
+    model: ChatModel | None = None  # the mode's own client (its sampling); None: the agent's
+
+
+class Modes(Protocol):
+    """The modes Jarvis can be in (normal, coding), as the agent uses them (`jarvis.modes`)."""
+
+    def current(self) -> str:
+        """Return the mode Jarvis is in now; another Jarvis process may have changed it."""
+        ...
+
+    def setup(self, mode: str) -> Setup:
+        """Return what the agent works with in `mode`."""
+        ...
+
+    def switch(self, to: str, say: Callable[[str], None]) -> str:
+        """Switch Jarvis to `to`, telling the owner through `say` first when it takes a while.
+
+        Return "" once Jarvis is in that mode, else what to tell the owner instead.
+        """
+        ...
+
+    def used(self) -> None:
+        """Note that a request was just answered in the current mode."""
+        ...
+
+    def rest(self, say: Callable[[str], None]) -> None:
+        """Go back to the normal mode when coding mode went unused too long, telling the owner."""
+        ...
+
+    def answering(self) -> AbstractContextManager[object]:
+        """Return the mark held while a request is answered, so no switch cuts its model call."""
+        ...
+
+
+class _OneMode:
+    """The modes of an agent that has only the one it was made with."""
+
+    mode = "normal"
+
+    def current(self) -> str:
+        return self.mode
+
+    def setup(self, mode: str) -> Setup:
+        raise NotImplementedError(mode)
+
+    def switch(self, to: str, say: Callable[[str], None]) -> str:
+        del say
+        return f"This Jarvis has no {to} mode, only the {self.mode} one."
+
+    def used(self) -> None:
+        pass
+
+    def rest(self, say: Callable[[str], None]) -> None:
+        pass
+
+    @staticmethod
+    def answering() -> AbstractContextManager[object]:
+        return contextlib.nullcontext()
+
+
+def _tell(hooks: Hooks, line: str) -> None:
+    """Tell the owner a line while a request runs: said by voice, shown in a window."""
+    if hooks.speak is not None:
+        hooks.speak(line)
+    elif hooks.draft is not None:
+        hooks.draft(line)
+
+
+def _carried(turn: _Turn, before: _Turn | None) -> None:
+    """Carry what a request held before a mode switch into the request begun anew (`before`).
+
+    What it read stays read: outside text or the owner's own data seen before the switch still
+    puts the actions after it behind a yes. The words typed into it come along; they were
+    audited and counted as the owner's own the first time.
+    """
+    if before is None:
+        return
+    turn.untrusted = turn.untrusted or before.untrusted
+    turn.private = turn.private or before.private
+    turn.outside = turn.outside or before.outside
+    for words in before.steered:
+        turn.messages.append({"role": "user", "content": f"{STEERED} {words}"})
+        turn.steered.append(words)
+
+
+def _name(call: Mapping[str, Any]) -> str:
+    """Return the name of the operation a call asks for."""
+    return str(obj(call.get("function")).get("name", ""))
+
+
+@dataclass(frozen=True, slots=True)
 class ContextUse:
     """How full the model's context is, for the owner to see.
 
@@ -740,14 +841,23 @@ def _audited(op: Operation | None, args: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+_HEARD = f'<data origin="{Origin.PC_AUDIO.value}">'
+HEARD_NOT_KEPT = "(What was heard is not kept after the request that heard it.)"
+
+
 def kept_work(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Return what the conversation keeps of a request's work: its messages after the request.
 
     They end after the last call whose results all came back (a request stopped while a call
     ran leaves no call without its result). A lone `no_action` call at the end is left out with
-    its result: its words are the reply the turn keeps anyway.
+    its result: its words are the reply the turn keeps anyway. What was heard in PC audio is
+    held no longer than its request (ADR 0015): its result is kept as a note, still marked as
+    PC audio, without the words.
     """
     work = answered_calls([copy.deepcopy(dict(message)) for message in messages])
+    for message in work:
+        if message.get("role") == "tool" and str(message.get("content")).startswith(_HEARD):
+            message["content"] = f"{_HEARD}{HEARD_NOT_KEPT}</data>"
     calls = [index for index, message in enumerate(work) if message.get("tool_calls")]
     if calls and all(m.get("role") == "tool" for m in work[calls[-1] + 1 :]):
         names = {
@@ -830,6 +940,8 @@ class _Turn:
     stuck: bool = False
     cold: bool = False  # the model must load first: the next model call may wait for that too
     answered: bool = False  # a model call returned: the model is in and working
+    wrote: bool = False  # the model wrote words of the reply: a call returned, or one stopped
+    stopped: bool = False  # cancelled before its reply was whole: what was said is all there is
     last: bool = False  # the request's last step: the model may only answer
     declined: bool = False
     played: bool = False  # a sound an operation made (a song) was queued to be heard
@@ -843,6 +955,7 @@ class _Turn:
     steered: list[str] = field(default_factory=list[str])  # the owner's words typed in meanwhile
     stream: _ReplyStream | None = None  # the last model call's, when the reply is spoken
     thinking: Thinking | None = None  # how the next model call thinks; the model may raise it
+    switch: str = ""  # the mode this request was moved to (`switch_model`): it is answered again
 
 
 @dataclass(frozen=True, slots=True)
@@ -920,6 +1033,7 @@ class Agent:
         pictures: bool = False,
         bypass_consent: bool = False,
         actions: ActionRate | None = None,
+        modes: Modes | None = None,
     ) -> None:
         """Wire the agent to its model, operations, prompt, audit log and the owner's classes.
 
@@ -934,7 +1048,8 @@ class Agent:
         would need a yes runs, and is audited as run with consent bypassed; `deny` still refuses.
         `actions` caps the side-effecting actions in a window, asked or not and with consent
         bypassed too (`boundaries.max_actions`); without it this agent counts its own, 30 in 10
-        minutes.
+        minutes. With `modes`, the agent follows the mode Jarvis is in (the prompt, operations
+        and limits given here are the normal mode's), and the model may ask to switch it.
         """
         super().__init__()
         self._model = model
@@ -959,6 +1074,29 @@ class Agent:
         self._written = [0, 0.0]  # tokens the model wrote this request, and the milliseconds
         self._bypass_consent = bypass_consent
         self._actions = actions or ActionRate(None)
+        self._modes: Modes = modes or _OneMode()
+        self._mode: str = "normal"
+        self._switched = False  # this request already moved to another mode
+        self._ends = 0.0  # when the request in flight runs out of time
+        self._shared_pictures = False  # the request in flight came with pictures
+        self._follow_mode()
+
+    def _follow_mode(self) -> None:
+        """Work as the mode Jarvis is in now asks, when it is not the one this agent was in."""
+        mode = self._modes.current()
+        if mode == self._mode:
+            return
+        setup = self._modes.setup(mode)
+        self._mode = mode
+        self._registry = setup.registry
+        self._system = setup.system_prompt
+        self._limits = setup.limits
+        self._pictures = setup.pictures
+        self._model = setup.model or self._model
+        self._schemas = tokens(json.dumps(setup.registry.tool_schemas()))
+        self._fixed = tokens(setup.system_prompt) + self._schemas
+        self._memory.budget = self._memory_budget()
+        self._last_used = 0
 
     def _memory_budget(self) -> int:
         """Return the room for the conversation: the setting, within what the window leaves.
@@ -982,6 +1120,14 @@ class Agent:
         fresh = Limits.of(section, self._limits.context_tokens)
         self._limits = replace(self._limits, thinking=fresh.thinking, raised=fresh.raised)
         self._memory.budget = self._memory_budget()  # an answer's room includes its thinking
+
+    def set_bypass_consent(self, *, on: bool) -> None:
+        """Ask before acting again (`on` False), or stop asking, from the next decision on.
+
+        For a chat whose `/config` changed `boundaries.bypass_consent`: the change is audited
+        where it is saved.
+        """
+        self._bypass_consent = on
 
     @property
     def memory(self) -> Conversation:
@@ -1040,7 +1186,8 @@ class Agent:
         folded = folded or memory.oldest_to_fold()
         if not folded:
             return False
-        summary = self._summarize(folded)
+        with self._modes.answering():  # no mode switch restarts the model under the summary
+            summary = self._summarize(folded)
         if summary is None:
             return False
         memory.fold(folded, summary)
@@ -1084,16 +1231,17 @@ class Agent:
         thinking = self._limits.thinking
         began = self._clock()
         try:
-            self._model.chat(
-                [
-                    {"role": "system", "content": self._system},
-                    {"role": "user", "content": PRIME_WORDS},
-                ],
-                self._registry.tool_schemas(),
-                timeout_s=PRIME_S,
-                max_tokens=1,
-                thinking=None if thinking is None else Thinking(thinking.effort, 1),
-            )
+            with self._modes.answering():  # no mode switch restarts the model under this call
+                self._model.chat(
+                    [
+                        {"role": "system", "content": self._system},
+                        {"role": "user", "content": PRIME_WORDS},
+                    ],
+                    self._registry.tool_schemas(),
+                    timeout_s=PRIME_S,
+                    max_tokens=1,
+                    thinking=None if thinking is None else Thinking(thinking.effort, 1),
+                )
         except Exception as exc:  # ruff: ignore[blind-except] - the first request reads it instead
             log.warning("the model did not read its prompt ahead of the first request: %s", exc)
             return False
@@ -1184,11 +1332,12 @@ class Agent:
         found on a page is that page's words). A request the model answered while the
         conversation held outside text is marked as drawing on it too (`REMEMBERED`, or
         `process` for listings alone), as is its file text: what the model wrote then may repeat
-        that text, and the mark stays after the turn it came from is forgotten.
+        that text, and the mark stays after the turn it came from is forgotten. One stopped
+        while the model wrote is marked the same once any of its words were passed on.
         """
         outside = turn.outside
         memory = self._memory
-        if turn.answered and outside in {"", Origin.PROCESS.value}:
+        if turn.wrote and outside in {"", Origin.PROCESS.value}:
             if memory.holds_outside_text_but(Origin.PROCESS.value):
                 outside = REMEMBERED
             elif memory.holds_outside_text:
@@ -1251,22 +1400,29 @@ class Agent:
         foreign = origin not in TRUSTED_ORIGINS
         handed_over = foreign or bool(steered_by) or scheduled
         own = "" if handed_over else _own_words(text, self._outside_pastes(text, pasted))
-        ends = self._clock() + self._limits.max_seconds
-        turns: list[_Turn] = []  # the request's turn once `_answer` makes it: it keeps the time
+        self._switched = False
+        self._ends = self._clock() + self._limits.max_seconds
+        turns: list[
+            _Turn
+        ] = []  # the request's turns as `_answer` makes them: the last keeps the time
 
         def time_left() -> float:
-            if turns:
-                return turns[0].started + turns[0].limit_s - self._clock()
-            return ends - self._clock()
+            if turns:  # the turn's own limit: it grows by the time a yes was waited for
+                return turns[-1].started + turns[-1].limit_s - self._clock()
+            return self._ends - self._clock()
 
-        with request_scope(
-            foreign=foreign,
-            words=own,
-            time_left=time_left,
-            cancelled=hooks.cancelled,
-            hushed=hooks.hushed,
-            making_sound=hooks.making_sound,
-        ) as request:
+        with (
+            self._modes.answering(),
+            request_scope(
+                foreign=foreign,
+                words=own,
+                time_left=time_left,
+                cancelled=hooks.cancelled,
+                scheduled=scheduled,
+                hushed=hooks.hushed,
+                making_sound=hooks.making_sound,
+            ) as request,
+        ):
             for seen in sorted(steered_by):
                 request.saw(seen)
             source = (origin, request, frozenset(steered_by), turns)
@@ -1278,12 +1434,13 @@ class Agent:
         hooks: Hooks,
         source: tuple[Origin, Request, frozenset[str], list[_Turn]],
         shared: tuple[Sequence[Picture], Sequence[str]],
+        before: _Turn | None = None,
     ) -> str:
+        """Answer the request; `before` is its turn up to the mode switch that began it anew."""
         origin, request = source[0], source[1]
         pictures, pasted = shared
-        started = self._clock()
+        started = self._begin(hooks, pictures=bool(pictures))
         foreign = origin not in TRUSTED_ORIGINS
-        self._written = [0, 0.0]
         outside = self._outside_pastes(text, pasted)
         shown: dict[str, object] = {"pictures": [p.name for p in pictures]} if pictures else {}
         if outside:
@@ -1336,6 +1493,7 @@ class Agent:
             turn.outside = turn.outside or Origin.PASTE.value
             request.saw(Origin.PASTE.value)
         _steered(turn, source[2])
+        _carried(turn, before)
         reply = self._shortcut(hit, hooks, turn) if hit is not None else None
         if reply is None:
             if hit is not None and remembered and self._memory.over_budget():
@@ -1352,18 +1510,38 @@ class Agent:
             )
             turn.private = turn.private or (bool(remembered) and self._memory.holds_private_text)
             reply = self._converse(hooks, turn)
+        if turn.switch:
+            # The request starts again in the new mode: its prompt, tools, limits and time.
+            return self._answer(text, hooks, source, shared, turn)
         self._deliver(reply, hooks, turn)
-        self._close(_with_pictures(words if outside else text, pictures), reply, hooks, turn)
+        self._close(_with_pictures(words if outside else text, pictures), reply, turn)
         self._fit_memory(turn, hooks)
+        self._modes.used()
         return reply
 
-    def _close(self, asked: str, reply: str, hooks: Hooks, turn: _Turn) -> None:
+    def _begin(self, hooks: Hooks, *, pictures: bool) -> float:
+        """Start answering in the mode Jarvis is in; return the time the answer began.
+
+        Coding mode left unused too long is left first, and the owner told. The request's time
+        runs from here, by the mode's own limit: a request moved to another mode begins anew.
+        """
+        if not self._switched:
+            self._modes.rest(lambda line: _tell(hooks, line))
+        self._follow_mode()
+        started = self._clock()
+        self._ends = started + self._limits.max_seconds
+        self._shared_pictures = pictures
+        self._written = [0, 0.0]
+        return started
+
+    def _close(self, asked: str, reply: str, turn: _Turn) -> None:
         """Remember a request and audit its reply.
 
         A stopped request is kept too, with what it looked up and a note that it was stopped, so
-        a follow-up need not look it all up again; a request heard in PC audio never is.
+        a follow-up need not look it all up again; a request heard in PC audio never is. A reply
+        written whole is not stopped, though the owner spoke over its last words.
         """
-        stopped = hooks.cancelled()
+        stopped = turn.stopped
         full = self._limits.memory_detail == "full"
         work = kept_work(turn.messages[turn.first + 1 :]) if full else []
         # Typed words the kept work holds stay there, so the request reads as the model read it.
@@ -1457,6 +1635,7 @@ class Agent:
         try:
             for step in range(self._limits.max_steps):
                 if hooks.cancelled():
+                    turn.stopped = True
                     return ""
                 if self._clock() - turn.started > turn.limit_s:
                     return _out_of_time(turn)
@@ -1515,7 +1694,10 @@ class Agent:
                 thinking=turn.thinking,
             )
         except _Stopped:
-            return stream.spoken if stream is not None else ""
+            spoken = stream.spoken if stream is not None else ""
+            turn.wrote = turn.wrote or bool(spoken)  # those words may repeat outside text too
+            turn.stopped = True
+            return spoken
         except Exception as exc:  # ruff: ignore[blind-except] - any model failure becomes a spoken apology
             self._audit.record("model_error", error=str(exc)[:MAX_AUDIT_TEXT])
             log.warning("the model did not answer: %s", exc)
@@ -1523,7 +1705,7 @@ class Agent:
         finally:
             turn.cues.settle()
             turn.cold = False  # the first call waited for the load; the model is in after it
-        turn.answered = True
+        turn.answered = turn.wrote = True
         self._note_usage(message)
         self._audit.record("model_call", step=step, seconds=round(self._clock() - began, 2))
         calls = self._unique(objs(message.get("tool_calls")))
@@ -1543,18 +1725,30 @@ class Agent:
             if cut and text:
                 text = f"{text} {CUT_SHORT}"
             return self._final(turn, text) if text else self._wordless(turn)
-        return self._act(turn, hooks, message, calls)
+        return self._act(turn, hooks, message, calls, cut=cut)
 
     def _act(
-        self, turn: _Turn, hooks: Hooks, message: Mapping[str, Any], calls: list[dict[str, Any]]
+        self,
+        turn: _Turn,
+        hooks: Hooks,
+        message: Mapping[str, Any],
+        calls: list[dict[str, Any]],
+        *,
+        cut: bool = False,
     ) -> str | None:
-        """Run the tool calls of one message; return the final reply, or None to go on."""
+        """Run the tool calls of one message; return the final reply, or None to go on.
+
+        `cut` says the length cap ended the message: a call may have been meant to follow.
+        """
         stream = turn.stream
         lone_reply = len(calls) == 1 and str(obj(calls[0].get("function")).get("name")) == NO_ACTION
         if not lone_reply or (stream is not None and stream.cut):
             self._cut(stream)  # text before even a lone reply call was not the reply
         turn.messages.append({"role": "assistant", "content": _text(message), "tool_calls": calls})
-        results = self._run_calls(calls, hooks, turn)
+        results = self._run_calls(calls, hooks, turn, cut=cut)
+        if turn.switch:
+            self._cut(stream)  # the request is answered again in the other mode
+            return ""
         if any(result.quiet for result in results):
             self._cut(stream)  # the owner asked for silence: no reply, not even words before it
             if not turn.played:  # a song asked for in this request still plays, in full
@@ -1632,7 +1826,7 @@ class Agent:
         turn.messages.append(
             {"role": "assistant", "content": _text(message), "tool_calls": [*whole, cut]}
         )
-        results = self._run_calls(whole, hooks, turn) if whole else []
+        results = self._run_calls(whole, hooks, turn, cut=True) if whole else []
         self._record(cut, Result(self._cut_note(name), ok=False), turn)
         if any(result.quiet for result in results):
             hooks.hush()
@@ -1743,8 +1937,12 @@ class Agent:
         )
         return None
 
-    def _run_calls(self, calls: list[dict[str, Any]], hooks: Hooks, turn: _Turn) -> list[Result]:
+    def _run_calls(
+        self, calls: list[dict[str, Any]], hooks: Hooks, turn: _Turn, *, cut: bool = False
+    ) -> list[Result]:
         """Run the calls of one assistant message and add their results to the conversation.
+
+        `cut` says the length cap ended the message, so these may not be all it was to hold.
 
         The calls were all written before any of their results existed, so whether outside text
         can have steered them is settled once, before the first one runs (and so is whether file
@@ -1752,6 +1950,13 @@ class Agent:
         """
         taint = (turn.untrusted, turn.private)
         results: list[Result] = []
+        if any(_name(call) == SWITCH_MODEL for call in calls) and self._offers_switch():
+            ran = self._run_switch(calls, hooks, turn, taint=taint, cut=cut)
+            alone = len(calls) == 1 and not cut  # beside other calls, none of them was tried
+            return [
+                self._record(call, result, turn, tried=alone)
+                for call, result in zip(calls, ran, strict=True)
+            ]
         for group in self._side_by_side(calls):
             ran = self._run_group(group, hooks, turn, taint=taint)
             results += (
@@ -1773,13 +1978,20 @@ class Agent:
             turn.played = True
         return replace(result, sound=None)  # played: the conversation keeps only its words
 
-    def _record(self, call: dict[str, Any], result: Result, turn: _Turn) -> Result:
-        """Note what one call did in the request, add its result to the conversation, return it."""
+    def _record(
+        self, call: dict[str, Any], result: Result, turn: _Turn, *, tried: bool = True
+    ) -> Result:
+        """Note what one call did in the request, add its result to the conversation, return it.
+
+        Without `tried` the call was not even decided, so it is not an action that was tried.
+        """
         name = str(obj(call.get("function")).get("name", ""))
         op = self._registry.get(name)
-        if op is not None and name == THINK_HARDER:
-            # How hard to think is not an action: the request still needs its own tools.
-            result = self._think_harder(turn, result)
+        going_on = op is not None and name in _WAYS_TO_GO_ON
+        if going_on:
+            # How hard to think, and in which mode, is not an action: the request still needs
+            # its own tools.
+            result = self._think_harder(turn, result) if name == THINK_HARDER else result
         else:
             turn.actions.append(f"{name if op is not None else _UNKNOWN} -> {_outcome(result)}")
         if op is not None and not op.side_effect and result.ok and name not in _NOT_LOOK_UPS:
@@ -1787,7 +1999,7 @@ class Agent:
             if asked:
                 turn.looked.append(f"{name} {asked}")
                 del turn.looked[:-MAX_LOOK_UPS_KEPT]  # the newest are what a follow-up asks about
-        if op is None or op.side_effect:
+        if tried and not going_on and (op is None or op.side_effect):
             turn.tried = True
             if op is not None and (result.ok or result.acted):
                 turn.succeeded = True
@@ -1888,6 +2100,83 @@ class Agent:
             f"From now on in this request you think at {wanted.effort} effort. Work the request "
             "out again, then call the tools it needs or answer."
         )
+
+    def _run_switch(
+        self,
+        calls: list[dict[str, Any]],
+        hooks: Hooks,
+        turn: _Turn,
+        *,
+        taint: tuple[bool, bool],
+        cut: bool = False,
+    ) -> list[Result]:
+        """Decide a reply that holds a `switch_model` call, and make the switch it may make.
+
+        The request is answered again in the new mode, so nothing else of it may have run or run
+        with it: a switch is made only when its call stands alone in the reply, and then no call
+        of that reply runs. Only the owner's own request switches, once, before any of its
+        actions was tried, and never to a mode that cannot see the pictures it came with. A call the
+        length cap cut off the reply (`cut`) stood beside it, so the switch is not made then. A
+        switch that is refused or cannot be made is the call's result, and the request goes on
+        in the mode it is in.
+        """
+        if len(calls) > 1 or cut:
+            alone = Result(
+                "Not run: switch_model must be the only call of a reply, as the request is "
+                "answered again in the other mode. Call it alone, or go on without it.",
+                ok=False,
+            )
+            return [alone] * len(calls)
+        call = calls[0]
+        refusal = self._no_switch(call, turn)
+        if refusal is not None:
+            return [refusal]
+        result = self._guarded(call, hooks, turn, taint=taint)
+        if not (result.ok and result.mode):
+            return [result]
+        if hooks.cancelled():
+            return [Result("Stopped: Jarvis is shutting down.", ok=False)]
+        refused = self._modes.switch(result.mode, lambda line: _tell(hooks, line))
+        if refused:
+            return [
+                Result(
+                    f"The switch was not made: {refused} Go on with the request in "
+                    f"{self._mode} mode, and tell the owner the switch was not made and why.",
+                    ok=False,
+                )
+            ]
+        self._switched = True
+        turn.switch = result.mode
+        return [result]
+
+    def _offers_switch(self) -> bool:
+        return self._registry.get(SWITCH_MODEL) is not None
+
+    def _no_switch(self, call: dict[str, Any], turn: _Turn) -> Result | None:
+        """Return why a `switch_model` call is not even decided, or None when it may be."""
+        try:
+            to = str(obj(self._arguments(obj(call.get("function")))).get("mode", ""))
+        except ValueError, RecursionError:
+            to = ""  # the arguments are refused where every call's are
+        if turn.foreign or (turn.request is not None and turn.request.scheduled):
+            # A scheduled request runs with nobody there to be told or to wait for the model.
+            return Result("Refused: only the owner's own request switches the model.", ok=False)
+        if self._switched or to == self._mode:
+            return Result(f"You are in {self._mode} mode now; go on with the request.")
+        if turn.tried:
+            return Result(
+                "An action of this request was already tried, so it finishes in this mode. "
+                "Finish it, and say the owner can ask for the switch in their next request.",
+                ok=False,
+            )
+        blind = self._shared_pictures and to in {"normal", "coding"}
+        if blind and not self._modes.setup(to).pictures:
+            return Result(
+                f"Refused: the model of {to} mode cannot see the picture this request came "
+                "with. Go on in this mode.",
+                ok=False,
+            )
+        return None
 
     def _guarded(
         self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, taint: tuple[bool, bool]
@@ -2128,9 +2417,9 @@ class Agent:
             )
             return False
         turn.cues.settle()
-        question = self._question(op, args, turn)
-        shown = op.preview(args) if hooks.preview and op.preview is not None else ""
-        try:
+        try:  # wording the question runs the operation's own code, which may fail too
+            question = self._question(op, args, turn)
+            shown = op.preview(args) if hooks.preview and op.preview is not None else ""
             answer = hooks.confirm(f"{question}\n{shown}" if shown else question)
         except Exception:
             log.exception("the confirmation question for %s could not be asked", op.name)

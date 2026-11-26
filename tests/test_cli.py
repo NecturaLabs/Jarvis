@@ -19,14 +19,16 @@ import numpy as np
 import pytest
 from strata_fixture import engine_run_config, install_engine
 
-from jarvis import __version__, app, cli, config, models, paths, services
+from jarvis import __version__, app, cli, config, models, modes, paths, services
 from jarvis import audio as audio_module
 from jarvis import voice as voice_module
 from jarvis.agent import Hooks
 from jarvis.audit import AuditLog
 from jarvis.chat.app import ChatApp
+from jarvis.chat.archive import ChatArchive
 from jarvis.cli import main
 from jarvis.confirmkey import ConfirmKey
+from jarvis.memory import Conversation
 from jarvis.operations import OperationError
 from jarvis.pc.hearing import Listening
 from jarvis.secretfile import write_private_json
@@ -727,13 +729,15 @@ def test_chat_sends_typed_requests_to_an_agent_that_marks_its_audit_events(
     opened = _opened_chat(monkeypatch)
     built: list[tuple[str | None, str]] = []
 
-    def build(_config: object, *, via: str | None = None, session: str = "") -> object:
+    def build(
+        _config: object, *, via: str | None = None, session: str = "", **_kwargs: object
+    ) -> object:
         built.append((via, session))
 
         def handle(text: str, _hooks: Hooks) -> str:
             return f"heard {text}"
 
-        return SimpleNamespace(agent=SimpleNamespace(handle=handle))
+        return SimpleNamespace(agent=SimpleNamespace(handle=handle), modes=None)
 
     monkeypatch.setattr(cli, "build", build)
 
@@ -747,6 +751,24 @@ def test_chat_sends_typed_requests_to_an_agent_that_marks_its_audit_events(
     agent = app._session  # pyright: ignore[reportPrivateUsage] - the chat app's agent, built on the first request
     assert agent is not None
     assert agent.handle("pause", Hooks(confirm=lambda _q: False)) == "heard pause"
+
+
+def test_a_chat_that_keeps_no_archive_deletes_the_one_kept_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = _opened_chat(monkeypatch)
+    folder = cli.chat_archive_dir()
+    earlier = ChatArchive(folder, keep=50)
+    earlier.record({"event": "request", "text": "hello"})
+    earlier.save(Conversation(budget=1000))
+    assert earlier.listed()
+    config.save(config.Config(chat=config.ChatConfig(archive_keep=0)))
+
+    assert main(["chat"]) == 0
+
+    (app,) = opened
+    assert app._services.archive is None  # pyright: ignore[reportPrivateUsage] - what the chat app was given
+    assert not list(folder.iterdir())
 
 
 def _transcribed(monkeypatch: pytest.MonkeyPatch, text: str) -> list[tuple[str, Path | None]]:
@@ -917,9 +939,13 @@ def _cmd_run(
     )
     ops = SimpleNamespace(start_refresh=run.refresh.append)
     agent = SimpleNamespace(prime=run.primed.set)
-    jarvis = SimpleNamespace(agent=agent, model=model, ops=ops, hint=lambda: "", audit=run.audit)
+    jarvis = SimpleNamespace(
+        agent=agent, model=model, ops=ops, hint=lambda: "", audit=run.audit, switcher=None
+    )
 
-    def build(_cfg: config.Config, *, listening: Listening | None = None) -> SimpleNamespace:
+    def build(
+        _cfg: config.Config, *, listening: Listening | None = None, **_kwargs: object
+    ) -> SimpleNamespace:
         run.listening.append(listening)
         return jarvis
 
@@ -2372,6 +2398,20 @@ def test_a_setting_the_chat_could_not_save_is_not_audited(monkeypatch: pytest.Mo
     assert not paths.audit_file().exists() or not paths.audit_file().read_text()
 
 
+def test_a_setting_saved_from_the_chat_is_not_said_to_have_failed_when_its_audit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config.save(config.Config())
+
+    def broken(_self: AuditLog, _path: Path, _line: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(AuditLog, "_append", broken)
+    cli._set_shared("boundaries.bypass_consent", False)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    assert config.load().boundaries.bypass_consent is False
+
+
 def test_the_chats_own_settings_are_audited_once_saved() -> None:
     config.save(config.Config())
 
@@ -2431,3 +2471,88 @@ def test_pc_audio_listen_reads_with_the_unhinted_transcriber_and_says_its_failur
     assert failing is not None
     with pytest.raises(OperationError, match="speech-to-text failed"):
         failing.transcribe(frames)
+
+
+def _mode_lock_free() -> bool:
+    with modes._locked(wait=False) as free:  # pyright: ignore[reportPrivateUsage]
+        return free
+
+
+def test_restart_keeps_mode_switches_out_while_it_writes_and_restarts_strata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: a restart wrote the model server's files and restarted it in the middle of a
+    # switch of modes, which writes and restarts the same.
+    profile = strata_profile_file()
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text("{}")
+    free: dict[tuple[str, ...], bool] = {}
+    begins: dict[tuple[str, ...], bool] = {}
+
+    def systemctl(*args: str) -> int:
+        free[args] = _mode_lock_free()
+        with modes.nobody_answering() as nobody:  # False: the restart holds requests off
+            begins[args] = nobody
+        return 0
+
+    def started(_unit: str) -> float | None:
+        return profile.stat().st_mtime - 60
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+    monkeypatch.setattr(cli, "_started_at", started)
+
+    assert cli.main(["restart"]) == 0
+
+    assert free["restart", "jarvis-strata.service"] is False
+    assert free["restart", "jarvis.service"] is True  # the voice service takes the lock itself
+    assert begins["restart", "jarvis-strata.service"] is False
+    assert begins["restart", "jarvis.service"] is True
+
+
+def test_restart_says_when_it_cut_a_request_that_was_being_answered(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    profile = strata_profile_file()
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text("{}")
+
+    with modes.Answering():  # a chat window is in the middle of a request
+        calls = _restart_calls(monkeypatch, profile.stat().st_mtime - 60)
+
+    assert ("restart", "jarvis-strata.service") in calls  # the owner's own restart is made
+    assert "was being answered" in capsys.readouterr().out
+
+
+def test_setup_keeps_mode_switches_out_while_it_writes_the_model_servers_files(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_subprocess(monkeypatch)
+    run = engine_run_config(home)
+    install_engine(home / "data")
+    config.save(config.Config(strata=config.StrataConfig(vram_reserve_mib=12000)))
+    free: list[bool] = []
+    write = services.write_strata_profile
+
+    def watched(cfg: config.Config) -> Path:
+        free.append(_mode_lock_free())
+        return write(cfg)
+
+    monkeypatch.setattr(services, "write_strata_profile", watched)
+
+    assert main(["setup", "--run-config", str(run)]) == 0
+
+    assert free == [False]
+
+
+def test_restart_is_made_when_the_modes_lock_cannot_be_opened(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def no_lock(_path: Path) -> int:
+        raise PermissionError
+
+    monkeypatch.setattr(modes, "_open_lock", no_lock)
+
+    calls = _restart_calls(monkeypatch, None)
+
+    assert ("restart", "jarvis.service") in calls
+    assert "lock" in capsys.readouterr().out
