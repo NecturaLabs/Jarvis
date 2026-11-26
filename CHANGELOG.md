@@ -297,6 +297,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Coding mode no longer lowers the chat's memory: `[coding.chat] memory_tokens` is unset by default, so it
+  keeps `chat.memory_tokens` unless set. `[coding]` can now set `kv_resident`, `keep_in_ram`, `pictures` and
+  `effort_position` for coding mode, like `[strata]` (#57).
 - With a shared Strata run config, the ACP coding provider keeps the current model mode and
   uses the normal context budget. Coding requests hold off automatic model restarts while they answer.
 - ACP cancel and close stop deferred prompts and suppress late chunks. Confirmation answers are

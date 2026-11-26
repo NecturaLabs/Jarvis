@@ -199,6 +199,46 @@ def test_what_the_owner_sets_for_coding_mode_wins(tmp_path: Path) -> None:
     assert coding.files.write_roots == [*cfg.files.write_roots, "~/code"]
 
 
+def test_coding_mode_keeps_the_chat_memory_unless_it_sets_its_own(tmp_path: Path) -> None:
+    cfg = _config(tmp_path).model_copy(
+        update={"chat": Config().chat.model_copy(update={"memory_tokens": 24000})}
+    )
+
+    assert modes.effective(cfg, "coding").chat.memory_tokens == 24000
+
+    own = _config(tmp_path, chat={"memory_tokens": 16000})
+    assert modes.effective(own, "coding").chat.memory_tokens == 16000
+
+
+def test_coding_mode_can_set_the_model_servers_memory_and_picture_keys(tmp_path: Path) -> None:
+    cfg = _config(
+        tmp_path, kv_resident=32768, keep_in_ram=False, pictures=False, effort_position="end"
+    )
+
+    coding = modes.effective(cfg, "coding").strata
+
+    assert coding.kv_resident == 32768
+    assert coding.keep_in_ram is False
+    assert coding.pictures is False
+    assert coding.effort_position == "end"
+    profile = services.strata_profile(modes.effective(cfg, "coding"))
+    args = profile["args"]
+    assert isinstance(args, list)
+    assert "--kv-resident" in args
+    assert profile["effort_position"] == "end"
+
+
+def test_coding_mode_keeps_the_strata_keys_it_leaves_unset(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+
+    coding = modes.effective(cfg, "coding").strata
+
+    assert coding.kv_resident == cfg.strata.kv_resident
+    assert coding.keep_in_ram == cfg.strata.keep_in_ram
+    assert coding.pictures == cfg.strata.pictures
+    assert coding.effort_position == cfg.strata.effort_position
+
+
 def test_a_thinking_ceiling_never_ends_below_where_coding_starts(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     low = cfg.model_copy(update={"chat": cfg.chat.model_copy(update={"thinking_max": "low"})})
