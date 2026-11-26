@@ -272,6 +272,44 @@ def test_a_yes_holds_only_for_the_element_the_question_named(tmp_path: Path) -> 
     assert setup.clicks() == []
 
 
+LINK_PAGE = {"e1": {"role": "link", "name": "More"}}
+
+
+def test_a_click_on_a_link_says_where_it_goes(tmp_path: Path) -> None:
+    page = Page(refs=dict(LINK_PAGE), attrs={("e1", "href"): "https://other.example/deal?id=7"})
+    setup = Setup(tmp_path, page)
+    _opened(setup)
+    agent, _, _ = setup.agent(
+        [_call("browser_act", {"element": "e1"}), _say("Done.")], bypass=False
+    )
+    asked: list[str] = []
+
+    agent.handle("press more", Hooks(confirm=lambda q: asked.append(q) or True))
+
+    assert asked == [
+        'Should I click the link "More" on site.example, which goes to other.example/deal?id=7?'
+    ]
+    assert ["click", "@e1"] in setup.clicks()
+
+
+def test_a_link_that_points_elsewhere_after_the_question_is_not_clicked(tmp_path: Path) -> None:
+    page = Page(refs=dict(LINK_PAGE), attrs={("e1", "href"): "/deal"})
+    setup = Setup(tmp_path, page)
+    _opened(setup)
+
+    def repoint(_question: str) -> bool:
+        setup.fake.page.attrs["e1", "href"] = "https://elsewhere.example/pay"
+        return True
+
+    agent, _, _ = setup.agent(
+        [_call("browser_act", {"element": "e1"}), _say("It changed.")], bypass=True
+    )
+
+    agent.handle("press more", Hooks(confirm=repoint))
+
+    assert setup.clicks() == []
+
+
 def test_text_for_a_button_is_refused_before_any_question(tmp_path: Path) -> None:
     setup = Setup(tmp_path)
     _opened(setup)

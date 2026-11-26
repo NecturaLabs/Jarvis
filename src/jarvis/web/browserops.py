@@ -30,6 +30,7 @@ MAX_URL = 2000
 MAX_TEXT = 200  # what may be typed: about a search, like `web_search`'s query
 ELEMENT_SHARE = 3  # at most a third of a result lists elements; the rest is the page's text
 _SAID_NAME = 60  # characters of an element's name in a question
+_SAID_ADDRESS = 80  # characters of where a link goes, in a question
 _REF = {"type": "string", "minLength": 2, "maxLength": 12}
 _PART = {"type": "integer", "minimum": 1, "maximum": MAX_PARTS}
 
@@ -91,11 +92,27 @@ def _where(args: dict[str, Any]) -> str:
     return f"the {role}{label} on {host}"
 
 
+def _goes_to(args: dict[str, Any]) -> str:
+    """Say where a bound link goes, for its question: its site and path, or that it goes nowhere."""
+    if "goes_to" not in args:
+        return ""
+    parts = urlsplit(str(args["goes_to"]))
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        return ", which goes to no web address"
+    address = parts.hostname + (parts.path if parts.path != "/" else "")
+    if parts.query:
+        address += f"?{parts.query}"
+    return f", which goes to {' '.join(address.split())[:_SAID_ADDRESS]}"
+
+
 def act_summary(args: dict[str, Any]) -> str:
-    """The words of the question about a bound `browser_act`: the element, its site, the words."""
+    """The words of the question about a bound `browser_act`: the element, its site, the words.
+
+    A link's question says where it goes as well: its name alone can say anything.
+    """
     words = " ".join(str(args.get("text", "")).split())
     if not words:
-        return f"click {_where(args)}"
+        return f"click {_where(args)}{_goes_to(args)}"
     then = " and press Enter" if args.get("submit", True) else ""
     return f'type "{words}" into {_where(args)}{then}'
 
@@ -220,16 +237,23 @@ class BrowserOps:
         if view is None or element is None:
             msg = "The page shows no such element now; open the page again."
             raise OperationError(msg)
-        if str(args.get("text", "")).strip() and element.role not in TYPABLE:
+        typing = bool(str(args.get("text", "")).strip())
+        if typing and element.role not in TYPABLE:
             msg = f"{element.said()} takes no typing; pick a text box."
             raise OperationError(msg)
-        return {
+        bound = {
             **args,
             "element": ref,
             "role": element.role,
             "name": element.name,
             "page": view.url,
         }
+        if element.role == "link" and not typing:
+            try:
+                bound["goes_to"] = self._browser.href(ref)
+            except BrowserError as exc:
+                raise OperationError(f"Couldn't read that link: {exc}.") from exc
+        return bound
 
     def act(self, args: dict[str, Any]) -> Result:
         """Click the element the owner agreed to, or type the words they agreed to into it.
@@ -247,7 +271,8 @@ class BrowserOps:
                     expect, page, words, submit=bool(args.get("submit", True))
                 )
             else:
-                view = self._browser.click(expect, page)
+                goes_to = args.get("goes_to")
+                view = self._browser.click(expect, page, None if goes_to is None else str(goes_to))
         except BrowserTimeoutError as exc:
             raise UncertainOutcomeError(f"The browser didn't answer: {exc}.") from exc
         except BrowserError as exc:

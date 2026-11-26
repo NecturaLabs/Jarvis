@@ -486,9 +486,9 @@ default). Without the program they are not offered, and `jarvis doctor` notes it
   `web_read`), follows a link the open page shows, or reads on in the page. It asks nothing.
 - `browser_screenshot` (the chat only) shows you one screen of the page. It asks nothing.
 - `browser_act` clicks something on the page, or types up to 200 characters into a text box (never a
-  password field) and presses Enter. It always asks first, naming the element, the site and the words, even
-  with `bypass_consent` on. `[boundaries.classes]` can switch it off (`deny`) or ask for the confirm key
-  (`strong`), never set it to run unasked.
+  password field) and presses Enter. It always asks first, naming the element, the site and the words (and
+  where a link goes), even with `bypass_consent` on. `[boundaries.classes]` can switch it off (`deny`) or
+  ask for the confirm key (`strong`), never set it to run unasked.
 
 The browser runs headless and muted, opens no window, and uses a throwaway profile in
 `$XDG_RUNTIME_DIR/jarvis/browser/`: none of your browsers, cookies or logins. Every connection it makes goes

@@ -67,10 +67,12 @@ quick commands.
   - `browser_act` clicks an element or types into a text box. It is `confirm`, its lowest class is
     `confirm`, and it is `always_ask`: the owner is asked even with `boundaries.bypass_consent` on. The
     question names the element, its site and the exact words ('Should I type "red shoes" into the
-    searchbox "Search" on shop.example and press Enter?'). The yes is bound to that element on that page:
-    if the page changed meanwhile, or the browser closed while the owner was asked (a question open longer
-    than `idle_close_s`), nothing is done and no new browser is started for it. Typing is `outbound`, at
-    most 200 characters, never into a password, hidden or file field.
+    searchbox "Search" on shop.example and press Enter?'), and for a link where it goes, since its name can
+    say anything ('Should I click the link "More" on shop.example, which goes to pay.example/checkout?').
+    The yes is bound to that element on that page, and a link to that address: if the page changed
+    meanwhile, or the browser closed while the owner was asked (a question open longer than
+    `idle_close_s`), nothing is done and no new browser is started for it. Typing is `outbound`, at most
+    200 characters, never into a password, hidden or file field.
   - Everything the browser returns is web text (`Origin.WEB`), cut to the channel's room for one result.
   - Each call to agent-browser gets at most 40 s and ends 25 s before the request's own time limit
     (`agent.max_seconds`), so a click or typing with its checks, or a browser that does not answer and is

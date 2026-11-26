@@ -497,12 +497,11 @@ class Browser:
         except PageError as exc:
             raise BrowserError(str(exc)) from exc
 
-    def link(self, ref: str) -> str:
-        """Return the full address a link on the current page points to.
+    def href(self, ref: str) -> str:
+        """Return where a link on the current page points, in full, unchecked ("" for nowhere).
 
         Raises:
-            BrowserError: no page is open, the element is not a link, or it points nowhere Jarvis
-                opens (another scheme, a script).
+            BrowserError: no page is open, or the element is not a link.
         """
         with self._lock:
             view = self._view
@@ -511,15 +510,24 @@ class Browser:
                 msg = "that is not a link on the page now; look at the page again"
                 raise BrowserError(msg)
             try:
-                rows = self._batch([["get", "attr", f"@{ref}", "href"]])
+                rows = self._batch([_href_command(ref)])
                 self._done(rows, 1, "read that link")
             finally:
                 self._idle()
-            href = _field(rows[0], "value").strip()
-            if not href:
-                msg = "that link points nowhere"
-                raise BrowserError(msg)
-            return self._checked(urljoin(view.url, href))
+            return _joined(view.url, rows[0])
+
+    def link(self, ref: str) -> str:
+        """Return the full address a link on the current page points to, to open it.
+
+        Raises:
+            BrowserError: no page is open, the element is not a link, or it points nowhere Jarvis
+                opens (another scheme, a script).
+        """
+        address = self.href(ref)
+        if not address:
+            msg = "that link points nowhere"
+            raise BrowserError(msg)
+        return self._checked(address)
 
     def _still_open(self) -> None:
         """Check that the page a yes was given for is still open.
@@ -551,18 +559,25 @@ class Browser:
             raise BrowserError(msg)
         return rows[look:]
 
-    def click(self, expect: Element, url: str) -> View:
+    def click(self, expect: Element, url: str, href: str | None = None) -> View:
         """Click an element the owner agreed to, if the page still shows it, and return the page.
 
-        A `BrowserTimeoutError` says the browser did not answer (the click may have happened), a
-        `BrowserError` that the page changed or the click failed.
+        With `href` (a link's, from `href`), the link must still point there.
+
+        A `BrowserTimeoutError` says the browser did not answer (the click may have happened).
+
+        Raises:
+            BrowserError: the page changed, the link points elsewhere now, or the click failed.
         """
         with self._lock:
             self._still_open()
             try:
-                self._same(expect, url)
+                rows = self._same(expect, url, [] if href is None else [_href_command(expect.ref)])
             finally:
                 self._idle()
+            if href is not None and _joined(url, rows[0]) != href:
+                msg = "that link points somewhere else now; look at the page again"
+                raise BrowserError(msg)
             return self._act([["click", f"@{expect.ref}"]], "click that", acting=True)
 
     def fill(self, expect: Element, url: str, text: str, *, submit: bool) -> View:
@@ -623,6 +638,16 @@ class Browser:
             finally:
                 path.unlink(missing_ok=True)
             return data
+
+
+def _href_command(ref: str) -> list[str]:
+    return ["get", "attr", f"@{ref}", "href"]
+
+
+def _joined(page: str, row: Mapping[str, Any]) -> str:
+    """Return the full address a `get attr href` row names, against `page`; "" for none."""
+    href = _field(row, "value").strip()
+    return urljoin(page, href) if href else ""
 
 
 def _time_for_batch() -> float:
