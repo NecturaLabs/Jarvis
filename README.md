@@ -1,3 +1,5 @@
+<img src="docs/assets/jarvis-icon.svg" alt="" width="96">
+
 # Jarvis
 
 [![CI](https://github.com/NecturaLabs/Jarvis/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/NecturaLabs/Jarvis/actions/workflows/ci.yml)
