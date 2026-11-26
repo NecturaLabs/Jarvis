@@ -1,6 +1,7 @@
 """The chat's archive: each conversation kept, listed, resumed with its provenance, capped."""
 
 import json
+import os
 import stat
 from typing import TYPE_CHECKING
 
@@ -209,3 +210,68 @@ def test_a_file_nested_too_deep_to_read_is_skipped(tmp_path: Path) -> None:
 
     assert [a.id for a in archive.listed()] == [kept]
     assert not archive.resume(kept, Conversation(budget=1000).load)
+
+
+def _first_format(folder: Path, conversation: str) -> None:
+    folder.mkdir(mode=0o700, exist_ok=True)
+    meta = {
+        "version": 1,
+        "id": conversation,
+        "name": "hello",
+        "named": False,
+        "created": "2026-11-25T21:44:03+00:00",
+        "updated": "2026-11-25T21:44:09+00:00",
+        "log": [{"event": "request", "text": "hello"}, {"event": "reply", "text": "Hi."}],
+    }
+    (folder / f"{conversation}.json").write_text(json.dumps(meta))
+    (folder / f"{conversation}.json").chmod(0o600)
+    memory = Conversation(budget=1000)
+    memory.add(Turn("hello", "Hi.", "", "", 1.0))
+    memory.save(folder / f"{conversation}.memory.json")
+
+
+def test_a_move_to_the_new_format_that_was_cut_short_is_made_again(tmp_path: Path) -> None:
+    folder, old = tmp_path / "a", "20261125-214403-abcdef"
+    _first_format(folder, old)
+    (folder / f"{old}.log.jsonl").write_text("")  # created, then the write never happened
+
+    ChatArchive(folder, keep=10).listed()
+
+    log = (folder / f"{old}.log.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["event"] for line in log] == ["request", "reply"]
+    assert (folder / f"{old}.log.jsonl").stat().st_mode & 0o777 == 0o600
+
+
+def test_an_entry_after_half_a_line_starts_on_its_own_line(tmp_path: Path) -> None:
+    archive = ChatArchive(tmp_path / "a", keep=10)
+    memory = Conversation(budget=1000)
+    memory.add(Turn("one", "Yes.", "", "", 1.0))
+    archive.record({"event": "request", "text": "one"})
+    archive.save(memory)
+    log = tmp_path / "a" / f"{archive.current}.log.jsonl"
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write('{"event": "rep')  # a write cut short
+
+    archive.record({"event": "request", "text": "two"})
+    archive.save(memory)
+
+    assert json.loads(log.read_text(encoding="utf-8").splitlines()[-1])["text"] == "two"
+
+
+def test_files_no_conversation_owns_are_deleted_once_they_are_old(tmp_path: Path) -> None:
+    folder = tmp_path / "a"
+    folder.mkdir(mode=0o700)
+    stale, fresh = folder / "20260101-000000-aaaaaa.memory.json", folder / "x.log.jsonl"
+    stale.write_text("{}")
+    fresh.write_text("")  # another window may be writing this one now
+    os.utime(stale, (0, 0))
+    archive = ChatArchive(folder, keep=10)
+    memory = Conversation(budget=1000)
+    memory.add(Turn("one", "Yes.", "", "", 1.0))
+    archive.record({"event": "request", "text": "one"})
+
+    archive.save(memory)
+
+    assert not stale.exists()
+    assert fresh.exists()
+    assert len(archive.listed()) == 1

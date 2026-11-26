@@ -148,6 +148,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The chat archive survives a write that was cut short: moving a conversation kept in the first format is
+  made again from that file, a half-written log line no longer swallows the next entry, and files no
+  listed conversation owns are deleted once they are an hour old. `/forget all` that cannot delete says so
+  and forgets nothing. `/compact` is written to the archive, and `/clear`, `/resume` and `/forget all` read
+  the log's last events first, so none lands in the next conversation. A chat closed before its request
+  began is still archived.
 - A request the model answered while the conversation held outside text now keeps that mark itself: what the
   model wrote then may repeat that text, so actions still need a yes once the turn it came from is forgotten. A
   request stopped while the model was writing keeps the mark too once any of its words were said or shown.

@@ -13,11 +13,13 @@ already in the archive. A chat that opens with the conversation it remembers and
 writes no copy of it.
 """
 
+import contextlib
 import json
 import logging
 import os
 import secrets
 import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -67,9 +69,17 @@ def _lines(entries: list[dict[str, object]]) -> str:
 
 def _append(path: Path, text: str) -> None:
     """Add `text` to the end of the private file `path`, made 0600 when it is new."""
-    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
-    with os.fdopen(os.open(path, flags, 0o600), "a", encoding="utf-8") as handle:
-        handle.write(text)
+    flags = os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+    with os.fdopen(os.open(path, flags, 0o600), "a+b") as handle:
+        size = handle.seek(0, os.SEEK_END)
+        if size:  # a write cut short left half a line: the next entry starts on its own line
+            handle.seek(size - 1)
+            if handle.read(1) != b"\n":
+                handle.write(b"\n")
+        handle.write(text.encode("utf-8"))
+
+
+ORPHAN_AFTER_S = 3600.0  # a file no listed conversation owns is deleted once it is this old
 
 
 class ChatArchive:
@@ -106,6 +116,11 @@ class ChatArchive:
 
     def _log(self, conversation_id: str) -> Path:
         return self._folder / f"{conversation_id}{LOG_SUFFIX}"
+
+    @property
+    def folder(self) -> Path:
+        """The folder the conversations are kept in."""
+        return self._folder
 
     @property
     def name(self) -> str:
@@ -210,8 +225,9 @@ class ChatArchive:
         upgraded["version"] = FILE_VERSION
         upgraded["requests"] = sum(e.get("event") == "request" for e in entries)
         try:
-            if not self._log(conversation_id).exists():
-                _append(self._log(conversation_id), _lines(entries))
+            # Written whole or not at all, and before the meta data lets go of the entries: a
+            # move that was cut short is made again from the first-format file.
+            write_atomic(self._log(conversation_id), _lines(entries), mode=0o600)
             write_atomic(
                 self._meta(conversation_id), json.dumps(upgraded, ensure_ascii=False), mode=0o600
             )
@@ -288,6 +304,16 @@ class ChatArchive:
             return gone
 
     def _prune(self) -> None:
-        for old in self._listed()[self._keep :]:
+        """Delete the conversations past the cap, and files a cut-short write left unlisted."""
+        listed = self._listed()
+        for old in listed[self._keep :]:
             for path in (self._meta(old.id), self._memory(old.id), self._log(old.id)):
                 path.unlink(missing_ok=True)
+        known = {kept.id for kept in listed} | {self.current}
+        old_enough = time.time() - ORPHAN_AFTER_S  # another window may be writing its own now
+        for suffix in (MEMORY_SUFFIX, LOG_SUFFIX):
+            for path in self._folder.glob(f"*{suffix}"):
+                with contextlib.suppress(OSError):
+                    orphan = path.name.removesuffix(suffix) not in known
+                    if orphan and path.stat().st_mtime < old_enough:
+                        path.unlink(missing_ok=True)

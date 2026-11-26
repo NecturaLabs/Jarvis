@@ -258,6 +258,7 @@ class _Work:
     steering: list[str] = field(default_factory=list[str])  # typed meanwhile, not yet taken
     taking: bool = True  # the request still takes steering; once it ends, the words wait
     running: bool = True  # the agent still works on the conversation: it is not archived now
+    began: bool = False  # its worker started: it archives at close, once the agent is done
     archive: bool = False  # it was asked to be archived meanwhile: once the agent is done
 
 
@@ -580,7 +581,8 @@ class ChatApp(App[None]):
             self._closing = True
             question, self._question = self._question, None
             work = self._work
-            running = work is not None and work.running
+            # A worker that never started will not archive: the window does, as with no request.
+            running = work is not None and work.running and work.began
         if question is not None:
             question.answered.set()
         if work is not None:
@@ -1321,6 +1323,7 @@ class ChatApp(App[None]):
         if self._work is not None:
             self._note("Wait for the request to finish, or press esc to stop it.", "warn")
             return
+        self._poll()  # the log's last events belong to the conversation that ends here
         self._archive_now()
         if self._services.archive is not None:
             self._services.archive.start()
@@ -1350,6 +1353,9 @@ class ChatApp(App[None]):
         work = self._work
 
         def run() -> None:
+            folded = False
+            if work is not None:
+                work.began = True
             try:
                 folded = session.compact(everything=True)
             except Exception as exc:  # ruff: ignore[blind-except] - shown in the window
@@ -1362,7 +1368,7 @@ class ChatApp(App[None]):
                 )
                 self._from_worker(self._note, note)
             finally:
-                self._ran(work)
+                self._ran(work, changed=folded)  # the summary is the conversation now
                 if work is not None and work.archive:
                     self._from_worker(self._archive_now)
                 self._finish(work)
@@ -1462,6 +1468,7 @@ class ChatApp(App[None]):
         if self._work is not None:
             self._note("Wait for the request to finish, or press esc to stop it.", "warn")
             return
+        self._poll()  # the log's last events belong to the conversation left here
         self._archive_now()
         kept = [a for a in archive.listed() if a.id != archive.current]
         if not argument:
@@ -1534,7 +1541,16 @@ class ChatApp(App[None]):
         if self._busy():
             self._note("Wait for the request to finish, or press esc to stop it.", "warn")
             return
-        gone = archive.forget()
+        self._poll()  # the log's last events are forgotten too, not recorded into the next one
+        try:
+            gone = archive.forget()
+        except OSError as exc:
+            self._note(
+                f"Couldn't delete the archive ({type(exc).__name__}); nothing was forgotten. "
+                f"Its folder is {archive.folder}.",
+                "error",
+            )
+            return
         self._forget_here()
         self._note(
             f"Deleted {gone} archived conversation{'' if gone == 1 else 's'} and forgot this "
@@ -1892,6 +1908,7 @@ class ChatApp(App[None]):
         pasted: Sequence[str] = (),
     ) -> None:
         session = self._session
+        work.began = True
         hooks = Hooks(
             confirm=self._confirm,
             waking=lambda: self._relabel(work, "Waking the model; the first answer takes longer"),

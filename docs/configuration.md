@@ -106,7 +106,8 @@ Chat it changes `verbosity`, `toolbar`, `while_working` and `thinking` at once, 
 `max_steps`, `memory_detail` and `resume` from the next time the chat opens, writing them here. Under Voice, Listening and
 Safety it sets `audio.speech_speed`, `audio.listen_to_pc` (off by default) and `boundaries.bypass_consent`,
 and under Tools each tool's setting; the voice service restarts once to take these when the screen closes,
-and the open chat takes `bypass_consent` at once.
+and the open chat takes `bypass_consent` at once (what Jarvis says about its own setup, `about_jarvis`,
+follows when the chat next opens).
 Acting without asking and taking requests from PC audio are turned on only by the same step again to the same
 value (a second Enter or →, or ← after ←), after the row says what that means and which value, and are marked in
 red while they are on; a step to another value asks about that one instead. A restart that fails is said in the chat.

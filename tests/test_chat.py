@@ -2526,3 +2526,24 @@ def test_a_finished_request_is_archived_with_the_windows_own_log(tmp_path: Path)
     _run(test, app)
     (kept,) = archive.listed()
     assert kept.name == "pause"
+
+
+def test_forget_all_that_cannot_delete_says_so_and_forgets_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = ChatArchive(tmp_path / "archive", keep=10)
+    session = FakeSession()
+    session.memory.add(Turn("keep me", "Kept.", "", "", 1.0))
+    app = _app(FakeTail(), session, services=Services(archive=archive))
+
+    def refuse() -> int:
+        raise PermissionError
+
+    monkeypatch.setattr(archive, "forget", refuse)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/forget all")
+        await _until(pilot, lambda: _has(app, "Couldn't delete the archive"))
+
+    _run(test, app)
+    assert len(session.memory.turns) == 1
