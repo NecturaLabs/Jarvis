@@ -1,6 +1,6 @@
 # 0023. Serve Jarvis to coding apps over the Agent Client Protocol; consent stays Jarvis's own
 
-Status: proposed  
+Status: accepted (2026-11-26)  
 Date: 2026-11-26
 
 ## Context

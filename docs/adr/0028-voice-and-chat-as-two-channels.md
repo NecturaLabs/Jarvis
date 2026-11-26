@@ -1,6 +1,6 @@
 # ADR: Voice and chat as two cooperating channels, with a typed hand-off between them
 
-**Status:** proposed
+**Status:** accepted (2026-11-26)
 **Date:** 2026-11-26
 
 ## Context and problem statement

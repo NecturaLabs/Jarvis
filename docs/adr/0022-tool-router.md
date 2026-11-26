@@ -1,6 +1,6 @@
 # ADR: Let the model route itself through tool groups, off by default until measured
 
-**Status:** proposed (the owner confirms the default stays `all` until the benchmark below is run)
+**Status:** accepted (2026-11-26); the default stays `all` until the benchmark below is run
 **Date:** 2026-11-26
 
 ## Context and problem statement

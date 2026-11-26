@@ -1,6 +1,6 @@
 # ADR: Where the model can run
 
-**Status:** proposed
+**Status:** accepted (2026-11-26)
 **Date:** 2026-11-26
 
 ## Context

@@ -1,6 +1,6 @@
 # ADR: Refuse to start or load the model when the memory available would be left below a margin
 
-**Status:** proposed
+**Status:** accepted (2026-11-26)
 **Date:** 2026-11-26
 
 ## Context and problem statement
