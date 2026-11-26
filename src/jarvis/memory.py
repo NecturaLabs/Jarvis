@@ -153,6 +153,12 @@ class Conversation:
         self.summary_outside = False
         self.summary_private = False
 
+    def adopt(self, other: Conversation) -> None:
+        """Take over `other`'s turns, summary and marks: a rebuilt agent remembers the talk."""
+        self.turns, self.summary = list(other.turns), other.summary
+        self.summary_outside, self.summary_private = other.summary_outside, other.summary_private
+        self.last, self.saved_at = other.last, other.saved_at
+
     def add(self, turn: Turn) -> None:
         """Remember one finished turn."""
         self.turns.append(turn)

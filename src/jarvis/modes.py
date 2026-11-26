@@ -441,7 +441,9 @@ class Switcher:
     """Switches the mode for one Jarvis process: the files, the model server, the state, the audit.
 
     `units` is the model server's unit, `server` makes the client of a config's model server, and
-    `busy` says whether another request is in flight (a switch would cut its model call).
+    `busy` says whether another request is in flight (a switch would cut its model call), and
+    `ram_reason` says why the model of a mode's config must not load into the memory that is free
+    now ("" when it may): a restart that would load it is then not made.
     """
 
     def __init__(  # ruff: ignore[too-many-arguments] - collaborators, each a test seam
@@ -452,6 +454,7 @@ class Switcher:
         audit: Audit,
         *,
         busy: Callable[[], bool] = lambda: False,
+        ram_reason: Callable[[Config], str] = lambda _config: "",
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], float] = time.time,
@@ -463,6 +466,7 @@ class Switcher:
         self._server = server
         self._audit = audit
         self._busy = busy
+        self._ram_reason = ram_reason
         self._clock = clock
         self._sleep = sleep
         self._now = now
@@ -543,7 +547,23 @@ class Switcher:
             return self._remember(to, by, state, began, restarted=False)
         before = _texts()
         try:
-            services.strata_profile(effective(self._config, to))  # refused before anything changes
+            served = effective(self._config, to)
+            profile = services.strata_profile(served)  # refused before anything changes
+            if (
+                before[1] is not None
+                and (state.pending is not None or self._changes_files(profile, served, before))
+                and self._units.active()
+                and (why := self._ram_reason(served))
+            ):
+                # Refused before a file is written: the server keeps its files, so nothing they
+                # say is newer than it, and nothing reloads its model for no reason later.
+                return Switched(
+                    state.mode,
+                    error=(
+                        f"There isn't enough free memory to load the {to} model right now, so "
+                        f"Jarvis stays in {state.mode} mode. {why}"
+                    ),
+                )
             # Noted before the files change: a switch killed from here on is seen and made whole.
             _write_state(dataclasses.replace(state, pending=to))
             # After a killed switch the server may run either mode's files: it is restarted.
@@ -565,6 +585,16 @@ class Switcher:
         elif not restart:
             say(announcement(self._config, to, restart=False))
         return self._remember(to, by, state, began, restarted=running)
+
+    @staticmethod
+    def _changes_files(
+        profile: dict[str, object], served: Config, before: tuple[str | None, str | None]
+    ) -> bool:
+        """Whether writing the model server's files for `served` changes either of them."""
+        return (
+            json.dumps(profile, indent=1) + "\n" != before[0]
+            or services.strata_unit(served, paths.strata_key_file()) != before[1]
+        )
 
     def _remember(
         self, to: Mode, by: By, state: State, began: float, *, restarted: bool

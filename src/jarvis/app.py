@@ -8,7 +8,18 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from jarvis import __version__, calc, handoff, modes, osskills, paths, plugins, services, skills
+from jarvis import (
+    __version__,
+    calc,
+    handoff,
+    modes,
+    osskills,
+    paths,
+    plugins,
+    ramguard,
+    services,
+    skills,
+)
 from jarvis.about import AboutOps
 from jarvis.agent import SWITCH_MODEL, Agent, Limits, Setup
 from jarvis.audit import AuditLog
@@ -868,6 +879,7 @@ def strata_model(config: Config, key: str) -> StrataModel:
         endpoint,
         key,
         model_file=model_file if model_file != Path() else None,
+        ram_guard=lambda file: ramguard.server_verdict(file, config.strata),
     )
 
 
@@ -1081,6 +1093,7 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
             lambda cfg: strata_model(cfg, key),
             audit,
             busy=voice_busy if elsewhere else lambda: False,
+            ram_reason=ramguard.switch_reason,
         )
     )
     agent_modes = (

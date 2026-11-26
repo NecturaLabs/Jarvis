@@ -309,9 +309,24 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
-- The model no longer switches modes, either way, to answer a question about them: the switch's
-  description says a question about them is answered, not switched for. A needless switch restarts the
-  model server.
+- The model no longer switches modes, either way, to answer a question about them. A needless switch
+  restarts the model server.
+- A T3 Code thread goes on after Jarvis or T3 Code restarts. `jarvis acp` keeps each session's
+  conversation and answers `session/load`, so the app reopens the thread instead of failing with
+  "Provider session failed to open"; the remembered turns are sent back and the conversation goes on.
+- `/clear` in a T3 Code thread starts the conversation afresh. T3 Code sends it to Jarvis as text, and the
+  model answered that it could not clear; `jarvis acp` now offers the command and runs it itself.
+  It also works while a confirmation question waits (the question is declined). The kept sessions
+  follow the chat's privacy settings: `chat.archive_keep = 0` keeps none, and `/forget all` deletes them.
+- The model server no longer loads a model into memory that is not there. With a game running and 13 to 20 GB
+  of RAM available, starting Strata read about 39 GB of experts into RAM, the kernel failed page allocations
+  and the game's process died. `jarvis start`, `jarvis restart`, a switch of modes, a model load and the
+  server's own unit (`ExecCondition=`, which skips the start instead of failing and retrying it) now compare the model file's size with `MemAvailable` and refuse, with
+  the figures and nothing started, when the load would leave less than `strata.min_free_ram_mib` (4096).
+  `strata.allow_low_ram` loads anyway; `jarvis doctor` reports the check; `jarvis update` skips only the
+  server's restart when it would not fit; each refusal is audited as `ram_refused`; the unit's check fails open, and `jarvis start` and `jarvis restart` report a server that did not start. `jarvis setup` or `jarvis restart` writes the
+  unit's check ([docs/configuration.md](docs/configuration.md#refusing-a-load-that-does-not-fit),
+  [ADR 0029](docs/adr/0029-refuse-a-load-that-does-not-fit.md)).
 - A reply no longer starts with "[looked up: …]": the notes memory puts before a remembered reply are
   stripped when the model copies them, as "[actions taken: …]" already was.
 - `pc_stats` lists a file system once (by its mount source) when the home folder and the root are two btrfs
