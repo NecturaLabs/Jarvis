@@ -12,7 +12,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   agent-browser when it is installed: `browser_open` opens a search result, an address you wrote or a link the
   page shows, and reads it, less the text and elements the page hides (best effort); `browser_screenshot`
   shows the chat a picture of it; `browser_act` clicks or types there, and always asks first, even with
-  questions turned off. It runs headless and muted with a throwaway profile, every connection goes through a
+  questions turned off and with `jarvis ask --yes`, which asks it on the terminal. It runs headless and muted with a throwaway profile, every connection goes through a
   loopback proxy that reaches only public addresses, and it closes when idle. On in the chat (`chat.browser`), off for speech (`agent.browser`); `[browser] idle_close_s`.
   The chat's `/config` sets all three.
   A preview session for the owner's own builds (one project folder, served read-only on loopback, with a

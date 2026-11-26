@@ -84,7 +84,9 @@ quick commands.
     reads further parts of the page. It needs no yes.
   - `browser_screenshot` (the chat only) shows one screen of the page. It needs no yes.
   - `browser_act` clicks an element or types into a text box. It is `confirm`, its lowest class is
-    `confirm`, and it is `always_ask`: the owner is asked even with `boundaries.bypass_consent` on. The
+    `confirm`, and it is `always_ask`: the owner is asked even with `boundaries.bypass_consent` on, and
+    `jarvis ask --yes`, which answers other questions by itself, asks this one on the terminal and refuses
+    it when there is no terminal to answer on (`Hooks.confirm_always`). The
     question names the element, its site and the exact words ('Should I type "red shoes" into the
     searchbox "Search" on shop.example and press Enter?'), and for a link where it goes, since its name can
     say anything ('Should I click the link "More" on shop.example, which goes to pay.example/checkout?').

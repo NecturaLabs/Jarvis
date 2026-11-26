@@ -676,7 +676,9 @@ class Hooks:
     `waking` is called when the model has to load first and `still_waiting` once more if that
     takes long; both run beside the model call and have finished before anything else is said.
     `confirm` asks for a spoken yes and returns `True` for one; a no is `False`, or `Declined`
-    when the hook knows why (the PC slept, nothing was heard). `confirm_key`, where the channel
+    when the hook knows why (the PC slept, nothing was heard). `confirm_always`, where `confirm`
+    answers by itself (`jarvis ask --yes`), asks the owner instead about an operation that always
+    asks (`Operation.always_ask`). `confirm_key`, where the channel
     has one, asks the question and waits for the confirm key bound to the action's hash
     (`confirmkey`); without it a `strong` action is refused. `cancelled` turning true (Jarvis
     is stopping, or the owner spoke over it) ends the request.
@@ -694,6 +696,7 @@ class Hooks:
     """
 
     confirm: Callable[[str], bool | Declined]
+    confirm_always: Callable[[str], bool | Declined] | None = None
     confirm_key: Callable[[str, str], bool | Declined] | None = None
     waking: Callable[[], None] = lambda: None
     still_waiting: Callable[[], None] = lambda: None
@@ -2088,8 +2091,11 @@ class Agent:
         turn.cues.settle()
         question = self._question(op, args, turn)
         shown = op.preview(args) if hooks.preview and op.preview is not None else ""
+        ask = hooks.confirm
+        if op.always_ask and hooks.confirm_always is not None:
+            ask = hooks.confirm_always
         try:
-            answer = hooks.confirm(f"{question}\n{shown}" if shown else question)
+            answer = ask(f"{question}\n{shown}" if shown else question)
         except Exception:
             log.exception("the confirmation question for %s could not be asked", op.name)
             answer = Declined(NoReason.FAILED)

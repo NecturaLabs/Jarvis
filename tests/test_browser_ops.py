@@ -232,6 +232,24 @@ def test_a_click_is_asked_about_even_with_consent_bypassed(tmp_path: Path, bypas
     assert "would_need" not in call
 
 
+def test_a_click_goes_to_the_hook_that_always_asks_where_one_is_given(tmp_path: Path) -> None:
+    # `jarvis ask --yes` answers `confirm` by itself; a click is asked through `confirm_always`.
+    setup = Setup(tmp_path)
+    _opened(setup)
+    agent, _, _ = setup.agent(
+        [_call("browser_act", {"element": "e1"}), _say("Okay.")], bypass=False
+    )
+    asked: list[str] = []
+
+    agent.handle(
+        "press search",
+        Hooks(confirm=lambda _q: True, confirm_always=lambda q: asked.append(q) or False),
+    )
+
+    assert asked == ['Should I click the button "Search" on site.example?']
+    assert setup.clicks() == []
+
+
 @pytest.mark.parametrize("bypass", [True, False], ids=["bypassed", "asking"])
 def test_a_click_the_owner_declines_does_nothing(tmp_path: Path, bypass: bool) -> None:
     setup = Setup(tmp_path)

@@ -391,7 +391,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes",
         action="store_true",
         help="answer yes to Jarvis's questions (default: ask here); it cannot press the "
-        "confirm key a strong action waits for",
+        "confirm key a strong action waits for, and a browser click or typing is still asked here",
     )
 
     made["status"].add_argument(
@@ -568,8 +568,11 @@ def cmd_ask(args: argparse.Namespace) -> int:
     confirm: Callable[[str], bool | Declined] = (
         (lambda q: print(q, "-> yes") is None) if args.yes else _terminal_confirm
     )
+    # `--yes` cannot answer for a click or typing in the browser, which always asks (ADR 0016).
+    always = _terminal_confirm if args.yes else None
     reply = jarvis.agent.handle(
-        " ".join(args.text), Hooks(confirm=confirm, waking=lambda: print("(waking up)"))
+        " ".join(args.text),
+        Hooks(confirm=confirm, confirm_always=always, waking=lambda: print("(waking up)")),
     )
     print(reply)
     return 0
