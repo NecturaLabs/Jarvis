@@ -1224,6 +1224,7 @@ def cmd_acp(_args: argparse.Namespace) -> int:
         version=__version__,
         follow=control.subscribe,
         pusher=pusher,
+        record=AuditLog(paths.audit_file(), tags={"via": "acp"}).record,
     )
 
 
@@ -1958,16 +1959,20 @@ class DoctorReport:
         return cliout.summary(self.checks, extra=len(self.verified))
 
 
-def _t3_notes() -> list[str]:
-    """Say how to add Jarvis to T3 Code when T3 Code is set up on this PC."""
-    if not (Path.home() / ".t3").is_dir():
+def _t3_notes(cfg: config.Config) -> list[str]:
+    """Say how to add Jarvis to T3 Code when T3 Code is set up on this PC, and what is off."""
+    if not t3push.t3_home().is_dir():
         return []
     program = shutil.which("jarvis") or "jarvis"
     where = "Settings, Providers, Add provider"
     head = (
         f"note T3 Code is set up here: to talk to Jarvis in it, add a Local ACP command ({where})"
     )
-    return [f"{head} with the executable {program} and the argument acp"]
+    notes = [f"{head} with the executable {program} and the argument acp"]
+    pusher = t3push.T3Push(cfg.acp.t3_command, cfg.acp.t3_provider)
+    if cfg.acp.push_to_t3 and (problem := pusher.provider_problem()):
+        notes.append(f"note {problem}")
+    return notes
 
 
 def _remote_notes(cfg: config.Config, *, no_service: bool) -> list[str]:
@@ -2020,7 +2025,7 @@ def doctor_report(args: argparse.Namespace) -> DoctorReport:
         notes.extend(_memlock_notes(cfg))
     else:
         notes.extend(_remote_notes(cfg, no_service=args.no_service))
-    notes.extend([*_t3_notes(), *update.doctor_notes(cfg, launch_for_update)])
+    notes.extend([*_t3_notes(cfg), *update.doctor_notes(cfg, launch_for_update)])
     notes.extend(skills.doctor_notes())
     verified = [line.removeprefix("ok").strip() for line in release_lines if line.startswith("ok ")]
     notes.extend(line for line in release_lines if not line.startswith("ok "))

@@ -247,6 +247,41 @@ def test_doctor_says_how_to_add_jarvis_to_t3_code_only_where_t3_code_is_set_up(
     assert said[0].rstrip().endswith("acp")
 
 
+def test_doctor_looks_for_t3_code_where_t3code_home_says(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setenv("T3CODE_HOME", str(elsewhere))
+
+    cli.main(["doctor"])
+
+    assert any("T3 Code" in line for line in _doctor_output(capsys))
+
+
+def test_doctor_says_why_nothing_is_pushed_when_the_t3_provider_does_not_run_jarvis(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "t3"
+    (home / "userdata").mkdir(parents=True)
+    settings = {
+        "providerInstances": {
+            "jarvis": {"config": {"commandPath": "/usr/bin/jarvis", "commandArgs": ["acp"]}},
+            "other": {"config": {"commandPath": "/usr/bin/other", "commandArgs": ["acp"]}},
+        }
+    }
+    (home / "userdata" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    monkeypatch.setenv("T3CODE_HOME", str(home))
+    config.save(config.Config(acp=config.AcpConfig(push_to_t3=True, t3_provider="other")))
+
+    cli.main(["doctor"])
+
+    said = [line for line in _doctor_output(capsys) if "t3_provider" in line]
+    assert len(said) == 1
+    assert "other" in said[0]
+    assert "nothing is pushed" in said[0]
+
+
 def test_doctor_names_the_release_of_a_model_file_it_recognises(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

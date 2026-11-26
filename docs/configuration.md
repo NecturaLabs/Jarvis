@@ -919,7 +919,7 @@ A message that starts with Jarvis's mark but whose tag is not valid is dropped (
 to the model), whether `push_to_t3` is on or not. Nothing happens, and nothing fails, when `t3` is not installed or no such thread exists: the line then
 waits for the session's next reply. What of T3 Code's own files Jarvis reads: only `userdata/settings.json` under `$T3CODE_HOME` (else `~/.t3`), and in it only
 `providerInstances` (each one's `config.commandPath` and `commandArgs`), to find the providers that run `jarvis acp`
-(skipped when `t3_provider` is set); `jarvis doctor` looks only whether `~/.t3` exists. `t3` itself reads and
+(`t3_provider`, when set, only picks one of them: a name that is not a provider running `jarvis acp` pushes nothing, and `jarvis doctor` says so); `jarvis doctor` looks only whether `~/.t3` exists. `t3` itself reads and
 writes what it needs, started only as `t3 thread list --project <folder> --json` and `t3 thread send <thread> -`. Nothing else of
 `~/.t3` is opened. The tag's key is a
 private file in Jarvis's state folder. A change takes effect the next time T3 Code starts `jarvis acp`.

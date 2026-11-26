@@ -56,7 +56,7 @@ def t3_installed(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def pusher(runner: Runner, provider: str = "jarvis") -> T3Push:
-    return T3Push("t3", provider, runner)
+    return T3Push("t3", provider, runner, providers=lambda: frozenset({"jarvis"}))
 
 
 # The tag
@@ -117,6 +117,33 @@ def test_a_pusher_that_is_off_pushes_nothing_but_still_verifies() -> None:
     assert off.push(item(), ["/p"]) == set()
     assert runner.runs == []
     assert off.verified(t3push.message(item())) == "Reminder: tea"
+
+
+@pytest.mark.parametrize(
+    "digits", ["9" * 5000, "٣" * 3, "1" * 19, ""], ids=["huge", "unicode", "19-digits", "none"]
+)
+def test_a_tag_with_odd_numbers_is_refused_and_never_raises(digits: str) -> None:
+    prompt = f"⟲ Jarvis: hi\n[announcement {digits}-1-aaaaaaaaaaaaaaaa]"
+
+    assert t3push.verified(prompt) is None
+    assert T3Push.marked(prompt)
+
+
+def test_the_key_made_by_another_process_meanwhile_is_kept_not_replaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = t3push.message(item())  # makes the key
+    real = t3push.read_private
+    calls: list[int] = []
+
+    def late(path: Path) -> str | None:
+        calls.append(1)
+        return None if len(calls) == 1 else real(path)  # the first look finds nothing
+
+    monkeypatch.setattr(t3push, "read_private", late)
+
+    assert t3push.message(item()) == first  # the key already there was not overwritten
+    assert t3push.verified(first) == "Reminder: tea"
 
 
 def test_ordinary_words_are_not_an_announcement() -> None:
@@ -197,6 +224,31 @@ def test_the_newest_open_jarvis_thread_of_the_project_gets_the_message() -> None
     assert t3push.verified(words) == "Reminder: tea"
 
 
+@pytest.mark.parametrize(
+    "ident",
+    ["t 1", "-x", "a;b", "٣", "x" * 129, "", "../x", "t-1\nsend"],
+    ids=lambda i: repr(i)[:12],
+)
+def test_a_thread_id_that_is_not_plain_is_skipped_never_sent_to(ident: str) -> None:
+    runner = Runner([thread(ident), thread("t-ok")])
+
+    assert pusher(runner).push(item(), ["/p"]) == {"/p"}
+    assert [args[3] for args, _ in runner.sent()] == ["t-ok"]
+
+
+def test_a_set_provider_must_be_one_that_runs_jarvis_or_nothing_is_pushed() -> None:
+    runner = Runner([thread("t-1", "someone-else")])
+    other = T3Push("t3", "someone-else", runner, providers=lambda: frozenset({"jarvis"}))
+    right = T3Push("t3", "jarvis", Runner([thread("t-2")]), providers=lambda: frozenset({"jarvis"}))
+
+    assert other.push(item(), ["/p"]) == set()
+    assert runner.runs == []  # not even listed
+    assert right.push(item(), ["/p"]) == {"/p"}
+    assert other.provider_problem() is not None
+    assert right.provider_problem() is None
+    assert T3Push("t3", "", runner, providers=frozenset).provider_problem() is None
+
+
 def test_each_project_a_session_is_open_in_is_pushed_to_once() -> None:
     runner = Runner([thread("t-1")])
 
@@ -273,6 +325,10 @@ def test_the_run_of_the_real_program_never_raises_and_uses_no_shell(
     assert calls[0]["args"] == ["t3", "thread", "send", "t-1", "-"]
     assert "shell" not in calls[0]
     assert calls[0]["input"] == "words"
+    assert calls[0]["timeout"] == t3push.TIMEOUT_S
+    assert calls[0]["capture_output"] is True
+    assert calls[0]["text"] is True
+    assert calls[0]["check"] is False
 
 
 def test_the_environment_names_t3_codes_home_before_the_default(

@@ -31,6 +31,7 @@ new request.
 
 import base64
 import binascii
+import collections
 import json
 import logging
 import queue
@@ -58,6 +59,7 @@ MAX_BASE64 = MAX_FILE_BYTES * 4 // 3 + 4  # characters of one picture
 MAX_IMAGES = 4
 MAX_TEXT = 100_000  # characters of one prompt
 MAX_SESSIONS = 32
+MAX_PUSHES = 8  # announcements waiting to be pushed; a hung `t3` loses the oldest
 MAX_PENDING = 50  # announcements a session keeps for its next prompt
 FEED_RETRY_S = 10.0  # how long to wait before looking again for the running Jarvis
 QUESTION_S = 300.0  # how long a question waits for the owner's next prompt
@@ -182,6 +184,7 @@ class AcpServer:
         follow: Callable[[], Feed | None] | None = None,
         retry_s: float = FEED_RETRY_S,
         pusher: Pusher | None = None,
+        record: Callable[..., None] | None = None,
     ) -> None:
         """Serve sessions whose agents `make_agent` makes (it takes the session's id).
 
@@ -205,6 +208,12 @@ class AcpServer:
         self._closing = threading.Event()
         self._follow = follow
         self._pusher = pusher
+        self._record = record
+        self._pushes: collections.deque[tuple[Announcement, set[str]]] = collections.deque(
+            maxlen=MAX_PUSHES
+        )
+        self._push_ready = threading.Condition()
+        self._push_worker: threading.Thread | None = None
         self._retry_s = retry_s
         self._feed: Feed | None = None
         self._feed_lock = threading.Lock()
@@ -225,6 +234,8 @@ class AcpServer:
     def close(self) -> None:
         """Stop every request and wait a little for its thread."""
         self._closing.set()
+        with self._push_ready:
+            self._push_ready.notify_all()  # the push worker is a daemon: a hung `t3` is left
         with self._feed_lock:
             feed = self._feed
         if feed is not None:
@@ -272,10 +283,26 @@ class AcpServer:
             with session.lock:
                 session.pending.append(f"Jarvis: {item.text}")
                 del session.pending[:-MAX_PENDING]
-        if self._pusher is not None:
-            projects = {s.cwd for s in sessions if s.cwd}
-            if projects:
-                self._spawn(self._push, self._pusher, item, projects, name="acp-push")
+        projects = {s.cwd for s in sessions if s.cwd}
+        if self._pusher is not None and projects:
+            with self._push_ready:
+                self._pushes.append((item, projects))  # a full queue loses its oldest
+                if self._push_worker is None:
+                    self._push_worker = threading.Thread(
+                        target=self._push_loop, args=(self._pusher,), name="acp-push", daemon=True
+                    )
+                    self._push_worker.start()
+                self._push_ready.notify()
+
+    def _push_loop(self, pusher: Pusher) -> None:
+        """Push the queued announcements one at a time, on one thread, until closed."""
+        while True:
+            with self._push_ready:
+                self._push_ready.wait_for(lambda: bool(self._pushes) or self._closing.is_set())
+                if self._closing.is_set():
+                    return
+                item, projects = self._pushes.popleft()
+            self._push(pusher, item, projects)
 
     def _push(self, pusher: Pusher, item: Announcement, projects: set[str]) -> None:
         """Push `item`; a session of a project it was pushed for need not keep the line."""
@@ -361,6 +388,9 @@ class AcpServer:
             self._dispatch(request_id, method, params)
         except _Rpc as exc:
             self._error(request_id, exc.code, exc.message)
+        except Exception:
+            log.exception("a request failed: %s", method)
+            self._error(request_id, INTERNAL_ERROR, "Jarvis failed on that request")
 
     def _dispatch(self, request_id: str | int, method: str, params: dict[str, Any]) -> None:
         match method:
@@ -370,6 +400,8 @@ class AcpServer:
                 self._result(request_id, self._new_session(params))
             case "session/prompt":
                 self._prompt(request_id, params)
+            case "session/close":
+                self._result(request_id, self._close_session(params))
             case _:
                 raise _Rpc(METHOD_NOT_FOUND, f"method not found: {method}")
 
@@ -382,6 +414,7 @@ class AcpServer:
             "protocolVersion": version,
             "agentCapabilities": {
                 "loadSession": False,
+                "sessionCapabilities": {"close": {}},
                 "promptCapabilities": {"image": True, "audio": False, "embeddedContext": False},
                 "mcpCapabilities": {"http": False, "sse": False},
             },
@@ -391,7 +424,10 @@ class AcpServer:
 
     def _new_session(self, params: dict[str, Any]) -> dict[str, Any]:
         if len(self._sessions) >= MAX_SESSIONS:
-            raise _Rpc(INTERNAL_ERROR, f"at most {MAX_SESSIONS} sessions at once")
+            idle = next((sid for sid, s in self._sessions.items() if s.run is None), None)
+            if idle is None:
+                raise _Rpc(INTERNAL_ERROR, f"at most {MAX_SESSIONS} sessions at once, all busy")
+            del self._sessions[idle]  # the oldest session nothing is running in makes room
         session_id = f"jarvis-{secrets.token_hex(6)}"
         try:
             agent = self._make_agent(session_id)
@@ -402,6 +438,12 @@ class AcpServer:
         self._sessions[session_id] = _Session(session_id, agent, cwd=folder)
         return {"sessionId": session_id}
 
+    def _close_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        session = self._session(params)
+        self._cancel(session)
+        self._sessions.pop(session.id, None)
+        return {}
+
     def _session(self, params: dict[str, Any]) -> _Session:
         found = self._sessions.get(str(params.get("sessionId")))
         if found is None:
@@ -410,8 +452,12 @@ class AcpServer:
 
     # A prompt
 
-    def _prompt(self, request_id: str | int, params: dict[str, Any]) -> None:
+    def _prompt(
+        self, request_id: str | int, params: dict[str, Any], *, waited: bool = False
+    ) -> None:
         """Begin a prompt: a new request, or the owner's answer to the question being asked.
+
+        `waited` says a request that was stopped has ended already (`_prompt_later`).
 
         Raises:
             _Rpc: no such session, no list of blocks, or a request still being answered.
@@ -424,11 +470,20 @@ class AcpServer:
             # Jarvis's own message, pushed into the thread: shown, never given to the model, and
             # never taken for the owner's answer to a question that waits. One that starts as
             # such a message but has no valid tag is dropped, also never given to the model.
+            with session.lock:
+                running = session.run
+                if running is not None and running.attached:
+                    # A reply is being written: nothing may be written into it.
+                    raise _Rpc(BUSY, "a request is still being answered")
+            if note == FORGED:
+                self._audit("acp_refused", reason="forged_announcement", session=session.id)
             self._spawn(self._show, request_id, session, note, name="acp-announcement")
             return
         old = session.run
-        if old is not None and old.cancel.is_set():
-            old.finished.wait(CANCEL_WAIT_S)  # a request just stopped ends at its next check
+        if not waited and old is not None and old.cancel.is_set() and not old.finished.is_set():
+            # A request just stopped ends at its next check; the reader goes on meanwhile.
+            self._spawn(self._prompt_later, request_id, params, old, name="acp-prompt-wait")
+            return
         answering: _Question | None = None
         with session.lock:
             run = session.run
@@ -447,6 +502,26 @@ class AcpServer:
         self._flush(session, run)  # before the request goes on and writes
         answering.answered.set()
         self._spawn(self._wait, request_id, run, name="acp-answer")
+
+    def _prompt_later(self, request_id: str | int, params: dict[str, Any], old: _Run) -> None:
+        """Begin a prompt once the request that was stopped has ended (or after `CANCEL_WAIT_S`)."""
+        old.finished.wait(CANCEL_WAIT_S)
+        try:
+            self._prompt(request_id, params, waited=True)
+        except _Rpc as exc:
+            self._error(request_id, exc.code, exc.message)
+        except Exception:
+            log.exception("a prompt failed")
+            self._error(request_id, INTERNAL_ERROR, "Jarvis failed on that request")
+
+    def _audit(self, event: str, **fields: object) -> None:
+        """Record an event in the audit log, when there is one; a failure only logs."""
+        if self._record is None:
+            return
+        try:
+            self._record(event, **fields)
+        except Exception:
+            log.exception("could not audit %s", event)
 
     def _announced(self, blocks: list[dict[str, Any]]) -> str | None:
         """Return what to answer a prompt that starts as a message Jarvis pushes, else None.
@@ -694,13 +769,22 @@ def serve(  # ruff: ignore[too-many-arguments] - what one connection is given
     version: str = "",
     follow: Callable[[], Feed | None] | None = None,
     pusher: Pusher | None = None,
+    record: Callable[..., None] | None = None,
 ) -> int:
     """Serve one ACP connection over `source` and `out`; return the exit code (0 at its end).
 
     `follow` opens the running Jarvis's announcements (`control.subscribe`), tried again while
-    none runs; `pusher` sends them into the client's own threads as well.
+    none runs; `pusher` sends them into the client's own threads as well; `record` writes
+    the audit log's events.
     """
-    AcpServer(make_agent, out, names=names, version=version, follow=follow, pusher=pusher).serve(
-        source
+    server = AcpServer(
+        make_agent,
+        out,
+        names=names,
+        version=version,
+        follow=follow,
+        pusher=pusher,
+        record=record,
     )
+    server.serve(source)
     return 0

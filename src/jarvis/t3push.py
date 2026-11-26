@@ -45,7 +45,8 @@ MAX_SETTINGS_BYTES = 1024 * 1024
 TIMEOUT_S = 20.0
 KEPT_TAGS = 200  # pushed announcements remembered, so two Jarvis processes send one
 MARK = "⟲ Jarvis: "
-_TAG = re.compile(r"\n\[announcement (\d+)-(\d+)-([0-9a-f]{16})\]\Z")
+_TAG = re.compile(r"\n\[announcement ([0-9]{1,18})-([0-9]{1,18})-([0-9a-f]{16})\]\Z")
+_THREAD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")  # a thread id as `t3` prints it
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,12 +87,37 @@ def _key_file() -> Path:
     return paths.state_dir() / "t3-push.key"
 
 
+def _usable(key: str | None) -> bool:
+    return key is not None and len(key.strip()) >= MIN_KEY
+
+
+def _make_key(path: Path) -> None:
+    """Make the key file if it is not there: complete and private at once, never replacing one."""
+    mine = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}")
+    write_private(mine, secrets.token_hex(32))
+    try:
+        os.link(mine, path)  # fails when another process made it first
+    except FileExistsError:
+        if not _usable(read_private(path)):  # a broken file: replaced
+            mine.replace(path)
+    finally:
+        mine.unlink(missing_ok=True)
+
+
 def _key() -> bytes:
-    """Return the private key that tags what Jarvis pushes, making it on first use."""
-    found = read_private(_key_file())
-    if found is None or len(found.strip()) < MIN_KEY:
-        found = secrets.token_hex(32)
-        write_private(_key_file(), found)
+    """Return the private key that tags what Jarvis pushes, making it on first use.
+
+    Raises:
+        OSError: the key file cannot be read or made.
+    """
+    path = _key_file()
+    found = read_private(path)
+    if not _usable(found):
+        _make_key(path)
+        found = read_private(path)
+    if found is None or not _usable(found):
+        msg = f"no usable key in {path}"
+        raise OSError(msg)
     return found.strip().encode()
 
 
@@ -114,12 +140,12 @@ def verified(prompt: str) -> str | None:
     if tag is None:
         return None
     words = prompt[len(MARK) : tag.start()]
-    number, at, given = int(tag.group(1)), int(tag.group(2)), tag.group(3)
     if not words or words != clean(words):
         return None
     try:
+        number, at, given = int(tag.group(1)), int(tag.group(2)), tag.group(3)
         key = _key()
-    except OSError:
+    except OSError, ValueError:
         return None
     return words if hmac.compare_digest(given, _mac(key, number, at, words)) else None
 
@@ -189,6 +215,20 @@ class T3Push:
         """Whether the program is there to run."""
         return shutil.which(self._command) is not None
 
+    def _wanted(self) -> frozenset[str]:
+        """The providers to push into: those T3 Code runs as `jarvis acp`, or the one picked."""
+        runs_jarvis = self._providers()
+        return runs_jarvis & {self._provider} if self._provider else runs_jarvis
+
+    def provider_problem(self) -> str | None:
+        """Say why nothing can be pushed when `t3_provider` is not a provider that runs Jarvis."""
+        if self._provider and self._provider not in self._providers():
+            return (
+                f"acp.t3_provider {self._provider!r} is not a T3 Code provider that runs "
+                "`jarvis acp` in its settings, so nothing is pushed"
+            )
+        return None
+
     def push(self, item: Announcement, projects: Iterable[str]) -> set[str]:
         """Send `item` into the newest open Jarvis thread of each of `projects`.
 
@@ -197,7 +237,7 @@ class T3Push:
         done: set[str] = set()
         if not self._enabled or not self.available():
             return done
-        wanted = frozenset({self._provider}) if self._provider else self._providers()
+        wanted = self._wanted()
         if not wanted:
             return done
         text = message(item)
@@ -222,6 +262,7 @@ class T3Push:
             ident = thread.get("threadId")
             if (
                 isinstance(ident, str)
+                and _THREAD.fullmatch(ident)
                 and thread.get("providerInstanceId") in wanted
                 and thread.get("settled") is not True
             ):

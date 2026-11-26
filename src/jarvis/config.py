@@ -732,10 +732,11 @@ class AcpConfig(_Section):
     @field_validator("t3_command", "t3_provider")
     @classmethod
     def _plain_words(cls, value: str) -> str:
-        if any(not c.isprintable() for c in value) or value.startswith("-"):
+        plain = value.strip()
+        if any(not c.isprintable() for c in plain) or plain.startswith("-"):
             msg = "must be one plain word or path, not starting with a dash"
             raise ValueError(msg)
-        return value.strip()
+        return plain
 
 
 class CodingChatConfig(_Section):

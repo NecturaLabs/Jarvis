@@ -76,6 +76,23 @@ Add `jarvis acp`, a front end to the agent `jarvis chat` already has.
 - **Tool steps are not shown.** The agent's hooks give no step events, so `tool_call` updates are left
   out; the reply is the text.
 
+## Trust and limits of the push
+
+- A valid tag is not single-use: a pushed message sent again is accepted again. All it does is show its own
+  words (no model, no tool), so a replay can show an old announcement and nothing more.
+- Any local program that can send into a Jarvis thread (another agent running `t3 thread send`, say) types as
+  the owner there, the same trust as `jarvis ask`: its words are an ordinary request, and an action that
+  needs a yes still asks for it. A `strong` action stays unreachable, because `jarvis acp` has no confirm key.
+- `acp.t3_provider` only picks among T3 Code providers whose settings run `jarvis ... acp`. A name that is not
+  one of them pushes nothing (`jarvis doctor` says so), so no announcement or model text reaches another
+  agent's thread.
+- A pushed prompt that arrives while a request of the same session is being written is answered as busy, like
+  any other prompt, so it never lands in a streaming reply. A refused forged prompt is audited
+  (`acp_refused`, without its words).
+- Announcements wait for the push on one worker with a short queue (the oldest is dropped when full), so a
+  hung `t3` holds one thread and closing does not wait for it.
+- When the 32 sessions are all in use the oldest idle one makes room; `session/close` ends one.
+
 ## Consequences
 
 - T3 Code's own approval buttons never appear for Jarvis, and its permission mode changes nothing about
