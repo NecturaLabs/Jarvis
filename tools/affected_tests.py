@@ -90,6 +90,23 @@ def _mentions_module(imports: set[str], modules: set[str]) -> bool:
     )
 
 
+def _loaders(root: Path, assets: set[Path]) -> set[str]:
+    """Return the modules that name a changed data file's top folder.
+
+    A module that names it as a string (`"prompts"`, `"prompts/skills"`) reads it, so its tests
+    are affected.
+    """
+    folders = {path.parts[1] for path in assets if len(path.parts) > 2}  # ruff: ignore[magic-value-comparison] - jarvis/<folder>/<file>
+    if not folders:
+        return set()
+    named = re.compile(rf"""["']({"|".join(map(re.escape, sorted(folders)))})(/[^"']*)?["']""")
+    return {
+        _module(file.relative_to(root / "src"))
+        for file in sorted((root / PACKAGE).rglob("*.py"))
+        if named.search(file.read_text(encoding="utf-8"))
+    }
+
+
 def _select_tests(root: Path, changed: set[Path]) -> list[Path]:
     source_paths = {path.relative_to("src") for path in changed if path.is_relative_to(PACKAGE)}
     modules = {_module(path) for path in source_paths if path.suffix == ".py"}
@@ -100,6 +117,7 @@ def _select_tests(root: Path, changed: set[Path]) -> list[Path]:
 
     packages = {".".join(path.parent.parts) for path in assets}
     modules.update(packages)
+    modules.update(_loaders(root, assets))
     data_mentions = [re.compile(rf"(?<![\w.]){re.escape(name)}(?!\w)") for name in sorted(packages)]
     data_mentions.extend(
         re.compile(rf"(?<![\w.-]){re.escape(name)}(?![\w-]|\.\w)")

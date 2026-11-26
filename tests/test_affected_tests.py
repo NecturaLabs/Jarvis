@@ -140,3 +140,22 @@ def test_ci_only_paths_are_reported_without_selecting_tests(tmp_path: Path) -> N
     assert selected == []
     assert "CI" in stderr
     assert all(path in stderr for path in changes)
+
+
+def test_a_packaged_file_selects_the_tests_of_the_modules_that_load_its_folder(
+    tmp_path: Path,
+) -> None:
+    """Regression: a changed prompt selected no test, the pinned prompt digests included."""
+    files = {
+        "src/jarvis/prompts/core.md": "Be brief.\n",
+        "src/jarvis/app.py": 'prompts = files("jarvis").joinpath("prompts")\n',
+        "src/jarvis/skills.py": 'folder = files("jarvis").joinpath("prompts/skills")\n',
+        "src/jarvis/unrelated.py": 'name = "promptsy"\n',
+        "tests/test_router.py": "from jarvis.app import build\n",
+        "tests/test_skills.py": "import jarvis.skills\n",
+        "tests/test_unrelated.py": "import jarvis.unrelated\n",
+    }
+
+    selected, _ = _select(tmp_path, files, "src/jarvis/prompts/core.md")
+
+    assert selected == ["tests/test_router.py", "tests/test_skills.py"]
