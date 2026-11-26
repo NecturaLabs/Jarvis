@@ -2476,9 +2476,12 @@ def test_restart_keeps_mode_switches_out_while_it_writes_and_restarts_strata(
     profile.parent.mkdir(parents=True, exist_ok=True)
     profile.write_text("{}")
     free: dict[tuple[str, ...], bool] = {}
+    begins: dict[tuple[str, ...], bool] = {}
 
     def systemctl(*args: str) -> int:
         free[args] = _mode_lock_free()
+        with modes.nobody_answering() as nobody:  # False: the restart holds requests off
+            begins[args] = nobody
         return 0
 
     def started(_unit: str) -> float | None:
@@ -2491,6 +2494,8 @@ def test_restart_keeps_mode_switches_out_while_it_writes_and_restarts_strata(
 
     assert free["restart", "jarvis-strata.service"] is False
     assert free["restart", "jarvis.service"] is True  # the voice service takes the lock itself
+    assert begins["restart", "jarvis-strata.service"] is False
+    assert begins["restart", "jarvis.service"] is True
 
 
 def test_restart_says_when_it_cut_a_request_that_was_being_answered(
@@ -2526,3 +2531,17 @@ def test_setup_keeps_mode_switches_out_while_it_writes_the_model_servers_files(
     assert main(["setup", "--run-config", str(run)]) == 0
 
     assert free == [False]
+
+
+def test_restart_is_made_when_the_modes_lock_cannot_be_opened(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def no_lock(_path: Path) -> int:
+        raise PermissionError
+
+    monkeypatch.setattr(modes, "_open_lock", no_lock)
+
+    calls = _restart_calls(monkeypatch, None)
+
+    assert ("restart", "jarvis.service") in calls
+    assert "lock" in capsys.readouterr().out

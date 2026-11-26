@@ -910,3 +910,54 @@ def test_the_assembled_app_hands_out_its_modes_for_the_chats_settings(
 
     assert built.modes is not None
     assert built.switcher is not None
+
+
+def test_a_whole_switch_call_in_a_reply_the_length_limit_ended_is_not_made() -> None:
+    # The limit can fall right after the call: what was meant to follow it never arrived.
+    cut = _call("switch_model", {"mode": "coding"})
+    cut["finish_reason"] = "length"
+    model = _Model([cut, _call("switch_model", {"mode": "coding"}), _reply("Built.")])
+    agent, kept = _agent(model)
+
+    agent.handle("build me a site", HOOKS)
+
+    assert _tool_results(model.seen[1])[0].startswith("Not run:")
+    assert kept.switched == ["coding"]  # made by the call of a reply that arrived whole
+
+
+def test_a_request_that_starts_keeps_its_mark_unless_coding_mode_idled_too_long(
+    installed: Config,
+) -> None:
+    unit = _Unit()
+    chat, other = _process(installed, unit), _process(installed, unit)
+    chat.switch("coding", lambda _line: None)
+
+    with chat.answering():
+        chat.rest(lambda _line: None)  # coding mode was just used: nothing to go back from
+        meanwhile = other.switch("normal", lambda _line: None)
+
+    assert meanwhile == modes.BUSY
+    assert modes.current() == "coding"
+
+
+def test_the_idle_return_a_request_makes_leaves_it_holding_its_mark(
+    installed: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unit = _Unit()
+    cfg = installed.model_copy(
+        update={"coding": installed.coding.model_copy(update={"back_after_s": 60.0})}
+    )
+    chat, other = _process(cfg, unit), _process(cfg, unit)
+    chat.switch("coding", lambda _line: None)
+
+    def idle(_cfg: Config, _now: float | None = None) -> bool:
+        return modes.current() == "coding"  # until it was left, it has idled too long
+
+    monkeypatch.setattr(modes, "idle_too_long", idle)
+
+    with chat.answering():
+        chat.rest(lambda _line: None)
+        after = other.switch("coding", lambda _line: None)
+
+    assert modes.current() == "normal"  # gone back, and the request still keeps switches out
+    assert after == modes.BUSY

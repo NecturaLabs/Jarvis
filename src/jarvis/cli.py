@@ -1874,19 +1874,25 @@ def cmd_restart(_args: argparse.Namespace) -> int:
     """Restart the voice service; restart Strata too when its settings changed since it started.
 
     Strata's profile and unit are written from the config first. A running Strata is otherwise
-    left alone, so the model stays loaded. No switch of modes is made meanwhile, and no request
-    begins while Strata restarts. The restart is the owner's own, so it is made even when a
-    request is being answered (in a chat window, say), and says that it cut one.
+    left alone, so the model stays loaded. No switch of modes is made meanwhile, and while no
+    request is being answered none begins until Strata is back. The restart is the owner's own,
+    so it is made even when a request is being answered (in a chat window, say): it says that
+    it cut one, and requests are not held off then. It is also made when the modes' lock cannot
+    be opened, which is said.
     """
     _reset_failed(STRATA_UNIT, JARVIS_UNIT)
-    cut = False
-    with modes.locked():
+    with contextlib.ExitStack() as held:
+        try:
+            held.enter_context(modes.locked())
+            free = held.enter_context(modes.nobody_answering())
+        except OSError as exc:
+            print(f"jarvis: restarting without the modes' lock: {exc.strerror or exc}")
+            free = True
         _refresh_strata()
         started = _started_at(STRATA_UNIT)
         changed = started is not None and _strata_changed_since(started)
-        with modes.nobody_answering() as free:
-            cut = changed and not free
-            code = _systemctl("restart" if changed else "start", STRATA_UNIT)
+        cut = changed and not free
+        code = _systemctl("restart" if changed else "start", STRATA_UNIT)
     code = code or _systemctl("restart", JARVIS_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}" + (", model server restarted" if changed else ""))
     if cut:

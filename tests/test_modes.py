@@ -298,14 +298,14 @@ def test_no_switch_while_another_process_answers_a_request(tmp_path: Path) -> No
     assert switcher.switch("coding", "owner").changed  # the request is over
 
 
-def test_a_request_switches_the_mode_itself_by_setting_its_mark_aside(tmp_path: Path) -> None:
+def test_a_request_switches_the_mode_itself_by_letting_its_mark_go(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     _installed(cfg)
     switcher = _switcher(cfg, _Units(), _Server(), _Audit())
 
     with modes.Answering() as mine:
-        with mine.set_aside():
-            done = switcher.switch("coding", "model")
+        assert mine.release()
+        done = switcher.switch("coding", "model", rehold=mine.hold)
         held_again = switcher.switch("normal", "owner")
 
     assert done.changed
@@ -517,7 +517,13 @@ def test_a_mark_that_cannot_be_taken_leaves_no_file_open(
 ) -> None:
     del tmp_path
     closed: list[int] = []
+    opened: list[int] = []
     real_close = os.close
+    real_open = modes._open_lock  # pyright: ignore[reportPrivateUsage]
+
+    def open_lock(path: Path) -> int:
+        opened.append(real_open(path))
+        return opened[-1]
 
     def close(fd: int) -> None:
         closed.append(fd)
@@ -528,15 +534,16 @@ def test_a_mark_that_cannot_be_taken_leaves_no_file_open(
         raise OSError(msg)
 
     monkeypatch.setattr(os, "close", close)
+    monkeypatch.setattr(modes, "_open_lock", open_lock)
     monkeypatch.setattr(modes.fcntl, "flock", refuse)
     mark = modes.Answering()
 
     with pytest.raises(OSError, match="no lock to be had"), mark:
         pass
 
-    assert len(closed) == 1
-    with mark.set_aside():  # nothing is held, so there is nothing to set aside
-        pass
+    assert len(opened) == 1
+    assert opened[0] in closed
+    assert not mark.release()  # nothing is held, so there is nothing to let go
 
 
 def test_requests_are_held_off_before_the_voice_service_is_asked(tmp_path: Path) -> None:
@@ -700,3 +707,21 @@ def test_use_of_coding_mode_is_noted_once_a_switch_lets_the_lock_go(tmp_path: Pa
     thread.join(5.0)
 
     assert modes.read_state().used == pytest.approx(5000.0)
+
+
+def test_a_mark_two_calls_hold_is_not_let_go_for_the_switch_of_one(tmp_path: Path) -> None:
+    # A summary or a prompt read ahead runs beside a request, in the same process on the same
+    # mark: the request's own switch must not restart the model server under that call.
+    cfg = _config(tmp_path)
+    _installed(cfg)
+    units = _Units()
+    switcher = _switcher(cfg, units, _Server(), _Audit())
+    mark = modes.Answering()
+
+    with mark, mark:  # the request, and a model call beside it
+        let_go = mark.release()
+        done = switcher.switch("coding", "model", rehold=mark.hold)
+
+    assert not let_go
+    assert done.error == modes.BUSY
+    assert (modes.current(), units.restarts) == ("normal", 0)

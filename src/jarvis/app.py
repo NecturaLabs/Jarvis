@@ -348,6 +348,8 @@ class AgentModes:
 
     def rest(self, say: Callable[[str], None]) -> None:
         """Go back to normal when coding mode idled too long; `say` gets the line for the owner."""
+        if not self._switcher.idle():
+            return  # the request keeps its mark: no other switch slips in before it
         self._answering.release()
         try:
             self._switcher.back_if_idle(say, rehold=self._answering.hold)

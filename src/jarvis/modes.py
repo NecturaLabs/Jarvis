@@ -287,10 +287,18 @@ class Answering:
                 os.close(self._fd)
                 self._fd = None
 
-    def release(self) -> None:
-        """Let the mark go for a switch this request makes itself; `hold` takes it again."""
-        if self._fd is not None:
+    def release(self) -> bool:
+        """Let the mark go for a switch this request makes itself; return whether it was let go.
+
+        `hold` takes it again. It stays held, and the switch is refused as busy, while another
+        call of this process holds it too (a summary, the prompt read ahead): the switch would
+        restart the model server under that call.
+        """
+        with self._own:
+            if self._fd is None or self._depth != 1:
+                return False
             fcntl.flock(self._fd, fcntl.LOCK_UN)
+            return True
 
     def hold(self) -> None:
         """Hold the mark again after `release` (nothing to do when no request is being answered).
@@ -298,17 +306,9 @@ class Answering:
         A switch calls it (`Switcher.switch`'s `rehold`) while it still keeps other switches out,
         so none is made between this request's own switch and the rest of the request.
         """
-        if self._fd is not None:
-            fcntl.flock(self._fd, fcntl.LOCK_SH)
-
-    @contextlib.contextmanager
-    def set_aside(self) -> Generator[None]:
-        """Let the mark go for a switch this request makes itself, then hold it again."""
-        self.release()
-        try:
-            yield
-        finally:
-            self.hold()
+        with self._own:
+            if self._fd is not None:
+                fcntl.flock(self._fd, fcntl.LOCK_SH)
 
 
 @contextlib.contextmanager
@@ -533,6 +533,10 @@ class Switcher:
         )
         return Switched(to, changed=True, restarted=running, seconds=seconds)
 
+    def idle(self) -> bool:
+        """Whether coding mode went unused too long, so `back_if_idle` would leave it."""
+        return idle_too_long(self._config, self._now())
+
     def back_if_idle(
         self,
         say: Callable[[str], None] = lambda _line: None,
@@ -543,7 +547,7 @@ class Switcher:
 
         `say` gets the line for the owner and `rehold` is called as in `switch`.
         """
-        if not idle_too_long(self._config, self._now()):
+        if not self.idle():
             return None
         # Asked again with the locks held: a request that ended meanwhile stamped its use.
         return self.switch(
@@ -551,7 +555,7 @@ class Switcher:
             "idle",
             say,
             rehold=rehold,
-            only_if=lambda: idle_too_long(self._config, self._now()),
+            only_if=self.idle,
         )
 
     def _write(self, to: Mode, before: tuple[str | None, str | None]) -> bool:

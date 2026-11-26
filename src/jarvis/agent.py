@@ -1698,18 +1698,27 @@ class Agent:
             if cut and text:
                 text = f"{text} {CUT_SHORT}"
             return self._final(turn, text) if text else self._wordless(turn)
-        return self._act(turn, hooks, message, calls)
+        return self._act(turn, hooks, message, calls, cut=cut)
 
     def _act(
-        self, turn: _Turn, hooks: Hooks, message: Mapping[str, Any], calls: list[dict[str, Any]]
+        self,
+        turn: _Turn,
+        hooks: Hooks,
+        message: Mapping[str, Any],
+        calls: list[dict[str, Any]],
+        *,
+        cut: bool = False,
     ) -> str | None:
-        """Run the tool calls of one message; return the final reply, or None to go on."""
+        """Run the tool calls of one message; return the final reply, or None to go on.
+
+        `cut` says the length cap ended the message: a call may have been meant to follow.
+        """
         stream = turn.stream
         lone_reply = len(calls) == 1 and str(obj(calls[0].get("function")).get("name")) == NO_ACTION
         if not lone_reply or (stream is not None and stream.cut):
             self._cut(stream)  # text before even a lone reply call was not the reply
         turn.messages.append({"role": "assistant", "content": _text(message), "tool_calls": calls})
-        results = self._run_calls(calls, hooks, turn)
+        results = self._run_calls(calls, hooks, turn, cut=cut)
         if turn.switch:
             self._cut(stream)  # the request is answered again in the other mode
             return ""
@@ -1905,7 +1914,7 @@ class Agent:
     ) -> list[Result]:
         """Run the calls of one assistant message and add their results to the conversation.
 
-        `cut` says the length cap cut a further call off the message, so these are not all of it.
+        `cut` says the length cap ended the message, so these may not be all it was to hold.
 
         The calls were all written before any of their results existed, so whether outside text
         can have steered them is settled once, before the first one runs (and so is whether file
