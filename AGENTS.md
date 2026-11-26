@@ -39,13 +39,18 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
   daemon's `record start --file …` and `record stop --wait --json` are its contract if that path is ever
   built. A new Voxtype command needs the owner's yes. Never edit `~/.config/voxtype/` and never stop a
   recording Jarvis did not start.
+- Jarvis runs T3 Code's own `t3` command only as `t3 thread list --project <folder> --json` and
+  `t3 thread send <thread> -`, to deliver its own announcements into a T3 Code thread that runs Jarvis
+  (`[acp] push_to_t3`, off by default; ADR 0023). Of T3 Code's `userdata/settings.json` it reads only
+  `providerInstances`.
 - Strata serves only Jarvis. Its model lives outside the repository, named by Strata's own run config
   (`strata.run_config`); nothing model-specific is hardcoded in Jarvis. Health
   checks never generate tokens. The local model is loaded when `jarvis run` starts and stays loaded (the owner's
   choice): it may hold RAM and VRAM, but must use no GPU or CPU while idle, and Jarvis runs beside games.
 - Jarvis runs locally and is free to use and maintain. Strata may run on the owner's own machine on
   their network. No hosted model backend or paid API. Voice activation and speech-to-text stay local.
-- Jarvis replies by voice only; no desktop notifications.
+- Jarvis speaks its replies and announcements. Announcements (reminders, watch alerts) also go to open
+  text front ends: the chat window, and T3 Code through `jarvis acp`. No desktop notifications.
 - Never hardcode spoken commands: the owner says whatever is on their mind, so the model decides what a
   request means. Add a typed tool with a clear description, never a new shortcut phrasing or keyword list.
 
