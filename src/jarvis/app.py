@@ -348,8 +348,11 @@ class AgentModes:
 
     def rest(self, say: Callable[[str], None]) -> None:
         """Go back to normal when coding mode idled too long; `say` gets the line for the owner."""
-        with self._answering.set_aside():
-            self._switcher.back_if_idle(say)
+        self._answering.release()
+        try:
+            self._switcher.back_if_idle(say, rehold=self._answering.hold)
+        finally:
+            self._answering.hold()
 
     def setup(self, mode: str) -> Setup:
         """Return what the agent works with in `mode` (the normal mode's for an unknown one)."""
@@ -362,10 +365,14 @@ class AgentModes:
         """Switch to `to` for the model; return "" when done, else what to tell the owner."""
         if to not in modes.MODES:
             return f"There is no {to} mode."
-        with self._answering.set_aside():  # this request's own mark would refuse its switch
+        self._answering.release()  # this request's own mark would refuse its switch
+        try:
+            # Held again before another switch can begin: the request goes on in this mode.
             return self._switcher.switch(
-                "coding" if to == "coding" else "normal", "model", say
+                "coding" if to == "coding" else "normal", "model", say, rehold=self._answering.hold
             ).error
+        finally:
+            self._answering.hold()
 
     def answering(self) -> modes.Answering:
         """Return this process's mark that it answers a request (`modes.Answering`)."""
@@ -821,4 +828,5 @@ def build(
         ops,
         lambda: speech_hint(config, normal.registry, ops.artist_names()),
         switcher,
+        agent_modes,
     )

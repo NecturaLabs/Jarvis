@@ -523,12 +523,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
         )
         return 0
     try:
-        served = modes.effective(updated, modes.current())  # a setup in coding mode keeps it
         services.strata_profile(
             modes.effective(updated, "coding")
         )  # a change of the usual one can break it too
-        profile = services.write_strata_profile(served)
-        units = services.write_units(served, strata_key_file())
+        with modes.locked():  # not in the middle of a switch of modes, which writes them too
+            served = modes.effective(updated, modes.current())  # a setup in coding mode keeps it
+            profile = services.write_strata_profile(served)
+            units = services.write_units(served, strata_key_file())
     except config.ConfigError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
@@ -1873,15 +1874,23 @@ def cmd_restart(_args: argparse.Namespace) -> int:
     """Restart the voice service; restart Strata too when its settings changed since it started.
 
     Strata's profile and unit are written from the config first. A running Strata is otherwise
-    left alone, so the model stays loaded.
+    left alone, so the model stays loaded. No switch of modes is made meanwhile, and no request
+    begins while Strata restarts. The restart is the owner's own, so it is made even when a
+    request is being answered (in a chat window, say), and says that it cut one.
     """
     _reset_failed(STRATA_UNIT, JARVIS_UNIT)
-    _refresh_strata()
-    started = _started_at(STRATA_UNIT)
-    changed = started is not None and _strata_changed_since(started)
-    code = _systemctl("restart" if changed else "start", STRATA_UNIT)
+    cut = False
+    with modes.locked():
+        _refresh_strata()
+        started = _started_at(STRATA_UNIT)
+        changed = started is not None and _strata_changed_since(started)
+        with modes.nobody_answering() as free:
+            cut = changed and not free
+            code = _systemctl("restart" if changed else "start", STRATA_UNIT)
     code = code or _systemctl("restart", JARVIS_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}" + (", model server restarted" if changed else ""))
+    if cut:
+        print("jarvis: a request that was being answered was cut off by the model server's restart")
     return code
 
 

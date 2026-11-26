@@ -23,6 +23,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   answers one, and a request that begins during a switch waits for the model server. The model's own switch
   is made only by a call that stands alone in its reply, before any action of the request was tried, and
   one that cannot be made leaves the request going on in the mode it is in.
+  A scheduled request never switches, and what a request read before its switch (outside text, your own
+  data) still puts the actions after it behind a yes. A switch that was killed midway is made whole by the
+  next one, and `jarvis setup` and `jarvis restart` no longer write the model server's files in the middle
+  of a switch; `jarvis restart` says when its restart of the model server cut a request.
 - `/config` in the chat has a "Mode" section: how long coding mode may go unused before Jarvis leaves it
   (`coding.back_after_s`), and whether the model switches the mode by itself in the chat (`coding.chat.auto`)
   and for speech (`coding.voice.auto`, asked about before it is turned on).

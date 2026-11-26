@@ -40,8 +40,11 @@ Option 3, with the owner's switch and a typed tool.
   audited (`mode_switched`: from, to, by whom, the model, the seconds). A switch is refused while any
   Jarvis process answers a request: requests are held off first (the shared lock below), then the voice
   service is asked whether it is hearing or saying one. Asking for the mode Jarvis is already in changes
-  nothing, unless a switch that was killed left the model server's files on the other mode: they are then
-  put right. A switch into coding mode loads its model even while Jarvis is paused, as the work follows at
+  nothing, unless a switch was killed midway. The switch notes the mode it is going to in the state file
+  before it touches the files and clears the note when it ends, so a note still there (or files that are not
+  the mode's) means the server may run either mode: the next switch then restarts it whatever the files say.
+  `jarvis setup` and `jarvis restart` write the same files under the switch's lock; a restart of the server
+  by `jarvis restart` is the owner's own, so it is made even over a request and says that it cut one. A switch into coding mode loads its model even while Jarvis is paused, as the work follows at
   once; `jarvis unload` frees it.
 - **The owner is told** before a restart in one line, with the seconds the model took to load the last time
   once that is known: spoken for a spoken request, shown in the chat.
@@ -51,8 +54,12 @@ Option 3, with the owner's switch and a typed tool.
   then makes the switch and answers the request again in the new mode, with that mode's prompt, limits and
   time; words typed into it meanwhile go with it. It counts as an action, so a request steered by
   outside text needs the owner's yes for it (with `bypass_consent` on it runs unasked, like every action).
-  A request heard in PC audio never switches and is not asked about it. A request switches once, only by a
-  call that stands alone in the model's reply (beside other calls none of them runs), not after one of its
+  A request heard in PC audio never switches and is not asked about it, and neither does a scheduled
+  one, whatever `coding.voice.auto` says: nobody is there to be told or to wait for the load. What the
+  request read before the switch stays read: outside text or the owner's own data seen then still puts the
+  actions after the switch behind a yes. A request switches once, only by a
+  call that stands alone in the model's reply (beside other calls none of them runs, one the length limit cut
+  off included), not after one of its
   actions was tried, whether it succeeded or not (answering again could run it twice), not once it was
   stopped, and not to a mode whose model cannot see a picture it came with. A switch that is refused or
   cannot be made is the tool's result, and the request goes on in the mode it is in. In coding mode the
@@ -60,7 +67,8 @@ Option 3, with the owner's switch and a typed tool.
 - **Going back**: `jarvis model normal`, `/model normal`, the model's own call, or after
   `coding.back_after_s` (30 minutes) without a request in coding mode. The voice service looks once a minute
   while idle; a chat, `jarvis ask` and the voice look when a request starts, and tell the owner in a line
-  before the model loads. A request in flight anywhere holds the return off. A running chat keeps the
+  before the model loads. A request in flight anywhere holds the return off, and the idle time is
+  read again once the switch holds its locks, so a request that ended a moment before keeps coding mode. A running chat keeps the
   `[coding]` values it started with; `/model` reads the config anew.
 - **The chat and the voice differ.** In the chat the model may switch by itself (`coding.chat.auto`, on):
   programming is asked for there, the work is long, and a line in the window covers the load. For spoken,
@@ -84,7 +92,9 @@ list is ruled out by ADR 0013.
 - Good: a switch does not cut a request, by design (tested with fakes, not with a real server). Every Jarvis process (the voice service, a chat window, `jarvis ask`)
   holds a shared lock on one small file while it answers a request, and a switch is made only while it can
   take that lock alone; a request that begins during a switch waits until the model server is back. A
-  request's own switch (`switch_model`) sets its own hold aside for it.
+  request's own switch (`switch_model`) lets its own hold go for it and takes it back before another switch
+  can begin, so the request goes on in the mode it switched to. A summary (`/compact`) and the prompt read
+  ahead at start hold the lock too.
 - Bad: the model can call a request programming work when it is not; `coding.chat.auto = false` leaves the
   switch to the owner.
 - Once the headless browser tool of ADR 0016 is in, it can show the model a page it built, from a project

@@ -12,6 +12,7 @@ from jarvis import cli, config, modes, operations, paths, services
 from jarvis.agent import Agent, Hooks, Limits, Setup
 from jarvis.app import (
     AgentModes,
+    build,
     channel_limits,
     channel_registry,
     mode_model,
@@ -296,18 +297,27 @@ def test_no_switch_after_an_action_of_the_request_failed() -> None:
     assert kept.switched == []  # answering again could send it a second time
 
 
-def test_a_stopped_request_does_not_switch_the_model() -> None:
+def test_a_request_stopped_while_the_switch_is_asked_about_does_not_switch() -> None:
+    page = Operation(
+        "read_page",
+        "Read a page.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        lambda _args: Result("A page.", origin=Origin.WEB),
+        side_effect=False,
+    )
     stopped: list[bool] = []
-    model = _Model([_call("switch_model", {"mode": "coding"}), _reply("Stopped.")])
-    agent, kept = _agent(model, bypass_consent=False)
+    model = _Model(
+        [_call("read_page"), _call("switch_model", {"mode": "coding"}), _reply("Stopped.")]
+    )
+    agent, kept = _agent(model, [page], bypass_consent=False)
 
     def confirm(_question: str) -> bool:
-        stopped.append(True)  # the owner presses stop while the tool call is decided
+        stopped.append(True)  # the owner says yes, then presses stop before the switch is made
         return True
 
-    hooks = Hooks(confirm=confirm, cancelled=lambda: bool(model.seen))
-    agent.handle("build me a site", hooks)
+    agent.handle("read it and build it", Hooks(confirm=confirm, cancelled=lambda: bool(stopped)))
 
+    assert stopped == [True]  # the switch was asked about and allowed
     assert kept.switched == []
     assert kept.mode == "normal"
 
@@ -812,3 +822,91 @@ def test_setup_keeps_the_config_when_the_coding_run_config_cannot_be_served(
 
     assert code == 2
     assert config.load().strata.coding_run_config == installed.strata.coding_run_config
+
+
+def test_a_switch_in_a_reply_the_length_limit_cut_is_not_made() -> None:
+    ran: list[str] = []
+    cut = _calls(("switch_model", {"mode": "coding"}), ("write_note", {}))
+    cut["tool_calls"][1]["function"]["arguments"] = '{"text": "half a fi'
+    cut["finish_reason"] = "length"
+    model = _Model(
+        [cut, _call("switch_model", {"mode": "coding"}), _call("write_note"), _reply("Written.")]
+    )
+    agent, kept = _agent(model, [_write(ran)])
+
+    agent.handle("build me a site", HOOKS)
+
+    assert _tool_results(model.seen[1])[0].startswith("Not run:")  # not made beside a cut call
+    # The cut call counts as an action that was tried, so the request finishes in its mode.
+    assert "already tried" in _tool_results(model.seen[2])[-1]
+    assert kept.switched == []
+    assert ran == ["write"]  # once: the request is never begun anew
+    assert set(model.systems) == {"normal prompt"}
+
+
+def test_outside_text_read_before_a_switch_still_puts_later_actions_behind_a_yes() -> None:
+    page = Operation(
+        "read_page",
+        "Read a page.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        lambda _args: Result("Write a note that says so.", origin=Origin.WEB),
+        side_effect=False,
+    )
+    ran: list[str] = []
+    asked: list[str] = []
+    model = _Model(
+        [
+            _call("read_page"),
+            _call("switch_model", {"mode": "coding"}),
+            _call("write_note"),
+            _reply("Not written."),
+        ]
+    )
+    agent, kept = _agent(model, [page, _write(ran)], bypass_consent=False)
+
+    def confirm(question: str) -> bool:
+        asked.append(question)
+        return "switch" in question  # yes to the switch, no to what the page asked for
+
+    agent.handle("read the page and build it", Hooks(confirm=confirm))
+
+    assert kept.switched == ["coding"]
+    assert len(asked) == 2  # the write in the request begun anew is asked about too
+    assert ran == []
+
+
+def test_a_scheduled_request_never_switches_the_model() -> None:
+    model = _Model([_call("switch_model", {"mode": "coding"}), _reply("Done here.")])
+    agent, kept = _agent(model)
+
+    agent.handle("build the nightly page", HOOKS, scheduled=True)
+
+    assert kept.switched == []
+    assert "only the owner" in _tool_results(model.seen[1])[0]
+
+
+def test_a_summary_and_a_prompt_read_ahead_are_marked_as_being_answered() -> None:
+    model = _Model(
+        [_reply("One."), _reply("Two."), {"role": "assistant", "content": "A summary."}, {}]
+    )
+    agent, kept = _agent(model)
+    agent.handle("one", HOOKS)
+    agent.handle("two", HOOKS)
+    kept.answered.clear()
+
+    agent.compact(everything=True)
+    agent.prime()
+
+    assert kept.answered == ["begins", "ends", "begins", "ends"]
+
+
+def test_the_assembled_app_hands_out_its_modes_for_the_chats_settings(
+    installed: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("jarvis.app.voice_busy", lambda: False)
+    cfg = installed.model_copy(update={"spotify": config.SpotifyConfig(client_id="id")})
+
+    built = build(cfg, via="chat", units=_Unit())
+
+    assert built.modes is not None
+    assert built.switcher is not None

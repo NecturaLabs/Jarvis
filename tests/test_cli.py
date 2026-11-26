@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from strata_fixture import engine_run_config, install_engine
 
-from jarvis import __version__, app, cli, config, models, paths, services
+from jarvis import __version__, app, cli, config, models, modes, paths, services
 from jarvis import audio as audio_module
 from jarvis import voice as voice_module
 from jarvis.agent import Hooks
@@ -2460,3 +2460,69 @@ def test_pc_audio_listen_reads_with_the_unhinted_transcriber_and_says_its_failur
     assert failing is not None
     with pytest.raises(OperationError, match="speech-to-text failed"):
         failing.transcribe(frames)
+
+
+def _mode_lock_free() -> bool:
+    with modes._locked(wait=False) as free:  # pyright: ignore[reportPrivateUsage]
+        return free
+
+
+def test_restart_keeps_mode_switches_out_while_it_writes_and_restarts_strata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: a restart wrote the model server's files and restarted it in the middle of a
+    # switch of modes, which writes and restarts the same.
+    profile = strata_profile_file()
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text("{}")
+    free: dict[tuple[str, ...], bool] = {}
+
+    def systemctl(*args: str) -> int:
+        free[args] = _mode_lock_free()
+        return 0
+
+    def started(_unit: str) -> float | None:
+        return profile.stat().st_mtime - 60
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+    monkeypatch.setattr(cli, "_started_at", started)
+
+    assert cli.main(["restart"]) == 0
+
+    assert free["restart", "jarvis-strata.service"] is False
+    assert free["restart", "jarvis.service"] is True  # the voice service takes the lock itself
+
+
+def test_restart_says_when_it_cut_a_request_that_was_being_answered(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    profile = strata_profile_file()
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text("{}")
+
+    with modes.Answering():  # a chat window is in the middle of a request
+        calls = _restart_calls(monkeypatch, profile.stat().st_mtime - 60)
+
+    assert ("restart", "jarvis-strata.service") in calls  # the owner's own restart is made
+    assert "was being answered" in capsys.readouterr().out
+
+
+def test_setup_keeps_mode_switches_out_while_it_writes_the_model_servers_files(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_subprocess(monkeypatch)
+    run = engine_run_config(home)
+    install_engine(home / "data")
+    config.save(config.Config(strata=config.StrataConfig(vram_reserve_mib=12000)))
+    free: list[bool] = []
+    write = services.write_strata_profile
+
+    def watched(cfg: config.Config) -> Path:
+        free.append(_mode_lock_free())
+        return write(cfg)
+
+    monkeypatch.setattr(services, "write_strata_profile", watched)
+
+    assert main(["setup", "--run-config", str(run)]) == 0
+
+    assert free == [False]

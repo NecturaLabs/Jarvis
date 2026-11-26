@@ -699,12 +699,19 @@ def _tell(hooks: Hooks, line: str) -> None:
         hooks.draft(line)
 
 
-def _typed_before(turn: _Turn, typed: Sequence[str]) -> None:
-    """Put the words typed into a request before a mode switch into the request begun anew.
+def _carried(turn: _Turn, before: _Turn | None) -> None:
+    """Carry what a request held before a mode switch into the request begun anew (`before`).
 
-    They were audited and counted as the owner's own the first time.
+    What it read stays read: outside text or the owner's own data seen before the switch still
+    puts the actions after it behind a yes. The words typed into it come along; they were
+    audited and counted as the owner's own the first time.
     """
-    for words in typed:
+    if before is None:
+        return
+    turn.untrusted = turn.untrusted or before.untrusted
+    turn.private = turn.private or before.private
+    turn.outside = turn.outside or before.outside
+    for words in before.steered:
         turn.messages.append({"role": "user", "content": f"{STEERED} {words}"})
         turn.steered.append(words)
 
@@ -1164,7 +1171,8 @@ class Agent:
         folded = folded or memory.oldest_to_fold()
         if not folded:
             return False
-        summary = self._summarize(folded)
+        with self._modes.answering():  # no mode switch restarts the model under the summary
+            summary = self._summarize(folded)
         if summary is None:
             return False
         memory.fold(folded, summary)
@@ -1208,16 +1216,17 @@ class Agent:
         thinking = self._limits.thinking
         began = self._clock()
         try:
-            self._model.chat(
-                [
-                    {"role": "system", "content": self._system},
-                    {"role": "user", "content": PRIME_WORDS},
-                ],
-                self._registry.tool_schemas(),
-                timeout_s=PRIME_S,
-                max_tokens=1,
-                thinking=None if thinking is None else Thinking(thinking.effort, 1),
-            )
+            with self._modes.answering():  # no mode switch restarts the model under this call
+                self._model.chat(
+                    [
+                        {"role": "system", "content": self._system},
+                        {"role": "user", "content": PRIME_WORDS},
+                    ],
+                    self._registry.tool_schemas(),
+                    timeout_s=PRIME_S,
+                    max_tokens=1,
+                    thinking=None if thinking is None else Thinking(thinking.effort, 1),
+                )
         except Exception as exc:  # ruff: ignore[blind-except] - the first request reads it instead
             log.warning("the model did not read its prompt ahead of the first request: %s", exc)
             return False
@@ -1399,9 +1408,9 @@ class Agent:
         hooks: Hooks,
         source: tuple[Origin, Request, frozenset[str]],
         shared: tuple[Sequence[Picture], Sequence[str]],
-        typed: Sequence[str] = (),
+        before: _Turn | None = None,
     ) -> str:
-        """Answer the request; `typed` are words typed into it before a mode switch began it."""
+        """Answer the request; `before` is its turn up to the mode switch that began it anew."""
         origin, request = source[0], source[1]
         pictures, pasted = shared
         started = self._begin(hooks, pictures=bool(pictures))
@@ -1457,7 +1466,7 @@ class Agent:
             turn.outside = turn.outside or Origin.PASTE.value
             request.saw(Origin.PASTE.value)
         _steered(turn, source[2])
-        _typed_before(turn, typed)
+        _carried(turn, before)
         reply = self._shortcut(hit, hooks, turn) if hit is not None else None
         if reply is None:
             if hit is not None and remembered and self._memory.over_budget():
@@ -1476,7 +1485,7 @@ class Agent:
             reply = self._converse(hooks, turn)
         if turn.switch:
             # The request starts again in the new mode: its prompt, tools, limits and time.
-            return self._answer(text, hooks, source, shared, turn.steered)
+            return self._answer(text, hooks, source, shared, turn)
         self._deliver(reply, hooks, turn)
         self._close(_with_pictures(words if outside else text, pictures), reply, turn)
         self._fit_memory(turn, hooks)
@@ -1780,7 +1789,7 @@ class Agent:
         turn.messages.append(
             {"role": "assistant", "content": _text(message), "tool_calls": [*whole, cut]}
         )
-        results = self._run_calls(whole, hooks, turn) if whole else []
+        results = self._run_calls(whole, hooks, turn, cut=True) if whole else []
         self._record(cut, Result(self._cut_note(name), ok=False), turn)
         if any(result.quiet for result in results):
             hooks.hush()
@@ -1891,8 +1900,12 @@ class Agent:
         )
         return None
 
-    def _run_calls(self, calls: list[dict[str, Any]], hooks: Hooks, turn: _Turn) -> list[Result]:
+    def _run_calls(
+        self, calls: list[dict[str, Any]], hooks: Hooks, turn: _Turn, *, cut: bool = False
+    ) -> list[Result]:
         """Run the calls of one assistant message and add their results to the conversation.
+
+        `cut` says the length cap cut a further call off the message, so these are not all of it.
 
         The calls were all written before any of their results existed, so whether outside text
         can have steered them is settled once, before the first one runs (and so is whether file
@@ -1901,8 +1914,8 @@ class Agent:
         taint = (turn.untrusted, turn.private)
         results: list[Result] = []
         if any(_name(call) == SWITCH_MODEL for call in calls) and self._offers_switch():
-            ran = self._run_switch(calls, hooks, turn, taint=taint)
-            alone = len(calls) == 1  # beside other calls, none of them was tried
+            ran = self._run_switch(calls, hooks, turn, taint=taint, cut=cut)
+            alone = len(calls) == 1 and not cut  # beside other calls, none of them was tried
             return [
                 self._record(call, result, turn, tried=alone)
                 for call, result in zip(calls, ran, strict=True)
@@ -2039,18 +2052,25 @@ class Agent:
         )
 
     def _run_switch(
-        self, calls: list[dict[str, Any]], hooks: Hooks, turn: _Turn, *, taint: tuple[bool, bool]
+        self,
+        calls: list[dict[str, Any]],
+        hooks: Hooks,
+        turn: _Turn,
+        *,
+        taint: tuple[bool, bool],
+        cut: bool = False,
     ) -> list[Result]:
         """Decide a reply that holds a `switch_model` call, and make the switch it may make.
 
         The request is answered again in the new mode, so nothing else of it may have run or run
         with it: a switch is made only when its call stands alone in the reply, and then no call
         of that reply runs. Only the owner's own request switches, once, before any of its
-        actions was tried, and never to a mode that cannot see the pictures it came with. A
+        actions was tried, and never to a mode that cannot see the pictures it came with. A call the
+        length cap cut off the reply (`cut`) stood beside it, so the switch is not made then. A
         switch that is refused or cannot be made is the call's result, and the request goes on
         in the mode it is in.
         """
-        if len(calls) > 1:
+        if len(calls) > 1 or cut:
             alone = Result(
                 "Not run: switch_model must be the only call of a reply, as the request is "
                 "answered again in the other mode. Call it alone, or go on without it.",
@@ -2088,7 +2108,8 @@ class Agent:
             to = str(obj(self._arguments(obj(call.get("function")))).get("mode", ""))
         except ValueError, RecursionError:
             to = ""  # the arguments are refused where every call's are
-        if turn.foreign:
+        if turn.foreign or (turn.request is not None and turn.request.scheduled):
+            # A scheduled request runs with nobody there to be told or to wait for the model.
             return Result("Refused: only the owner's own request switches the model.", ok=False)
         if self._switched or to == self._mode:
             return Result(f"You are in {self._mode} mode now; go on with the request.")

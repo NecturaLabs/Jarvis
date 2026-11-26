@@ -12,10 +12,12 @@ Jarvis process answers a request (`Answering`).
 """
 
 import contextlib
+import dataclasses
 import fcntl
 import json
 import math
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,13 +56,17 @@ class State:
     """The mode, who set it, when coding mode was last used and how long each mode took to load.
 
     `used` is Unix time, so every process reads the same idle time. `load_s` holds the seconds the
-    last switch into each mode waited for its model, for the line that tells the owner.
+    last switch into each mode waited for its model, for the line that tells the owner. `pending`
+    is the mode a switch is being made to, noted before the model server's files are touched and
+    cleared when the switch ends: one still there was left by a switch that was killed, so the
+    files and the server may be either mode's.
     """
 
     mode: Mode = "normal"
     by: By = "owner"
     used: float = 0.0
     load_s: dict[str, float] = field(default_factory=dict[str, float])
+    pending: Mode | None = None
 
 
 def read_state() -> State:
@@ -73,6 +79,8 @@ def read_state() -> State:
     used, loads = data.get("used"), data.get("load_s")
     said = data.get("by")
     by: By = "model" if said == "model" else "idle" if said == "idle" else "owner"
+    half = data.get("pending")
+    pending: Mode | None = "coding" if half == "coding" else "normal" if half == "normal" else None
     return State(
         "coding" if data.get("mode") == "coding" else "normal",
         by,
@@ -84,6 +92,7 @@ def read_state() -> State:
         }
         if isinstance(loads, dict)
         else {},
+        pending,
     )
 
 
@@ -95,9 +104,15 @@ def _finite(value: object) -> float | None:
 
 
 def _write_state(state: State) -> None:
-    text = json.dumps(
-        {"mode": state.mode, "by": state.by, "used": state.used, "load_s": state.load_s}
-    )
+    data: dict[str, object] = {
+        "mode": state.mode,
+        "by": state.by,
+        "used": state.used,
+        "load_s": state.load_s,
+    }
+    if state.pending is not None:
+        data["pending"] = state.pending
+    text = json.dumps(data)
     write_atomic(state_file(), text + "\n", 0o600)
 
 
@@ -167,13 +182,14 @@ def model_name(config: Config, mode: Mode) -> str:
 def mark_used(now: float | None = None) -> None:
     """Note that coding mode was used now, so the idle time before going back starts again.
 
-    Skipped while a switch holds the lock: the switch stamps the time itself.
+    It waits for a switch that holds the lock, so the time is never dropped: a return to the
+    normal mode for idleness looks at it under that lock.
     """
-    with _locked(wait=False) as held:
+    with locked():
         state = read_state()
-        if held and state.mode == "coding":
+        if state.mode == "coding":
             stamp = time.time() if now is None else now
-            _write_state(State(state.mode, state.by, stamp, state.load_s))
+            _write_state(dataclasses.replace(state, used=stamp))
 
 
 def idle_too_long(config: Config, now: float | None = None) -> bool:
@@ -182,6 +198,28 @@ def idle_too_long(config: Config, now: float | None = None) -> bool:
     after = config.coding.back_after_s
     now = time.time() if now is None else now
     return state.mode == "coding" and after > 0 and now - state.used > after
+
+
+@contextlib.contextmanager
+def locked() -> Generator[None]:
+    """Hold the mode's lock while the model server's files are written or it is restarted.
+
+    `jarvis setup` and `jarvis restart` hold it, so neither writes the files in the middle of a
+    switch, and no switch begins in the middle of theirs.
+    """
+    with _locked():
+        yield
+
+
+@contextlib.contextmanager
+def nobody_answering() -> Generator[bool]:
+    """Keep requests from beginning while held; yield False when one is in flight already.
+
+    For a restart of the model server outside a switch (`jarvis restart`), which would cut a
+    request's model call like a switch does.
+    """
+    with _nobody_answering() as free:
+        yield free
 
 
 @contextlib.contextmanager
@@ -225,34 +263,52 @@ class Answering:
         super().__init__()
         self._fd: int | None = None
         self._depth = 0
+        self._own = threading.Lock()  # a summary or a prompt read ahead may run beside a request
 
     def __enter__(self) -> Self:
         """Hold the mark; a request inside a request keeps the one already held."""
-        if self._depth == 0:
-            self._fd = _open_lock(_answering_file())
-            fcntl.flock(self._fd, fcntl.LOCK_SH)
-        self._depth += 1
+        with self._own:
+            if self._depth == 0:
+                fd = _open_lock(_answering_file())
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_SH)
+                except BaseException:
+                    os.close(fd)
+                    raise
+                self._fd = fd
+            self._depth += 1
         return self
 
     def __exit__(self, *_exc: object) -> None:
         """Let the mark go once the outermost request ends."""
-        self._depth -= 1
-        if self._depth == 0 and self._fd is not None:
-            os.close(self._fd)
-            self._fd = None
+        with self._own:
+            self._depth -= 1
+            if self._depth == 0 and self._fd is not None:
+                os.close(self._fd)
+                self._fd = None
+
+    def release(self) -> None:
+        """Let the mark go for a switch this request makes itself; `hold` takes it again."""
+        if self._fd is not None:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+
+    def hold(self) -> None:
+        """Hold the mark again after `release` (nothing to do when no request is being answered).
+
+        A switch calls it (`Switcher.switch`'s `rehold`) while it still keeps other switches out,
+        so none is made between this request's own switch and the rest of the request.
+        """
+        if self._fd is not None:
+            fcntl.flock(self._fd, fcntl.LOCK_SH)
 
     @contextlib.contextmanager
     def set_aside(self) -> Generator[None]:
         """Let the mark go for a switch this request makes itself, then hold it again."""
-        fd = self._fd
-        if fd is None:
-            yield
-            return
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        self.release()
         try:
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_SH)
+            self.hold()
 
 
 @contextlib.contextmanager
@@ -390,8 +446,21 @@ class Switcher:
             return True
         return json.dumps(profile, indent=1) + "\n" != _texts()[0]
 
-    def switch(self, to: Mode, by: By, say: Callable[[str], None] = lambda _line: None) -> Switched:
+    def switch(
+        self,
+        to: Mode,
+        by: By,
+        say: Callable[[str], None] = lambda _line: None,
+        *,
+        rehold: Callable[[], None] = lambda: None,
+        only_if: Callable[[], bool] = lambda: True,
+    ) -> Switched:
         """Put Jarvis in mode `to`; `say` gets the line for the owner before a restart.
+
+        `rehold` is called once requests may begin again and before another switch can: a request
+        that makes the switch itself takes its mark back there (`Answering.hold`), so it goes on
+        in the mode it switched to. `only_if` is asked with every lock held and no request in
+        flight; when it says no, nothing changes.
 
         Nothing changes when Jarvis is in that mode already (and the model server's files are that
         mode's), when a request is in flight in any
@@ -400,36 +469,53 @@ class Switcher:
         before.
         """
         with _locked():
-            state = read_state()
-            if state.mode == to and not self._out_of_step(to):
-                return Switched(to)
-            # Requests are held off first, then asked about: none begins between the two.
-            with _nobody_answering() as free:
-                if not free or self._busy():
-                    return Switched(state.mode, error=BUSY)
-                return self._switch(to, by, say, state)
+            try:
+                state = read_state()
+                if state.mode == to and not self._out_of_step(state):
+                    return Switched(to)
+                # Requests are held off first, then asked about: none begins between the two.
+                with _nobody_answering() as free:
+                    if not free or self._busy():
+                        return Switched(state.mode, error=BUSY)
+                    if not only_if():
+                        return Switched(read_state().mode)
+                    return self._switch(to, by, say, state)
+            finally:
+                rehold()
 
-    def _out_of_step(self, mode: Mode) -> bool:
-        """Whether the model server's profile on disk is not the one of `mode`, the mode in force.
+    def _out_of_step(self, state: State) -> bool:
+        """Whether the model server may not be running the mode in force.
 
-        A switch that was killed between writing the files and noting the mode leaves them so;
+        A switch that was killed leaves its `pending` note, or files that are not the mode's;
         asking for the mode again then puts the files and the server right.
         """
-        return _texts()[0] is not None and self.needs_restart(mode)
+        return state.pending is not None or (
+            _texts()[0] is not None and self.needs_restart(state.mode)
+        )
 
     def _switch(self, to: Mode, by: By, say: Callable[[str], None], state: State) -> Switched:
         """Make the switch from `state` to `to`, with the lock held and no request in flight."""
         began = self._clock()
         before = _texts()
         try:
-            restart = self._write(to, before)
+            services.strata_profile(effective(self._config, to))  # refused before anything changes
+            # Noted before the files change: a switch killed from here on is seen and made whole.
+            _write_state(dataclasses.replace(state, pending=to))
+            # After a killed switch the server may run either mode's files: it is restarted.
+            restart = self._write(to, before) or (
+                state.pending is not None and before[1] is not None
+            )
         except (ConfigError, OSError) as exc:
+            # The server was not restarted: with its files back it runs what it ran before.
+            if self._write_back(state.mode, restart=False):
+                self._settle(state)  # a note an earlier killed switch left stays
             return Switched(state.mode, error=f"{to} mode cannot be served: {exc}")
         running = restart and self._units.active()
         if running:
             say(announcement(self._config, to, restart=True))
             if not self._restart(to, state):
-                self._write_back(state.mode)
+                if self._write_back(state.mode, restart=True):
+                    self._settle(dataclasses.replace(state, pending=None))
                 return Switched(state.mode, restarted=True, error=self._failed(to, state))
         elif not restart:
             say(announcement(self._config, to, restart=False))
@@ -447,14 +533,26 @@ class Switcher:
         )
         return Switched(to, changed=True, restarted=running, seconds=seconds)
 
-    def back_if_idle(self, say: Callable[[str], None] = lambda _line: None) -> Switched | None:
+    def back_if_idle(
+        self,
+        say: Callable[[str], None] = lambda _line: None,
+        *,
+        rehold: Callable[[], None] = lambda: None,
+    ) -> Switched | None:
         """Go back to the normal mode when coding mode went unused too long; else do nothing.
 
-        `say` gets the line for the owner, as in `switch`.
+        `say` gets the line for the owner and `rehold` is called as in `switch`.
         """
         if not idle_too_long(self._config, self._now()):
             return None
-        return self.switch("normal", "idle", say)
+        # Asked again with the locks held: a request that ended meanwhile stamped its use.
+        return self.switch(
+            "normal",
+            "idle",
+            say,
+            rehold=rehold,
+            only_if=lambda: idle_too_long(self._config, self._now()),
+        )
 
     def _write(self, to: Mode, before: tuple[str | None, str | None]) -> bool:
         """Write the model server's profile and unit for `to`; return whether either changed.
@@ -469,10 +567,25 @@ class Switcher:
         services.write_strata_unit(config, paths.strata_key_file())
         return _texts() != before
 
-    def _write_back(self, mode: Mode) -> None:
-        with contextlib.suppress(ConfigError, OSError):
+    def _write_back(self, mode: Mode, *, restart: bool) -> bool:
+        """Put the files of `mode` back after a failed switch; return whether they are back.
+
+        With `restart` the server is restarted on them too, and it counts.
+        """
+        try:
             self._write(mode, _texts())
-            self._units.restart()
+        except ConfigError, OSError:
+            return False
+        return self._units.restart() if restart else True
+
+    @staticmethod
+    def _settle(state: State) -> None:
+        """Note how a failed switch left things, once files and server are the old mode's again.
+
+        Its note stays when they could not be put right: asking for a mode then restarts.
+        """
+        with contextlib.suppress(OSError):
+            _write_state(state)
 
     def _restart(self, to: Mode, state: State) -> bool:
         """Restart the model server on the new profile and load its model; return whether it did.

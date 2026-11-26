@@ -1,9 +1,11 @@
 """Coding mode: what it lays over the config, the state every process shares, and the switch."""
 
 import json
+import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import pytest
 from strata_fixture import engine_run_config, install_engine, touch
@@ -430,15 +432,111 @@ def test_coding_mode_is_not_left_while_a_request_is_answered_in_it(tmp_path: Pat
 def test_the_idle_return_tells_the_owner_before_the_model_loads(tmp_path: Path) -> None:
     cfg = _config(tmp_path, back_after_s=600.0)
     _installed(cfg)
-    clock, said = _Clock(), list[str]()
-    switcher = _switcher(cfg, _Units(), _Server(), _Audit(), clock=clock)
+    clock, order = _Clock(), list[str]()
+    server = _Server(on_load=lambda: order.append("load"))
+    units = _Units()
+    switcher = _switcher(cfg, units, server, _Audit(), clock=clock)
+    switcher.switch("coding", "owner")
+    order.clear()
+    clock.sleep(700.0)
+    before = units.restarts
+
+    switcher.back_if_idle(lambda _line: order.append(f"said, restarts {units.restarts - before}"))
+
+    assert order == ["said, restarts 0", "load"]  # told before the server restarts and loads
+
+
+def test_coding_mode_used_meanwhile_is_not_left_by_a_look_that_came_too_late(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path, back_after_s=600.0)
+    _installed(cfg)
+    clock, units = _Clock(), _Units()
+    switcher = _switcher(cfg, units, _Server(), _Audit(), clock=clock)
     switcher.switch("coding", "owner")
     clock.sleep(700.0)
 
-    switcher.back_if_idle(said.append)
+    def busy() -> bool:  # asked under the switch's locks: a request ended just before them
+        modes._write_state(  # pyright: ignore[reportPrivateUsage]
+            modes.State("coding", "owner", clock.now, {})
+        )
+        return False
 
-    assert len(said) == 1
-    assert said[0].startswith("Switching to the usual model")
+    idle = modes.Switcher(
+        cfg, units, lambda _cfg: _Server(), _Audit(), busy=busy, clock=clock, now=clock
+    )
+    assert idle.back_if_idle() is not None
+
+    assert (modes.current(), units.restarts) == ("coding", 1)
+
+
+def test_a_switch_killed_before_its_restart_is_made_whole_when_asked_again(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    _installed(cfg)
+
+    class Killed(BaseException):
+        pass
+
+    @dataclass
+    class _Dying(_Units):
+        @override
+        def restart(self) -> bool:
+            raise Killed  # the process is killed after the files were written
+
+    with pytest.raises(Killed):
+        _switcher(cfg, _Dying(), _Server(), _Audit()).switch("coding", "owner")
+    assert (modes.current(), _served_model()) == ("normal", "coder.gguf")
+    units = _Units()
+
+    done = _switcher(cfg, units, _Server(), _Audit()).switch("coding", "owner")
+
+    assert (done.changed, done.restarted, units.restarts) == (True, True, 1)
+    assert modes.current() == "coding"
+
+
+def test_the_request_that_switched_holds_its_mark_again_before_another_switch_can_begin(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    _installed(cfg)
+    seen: list[bool] = []
+
+    def rehold() -> None:
+        with modes._locked(wait=False) as free:  # pyright: ignore[reportPrivateUsage]
+            seen.append(free)  # False: the switch still holds the mode's lock
+
+    _switcher(cfg, _Units(), _Server(), _Audit()).switch("coding", "model", rehold=rehold)
+
+    assert seen == [False]
+
+
+def test_a_mark_that_cannot_be_taken_leaves_no_file_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del tmp_path
+    closed: list[int] = []
+    real_close = os.close
+
+    def close(fd: int) -> None:
+        closed.append(fd)
+        real_close(fd)
+
+    def refuse(_fd: int, _how: int) -> None:
+        msg = "no lock to be had"
+        raise OSError(msg)
+
+    monkeypatch.setattr(os, "close", close)
+    monkeypatch.setattr(modes.fcntl, "flock", refuse)
+    mark = modes.Answering()
+
+    with pytest.raises(OSError, match="no lock to be had"), mark:
+        pass
+
+    assert len(closed) == 1
+    with mark.set_aside():  # nothing is held, so there is nothing to set aside
+        pass
 
 
 def test_requests_are_held_off_before_the_voice_service_is_asked(tmp_path: Path) -> None:
@@ -537,3 +635,68 @@ def test_marking_use_in_the_normal_mode_writes_nothing() -> None:
     modes.mark_used()
 
     assert not modes.state_file().exists()
+
+
+def test_a_switch_that_ends_leaves_no_note_of_itself(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    _installed(cfg)
+
+    _switcher(cfg, _Units(), _Server(), _Audit()).switch("coding", "owner")
+
+    assert modes.read_state().pending is None
+    assert "pending" not in json.loads(modes.state_file().read_text(encoding="utf-8"))
+
+
+def test_a_switch_that_failed_and_was_put_back_leaves_no_note(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    _installed(cfg)
+
+    @dataclass
+    class _Once(_Units):
+        @override
+        def restart(self) -> bool:
+            self.restarts += 1
+            return self.restarts > 1  # the new mode's restart fails, the one back is taken
+
+    done = _switcher(cfg, _Once(), _Server(), _Audit()).switch("coding", "owner")
+
+    assert done.error
+    assert (modes.current(), modes.read_state().pending) == ("normal", None)
+    assert _served_model() == "q4.gguf"
+
+
+def test_a_switch_that_could_not_be_put_back_is_made_whole_when_a_mode_is_asked_for(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    _installed(cfg)
+    down = _Units(takes=False)
+
+    assert _switcher(cfg, down, _Server(), _Audit()).switch("coding", "owner").error
+    assert modes.read_state().pending == "coding"  # the server may run either mode's files
+    units = _Units()
+
+    done = _switcher(cfg, units, _Server(), _Audit()).switch("normal", "owner")
+
+    assert (done.changed, done.restarted, units.restarts) == (True, True, 1)
+    assert (modes.current(), modes.read_state().pending) == ("normal", None)
+
+
+def test_use_of_coding_mode_is_noted_once_a_switch_lets_the_lock_go(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, back_after_s=600.0)
+    _installed(cfg)
+    clock = _Clock()
+    _switcher(cfg, _Units(), _Server(), _Audit(), clock=clock).switch("coding", "owner")
+    noted = threading.Event()
+
+    def use() -> None:
+        modes.mark_used(5000.0)
+        noted.set()
+
+    with modes.locked():  # another process holds the lock, as a switch does
+        thread = threading.Thread(target=use)
+        thread.start()
+        assert not noted.wait(0.2)  # it waits; the time is not dropped
+    thread.join(5.0)
+
+    assert modes.read_state().used == pytest.approx(5000.0)
