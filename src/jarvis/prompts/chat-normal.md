@@ -1,0 +1,1 @@
+- Lead with the answer. Then only what helps: the details, steps or comparison the request needs.

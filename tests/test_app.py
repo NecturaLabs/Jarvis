@@ -32,6 +32,7 @@ from jarvis.audit import AuditLog
 from jarvis.config import (
     AudioConfig,
     BoundariesConfig,
+    ChatConfig,
     Config,
     FilesConfig,
     OpClassName,
@@ -731,6 +732,20 @@ def test_sing_is_offered_only_where_its_song_can_be_heard(via: str | None, offer
     names = build(config, via=via).agent._registry.names()  # pyright: ignore[reportPrivateUsage] - what the model is given
 
     assert ("sing" in names) is offered
+
+
+def test_the_chat_prompt_follows_the_response_format() -> None:
+    prompts = {
+        name: system_prompt(Config(chat=ChatConfig(response_format=name)), "chat")
+        for name in ("concise", "normal", "verbose")
+    }
+
+    assert len(set(prompts.values())) == 3
+    assert ChatConfig().response_format == "concise"
+    assert all("{format}" not in prompt for prompt in prompts.values())
+    assert system_prompt(Config(chat=ChatConfig(response_format="verbose")), "voice") == (
+        system_prompt(Config(), "voice")  # the voice keeps its own spoken style
+    )
 
 
 def test_the_voice_prompt_says_pc_audio_cannot_be_heard_while_listening_is_off() -> None:

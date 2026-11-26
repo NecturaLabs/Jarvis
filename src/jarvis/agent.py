@@ -962,6 +962,18 @@ class Agent:
         room = limits.context_tokens - CONTEXT_MARGIN - self._fixed - limits.answer_tokens - work
         return max(0, min(limits.memory_tokens, room))
 
+    def set_system(self, prompt: str) -> None:
+        """Give the model `prompt` as its instructions from the next request on."""
+        self._system = prompt
+        self._fixed = tokens(prompt) + self._schemas
+        self._memory.budget = self._memory_budget()
+
+    def set_thinking(self, section: AgentConfig) -> None:
+        """Think as `section` says (its effort, caps and ceiling) from the next request on."""
+        fresh = Limits.of(section, self._limits.context_tokens)
+        self._limits = replace(self._limits, thinking=fresh.thinking, raised=fresh.raised)
+        self._memory.budget = self._memory_budget()  # an answer's room includes its thinking
+
     @property
     def memory(self) -> Conversation:
         """The remembered conversation (read it; change it through `forget` and `compact`)."""
@@ -990,6 +1002,24 @@ class Agent:
         self._last_used = 0
         self._audit.record("memory_cleared")
         self._save_memory()
+
+    def resume(self, path: Path) -> bool:
+        """Continue a conversation saved by `Conversation.save`; return whether it was read.
+
+        It comes back as it was saved, with what drew on outside text or the owner's files still
+        marked, so it still puts actions behind a yes. The operations forget what they kept, as
+        for a new conversation. A file that cannot be read leaves the conversation as it was.
+        """
+        restored = Conversation(self._memory.budget, self._memory.idle_s)
+        if not restored.load(path):
+            return False
+        self._memory = restored
+        self._memory.last = self._clock()
+        self._registry.reset()
+        self._last_used = 0
+        self._audit.record("memory_resumed", turns=len(restored.turns))
+        self._save_memory()
+        return True
 
     def compact(self, *, everything: bool = False) -> bool:
         """Fold the older turns into the summary now; return whether anything was folded.

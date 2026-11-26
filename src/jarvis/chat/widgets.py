@@ -7,7 +7,7 @@ structure comes from marks, rules and spacing instead of shaded bands. Cyan is t
 caret, the owner's requests, and the option the keyboard is on.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, ClassVar, Protocol, cast, override
 from urllib.parse import urlsplit
 
@@ -102,6 +102,74 @@ class Entry(Static):
         spaced = " spaced" if not shown.nested and shown.kind not in {"result", "detail"} else ""
         super().__init__(entry_renderable(shown), classes=f"entry level-{shown.level}{spaced}")
         self.shown = shown
+
+
+MAX_CHAIN_TARGETS = 3  # the different targets a chain's row names before it says "and N more"
+
+
+class Chain(Vertical):
+    """Calls of one tool in a row, as one step: how many, on what, and the newest result.
+
+    With every detail shown, each call's result is listed under it too.
+    """
+
+    def __init__(self, first: Shown, op: str, target: str, session: object) -> None:
+        """Start the chain with its first call."""
+        super().__init__(classes="chain")
+        self.op = op
+        self.session = session
+        self.shown = first  # the step, as an `Entry` has it
+        self._targets = [target]
+        self._results: list[Shown] = []
+        self._earlier: list[Static] = []  # earlier results waiting to be composed
+        self._head = Static(classes=f"entry level-{first.level} spaced")
+        self._newest = Static(classes=f"entry level-{first.level}")
+        self._newest.display = False
+
+    @override
+    def compose(self) -> ComposeResult:
+        """The step's line, then its newest result."""
+        yield self._head
+        yield from self._earlier
+        self._earlier = []
+        yield self._newest
+        self._draw()
+
+    def add_call(self, target: str) -> None:
+        """Count one more call of the tool."""
+        self._targets.append(target)
+        self._draw()
+
+    def add_result(self, result: Shown) -> None:
+        """Show `result` as the newest; it is listed with every detail shown."""
+        self._results.append(result)
+        if len(self._results) > 1:  # the one before moves into the list of every result
+            earlier = Static(entry_renderable(self._results[-2]), classes="entry level-everything")
+            if self._newest.parent is None:  # not composed yet: it comes with the rest
+                self._earlier.append(earlier)
+            else:
+                self.mount(earlier, before=self._newest)
+        self._draw()
+
+    def _draw(self) -> None:
+        calls = len(self._targets)
+        named = list(dict.fromkeys(t for t in self._targets if t))
+        quoted = ", ".join(f'"{t}"' for t in named[:MAX_CHAIN_TARGETS])
+        if len(named) > MAX_CHAIN_TARGETS:
+            quoted += f" and {len(named) - MAX_CHAIN_TARGETS} more"
+        note = quoted if calls == 1 else _joined_note(quoted, f"{calls} calls")
+        self._head.update(entry_renderable(replace(self.shown, note=note)))
+        if self._results:
+            newest = self._results[-1]
+            done = len(self._results)
+            if done > 1:
+                newest = replace(newest, note=_joined_note(newest.note, f"newest of {done}"))
+            self._newest.update(entry_renderable(newest))
+            self._newest.display = True
+
+
+def _joined_note(*parts: str) -> str:
+    return " · ".join(part for part in parts if part)
 
 
 class Note(Static):

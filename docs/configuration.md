@@ -96,10 +96,29 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 | `verbosity` | `replies` | `replies`, `steps`, `everything` | How much of Jarvis's work the chat shows: requests and replies only, plus each step and its result, or plus every model call and detail. Ctrl+O and `/verbosity` change it and save it here. |
 | `toolbar` | `true` | `true`, `false` | The line under the input with the PC's CPU, GPU, VRAM and RAM use, temperatures, and how full the model's context is. In a narrow window it leaves out the temperatures first, so it stays on one line. |
 | `while_working` | `steer` | `steer`, `queue` | What Enter does while a request runs. `steer`: the words join that request as yours, before the model's next call; words it ended before taking run next. `queue`: they wait and run as the next request. Words sent with a picture or a long paste are always queued. Esc still stops the request; queued words then run. `/config` changes it. |
+| `response_format` | `concise` | `concise`, `normal`, `verbose` | How the model writes chat replies: briefly, in a few sentences and without headings; as much as the request needs; or explained in full, with headings for a long answer. `/format` and `/config` change it, from the next request on. The voice keeps its own short spoken style. |
+| `archive_keep` | `50` | 0 to 1000 | Chat conversations kept in `~/.local/state/jarvis/chat-archive/` (0600) for `/resume` and reading back: each with its full log of requests, steps, results and replies. Older ones are deleted; `0` keeps none and turns `/resume` off. `/forget all` deletes them all. |
 | `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, with what was pasted into each, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
 
-`/config` in the chat changes `verbosity`, `toolbar`, `resume`, `reply_tokens` and `max_steps` and writes
-them here; the last three apply the next time the chat opens.
+`/config` in the chat opens the settings in sections, each setting with its values, when a change applies
+and a line on what it does; ↑↓ move, Enter or → takes the next value, ← the one before, Esc closes. Under
+Chat it changes `verbosity`, `toolbar`, `while_working` and `thinking` at once, and `reply_tokens`,
+`max_steps`, `memory_detail` and `resume` from the next time the chat opens, writing them here. Under Voice, Listening and
+Safety it sets `audio.speech_speed`, `audio.listen_to_pc` (off by default) and `boundaries.bypass_consent`,
+and under Tools each tool's setting; the voice service restarts once to take these when the screen closes.
+Acting without asking and taking requests from PC audio are turned on only by a second Enter, after the row
+says what that means, and are marked in red while they are on. A restart that fails is said in the chat.
+
+`/resume` lists the archived conversations, newest first (when, name, how many requests), and `/resume 2`
+continues the second: the model gets that conversation back as it was, so what came from outside text then
+still counts as data and still puts actions behind a yes. A conversation is named after its first request
+until `/rename NAME` names it; the name stays when it is resumed. In Listening, `/config` also sets
+`audio.pc_audio_recall_s` (0, 10, 30 or 60 seconds), asked about before it first leaves 0.
+
+`/effort` in the chat says how hard the model thinks before it answers, and how far it may raise that itself
+for a hard request. `/effort none`, `low`, `medium` or `high` sets `thinking` here, from the next request on;
+when `thinking_max` is lower, it is raised to the same level. Every chat setting saved here is written to the
+audit log as `setting_changed`, after the save.
 
 The chat remembers replies that drew on outside text, as data. While one is remembered, an action with a side
 effect that the model chooses needs your yes; a plain command (`pause`, `volume 40`) does not, since the
