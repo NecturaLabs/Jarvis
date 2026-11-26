@@ -26,7 +26,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from jarvis import paths
-from jarvis.operations import Operation, OperationError, Result
+from jarvis.operations import Operation, OperationError, Result, cut_inert, inert_chars
 from jarvis.policy import Origin
 
 _FRONT = re.compile(r"\A---\n(?P<head>.*?)\n---\n(?P<body>.*)\Z", re.DOTALL)
@@ -44,6 +44,7 @@ GUIDANCE = (
     "nothing; every boundary still applies."
 )
 CLOSING = "End of third-party text from {plugin}."
+WRAPPER_CHARS = 60  # the `<data origin="...">` lines the agent puts round a result
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,16 +58,22 @@ class Skill:
     plugin: bool = False
 
 
-def third_party(skill: Skill, argument: str = "") -> str:
+def third_party(skill: Skill, argument: str = "", room: int | None = None) -> str:
     """Return a plugin skill's text between the lines Jarvis writes (`GUIDANCE`, `CLOSING`).
 
-    `argument` is the owner's one line for the skill, said under the heading.
+    `argument` is the owner's one line for the skill, said under the heading. With `room`, the
+    body is cut so that the whole, once its angle brackets are spelled out, fits that many
+    characters and the closing line is always kept.
     """
     plugin = skill.name.partition(":")[0]
     said = f"\n{skill.name} active: {argument}" if argument else ""
-    return (
-        f"{GUIDANCE.format(plugin=plugin)}{said}\n\n{skill.body}\n{CLOSING.format(plugin=plugin)}\n"
-    )
+    head = f"{GUIDANCE.format(plugin=plugin)}{said}\n\n"
+    tail = f"\n{CLOSING.format(plugin=plugin)}\n"
+    body = skill.body
+    if room is not None and inert_chars(head + body + tail) > room:
+        cut = "\n[cut: the rest does not fit one answer]"
+        body = cut_inert(body, room - inert_chars(head + tail + cut)).rstrip() + cut
+    return f"{head}{body}{tail}"
 
 
 def _parsed(name: str, text: str, *, owner: bool = False) -> Skill | None:
@@ -254,8 +261,12 @@ def prompt_section(skills: tuple[Skill, ...]) -> str:
     )
 
 
-def skill_operation(skills: tuple[Skill, ...]) -> Operation:
-    """Return `read_skill`, which gives the model one listed skill's instructions."""
+def skill_operation(skills: tuple[Skill, ...], max_chars: int | None = None) -> Operation:
+    """Return `read_skill`, which gives the model one listed skill's instructions.
+
+    With `max_chars` (the channel's tool text cap), a plugin skill is cut to fit it, closing line
+    kept.
+    """
     by_name = {skill.name: skill for skill in skills}
 
     def run(args: dict[str, object]) -> Result:
@@ -264,7 +275,8 @@ def skill_operation(skills: tuple[Skill, ...]) -> Operation:
             msg = "There is no skill with that name."
             raise OperationError(msg)
         if skill.plugin:  # outside text: what it says never counts as the owner's word
-            return Result(third_party(skill), Origin.PLUGIN_SKILL)
+            room = None if max_chars is None else max_chars - WRAPPER_CHARS
+            return Result(third_party(skill, room=room), Origin.PLUGIN_SKILL)
         return Result(skill.body)
 
     return Operation(

@@ -35,6 +35,8 @@ GIT_S = 60
 FETCH_DEPTH = 100  # enough history to see that a new commit builds on the one held
 MAX_CLONE_BYTES = 50 * 2**20  # a repository bigger than this (`.git` included) is not used
 _OTHERS_WRITE = 0o022
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
 # Everything Git is told on every call: no hooks, https only, no links written, no submodules.
 SAFE = (
     "-c",
@@ -120,15 +122,22 @@ class Git:
         super().__init__()
         self._launch = launch
 
-    def run(self, cwd: Path, *args: str, timeout: float = GIT_S) -> tuple[int, str]:
+    def run(
+        self,
+        cwd: Path,
+        *args: str,
+        timeout: float = GIT_S,
+        abort_when: Callable[[], bool] | None = None,
+    ) -> tuple[int, str]:
         """Return Git's exit status and its output (errors included).
 
         Raises:
-            PluginError: Git is missing or ran past `timeout`.
+            PluginError: Git is missing, ran past `timeout` or was stopped by `abort_when`.
         """
+        watch = {} if abort_when is None else {"abort_when": abort_when}
         try:
             done = self._launch(
-                ("git", *SAFE, *args), cwd=cwd, timeout=timeout, env=_env(), show=False
+                ("git", *SAFE, *args), cwd=cwd, timeout=timeout, env=_env(), show=False, **watch
             )
         except FileNotFoundError as error:
             raise PluginError(_NOT_FOUND) from error
@@ -136,13 +145,19 @@ class Git:
             raise PluginError(plugins.tidy(str(error), 200)) from error
         return done.returncode, (done.stdout or "").strip() or (done.stderr or "").strip()
 
-    def read(self, cwd: Path, *args: str, timeout: float = GIT_S) -> str:
+    def read(
+        self,
+        cwd: Path,
+        *args: str,
+        timeout: float = GIT_S,
+        abort_when: Callable[[], bool] | None = None,
+    ) -> str:
         """Return what Git printed.
 
         Raises:
             PluginError: Git failed.
         """
-        code, out = self.run(cwd, *args, timeout=timeout)
+        code, out = self.run(cwd, *args, timeout=timeout, abort_when=abort_when)
         if code:
             raise PluginError(f"git {args[0]} failed: {plugins.tidy(out, 200)}")
         return out
@@ -163,17 +178,62 @@ def _tree_bytes(folder: Path) -> int:
     return total
 
 
+def _strip(folder: int) -> None:
+    """Take group and other write permission off the open folder and all that is in it."""
+    with os.scandir(folder) as scan:
+        entries = list(scan)
+    for entry in entries:
+        if entry.is_symlink():
+            continue  # a link is never followed, so what it points at is never changed
+        if entry.is_dir(follow_symlinks=False):
+            child = os.open(entry.name, _DIR_FLAGS, dir_fd=folder)
+            try:
+                _strip(child)
+            finally:
+                os.close(child)
+        else:
+            file = os.open(entry.name, _FILE_FLAGS, dir_fd=folder)
+            try:
+                os.fchmod(file, os.fstat(file).st_mode & ~_OTHERS_WRITE)
+            finally:
+                os.close(file)
+    os.fchmod(folder, os.fstat(folder).st_mode & ~_OTHERS_WRITE)
+
+
 def _only_yours(folder: Path) -> None:
     """Take group and other write permission off `folder` and all that is in it.
 
     Jarvis reads only what nobody else can write (`plugins.read_file`), whatever the umask was.
+    Everything is changed through descriptors opened without following a link.
     """
-    for here, dirs, names in os.walk(folder):
-        for name in (*dirs, *names):
-            path = Path(here) / name
-            if not path.is_symlink():
-                path.chmod(path.stat().st_mode & ~_OTHERS_WRITE)
-    folder.chmod(folder.stat().st_mode & ~_OTHERS_WRITE)
+    fd = os.open(folder, _DIR_FLAGS)
+    try:
+        _strip(fd)
+    finally:
+        os.close(fd)
+
+
+def _prepare(parent: Path) -> None:
+    """Make the plugins folder and `parent` (its `marketplaces` or `sources`), yours alone.
+
+    Raises:
+        PluginError: one of them is a link, which is never followed, or cannot be opened.
+    """
+    parent.parent.parent.mkdir(parents=True, exist_ok=True)
+    for folder in (parent.parent, parent):
+        if folder.is_symlink():
+            msg = f"{folder} is a link, which is not followed"
+            raise PluginError(msg)
+        folder.mkdir(mode=0o700, exist_ok=True)
+        try:
+            fd = os.open(folder, _DIR_FLAGS)
+        except OSError as error:
+            msg = f"{folder} is not a folder Jarvis can use ({error.strerror})"
+            raise PluginError(msg) from error
+        try:
+            os.fchmod(fd, os.fstat(fd).st_mode & ~_OTHERS_WRITE)
+        finally:
+            os.close(fd)
 
 
 def _partial(destination: Path) -> Path:
@@ -188,23 +248,33 @@ def _fill(
     Raises:
         PluginError: Git failed, or the copy is too big or did not pass `check`.
     """
-    git.read(
-        partial.parent,
-        "clone",
-        "--depth",
-        str(depth),
-        "--filter=blob:limit=1m",
-        "--no-recurse-submodules",
-        "--single-branch",
-        "--no-tags",
-        "--quiet",
-        "--",
-        url,
-        str(partial),
-        timeout=CLONE_S,
-    )
-    if _tree_bytes(partial) > MAX_CLONE_BYTES:
-        msg = f"the repository is bigger than {MAX_CLONE_BYTES // 2**20} MB and is not used"
+
+    def too_big() -> bool:
+        return _tree_bytes(partial) > MAX_CLONE_BYTES
+
+    msg = f"the repository is bigger than {MAX_CLONE_BYTES // 2**20} MB and is not used"
+    try:
+        git.read(
+            partial.parent,
+            "clone",
+            "--depth",
+            str(depth),
+            "--filter=blob:limit=1m",
+            "--no-recurse-submodules",
+            "--single-branch",
+            "--no-tags",
+            "--quiet",
+            "--",
+            url,
+            str(partial),
+            timeout=CLONE_S,
+            abort_when=too_big,  # stopped while it runs, not only judged when it is done
+        )
+    except PluginError:
+        if too_big():
+            raise PluginError(msg) from None
+        raise
+    if too_big():
         raise PluginError(msg)
     _only_yours(partial)
     if check is not None:
@@ -223,10 +293,7 @@ def _download(
         PluginError: Git failed, or the copy was refused.
         OSError: a folder or permission could not be set.
     """
-    parent = partial.parent
-    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    for folder in (parent, parent.parent):
-        folder.chmod(folder.stat().st_mode & ~_OTHERS_WRITE)
+    _prepare(partial.parent)
     shutil.rmtree(partial, ignore_errors=True)
     try:
         return _fill(git, url, partial, check, depth)
@@ -293,6 +360,8 @@ def _refresh(
         OSError: a folder or permission could not be set, or the swap failed.
     """
     before = git.head(folder)[0]
+    if git.read(folder.parent, "ls-remote", "--", url, "HEAD").split()[:1] == [before]:
+        return before, before  # the remote has not moved: nothing is downloaded
     partial = _partial(folder)
     _download(git, url, partial, check, depth=FETCH_DEPTH)
     try:
@@ -418,6 +487,7 @@ def sync(
     git = Git(launch)
     root = plugins.plugins_root(data_dir)
     with _locked():
+        plugins.recover_folders(root)
         for name, folder, url, market in _wanted(settings, root):
             change = _bring(
                 git, name, folder, url, update=update, check=_is_marketplace if market else None
@@ -548,6 +618,10 @@ def _save(**changes: object) -> None:
     config.save(current.model_copy(update={"plugins": current.plugins.model_copy(update=changes)}))
 
 
+def _fetched(fetched: list[str]) -> str:
+    return f" (Downloaded marketplaces: {', '.join(fetched)}.)" if fetched else ""
+
+
 def _hinted(spec: str, called: str) -> bool:
     """Return whether a setting's repository name is the marketplace name looked for."""
     return spec.rstrip("/").removesuffix(".git").rsplit("/", 1)[-1] == called
@@ -585,6 +659,7 @@ def _find(
             )
             if change.action == "failed":
                 failures.append(f"{spec}: {change.error}")
+                audit.record("plugin", name=spec, result="failed", error=change.error)
                 continue
             fetched.append(spec)
             audit.record("plugin", name=spec, result="downloaded", after=change.after)
@@ -598,10 +673,10 @@ def _find(
             if entry is None:
                 held = ", ".join(entry.name for entry in market.entries) or "none"
                 msg = f"marketplace {called} lists no plugin {name} (it lists: {held})"
-                raise PluginError(msg)
+                raise PluginError(msg + _fetched(fetched))
             return spec, market, entry, fetched
     msg = f"no marketplace named {called} is set under [plugins] in config.toml"
-    raise PluginError(msg + "".join(f"; {failure}" for failure in failures))
+    raise PluginError(msg + "".join(f"; {failure}" for failure in failures) + _fetched(fetched))
 
 
 def _fetch_for(

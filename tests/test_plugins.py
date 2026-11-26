@@ -1,23 +1,26 @@
 """Skill plugins: the marketplace format, skills-only loading, Git with safe flags, the command."""
 
 import json
+import os
 import subprocess
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from jarvis import app, cli, config, paths, plugins, pluginsync, skills
+from jarvis import app, cli, config, osskills, paths, plugins, pluginsync, skills
 from jarvis.agent import Agent, Hooks, Limits
 from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
 from jarvis.config import Config, PluginsAlwaysOn, PluginsConfig
-from jarvis.operations import ArgumentError, Operation, Registry, Result, validate_args
+from jarvis.operations import ArgumentError, Operation, Registry, Result, inert_chars, validate_args
 from jarvis.pc.files import FileRefusalError
 from jarvis.policy import TRUSTED_ORIGINS, Origin
+from jarvis.update import UpdateError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
 URL = "https://github.com/acme/market.git"
 ELSEWHERE = "https://github.com/acme/elsewhere.git"
@@ -578,6 +581,7 @@ class FakeGit:
         self.calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
         self.fail: set[str] = set()
         self.rewritten: set[str] = set()
+        self.abort_when: Callable[[], bool] | None = None
 
     def publish(self, url: str, files: Mapping[str, str], commit: str) -> None:
         self.repos[url] = dict(files)
@@ -592,10 +596,12 @@ class FakeGit:
         timeout: float,
         env: Mapping[str, str],
         show: bool,
+        abort_when: Callable[[], bool] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         assert not show
         assert timeout > 0
         assert args[0] == "git"
+        self.abort_when = abort_when
         self.calls.append((args, dict(env)))
         words = args[1 + len(pluginsync.SAFE) :]
         assert args[1 : 1 + len(pluginsync.SAFE)] == pluginsync.SAFE
@@ -609,7 +615,11 @@ class FakeGit:
         known = (held / "commit").read_text(encoding="utf-8") if (held / "commit").exists() else ""
         out, code = "", 0
         if words[0] == "clone":
-            return self._clone(args, words[-2], words[-1])
+            return self.fake_clone(args, words[-2], words[-1])
+        if words[0] == "ls-remote":
+            if words[-2] in self.fail or words[-2] not in self.commits:
+                return self.done(args, "fatal: unable to access", 128)
+            return self.done(args, f"{self.commits[words[-2]]}\tHEAD")
         if words[0] == "log":
             out = f"{known} 2026-11-25T10:00:00+00:00"
         elif words[0] == "rev-parse":
@@ -618,20 +628,20 @@ class FakeGit:
             code = int(words[-2] not in self.history[url] or url in self.rewritten)
         else:
             raise AssertionError(words)
-        return self._done(args, out, code)
+        return self.done(args, out, code)
 
-    def _clone(
+    def fake_clone(
         self, args: tuple[str, ...], url: str, destination: str
     ) -> subprocess.CompletedProcess[str]:
         if url in self.fail or url not in self.repos:
-            return self._done(args, "fatal: unable to access", 128)
+            return self.done(args, "fatal: unable to access", 128)
         where = Path(destination)
         write(where, self.repos[url])
         write(where, {".git/commit": self.commits[url], ".git/url": url})
-        return self._done(args, "")
+        return self.done(args, "")
 
     @staticmethod
-    def _done(args: tuple[str, ...], out: str, code: int = 0) -> subprocess.CompletedProcess[str]:
+    def done(args: tuple[str, ...], out: str, code: int = 0) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args, code, out if not code else "", out if code else "")
 
 
@@ -755,7 +765,8 @@ def test_an_unchanged_repository_is_current_and_without_a_merge(git: FakeGit, da
     (change,) = run_sync(git, data, update=True)
 
     assert change.action == "current"
-    assert not any("merge-base" in c for c, _ in git.calls)
+    assert not any("merge-base" in c or "clone" in c for c, _ in git.calls)  # asked, not fetched
+    assert any("ls-remote" in c for c, _ in git.calls)
     assert list((folder(data).parent).iterdir()) == [folder(data)]  # no copy left beside it
 
 
@@ -1274,3 +1285,243 @@ def test_install_from_a_marketplace_already_downloaded_fetches_nothing(
 
     assert cli_git.calls == []
     assert "Downloaded marketplaces" not in capsys.readouterr().out
+
+
+# --- the second review ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse] - modes follow the umask
+def usual_umask() -> Iterator[None]:
+    """Run each test under umask 022, whatever the shell's was: files are made by the tests."""
+    before = os.umask(0o022)
+    yield
+    os.umask(before)
+
+
+def test_the_prompt_tells_the_model_to_follow_a_skill_that_grants_nothing() -> None:
+    for channel in ("chat", "voice"):
+        prompt = app.system_prompt(Config(), channel)  # type: ignore[arg-type]
+        assert prompt.count("read_skill") >= 1
+        assert "follow its how-to" in prompt
+        assert "grants nothing" in prompt
+        assert "still needs the owner's yes" in prompt
+    assert "do what it asks" not in osskills.prompt_section(())  # the Omarchy line says it too
+    assert "never run a command" in osskills.prompt_section(
+        (osskills.OsSkill("a", "d", ("SKILL.md",)),)
+    )
+
+
+def test_a_plugin_skill_is_outside_text_however_it_is_told_to_the_model(data: Path) -> None:
+    install_market(data)
+    op = skills.skill_operation(skills.available(extra=plugins.loaded(settings(), data).skills))
+
+    assert op.run(validate_args(op, {"name": "tidy:style"})).origin not in TRUSTED_ORIGINS
+
+
+def test_a_long_plugin_skill_keeps_its_closing_line_within_the_tool_text(data: Path) -> None:
+    install_market(
+        data, {"skills/long/SKILL.md": skill_text("long", "Long.", body="<b>word</b> " * 1000)}
+    )
+    found = skills.available(extra=plugins.loaded(settings(), data).skills)
+    op = skills.skill_operation(found, max_chars=3000)
+
+    text = op.run(validate_args(op, {"name": "tidy:long"})).text
+
+    assert text.startswith("Guidance from the tidy plugin")
+    assert text.rstrip().endswith("End of third-party text from tidy.")
+    wrapper = len('<data origin="plugin_skill"></data>')
+    assert inert_chars(text) + wrapper <= 3000
+    assert "cut" in text
+
+
+def test_what_is_downloaded_is_stripped_of_other_write_bits_on_open_descriptors(
+    git: FakeGit, data: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    os.umask(0)  # the clone is then made world-writable, as a loose umask would
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x", encoding="utf-8")
+    outside.chmod(0o666)
+    real = git.__class__.fake_clone
+
+    def with_link(self: FakeGit, args: tuple[str, ...], url: str, destination: str) -> object:
+        done = real(self, args, url, destination)
+        (Path(destination) / "skills" / "style" / "link").symlink_to(outside)
+        return done
+
+    monkeypatch.setattr(git.__class__, "fake_clone", with_link)
+
+    (change,) = run_sync(git, data, update=False)
+
+    assert change.action == "downloaded"
+    bits = {
+        path.lstat().st_mode & 0o022
+        for path in (folder(data), *folder(data).rglob("*"))
+        if not path.is_symlink()
+    }
+    assert bits == {0}
+    assert outside.stat().st_mode & 0o777 == 0o666  # a link inside never changes what it points at
+    assert plugins.load(settings(), data).skills != ()
+
+
+@pytest.mark.parametrize("which", ["plugins", "marketplaces"])
+def test_a_download_never_goes_through_a_link_in_the_plugins_path(
+    git: FakeGit, data: Path, tmp_path: Path, which: str
+) -> None:
+    target = tmp_path / "elsewhere"
+    target.mkdir(mode=0o755)
+    if which == "plugins":
+        data.mkdir()
+        (data / "plugins").symlink_to(target)
+    else:
+        (data / "plugins").mkdir(parents=True)
+        (data / "plugins" / "marketplaces").symlink_to(target)
+
+    (change,) = run_sync(git, data, update=False)
+
+    assert change.action == "failed"
+    assert "link" in change.error
+    assert list(target.iterdir()) == []
+    assert target.stat().st_mode & 0o777 == 0o755
+    assert not any("clone" in c for c, _ in git.calls)
+
+
+def test_a_clone_that_grows_past_the_limit_is_stopped_while_it_runs(
+    git: FakeGit, data: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    written: list[int] = []
+
+    def growing(
+        self: FakeGit, args: tuple[str, ...], _url: str, destination: str
+    ) -> subprocess.CompletedProcess[str]:
+        where = Path(destination)
+        for number in range(50):
+            write(where, {f"blob{number}": "x" * 400})
+            written.append(number)
+            if self.abort_when is not None and self.abort_when():
+                msg = "git was stopped"
+                raise UpdateError(msg)
+        return self.done(args, "")
+
+    monkeypatch.setattr(FakeGit, "fake_clone", growing)
+    monkeypatch.setattr(pluginsync, "MAX_CLONE_BYTES", 1000)
+
+    (change,) = run_sync(git, data, update=False)
+
+    assert change.action == "failed"
+    assert "bigger than" in change.error
+    assert len(written) < 10  # stopped, not run to the end
+    assert list((data / "plugins" / "marketplaces").iterdir()) == []
+
+
+def test_the_cli_launcher_stops_a_program_the_watcher_calls_too_big(tmp_path: Path) -> None:
+    started = time.monotonic()
+
+    with pytest.raises(UpdateError, match="stopped"):
+        cli.launch_for_update(
+            ("sleep", "30"),
+            cwd=tmp_path,
+            timeout=60,
+            env={"PATH": os.environ["PATH"]},
+            show=False,
+            abort_when=lambda: True,
+        )
+
+    assert time.monotonic() - started < 10
+    done = cli.launch_for_update(
+        ("echo", "ok"),
+        cwd=tmp_path,
+        timeout=10,
+        env={"PATH": os.environ["PATH"]},
+        show=False,
+        abort_when=lambda: False,
+    )
+    assert (done.returncode, done.stdout.strip()) == (0, "ok")
+
+
+def test_a_crash_between_the_two_renames_of_a_swap_is_recovered_at_the_next_load(
+    git: FakeGit, data: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_sync(git, data, update=False)
+    git.publish(URL, market_files(("skills/new/SKILL.md", skill_text("new", "New."))), "b" * 40)
+    real = Path.rename
+    seen: list[str] = []
+
+    def crashing(self: Path, target: Path | str) -> Path:
+        seen.append(self.name)
+        if len(seen) >= 2:  # the new copy cannot go in, and the old one cannot go back
+            msg = "power cut"
+            raise OSError(msg)
+        return real(self, target)
+
+    with monkeypatch.context() as crash:
+        crash.setattr(Path, "rename", crashing)
+        (change,) = run_sync(git, data, update=True)
+    assert change.action == "failed"
+    assert not folder(data).exists()  # the crash left no plugin folder, an `.old` beside
+
+    loaded = plugins.load(settings(), data)  # an offline restart
+
+    assert [s.name for s in loaded.skills] == ["tidy:style"]
+    assert folder(data).is_dir()
+
+
+def test_an_update_start_also_puts_back_a_lost_folder(git: FakeGit, data: Path) -> None:
+    run_sync(git, data, update=False)
+    folder(data).rename(folder(data).parent / f".{folder(data).name}.old")
+
+    (change,) = run_sync(git, data, update=True)
+
+    assert change.action == "current"
+    assert folder(data).is_dir()
+
+
+def test_the_remote_is_asked_first_and_nothing_is_downloaded_when_it_has_not_moved(
+    git: FakeGit, data: Path
+) -> None:
+    run_sync(git, data, update=False)
+    git.calls.clear()
+
+    (change,) = run_sync(git, data, update=True)
+
+    assert change.action == "current"
+    words = [c[1 + len(pluginsync.SAFE) :] for c, _ in git.calls]
+    assert [w[0] for w in words] == ["log", "ls-remote"]
+    assert words[1][-2:] == (URL, "HEAD")
+    assert all(env["GIT_CONFIG_GLOBAL"] == "/dev/null" for _, env in git.calls)
+
+
+def test_a_remote_that_cannot_be_asked_fails_without_downloading(git: FakeGit, data: Path) -> None:
+    run_sync(git, data, update=False)
+    git.fail.add(URL)
+    git.calls.clear()
+
+    (change,) = run_sync(git, data, update=True)
+
+    assert change.action == "failed"
+    assert not any("clone" in c for c, _ in git.calls)
+
+
+@pytest.mark.usefixtures("cli_git")
+def test_install_that_finds_no_such_marketplace_says_which_it_downloaded_and_audits_failures(
+    cli_git: FakeGit, data: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    two_markets(cli_git)
+    cli_git.fail.add("https://github.com/acme/three.git")
+    config.save(
+        Config(
+            data_dir=data,
+            plugins=settings(marketplaces=["acme/one", "acme/two", "acme/three"], enabled=[]),
+        )
+    )
+
+    assert cli.main(["plugins", "install", "tidy@nowhere"]) == 1
+
+    err = capsys.readouterr().err
+    assert "no marketplace named nowhere" in err
+    assert "Downloaded marketplaces: acme/one, acme/two" in err
+    failed = [r for r in audit_rows() if r["result"] == "failed"]
+    assert [r["name"] for r in failed] == ["acme/three"]
+    assert [r["name"] for r in audit_rows() if r["result"] == "downloaded"] == [
+        "acme/one",
+        "acme/two",
+    ]

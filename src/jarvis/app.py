@@ -33,10 +33,12 @@ from jarvis.pc.screenshot import ScreenshotOps, save_folder
 from jarvis.pc.shell import ShellOps
 from jarvis.pc.stats import StatsOps
 from jarvis.pc.volume import VolumeOps
+from jarvis.pc.watch import ScreenWatch
 from jarvis.pc.windows import WindowOps
 from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
+from jarvis.router import toolbox_section, use_tools_operation
 from jarvis.schedule import JobStore, ScheduleOps
 from jarvis.services import StrataSetupError, read_run_config, reads_pictures
 from jarvis.sing.engines import singer_for
@@ -45,6 +47,7 @@ from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
 from jarvis.sysinfo import Sampler
+from jarvis.toolgroups import USE_TOOLS
 from jarvis.web import browser, browserops
 from jarvis.web.arctic import ArcticShift
 from jarvis.web.guard import public_client
@@ -54,7 +57,7 @@ from jarvis.web.page import PageReader
 from jarvis.web.searxng import Searxng
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Collection, Sequence
 
     from jarvis.config import ChatConfig, Config
     from jarvis.model import ModelStatus
@@ -213,13 +216,20 @@ def _served_model(config: Config) -> str:
     return f"the {name} model" if name else "a local model"
 
 
-def system_prompt(config: Config, channel: Channel = "voice", *, coding: bool = False) -> str:
+def system_prompt(
+    config: Config,
+    channel: Channel = "voice",
+    *,
+    coding: bool = False,
+    registry: Registry | None = None,
+) -> str:
     """Render the shipped prompt for a channel with the owner's persona, skills and addendum.
 
     The voice prompt asks for short spoken replies; the chat prompt for written Markdown that fits
     the chat's reply budget, as brief or as full as `chat.response_format` says. In coding mode
     the prompt gains its part on programming work, and the owner's own instructions for it
-    (`coding.prompt`).
+    (`coding.prompt`). Given the `registry` of a routed agent (one with `use_tools`), it holds a
+    toolbox of that registry's tool groups (`jarvis.router`); every other prompt is unchanged.
     """
     prompts = files("jarvis").joinpath("prompts")
     core = prompts.joinpath("core.md").read_text(encoding="utf-8")
@@ -232,6 +242,9 @@ def system_prompt(config: Config, channel: Channel = "voice", *, coding: bool = 
         if skill.name not in extra.always_on(channel)  # their text is in the prompt already
     )
     fill = {
+        "toolbox": toolbox_section(registry)
+        if registry is not None and registry.get(USE_TOOLS) is not None
+        else "",
         "skills": skills.prompt_section(listed) + osskills.prompt_section(osskills.catalog()),
         "name": config.persona.name,
         "version": __version__,
@@ -332,6 +345,7 @@ class Jarvis:
     switcher: modes.Switcher | None = None
     modes: AgentModes | None = None  # the chat tells it when its settings change (`restyle`)
     pictures: bool = False
+    watch: ScreenWatch | None = None  # the voice service's screen watches (`pc_watch`)
 
 
 class AgentModes:
@@ -511,28 +525,34 @@ def _playerctl(args: Sequence[str]) -> str:
 
 
 def pc_operations(
-    config: Config, limits: Limits, home: Path | None = None, shown: PictureCache | None = None
+    config: Config,
+    limits: Limits,
+    home: Path | None = None,
+    shown: PictureCache | None = None,
+    watching: ScreenWatch | None = None,
 ) -> list[Operation]:
     """Return the PC operations, from stats and the volume to windows, screenshots and the shell.
 
     The files are those within `[files]`, `open_app` opens only what `[apps]` lists, and
     `pc_shell` is there only when `[shell]` turns it on. A screenshot is shown through `shown`
-    where the channel shows pictures (the chat).
+    where the channel shows pictures (the chat). The screen watch operations are there only with
+    `watching` (the voice service's), which also gives the window tools they share.
 
     Jarvis's own state (its tokens and keys) is never read or written, whatever the roots say.
     """
     boundary = files_boundary(config, home)
-    windows = WindowOps()
+    windows = WindowOps() if watching is None else watching.windows
     return [
         *StatsOps(Sampler()).operations(),
         *VolumeOps(_wpctl).operations(),
         *MediaOps(_playerctl).operations(),
         *FileOps(boundary, max_chars=limits.tool_text_chars).operations(),
-        *ProcessOps().operations(),
+        *(ProcessOps() if watching is None else watching.processes).operations(),
         *windows.operations(),
         *ScreenshotOps(
             windows, save_folder(home or Path.home(), os.environ), shown_pictures=shown
         ).operations(),
+        *([] if watching is None else watching.operations()),
         *AppOps(config.apps.programs).operations(),
         *ShellOps(config.shell, home or Path.home(), max_chars=limits.tool_text_chars).operations(),
     ]
@@ -620,6 +640,8 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     coding: bool = False,
     listening: Listening | None = None,
     browsers: dict[str, browser.Browser] | None = None,
+    off: Collection[str] = (),
+    watching: ScreenWatch | None = None,
 ) -> Registry:
     """Return every operation a channel's agent is offered, sized to its limits.
 
@@ -630,6 +652,10 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     offered: into coding mode, or with `coding` (the registry of coding mode) back out of it. With
     `audio.listen_to_pc` on, the voice channel also has `pc_audio_listen`, which hears through
     `listening` (the voice service's; without it, as in `jarvis ask`, it refuses every listen).
+    Operations named in `off` are left out before anything is derived from the rest, so a routed
+    agent's `use_tools` offers, and its toolbox lists, only groups that still have a tool.
+    The screen watch tools (`pc_watch` and two more) are offered only with `watching`, the voice
+    service's: a watch lives in that process.
     """
     room = limits.tool_text_chars - PAGE_HEADROOM
     pages = room if channel == "chat" else min(config.research.page_chars, room)
@@ -643,50 +669,50 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     browsing = browser_ops(
         config, online, channel, page_chars=pages, shown=shown, sessions=browsers
     )
+    ops = [
+        *spotify,
+        *online.operations(),
+        *(browsing.operations() if browsing is not None else []),
+        *pc_operations(config, limits, shown=shown, watching=watching),
+        *calc.operations(config.format),
+        *AboutOps(config, channel, limits, refused=files_boundary(config).secret).operations(),
+        *ScheduleOps(
+            JobStore(paths.schedule_file()),
+            twelve_hour=config.clock.twelve_hour,
+            voice_running=voice_running,
+        ).operations(),
+        *([skills.skill_operation(shipped, max_chars=limits.tool_text_chars)] if shipped else []),
+        *(
+            [
+                osskills.os_skill_operation(
+                    guides,
+                    max_chars=limits.tool_text_chars,
+                    root=osskills.ROOT,
+                    owner=osskills.OWNER,
+                )
+            ]
+            if guides
+            else []
+        ),
+        *(
+            HearingOps(
+                listening, heard=pc_audio_heard(config), max_chars=limits.tool_text_chars
+            ).operations()
+            if channel == "voice" and config.audio.listen_to_pc
+            else []
+        ),
+        *([quiet_operation()] if channel == "voice" else []),
+        *(SingOps(singer_for(config)).operations() if channel == "voice" else []),
+        *([think] if (think := think_operation(limits)) is not None else []),
+        *([switch_operation(config, coding=coding)] if switches_itself(config, channel) else []),
+        no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
+    ]
+    ops = [op for op in ops if op.name not in off]
+    if limits.tools == "routed":
+        groups = [group.name for group in Registry(ops).groups()]
+        ops.insert(-1, use_tools_operation(groups))
     return Registry(
-        [
-            *spotify,
-            *online.operations(),
-            *(browsing.operations() if browsing is not None else []),
-            *pc_operations(config, limits, shown=shown),
-            *calc.operations(config.format),
-            *AboutOps(config, channel, limits, refused=files_boundary(config).secret).operations(),
-            *ScheduleOps(
-                JobStore(paths.schedule_file()),
-                twelve_hour=config.clock.twelve_hour,
-                voice_running=voice_running,
-            ).operations(),
-            *([skills.skill_operation(shipped)] if shipped else []),
-            *(
-                [
-                    osskills.os_skill_operation(
-                        guides,
-                        max_chars=limits.tool_text_chars,
-                        root=osskills.ROOT,
-                        owner=osskills.OWNER,
-                    )
-                ]
-                if guides
-                else []
-            ),
-            *(
-                HearingOps(
-                    listening, heard=pc_audio_heard(config), max_chars=limits.tool_text_chars
-                ).operations()
-                if channel == "voice" and config.audio.listen_to_pc
-                else []
-            ),
-            *([quiet_operation()] if channel == "voice" else []),
-            *(SingOps(singer_for(config)).operations() if channel == "voice" else []),
-            *([think] if (think := think_operation(limits)) is not None else []),
-            *(
-                [switch_operation(config, coding=coding)]
-                if switches_itself(config, channel)
-                else []
-            ),
-            no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
-        ],
-        resets=(online.reset, *((browsing.reset,) if browsing is not None else ())),
+        ops, resets=(online.reset, *((browsing.reset,) if browsing is not None else ()))
     )
 
 
@@ -698,14 +724,17 @@ def switches_itself(config: Config, channel: Channel) -> bool:
 # Operations offered only when their files or programs are installed (and the browser switched on),
 # known to `boundaries.classes` either way.
 INSTALLED_ONLY = frozenset({"read_skill", "os_skill", *browserops.NAMES})
-# ... and only while a setting turns them on (`audio.listen_to_pc`).
-SETTING_ONLY = frozenset({"pc_audio_listen", SWITCH_MODEL})
+# ... and only while a setting turns them on (`audio.listen_to_pc`, `tools = "routed"`) or in
+# the voice service (the screen watches).
+SETTING_ONLY = frozenset(
+    {"pc_audio_listen", SWITCH_MODEL, USE_TOOLS, "pc_watch", "pc_watches", "pc_watch_stop"}
+)
 # Tools whose result is a sound, and the voice-channel callers that cannot play one (`jarvis ask`
 # prints its reply): they are not offered there, so nothing is made only to be thrown away.
 MAKES_SOUND = frozenset({"sing"})
 SOUNDLESS = frozenset({"ask", "speech-test"})
 # How Jarvis answers, not tools: never switched off.
-ALWAYS_OFFERED = frozenset({"no_action", "think_harder", "stay_quiet"})
+ALWAYS_OFFERED = frozenset({"no_action", "think_harder", "stay_quiet", USE_TOOLS})
 
 
 def switched_off(config: Config) -> set[str]:
@@ -804,6 +833,46 @@ def mode_model(config: Config, key: str) -> StrataModel:
     return replace(strata_model(config, key), file_of=lambda: files[modes.current()])
 
 
+def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; the rest is keyword-only
+    config: Config,
+    spotify: list[Operation],
+    channel: Channel,
+    *,
+    coding: bool,
+    via: str | None,
+    can_switch: bool,
+    voice_running: Callable[[], bool] = lambda: True,
+    listening: Listening | None = None,
+    browsers: dict[str, browser.Browser] | None = None,
+    watching: ScreenWatch | None = None,
+) -> Registry:
+    """Return the operations an agent offers in a mode, without what is switched off.
+
+    `config` is the mode's own (`modes.effective`). A tool switched off is not offered at all:
+    by `boundaries.classes`, by coding mode's `tools_off`, `sing` where the caller cannot play a
+    sound (`via`), and `switch_model` where there is no model server to switch (`can_switch`).
+    """
+    off: set[str] = {
+        *switched_off(config),
+        *(config.coding.tools_off if coding else ()),
+        *(MAKES_SOUND if via in SOUNDLESS else ()),
+    }
+    if not can_switch:
+        off.add(SWITCH_MODEL)
+    return channel_registry(
+        config,
+        spotify,
+        channel_limits(config, channel),
+        channel,
+        voice_running=voice_running,
+        coding=coding,
+        listening=listening,
+        browsers=browsers,
+        watching=watching,
+        off=off,  # a tool switched off is not offered at all, nor counted in the router's groups
+    )
+
+
 def with_remote_metadata(config: Config, status: ModelStatus) -> Config:
     """Apply advertised capabilities in memory. Missing fields keep the client's settings."""
     strata: dict[str, object] = {}
@@ -861,6 +930,21 @@ def _check_overrides(config: Config, operations: list[Operation]) -> None:
         raise SetupError(msg)
 
 
+def _tagged_audit(via: str | None, session: str) -> AuditLog:
+    """Return the audit log whose events say where requests come from and which window."""
+    tags = {"via": via} if via else {}
+    if session:
+        tags["session"] = session
+    return AuditLog(audit_file(), tags=tags or None)
+
+
+def _screen_watch(audit: AuditLog) -> ScreenWatch:
+    """Return the voice service's screen watches, over the window tools and the screen capture."""
+    windows = WindowOps()
+    shots = ScreenshotOps(windows, save_folder(Path.home(), os.environ))
+    return ScreenWatch(windows, shots, ProcessOps(), audit=audit)
+
+
 def build(
     config: Config,
     *,
@@ -890,12 +974,10 @@ def build(
     config, key, model = _agent_model(config)
     ops = _spotify_ops(config)
     available = ops.operations()
-    tags = {"via": via} if via else {}
-    if session:
-        tags["session"] = session
-    audit = AuditLog(audit_file(), tags=tags or None)
+    audit = _tagged_audit(via, session)
     _check_overrides(config, available)
     channel: Channel = "chat" if via == "chat" else "voice"
+    watch = _screen_watch(audit) if via is None else None  # only the voice service runs watches
     elsewhere = via in {"chat", "ask"}  # the voice service says reminders; is one running?
 
     def setup(
@@ -907,24 +989,19 @@ def build(
         base = config if chat is None else config.model_copy(update={"chat": chat})
         cfg = modes.effective(base, mode)
         limits = channel_limits(cfg, channel)
-        off: set[str] = {
-            *switched_off(cfg),
-            *(cfg.coding.tools_off if coding else ()),
-            *(MAKES_SOUND if via in SOUNDLESS else ()),
-        }
-        if units is None:
-            off.add(SWITCH_MODEL)
-        registry = channel_registry(
+        registry = offered_registry(
             cfg,
             available if cfg.spotify.client_id else [],
-            limits,
             channel,
-            voice_running=voice_service_running if elsewhere else lambda: True,
             coding=coding,
+            via=via,
+            can_switch=units is not None,
+            voice_running=voice_service_running if elsewhere else lambda: True,
             listening=listening,
             browsers=browsers,
-        ).without(off)  # a tool switched off is not offered at all
-        prompt = system_prompt(cfg, channel, coding=coding)
+            watching=watch,
+        )
+        prompt = system_prompt(cfg, channel, coding=coding, registry=registry)
         return Setup(prompt, registry, limits, reads_pictures(cfg), strata_model(cfg, key))
 
     normal = setup("normal")
@@ -958,6 +1035,8 @@ def build(
         actions=action_rate(config),
         modes=agent_modes,
     )
+    if watch is not None:
+        watch.attach(agent)
     return Jarvis(
         agent,
         model,
@@ -969,4 +1048,5 @@ def build(
         switcher,
         agent_modes,
         normal.pictures,
+        watch,
     )

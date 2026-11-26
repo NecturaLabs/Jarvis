@@ -18,7 +18,9 @@ Only regular files and folders of the owner's are read, opened without following
 the size limits below. `jarvis doctor` says what was left out and why.
 """
 
+import contextlib
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -31,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
-from jarvis import config
+from jarvis import config, paths
 from jarvis.skills import Skill, third_party
 
 if TYPE_CHECKING:
@@ -541,6 +543,38 @@ def _plugin_skills(
     return _skills_of(base, entry.name)
 
 
+def recover_folders(root: Path) -> None:
+    """Put back a plugin folder lost between the two renames of an update's swap.
+
+    The old copy is kept beside as `.<name>.old` until the next update; when the folder it was
+    swapped for is missing, it is renamed back, so a restart with no network still has it. The
+    caller holds the plugins lock.
+    """
+    for kind in ("marketplaces", "sources"):
+        base = root / kind
+        if base.is_symlink() or not base.is_dir():
+            continue
+        for old in base.iterdir():
+            name = old.name.removeprefix(".").removesuffix(".old")
+            if old.name == f".{name}.old" and old.is_dir() and not old.is_symlink():
+                with contextlib.suppress(OSError):
+                    if not os.path.lexists(base / name):
+                        old.rename(base / name)
+
+
+def recover(data_dir: Path) -> None:
+    """Run `recover_folders`, unless an update is running (it would be mid-swap)."""
+    lock = paths.state_dir() / "plugins.lock"
+    with contextlib.suppress(OSError):
+        lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            recover_folders(plugins_root(data_dir))
+        finally:
+            os.close(fd)
+
+
 def load(settings: config.PluginsConfig, data_dir: Path) -> Loaded:
     """Return the skills of every enabled plugin downloaded under `data_dir`, and the problems.
 
@@ -548,6 +582,8 @@ def load(settings: config.PluginsConfig, data_dir: Path) -> Loaded:
     old and new files.
     """
     root = plugins_root(data_dir)
+    if settings.enabled:
+        recover(data_dir)
     notes: list[str] = []
     found: list[Skill] = []
     room = MAX_DESCRIPTIONS_CHARS

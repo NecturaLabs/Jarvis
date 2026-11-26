@@ -14,10 +14,16 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   agents, MCP servers and scripts never run. A skill named under `[plugins.always_on]` is in every request of
   that channel between a heading and a closing line Jarvis writes; the others are listed as third-party and read
   with `read_skill`, which gives them as outside text, so an action after it asks for a yes. Updates are swapped in
-  whole, a repository over 50 MB is refused, and a plugin is read only from folders and files that are yours alone. Nothing is
+  whole (only when the remote moved, and an interrupted swap is undone at the next start), a repository over 50 MB is stopped while it downloads, and a plugin is read only from folders and files that are yours alone. Nothing is
   downloaded while no plugin is enabled. Jarvis keeps its own copies under `<data_dir>/plugins/`, closed to the
   file operations. Each update is audited with the old and new commit, and `jarvis doctor` shows each
   marketplace's commit and date. See [ADR 0027](docs/adr/0027-skill-plugins.md).
+- A tool router, `tools = "routed"` in `[agent]` and `[chat]` (default `all`, nothing changes). Every tool
+  belongs to a group (music, sound, screen, apps, system, files, everyday, web, browser, schedule, guides,
+  jarvis); a routed request starts with only the core tools and a toolbox of the groups in the prompt, and
+  the same model asks for the groups it needs with `use_tools`. A tool of a group it has not asked for is
+  not run. It stays off by default until a live run shows it as accurate and not slower
+  ([ADR 0022](docs/adr/0022-tool-router.md)).
 - Your own skills: Markdown files in `~/.config/jarvis/skills/` are listed in the prompt and read with
   `read_skill` like the shipped ones. A file is read only when it and its folder are yours alone, it is no
   link, and it fits the size limits. `jarvis doctor` names any file it left out. Jarvis's file operations
@@ -49,6 +55,20 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - `pc_screenshot` takes a picture of the screen, a workspace or one window. A window or workspace
   that is not on screen is captured off-screen without switching to it. The picture is saved where
   Omarchy keeps screenshots, copied to the clipboard and shown in the chat.
+- Jarvis sees its own screenshots: where its model can see pictures, `pc_screenshot` also hands it the
+  picture, as outside data (a side effect after it needs a yes, like after a shared picture). The
+  conversation keeps the picture's name, not the picture.
+- Process watches: `pc_watch` with `of=process` and a PID `find_processes` listed watches a program and
+  says once when it exits (it cannot tell closed, crashed and killed apart), is stopped (`T`), is stuck
+  waiting on a disk or device (`D`) at three checks in a row over at least 30 s, and when it runs again.
+  Read from `/proc` only: no picture, no model, no GPU; up to four, apart from the two screen watches.
+- Screen watches: ask Jarvis to tell you when something shows up in a window, a workspace or the screen
+  and `pc_watch` checks now and then (`every_s`, default 20, 10 to 300; `for_min`, default 120, up to
+  720; `repeat`), said by voice in a fixed line built from what you asked for, never words read off the
+  screen. `pc_watches` lists and `pc_watch_stop` stops. Two at most, only in `jarvis run`, only
+  between requests (a check under way gives way to the wake word), said when it starts to show (a line that
+  stays up is said once), optionally in the model's own short `say` line, and each check is one model call
+  with a picture ([ADR 0021](docs/adr/0021-screen-watch.md), proposed).
 - Every `jarvis` command answers a script or an AI agent in one line of JSON with `--agent` (or
   `--agent-format`, or `JARVIS_AGENT_FORMAT=1`): `command`, `ok` and `exit`, then its own keys (`doctor`,
   `status`, `tools`, `speed`, `consent`) or its output lines, even for a wrong argument or a crash. Interactive
@@ -346,6 +366,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   for. A home set in `[weather]` is always the place it names.
 
 ### Changed
+
+- The chat's remembered conversation takes what the context window leaves (`chat.memory_tokens` unset
+  by default, was 5,700): a longer prompt or more tools take from it instead of failing the defaults.
+  The defaults leave it at least 5,000 tokens. A set number still caps it.
+- Jarvis puts the choice it recommends first, and marks it with its reason, whenever it offers choices.
 
 - The chat's default `memory_tokens` is now 5700 (was 6200), so the default 24,576-token window
   still holds it beside the new window and screenshot tools.

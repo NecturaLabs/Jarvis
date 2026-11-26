@@ -54,6 +54,9 @@ thinking_max = "high"
 thinking_raised_tokens = 768
 # Offer the headless browser tools by voice too (see [browser]).
 browser = false
+# "all" offers every tool on every call; "routed" offers the core tools first and the model asks for
+# the groups it needs (use_tools), so a call carries fewer tokens ([chat] takes it too).
+tools = "all"
 
 # The same for typed requests in `jarvis chat`, with room for longer written work. resume opens the
 # chat on its last conversation (/clear starts a new one).
@@ -63,7 +66,7 @@ max_tool_calls = 40
 max_seconds = 600.0
 reply_tokens = 2048
 tool_text_chars = 8000
-memory_tokens = 5700
+# memory_tokens = 8000   # unset: as much as the window leaves beside the prompt, a reply and the work
 memory_idle_s = 0.0
 memory_detail = "full"
 thinking = "none"
@@ -71,6 +74,7 @@ thinking_tokens = 512
 thinking_max = "high"
 thinking_raised_tokens = 1024
 browser = true
+tools = "all"
 resume = true
 verbosity = "replies"
 toolbar = true

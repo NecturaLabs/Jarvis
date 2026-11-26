@@ -17,6 +17,7 @@ import subprocess
 import sys
 import termios
 import threading
+import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,7 @@ from jarvis.app import (
     chat_memory_file,
     chat_pictures,
     echoes_hint,
+    offered_registry,
     spotify_operations,
     strata_model,
     system_prompt,
@@ -957,7 +959,15 @@ def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
         ("mode", f"{mode} (/model switches)"),
         ("model", f"{services.model_name(served)}, {served.strata.context:,} tokens of context"),
         ("replies", f"up to {chat.reply_tokens:,} tokens, {chat.max_steps} model calls"),
-        ("memory", f"{chat.memory_detail}, up to {chat.memory_tokens:,} tokens"),
+        (
+            "memory",
+            f"{chat.memory_detail}, "
+            + (
+                "as much as the window leaves"
+                if chat.memory_tokens is None
+                else f"up to {chat.memory_tokens:,} tokens"
+            ),
+        ),
         ("config", str(paths.config_file())),
         ("conversation", str(chat_memory_file())),
         ("archive", f"{chat_archive_dir()}, up to {cfg.chat.archive_keep} conversations"),
@@ -1190,7 +1200,15 @@ def _chat_prompt(chat: config.ChatConfig) -> str:
     """Render the chat's instructions for these settings, in the mode Jarvis is in now."""
     mode = modes.current()
     cfg = modes.effective(config.load().model_copy(update={"chat": chat}), mode)
-    return system_prompt(cfg, "chat", coding=mode == "coding")
+    registry = offered_registry(
+        cfg,
+        spotify_operations(cfg),
+        "chat",
+        coding=mode == "coding",
+        via="chat",
+        can_switch=True,
+    )
+    return system_prompt(cfg, "chat", coding=mode == "coding", registry=registry)
 
 
 def cmd_chat(_args: argparse.Namespace) -> int:
@@ -1476,6 +1494,7 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
         keys=keys,
         due=jobs.take_due,
         schedule_ready=jobs.may_be_due,
+        watching=jarvis.watch,
     )
     handler = control.Controls(
         loop,
@@ -2008,19 +2027,22 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 FETCH_MODELS = "uv run tools/get_models.py (or see docs/models.md)"  # the fix for a missing model
 
 
-def launch_for_update(
+def launch_for_update(  # ruff: ignore[too-many-arguments] - the launcher's own keyword options
     args: tuple[str, ...],
     *,
     cwd: Path,
     timeout: float,
     env: Mapping[str, str],
     show: bool,
+    abort_when: Callable[[], bool] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Start one program `jarvis update` needs (git, uv, systemctl, the updated Jarvis).
 
     Raises:
-        update.UpdateError: it ran past `timeout` and was stopped.
+        update.UpdateError: it ran past `timeout` or `abort_when` said yes, and it was stopped.
     """
+    if abort_when is not None:
+        return _launch_watched(args, cwd=cwd, timeout=timeout, env=env, abort_when=abort_when)
     try:
         return subprocess.run(
             args,
@@ -2039,6 +2061,44 @@ def launch_for_update(
 def _update_plugins(cfg: config.Config, audit: AuditLog) -> None:
     """Bring the plugins up to date as part of `jarvis update --apply`."""
     pluginsync.update_all(cfg, launch_for_update, audit)
+
+
+def _launch_watched(
+    args: tuple[str, ...],
+    *,
+    cwd: Path,
+    timeout: float,
+    env: Mapping[str, str],
+    abort_when: Callable[[], bool],
+) -> subprocess.CompletedProcess[str]:
+    """Run a program, asking `abort_when` twice a second and stopping it once it says yes.
+
+    Raises:
+        update.UpdateError: it ran past `timeout` or `abort_when` said yes, and it was stopped.
+    """
+    deadline = time.monotonic() + timeout
+    with subprocess.Popen(
+        args,
+        cwd=cwd,
+        env=dict(env),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as proc:
+        while True:
+            try:
+                out, err = proc.communicate(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                reason = "was stopped" if abort_when() else ""
+                if not reason and time.monotonic() > deadline:
+                    reason = f"ran past {timeout:g} s and was stopped"
+                if reason:
+                    proc.kill()
+                    proc.communicate()
+                    msg = f"{Path(args[0]).name} {reason}"
+                    raise update.UpdateError(msg) from None
+            else:
+                return subprocess.CompletedProcess(args, proc.returncode, out, err)
 
 
 def finish_update() -> int:

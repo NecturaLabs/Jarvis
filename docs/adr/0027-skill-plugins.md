@@ -40,19 +40,25 @@ Chosen option 3.
   alone (not writable by group or others), opened without following a link, within size limits (16,000 bytes a skill file; at most 8,000 bytes for an always-on body and
   12,000 for a channel's). A skill over the limit is not always-on and `jarvis doctor` says why.
 - **Use.** An always-on skill's body (front matter removed) is appended to that channel's prompt under a header
-  Jarvis writes and followed by a closing line Jarvis writes, so the text cannot fake its own end: it is
-  third-party text that changes how the model works and grants nothing. **An always-on skill is in the system
+  Jarvis writes and followed by a closing line Jarvis writes: the closing line marks where Jarvis's own words
+  resume, but the text between is still third-party text the model reads. It changes how the model works and grants nothing. **An always-on skill is in the system
   prompt, a trusted context, by the owner's choice of enabling it always-on**; the owner accepts that its text
   steers the model like their own instructions, bounded by the policy in code. Any other skill is listed as
   third-party with a short description and read with `read_skill`, which gives it as outside text
-  (`Origin.PLUGIN_SKILL`, not trusted) under the same heading and closing line, so an action that changes
-  something after it needs a yes, as after a web page. A plugin's text never widens an operation: policy,
+  (`Origin.PLUGIN_SKILL`, not trusted) under the same heading and closing line, with its angle brackets
+  spelled out like any outside text (cut, when long, so the closing line is kept), so an action that changes
+  something after it needs a yes, as after a web page. The system prompt tells the model once, for every
+  kind of skill, that a skill's how-to is to be followed for the owner's task while it grants nothing and never
+  overrides Jarvis's rules or the owner's words. A plugin's text never widens an operation: policy,
   confirmation and audit are in code.
 - **Updates, not pinned.** Each repository is shallow-cloned once and then, to update, cloned again beside
   the old copy and swapped in whole (the old one stays as `.old` until the next update), after checking that
   the new commit builds on the old one (a rewritten history, or more than 100 commits ahead, is a failure the
   owner resolves). A repository over 50 MB is refused and removed; clones ask the host to skip files over 1 MB.
-  Folders under `<data_dir>/plugins/` are named by host, path and a digest of the address.
+  A clone is stopped while it runs once it passes the cap. An update first asks the remote for its HEAD and
+  downloads only when it moved. A swap interrupted between its two renames is undone at the next load or update
+  (the `.old` copy is renamed back). Folders under `<data_dir>/plugins/` are named by host, path and a digest
+  of the address, and a link anywhere in that path stops a download.
   `jarvis update --apply`, and its daily timer, do this before Jarvis's own update when `auto_update` is on;
   `jarvis plugins update` always does. Each change is audited with the commit before and after, and
   `jarvis doctor` shows each marketplace's commit and date and any failed update.

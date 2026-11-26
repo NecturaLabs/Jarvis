@@ -97,7 +97,7 @@ class Launch(Protocol):
     It raises `UpdateError` when the program runs past `timeout`.
     """
 
-    def __call__(
+    def __call__(  # ruff: ignore[too-many-arguments] - the launcher's own keyword options
         self,
         args: tuple[str, ...],
         *,
@@ -105,8 +105,13 @@ class Launch(Protocol):
         timeout: float,
         env: Mapping[str, str],
         show: bool,
+        abort_when: Callable[[], bool] | None = None,
     ) -> Finished:
-        """Run `args` in `cwd` with exactly `env`; with `show`, its output goes to the terminal."""
+        """Run `args` in `cwd` with exactly `env`; with `show`, its output goes to the terminal.
+
+        With `abort_when`, it is asked about twice a second and the program is stopped, and
+        `UpdateError` raised, once it says yes.
+        """
         ...
 
 
