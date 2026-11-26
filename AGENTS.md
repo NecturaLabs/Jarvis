@@ -40,10 +40,10 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
   recording Jarvis did not start.
 - Strata serves only Jarvis. Its model lives outside the repository, named by Strata's own run config
   (`strata.run_config`); nothing model-specific is hardcoded in Jarvis. Health
-  checks never generate tokens. The model is loaded when `jarvis run` starts and stays loaded (the owner's
+  checks never generate tokens. The local model is loaded when `jarvis run` starts and stays loaded (the owner's
   choice): it may hold RAM and VRAM, but must use no GPU or CPU while idle, and Jarvis runs beside games.
-- Jarvis runs locally and is free to use and maintain: no hosted model backend, no paid API. Voice activation
-  and speech-to-text stay local too.
+- Jarvis runs locally and is free to use and maintain. Strata may run on the owner's own machine on
+  their network. No hosted model backend or paid API. Voice activation and speech-to-text stay local.
 - Jarvis replies by voice only; no desktop notifications.
 - Never hardcode spoken commands: the owner says whatever is on their mind, so the model decides what a
   request means. Add a typed tool with a clear description, never a new shortcut phrasing or keyword list.

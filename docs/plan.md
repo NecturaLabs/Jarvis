@@ -43,7 +43,8 @@ behind the same speech setting, as the Piper-licence risk below asked.
 
 - Always running; wakes on "Hey Jarvis" (bare "Jarvis" later, optional).
 - Transcription through Omarchy's local dictation (Voxtype, the configured default), not the API backend.
-- Reasoning by the local model on Strata. Strata serves only Jarvis.
+- Reasoning by Strata, on this PC by default or on the owner's own machine on their network
+  ([ADR 0020](adr/0020-model-on-another-machine.md)). Strata serves only Jarvis.
 - First-time configuration sets boundaries, tone/persona and the core instructions (what Jarvis is).
 - Researches online and operates this PC.
 - No global instructions, skills or plugins: only Jarvis's own skills, the owner's skills in Jarvis's config
