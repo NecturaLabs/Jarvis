@@ -452,7 +452,7 @@ yes, unless `boundaries.bypass_consent` is on, and the question reads out the so
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
-| `engine` | `auto` | `auto`, `speech`, `soulx` | `speech` sings with the Kokoro voice: its words stretched to each note and moved to its pitch on the CPU (Praat), in a fraction of the song's length. `soulx` sings with SoulX-Singer, a singing-voice model, on the GPU for about two seconds a song, in the same voice; it falls back to `speech` when its files are missing, it fails, or it runs past 20 seconds, and it stops at once when the request is cut short. `auto` is `soulx` when its files are installed ([models.md](models.md#singing)), else `speech`. |
+| `engine` | `auto` | `auto`, `speech`, `soulx` | `speech` sings with the Kokoro voice: its words stretched to each note and moved to its pitch on the CPU (Praat), in a fraction of the song's length. `soulx` sings with SoulX-Singer, a singing-voice model, on the GPU for about two seconds a song, in the same voice; it falls back to `speech` when its files are missing or not the pinned release, it fails, it runs past 20 seconds or the request's time left, or less than 5 seconds are left to start it, and it stops at once when the song is stopped (the wake word, `jarvis hush`, a pause). `auto` is `soulx` when its files are installed ([models.md](models.md#singing)), else `speech`. |
 | `device` | `0` | `0` to `15` | The Vulkan device SoulX-Singer runs on (`audiocpp_cli --list-devices` lists them). |
 
 Jarvis sings in a Kokoro voice: the speaking voice when `audio.voice` is a Kokoro one, else `bm_george`. The song

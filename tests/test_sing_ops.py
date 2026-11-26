@@ -1,13 +1,14 @@
 """The `sing` operation: its arguments, its policy class, its singer and where it is offered."""
 
 import contextlib
+import hashlib
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
 from test_sing_psola import Voice
 
-from jarvis import app
+from jarvis import app, models
 from jarvis.config import Config
 from jarvis.operations import (
     ArgumentError,
@@ -312,14 +313,29 @@ def test_without_the_kokoro_files_singing_says_what_is_missing(tmp_path: Path) -
         singer_for(cfg)()
 
 
-def _installed(data_dir: Path, *, executable: bool = True, libraries: bool = True) -> None:
+def _installed(
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    executable: bool = True,
+    libraries: bool = True,
+) -> None:
+    """Put a runner bundle in place and pin it as the release: the runner and one library."""
+    bundle = {soulx.BINARY: b"the runner", "libggml-vulkan.so": b"a library"}
+    monkeypatch.setattr(
+        models,
+        "SOULX_RUNNER",
+        tuple(
+            models.RunnerFile(n, len(d), hashlib.sha256(d).hexdigest()) for n, d in bundle.items()
+        ),
+    )
     found = soulx.files(data_dir)
     found.binary.parent.mkdir(parents=True, exist_ok=True)
-    found.binary.write_bytes(b"")
+    found.binary.write_bytes(bundle[soulx.BINARY])
     found.binary.chmod(0o755 if executable else 0o644)
     found.model.write_bytes(b"")
     if libraries:
-        (found.binary.parent / "libggml-vulkan.so").write_bytes(b"")
+        (found.binary.parent / "libggml-vulkan.so").write_bytes(bundle["libggml-vulkan.so"])
 
 
 def _singer_checks(data_dir: Path, engine: str = "auto") -> dict[str, bool]:
@@ -328,32 +344,45 @@ def _singer_checks(data_dir: Path, engine: str = "auto") -> dict[str, bool]:
     return {label.split(" ")[0]: ok for ok, label, _fix in checks}
 
 
-def test_the_doctor_passes_an_installed_runner_that_can_run(tmp_path: Path) -> None:
-    _installed(tmp_path)
+def test_the_doctor_passes_an_installed_runner_that_can_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _installed(tmp_path, monkeypatch)
 
     checks = _singer_checks(tmp_path)
 
     assert checks["executable"]
-    assert checks["libraries"]
+    assert checks["runner"]
 
 
 @pytest.mark.parametrize(
     ("flaw", "failed"),
-    [({"executable": False}, "executable"), ({"libraries": False}, "libraries")],
+    [({"executable": False}, "executable"), ({"libraries": False}, "runner")],
     ids=["not-executable", "no-libraries"],
 )
 def test_the_doctor_fails_a_runner_that_cannot_run(
-    tmp_path: Path, flaw: dict[str, bool], failed: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flaw: dict[str, bool], failed: str
 ) -> None:
-    _installed(tmp_path, **flaw)
+    _installed(tmp_path, monkeypatch, **flaw)
 
     checks = _singer_checks(tmp_path)
 
     assert not checks[failed]
 
 
-def test_the_doctor_leaves_the_runner_alone_when_soulx_is_not_used(tmp_path: Path) -> None:
-    _installed(tmp_path, executable=False, libraries=False)
+def test_the_doctor_fails_a_bundle_with_a_library_that_is_not_the_pinned_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _installed(tmp_path, monkeypatch)
+    (soulx.files(tmp_path).binary.parent / "libggml-vulkan.so").write_bytes(b"another build")
+
+    assert not _singer_checks(tmp_path)["runner"]
+
+
+def test_the_doctor_leaves_the_runner_alone_when_soulx_is_not_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _installed(tmp_path, monkeypatch, executable=False, libraries=False)
 
     assert "executable" not in _singer_checks(tmp_path, "speech")
 

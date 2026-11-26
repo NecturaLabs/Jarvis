@@ -45,8 +45,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   with SoulX-Singer on the GPU once `tools/get_singer.py` has installed it (it skips files already in place);
   `[sing] engine` chooses. A song still being made stops at once when you speak over Jarvis, hush or pause
   it, and making one never takes longer than the request's time. Asked for after a web page while Jarvis
-  asks first, a song waits for your yes to a question that reads out all its words. `jarvis doctor` checks
-  the singer, including that SoulX-Singer's runner is executable with its libraries
+  asks first, a song waits for your yes to a question that reads out all its words. Before each song, and
+  in `jarvis doctor`, every file of SoulX-Singer's runner is checked against its pinned release; when one is
+  not, Jarvis sings with the speaking voice. `tools/get_singer.py` puts a new runner in place only whole
   ([ADR 0018](docs/adr/0018-sing-a-song-the-model-writes.md)).
 - The chat's `/config` also sets Jarvis's speaking speed, whether it acts without asking first and whether it
   takes requests from PC audio. Changes there restart the voice service once, when the settings close, instead of

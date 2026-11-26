@@ -5,6 +5,7 @@ The program is never run here: a stand-in runner reads what Jarvis wrote and wri
 """
 
 import contextlib
+import hashlib
 import json
 import os
 import signal
@@ -19,6 +20,7 @@ import numpy as np
 import pytest
 from test_sing_psola import Voice
 
+from jarvis import models
 from jarvis.audio import AudioError, SingerStoppedError
 from jarvis.sing import arpabet, soulx
 from jarvis.sing.budget import Budget, SongStoppedError
@@ -135,8 +137,14 @@ class Runner:
         return self.exit_code, "vulkan: out of memory"
 
 
+def _whole(_found: soulx.Files) -> None:
+    """A check of the runner's files that finds nothing wrong (the stand-in runner is no build)."""
+
+
 def _singer(tmp_path: Path, runner: Runner) -> soulx.SoulxSinger:
-    return soulx.SoulxSinger(_files(tmp_path), PsolaSinger(Voice()), device=1, run=runner)
+    return soulx.SoulxSinger(
+        _files(tmp_path), PsolaSinger(Voice()), device=1, run=runner, check=_whole
+    )
 
 
 def test_soulx_sings_in_the_voice_of_the_same_song_sung_by_the_speaking_voice(
@@ -240,7 +248,7 @@ def test_a_song_stopped_before_soulx_starts_never_launches_it(
     runner = Runner()
     stopped = [False]
     singer = soulx.SoulxSinger(
-        _files(tmp_path), _Then(lambda: stopped.__setitem__(0, True)), run=runner
+        _files(tmp_path), _Then(lambda: stopped.__setitem__(0, True)), run=runner, check=_whole
     )
 
     with pytest.raises(SongStoppedError):
@@ -257,7 +265,7 @@ def test_a_song_stopped_while_soulx_runs_ends_the_program_and_leaves_nothing(
     pid_file = tmp_path / "pid"
     found.binary.write_text(f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep 60\n", encoding="ascii")
     found.binary.chmod(0o755)
-    singer = soulx.SoulxSinger(found, PsolaSinger(Voice()))  # the real runner
+    singer = soulx.SoulxSinger(found, PsolaSinger(Voice()), check=_whole)  # the real runner
     stop = threading.Event()
     threading.Thread(target=lambda: (_wait_for(pid_file.exists), stop.set()), daemon=True).start()
     started = time.monotonic()
@@ -317,3 +325,115 @@ def test_the_runner_is_given_the_stop_signal_of_the_render(
     stopped[0] = True
 
     assert runner.cancels[0]()
+
+
+def test_a_runner_that_fails_its_check_is_not_started_and_the_speaking_voice_sings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    runner = Runner()
+    score = parse(LINE, 120)
+    singer = soulx.SoulxSinger(
+        _files(tmp_path), PsolaSinger(Voice()), run=runner, check=lambda _f: "a library is missing"
+    )
+
+    pcm, _ = singer.render(score, Budget())
+
+    assert not runner.commands
+    assert pcm.size == round(score.seconds * soulx.RATE)
+    assert "a library is missing" in caplog.text
+
+
+BUNDLE = {soulx.BINARY: b"the runner", "libggml.so": b"a library", "LICENSE": b"its licence"}
+
+
+def _bundle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> soulx.Files:
+    """Pin BUNDLE as the runner's files and put it, and a model of the pinned size, in place."""
+    monkeypatch.setattr(
+        models,
+        "SOULX_RUNNER",
+        tuple(
+            models.RunnerFile(n, len(d), hashlib.sha256(d).hexdigest()) for n, d in BUNDLE.items()
+        ),
+    )
+    monkeypatch.setattr(models, "SOULX_MODEL_BYTES", 5)
+    found = soulx.files(tmp_path)
+    found.binary.parent.mkdir(parents=True)
+    for name, data in BUNDLE.items():
+        (found.binary.parent / name).write_bytes(data)
+    found.binary.chmod(0o755)
+    found.model.write_bytes(b"model")
+    return found
+
+
+def test_the_pinned_bundle_in_place_passes_its_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    found = _bundle(monkeypatch, tmp_path)
+
+    assert soulx.verify(found) is None
+    assert soulx.verify(found) is None  # again, from what was hashed
+
+
+def _link_runner(found: soulx.Files) -> None:
+    real = found.binary.parent / "elsewhere"
+    found.binary.rename(real)
+    found.binary.symlink_to(real)
+
+
+def _replace_library(found: soulx.Files) -> None:
+    library = found.binary.parent / "libggml.so"
+    library.unlink()
+    library.write_bytes(b"a librarz")  # the same size, another build
+
+
+def _drop_library(found: soulx.Files) -> None:
+    (found.binary.parent / "libggml.so").unlink()
+
+
+def _grow_licence(found: soulx.Files) -> None:
+    (found.binary.parent / "LICENSE").write_bytes(b"a longer licence")
+
+
+def _not_executable(found: soulx.Files) -> None:
+    found.binary.chmod(0o644)
+
+
+def _cut_model(found: soulx.Files) -> None:
+    found.model.write_bytes(b"half")
+
+
+@pytest.mark.parametrize(
+    ("flaw", "said"),
+    [
+        (_link_runner, "not a regular file"),
+        (_drop_library, "missing"),
+        (_replace_library, "not the pinned"),
+        (_grow_licence, "bytes"),
+        (_not_executable, "not executable"),
+        (_cut_model, "model"),
+    ],
+    ids=["linked", "missing-library", "other-library", "other-size", "not-executable", "model"],
+)
+def test_a_bundle_that_is_not_the_pinned_one_fails_its_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flaw: Callable[[soulx.Files], object],
+    said: str,
+) -> None:
+    found = _bundle(monkeypatch, tmp_path)
+    assert soulx.verify(found) is None  # hashed once, whole
+
+    flaw(found)
+    problem = soulx.verify(found)
+
+    assert problem is not None
+    assert said in problem
+
+
+def test_the_pinned_runner_is_the_build_jarvis_doctor_hashes() -> None:
+    runner = next(entry for entry in models.SOULX_RUNNER if entry.name == soulx.BINARY)
+    known = next(k for k in models.KNOWN_MODELS if k.role == "soulx-binary")
+
+    assert runner.sha256 == known.sha256
+    assert {entry.name for entry in models.SOULX_RUNNER} >= {soulx.BINARY, "LICENSE"}

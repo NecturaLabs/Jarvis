@@ -14,6 +14,7 @@ from jarvis import models
 from jarvis.sing import soulx
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 BODY = b"the pinned release"
@@ -76,7 +77,28 @@ def _archive(tmp_path: Path, members: dict[str, bytes], links: tuple[str, ...] =
     return path
 
 
-def test_only_the_runner_its_libraries_and_licence_are_unpacked(tmp_path: Path) -> None:
+def _pin_bundle(monkeypatch: pytest.MonkeyPatch, files: dict[str, bytes]) -> None:
+    """Pin `files` as the runner bundle of the release."""
+    monkeypatch.setattr(
+        models,
+        "SOULX_RUNNER",
+        tuple(
+            models.RunnerFile(n, len(d), hashlib.sha256(d).hexdigest()) for n, d in files.items()
+        ),
+    )
+
+
+RELEASE = {f"./{soulx.BINARY}": b"runner", "./libggml-vulkan.so": b"lib", "./LICENSE": b"licence"}
+
+
+def _pin_release(monkeypatch: pytest.MonkeyPatch) -> None:
+    _pin_bundle(monkeypatch, {n.removeprefix("./"): d for n, d in RELEASE.items()})
+
+
+def test_only_the_runner_its_libraries_and_licence_are_unpacked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pin_release(monkeypatch)
     archive = _archive(
         tmp_path,
         {
@@ -99,9 +121,59 @@ def test_only_the_runner_its_libraries_and_licence_are_unpacked(tmp_path: Path) 
     assert not (tmp_path / "escape").exists()
 
 
-def test_an_archive_without_the_runner_is_refused(tmp_path: Path) -> None:
+def test_an_archive_without_the_runner_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pin_release(monkeypatch)
+
     with pytest.raises(DownloadError, match="holds no"):
         unpack(_archive(tmp_path, {"./LICENSE": b"licence"}), tmp_path / "out")
+
+
+def _old_runner(folder: Path) -> dict[str, bytes]:
+    """Put an earlier install in `folder`; return what it holds."""
+    folder.mkdir(parents=True)
+    old = {soulx.BINARY: b"old runner", "libggml-old.so": b"old lib"}
+    for name, data in old.items():
+        (folder / name).write_bytes(data)
+    return old
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        {n: d for n, d in RELEASE.items() if n != "./libggml-vulkan.so"},
+        {**RELEASE, "./libggml-vulkan.so": b"another build"},
+    ],
+    ids=["a-library-missing", "a-library-of-another-build"],
+)
+def test_an_archive_that_is_not_the_whole_pinned_bundle_leaves_the_old_runner_as_it_was(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, members: dict[str, bytes]
+) -> None:
+    _pin_release(monkeypatch)
+    sing = tmp_path / "sing"
+    old = _old_runner(sing / "audiocpp")
+
+    with pytest.raises(DownloadError):
+        unpack(_archive(tmp_path, members), sing / "audiocpp")
+
+    assert {p.name: p.read_bytes() for p in (sing / "audiocpp").iterdir()} == old
+    assert [p.name for p in sing.iterdir()] == ["audiocpp"]  # no half-made folder is left
+
+
+def test_a_new_runner_takes_the_old_ones_place_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pin_release(monkeypatch)
+    sing = tmp_path / "sing"
+    _old_runner(sing / "audiocpp")
+
+    unpack(_archive(tmp_path, RELEASE), sing / "audiocpp")
+
+    held = {p.name: p.read_bytes() for p in (sing / "audiocpp").iterdir()}
+    assert held == {n.removeprefix("./"): d for n, d in RELEASE.items()}  # nothing old is left
+    assert [p.name for p in sing.iterdir()] == ["audiocpp"]
+    assert get_singer.runner_in_place(sing / "audiocpp" / soulx.BINARY)
 
 
 def _refusing() -> httpx.Client:
@@ -157,35 +229,50 @@ def _runner(
     for name in libs:
         (folder / name).write_bytes(b"lib")
     (folder / soulx.BINARY).write_bytes(binary)
+    (folder / soulx.BINARY).chmod(0o755)
     return folder / soulx.BINARY
-
-
-def _pin(monkeypatch: pytest.MonkeyPatch, binary: bytes) -> None:
-    known = models.KnownModel(
-        "soulx-binary", "test", "v0", hashlib.sha256(binary).hexdigest(), "Apache-2.0"
-    )
-    monkeypatch.setattr(models, "KNOWN_MODELS", (known,))
 
 
 def test_a_runner_in_place_with_its_libraries_and_the_pinned_hash_is_kept(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _pin(monkeypatch, b"runner")
+    _pin_bundle(monkeypatch, {soulx.BINARY: b"runner", "libggml.so": b"lib"})
 
     assert get_singer.runner_in_place(_runner(tmp_path))
 
 
-@pytest.mark.parametrize(
-    ("binary", "libs"),
-    [(b"another", ("libggml.so",)), (b"runner", ())],
-    ids=["other-build", "no-libraries"],
-)
-def test_a_runner_that_is_not_the_pinned_one_or_has_no_libraries_is_fetched_again(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, binary: bytes, libs: tuple[str, ...]
-) -> None:
-    _pin(monkeypatch, b"runner")
+def _other_build(folder: Path) -> Path:
+    return _runner(folder, b"another")
 
-    assert not get_singer.runner_in_place(_runner(tmp_path, binary, libs))
+
+def _no_libraries(folder: Path) -> Path:
+    return _runner(folder, libs=())
+
+
+def _one_library(folder: Path) -> Path:
+    return _runner(folder, libs=("libggml.so",))  # one of the two pinned libraries
+
+
+def _linked(folder: Path) -> Path:
+    binary = _runner(folder)
+    binary.rename(folder / "real")
+    binary.symlink_to(folder / "real")
+    return binary
+
+
+@pytest.mark.parametrize(
+    "made",
+    [_other_build, _no_libraries, _one_library, _linked],
+    ids=["other-build", "no-libraries", "a-library-missing", "linked"],
+)
+def test_a_runner_that_is_not_the_whole_pinned_bundle_is_fetched_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, made: Callable[[Path], Path]
+) -> None:
+    _pin_bundle(
+        monkeypatch, {soulx.BINARY: b"runner", "libggml.so": b"lib", "libggml-base.so": b"lib"}
+    )
+
+    assert not get_singer.runner_in_place(made(tmp_path))
 
 
 def test_no_runner_is_not_in_place(tmp_path: Path) -> None:
@@ -198,7 +285,7 @@ def test_an_install_with_everything_in_place_downloads_nothing(
     folder = soulx.files(tmp_path).model.parent
     folder.mkdir(parents=True)
     _runner(folder / "audiocpp")
-    _pin(monkeypatch, b"runner")
+    _pin_bundle(monkeypatch, {soulx.BINARY: b"runner", "libggml.so": b"lib"})
     files = tuple(
         Download(f"https://example.invalid/{n}", len(BODY), hashlib.sha256(BODY).hexdigest(), n)
         for n in ("a", "b")

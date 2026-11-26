@@ -2287,7 +2287,9 @@ def _singing_agent(tmp_path: Path, audit: AuditLog) -> tuple[RealAgent, Path]:
     pid_file = tmp_path / "pid"
     found.binary.write_text(f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep 60\n", encoding="ascii")
     found.binary.chmod(0o755)
-    singer = soulx.SoulxSinger(found, PsolaSinger(SpeechVoice()), timeout_s=10.0)
+    singer = soulx.SoulxSinger(
+        found, PsolaSinger(SpeechVoice()), timeout_s=10.0, check=lambda _found: None
+    )
     (sing,) = SingOps(lambda: singer).operations()
     model = cast("ChatModel", _SingsOnce())
     return RealAgent(model, Registry([sing, no_action_operation()]), "system", audit, {}), pid_file

@@ -8,6 +8,7 @@ libraries and its licence are taken out of the audio.cpp archive. About 1.3 GB i
 
 import argparse
 import hashlib
+import shutil
 import sys
 import tarfile
 import tempfile
@@ -45,7 +46,7 @@ class Download:
 MODEL_FILES = (
     Download(
         GGUF + soulx.MODEL,
-        1_173_681_632,
+        models.SOULX_MODEL_BYTES,
         "c146c09427f88202db37a71869cdd498e6c0e92fa2cd08065bd5c2f735eb82fd",
         soulx.MODEL,
     ),
@@ -145,12 +146,8 @@ def fetch(item: Download, folder: Path, client: httpx.Client) -> Path:
 
 
 def runner_in_place(binary: Path) -> bool:
-    """Whether the runner is there as the pinned build, beside at least one of its libraries."""
-    try:
-        known = models.verify("soulx-binary", binary).known
-    except OSError:
-        return False
-    return known is not None and any(binary.parent.glob("libggml*"))
+    """Whether the runner's folder holds the whole pinned bundle (`models.SOULX_RUNNER`)."""
+    return soulx.runner_problem(binary.parent) is None
 
 
 def _wanted(name: str) -> bool:
@@ -159,16 +156,12 @@ def _wanted(name: str) -> bool:
     return "/" not in base and (base in {soulx.BINARY, "LICENSE"} or base.startswith("libggml"))
 
 
-def unpack(archive: Path, folder: Path) -> list[str]:
-    """Take the runner, its libraries and licence out of `archive` into `folder`; return them.
+def _extract(archive: Path, folder: Path) -> list[str]:
+    """Write the runner, its libraries and licence from `archive` into `folder`; return them.
 
     Only regular files at the archive's top level are taken (no links, no paths).
-
-    Raises:
-        DownloadError: the archive holds no runner.
     """
     taken: list[str] = []
-    folder.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive, "r:gz") as tar:
         for member in tar.getmembers():
             if not member.isfile() or not _wanted(member.name):
@@ -181,10 +174,64 @@ def unpack(archive: Path, folder: Path) -> list[str]:
             target.write_bytes(source.read())
             target.chmod(0o755 if name == soulx.BINARY else 0o644)
             taken.append(name)
+    return sorted(taken)
+
+
+def _publish(staged: Path, folder: Path) -> None:
+    """Put the checked folder `staged` in the place of `folder`, which may not exist yet.
+
+    The old folder is moved aside first and removed last, so a reader finds the old bundle, the
+    new one or, for a moment, none, never a mix; a failure puts the old one back.
+    """
+    old = staged.with_name(f"{staged.name}-old")
+    had = folder.exists()
+    if had:
+        folder.replace(old)
+    try:
+        staged.replace(folder)
+    except BaseException:
+        if had:
+            old.replace(folder)
+        raise
+    if had:
+        shutil.rmtree(old)
+
+
+def _staged(archive: Path, staged: Path) -> list[str]:
+    """Extract `archive` into `staged` and check it is the whole pinned bundle; return its files.
+
+    Raises:
+        DownloadError: it is not.
+    """
+    taken = _extract(archive, staged)
     if soulx.BINARY not in taken:
         msg = f"{archive.name} holds no {soulx.BINARY}"
         raise DownloadError(msg)
-    return sorted(taken)
+    problem = soulx.runner_problem(staged)
+    if problem is not None:
+        msg = f"{archive.name} is not the pinned runner bundle: {problem}"
+        raise DownloadError(msg)
+    return taken
+
+
+def unpack(archive: Path, folder: Path) -> list[str]:
+    """Install the runner, its libraries and licence from `archive` as `folder`; return them.
+
+    They are written to a new folder beside it and checked against the pinned bundle
+    (`models.SOULX_RUNNER`) first, then that folder takes the old one's place, so a runner is
+    only ever in place whole. Nothing is left beside it when the archive is refused, which
+    raises `_staged`'s DownloadError.
+    """
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    staged = Path(tempfile.mkdtemp(dir=folder.parent, prefix=f".{folder.name}-"))
+    try:
+        taken = _staged(archive, staged)
+        staged.chmod(0o755)
+        _publish(staged, folder)
+    except BaseException:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+    return taken
 
 
 def install(data_dir: Path) -> str:

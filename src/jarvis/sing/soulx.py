@@ -10,10 +10,14 @@ fails or runs too long, or the request has too little time left to start it, the
 song made for the reference is sung instead; a song that is stopped ends the process at once.
 """
 
+import hashlib
 import json
 import logging
+import os
+import stat
 import struct
 import tempfile
+import threading
 import wave
 from dataclasses import dataclass
 from functools import lru_cache
@@ -22,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from jarvis import paths
+from jarvis import models, paths
 from jarvis.audio import AudioError, SingerStoppedError, run_singer
 from jarvis.sing import arpabet
 from jarvis.sing.budget import SongStoppedError
@@ -61,7 +65,7 @@ class Files:
 
     @property
     def installed(self) -> bool:
-        """Whether both are there."""
+        """Whether both are there (`verify` says whether they may run)."""
         return self.binary.is_file() and self.model.is_file()
 
 
@@ -69,6 +73,93 @@ def files(data_dir: Path) -> Files:
     """Return where SoulX-Singer's files go under `data_dir`."""
     folder = data_dir / FOLDER
     return Files(folder / "audiocpp" / BINARY, folder / MODEL)
+
+
+_hashed: dict[
+    Path, tuple[tuple[int, ...], str]
+] = {}  # a file's stat when it was hashed, and its sha256
+_hashed_lock = threading.Lock()
+
+
+def _signature(st: os.stat_result) -> tuple[int, ...]:
+    """What changes when a file is written, replaced or moved: it is hashed again then."""
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_mode)
+
+
+def _sha256(path: Path) -> tuple[os.stat_result, str]:
+    """Return a regular file's stat and sha256, read through no link; kept while it is unchanged.
+
+    A file that cannot be read, or is a link (ELOOP), raises what `os.open` raises.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(fd, "rb") as handle:
+        st = os.fstat(handle.fileno())
+        with _hashed_lock:
+            kept = _hashed.get(path)
+        if kept is not None and kept[0] == _signature(st):
+            return st, kept[1]
+        digest = hashlib.sha256()
+        while chunk := handle.read(models.CHUNK_SIZE):
+            digest.update(chunk)
+        sha = digest.hexdigest()
+        if _signature(os.fstat(handle.fileno())) == _signature(st):  # unchanged while it was read
+            with _hashed_lock:
+                _hashed[path] = (_signature(st), sha)
+    return st, sha
+
+
+def _file_problem(folder: Path, pinned: models.RunnerFile) -> str | None:
+    """Return why `folder`'s copy of one file of the bundle is not the pinned one, or None."""
+    path = folder / pinned.name
+    try:
+        st = path.lstat()
+        whole = stat.S_ISREG(st.st_mode) and st.st_size == pinned.size
+        sha = _sha256(path)[1] if whole else ""
+    except FileNotFoundError:
+        return f"{pinned.name} is missing"
+    except OSError as exc:
+        return f"{pinned.name} cannot be read: {exc.strerror or exc}"
+    if not stat.S_ISREG(st.st_mode):
+        return f"{pinned.name} is not a regular file"
+    if st.st_size != pinned.size:
+        return f"{pinned.name} is {st.st_size} bytes, not {pinned.size}"
+    if pinned.name == BINARY and not st.st_mode & stat.S_IXUSR:
+        return f"{pinned.name} is not executable"
+    return None if sha == pinned.sha256 else f"{pinned.name} is not the pinned build"
+
+
+def runner_problem(folder: Path) -> str | None:
+    """Return why `folder` does not hold the pinned runner bundle (`models.SOULX_RUNNER`), or None.
+
+    Every file of the bundle must be there as a regular file, not a link, with its pinned size
+    and sha256, and the runner must be executable. A file is hashed again only once it changed.
+    """
+    if folder.is_symlink() or not folder.is_dir():
+        return f"{folder} is not a folder"
+    return next(
+        (p for pinned in models.SOULX_RUNNER if (p := _file_problem(folder, pinned)) is not None),
+        None,
+    )
+
+
+def verify(found: Files) -> str | None:
+    """Return why SoulX-Singer may not run from `found`, or None when its files are the pinned ones.
+
+    The runner bundle is checked whole (`runner_problem`), and the model by its pinned size
+    (`jarvis doctor` hashes it; 1.2 GB is too much to hash for every song).
+    """
+    if found.binary.parent / BINARY != found.binary:
+        return f"{found.binary} is not where the runner goes"
+    problem = runner_problem(found.binary.parent)
+    if problem is not None:
+        return problem
+    try:
+        size = found.model.stat().st_size
+    except OSError as exc:
+        return f"the model cannot be read: {exc.strerror or exc}"
+    if size != models.SOULX_MODEL_BYTES:
+        return f"the model is {size} bytes, not {models.SOULX_MODEL_BYTES}"
+    return None
 
 
 @lru_cache(maxsize=PHONES_CACHED)
@@ -209,7 +300,7 @@ class SoulxSinger:
 
     name = "soulx"
 
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-arguments] - the runner's settings, keyword-only
         self,
         found: Files,
         speech: PsolaSinger,
@@ -217,14 +308,19 @@ class SoulxSinger:
         device: int = 0,
         timeout_s: float = TIMEOUT_S,
         run: Runner = run_singer,
+        check: Callable[[Files], str | None] = verify,
     ) -> None:
-        """Sing with the files `found`, the reference sung by `speech`, on GPU `device`."""
+        """Sing with the files `found`, the reference sung by `speech`, on GPU `device`.
+
+        `check` says why the files may not run (`verify`); it is asked before every song.
+        """
         super().__init__()
         self._files = found
         self._speech = speech
         self._device = device
         self._timeout_s = timeout_s
         self._runner = run
+        self._check = check
 
     def render(self, score: Score, budget: Budget, /) -> tuple[NDArray[np.int16], int]:
         """Return the song sung by SoulX-Singer, or by the speaking voice if that fails.
@@ -239,6 +335,14 @@ class SoulxSinger:
         reference, sung = self._speech.sing(score, budget)
         if budget.stopped():
             raise SongStoppedError
+        problem = self._check(self._files)
+        if problem is not None:
+            log.warning(
+                "SoulX-Singer's files are not the pinned release (%s); singing with the speaking"
+                " voice (run tools/get_singer.py again)",
+                problem,
+            )
+            return reference, RATE
         left = min(self._timeout_s, budget.time_left())
         if left < MIN_GPU_S:
             log.info(

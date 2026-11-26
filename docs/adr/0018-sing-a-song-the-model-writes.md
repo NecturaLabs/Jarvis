@@ -65,7 +65,9 @@ CPU singer instead of leaving the owner without a song.
     Vulkan, one process per song that exits afterwards, so nothing holds the GPU while Jarvis is idle. The
     reference clip is the same song sung first by the CPU singer, so no recording ships and the song comes out in
     Jarvis's own voice.
-  - `auto` is `soulx` when its files are installed, else `speech`. The CPU song is made first in every case, so
+  - `auto` is `soulx` when its files are installed, else `speech`. It does not look at how busy the GPU is or
+    how much VRAM is free, and SoulX-Singer's peak VRAM and its effect on a game's frame time while it runs are
+    not measured: until they are, this ADR stays proposed and `auto` beside a game is unproven. The CPU song is made first in every case, so
     when SoulX-Singer exits with an error, writes a file Jarvis cannot read, a file cut short of its own header
     or a song more than 0.25 s off the score's length, or runs past 20 seconds, that song is sung instead and
     the log says why. The edges of silence Jarvis asks SoulX-Singer for are taken off, so both singers' songs
@@ -80,8 +82,13 @@ CPU singer instead of leaving the owner without a song.
 - **SoulX-Singer is optional and never downloaded at run time.** `uv run tools/get_singer.py` is the only way
   the files arrive, run by the owner. It fetches each file from its pinned upstream release, checks its size and
   sha256 before keeping it, and takes only the runner, its libraries and licences out of the archive. The pins
-  are in `src/jarvis/models.py`, which `jarvis doctor` hashes; it also checks the runner is executable with its
-  libraries beside it. Jarvis starts the runner as a separate program and ships none of its files.
+  are in `src/jarvis/models.py`: the archive, the model, and every one of the 23 files of the runner bundle by
+  size and sha256 (`SOULX_RUNNER`). The installer writes the bundle to a new folder, checks it whole, and only
+  then puts it in the old one's place, so a half-written or partial bundle is never in place. Before every
+  song Jarvis checks the bundle again (each file a regular file, not a link, with its pinned size and sha256,
+  hashed again only once it changed, and the runner executable) and the model's size; when that fails, the CPU
+  song is sung and the log says why. `jarvis doctor` runs the same check. Jarvis starts the runner as a
+  separate program and ships none of its files.
 - **The off switch is `sing = "deny"`** under `[boundaries.classes]` (also `jarvis tools sing off`). That is
   this repository's convention for any tool ([ADR 0002](0002-typed-operation-policy.md)), so there is no separate
   `[sing] enabled` key. A denied `sing` is not offered, and `jarvis doctor` checks nothing of the singer.

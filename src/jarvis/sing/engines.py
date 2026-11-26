@@ -98,6 +98,7 @@ def doctor_checks(cfg: Config) -> tuple[list[tuple[bool, str, str]], list[str]]:
     if cfg.sing.engine == "soulx":
         checks += [(f.is_file(), f"file {f}", fix) for f in (found.binary, found.model)]
     if cfg.sing.engine != "speech" and found.binary.is_file():
+        problem = soulx.runner_problem(found.binary.parent)
         checks += [
             (
                 os.access(found.binary, os.X_OK),
@@ -105,8 +106,9 @@ def doctor_checks(cfg: Config) -> tuple[list[tuple[bool, str, str]], list[str]]:
                 f"chmod +x {found.binary}",
             ),
             (
-                any(found.binary.parent.glob("libggml*")),
-                f"libraries beside {found.binary.name}",
+                problem is None,
+                f"runner files in {found.binary.parent} are the pinned audio.cpp release"
+                + ("" if problem is None else f" ({problem})"),
                 "run tools/get_singer.py again",
             ),
         ]
