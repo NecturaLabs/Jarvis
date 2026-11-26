@@ -529,13 +529,24 @@ def test_doctor_checks_the_kokoro_files_only_for_a_kokoro_voice(
     piper = data / "voices"
     (piper / "en_GB-alan-medium.onnx").write_bytes(b"piper")
     (piper / "en_GB-alan-medium.onnx.json").write_bytes(b"{}")
-    config.save(config.Config(data_dir=data, audio=config.AudioConfig(voice="en_GB-alan-medium")))
+    piper_voice = config.AudioConfig(voice="en_GB-alan-medium")
+    singing_off = config.BoundariesConfig(classes={"sing": "deny"})
+    config.save(config.Config(data_dir=data, audio=piper_voice, boundaries=singing_off))
 
     cli.main(["doctor"])
 
     out = _doctor_lines(capsys)
     assert not any("Example kokoro" in line or "kokoro-v1.0" in line for line in out)
     assert not any("not a known release" in line and "alan" in line for line in out)
+
+    # Jarvis sings in a Kokoro voice whatever voice speaks, so singing on checks its files.
+    config.save(config.Config(data_dir=data, audio=piper_voice))
+
+    cli.main(["doctor"])
+
+    out = _doctor_lines(capsys)
+    assert any("Example kokoro-model 9.9" in line for line in out)
+    assert any("ok   singing voice kokoro:bm_george" in line for line in out)
 
 
 def test_doctor_fails_a_model_file_it_cannot_read(

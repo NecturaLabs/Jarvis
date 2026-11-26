@@ -26,6 +26,7 @@ dependencies = [
     "onnxruntime==1.32.0",
     "pillow==13.0.0",
     "piper-tts==1.8.0",
+    "praat-parselmouth==0.4.7",
     "pydantic==2.14.3",
     "textual==8.2.8",
     "textual-image==0.14.2",

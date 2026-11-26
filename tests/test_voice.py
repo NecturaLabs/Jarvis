@@ -1,14 +1,20 @@
 """The voice loop with scripted fakes: owner requests, failures, confirmation and PC audio."""
 
+import contextlib
+import json
 import logging
+import os
+import signal
 import stat
 import threading
+import time
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, cast, override
 
 import httpx
 import numpy as np
 import pytest
+from test_sing_psola import Voice as SpeechVoice
 
 from jarvis import voice
 from jarvis.agent import MODEL_MISSING, Declined, NoReason
@@ -19,10 +25,13 @@ from jarvis.audit import AuditLog
 from jarvis.config import AudioConfig, Config, ModelConfig
 from jarvis.confirmkey import MIN_PRESS_S, NOTHING_WAITING, STRAY_HOLD_S, ConfirmKey
 from jarvis.model import Delta, StrataModel
-from jarvis.operations import Operation, Registry, Result
+from jarvis.operations import Lyric, Operation, Registry, Result, Sound
 from jarvis.pc.hearing import PcHearing
 from jarvis.policy import OpClass, Origin
 from jarvis.schedule import Due, Job
+from jarvis.sing import soulx
+from jarvis.sing.ops import SingOps
+from jarvis.sing.psola import PsolaSinger
 from jarvis.voice import PcListener, State, VoiceLoop
 
 if TYPE_CHECKING:
@@ -175,6 +184,8 @@ class Speaker:
     """Speaks at once; `broken` fails each speech the way the real speaker does, at its wait."""
 
     said: list[str] = field(default_factory=list[str])
+    sounds: list[tuple[int, int, str]] = field(default_factory=list[tuple[int, int, str]])
+    queued_in_order: list[str] = field(default_factory=list[str])  # words, and "sound: <words>"
     chimes: int = 0
     broken: bool = False
     during_chime: Callable[[], object] = lambda: None
@@ -192,6 +203,17 @@ class Speaker:
             self._failed = True
             return
         self.said.append(text)
+        self.queued_in_order.append(text)
+
+    def queue_sound(
+        self, pcm: bytes, rate: int, lyrics: Sequence[tuple[float, float, str]] = ()
+    ) -> None:
+        if self.broken:
+            self._failed = True
+            return
+        words = " ".join(text for _start, _end, text in lyrics)
+        self.sounds.append((len(pcm), rate, words))
+        self.queued_in_order.append(f"sound: {words}")
 
     def wait(self) -> None:
         failed, self._failed = self._failed, False
@@ -2176,6 +2198,165 @@ def test_a_paused_loop_says_nothing_more() -> None:
     _run(loop)
 
     assert speaker.said == ["One."]
+
+
+SONG = Sound(b"\x01\x00" * 2400, 24000, (Lyric(0.0, 0.05, "la"), Lyric(0.05, 0.1, "la")))
+
+
+def test_a_song_plays_through_the_speaker_after_the_words_before_it() -> None:
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        assert hooks.speak is not None
+        assert hooks.play is not None
+        hooks.speak("Here goes.")
+        hooks.play(SONG)
+        return ""
+
+    speaker = Speaker()
+    loop = _loop(Agent(reply), Mic(*REQUEST), speaker)
+
+    _run(loop)
+
+    assert speaker.queued_in_order == ["Here goes.", "sound: la la"]
+    assert speaker.sounds == [(len(SONG.pcm), SONG.rate, "la la")]
+
+
+def test_a_song_is_not_played_after_a_hush_or_while_paused() -> None:
+    paused = [False]
+
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        assert hooks.play is not None
+        if len(agent.calls) == 1:
+            loop.hush()  # `jarvis hush` while the song is being made
+        else:
+            paused[0] = True  # `jarvis pause`
+        hooks.play(SONG)
+        return ""
+
+    agent = Agent(reply)
+    speaker = Speaker()
+    loop = _loop(agent, Mic(*REQUEST, *REQUEST), speaker, paused=lambda: paused[0])
+
+    _run(loop)
+
+    assert len(agent.calls) == 2
+    assert not speaker.sounds
+
+
+class _SingsOnce:
+    """A model that asks to sing once, then says "Okay." to everything."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._turn = 0
+
+    def chat(
+        self,
+        _messages: list[dict[str, Any]],
+        _tools: list[dict[str, Any]],
+        *,
+        on_delta: Callable[[Delta], None] | None = None,
+        **_options: object,
+    ) -> dict[str, Any]:
+        self._turn += 1
+        if self._turn == 1:
+            arguments = json.dumps({"notes": "la C4 1, la E4 1, _ 0.5, lo G4 2"})
+            call = {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "sing", "arguments": arguments},
+            }
+            return {"role": "assistant", "content": "", "tool_calls": [call]}
+        if on_delta is not None:
+            on_delta(Delta(text="Okay."))
+        return {"role": "assistant", "content": "Okay."}
+
+    @staticmethod
+    def is_loaded() -> bool | None:
+        return True
+
+
+def _singing_agent(tmp_path: Path, audit: AuditLog) -> tuple[RealAgent, Path]:
+    """The real agent and `sing`, with SoulX-Singer as a program that sleeps until it is killed.
+
+    Returns the agent and the file the program writes its process id to once it runs.
+    """
+    found = soulx.files(tmp_path)
+    found.model.parent.mkdir(parents=True)
+    found.model.write_bytes(b"")
+    found.binary.parent.mkdir()
+    pid_file = tmp_path / "pid"
+    found.binary.write_text(f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep 60\n", encoding="ascii")
+    found.binary.chmod(0o755)
+    singer = soulx.SoulxSinger(
+        found, PsolaSinger(SpeechVoice()), timeout_s=10.0, check=lambda _found: None
+    )
+    (sing,) = SingOps(lambda: singer).operations()
+    model = cast("ChatModel", _SingsOnce())
+    return RealAgent(model, Registry([sing, no_action_operation()]), "system", audit, {}), pid_file
+
+
+def _gone(pid_file: Path) -> bool:
+    try:
+        os.kill(int(pid_file.read_text(encoding="ascii")), 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+def _kill(pid_file: Path) -> None:
+    with contextlib.suppress(OSError, ValueError):
+        os.kill(int(pid_file.read_text(encoding="ascii")), signal.SIGKILL)
+
+
+def test_a_hush_while_a_song_is_made_stops_making_it_and_nothing_plays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    audit = AuditLog(None)
+    agent, pid_file = _singing_agent(tmp_path, audit)
+    speaker = Speaker()
+    loop = _loop(agent, Mic(*REQUEST), speaker)
+    hushed_at: list[float] = []
+
+    def hush_once_it_runs() -> None:
+        until(pid_file.exists)()
+        hushed_at.append(time.monotonic())
+        loop.hush()  # `jarvis hush` while SoulX-Singer runs
+
+    threading.Thread(target=hush_once_it_runs, daemon=True).start()
+    try:
+        _run(loop)
+
+        assert hushed_at
+        assert time.monotonic() - hushed_at[0] < 3.0  # not left to run out its time
+        assert _gone(pid_file)
+        assert not list((tmp_path / "run" / "jarvis").iterdir())
+        assert not speaker.sounds
+        assert [e["op"] for e in audit.events if e["event"] == "tool_stopped"] == ["sing"]
+    finally:
+        _kill(pid_file)
+
+
+def test_the_wake_word_while_a_song_is_made_stops_it_and_takes_the_new_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    audit = AuditLog(None)
+    agent, pid_file = _singing_agent(tmp_path, audit)
+    speaker = Speaker()  # nothing is playing while the song is made
+    mic = Mic(*REQUEST, until(pid_file.exists), SILENCE, WAKE, *REQUEST[1:])
+    heard = iter(["sing me something", "never mind"])
+    loop = _loop(agent, mic, speaker, transcribe=lambda _samples: next(heard))
+    try:
+        _run(loop)
+
+        assert _gone(pid_file)
+        assert not speaker.sounds
+        assert [e["op"] for e in audit.events if e["event"] == "tool_stopped"] == ["sing"]
+        requests = [e["text"] for e in audit.events if e["event"] == "request"]
+        assert requests == ["sing me something", "never mind"]  # spoken over, then heard
+    finally:
+        _kill(pid_file)
 
 
 def _reopening_loop(

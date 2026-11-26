@@ -1,10 +1,10 @@
 """Typed operations: a name, a JSON schema for its arguments, a class and an executor."""
 
 import math
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from jarvis.policy import OpClass, Origin
 
@@ -53,6 +53,13 @@ class ArgumentError(ValueError):
     """A tool call's arguments do not match the operation's schema."""
 
 
+class OperationStoppedError(Exception):
+    """An operation stopped part way because its request was cut short or silenced (`sing`).
+
+    Nothing it would have done was done; the message says what was stopped.
+    """
+
+
 class OperationError(Exception):
     """An operation could not do what was asked; the message is what the model is told.
 
@@ -80,10 +87,14 @@ class Request:
     came into the request so far (`"memory"` for outside text it remembers). `words` are the
     owner's own words of the request: none for one heard in PC audio or handed over with outside
     text behind it, and without the pastes that count as outside data; with the words the owner
-    typed into it while it ran (`steered`). `time_left` says how many seconds the request has
-    left before its time limit (`agent.max_seconds`), and `cancelled` whether it was stopped, for
-    an operation that waits as long as it is asked (`pc_audio_listen`). `scheduled` marks a
-    request run when a job fell due: the owner did not ask for it just now.
+    typed into it while it ran (`steered`). `time_left` says how many seconds the request has left
+    before its time limit (`agent.max_seconds`), for an operation that waits as long as it is asked
+    (`pc_audio_listen`). `cancelled` turns true when the request is cut short (the owner spoke over
+    Jarvis, Jarvis was paused or is stopping), for an operation that runs long, and `hushed` when
+    nothing more of it can be heard (`jarvis hush` too), for one that makes a sound (`sing`). An
+    operation making a sound runs inside `making_sound()`, so the voice listens for the wake word
+    meanwhile, as it does while it speaks. `scheduled` marks a request run when a job fell due: the
+    owner did not ask for it just now.
     """
 
     foreign: bool
@@ -92,6 +103,8 @@ class Request:
     steered: list[str] = field(default_factory=list[str])
     time_left: Callable[[], float] = field(default=lambda: math.inf)
     cancelled: Callable[[], bool] = field(default=lambda: False)
+    hushed: Callable[[], bool] = field(default=lambda: False)
+    making_sound: Callable[[], AbstractContextManager[None]] = field(default=nullcontext)
     scheduled: bool = False
 
     @property
@@ -117,23 +130,57 @@ def current_request() -> Request | None:
 
 
 @contextmanager
-def request_scope(
+def request_scope(  # ruff: ignore[too-many-arguments] - the request's fields, keyword-only
     *,
     foreign: bool,
     words: str = "",
     time_left: Callable[[], float] = lambda: math.inf,
     cancelled: Callable[[], bool] = lambda: False,
     scheduled: bool = False,
+    hushed: Callable[[], bool] = lambda: False,
+    making_sound: Callable[[], AbstractContextManager[None]] = nullcontext,
 ) -> Generator[Request]:
     """Mark everything run inside as part of one new request; `words` are the owner's own."""
     request = Request(
-        foreign, typed=words, time_left=time_left, cancelled=cancelled, scheduled=scheduled
+        foreign,
+        typed=words,
+        time_left=time_left,
+        cancelled=cancelled,
+        scheduled=scheduled,
+        hushed=hushed,
+        making_sound=making_sound,
     )
     token = _CURRENT.set(request)
     try:
         yield request
     finally:
         _CURRENT.reset(token)
+
+
+class Lyric(NamedTuple):
+    """A word a sound says, and the seconds from the sound's start it is heard in."""
+
+    start: float
+    end: float
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class Sound:
+    """A sound an operation made for the owner to hear, a song: int16 mono samples at `rate`.
+
+    `lyrics` are the words it says and when, so the voice's check for its own wake word reads
+    each stretch of it with the words heard there.
+    """
+
+    pcm: bytes
+    rate: int
+    lyrics: tuple[Lyric, ...] = ()
+
+    @property
+    def words(self) -> str:
+        """The words it says, in order."""
+        return " ".join(lyric.text for lyric in self.lyrics)
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +195,8 @@ class Result:
     window did not show where asked. A reply may then say what was done. `quiet` ends the
     request with nothing said: the owner asked for silence. `effort` asks the agent to let the
     model think that hard for the rest of the request (`think_harder`); the agent decides.
+    `sound` is played to the owner in the reply, after the words spoken before it; a channel
+    that cannot play sound turns the result into a failure the model is told about.
     `mode` asks the agent to go on in that mode, on that mode's model (`switch_model`).
     """
 
@@ -160,6 +209,7 @@ class Result:
     acted: bool = False
     quiet: bool = False
     effort: str = ""
+    sound: Sound | None = None
     mode: str = ""
 
 

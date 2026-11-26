@@ -1185,11 +1185,13 @@ def _run_until_stopped(
 def _model_files(cfg: config.Config) -> list[tuple[str, Path]]:
     """Return the (role, file) pairs the doctor can check against a known release."""
     from jarvis.audio import KOKORO_PREFIX, voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
+    from jarvis.sing.engines import singer_files  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, as above
 
     found = [*(("wake", path) for path in wake_files(cfg)), ("vad", cfg.data_dir / VAD_MODEL)]
     if cfg.audio.voice.startswith(KOKORO_PREFIX):
         model, voices = voice_files(cfg.data_dir, cfg.audio.voice)
         found += [("kokoro-model", model), ("kokoro-voices", voices)]
+    found += singer_files(cfg)
     with contextlib.suppress(services.StrataSetupError):  # `_model_checks` reports it
         reader = services.read_run_config(cfg).picture_reader
         if cfg.strata.pictures and reader is not None:
@@ -1439,9 +1441,11 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     """
     cfg = _load()
     from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
+    from jarvis.sing.engines import doctor_checks  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, as above
 
     wake_checks, wake_notes = _wake_checks(cfg)
     tool_checks, tool_notes = _tool_checks(cfg)
+    sing_checks, sing_notes = doctor_checks(cfg)
     files = [
         cfg.data_dir / VAD_MODEL,
         *voice_files(cfg.data_dir, cfg.audio.voice),
@@ -1460,6 +1464,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         *_model_checks(cfg),
         *_coding_checks(cfg),
         *tool_checks,
+        *sing_checks,
         *_source_checks(cfg),
         *_azure_checks(cfg),
         *_lock_checks(cfg),
@@ -1474,6 +1479,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     notes = [
         *wake_notes,
         *tool_notes,
+        *sing_notes,
         *_spotify_scope_notes(cfg),
         *_memlock_notes(cfg),
     ]

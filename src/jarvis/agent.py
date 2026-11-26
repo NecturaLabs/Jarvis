@@ -13,6 +13,7 @@ import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -38,6 +39,7 @@ from jarvis.operations import (
     REMEMBERED_LISTING,
     ArgumentError,
     OperationError,
+    OperationStoppedError,
     Result,
     UncertainOutcomeError,
     inert,
@@ -57,7 +59,7 @@ if TYPE_CHECKING:
     from jarvis.audit import AuditLog
     from jarvis.config import AgentConfig
     from jarvis.model import ChatModel, Delta
-    from jarvis.operations import Operation, Registry, Request
+    from jarvis.operations import Operation, Registry, Request, Sound
     from jarvis.pictures import Picture
 
 log = logging.getLogger(__name__)
@@ -137,6 +139,10 @@ SUMMARY_PROMPT = (
 FAILED_REMINDER = (
     "System check: no action in this request succeeded, so nothing has changed. Say plainly "
     "what went wrong, without saying that anything was done."
+)
+NO_SOUND = (
+    "Nothing was played: this channel has no sound, so a song can only be sung when the owner"
+    " talks to you by voice. Say so in a few words."
 )
 LOOKED_REMINDER = (
     "System check: the tools you called in this request only look things up, so nothing has "
@@ -794,7 +800,12 @@ class Hooks:
     `steer` returns what the owner typed while the request runs (a window), taken once: it joins
     the request as the owner's own words before the next model call. `condensed` gets one line
     saying the remembered conversation was condensed to make room, after the reply (a window
-    shows it; a voice need not say it).
+    shows it; a voice need not say it). With `play`, a sound an operation made (a song) is
+    played through it, queued after the words passed to `speak`; without it, such an
+    operation's result is a failure, since nothing could be heard. `hushed` turns true once
+    nothing more of the request can be heard (hushed, spoken over, paused), and an operation
+    making a sound runs inside `making_sound()`, so a voice can listen for its wake word
+    meanwhile (`Request.hushed`, `Request.making_sound`).
     """
 
     confirm: Callable[[str], bool | Declined]
@@ -809,6 +820,9 @@ class Hooks:
     quiet: Callable[[], None] = lambda: None
     preview: bool = False
     steer: Callable[[], list[str]] = list
+    play: Callable[[Sound], None] | None = None
+    hushed: Callable[[], bool] = lambda: False
+    making_sound: Callable[[], AbstractContextManager[None]] = nullcontext
     condensed: Callable[[str], None] = lambda _note: None
 
 
@@ -933,6 +947,7 @@ class _Turn:
     stopped: bool = False  # cancelled before its reply was whole: what was said is all there is
     last: bool = False  # the request's last step: the model may only answer
     declined: bool = False
+    played: bool = False  # a sound an operation made (a song) was queued to be heard
     tried: bool = False  # a call that could change something: an action, or a tool not offered
     succeeded: bool = False  # an action succeeded; a look-up alone changes nothing
     done: list[str] = field(default_factory=list[str])  # the spoken sentences of those actions
@@ -1390,26 +1405,37 @@ class Agent:
         own = "" if handed_over else _own_words(text, self._outside_pastes(text, pasted))
         self._switched = False
         self._ends = self._clock() + self._limits.max_seconds
+        turns: list[
+            _Turn
+        ] = []  # the request's turns as `_answer` makes them: the last keeps the time
+
+        def time_left() -> float:
+            if turns:  # the turn's own limit: it grows by the time a yes was waited for
+                return turns[-1].started + turns[-1].limit_s - self._clock()
+            return self._ends - self._clock()
+
         with (
             self._modes.answering(),
             request_scope(
                 foreign=foreign,
                 words=own,
-                time_left=lambda: self._ends - self._clock(),
+                time_left=time_left,
                 cancelled=hooks.cancelled,
                 scheduled=scheduled,
+                hushed=hooks.hushed,
+                making_sound=hooks.making_sound,
             ) as request,
         ):
             for seen in sorted(steered_by):
                 request.saw(seen)
-            source = (origin, request, frozenset(steered_by))
+            source = (origin, request, frozenset(steered_by), turns)
             return self._answer(text, hooks, source, (pictures, pasted))
 
     def _answer(
         self,
         text: str,
         hooks: Hooks,
-        source: tuple[Origin, Request, frozenset[str]],
+        source: tuple[Origin, Request, frozenset[str], list[_Turn]],
         shared: tuple[Sequence[Picture], Sequence[str]],
         before: _Turn | None = None,
     ) -> str:
@@ -1460,6 +1486,7 @@ class Agent:
             request=request,
             thinking=self._limits.thinking,
         )
+        source[3].append(turn)  # the request's time left is now the turn's (`handle`)
         if pictures:
             turn.untrusted = True
             turn.outside = Origin.PICTURE.value
@@ -1727,7 +1754,8 @@ class Agent:
             return ""
         if any(result.quiet for result in results):
             self._cut(stream)  # the owner asked for silence: no reply, not even words before it
-            hooks.hush()
+            if not turn.played:  # a song asked for in this request still plays, in full
+                hooks.hush()
             hooks.quiet()
             return ""
         answer = self._no_action_reply(calls, results)
@@ -1935,10 +1963,23 @@ class Agent:
         for group in self._side_by_side(calls):
             ran = self._run_group(group, hooks, turn, taint=taint)
             results += (
-                self._record(call, result, turn) for call, result in zip(group, ran, strict=True)
+                self._record(call, self._play(result, hooks, turn), turn)
+                for call, result in zip(group, ran, strict=True)
             )
         turn.stuck = any(result is _REPEATED for result in results)
         return results
+
+    def _play(self, result: Result, hooks: Hooks, turn: _Turn) -> Result:
+        """Play the sound a result carries; a channel that cannot play it gets a failure instead."""
+        if result.sound is None:
+            return result
+        if hooks.play is None:
+            self._audit.record("sound_not_played", reason="no sound on this channel")
+            return Result(NO_SOUND, ok=False)
+        if not hooks.cancelled():
+            hooks.play(result.sound)
+            turn.played = True
+        return replace(result, sound=None)  # played: the conversation keeps only its words
 
     def _record(
         self, call: dict[str, Any], result: Result, turn: _Turn, *, tried: bool = True
@@ -2380,12 +2421,12 @@ class Agent:
             )
             return False
         turn.cues.settle()
-        question = self._question(op, args, turn)
-        shown = op.preview(args) if hooks.preview and op.preview is not None else ""
         ask = hooks.confirm
         if op.always_ask and hooks.confirm_always is not None:
             ask = hooks.confirm_always
-        try:
+        try:  # wording the question runs the operation's own code, which may fail too
+            question = self._question(op, args, turn)
+            shown = op.preview(args) if hooks.preview and op.preview is not None else ""
             answer = ask(f"{question}\n{shown}" if shown else question)
         except Exception:
             log.exception("the confirmation question for %s could not be asked", op.name)
@@ -2477,6 +2518,12 @@ class Agent:
             return _Failed(
                 Result("Uncertain: it may not have gone through; do not retry it.", ok=False)
             )
+        except OperationStoppedError as exc:
+            self._audit.record(
+                "tool_stopped", op=op.name, action=digest, reason=str(exc)[:MAX_AUDIT_TEXT]
+            )
+            log.info("%s was stopped: %s", op.name, exc)
+            return _Failed(Result(f"Stopped: {exc}.", ok=False))
         except OperationError as exc:
             self._audit.record(
                 "tool_failed", op=op.name, action=digest, error=str(exc)[:MAX_AUDIT_TEXT]

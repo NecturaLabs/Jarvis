@@ -25,7 +25,7 @@ Paths and names may not contain control characters, because they are written int
 Jarvis reads the file when a command starts, so `jarvis ask`, `status`, `unload` and `doctor` always see the
 current file. The running voice service reads it once, when it starts.
 
-- `audio`, `persona`, `boundaries`, `spotify`, `model`, `clock`, `weather`, `research` and `files` keys:
+- `audio`, `persona`, `boundaries`, `spotify`, `model`, `clock`, `weather`, `research`, `files` and `sing` keys:
   run `jarvis restart`.
 - `strata` keys: run `jarvis restart`. It writes Strata's profile and unit from the config, restarts
   Strata when either changed since Strata started, and otherwise leaves a running Strata, and its loaded
@@ -505,6 +505,25 @@ be spoken over.
 | `tone` | calm, warm, to the point, with a light touch of dry wit | How it speaks. |
 | `addendum` | empty | Your own extra instructions, added to the system prompt. |
 
+## `[sing]`: how Jarvis sings
+
+Ask Jarvis to sing, in any words: the model writes the song as notes (words or syllables, pitches and lengths)
+and the `sing` tool checks it in code before a sound is made: at most 64 notes and 30 seconds, pitches from C2
+to C6. The song plays like a reply, after what Jarvis said before it: say the wake word over it to stop it,
+`jarvis hush` ends it, and nothing is sung while Jarvis is paused. The song is checked for its own wake word in
+chunks of about 2.5 seconds, so a stretch that sounds like it is the only part that cannot be spoken over. It is sung by voice only; the chat does not
+offer it. The tool's class is `safe` and it counts as an action: after outside text (a web page) it needs a
+yes, unless `boundaries.bypass_consent` is on, and the question reads out the song's length and all its words.
+`sing = "deny"` under `[boundaries.classes]` switches it off.
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `engine` | `auto` | `auto`, `speech`, `soulx` | `speech` sings with the Kokoro voice: its words stretched to each note and moved to its pitch on the CPU (Praat), in a fraction of the song's length. `soulx` sings with SoulX-Singer, a singing-voice model, on the GPU for about two seconds a song, in the same voice; it falls back to `speech` when its files are missing or not the pinned release, it fails, it runs past 20 seconds or the request's time left, or less than 5 seconds are left to start it, and it stops at once when the song is stopped (the wake word, `jarvis hush`, a pause). `auto` is `soulx` when its files are installed ([models.md](models.md#singing)), else `speech`. |
+| `device` | `0` | `0` to `15` | The Vulkan device SoulX-Singer runs on (`audiocpp_cli --list-devices` lists them). |
+
+Jarvis sings in a Kokoro voice: the speaking voice when `audio.voice` is a Kokoro one, else `bm_george`. The song
+is moved by whole octaves to suit that voice. Restart Jarvis (`jarvis restart`) after changing these.
+
 ## `[format]`
 
 | Key | Default | Allowed | What it does |
@@ -653,7 +672,7 @@ cannot leave an operation you meant to switch off at its shipped class. An opera
 its shipped class, which is `safe` for every operation but `write_file` and `browser_act` (`confirm`) and `stop_process`
 (`strong`): `spotify_*`, `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`,
 `pc_stats`, `pc_volume`, `pc_media`, `pc_audio_listen`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`,
-`browser_open`, `browser_screenshot`; set one to `deny` to switch it off: it is then
+`sing`, `browser_open`, `browser_screenshot`; set one to `deny` to switch it off: it is then
 not offered to the model at all. `no_action`, `think_harder` and `stay_quiet` are how Jarvis answers, not tools, and
 cannot be switched off. `stop_process`
 may be set only to `strong` or `deny`: a program is stopped by your command and your key alone, so any

@@ -36,6 +36,8 @@ from jarvis.ratelimit import ActionRate
 from jarvis.schedule import JobStore, ScheduleOps
 from jarvis.secretfile import read_api_key
 from jarvis.services import StrataSetupError, read_run_config, reads_pictures
+from jarvis.sing.engines import singer_for
+from jarvis.sing.ops import SingOps
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
@@ -642,6 +644,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
                 else []
             ),
             *([quiet_operation()] if channel == "voice" else []),
+            *(SingOps(singer_for(config)).operations() if channel == "voice" else []),
             *([think] if (think := think_operation(limits)) is not None else []),
             *(
                 [switch_operation(config, coding=coding)]
@@ -664,6 +667,10 @@ def switches_itself(config: Config, channel: Channel) -> bool:
 INSTALLED_ONLY = frozenset({"read_skill", "os_skill", *browserops.NAMES})
 # ... and only while a setting turns them on (`audio.listen_to_pc`).
 SETTING_ONLY = frozenset({"pc_audio_listen", SWITCH_MODEL})
+# Tools whose result is a sound, and the voice-channel callers that cannot play one (`jarvis ask`
+# prints its reply): they are not offered there, so nothing is made only to be thrown away.
+MAKES_SOUND = frozenset({"sing"})
+SOUNDLESS = frozenset({"ask", "speech-test"})
 # How Jarvis answers, not tools: never switched off.
 ALWAYS_OFFERED = frozenset({"no_action", "think_harder", "stay_quiet"})
 
@@ -818,7 +825,11 @@ def build(
         base = config if chat is None else config.model_copy(update={"chat": chat})
         cfg = modes.effective(base, mode)
         limits = channel_limits(cfg, channel)
-        off: set[str] = {*switched_off(cfg), *(cfg.coding.tools_off if coding else ())}
+        off: set[str] = {
+            *switched_off(cfg),
+            *(cfg.coding.tools_off if coding else ()),
+            *(MAKES_SOUND if via in SOUNDLESS else ()),
+        }
         if units is None:
             off.add(SWITCH_MODEL)
         registry = channel_registry(

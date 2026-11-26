@@ -22,3 +22,4 @@ edited once accepted; a later decision supersedes it with a new record that link
 | [0015](0015-listen-to-pc-audio.md) | Listen to PC audio for the owner through the wake-word watcher's frames, kept in memory only | accepted |
 | [0016](0016-headless-browser.md) | Give Jarvis a headless browser, fenced by a local proxy and a yes for every click and typing | accepted |
 | [0017](0017-coding-mode.md) | A coding mode with its own model on the one model server, switched by the owner or by the model with a typed tool | accepted |
+| [0018](0018-sing-a-song-the-model-writes.md) | Sing a song the model writes as notes, with a speaking-voice singer and an optional GPU one | proposed |

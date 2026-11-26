@@ -727,6 +727,16 @@ def test_a_registry_without_some_operations_keeps_the_others_and_their_resets() 
     assert resets == [True]
 
 
+@pytest.mark.parametrize(("via", "offered"), [(None, True), ("ask", False), ("speech-test", False)])
+def test_sing_is_offered_only_where_its_song_can_be_heard(via: str | None, offered: bool) -> None:
+    ensure_api_key(strata_key_file())
+    config = Config(spotify=SpotifyConfig(client_id="id"))
+
+    names = build(config, via=via).agent._registry.names()  # pyright: ignore[reportPrivateUsage] - what the model is given
+
+    assert ("sing" in names) is offered
+
+
 def test_the_chat_prompt_follows_the_response_format() -> None:
     prompts = {
         name: system_prompt(Config(chat=ChatConfig(response_format=name)), "chat")

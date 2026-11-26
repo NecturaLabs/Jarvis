@@ -76,6 +76,18 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   listens for up to a minute and tells you. `audio.pc_audio_recall_s` (off by default) keeps the last seconds in
   memory, so it can also tell you what was just said. The audio reaches the disk only for the moment Voxtype
   transcribes it, the words are someone else's data, and when Jarvis asks first (`bypass_consent` off) a search
+  or action after them waits for your yes.
+- Jarvis sings: ask in any words and the model writes the song as notes (words, pitches and lengths), which
+  the new `sing` tool checks (at most 30 seconds and 64 notes) before Jarvis sings it by voice, spoken over
+  (but not a stretch of about 3 seconds that sounds like the wake word), hushed and paused like a reply. It
+  sings with the Kokoro voice moved to each note (Praat, through the new `praat-parselmouth` dependency), or
+  with SoulX-Singer on the GPU once `tools/get_singer.py` has installed it (it skips files already in place);
+  `[sing] engine` chooses. A song still being made stops at once when you speak over Jarvis, hush or pause
+  it, and making one never takes longer than the request's time. Asked for after a web page while Jarvis
+  asks first, a song waits for your yes to a question that reads out all its words. Before each song, and
+  in `jarvis doctor`, every file of SoulX-Singer's runner is checked against its pinned release; when one is
+  not, Jarvis sings with the speaking voice. `tools/get_singer.py` puts a new runner in place only whole
+  ([ADR 0018](docs/adr/0018-sing-a-song-the-model-writes.md)).
   or action after them waits for your yes. Only your own request can listen, never a scheduled one; a stop ends
   a listen at once, and the words heard are not kept in the remembered conversation after that request.
 - The chat's `/config` also sets Jarvis's speaking speed, whether it acts without asking first and whether it
