@@ -1,14 +1,14 @@
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import pytest
 from test_pc_windows import FakeDesktop
 
 from jarvis import __version__, control, modes, osskills, paths
 from jarvis import app as app_module
-from jarvis.agent import SWITCH_MODEL, THINK_HARDER, Agent, Hooks
+from jarvis.agent import NO_ACTION, SWITCH_MODEL, THINK_HARDER, Agent, Hooks
 from jarvis.app import (
     MAX_HINT_CHARS,
     PAGE_HEADROOM,
@@ -803,6 +803,58 @@ def test_a_fixed_coding_agent_drops_what_coding_mode_switches_off() -> None:
 
     assert victim not in fixed._registry.names()  # pyright: ignore[reportPrivateUsage] - switched off in coding mode
     assert victim in plain._registry.names()  # pyright: ignore[reportPrivateUsage] - the normal mode keeps it
+
+
+def test_a_fixed_coding_request_holds_the_answering_mark_and_refreshes_coding_idle_time(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ensure_api_key(strata_key_file())
+    modes.state_file().parent.mkdir(parents=True, exist_ok=True)
+    modes.state_file().write_text('{"mode":"coding","used":1}', encoding="utf-8")
+    config = Config(coding=CodingConfig(back_after_s=60))
+    run = tmp_path / "coding.json"
+    config = config.model_copy(
+        update={"strata": config.strata.model_copy(update={"coding_run_config": run})}
+    )
+    assert modes.idle_too_long(config, now=100)
+    free_during_chat: list[bool] = []
+
+    class Model(_Model):
+        remote = False
+
+        @override
+        def chat(
+            self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **_: object
+        ) -> dict[str, Any]:
+            self.seen.append(messages)
+            del tools
+            with modes.nobody_answering() as free:
+                free_during_chat.append(free)
+            return _tool(NO_ACTION, {"reply": "Hello there."})
+
+    model = Model([])
+
+    def fake_model(_cfg: Config, _key: str) -> Model:
+        return model
+
+    monkeypatch.setattr(app_module, "strata_model", fake_model)
+    monkeypatch.setattr(app_module, "mode_model", fake_model)
+    agent = build(config, via="acp", mode="coding").agent
+
+    assert agent.handle("hello", Hooks(confirm=lambda _q: False)) == "Hello there."
+    assert free_during_chat
+    assert not any(free_during_chat)
+    assert modes.read_state().used > 1
+    with modes.nobody_answering() as free:
+        assert free
+
+
+def test_a_fixed_same_model_coding_agent_budgets_for_the_normal_context() -> None:
+    ensure_api_key(strata_key_file())
+    config = Config(coding=CodingConfig(context=65536))
+    agent = build(config, via="acp", mode="coding").agent
+
+    assert agent._limits.context_tokens == config.strata.context  # pyright: ignore[reportPrivateUsage] - the request budget
 
 
 def test_the_chat_prompt_follows_the_response_format() -> None:

@@ -26,6 +26,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
     from jarvis.announce import Announcement
 
 MIN_KEY = 32  # characters of a usable key
+KEY_LOCK_MODE = 0o600
 MAX_WORDS = 500  # characters of an announcement passed on
 MAX_SETTINGS_BYTES = 1024 * 1024
 # The arguments T3 Code runs Jarvis with: the regular provider, and the coding one.
@@ -99,14 +101,25 @@ def _make_key(path: Path) -> None:
     Under an exclusive lock on a file beside it, so two processes never each replace a broken key
     with their own; the new key is written whole and private to a temporary file and moved into
     place, so a reader sees the old file or the complete new one, and no hard link is needed.
+
+    Raises:
+        PermissionError: the lock file is not regular, private and owned by this user.
     """
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock = os.open(
         path.with_name(f"{path.name}.lock"),
         os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
-        0o600,
+        KEY_LOCK_MODE,
     )
     try:
+        status = os.fstat(lock)
+        if (
+            not stat.S_ISREG(status.st_mode)
+            or status.st_uid != os.geteuid()
+            or stat.S_IMODE(status.st_mode) != KEY_LOCK_MODE
+        ):
+            msg = "the announcement key lock must be a regular file of your own with mode 0600"
+            raise PermissionError(msg)
         fcntl.flock(lock, fcntl.LOCK_EX)
         if _usable(read_private(path)):  # another process made it while this waited
             return
@@ -148,8 +161,17 @@ def message(item: Announcement) -> str:
     return f"{MARK}{words}\n[announcement {item.id}-{at}-{_mac(_key(), item.id, at, words)}]"
 
 
-def verified(prompt: str) -> str | None:
-    """Return the announcement's words when `prompt` is a message Jarvis made, else None."""
+@dataclass(frozen=True, slots=True)
+class Delivery:
+    """The identity and words authenticated by an announcement's tag."""
+
+    id: int
+    at: int
+    text: str
+
+
+def verified_delivery(prompt: str) -> Delivery | None:
+    """Return the authenticated announcement when `prompt` is a message Jarvis made."""
     if not prompt.startswith(MARK):
         return None
     tag = _TAG.search(prompt)
@@ -163,7 +185,17 @@ def verified(prompt: str) -> str | None:
         key = _key()
     except OSError, ValueError:
         return None
-    return words if hmac.compare_digest(given, _mac(key, number, at, words)) else None
+    return (
+        Delivery(number, at, words)
+        if hmac.compare_digest(given, _mac(key, number, at, words))
+        else None
+    )
+
+
+def verified(prompt: str) -> str | None:
+    """Return the words of an authenticated announcement, when there is one."""
+    delivery = verified_delivery(prompt)
+    return None if delivery is None else delivery.text
 
 
 def t3_home() -> Path:
@@ -226,6 +258,11 @@ class T3Push:
     def verified(prompt: str) -> str | None:
         """Return the announcement's words when `prompt` is a message Jarvis pushed, else None."""
         return verified(prompt)
+
+    @staticmethod
+    def verified_delivery(prompt: str) -> Delivery | None:
+        """Return the authenticated identity and words from a pushed prompt."""
+        return verified_delivery(prompt)
 
     def available(self) -> bool:
         """Whether the program is there to run."""

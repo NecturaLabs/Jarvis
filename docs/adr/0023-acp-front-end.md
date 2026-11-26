@@ -87,13 +87,18 @@ Add `jarvis acp`, a front end to the agent `jarvis chat` already has.
   one of them pushes nothing (`jarvis doctor` says so), so no announcement or model text reaches another
   agent's thread.
 - A pushed prompt that arrives while a request of the same session is being written is answered as busy, like
-  any other prompt, so it never lands in a streaming reply; its words go back to wait for the next reply, so
-  they are not lost. One that arrives between requests is written whole under the session's lock, so a prompt
-  that follows cannot begin its reply in the middle of it. A refused forged prompt is audited
-  (`acp_refused`, without its words), busy or not.
+  any other prompt. Its announcement stays queued for the end of the current reply or the next reply.
+  Cleanup after `t3 thread send` removes only the original pending copy for that announcement. This
+  preserves the copy kept on BUSY even if the prompt arrives before the command returns. A pushed prompt
+  between requests is written whole under the session lock. A forged prompt is audited as `acp_refused`
+  without its words, including when the session is busy.
 - Announcements wait for the push on one worker with a short queue (the oldest is dropped when full), so a
   hung `t3` holds one thread and closing does not wait for it.
-- When the 32 sessions are all in use the oldest idle one makes room; `session/close` ends one.
+- At the 32-session limit, a new session evicts the oldest idle one. `session/close` removes a session.
+  Cancel and close stop deferred prompts before they can reserve a run. The protocol writer checks
+  stop state under its lock for every chunk, including validation refusals.
+- A prompt can answer a confirmation only after Jarvis writes the question. A deferred prompt
+  remains a request of its own.
 
 ## Consequences
 
@@ -123,9 +128,12 @@ fetched needs the client to take an image content block in a reply.
 T3 Code can list the program twice, so there are two providers: `jarvis acp` and `jarvis acp --coding`. Both are
 the same front end and the one agent. In a `--coding` process every session is built in coding mode
 (`build(..., mode="coding")`): the chat's coding prompt part and `[coding.chat]` over `[chat]`, `coding.tools_off` and
-`coding.write_roots`, as the chat gets in coding mode. It is fixed: it neither follows nor writes the global mode
-file the voice service and the chat share, and it has no `switch_model` tool. Where coding mode has its own model
-(`strata.coding_run_config`), the first request of the process does what `/model coding` does in the chat
-(`switch_model`, from source `acp`) and says so in its reply, and a switch that fails (the voice service is busy)
-is the answer instead, with the request not run, tried again on the next one. Where the model is the same, the
-server and the mode file are untouched. The push finds the newest open thread of either provider.
+`coding.write_roots`, as the chat gets in coding mode. The first request reloads the configuration and compares
+the resolved run-config paths. If coding has its own run config, the request uses the same switch as
+`/model coding` and reports the result. If the switch fails, Jarvis reports the failure and tries again
+on the next request. Cancellation while waiting for either switch lock skips it. With a shared run
+config, the provider keeps the shared mode and budgets for the normal Strata context on local setups.
+
+The coding provider holds the shared answering lock while handling a request and resets the idle timer
+when it finishes in shared coding mode. The voice service can return Strata to normal after the idle interval.
+The provider's prompt and tools stay in coding mode. The push finds the newest open thread of either provider.

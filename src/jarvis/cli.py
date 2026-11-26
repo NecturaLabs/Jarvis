@@ -1233,35 +1233,56 @@ class _CodingFirst:
     def __init__(self) -> None:
         super().__init__()
         self._lock = threading.Lock()
-        self._done = False
+        self._ready: config.Config | None = None
 
-    def ready(self, hooks: Hooks) -> str:
-        """Return what to tell the owner: the switch's line when it ran, "" once it is done."""
+    def ready(self, hooks: Hooks) -> tuple[config.Config | None, str]:
+        """Return the config ready to use and any line from the first switch."""
         with self._lock:
-            if self._done:
-                return ""
+            if hooks.cancelled() or self._ready is not None:
+                return self._ready, ""
+            cfg = config.load()
+            if not modes.own_model(cfg):
+                self._ready = cfg
+                return cfg, ""
             hooks.waking()
+            if hooks.cancelled():
+                return None, ""
             # The same switch as the chat's /model coding, for the owner; nothing is said aloud.
-            line = switch_model(config.load(), "coding", lambda _line: None, "acp")
-            self._done = line.startswith(("Now in", "Already in"))
-            return line
+            line = switch_model(
+                cfg, "coding", lambda _line: None, "acp", only_if=lambda: not hooks.cancelled()
+            )
+            if hooks.cancelled():
+                return None, ""
+            if line.startswith(("Now in", "Already in")):
+                self._ready = cfg
+            return self._ready, line
 
 
 class _CodingSession:
     """An agent whose first request waits for the coding model, and says how that went."""
 
-    def __init__(self, agent: acp.AgentSession, first: _CodingFirst) -> None:
+    def __init__(self, cfg: config.Config, session_id: str, first: _CodingFirst) -> None:
         super().__init__()
-        self._agent = agent
+        self._config = cfg
+        self._session_id = session_id
+        self._agent = build(cfg, via="acp", session=session_id, mode="coding").agent
         self._first = first
 
     def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
         """Answer `text` on the coding model; a switch that failed is the answer instead."""
-        line = self._first.ready(hooks)
-        if line and not line.startswith(("Now in", "Already in")):
+        cfg, line = self._first.ready(hooks)
+        if cfg is None or hooks.cancelled():
             return line
+        if cfg != self._config:
+            try:
+                self._agent = build(cfg, via="acp", session=self._session_id, mode="coding").agent
+            except SetupError as exc:
+                return str(exc)
+            self._config = cfg
         if line and hooks.draft is not None:
             hooks.draft(line)
+        if hooks.cancelled():
+            return ""
         return self._agent.handle(text, hooks, pictures=pictures)
 
 
@@ -1269,17 +1290,15 @@ def cmd_acp(args: argparse.Namespace) -> int:
     """Speak the Agent Client Protocol on standard input and output, for a coding app."""
     cfg = _load()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    coding = bool(args.coding)
-    first = _CodingFirst() if coding and modes.own_model(cfg) else None
+    first = _CodingFirst() if args.coding else None
 
     def make(session_id: str) -> acp.AgentSession:
         try:
-            if not coding:
+            if first is None:
                 return build(cfg, via="acp", session=session_id, units=StrataUnits()).agent
-            agent = build(cfg, via="acp", session=session_id, mode="coding").agent
+            return _CodingSession(cfg, session_id, first)
         except SetupError as exc:
             raise acp.StartError(str(exc)) from exc
-        return agent if first is None else _CodingSession(agent, first)
 
     # Also made when nothing is pushed: it tells a forged message from a real one.
     pusher = t3push.T3Push(cfg.acp.t3_command, cfg.acp.t3_provider, enabled=cfg.acp.push_to_t3)
@@ -2411,14 +2430,23 @@ def model_report(cfg: config.Config) -> list[str]:
     return lines
 
 
-def switch_model(cfg: config.Config, to: str, say: Callable[[str], None], source: str) -> str:
-    """Switch to mode `to` for the owner and return the line that says how it went."""
+def switch_model(
+    cfg: config.Config,
+    to: str,
+    say: Callable[[str], None],
+    source: str,
+    *,
+    only_if: Callable[[], bool] = lambda: True,
+) -> str:
+    """Switch to mode `to` for the owner if `only_if` still allows it under the mode lock."""
     if to not in modes.MODES:
         return f"No mode {to}: it is normal or coding."
     wanted: modes.Mode = "coding" if to == "coding" else "normal"
-    done = _switcher(cfg, source).switch(wanted, "owner", say)
+    done = _switcher(cfg, source).switch(wanted, "owner", say, only_if=only_if)
     if done.error:
         return done.error
+    if done.mode != wanted:
+        return ""  # the request was stopped before the switch
     name = modes.model_name(cfg, done.mode)
     if cfg.strata.mode == "remote":
         return (

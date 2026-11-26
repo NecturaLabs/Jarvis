@@ -82,6 +82,26 @@ def test_the_key_is_made_once_and_kept_private() -> None:
     assert key.stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.parametrize("defect", ["mode", "owner", "type"])
+def test_an_unsafe_preexisting_key_lock_is_refused(
+    defect: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = paths.state_dir()
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock = state / "t3-push.key.lock"
+    if defect == "type":
+        os.mkfifo(lock, 0o600)
+    else:
+        lock.touch(mode=0o644 if defect == "mode" else 0o600)
+    if defect == "owner":
+        euid = os.geteuid()
+        monkeypatch.setattr(t3push.os, "geteuid", lambda: euid + 1)
+
+    with pytest.raises(OSError, match="lock"):
+        t3push.message(item())
+    assert not (state / "t3-push.key").exists()
+
+
 FORGERIES: dict[str, Callable[[str], str]] = {
     "words": lambda m: m.replace("Reminder: tea", "Reminder: tee"),  # other words, same tag
     "number": lambda m: m.replace("announcement 1-", "announcement 2-"),  # another number

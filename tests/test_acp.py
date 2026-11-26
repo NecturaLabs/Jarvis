@@ -15,19 +15,20 @@ import pytest
 from PIL import Image
 from test_pictures import claimed_png
 
-from jarvis import acp, cli
+from jarvis import acp, cli, t3push
 from jarvis.acp import AcpServer, StartError
 from jarvis.agent import Declined, Hooks
 from jarvis.announce import Announcement
 from jarvis.jsonutil import obj
 from jarvis.paths import strata_key_file
 from jarvis.secretfile import ensure_api_key
-from jarvis.t3push import T3Push
+from jarvis.t3push import Delivery, T3Push
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Sequence
     from pathlib import Path
 
+    from jarvis.acp import _Run, _Session  # pyright: ignore[reportPrivateUsage] - writer test seam
     from jarvis.pictures import Picture
 
 WAIT_S = 10.0
@@ -639,7 +640,9 @@ def test_closing_the_input_stops_a_request_in_flight() -> None:
 
 
 def pending(client: Client, session: str) -> list[str]:
-    return list(client.server._sessions[session].pending)  # pyright: ignore[reportPrivateUsage] - what waits
+    current = client.server._sessions[session]  # pyright: ignore[reportPrivateUsage] - what waits
+    with current.lock:
+        return [f"Jarvis: {note.text}" for note in current.pending.values()]
 
 
 def test_an_announcement_between_prompts_waits_and_leads_the_next_reply() -> None:
@@ -777,8 +780,10 @@ class FakePusher:
         return prompt.lstrip().startswith("PUSHED:")
 
     @staticmethod
-    def verified(prompt: str) -> str | None:
-        return prompt.removeprefix("PUSHED:ok:") if prompt.startswith("PUSHED:ok:") else None
+    def verified_delivery(prompt: str) -> Delivery | None:
+        if not prompt.startswith("PUSHED:ok:"):
+            return None
+        return Delivery(1, 1, prompt.removeprefix("PUSHED:ok:"))
 
 
 def test_an_announcement_is_pushed_for_the_project_each_session_opened_in() -> None:
@@ -836,6 +841,20 @@ def test_the_copy_of_a_pushed_line_that_waited_is_dropped_so_it_shows_once() -> 
         client.response(client.prompt(session, text("hello")))
 
         assert client.said().count("Reminder: tea") == 1
+
+
+def test_a_pushed_prompt_only_clears_the_pending_copy_with_its_signed_identity() -> None:
+    feed = FakeFeed()
+    with Client(follow=lambda: feed, pusher=T3Push(enabled=False)) as client:
+        session = client.start("/work/a")
+        feed.push("Reminder: tea")
+        feed.push("Reminder: tea")
+        until(lambda: len(pending(client, session)) == 2, "both announcements wait")
+
+        signed = t3push.message(Announcement(1, 1.0, "reminder", "Reminder: tea"))
+        client.response(client.prompt(session, text(signed)))
+
+        assert pending(client, session) == ["Jarvis: Reminder: tea"]
 
 
 def test_a_prompt_that_starts_as_a_pushed_message_but_is_not_valid_is_dropped() -> None:
@@ -1136,6 +1155,54 @@ def test_a_pushed_line_answered_busy_goes_back_to_wait_for_the_next_reply() -> N
         assert "Jarvis: Reminder: tea" in client.said()  # not lost: it follows the reply
 
 
+def test_busy_delivery_before_push_returns_preserves_its_pending_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    feed, pusher = FakeFeed(), FakePusher()
+    send_returned = threading.Event()
+    allow_send_return = threading.Event()
+    allow_reply = threading.Event()
+    answering = threading.Event()
+    send = pusher.push
+    push = AcpServer._push  # pyright: ignore[reportPrivateUsage] - wait for worker cleanup
+
+    def held_send(item: Announcement, projects: Iterable[str]) -> set[str]:
+        sent = send(item, projects)
+        assert allow_send_return.wait(WAIT_S)
+        return sent
+
+    def observe_push(
+        server: AcpServer, pusher: acp.Pusher, delivery: Announcement, projects: set[str]
+    ) -> None:
+        push(server, pusher, delivery, projects)
+        send_returned.set()
+
+    def script(_text: str, _hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        answering.set()
+        assert allow_reply.wait(WAIT_S)
+        return "Done."
+
+    monkeypatch.setattr(pusher, "push", held_send)
+    monkeypatch.setattr(AcpServer, "_push", observe_push)
+    with Client(FakeAgent(script), follow=lambda: feed, pusher=pusher) as client:
+        session = client.start("/work/a")
+        running = client.prompt(session, text("go"))
+        assert answering.wait(WAIT_S)
+        try:
+            feed.push("Reminder: tea")
+            assert pusher.done.wait(WAIT_S)
+            busy = client.response(client.prompt(session, text("PUSHED:ok:Reminder: tea")))
+            assert busy["error"]["code"] == acp.BUSY
+            allow_send_return.set()
+            assert send_returned.wait(WAIT_S)
+        finally:
+            allow_send_return.set()
+            allow_reply.set()
+        client.response(running)
+
+    assert client.said() == f"Done.{acp.SEPARATOR}Jarvis: Reminder: tea"
+
+
 def test_a_forged_prompt_answered_busy_is_audited_all_the_same() -> None:
     events: list[tuple[str, dict[str, object]]] = []
     release = threading.Event()
@@ -1163,28 +1230,30 @@ def test_a_forged_prompt_answered_busy_is_audited_all_the_same() -> None:
 
 def test_nothing_is_written_for_a_request_that_was_cancelled() -> None:
     cancelled = threading.Event()
-    release = threading.Event()
+    attempted = threading.Event()
 
     def script(_text: str, hooks: Hooks, _pictures: Sequence[Picture]) -> str:
         assert hooks.draft is not None
         hooks.draft("First")
-        cancelled.wait(WAIT_S)
+        assert cancelled.wait(WAIT_S)
+        assert hooks.cancelled()
         hooks.draft("First, and then more")  # written after the owner stopped it
         assert hooks.condensed is not None
         hooks.condensed("A late note")
-        release.set()
+        attempted.set()
         return "First, and then more."
 
     with Client(FakeAgent(script)) as client:
         session = client.start()
         request = client.prompt(session, text("go"))
-        until(lambda: client.said() == "First" or "First" in "".join(client.raw), "a chunk")
-        client.notify("session/cancel", {"sessionId": session})
+        try:
+            assert client.next()["params"]["update"]["content"]["text"] == "First"
+            client.notify("session/cancel", {"sessionId": session})
+            client.ask("initialize", {"protocolVersion": 1})  # the cancel was read
+        finally:
+            cancelled.set()
         assert client.response(request)["result"] == {"stopReason": "cancelled"}
-        cancelled.set()
-        assert release.wait(WAIT_S)
-        time.sleep(0.1)
-        client.ask("initialize", {"protocolVersion": 1})  # everything before it has been written
+        assert attempted.is_set()
 
         assert "more" not in "".join(client.raw)
         assert "late note" not in "".join(client.raw)
@@ -1238,6 +1307,209 @@ def test_a_cancel_while_a_prompt_waits_for_the_stopped_request_stops_that_prompt
         assert calls == ["stubborn"]  # "next" never reached the model
 
 
+@pytest.mark.parametrize("intervening", ["cancel", "close", "question"])
+def test_a_deferred_prompt_rechecks_the_session_before_reserving_a_run(
+    intervening: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_started = threading.Event()
+    finish_old = threading.Event()
+    looked_up = threading.Event()
+    reserve = threading.Event()
+    actions: list[str] = []
+    ask = closing_script(actions)
+    announced = AcpServer._announced  # pyright: ignore[reportPrivateUsage] - pause after session lookup
+
+    def pause_deferred(server: AcpServer, blocks: list[dict[str, Any]]) -> Delivery | str | None:
+        if threading.current_thread().name == "acp-prompt-wait":
+            looked_up.set()
+            assert reserve.wait(WAIT_S)
+        return announced(server, blocks)
+
+    def script(words: str, hooks: Hooks, pictures: Sequence[Picture]) -> str:
+        if words == "old":
+            old_started.set()
+            assert finish_old.wait(WAIT_S)
+        if words == "ask":
+            return ask(words, hooks, pictures)
+        return "done"
+
+    monkeypatch.setattr(AcpServer, "_announced", pause_deferred)
+    with Client(FakeAgent(script)) as client:
+        session = client.start()
+        try:
+            old = client.prompt(session, text("old"))
+            assert old_started.wait(WAIT_S)
+            client.notify("session/cancel", {"sessionId": session})
+            deferred = client.prompt(session, text("yes"))
+            client.ask("initialize", {"protocolVersion": 1})  # the deferred prompt was read
+            finish_old.set()
+            assert looked_up.wait(WAIT_S)
+            assert client.response(old)["result"] == {"stopReason": "cancelled"}
+            if intervening == "close":
+                assert client.ask("session/close", {"sessionId": session})["result"] == {}
+            elif intervening == "cancel":
+                client.notify("session/cancel", {"sessionId": session})
+                client.ask("initialize", {"protocolVersion": 1})
+            else:
+                assert client.response(client.prompt(session, text("ask")))["result"] == {
+                    "stopReason": "end_turn"
+                }
+        finally:
+            finish_old.set()
+            reserve.set()
+        stopped = client.response(deferred)
+        if intervening == "close":
+            assert stopped["error"]["code"] == acp.INVALID_PARAMS
+        elif intervening == "cancel":
+            assert stopped["result"] == {"stopReason": "cancelled"}
+        else:
+            assert stopped["error"]["code"] == acp.BUSY
+            assert not actions
+            client.response(client.prompt(session, text("yes")))
+            assert actions == ["closed"]
+        assert client.agent.calls == (
+            [("old", []), ("ask", [])] if intervening == "question" else [("old", [])]
+        )
+
+
+def test_a_validation_refusal_finishing_after_close_emits_no_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    validating = threading.Event()
+    finish = threading.Event()
+    read = acp._read_prompt  # pyright: ignore[reportPrivateUsage] - delay real content validation
+
+    def delayed(blocks: list[dict[str, Any]]) -> tuple[str, list[Picture]]:
+        validating.set()
+        assert finish.wait(WAIT_S)
+        return read(blocks)
+
+    monkeypatch.setattr(acp, "_read_prompt", delayed)
+    with Client() as client:
+        session = client.start()
+        request = client.prompt(session, {"type": "image", "mimeType": "image/png", "data": "!"})
+        try:
+            assert validating.wait(WAIT_S)
+            assert client.ask("session/close", {"sessionId": session})["result"] == {}
+        finally:
+            finish.set()
+        reply = client.response(request)
+
+    assert not client.said()
+    assert reply["result"] == {"stopReason": "cancelled"}
+
+
+@pytest.mark.parametrize("kind", ["draft", "thought"])
+def test_a_chunk_waiting_to_write_is_dropped_after_cancel(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reached_writer = threading.Event()
+    write = threading.Event()
+    send = AcpServer._send  # pyright: ignore[reportPrivateUsage] - pause before the writer lock
+
+    def delayed(
+        server: AcpServer,
+        message: dict[str, Any],
+        *,
+        session: _Session | None = None,
+        run: _Run | None = None,
+    ) -> bool:
+        if message.get("method") == "session/update":
+            reached_writer.set()
+            assert write.wait(WAIT_S)
+        return send(server, message, session=session, run=run)
+
+    def script(_words: str, hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        chunk = hooks.draft if kind == "draft" else hooks.condensed
+        assert chunk is not None
+        chunk("late chunk")
+        return "done"
+
+    monkeypatch.setattr(AcpServer, "_send", delayed)
+    with Client(FakeAgent(script)) as client:
+        session = client.start()
+        request = client.prompt(session, text("go"))
+        try:
+            assert reached_writer.wait(WAIT_S)
+            client.notify("session/cancel", {"sessionId": session})
+            client.ask("initialize", {"protocolVersion": 1})
+        finally:
+            write.set()
+        assert client.response(request)["result"] == {"stopReason": "cancelled"}
+    assert not client.said()
+
+
+def test_a_worker_flushing_announcements_does_not_hold_off_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = FakeAgent(lambda _t, _h, _p: "ok")
+    out = io.StringIO()
+    server = AcpServer(lambda _session: agent, out)
+    run = acp._Run()  # pyright: ignore[reportPrivateUsage] - reserve a run for the flush
+    session = acp._Session("session", agent, run=run)  # pyright: ignore[reportPrivateUsage] - same
+    for number in (1, 2):
+        session.keep(Announcement(number, 1.0, "reminder", f"Reminder {number}"))
+    send = server._send  # pyright: ignore[reportPrivateUsage] - pause before the writer lock
+
+    def stop_at_write(
+        message: dict[str, Any], *, session: _Session | None = None, run: _Run | None = None
+    ) -> bool:
+        assert session is not None
+        assert session.lock.acquire(blocking=False)  # cancel can reach the stop state
+        session.lock.release()
+        server._cancel(session)  # pyright: ignore[reportPrivateUsage] - stop before the first write
+        return send(message, session=session, run=run)
+
+    monkeypatch.setattr(server, "_send", stop_at_write)
+    server._flush(session, run)  # pyright: ignore[reportPrivateUsage] - a worker flush
+
+    assert run.cancel.is_set()
+    assert len(session.pending) == 2
+    assert not out.getvalue()
+
+
+def test_a_prompt_cannot_answer_before_the_confirmation_question_is_written(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writing = threading.Event()
+    allow_write = threading.Event()
+    actions: list[str] = []
+    send = AcpServer._send  # pyright: ignore[reportPrivateUsage] - pause before writing the question
+
+    def hold_question(
+        server: AcpServer,
+        message: dict[str, Any],
+        *,
+        session: _Session | None = None,
+        run: _Run | None = None,
+    ) -> bool:
+        update = obj(obj(message.get("params")).get("update"))
+        content = obj(update.get("content")).get("text")
+        if isinstance(content, str) and acp.ASK_HOW in content:
+            writing.set()
+            assert allow_write.wait(WAIT_S)
+        return send(server, message, session=session, run=run)
+
+    monkeypatch.setattr(AcpServer, "_send", hold_question)
+    with Client(FakeAgent(closing_script(actions))) as client:
+        session = client.start()
+        question = client.prompt(session, text("close notes"))
+        try:
+            assert writing.wait(WAIT_S)
+            early = client.prompt(session, text("yes"))
+            client.ask("initialize", {"protocolVersion": 1})
+        finally:
+            allow_write.set()
+        client.response(question)
+        refusal = next((item for item in client.seen if item.get("id") == early), None)
+        if refusal is None:
+            refusal = client.response(early)
+        assert refusal.get("error", {}).get("code") == acp.BUSY
+        assert not actions
+        client.response(client.prompt(session, text("yes")))
+        assert actions == ["closed"]
+
+
 def test_a_pushed_line_is_written_whole_before_a_prompt_starts_answering() -> None:
     inside = threading.Event()
     go = threading.Event()
@@ -1245,12 +1517,14 @@ def test_a_pushed_line_is_written_whole_before_a_prompt_starts_answering() -> No
         session = client.start()
         real = client.server._send  # pyright: ignore[reportPrivateUsage] - the one write
 
-        def slow(message: dict[str, Any]) -> None:
+        def slow(
+            message: dict[str, Any], *, session: _Session | None = None, run: _Run | None = None
+        ) -> bool:
             update = obj(obj(message.get("params")).get("update"))
             if obj(update.get("content")).get("text") == "Reminder: tea":
                 inside.set()
                 go.wait(WAIT_S)
-            real(message)
+            return real(message, session=session, run=run)
 
         client.server._send = slow  # type: ignore[method-assign]  # pyright: ignore[reportPrivateUsage]
         shown = client.prompt(session, text("PUSHED:ok:Reminder: tea"))

@@ -220,10 +220,10 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 agent. In T3 Code open Settings, Providers, Add provider, Show more, Local ACP command. Set the executable
 to the path of `jarvis` (`which jarvis`; `jarvis doctor` prints it when T3 Code is set up on this PC), add
 one argument, `acp`, and give it a name. Add the provider a second time with two arguments, `acp` and
-`--coding`, and a name such as "Jarvis coding": every thread there works in coding mode (the coding prompt,
-more room to think and write, and the coding model when you set one with `strata.coding_run_config`, which
-the first request loads and says so). The two providers share Jarvis's one agent and model; neither changes
-the mode the voice service is in unless the coding model is a different one.
+`--coding`, and a name such as "Jarvis coding". Every thread there gets the coding prompt and tools.
+On a local Strata setup, the first request uses the same switch as `/model coding` if
+`strata.coding_run_config` resolves to a separate run config. With a shared run config, the provider
+keeps the voice service's mode and uses the normal context limit.
 
 - Each thread is a chat conversation of its own with the same agent `jarvis chat` talks to and the model
   Strata already serves. Jarvis answers in text; nothing is spoken, and the voice service keeps speaking
@@ -232,14 +232,14 @@ the mode the voice service is in unless the coding model is a different one.
 - When Jarvis wants to do something that needs your yes, it asks in its reply and your next message is the
   answer: a clear yes runs exactly that action, anything else cancels it. T3 Code's own permission buttons
   are never used, because T3 Code answers them by itself in Full access mode.
-- Stop stops the request. Jarvis loads no MCP servers and reads no T3 Code settings, folders or tools.
-  Tool steps are not shown, only the reply, and Jarvis does not show pictures there.
+- Stop cancels the request and suppresses further reply chunks. Jarvis loads no MCP servers.
 - Reminders (and later watch alerts) Jarvis says aloud also reach T3 Code. T3 Code shows nothing that
   arrives while no request is open, so with `push_to_t3` turned on (it is off by default) Jarvis sends the line into your newest open Jarvis thread with T3 Code's own
   `t3 thread send` (`[acp]` in the [configuration](docs/configuration.md#acp-jarvis-in-t3-code)), and answers
   that turn with the line itself, without the model: T3 Code shows it with its own turn-finished notice. Without
   that, `t3` or such a thread the line waits for your next message and comes first in the reply (after the reply
-  when it arrives during one). It is not a desktop notification.
+  when it arrives during one). A pushed announcement also waits for the reply if T3 Code delivers
+  it while the session is busy.
 
 For a script or an AI agent, add `--agent` (or `--agent-format`) to any command, or set `JARVIS_AGENT_FORMAT=1`:
 the answer is then one line of JSON with `command`, `ok` and `exit`, plus the command's own keys or its output

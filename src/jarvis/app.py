@@ -346,15 +346,19 @@ class AgentModes:
     """The modes as an agent uses them (`agent.Modes`): the state file, the switch, each setup."""
 
     def __init__(
-        self, switcher: modes.Switcher, make: Callable[[modes.Mode, ChatConfig | None], Setup]
+        self,
+        switcher: modes.Switcher | None,
+        make: Callable[[modes.Mode, ChatConfig | None], Setup],
+        *,
+        fixed: modes.Mode | None = None,
     ) -> None:
-        """Follow and switch the mode through `switcher`; `make` builds a mode's setup, once.
+        """Follow the shared mode through `switcher` or keep the agent in `fixed` mode.
 
-        `make` takes the chat's settings as they are now, when the chat changed them since it
-        started (`restyle`).
+        `make` builds and caches each mode's setup with any settings changed through `restyle`.
         """
         super().__init__()
         self._switcher = switcher
+        self._fixed = fixed
         self._make = make
         self._made: dict[str, Setup] = {}
         self._chat: ChatConfig | None = None
@@ -369,14 +373,13 @@ class AgentModes:
         self._chat = chat
         self._made.clear()
 
-    @staticmethod
-    def current() -> str:
-        """Return the mode Jarvis is in now."""
-        return modes.current()
+    def current(self) -> str:
+        """Return the agent's fixed mode or the shared mode it follows."""
+        return self._fixed or modes.current()
 
     def rest(self, say: Callable[[str], None]) -> None:
         """Go back to normal when coding mode idled too long; `say` gets the line for the owner."""
-        if not self._switcher.idle():
+        if self._switcher is None or not self._switcher.idle():
             return  # the request keeps its mark: no other switch slips in before it
         self._answering.release()
         try:
@@ -395,6 +398,8 @@ class AgentModes:
         """Switch to `to` for the model; return "" when done, else what to tell the owner."""
         if to not in modes.MODES:
             return f"There is no {to} mode."
+        if self._switcher is None:
+            return f"This Jarvis stays in {self.current()} mode."
         self._answering.release()  # this request's own mark would refuse its switch
         try:
             # Held again before another switch can begin: the request goes on in this mode.
@@ -960,7 +965,8 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
     agent's audit events too, so a window can tell its own from others'. With `units` (the
     model server's systemd unit) the agent follows the mode Jarvis is in and can switch it;
     without, it stays in the normal mode. With `mode` it stays in that mode whatever Jarvis is in
-    (`jarvis acp --coding`): it neither follows nor writes the owner's mode, and has no `units`.
+    (`jarvis acp --coding`): it holds the answering mark and notes use of the shared model,
+    with mode switches disabled.
     `listening` is how the voice service hears PC audio for
     `pc_audio_listen`.
 
@@ -982,6 +988,7 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
     channel: Channel = "chat" if via in WRITTEN else "voice"
     watch = _screen_watch(audit) if via is None else None  # only the voice service runs watches
     elsewhere = via in {*WRITTEN, "ask"}  # the voice service says reminders; is one running?
+    shared_profile = mode is not None and not modes.own_model(config)
 
     def setup(
         mode: modes.Mode,
@@ -991,6 +998,8 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
         coding = mode == "coding"
         base = config if chat is None else config.model_copy(update={"chat": chat})
         cfg = modes.effective(base, mode)
+        if shared_profile:
+            cfg = cfg.model_copy(update={"strata": base.strata})
         limits = channel_limits(cfg, channel)
         registry = offered_registry(
             cfg,
@@ -1005,9 +1014,9 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
             watching=watch,
         )
         prompt = system_prompt(cfg, channel, coding=coding, registry=registry)
-        return Setup(prompt, registry, limits, reads_pictures(cfg), strata_model(cfg, key))
+        client = model if shared_profile and model.remote else strata_model(cfg, key)
+        return Setup(prompt, registry, limits, reads_pictures(cfg), client)
 
-    normal = setup(mode or "normal")
     remembered = chat_memory_file() if via == "chat" else None  # an ACP session has its own
     if remembered is not None and not config.chat.resume:
         remembered.unlink(missing_ok=True)
@@ -1022,7 +1031,12 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
             busy=voice_busy if elsewhere else lambda: False,
         )
     )
-    agent_modes = None if switcher is None else AgentModes(switcher, setup)
+    agent_modes = (
+        AgentModes(switcher, setup, fixed=mode)
+        if switcher is not None or mode is not None
+        else None
+    )
+    normal = agent_modes.setup(mode) if mode is not None and agent_modes else setup("normal")
     agent = Agent(
         # A fixed mode talks to the server as that mode's config sets it, not as the mode file says.
         (normal.model or model) if mode is not None and not model.remote else model,

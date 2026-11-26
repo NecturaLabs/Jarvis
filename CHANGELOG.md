@@ -22,9 +22,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - `jarvis acp --coding` is Jarvis in coding mode for T3 Code: add the program twice there, with the
   argument `acp` and with `acp --coding`, to have both. Every session of a `--coding` process works in coding
   mode, with the coding prompt, `[coding.chat]` limits, tools and write roots. Where coding mode has a model of
-  its own, the first request loads it as `/model coding` does and says so in the reply; on the same model it
-  never touches the mode file the voice service reads. A pushed announcement goes to the newest open thread
-  of either provider.
+  its own, the first request loads it as `/model coding` does and says so in the reply. A pushed
+  announcement goes to the newest open thread of either provider.
 - Reminders also reach open text front ends: the voice service publishes each line it says as an
   announcement, the control socket streams them to a subscriber (`subscribe`), and `jarvis acp` writes each as
   `Jarvis: <line>` into every session's next reply, since T3 Code shows nothing that arrives between requests.
@@ -270,6 +269,13 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   ([docs/configuration.md](docs/configuration.md#keeping-the-model-in-ram)).
 
 ### Fixed
+
+- With a shared Strata run config, the ACP coding provider keeps the current model mode and
+  uses the normal context budget. Coding requests hold off automatic model restarts while they answer.
+- ACP cancel and close stop deferred prompts and suppress late chunks. Confirmation answers are
+  accepted only after the question is written. Announcements rejected as busy stay queued even if
+  T3 Code delivers them before the push command returns.
+- T3 Code announcement key creation refuses a lock file with the wrong type, owner or permissions.
 
 - Web reads and the browser no longer reach a public address on one of this PC's own networks: its own
   addresses, and a network it reaches without a router, such as the home network's global IPv6 prefix

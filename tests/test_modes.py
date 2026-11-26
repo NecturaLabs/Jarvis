@@ -211,6 +211,17 @@ def test_without_a_coding_run_config_coding_mode_keeps_the_model(tmp_path: Path)
 
     assert not modes.own_model(cfg)
     assert modes.effective(cfg, "coding").strata.run_config == cfg.strata.run_config
+
+
+def test_a_symlink_to_the_normal_run_config_is_the_same_model(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, own_model=False)
+    alias = tmp_path / "same-config.json"
+    alias.symlink_to(cfg.strata.run_config)
+    cfg = cfg.model_copy(
+        update={"strata": cfg.strata.model_copy(update={"coding_run_config": alias})}
+    )
+
+    assert not modes.own_model(cfg)
     assert modes.model_name(cfg, "coding") == "flash-q4"
 
 

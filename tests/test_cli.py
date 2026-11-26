@@ -12,6 +12,7 @@ import tomllib
 import types
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self, cast
 
@@ -37,7 +38,7 @@ from jarvis.voice import PcListener
 
 if TYPE_CHECKING:
     import argparse
-    from pathlib import Path
+    from collections.abc import Generator
 
     from numpy.typing import NDArray
 
@@ -300,17 +301,24 @@ class _Acp:
     """`jarvis acp` with the built agent, the model switch and the serve loop replaced."""
 
     built: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
+    configs: list[config.Config] = field(default_factory=list[config.Config])
     switched: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
+    switch_configs: list[config.Config] = field(default_factory=list[config.Config])
     reply: str = "Now in coding mode: flash-coder, loaded in 3 s."
     agent: _Said = field(default_factory=_Said)
     made: Callable[[str], Any] | None = None
 
     def run(self, monkeypatch: pytest.MonkeyPatch, *args: str) -> None:
-        def build(_cfg: config.Config, **kwargs: object) -> SimpleNamespace:
+        def build(cfg: config.Config, **kwargs: object) -> SimpleNamespace:
+            self.configs.append(cfg)
             self.built.append(kwargs)
             return SimpleNamespace(agent=self.agent)
 
-        def switch(_cfg: config.Config, to: str, _say: object, source: str) -> str:
+        def switch(
+            cfg: config.Config, to: str, _say: object, source: str, *, only_if: Callable[[], bool]
+        ) -> str:
+            assert only_if()
+            self.switch_configs.append(cfg)
             self.switched.append((to, source))
             return self.reply
 
@@ -408,6 +416,92 @@ def test_acp_coding_answers_with_the_failed_switch_and_tries_again_next_time(
 
     assert acp.switched == [("coding", "acp"), ("coding", "acp")]
     assert acp.agent.asked == ["two"]  # the first never reached the model
+
+
+def test_acp_coding_rechecks_the_model_when_its_run_config_is_removed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _own_coding_model(tmp_path)
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+    assert acp.made is not None
+    session = acp.made("s1")
+    cfg = config.load()
+    config.save(
+        cfg.model_copy(
+            update={"strata": cfg.strata.model_copy(update={"coding_run_config": Path()})}
+        )
+    )
+
+    assert session.handle("hello", Hooks(confirm=lambda _q: False)) == "answer"
+    assert acp.switched == []
+    assert acp.configs[-1].strata.coding_run_config == Path()
+
+
+def test_acp_coding_does_not_switch_after_waiting_cancelled_for_the_first_switch_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _own_coding_model(tmp_path)
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+    first = cli._CodingFirst()  # pyright: ignore[reportPrivateUsage] - exercise the shared switch gate
+    cancelled = threading.Event()
+
+    @contextlib.contextmanager
+    def wait_for_busy_switch() -> Generator[None]:
+        cancelled.set()  # the request was stopped before the busy switch let go of the lock
+        yield
+
+    monkeypatch.setattr(first, "_lock", wait_for_busy_switch())
+    first.ready(Hooks(confirm=lambda _q: False, cancelled=cancelled.is_set))
+
+    assert acp.switched == []
+
+
+def test_acp_coding_uses_the_first_requests_snapshot_for_the_new_model_and_agent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    acp = _Acp()
+    acp.run(monkeypatch, "--coding")
+    assert acp.made is not None
+    session = acp.made("s1")
+    _own_coding_model(tmp_path)
+
+    assert session.handle("hello", Hooks(confirm=lambda _q: False)) == "answer"
+    assert acp.switched == [("coding", "acp")]
+    assert acp.switch_configs[0] is acp.configs[-1]
+
+
+def test_acp_coding_rechecks_cancellation_under_the_shared_mode_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _own_coding_model(tmp_path)
+    cancelled = threading.Event()
+    switched: list[str] = []
+
+    class SharedSwitcher:
+        @staticmethod
+        def switch(
+            to: modes.Mode,
+            _by: modes.By,
+            _say: Callable[[str], None],
+            *,
+            only_if: Callable[[], bool] = lambda: True,
+        ) -> modes.Switched:
+            cancelled.set()  # cancelled by the time the shared mode lock is available
+            if only_if():
+                switched.append(to)
+                return modes.Switched(to, changed=True)
+            return modes.Switched("normal")
+
+    def switcher(_cfg: config.Config, _source: str) -> SharedSwitcher:
+        return SharedSwitcher()
+
+    monkeypatch.setattr(cli, "_switcher", switcher)
+    first = cli._CodingFirst()  # pyright: ignore[reportPrivateUsage] - use the real switch wrapper
+    first.ready(Hooks(confirm=lambda _q: False, cancelled=cancelled.is_set))
+
+    assert not switched
 
 
 def test_doctor_names_the_release_of_a_model_file_it_recognises(
