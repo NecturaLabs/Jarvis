@@ -17,6 +17,7 @@ from jarvis.app import (
     channel_registry,
     mode_model,
     no_action_operation,
+    offered_registry,
     switch_operation,
     system_prompt,
     unknown_overrides,
@@ -27,6 +28,7 @@ from jarvis.config import Config
 from jarvis.operations import Operation, Registry, Result
 from jarvis.pictures import Picture
 from jarvis.policy import Origin
+from jarvis.router import use_tools_operation
 from jarvis.secretfile import write_private
 
 if TYPE_CHECKING:
@@ -740,7 +742,84 @@ def test_the_chat_renders_its_prompt_for_the_mode_jarvis_is_in(installed: Config
     assert "You are in coding mode" not in usual
     assert "You are in coding mode" in coding
     served = modes.effective(installed.model_copy(update={"chat": chat}), "coding")
-    assert coding == system_prompt(served, "chat", coding=True)
+    tools = offered_registry(served, [], "chat", coding=True, via="chat", can_switch=True)
+    assert coding == system_prompt(served, "chat", coding=True, registry=tools)
+
+
+@pytest.mark.usefixtures("stopped_server")
+def test_the_chat_prompt_has_the_toolbox_when_routed(installed: Config) -> None:
+    chat = installed.chat.model_copy(update={"tools": "routed"})
+
+    prompt = cli._chat_prompt(chat)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    served = modes.effective(installed.model_copy(update={"chat": chat}), "normal")
+    tools = offered_registry(served, [], "chat", coding=False, via="chat", can_switch=True)
+    assert "Your toolbox" in prompt
+    assert prompt == system_prompt(served, "chat", registry=tools)
+
+
+def _routed_modes(ran: list[str]) -> tuple[Registry, Registry]:
+    def registry(to: str) -> Registry:
+        stop = Operation(
+            "stop_process",
+            "Stop.",
+            {"type": "object", "properties": {}, "additionalProperties": False},
+            lambda _args: (ran.append("stop"), Result("Stopped."))[1],
+        )
+        return Registry([_switch(to), stop, use_tools_operation(["apps"]), no_action_operation()])
+
+    return registry("coding"), registry("normal")
+
+
+def _routed_agent(model: _Model, ran: list[str]) -> tuple[Agent, _Modes]:
+    normal_tools, coding_tools = _routed_modes(ran)
+    limits = Limits(tools="routed")
+    normal = Setup("normal prompt", normal_tools, limits)
+    coding = Setup("coding prompt", coding_tools, limits)
+    kept = _Modes({"normal": normal, "coding": coding})
+    agent = Agent(
+        model,
+        normal.registry,
+        normal.system_prompt,
+        AuditLog(None),
+        {},
+        limits=limits,
+        modes=kept,
+        bypass_consent=True,
+    )
+    return agent, kept
+
+
+def test_a_routed_request_moved_to_coding_mode_starts_again_at_the_core_tools() -> None:
+    ran: list[str] = []
+    model = _Model(
+        [
+            _call("use_tools", {"groups": ["apps"]}),
+            _call("switch_model", {"mode": "coding"}),
+            _reply("Ready."),
+        ]
+    )
+    agent, kept = _routed_agent(model, ran)
+
+    assert agent.handle("build me a site", HOOKS) == "Ready."
+
+    assert kept.switched == ["coding"]
+    assert model.tools[0] == ["switch_model", "use_tools", "no_action"]
+    assert "stop_process" in model.tools[1]  # loaded, still in the mode it was asked in
+    assert model.tools[2] == ["switch_model", "use_tools", "no_action"]  # coding: core again
+
+
+def test_a_refused_unoffered_call_does_not_stop_a_switch_to_coding_mode() -> None:
+    ran: list[str] = []
+    model = _Model(
+        [_call("stop_process"), _call("switch_model", {"mode": "coding"}), _reply("Ready.")]
+    )
+    agent, kept = _routed_agent(model, ran)
+
+    assert agent.handle("build me a site", HOOKS) == "Ready."
+
+    assert ran == []  # the call was refused, not run
+    assert kept.switched == ["coding"]  # and it was no action tried, so the switch was allowed
 
 
 @dataclass

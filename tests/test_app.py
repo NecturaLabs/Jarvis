@@ -1,8 +1,10 @@
 import json
 import os
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import pytest
+from test_pc_windows import FakeDesktop
 
 from jarvis import __version__, control, modes, osskills, paths
 from jarvis import app as app_module
@@ -30,6 +32,7 @@ from jarvis.app import (
 )
 from jarvis.audit import AuditLog
 from jarvis.config import (
+    CHAT_MEMORY_FLOOR,
     AudioConfig,
     BoundariesConfig,
     ChatConfig,
@@ -50,14 +53,14 @@ from jarvis.operations import (
     UncertainOutcomeError,
     request_scope,
 )
+from jarvis.pc.screenshot import ScreenshotOps
+from jarvis.pc.watch import ScreenWatch
+from jarvis.pc.windows import WindowOps
 from jarvis.policy import Origin
 from jarvis.secretfile import ensure_api_key
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _op(name: str) -> Operation:
@@ -161,10 +164,18 @@ def test_the_default_context_holds_the_whole_remembered_conversation(
     limits = channel_limits(config, channel)
     registry = channel_registry(config, spotify.operations(), limits, channel)
     agent = Agent(
-        _Model([]), registry, system_prompt(config, channel), AuditLog(None), {}, limits=limits
+        _Model([]),
+        registry,
+        system_prompt(config, channel, registry=registry),
+        AuditLog(None),
+        {},
+        limits=limits,
     )
 
-    assert agent.memory.budget == limits.memory_tokens
+    # Voice keeps its set size; the chat's is unset and takes what fits, at least the floor.
+    wanted = CHAT_MEMORY_FLOOR if limits.memory_tokens is None else limits.memory_tokens
+    assert agent.memory.budget >= wanted
+    assert limits.memory_tokens is None or agent.memory.budget == limits.memory_tokens
     assert config.research.page_chars + PAGE_HEADROOM <= limits.tool_text_chars
 
 
@@ -188,11 +199,17 @@ def test_the_chat_memory_gives_way_when_thinking_needs_more_room(
         limits = channel_limits(config, "chat")
         registry = channel_registry(config, spotify.operations(), limits, "chat")
         agent = Agent(
-            _Model([]), registry, system_prompt(config, "chat"), AuditLog(None), {}, limits=limits
+            _Model([]),
+            registry,
+            system_prompt(config, "chat", registry=registry),
+            AuditLog(None),
+            {},
+            limits=limits,
         )
         budgets.append(agent.memory.budget)
 
-    assert budgets[0] == Config().chat.memory_tokens
+    assert Config().chat.memory_tokens is None  # what fits
+    assert budgets[0] >= CHAT_MEMORY_FLOOR
     assert 0 < budgets[1] < budgets[0]
 
 
@@ -870,6 +887,31 @@ def test_a_setting_for_pc_audio_listen_is_known_while_pc_audio_is_off() -> None:
     assert unknown_overrides(config, []) == []
 
 
+def test_the_screen_watch_tools_are_offered_only_with_the_voice_services_watch() -> None:
+    # A watch lives in the voice service's process: `jarvis ask` and the chat build none.
+    ensure_api_key(strata_key_file())
+    config = Config()
+    names = ("pc_watch", "pc_watches", "pc_watch_stop")
+    limits = channel_limits(config, "voice")
+    windows = WindowOps(FakeDesktop())
+    watch = ScreenWatch(windows, ScreenshotOps(windows, Path("/nonexistent")))
+
+    without = channel_registry(config, [], limits, "voice")
+    within = channel_registry(config, [], limits, "voice", watching=watch)
+
+    assert all(without.get(name) is None for name in names)
+    assert all(within.get(name) is not None for name in names)
+    assert build(config).watch is not None
+    assert build(config, via="ask").watch is None
+    assert build(config, via="chat").watch is None
+
+
+def test_a_setting_for_a_watch_tool_is_known_where_the_chat_does_not_offer_it() -> None:
+    config = Config.model_validate({"boundaries": {"classes": {"pc_watch": "deny"}}})
+
+    assert unknown_overrides(config, []) == []
+
+
 def test_build_without_spotify_does_not_offer_spotify_tools() -> None:
     ensure_api_key(strata_key_file())
     cfg = Config()
@@ -965,7 +1007,10 @@ def test_the_default_context_holds_the_remembered_conversation_with_the_browser(
     )
 
     assert (registry.get("browser_open") is not None) == (channel == "chat")
-    assert agent.memory.budget == limits.memory_tokens
+    # Voice keeps its set size; the chat's is unset and takes what fits, at least the floor.
+    wanted = CHAT_MEMORY_FLOOR if limits.memory_tokens is None else limits.memory_tokens
+    assert agent.memory.budget >= wanted
+    assert limits.memory_tokens is None or agent.memory.budget == limits.memory_tokens
 
 
 def test_forgetting_the_conversation_closes_the_chat_browser(

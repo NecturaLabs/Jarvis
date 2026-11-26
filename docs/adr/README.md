@@ -25,5 +25,7 @@ edited once accepted; a later decision supersedes it with a new record that link
 | [0018](0018-sing-a-song-the-model-writes.md) | Sing a song the model writes as notes, with a speaking-voice singer and an optional GPU one | proposed |
 | [0019](0019-install-and-update.md) | Install and update Jarvis from a release branch | proposed |
 | [0020](0020-model-on-another-machine.md) | Optionally serve Strata on another machine owned by the user, with the Jarvis client on the PC it controls | proposed |
+| [0021](0021-screen-watch.md) | Watch a window or the screen and say when something shows up, with one check by the same model that runs no call | proposed |
+| [0022](0022-tool-router.md) | Let the model route itself through tool groups, off by default until measured | proposed |
 | [0023](0023-acp-front-end.md) | Serve Jarvis to coding apps over the Agent Client Protocol; consent stays Jarvis's own | proposed |
 | [0024](0024-owner-skills.md) | Read the owner's own skills from Jarvis's config folder | accepted |
