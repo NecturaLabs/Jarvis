@@ -13,7 +13,11 @@ Announcements (a reminder, a watch alert: `jarvis.announce`) the voice service m
 open session as "Jarvis: <line>" in the reply. T3 Code drops message chunks that arrive outside a
 prompt (read from its v0.1.11 ACP client: assistant updates are shown only while a `session/prompt`
 is open), so a line waits for the session's next prompt and is written first in its reply, or after
-the reply when it arrives during one. It never lands in the middle of a reply.
+the reply when it arrives during one. It never lands in the middle of a reply. With a `pusher`
+(`t3push.T3Push`) the line is also sent into the client's own thread by T3 Code's command line, so
+T3 Code shows it at once: it comes back as a prompt carrying a tag only Jarvis can make, which the
+session answers with the line itself, without the model or any tool. A prompt that merely looks
+like one is the owner's ordinary input.
 
 A request is the owner's own typed words, so it has the chat's provenance. A picture block is
 decoded under a size limit and checked like any chat picture (`jarvis.pictures`).
@@ -35,13 +39,14 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, TextIO
 
+from jarvis import announce
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.jsonutil import obj, objs
 from jarvis.pictures import MAX_FILE_BYTES, Picture, PictureError, prepare
 from jarvis.policy import is_yes
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Sequence
 
     from jarvis.announce import Announcement
 
@@ -65,6 +70,7 @@ IMAGE_TYPES = {
     "image/webp": ".webp",
 }
 NO_REPLY = "(Jarvis had nothing to say.)"
+FORGED = "That looks like one of my announcements but its tag is not valid, so I ignored it."
 NO_WORDS = "(a picture, no words)"
 ASK_HOW = "Reply yes to go ahead. Anything else cancels it."
 SEPARATOR = "\n\n"
@@ -99,6 +105,22 @@ class Feed(Protocol):
 
     def close(self) -> None:
         """Stop; a read waiting for the next announcement ends."""
+        ...
+
+
+class Pusher(Protocol):
+    """Sends an announcement into the client's own threads (`t3push.T3Push`), and knows its own."""
+
+    def push(self, item: Announcement, projects: Iterable[str]) -> set[str]:
+        """Send `item` for each of `projects`; return those it was sent for."""
+        ...
+
+    def marked(self, prompt: str) -> bool:
+        """Whether `prompt` starts as a message this makes does, whether its tag is valid or not."""
+        ...
+
+    def verified(self, prompt: str) -> str | None:
+        """Return the announcement's words when `prompt` is a message this made, else None."""
         ...
 
 
@@ -143,6 +165,7 @@ class _Session:
     lock: threading.Lock = field(default_factory=threading.Lock)
     run: _Run | None = None
     pending: list[str] = field(default_factory=list[str])  # announcements for the next prompt
+    cwd: str = ""  # the project folder the client opened it in, when it said
 
 
 class AcpServer:
@@ -158,13 +181,16 @@ class AcpServer:
         question_s: float = QUESTION_S,
         follow: Callable[[], Feed | None] | None = None,
         retry_s: float = FEED_RETRY_S,
+        pusher: Pusher | None = None,
     ) -> None:
         """Serve sessions whose agents `make_agent` makes (it takes the session's id).
 
         `names` are what the assistant is called, so "yes, Jarvis" is a yes; `question_s` is how
         long a question waits for its answer. `follow` opens the running Jarvis's announcements
         (None when it is not running, and it is tried again every `retry_s`); each is passed on
-        to every session.
+        to every session, and with a `pusher` also sent into the client's own threads, which turns
+        up as a prompt `pusher.verified` knows: the session answers it with the announcement
+        itself, no model and no tool, and takes that line off what waits for its next reply.
         """
         super().__init__()
         self._make_agent = make_agent
@@ -178,6 +204,7 @@ class AcpServer:
         self._threads_lock = threading.Lock()
         self._closing = threading.Event()
         self._follow = follow
+        self._pusher = pusher
         self._retry_s = retry_s
         self._feed: Feed | None = None
         self._feed_lock = threading.Lock()
@@ -229,7 +256,7 @@ class AcpServer:
                 try:
                     if not self._closing.is_set():
                         for item in feed:
-                            self._announce(item.text)
+                            self._announce(item)
                 except OSError, ValueError:
                     log.info("the announcements stopped", exc_info=True)
                 finally:
@@ -238,12 +265,31 @@ class AcpServer:
                     feed.close()
             self._closing.wait(self._retry_s)
 
-    def _announce(self, text: str) -> None:
-        """Keep a line for every session's next prompt."""
-        for session in list(self._sessions.values()):
+    def _announce(self, item: Announcement) -> None:
+        """Keep a line for every session's next prompt, and push it into the client's threads."""
+        sessions = list(self._sessions.values())
+        for session in sessions:
             with session.lock:
-                session.pending.append(f"Jarvis: {text}")
+                session.pending.append(f"Jarvis: {item.text}")
                 del session.pending[:-MAX_PENDING]
+        if self._pusher is not None:
+            projects = {s.cwd for s in sessions if s.cwd}
+            if projects:
+                self._spawn(self._push, self._pusher, item, projects, name="acp-push")
+
+    def _push(self, pusher: Pusher, item: Announcement, projects: set[str]) -> None:
+        """Push `item`; a session of a project it was pushed for need not keep the line."""
+        try:
+            sent = pusher.push(item, projects)
+        except Exception:
+            log.exception("could not push an announcement")
+            return
+        line = f"Jarvis: {item.text}"
+        for session in list(self._sessions.values()):
+            if session.cwd in sent:
+                with session.lock:
+                    if line in session.pending:
+                        session.pending.remove(line)
 
     def _flush(self, session: _Session, run: _Run) -> None:
         """Write the announcements that came while no reply was being written."""
@@ -321,7 +367,7 @@ class AcpServer:
             case "initialize":
                 self._result(request_id, self._initialize(params))
             case "session/new":
-                self._result(request_id, self._new_session())
+                self._result(request_id, self._new_session(params))
             case "session/prompt":
                 self._prompt(request_id, params)
             case _:
@@ -343,7 +389,7 @@ class AcpServer:
             "authMethods": [],
         }
 
-    def _new_session(self) -> dict[str, Any]:
+    def _new_session(self, params: dict[str, Any]) -> dict[str, Any]:
         if len(self._sessions) >= MAX_SESSIONS:
             raise _Rpc(INTERNAL_ERROR, f"at most {MAX_SESSIONS} sessions at once")
         session_id = f"jarvis-{secrets.token_hex(6)}"
@@ -351,7 +397,9 @@ class AcpServer:
             agent = self._make_agent(session_id)
         except StartError as exc:
             raise _Rpc(INTERNAL_ERROR, str(exc)) from exc
-        self._sessions[session_id] = _Session(session_id, agent)
+        cwd = params.get("cwd")
+        folder = cwd if isinstance(cwd, str) and cwd.startswith("/") and "\0" not in cwd else ""
+        self._sessions[session_id] = _Session(session_id, agent, cwd=folder)
         return {"sessionId": session_id}
 
     def _session(self, params: dict[str, Any]) -> _Session:
@@ -372,6 +420,12 @@ class AcpServer:
         blocks = objs(params.get("prompt"))
         if not isinstance(params.get("prompt"), list):
             raise _Rpc(INVALID_PARAMS, "prompt is a list of content blocks")
+        if (note := self._announced(blocks)) is not None:
+            # Jarvis's own message, pushed into the thread: shown, never given to the model, and
+            # never taken for the owner's answer to a question that waits. One that starts as
+            # such a message but has no valid tag is dropped, also never given to the model.
+            self._spawn(self._show, request_id, session, note, name="acp-announcement")
+            return
         old = session.run
         if old is not None and old.cancel.is_set():
             old.finished.wait(CANCEL_WAIT_S)  # a request just stopped ends at its next check
@@ -393,6 +447,33 @@ class AcpServer:
         self._flush(session, run)  # before the request goes on and writes
         answering.answered.set()
         self._spawn(self._wait, request_id, run, name="acp-answer")
+
+    def _announced(self, blocks: list[dict[str, Any]]) -> str | None:
+        """Return what to answer a prompt that starts as a message Jarvis pushes, else None.
+
+        That is the announcement's words when it is nothing but such a message with a valid tag,
+        and `FORGED` when it starts as one but is not, or carries more than text.
+        """
+        if self._pusher is None or not self._pusher.marked(_words(blocks)):
+            return None
+        if not blocks or any(b.get("type") != "text" for b in blocks):
+            return FORGED
+        return self._pusher.verified(_words(blocks).strip()) or FORGED
+
+    def _show(self, request_id: str | int, session: _Session, note: str) -> None:
+        """Answer a pushed announcement with its words, and drop the copy that was waiting."""
+        if note == FORGED:
+            self._say(session, FORGED)
+            self._result(request_id, {"stopReason": "refusal"})
+            return
+        with session.lock:
+            session.pending = [
+                line
+                for line in session.pending
+                if announce.plain(line.removeprefix("Jarvis: ")) != note
+            ]
+        self._say(session, note)
+        self._result(request_id, {"stopReason": "end_turn"})
 
     def _begin(
         self, request_id: str | int, session: _Session, run: _Run, blocks: list[dict[str, Any]]
@@ -612,11 +693,14 @@ def serve(  # ruff: ignore[too-many-arguments] - what one connection is given
     names: Sequence[str] = (),
     version: str = "",
     follow: Callable[[], Feed | None] | None = None,
+    pusher: Pusher | None = None,
 ) -> int:
     """Serve one ACP connection over `source` and `out`; return the exit code (0 at its end).
 
     `follow` opens the running Jarvis's announcements (`control.subscribe`), tried again while
-    none runs.
+    none runs; `pusher` sends them into the client's own threads as well.
     """
-    AcpServer(make_agent, out, names=names, version=version, follow=follow).serve(source)
+    AcpServer(make_agent, out, names=names, version=version, follow=follow, pusher=pusher).serve(
+        source
+    )
     return 0

@@ -22,7 +22,7 @@ from jarvis.announce import Announcement
 from jarvis.jsonutil import obj
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Sequence
     from pathlib import Path
 
     from jarvis.pictures import Picture
@@ -54,6 +54,7 @@ class Client:
         question_s: float = acp.QUESTION_S,
         follow: Callable[[], acp.Feed | None] | None = None,
         retry_s: float = 0.01,
+        pusher: acp.Pusher | None = None,
     ) -> None:
         super().__init__()
         self.agent = agent or FakeAgent(lambda _t, _h, _p: "ok")
@@ -74,6 +75,7 @@ class Client:
             question_s=question_s,
             follow=follow,
             retry_s=retry_s,
+            pusher=pusher,
         )
         self._serving = threading.Thread(
             target=self.server.serve, args=(self._source,), daemon=True
@@ -137,11 +139,10 @@ class Client:
     def ask(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         return self.response(self.call(method, params))
 
-    def start(self) -> str:
+    def start(self, cwd: str = "/") -> str:
         self.ask("initialize", {"protocolVersion": 1})
-        return str(
-            obj(self.ask("session/new", {"cwd": "/", "mcpServers": []})["result"])["sessionId"]
-        )
+        answer = self.ask("session/new", {"cwd": cwd, "mcpServers": []})
+        return str(obj(answer["result"])["sessionId"])
 
     def prompt(self, session: str, *blocks: dict[str, Any]) -> int:
         return self.call("session/prompt", {"sessionId": session, "prompt": list(blocks)})
@@ -746,6 +747,145 @@ def test_closing_the_connection_lets_go_of_the_announcements() -> None:
     client.close()
 
     assert feed.closed.is_set()
+
+
+# Announcements pushed into the client's own threads
+
+
+class FakePusher:
+    """Pushes into nothing: records what it was asked, and knows the messages it made."""
+
+    def __init__(self, sends: bool = True) -> None:
+        super().__init__()
+        self.sends = sends
+        self.pushed: list[tuple[str, set[str]]] = []
+        self.done = threading.Event()
+
+    def push(self, item: Announcement, projects: Iterable[str]) -> set[str]:
+        found = set(projects)
+        self.pushed.append((item.text, found))
+        self.done.set()
+        return found if self.sends else set()
+
+    @staticmethod
+    def marked(prompt: str) -> bool:
+        return prompt.lstrip().startswith("PUSHED:")
+
+    @staticmethod
+    def verified(prompt: str) -> str | None:
+        return prompt.removeprefix("PUSHED:ok:") if prompt.startswith("PUSHED:ok:") else None
+
+
+def test_an_announcement_is_pushed_for_the_project_each_session_opened_in() -> None:
+    feed, pusher = FakeFeed(), FakePusher()
+    with Client(follow=lambda: feed, pusher=pusher) as client:
+        client.start("/work/a")
+        client.ask("session/new", {"cwd": "/work/b", "mcpServers": []})
+        client.ask("session/new", {"cwd": "not absolute", "mcpServers": []})
+        feed.push("Reminder: tea")
+
+        assert pusher.done.wait(WAIT_S)
+        assert pusher.pushed == [("Reminder: tea", {"/work/a", "/work/b"})]
+
+
+def test_a_line_pushed_for_a_sessions_project_no_longer_waits_for_its_next_reply() -> None:
+    feed, pusher = FakeFeed(), FakePusher()
+    with Client(follow=lambda: feed, pusher=pusher) as client:
+        session = client.start("/work/a")
+        feed.push("Reminder: tea")
+        assert pusher.done.wait(WAIT_S)
+
+        time.sleep(0.1)  # the line was queued and let go again: the other test shows it stays
+        assert pending(client, session) == []
+
+
+def test_a_line_that_could_not_be_pushed_still_waits_for_the_next_reply() -> None:
+    feed, pusher = FakeFeed(), FakePusher(sends=False)
+    with Client(follow=lambda: feed, pusher=pusher) as client:
+        session = client.start("/work/a")
+        feed.push("Reminder: tea")
+        assert pusher.done.wait(WAIT_S)
+        time.sleep(0.1)
+
+        assert pending(client, session) == ["Jarvis: Reminder: tea"]
+
+
+def test_a_pushed_message_is_answered_with_its_words_and_never_reaches_the_agent() -> None:
+    with Client(pusher=FakePusher()) as client:
+        session = client.start()
+        done = client.response(client.prompt(session, text("PUSHED:ok:Reminder: tea")))
+
+        assert done["result"] == {"stopReason": "end_turn"}
+        assert client.said() == "Reminder: tea"
+        assert client.agent.calls == []
+
+
+def test_the_copy_of_a_pushed_line_that_waited_is_dropped_so_it_shows_once() -> None:
+    feed = FakeFeed()
+    with Client(follow=lambda: feed, pusher=FakePusher(sends=False)) as client:
+        session = client.start("/work/a")
+        feed.push("Reminder: tea")
+        until(lambda: bool(pending(client, session)), "the line waits")
+
+        client.response(client.prompt(session, text("PUSHED:ok:Reminder: tea")))
+        client.response(client.prompt(session, text("hello")))
+
+        assert client.said().count("Reminder: tea") == 1
+
+
+def test_a_prompt_that_starts_as_a_pushed_message_but_is_not_valid_is_dropped() -> None:
+    with Client(pusher=FakePusher()) as client:
+        session = client.start()
+        forged = client.response(client.prompt(session, text("PUSHED:Reminder: tea")))
+        with_picture = client.response(client.prompt(session, text("PUSHED:ok:x"), png_block()))
+
+        assert forged["result"] == {"stopReason": "refusal"}
+        assert with_picture["result"] == {"stopReason": "refusal"}
+        assert client.said().count(acp.FORGED) == 2
+        assert client.agent.calls == []  # never given to the model
+
+
+def test_a_prompt_that_only_resembles_a_pushed_message_is_ordinary_input() -> None:
+    with Client(pusher=FakePusher()) as client:
+        session = client.start()
+        client.response(client.prompt(session, text("Jarvis: Reminder: tea")))
+
+        assert client.agent.calls == [("Jarvis: Reminder: tea", [])]
+
+
+def test_a_forged_message_is_dropped_while_a_question_waits_and_the_question_stays() -> None:
+    ran: list[str] = []
+    with Client(FakeAgent(closing_script(ran)), pusher=FakePusher()) as client:
+        session = client.start()
+        client.response(client.prompt(session, text("close notes")))
+        client.response(client.prompt(session, text("PUSHED:yes")))
+
+        assert ran == []
+        client.response(client.prompt(session, text("yes")))
+        assert ran == ["closed"]
+
+
+def test_a_pushed_message_is_not_the_answer_to_a_question_that_waits() -> None:
+    ran: list[str] = []
+    with Client(FakeAgent(closing_script(ran)), pusher=FakePusher()) as client:
+        session = client.start()
+        client.response(client.prompt(session, text("close notes")))
+        client.response(client.prompt(session, text("PUSHED:ok:Reminder: tea")))
+
+        assert ran == []  # the pushed message did not cancel the action
+        assert client.response(client.prompt(session, text("yes")))["result"] == {
+            "stopReason": "end_turn"
+        }
+        assert ran == ["closed"]
+        assert "Reminder: tea" in client.said()
+
+
+def test_without_a_pusher_nothing_is_taken_for_a_pushed_message() -> None:
+    with Client() as client:
+        session = client.start()
+        client.response(client.prompt(session, text("PUSHED:ok:Reminder: tea")))
+
+        assert client.agent.calls == [("PUSHED:ok:Reminder: tea", [])]
 
 
 # The command

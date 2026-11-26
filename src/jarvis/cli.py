@@ -34,6 +34,7 @@ from jarvis import (
     paths,
     services,
     skills,
+    t3push,
     update,
 )
 from jarvis.activity import AuditTail
@@ -1212,9 +1213,17 @@ def cmd_acp(_args: argparse.Namespace) -> int:
         except SetupError as exc:
             raise acp.StartError(str(exc)) from exc
 
+    # Also made when nothing is pushed: it tells a forged message from a real one.
+    pusher = t3push.T3Push(cfg.acp.t3_command, cfg.acp.t3_provider, enabled=cfg.acp.push_to_t3)
     source, out = _claim_stdio()
     return acp.serve(
-        source, out, make, names=(cfg.persona.name,), version=__version__, follow=control.subscribe
+        source,
+        out,
+        make,
+        names=(cfg.persona.name,),
+        version=__version__,
+        follow=control.subscribe,
+        pusher=pusher,
     )
 
 
@@ -1258,6 +1267,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         screenshots=_screenshot_folders(Path.home(), os.environ),
         shown=chat_pictures(),
         twelve_hour=cfg.clock.twelve_hour,
+        announcements=control.subscribe,
     )
     ChatApp(
         AuditTail(paths.audit_file()),

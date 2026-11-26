@@ -233,6 +233,14 @@ write_roots = ["~/Documents"]
 deny = []
 hidden_allow = [".config/hypr", ".config/omarchy", ".config/waybar", ".config/walker", ".config/mako", ".config/swayosd", ".config/kitty", ".config/alacritty", ".config/ghostty", ".config/foot", ".config/btop", ".config/fastfetch", ".config/jarvis"]
 
+# `jarvis acp`: send an announcement (a reminder) into the newest open T3 Code thread that runs
+# Jarvis, with T3 Code's own `t3` program, so T3 Code shows it at once. t3_provider is that
+# provider's id in T3 Code; empty finds it in T3 Code's settings.
+[acp]
+push_to_t3 = false
+t3_command = "t3"
+t3_provider = ""
+
 [boundaries]
 # true: act without asking (deny still refuses); false: ask for a yes first. `jarvis consent ask|bypass`.
 bypass_consent = true

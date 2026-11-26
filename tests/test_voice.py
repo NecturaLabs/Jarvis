@@ -3723,7 +3723,7 @@ def test_a_due_reminder_is_published_for_text_front_ends_as_well_as_said(
     ]
 
 
-def test_a_missed_reminder_and_a_due_request_publish_nothing(
+def test_the_reply_to_a_scheduled_request_is_published_too(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hub = announce.Hub()
@@ -3731,6 +3731,15 @@ def test_a_missed_reminder_and_a_due_request_publish_nothing(
     jobs = DueJobs([Due(_job(2, "do", "pause the music"), 1.0)])
 
     _run(_loop(Agent(lambda _t, _h, _o: "Paused."), Mic(SILENCE), Speaker(), due=jobs))
+
+    assert [(a.kind, a.text) for a in hub.recent()] == [("schedule", "Paused.")]
+
+
+def test_a_request_the_owner_makes_is_not_published(monkeypatch: pytest.MonkeyPatch) -> None:
+    hub = announce.Hub()
+    monkeypatch.setattr(announce, "HUB", hub)
+
+    _run(_loop(Agent(lambda _t, _h, _o: "Hello."), Mic(*[SPEECH] * 3, SILENCE), Speaker()))
 
     assert hub.recent() == []
 

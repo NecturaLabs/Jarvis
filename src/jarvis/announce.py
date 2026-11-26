@@ -8,7 +8,8 @@ To announce something, call `publish(text, kind)` from the voice service's proce
 
     announce.publish("Your tea is ready.", "reminder")
 
-`kind` names where the line came from: `REMINDER`, `WATCH` or `PROCESS`. `publish` never blocks and
+`kind` names where the line came from: `REMINDER`, `SCHEDULE` (the reply to a request that was
+scheduled), `WATCH` or `PROCESS`. `publish` never blocks and
 never raises: a line goes into a short ring in memory (the last `KEEP`, each with an id and a
 time) and into each subscriber's own bounded queue, whose oldest line is dropped when it is full.
 """
@@ -27,12 +28,18 @@ if TYPE_CHECKING:
     from types import TracebackType
 
 REMINDER = "reminder"
+SCHEDULE = "schedule"
 WATCH = "watch"
 PROCESS = "process"
-KINDS = frozenset({REMINDER, WATCH, PROCESS})
+KINDS = frozenset({REMINDER, SCHEDULE, WATCH, PROCESS})
 KEEP = 50  # announcements the ring remembers
 QUEUE = 100  # lines one subscriber may have waiting before its oldest is dropped
 MAX_TEXT = 2000  # characters of one announcement
+
+
+def plain(text: str) -> str:
+    """Return `text` as one plain line: control characters and runs of spaces become one space."""
+    return " ".join("".join(c if c.isprintable() else " " for c in text).split())
 
 
 @dataclass(frozen=True, slots=True)

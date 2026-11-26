@@ -1063,6 +1063,8 @@ class VoiceLoop:
                 steered_by=steered_by,
                 scheduled=scheduled,
             )
+            if scheduled:
+                announce.publish(reply, announce.SCHEDULE)  # the request ran on its own: say so
             if not reply.strip() and self._first_words is None:
                 self._said_nothing = True
             return time.perf_counter() - started

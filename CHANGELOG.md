@@ -16,7 +16,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - Reminders also reach open text front ends: the voice service publishes each line it says as an
   announcement, the control socket streams them to a subscriber (`subscribe`), and `jarvis acp` writes each as
   `Jarvis: <line>` into every session's next reply, since T3 Code shows nothing that arrives between requests.
-  Still no desktop notifications.
+  Still no desktop notifications. The reply to a scheduled request is announced too, and the chat window shows
+  each announcement as a dim `Jarvis:` line.
+- `jarvis acp` can show an announcement in T3 Code at once: it sends the line into the newest open T3 Code
+  thread that runs Jarvis with T3 Code's own `t3 thread send`, and answers that turn with the line itself, no
+  model and no tool, for a tag only Jarvis can make (`[acp]` in the configuration: `push_to_t3`, off until you turn it on, `t3_command`,
+  `t3_provider`). A message with Jarvis's mark and no valid tag is dropped. Without `t3` or such a thread the line waits for the next reply.
 - Your own skills: Markdown files in `~/.config/jarvis/skills/` are listed in the prompt and read with
   `read_skill` like the shipped ones. A file is read only when it and its folder are yours alone, it is no
   link, and it fits the size limits. `jarvis doctor` names any file it left out. Jarvis's file operations

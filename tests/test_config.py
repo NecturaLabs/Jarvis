@@ -468,3 +468,17 @@ def test_a_mapping_is_saved_whole_so_its_default_entries_survive(tmp_path: Path)
     config.save(changed, path)
 
     assert config.load(path) == changed
+
+
+def test_jarvis_acp_does_not_push_to_t3_code_until_turned_on_and_uses_its_own_program() -> None:
+    acp = config.Config().acp
+
+    assert (acp.push_to_t3, acp.t3_command, acp.t3_provider) == (False, "t3", "")
+
+
+@pytest.mark.parametrize("value", ["-x", "t3\n", "a\x00b"])
+def test_the_t3_program_and_provider_are_one_plain_word_not_an_option(value: str) -> None:
+    with pytest.raises(ValueError, match="plain word"):
+        config.AcpConfig(t3_command=value)
+    with pytest.raises(ValueError, match="plain word"):
+        config.AcpConfig(t3_provider=value)

@@ -56,6 +56,23 @@ Add `jarvis acp`, a front end to the agent `jarvis chat` already has.
   line is written first in the session's next reply, or after the reply when it came during one, never
   inside a reply being written, and before a waiting question's answer goes on. It is not seen until the
   owner's next message; ACP gives a client no other way to show a line. A session keeps its latest 50.
+- **Shown at once in T3 Code.** T3 Code's command line can start a turn: `t3 thread send <thread> -` ("a busy
+  thread gets it as its next turn; nothing is interrupted"). With `acp.push_to_t3` (off until the owner has tried it live and turns it on) `jarvis acp`
+  sends each announcement that way into the newest open thread, not settled, of the project a session was
+  opened in (`session/new`'s `cwd`) whose provider is a Jarvis ACP provider, found from T3 Code's `settings.json`
+  (only `providerInstances`' command path and arguments are read; nothing else of `~/.t3`) or named by
+  `acp.t3_provider`. The message is the words and a tag: a keyed hash (a private key file in the state
+  folder) of the announcement's number, time and words. The turn reaches a `jarvis acp` as a prompt; one whose
+  tag is valid is answered with the words alone, with no model and no tool, and is never the answer to a
+  question that waits. A prompt that starts with Jarvis's mark but has no valid tag, or carries more than text, is dropped:
+  answered with a fixed refusal and never given to the model (also with the push off); one that merely
+  resembles an announcement without the mark is the owner's ordinary input. Two Jarvis processes
+  send an announcement once. `t3` is started only with an argument list, the words on standard input, and
+  only for `thread list` and `thread send`. Without `t3`, a Jarvis provider or such a thread nothing happens
+  and the line waits as before. The voice service does not push: T3 Code's projects are known only to the
+  sessions that opened in them.
+- **More announcements.** The reply to a request that ran on a schedule is published too (kind `schedule`),
+  and the chat window shows each announcement as a dim `Jarvis:` line while it is open.
 - **Tool steps are not shown.** The agent's hooks give no step events, so `tool_call` updates are left
   out; the reply is the text.
 
@@ -65,8 +82,11 @@ Add `jarvis acp`, a front end to the agent `jarvis chat` already has.
   what Jarvis does.
 - An answer that is not a yes is not also treated as a request: "no, do this instead" cancels the action,
   and the owner asks again.
-- An announcement is seen in T3 Code only after the owner's next message there. The voice still says it
-  aloud when it is made.
+- An announcement reaches T3 Code at once only while a `jarvis acp` runs for a session of that project, a
+  `t3` is installed and a Jarvis thread exists; otherwise it is seen after the owner's next message there.
+  The voice still says it aloud when it is made.
+- The push goes to one thread per project (the newest); the other threads see it as the line queued for their
+  next reply only where no thread of the project was pushed to.
 - Only what the voice service publishes is announced; a program that wants to announce something calls
   `announce.publish` in that process (the reminders do).
 - A client that sends a second prompt while a request runs gets an error, not a queued request.

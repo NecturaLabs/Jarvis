@@ -901,6 +901,29 @@ most 50, 200 characters each. A file written by a newer version of Jarvis is lef
 jobs in it and refuses to add one, rather than writing over the newer jobs. Why it works this way is in
 [ADR 0011](adr/0011-reminders-and-scheduled-requests.md).
 
+## `[acp]`: Jarvis in T3 Code
+
+`jarvis acp` ([ADR 0023](adr/0023-acp-front-end.md)) can show an announcement (a reminder) as soon as it is
+made, once you turn `push_to_t3` on, by sending it into the newest open T3 Code thread of the project a session was opened in whose
+provider runs `jarvis acp`, with T3 Code's own `t3 thread send`. The thread's turn comes back to `jarvis acp`
+carrying a tag only Jarvis can make, and Jarvis answers it with the line itself: no model, no tool.
+
+```toml
+[acp]
+push_to_t3 = false   # off until you turn it on; then true sends it into T3 Code at once, else it waits for your next message
+t3_command = "t3"    # T3 Code's own program
+t3_provider = ""     # the provider's id in T3 Code; empty finds it in T3 Code's settings
+```
+
+A message that starts with Jarvis's mark but whose tag is not valid is dropped (answered with a fixed refusal, never given
+to the model), whether `push_to_t3` is on or not. Nothing happens, and nothing fails, when `t3` is not installed or no such thread exists: the line then
+waits for the session's next reply. What of T3 Code's own files Jarvis reads: only `userdata/settings.json` under `$T3CODE_HOME` (else `~/.t3`), and in it only
+`providerInstances` (each one's `config.commandPath` and `commandArgs`), to find the providers that run `jarvis acp`
+(skipped when `t3_provider` is set); `jarvis doctor` looks only whether `~/.t3` exists. `t3` itself reads and
+writes what it needs, started only as `t3 thread list --project <folder> --json` and `t3 thread send <thread> -`. Nothing else of
+`~/.t3` is opened. The tag's key is a
+private file in Jarvis's state folder. A change takes effect the next time T3 Code starts `jarvis acp`.
+
 ## `[shell]`: an opt-in shell command (off)
 
 `pc_shell` runs one shell command you say, as you, and only when you turn it on:

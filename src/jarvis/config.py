@@ -16,6 +16,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    field_validator,
     model_validator,
 )
 
@@ -713,6 +714,30 @@ class ShellConfig(_Section):
     tasks_max: int = Field(default=256, ge=8, le=4096)
 
 
+class AcpConfig(_Section):
+    """`jarvis acp`: what it does beside answering (ADR 0023).
+
+    With `push_to_t3` (off until the owner turns it on), an announcement (a reminder) is sent
+    into the newest open T3 Code thread of the project a session was opened in whose provider
+    runs `jarvis acp`, by `t3_command` (T3 Code's own program), so T3 Code shows it at once.
+    `t3_provider` names that provider's id in T3 Code; empty finds it in T3 Code's settings.
+    Nothing happens when `t3_command` is not installed or no such thread exists: the
+    announcement then waits for the next reply.
+    """
+
+    push_to_t3: bool = False
+    t3_command: str = "t3"
+    t3_provider: str = ""
+
+    @field_validator("t3_command", "t3_provider")
+    @classmethod
+    def _plain_words(cls, value: str) -> str:
+        if any(not c.isprintable() for c in value) or value.startswith("-"):
+            msg = "must be one plain word or path, not starting with a dash"
+            raise ValueError(msg)
+        return value.strip()
+
+
 class CodingChatConfig(_Section):
     """What coding mode changes for a typed request, laid over `[chat]`.
 
@@ -830,6 +855,7 @@ class Config(_Section):
     files: FilesConfig = Field(default_factory=FilesConfig)
     apps: AppsConfig = Field(default_factory=AppsConfig)
     shell: ShellConfig = Field(default_factory=ShellConfig)
+    acp: AcpConfig = Field(default_factory=AcpConfig)
     boundaries: BoundariesConfig = Field(default_factory=BoundariesConfig)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
 

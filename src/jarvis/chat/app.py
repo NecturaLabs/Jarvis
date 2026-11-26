@@ -78,13 +78,14 @@ from jarvis.config import ChatConfig
 from jarvis.pictures import PictureError, newest, pasted_path, prepare, read_file
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
     from rich.console import RenderableType
     from textual.timer import Timer
     from textual.widget import Widget
 
     from jarvis.agent import ContextUse
+    from jarvis.announce import Announcement
     from jarvis.chat.archive import Archived, ChatArchive
     from jarvis.chat.clipboard import Clip
     from jarvis.chat.history import InputHistory
@@ -100,6 +101,7 @@ POLL_S = 0.25
 STATUS_S = 10.0
 STATS_S = 2.0
 TICK_S = 0.12
+ANNOUNCEMENTS_RETRY_S = 10.0  # how long to wait before looking again for the voice service
 ARM_S = 0.4  # a choice made sooner than this after a question appears was meant for something else
 STILL_WORKING = "I'm still working on the last request; esc stops it."
 NO_REPLY = "The request ended without a reply."
@@ -198,6 +200,11 @@ class Session(Protocol):
         ...
 
 
+class _Announcements(Protocol):
+    def __iter__(self) -> Iterator[Announcement]: ...
+    def close(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class Services:
     """What the window reads besides the agent; each part is optional."""
@@ -225,6 +232,8 @@ class Services:
     home: Path = field(default_factory=Path.home)  # what `~/` means in a pasted path
     shown: PictureCache | None = None  # where the pictures Jarvis shows are kept
     twelve_hour: bool = True  # "done 7:37 PM" under a reply, or "done 19:37"
+    # Opens the voice service's announcements (a reminder it says): each is shown as a dim line.
+    announcements: Callable[[], _Announcements | None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -520,6 +529,8 @@ class ChatApp(App[None]):
         self._lock = threading.Lock()
         self._work: _Work | None = None
         self._closing = False
+        self._announce_stop = threading.Event()
+        self._announce_feed: _Announcements | None = None
         self._question: _Question | None = None
         self._recall = 0  # how far back ↑ has gone; 0 is the line being written
         self._draft = ""
@@ -575,6 +586,7 @@ class ChatApp(App[None]):
         self.query_one("#question").border_title = f"{self._name} asks"
         self.query_one("#settings").border_title = "Settings"
         self._apply_verbosity()
+        self._follow_announcements()
         self.query_one("#toolbar").display = self._settings.toolbar
         transcript = self.query_one("#transcript", VerticalScroll)
         transcript.mount(Static(self._welcome(), id="welcome"))
@@ -588,12 +600,42 @@ class ChatApp(App[None]):
         self._refresh_stats()
         self._tick()
 
+    def _follow_announcements(self) -> None:
+        """Show what the voice service announces, on a thread of its own, until the window ends."""
+        follow = self._services.announcements
+        if follow is None:
+            return
+
+        def watch() -> None:
+            while not self._announce_stop.is_set():
+                try:
+                    feed = follow()
+                except OSError:
+                    feed = None
+                if feed is not None:
+                    self._announce_feed = feed
+                    try:
+                        for item in feed:
+                            self._from_worker(self._note, f"Jarvis: {item.text}")
+                    except OSError, ValueError:
+                        log.info("the announcements stopped", exc_info=True)
+                    finally:
+                        self._announce_feed = None
+                        feed.close()
+                self._announce_stop.wait(ANNOUNCEMENTS_RETRY_S)
+
+        threading.Thread(target=watch, name="jarvis-chat-announcements", daemon=True).start()
+
     def on_unmount(self) -> None:
         """Answer a waiting question with no, stop a request, archive and let go of the log.
 
         While the agent still works on a request, its worker archives the conversation once the
         agent is done with it (`_ran`), so the stopped request is in the archive too.
         """
+        self._announce_stop.set()
+        feed = self._announce_feed
+        if feed is not None:
+            feed.close()
         with self._lock:
             self._closing = True
             question, self._question = self._question, None

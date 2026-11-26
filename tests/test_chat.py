@@ -4,6 +4,7 @@ toolbar, and what Jarvis does, shown live at the chosen verbosity."""
 import asyncio
 import io
 import json
+import queue
 import threading
 import time
 from dataclasses import dataclass, field
@@ -18,8 +19,10 @@ from textual.containers import VerticalScroll
 from textual.widgets import Markdown, OptionList, Static
 
 from jarvis.agent import Agent, ContextUse, Declined, Hooks, NoReason
+from jarvis.announce import Announcement
 from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
+from jarvis.chat import app as chat_app
 from jarvis.chat import commands
 from jarvis.chat.app import NO_REPLY, SETTINGS, ChatApp, Services
 from jarvis.chat.archive import ChatArchive
@@ -44,7 +47,7 @@ from jarvis.pictures import Picture, PictureCache
 from jarvis.sysinfo import Gpu, Stats
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Awaitable, Callable, Iterator, Sequence
     from pathlib import Path
     from typing import Any
 
@@ -501,6 +504,56 @@ def test_by_default_only_requests_and_replies_show() -> None:
         await pilot.pause(0.05)
         assert not _has(app, "Pause\n")
         assert not _has(app, "4.6 s")
+
+    _run(test, app)
+
+
+class FakeAnnouncements:
+    """The voice service's announcements as a test hands them out."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.items: queue.Queue[Announcement | None] = queue.Queue()
+        self.opened = 0
+        self.closed = threading.Event()
+
+    def open(self) -> FakeAnnouncements:
+        self.opened += 1
+        return self
+
+    def __iter__(self) -> Iterator[Announcement]:
+        while (item := self.items.get()) is not None:
+            yield item
+
+    def close(self) -> None:
+        self.closed.set()
+        self.items.put(None)
+
+
+def test_an_announcement_of_the_voice_service_is_shown_as_a_line_while_the_window_is_open() -> None:
+    feed = FakeAnnouncements()
+    app = _app(services=Services(announcements=feed.open))
+
+    async def test(pilot: Pilot[None]) -> None:
+        feed.items.put(Announcement(1, 1.0, "reminder", "Reminder: take the bread out"))
+        await _until(pilot, lambda: _has(app, "Jarvis: Reminder: take the bread out"))
+
+    _run(test, app)
+    assert feed.closed.is_set()  # the window let go of the feed as it closed
+
+
+def test_the_window_looks_again_for_the_voice_service_when_it_was_not_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_app, "ANNOUNCEMENTS_RETRY_S", 0.01)
+    first = FakeAnnouncements()
+    feeds: list[FakeAnnouncements | None] = [None, first]
+    app = _app(services=Services(announcements=lambda: feeds.pop(0) if feeds else None))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _until(pilot, lambda: not feeds)
+        first.items.put(Announcement(1, 1.0, "watch", "A door opened"))
+        await _until(pilot, lambda: _has(app, "Jarvis: A door opened"))
 
     _run(test, app)
 
