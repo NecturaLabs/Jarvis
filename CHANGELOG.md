@@ -39,9 +39,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   transcribes it, the words are someone else's data, and when Jarvis asks first (`bypass_consent` off) a search
   or action after them waits for your yes.
 - Jarvis sings: ask in any words and the model writes the song as notes (words, pitches and lengths), which
-  the new `sing` tool checks (at most 30 seconds and 64 notes) before Jarvis sings it by voice, spoken over,
-  hushed and paused like a reply. It sings with the Kokoro voice moved to each note (Praat, through the new
-  `praat-parselmouth` dependency), or with SoulX-Singer on the GPU once `tools/get_singer.py` has installed it;
+  the new `sing` tool checks (at most 30 seconds and 64 notes) before Jarvis sings it by voice, spoken over
+  (but not a stretch of about 3 seconds that sounds like the wake word), hushed and paused like a reply. It
+  sings with the Kokoro voice moved to each note (Praat, through the new `praat-parselmouth` dependency), or with SoulX-Singer on the GPU once `tools/get_singer.py` has installed it;
   `[sing] engine` chooses, and `jarvis doctor` checks the singer.
 - The chat's `/config` also sets Jarvis's speaking speed, whether it acts without asking first and whether it
   takes requests from PC audio. Changes there restart the voice service once, when the settings close, instead of

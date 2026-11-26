@@ -1887,6 +1887,10 @@ TAIL_KEEP_S = 0.2  # silence kept after each sentence (the voice pads about 0.35
 # How long after a wake-like sentence ends the wake word stays ignored: the player's buffer and
 # the wake model's own lag, so the end of the sentence heard late does not wake Jarvis.
 GUARD_TAIL_S = 1.0
+# A song is checked for its own wake word in chunks, so a hit guards only its own stretch; each
+# chunk is checked together with the second before it, so a phrase across two is still heard whole.
+SONG_CHUNK_S = 2.5
+SONG_OVERLAP_S = 1.0
 
 
 def trim_silence(pcm: bytes, rate: int, *, lead_s: float | None, tail_s: float) -> bytes:
@@ -2171,7 +2175,7 @@ class Speaker:
         pcm = trim_silence(pcm, rate, lead_s=LEAD_KEEP_S if first else None, tail_s=TAIL_KEEP_S)
         if not pcm:
             return
-        wake_like = self._sounds_like_wake(pcm, rate, text)
+        spans = self._wake_spans(pcm, rate, text, run, chunked=sound is not None)
         with self._lock:
             if run != self._run:  # hushed during the check: it will not be played
                 return
@@ -2179,13 +2183,31 @@ class Speaker:
             # it now. Kept before the player opens, so the guard is never late.
             start = max(self._clock(), self._ends if self._proc is not None else 0.0)
             self._ends = start + len(pcm) / (2 * rate)
-            if wake_like:
-                self._guards.append((start, self._ends + GUARD_TAIL_S))
-        if wake_like:
+            self._guards.extend((start + a, start + b + GUARD_TAIL_S) for a, b in spans)
+        if spans:
             log.info("a sentence sounds like the wake word; it cannot be spoken over")
         proc = self._proc or self._open(rate, run)
         if proc is not None:
             self._write(proc, pcm, run)
+
+    def _wake_spans(
+        self, pcm: bytes, rate: int, text: str, run: int, *, chunked: bool
+    ) -> list[tuple[float, float]]:
+        """Return the seconds of `pcm` (start, end) that would trigger the wake word.
+
+        A sentence is checked whole; a song (`chunked`) in chunks of `SONG_CHUNK_S`.
+        """
+        total = len(pcm) // 2
+        step = int(SONG_CHUNK_S * rate) if chunked else total
+        spans: list[tuple[float, float]] = []
+        for first in range(0, total, step):
+            if not self._current(run):
+                break
+            end = min(total, first + step)
+            back = max(0, first - int(SONG_OVERLAP_S * rate)) if chunked else first
+            if self._sounds_like_wake(pcm[2 * back : 2 * end], rate, text):
+                spans.append((back / rate, end / rate))
+        return spans
 
     def _sounds_like_wake(self, pcm: bytes, rate: int, text: str) -> bool:
         """Return whether `pcm` would trigger the wake word; a check that fails counts as yes."""

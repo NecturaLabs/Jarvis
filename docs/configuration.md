@@ -444,7 +444,8 @@ be spoken over.
 Ask Jarvis to sing, in any words: the model writes the song as notes (words or syllables, pitches and lengths)
 and the `sing` tool checks it in code before a sound is made: at most 64 notes and 30 seconds, pitches from C2
 to C6. The song plays like a reply, after what Jarvis said before it: say the wake word over it to stop it,
-`jarvis hush` ends it, and nothing is sung while Jarvis is paused. It is sung by voice only; the chat does not
+`jarvis hush` ends it, and nothing is sung while Jarvis is paused. The song is checked for its own wake word in
+chunks of about 2.5 seconds, so a stretch that sounds like it is the only part that cannot be spoken over. It is sung by voice only; the chat does not
 offer it. The tool's class is `safe` and it counts as an action; `sing = "deny"` under `[boundaries.classes]`
 switches it off.
 

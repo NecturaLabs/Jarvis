@@ -520,3 +520,55 @@ def test_no_sound_is_queued_after_a_stop(tmp_path: Path) -> None:
     speaker.wait()
 
     assert not files
+
+
+def test_a_wake_like_stretch_of_a_song_guards_only_that_stretch(tmp_path: Path) -> None:
+    # Ten seconds of song with the wake phrase sung at 6.0 to 6.2 s (the one louder stretch).
+    samples = np.full(RATE * 10, 1000, dtype=np.int16)
+    samples[RATE * 6 : int(RATE * 6.2)] = 5000
+    pid_file, heard = tmp_path / "pid", tmp_path / "heard.raw"
+    now = [0.0]
+
+    def own_wake(pcm: bytes, _rate: int, _text: str) -> bool:
+        return bool((np.frombuffer(pcm, dtype=np.int16) == 5000).any())
+
+    speaker = Speaker(
+        _voice, player=_taking(pid_file, heard), own_wake=own_wake, clock=lambda: now[0]
+    )
+    try:
+        speaker.queue_sound(samples.tobytes(), RATE, "la la")
+        _until(lambda: heard.exists() and heard.stat().st_size == samples.nbytes)
+        found: list[bool] = []
+        for moment in (1.0, 3.0, 5.0, 8.0, 9.5):
+            now[0] = moment
+            found.append(speaker.interruptible)
+    finally:
+        speaker.hush()
+        _end(pid_file)
+
+    assert found == [True, True, False, False, True]
+
+
+def test_a_wake_phrase_across_two_chunks_of_a_song_is_still_guarded(tmp_path: Path) -> None:
+    # The phrase straddles the 2.5 s edge between two chunks; neither half alone sounds like it.
+    samples = np.full(RATE * 6, 1000, dtype=np.int16)
+    samples[int(RATE * 2.0) : int(RATE * 3.0)] = 5000
+    pid_file, heard = tmp_path / "pid", tmp_path / "heard.raw"
+    now = [0.0]
+
+    def own_wake(pcm: bytes, _rate: int, _text: str) -> bool:
+        return bool((np.frombuffer(pcm, dtype=np.int16) == 5000).sum() >= RATE)  # a whole second
+
+    speaker = Speaker(
+        _voice, player=_taking(pid_file, heard), own_wake=own_wake, clock=lambda: now[0]
+    )
+    try:
+        speaker.queue_sound(samples.tobytes(), RATE, "la la")
+        _until(lambda: heard.exists() and heard.stat().st_size == samples.nbytes)
+        now[0] = 2.2
+        guarded = not speaker.interruptible
+    finally:
+        speaker.hush()
+        _end(pid_file)
+
+    assert guarded
