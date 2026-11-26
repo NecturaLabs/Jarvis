@@ -38,7 +38,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
 - **Your PC:** ask how the PC is doing, in any words, for its CPU, graphics card, VRAM, memory,
   temperatures and disks. Jarvis can list and read your files (your home folder by default, hidden ones
   only for the desktop's own settings) and create or change text files in `~/Documents`, asking first unless you turned questions
-  off. Keys, tokens, shell history and browser profiles are never read ([`[files]`](docs/configuration.md)).
+  off. It has a workspace folder of its own (`~/Documents/Jarvis`, `files.workspace`), where what it makes goes by default and
+  where a new file never waits on a question. Keys, tokens, shell history and browser profiles are never read ([`[files]`](docs/configuration.md)).
   Ask it in any words to close, end or kill a program: Jarvis lists the programs of yours that
   match, asks which one when there are several, and stops only that one once you press the confirm key. It
   never stops the desktop, the sound server, dictation or itself, and nothing heard from PC audio can stop a
@@ -205,7 +206,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis logs` | Follow the live log (Ctrl+C to leave). |
 | `jarvis help` | List the commands by group, each with what it does (the same as `jarvis --help`); `jarvis <command> --help` explains one command and its options, and a mistyped command gets a suggestion when one is close. |
 | `jarvis ask <text>` | Send one typed request as if spoken; a question is answered `y` or `n` on the terminal, and `--yes` answers yes to confirmations, except a browser click or typing, which it still asks on the terminal (and refuses with no terminal to answer on). |
-| `jarvis chat` | Open a Textual window where you type requests and watch what Jarvis does, live. |
+| `jarvis chat` | Open a Textual window where you type requests and watch what Jarvis does, live. Spoken requests are the voice's own and do not show there; ask Jarvis to pass something to the chat and it hands your words to the open window ([ADR 0028](docs/adr/0028-voice-and-chat-as-two-channels.md)). |
 | `jarvis acp` | Serve Jarvis to a coding app over the Agent Client Protocol on stdin and stdout; the app starts it, see [Using Jarvis in T3 Code](#using-jarvis-in-t3-code). |
 | `jarvis consent [ask\|bypass]` | Show or set whether Jarvis asks for a yes before a risky action or one after outside text; a `strong` action still waits for the confirm key either way. |
 | `jarvis wake [livekit\|azure]` | Show or switch the wake word model; `--model FILE` names the Azure `.table` file; `--words hey_jarvis,yo_jarvis` picks the LiveKit models that listen. |
@@ -288,8 +289,9 @@ uv run pytest -q -m "not local"   # unit tests
 ```
 
 Tests marked `local` need real hardware and services and never run in CI (`uv run pytest -m local`).
-`tools/check.sh` runs everything CI runs, in one command; `tools/install-hooks.sh` adds opt-in git hooks (lint,
-tests, the commit subject and a private-details check).
+`tools/check.sh` runs everything CI runs in one command. `tools/install-hooks.sh` adds opt-in git hooks
+for lint, affected non-local tests, the commit subject and private details. Rerun the installer to
+refresh an existing copy of the hooks.
 
 ## Project layout
 

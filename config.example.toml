@@ -64,7 +64,13 @@ tools = "all"
 resume = true
 verbosity = "replies"
 toolbar = true
+# What Enter does while a request runs: "steer" (the words join it) or "queue" (they run next).
+while_working = "steer"
+# How replies are written: "concise", "normal" or "verbose".
+response_format = "concise"
 history_size = 1000
+# Chat conversations kept for /resume; 0 keeps none.
+archive_keep = 50
 
 # How the jarvis-strata service runs the model; `jarvis setup` writes these into its profile.
 # The model, its engine and its flags come from Strata's own run config: run `strata launch` for
@@ -230,10 +236,14 @@ idle_close_s = 60.0
 # Jarvis's own state are never read or written; deny adds more (patterns such as "diary*").
 # Hidden files and folders under home are read only where hidden_allow opens them (by default
 # the desktop's own settings). Writing a file asks you first (unless bypass_consent is on) and
-# never touches a hidden file or folder.
+# never touches a hidden file or folder. The workspace is Jarvis's own folder: always readable and
+# writable, where a file saved with a bare name goes, and where a new file needs no yes. It is
+# made (mode 0700) if missing, must be a folder of yours nobody else can write to, and may not be
+# Jarvis's state or config folder.
 [files]
 read_roots = ["~"]
 write_roots = ["~/Documents"]
+workspace = "~/Documents/Jarvis"
 deny = []
 hidden_allow = [".config/hypr", ".config/omarchy", ".config/waybar", ".config/walker", ".config/mako", ".config/swayosd", ".config/kitty", ".config/alacritty", ".config/ghostty", ".config/foot", ".config/btop", ".config/fastfetch", ".config/jarvis"]
 

@@ -1403,7 +1403,7 @@ def test_a_subscribe_from_another_user_is_refused_like_every_request(
     def another_user(_conn: socket.socket) -> tuple[int, int]:
         return 1, os.getuid() + 1
 
-    monkeypatch.setattr(control, "_peer", another_user)
+    monkeypatch.setattr(control, "peer_credentials", another_user)
     hub = announce.Hub()
     server = _serving_announcements(hub)
     try:

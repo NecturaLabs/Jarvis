@@ -58,9 +58,17 @@ class ToolSetting:
         A menu never takes a tool below its shipped class (`write_file` from asking first to
         on): that takes `jarvis tools NAME on`, said on purpose.
         """
+        return self._step(1)
+
+    def preceding(self) -> OpClass:
+        """Return the class `following` came from: the same ring, the other way round."""
+        return self._step(-1)
+
+    def _step(self, by: int) -> OpClass:
         ring = [c for c in self.choices if _RANK[c] >= _RANK[self.shipped]]
-        at = ring.index(self.state) if self.state in ring else -1
-        return ring[(at + 1) % len(ring)]
+        if self.state not in ring:
+            return ring[0]
+        return ring[(ring.index(self.state) + by) % len(ring)]
 
 
 def _summary(op: Operation) -> str:

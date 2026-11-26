@@ -1,10 +1,11 @@
 """The chat window (`jarvis chat`): talk to Jarvis in writing and watch what it does, live.
 
 Typed requests go to the window's own agent; its replies are rendered as Markdown as they are
-written. What the voice service does is read from the shared audit log, so spoken requests and
-their replies show here too. How much of the work in between shows is the verbosity: by default
-only requests and replies, with a working line that says what Jarvis is doing; `steps` adds each
-tool call and its result, `everything` the model calls and other details.
+written. What other Jarvis processes do (`jarvis ask`, other windows) is read from the shared audit
+log and shown too; the voice service's own work is not (`VOICE_VIA`). How much of the work in
+between shows is the verbosity: by default only requests and replies, with a working line that says
+what Jarvis is doing; `steps` adds each tool call and its result, `everything` the model calls
+and other details.
 
 A question the agent asks opens a yes-or-no choice above the input; anything but a chosen yes is a
 no, as by voice. A picture is attached as Claude Code does it: Ctrl+V pastes a copied picture (or
@@ -29,13 +30,14 @@ from typing import TYPE_CHECKING, ClassVar, Protocol, override
 from rich.cells import cell_len
 from rich.table import Table
 from rich.text import Text
+from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import OptionList, Static
 
-from jarvis.activity import Shown, call_target, describe, full_text, working_label
+from jarvis.activity import VOICE_VIA, Shown, call_target, describe, full_text, working_label
 from jarvis.agent import MAX_TRUSTED_PASTE, PICTURES_OFF, Declined, Hooks, NoReason
 from jarvis.chat import commands
 from jarvis.chat.clipboard import ClipboardError
@@ -45,16 +47,13 @@ from jarvis.chat.settings import (
     NOW,
     NOW_AND_ON_CLOSE,
     ON_CLOSE,
-    SETTINGS_HINT,
-    SETTINGS_LEGEND,
-    TOOLS_HINT,
-    TOOLS_LEGEND,
+    TOOL_ROW,
+    TOOLS,
     Pending,
     Row,
     Section,
-    SettingsList,
-    ToolsList,
-    tools_summary,
+    SettingsPanel,
+    tool_rows,
 )
 from jarvis.chat.widgets import (
     CHEVRON,
@@ -68,6 +67,7 @@ from jarvis.chat.widgets import (
     PromptArea,
     Reply,
     Request,
+    footer_line,
     meter,
     tokens_short,
     toolbar,
@@ -75,6 +75,7 @@ from jarvis.chat.widgets import (
     worked_line,
 )
 from jarvis.config import ChatConfig
+from jarvis.handoff import HandoffError, State
 from jarvis.pictures import PictureError, newest, pasted_path, prepare, read_file
 
 if TYPE_CHECKING:
@@ -115,9 +116,12 @@ MAX_CAPTION = 200
 SPINNER = "·✢✳✶✻✽✻✶✳✢"
 PLACEHOLDER = 'Ask anything, or try "what\'s playing?"  (/ for commands)'
 PLACEHOLDER_OFF = "Typed requests are off (see above); / for commands"
-MENU_HINT = "tab completes · enter runs · esc closes"
-FOOTER_MARGIN = 6  # the footer's margins, left and right
-STATUS_GAP = 2  # between the footer's hint and the services' status
+MENU_HINTS = (
+    "tab completes · enter runs · esc closes",
+    "tab completes · enter runs",
+    "tab · enter · esc",
+)
+FOOTER_MARGIN = 4  # the footer's margins: the input's text column, and the box's right edge
 SHORTCUTS = (
     ("enter", "send"),
     ("shift+enter", "new line (or \\ then enter)"),
@@ -158,8 +162,12 @@ class Session(Protocol):
         *,
         pictures: Sequence[Picture] = (),
         pasted: Sequence[str] = (),
+        spoken: bool = False,
     ) -> str:
-        """Answer one request, with any pictures the owner attached, and return the reply."""
+        """Answer one request, with any pictures the owner attached, and return the reply.
+
+        `spoken` marks words the voice service handed over: the owner's, said aloud.
+        """
         ...
 
     def forget(self) -> None:
@@ -220,9 +228,10 @@ class Services:
     # Jarvis's own settings the chat may change too (the voice service restarts to take them).
     shared: Callable[[], list[SharedSetting]] | None = None
     set_shared: Callable[[str, object], None] | None = None
-    apply: Callable[[], None] | None = None  # restarts the voice service after changes, once
+    # Restarts the voice service after changes, once; returns a line to show, if any.
+    apply: Callable[[], str | None] | None = None
     tools: Callable[[], list[ToolSetting]] | None = None  # every tool and its setting
-    next_tool_setting: Callable[[str], ToolSetting] | None = None  # moves one on, saves it
+    next_tool_setting: Callable[[str, int], ToolSetting] | None = None  # moves one, saves it
     history: InputHistory | None = None
     archive: ChatArchive | None = None  # every conversation, for /resume and reading back
     export_dir: Path = field(default_factory=Path.home)
@@ -251,6 +260,8 @@ class SharedSetting:
     section: str = "Voice"
     about: str = ""
     risky: str = ""
+    unit: str = ""  # "seconds": shown as 30 s, 10 min, 4 h
+    zero: str = ""  # what 0 is called, where 0 means something
 
 
 @dataclass(slots=True)
@@ -267,7 +278,8 @@ class _Work:
     label: str = "Thinking"
     stop: threading.Event = field(default_factory=threading.Event)
     draft: str = ""
-    steering: list[str] = field(default_factory=list[str])  # typed meanwhile, not yet taken
+    # (words, source) typed or spoken meanwhile, not yet taken
+    steering: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
     taking: bool = True  # the request still takes steering; once it ends, the words wait
     running: bool = True  # the agent still works on the conversation: it is not archived now
     began: bool = False  # its worker started: it archives at close, once the agent is done
@@ -283,7 +295,6 @@ class _Setting:
     about: str
 
 
-TOOLS_ROW = "tools"  # the settings row that opens the list of tools
 BYPASS_CONSENT = "boundaries.bypass_consent"  # the shared setting the chat's own agent takes too
 SHARED_ROW = "jarvis:"  # the start of a row's id for one of Jarvis's own settings
 SETTINGS = (
@@ -344,7 +355,7 @@ SETTINGS = (
         "Earlier requests keep",
         ("full", "condensed"),
         live=False,
-        about="full: their tool calls and results too, so a follow-up need not look again. "
+        about="full: tool calls and results too, so a follow-up need not look again. "
         "condensed: only each request, reply, what was done and looked up.",
     ),
     _Setting(
@@ -359,8 +370,8 @@ SETTINGS = (
         "Headless browser",
         (True, False),
         live=False,
-        about="Open and read pages that need a real browser, and show you a picture of one; "
-        "every click or typing there asks you first. Needs agent-browser.",
+        about="Read pages that need a real browser, and show you a picture of one; every click "
+        "or typing there asks you first. Needs agent-browser.",
     ),
 )
 SECTIONS = (
@@ -445,9 +456,12 @@ class ChatApp(App[None]):
         height: 1fr; border: round ansi_bright_black; border-title-color: ansi_default;
         border-title-style: bold;
     }
-    #settings-list, #tools-list { height: 1fr; border: none; padding: 0; background: ansi_default; }
-    #settings-list > .option-list--option-disabled { color: ansi_default; }
-    .panel-legend { height: auto; color: ansi_bright_black; }
+    #settings-tabs { height: 1; }
+    #settings-search { height: 1; margin: 1 0 0 0; }
+    #settings-list {
+        height: 1fr; margin: 1 0 0 0; border: none; padding: 0; background: ansi_default;
+    }
+    #settings-footer { height: auto; min-height: 4; max-height: 8; margin: 1 0 0 0; }
     #question-text { height: auto; margin: 0 0 1 0; }
     #choices { height: auto; border: none; padding: 0; background: ansi_default; }
     .panel-hint { height: auto; margin: 1 0 0 0; color: ansi_bright_black; }
@@ -459,10 +473,14 @@ class ChatApp(App[None]):
     }
     #prompt PromptArea:focus { border: none; }
     #pictures { height: auto; margin: 0 3 0 5; color: ansi_bright_black; }
+    #menu-frame {
+        layer: menu; dock: bottom; width: 100%; height: auto; padding: 0 1;
+        background: ansi_default;
+    }
     #menu {
-        layer: menu; dock: bottom; width: 100%; height: auto; max-height: 8; padding: 0 1 0 3;
-        scrollbar-size-vertical: 0;
-        border: none; background: ansi_default; text-wrap: nowrap; text-overflow: ellipsis;
+        width: 100%; height: auto; max-height: 10; padding: 0 1; scrollbar-size-vertical: 0;
+        border: round ansi_bright_black; background: ansi_default;
+        text-wrap: nowrap; text-overflow: ellipsis;
     }
     OptionList > .option-list--option-highlighted,
     OptionList:focus > .option-list--option-highlighted {
@@ -470,13 +488,13 @@ class ChatApp(App[None]):
     }
     OptionList > .option-list--option-hover { background: ansi_default; }
     #shortcuts { height: auto; margin: 0 3; color: ansi_bright_black; }
-    #footer { height: 1; margin: 0 3; }
+    #footer { height: 1; margin: 0 1 0 3; }
     #hints { width: 1fr; color: ansi_bright_black; text-wrap: nowrap; text-overflow: ellipsis; }
     #status {
-        width: auto; max-width: 50%; padding: 0 0 0 2; color: ansi_bright_black;
+        width: auto; padding: 0 0 0 2; color: ansi_bright_black;
         text-wrap: nowrap; text-overflow: ellipsis;
     }
-    #toolbar { height: 1; margin: 0 3; text-wrap: nowrap; text-overflow: ellipsis; }
+    #toolbar { height: 1; margin: 0 1 0 3; text-wrap: nowrap; text-overflow: ellipsis; }
     """
     BINDINGS: ClassVar = [
         Binding("ctrl+q", "quit", "Quit", priority=True),
@@ -515,12 +533,11 @@ class ChatApp(App[None]):
         self._name = name
         self._settings = settings or ChatConfig()
         self._services = services or Services()
-        self._tools_shown = False  # the settings panel lists the tools
         self._chain: Chain | None = None  # the calls of one tool in a row, shown as one step
         self._pending: Pending | None = None  # a risky setting asked to be turned on, unconfirmed
         self._changed_jarvis = False  # a setting the voice service reads changed in /config
         # Requests typed while one ran, waiting their turn: words, pictures, pastes.
-        self._queued: list[tuple[str, list[Picture], list[str]]] = []
+        self._queued: list[tuple[str, list[Picture], list[str], str]] = []
         self._session_id = session_id
         self._poll_s = poll_s
         self._status_s = status_s
@@ -551,19 +568,14 @@ class ChatApp(App[None]):
         """Lay out the transcript, the working line, the panels, the input and the footer."""
         with Vertical(id="stage"):  # the command menu is drawn over the transcript's last lines
             yield VerticalScroll(id="transcript")
-            yield PointerList(id="menu")
+            with Vertical(id="menu-frame"):
+                yield PointerList(id="menu")
         yield Static("", id="working", markup=False)
         with Vertical(id="question"):
             yield Static("", id="question-text", markup=False)
             yield ChoiceList(id="choices")
             yield Static("1: yes · 2, n, esc or enter: no", classes="panel-hint")
-        with Vertical(id="settings"):
-            yield SettingsList(id="settings-list")
-            yield ToolsList(id="tools-list")
-            yield Static("", id="settings-hint", classes="panel-hint", markup=False)
-            yield Static(
-                SETTINGS_LEGEND, id="settings-legend", classes="panel-legend", markup=False
-            )
+        yield SettingsPanel(id="settings")
         with Horizontal(id="prompt"):
             yield Static(CHEVRON, id="caret")
             yield PromptArea(
@@ -757,9 +769,13 @@ class ChatApp(App[None]):
         with contextlib.suppress(NoMatches):
             self._show_log()
 
+    def _new_entries(self) -> list[dict[str, object]]:
+        """Return what the log gained, less the voice agent's own work (spoken, not shown)."""
+        return [entry for entry in self._tail.read() if entry.get("via") != VOICE_VIA]
+
     def _show_log(self) -> None:
         self._follow_down()  # a reply's Markdown grows after it is mounted
-        for entry in self._tail.read():
+        for entry in self._new_entries():
             own = bool(self._session_id) and entry.get("session") == self._session_id
             if own:
                 self._follow(entry)
@@ -860,7 +876,6 @@ class ChatApp(App[None]):
 
     def _set_status(self, line: str) -> None:
         self._status = line
-        self.query_one("#status", Static).update(line)
         self._tick()
 
     def _refresh_stats(self) -> None:
@@ -937,15 +952,26 @@ class ChatApp(App[None]):
         working = self.query_one("#working", Static)
         hints = self.query_one("#hints", Static)
         level = self._settings.verbosity
+        status = self.query_one("#status", Static)
+        width = max(0, self.size.width - FOOTER_MARGIN)
         if work is None:
             working.display = False
-            idle = f"? for shortcuts · {VERBOSITY_ABOUT[level]} (ctrl+o)"
-            room = self.size.width - FOOTER_MARGIN - len(self._status) - STATUS_GAP
-            if len(idle) > room:
-                idle = f"? for shortcuts · ctrl+o: {level}"
-            if self.query_one("#menu").display:
-                idle = MENU_HINT
-            hints.update("" if self._question is not None else idle)
+            variants = (
+                ()
+                if self._question is not None
+                else self.query_one("#settings", SettingsPanel).hint
+                if self.query_one("#settings").display
+                else MENU_HINTS
+                if self.query_one("#menu").display
+                else (
+                    f"? for shortcuts · {VERBOSITY_ABOUT[level]} (ctrl+o)",
+                    f"? for shortcuts · ctrl+o: {level}",
+                    "? for shortcuts",
+                )
+            )
+            hint, said = footer_line(variants or ("",), self._status, width)
+            hints.update(hint)
+            status.update(said)
             return
         seconds = int(self._clock() - work.started)
         frame = SPINNER[int(self._clock() / TICK_S) % len(SPINNER)]
@@ -959,6 +985,7 @@ class ChatApp(App[None]):
         working.update(line)
         working.display = True
         hints.update("")
+        status.update(footer_line(("",), self._status, width)[1])
 
     # Typing
 
@@ -1078,11 +1105,9 @@ class ChatApp(App[None]):
             pending, self._pending = self._pending, None  # the risky setting stays off
             self._fill_settings(pending.key)
             return
-        if self.query_one("#settings").display and self._tools_shown:
-            self._fill_settings(TOOLS_ROW)  # back to the settings, on the Tools row
-            return
         if self.query_one("#settings").display:
-            self._close_settings()
+            if not self.query_one("#settings", SettingsPanel).escape():
+                self._close_settings()
             return
         for widget in ("#menu", "#shortcuts"):
             if self.query_one(widget).display:
@@ -1161,13 +1186,23 @@ class ChatApp(App[None]):
     def _while_working(self, text: str) -> None:
         """Steer the running request with the typed words, or queue them as the next request.
 
-        Words that come with pictures or anything pasted are queued: a request of their own.
+        Words that come with pictures or anything pasted into them are queued: a request of their
+        own.
         """
         pictures = self._sent_pictures(text)
         pasted = self._sent_pastes(text)
         self._input().set_text("")
         if self._history is not None:
             self._history.add(text, pasted)
+        self._join_or_queue(text, "typed", pictures, pasted)
+
+    def _join_or_queue(
+        self, text: str, source: str, pictures: Sequence[Picture] = (), pasted: Sequence[str] = ()
+    ) -> bool:
+        """Join the running request with `text` or queue it, and show it; return True on joining.
+
+        `source` is how the words came ("typed", "spoken"), shown under them.
+        """
         now = datetime.now().astimezone().strftime("%H:%M:%S")
         with self._lock:
             work = self._work
@@ -1179,24 +1214,50 @@ class ChatApp(App[None]):
                 and not pasted
             )
             if steer and work is not None:
-                work.steering.append(text)
+                work.steering.append((text, source))
             else:
-                self._queued.append((text, list(pictures), list(pasted)))
-        self._mount(Request(text, _joined("typed", now, "steering" if steer else "queued")))
+                self._queued.append((text, list(pictures), list(pasted), source))
+        self._mount(Request(text, _joined(source, now, "steering" if steer else "queued")))
         self._exchanges.append(("you", text))
+        return steer
+
+    def take_handoff(self, text: str) -> State:
+        """Take the owner's spoken words the voice service handed over; return what was done.
+
+        Called from the hand-off socket's thread. The words are the owner's own: they join the
+        running request or start a new one, marked as spoken, like typed ones; typing and speaking
+        never pause the work in progress.
+
+        Raises:
+            HandoffError: the chat cannot take requests, or the window is closing.
+        """
+        try:
+            return self.call_from_thread(self._handed_over, text)
+        except RuntimeError as exc:  # the window is not running (any more)
+            msg = "the chat window is closing"
+            raise HandoffError(msg) from exc
+
+    def _handed_over(self, text: str) -> State:
+        if self._session is None:
+            msg = f"the chat cannot take requests: {self._unavailable}"
+            raise HandoffError(msg)
+        if self._busy():
+            return State.STEERED if self._join_or_queue(text, "spoken") else State.QUEUED
+        self._request(text, source="spoken")
+        return State.STARTED
 
     def _take_steering(self, work: _Work) -> list[str]:
         with self._lock:
             taken, work.steering = work.steering, []
-        return taken
+        return [text for text, _source in taken]
 
     def _next_queued(self) -> None:
         """Start the next queued request, if any, once the window is idle."""
         with self._lock:
             if self._work is not None or not self._queued:
                 return
-            text, pictures, pasted = self._queued.pop(0)
-        self._request(text, pictures, pasted, shown=True)
+            text, pictures, pasted, source = self._queued.pop(0)
+        self._request(text, pictures, pasted, shown=True, source=source)
 
     def _sent_pastes(self, text: str) -> list[str]:
         """Return what was pasted into `text`, once per paste, and forget it.
@@ -1741,14 +1802,17 @@ class ChatApp(App[None]):
     def _open_settings(self) -> None:
         """Open the settings screen in the transcript's place, on its first setting."""
         self._pending = None
+        panel = self.query_one("#settings", SettingsPanel)
+        panel.open()
         self._fill_settings()
         self.query_one("#stage").display = False
-        self.query_one("#settings").display = True
+        panel.display = True
         self.query_one("#prompt").display = False
-        self.query_one("#settings-list", SettingsList).focus()
+        panel.options.focus()
+        self._tick()
 
     def _sections(self) -> list[Section]:
-        """Return the settings, by heading: the chat's own, then Jarvis's, then the tools."""
+        """Return the settings by tab: the chat's own first, then Jarvis's, then the tools."""
         chat = tuple(
             Row(
                 setting.key,
@@ -1772,6 +1836,8 @@ class ChatApp(App[None]):
                     item.value,
                     NOW_AND_ON_CLOSE if item.key == BYPASS_CONSENT else ON_CLOSE,
                     risky=item.risky,
+                    unit=item.unit,
+                    zero=item.zero,
                 )
                 for item in shared
                 if item.section == title
@@ -1782,21 +1848,12 @@ class ChatApp(App[None]):
                 sections.append(Section(title, rows))
         tools = self._read_tools(quiet=True)
         if tools is not None:
-            about = "Switch each tool on or off, make it ask first, or need the confirm key."
-            row = Row(TOOLS_ROW, "Tools", about, (), None, ON_CLOSE, summary=tools_summary(tools))
-            sections.append(Section("Tools", (row,)))
+            sections.append(Section(TOOLS, tool_rows(tools)))
         return sections
 
     def _fill_settings(self, highlighted: str | None = None) -> None:
-        self._tools_shown = False
-        self.query_one("#settings").border_title = "Settings"
-        self.query_one("#settings-hint", Static).update(SETTINGS_HINT)
-        self.query_one("#settings-legend", Static).update(SETTINGS_LEGEND)
-        listed = self.query_one("#settings-list", SettingsList)
-        self.query_one("#tools-list").display = False
-        listed.display = True
-        listed.show(self._sections(), highlighted, self._pending)
-        listed.focus()
+        panel = self.query_one("#settings", SettingsPanel)
+        panel.show(self._sections(), highlighted, self._pending, restart=self._changed_jarvis)
 
     def _read_tools(self, *, quiet: bool = False) -> list[ToolSetting] | None:
         read = self._services.tools
@@ -1809,33 +1866,17 @@ class ChatApp(App[None]):
                 self.notify(f"Couldn't read the tools: {type(exc).__name__}", severity="warning")
             return None
 
-    def _fill_tools(self, highlighted: str | None = None) -> None:
-        """List every tool with its setting; Enter moves one on, Esc goes back to the settings."""
-        tools = self._read_tools()
-        if tools is None:
-            return
-        self._tools_shown = True
-        self.query_one("#settings").border_title = "Settings: Tools"
-        self.query_one("#settings-hint", Static).update(TOOLS_HINT)
-        self.query_one("#settings-legend", Static).update(TOOLS_LEGEND)
-        self.query_one("#settings-list").display = False
-        listed = self.query_one("#tools-list", ToolsList)
-        listed.display = True
-        listed.show(tools, highlighted)
-        listed.focus()
-
-    def _change_tool(self, name: str) -> None:
+    def _change_tool(self, name: str, by: int = 1) -> None:
         move = self._services.next_tool_setting
         if move is None:
             return
         try:
-            now = move(name)
+            move(name, by)
         except Exception as exc:  # ruff: ignore[blind-except] - the setting stays as it was
             self.notify(f"Couldn't change {name}: {exc}", severity="warning")
             return
         self._changed_jarvis = True
-        self._fill_tools(name)
-        self.notify(f"{now.name}: {now.label}")
+        self._fill_settings(f"{TOOL_ROW}{name}")
 
     def _close_settings(self) -> None:
         apply = self._services.apply
@@ -1848,12 +1889,15 @@ class ChatApp(App[None]):
         self.query_one("#stage").display = True
         self.query_one("#prompt").display = True
         self._input().focus()
+        self._tick()
         self.call_after_refresh(self._follow_down)
 
-    def _apply(self, apply: Callable[[], None]) -> None:
+    def _apply(self, apply: Callable[[], str | None]) -> None:
         """Restart the voice service on a worker, never blocking the window; say if it failed."""
         try:
-            apply()
+            said = apply()
+            if said:
+                self._from_worker(self._note, said)
         except Exception as exc:  # ruff: ignore[blind-except] - shown in the window, never raised
             self._from_worker(self._note, f"Settings saved, but {exc}", "warn")
 
@@ -1869,34 +1913,47 @@ class ChatApp(App[None]):
             )
             return []
 
-    def _step_setting(self, key: str, by: int) -> None:
-        """Move one setting's value `by` places (1 on, -1 back); Enter on Tools opens them.
+    def _step_setting(
+        self, key: str, by: int, chosen: object = None, *, picked: bool = False
+    ) -> None:
+        """Move one setting's value `by` places (1 on, -1 back), or to `chosen` from a list.
 
-        A risky setting is turned on only by a second step to the same value once the row has
+        A risky setting is turned on only by a second step to the same value once the footer has
         said what it means; a step to another value asks about that one instead, and any other
-        key, or Esc, leaves it off.
+        key, or Esc, leaves it off. Enter on a setting that asked takes the value it asked about.
         """
-        if key == TOOLS_ROW:
-            self._fill_tools()
+        if key.startswith(TOOL_ROW):
+            self._change_tool(key.removeprefix(TOOL_ROW), by or 1)
             return
-        listed = self.query_one("#settings-list", SettingsList)
-        row = next((r for r in listed.rows if r.id == key), None)
+        row = self._row(key)
         if row is None:
             return
-        following = row.step(by)
         asked = self._pending
+        if asked is not None and asked.key == key and not picked and by == 0:
+            following, by = asked.value, asked.by
+        else:
+            following = chosen if picked else row.step(by)
         if row.turns_on(following) and (
-            asked is None or (asked.key, asked.value) != (key, following)
+            asked is None
+            or (asked.key, asked.value) != (key, following)
+            or (asked.by == 0 and by != 0)  # a picked value is confirmed by Enter alone
         ):
             self._pending = Pending(key, following, by)
             self._fill_settings(key)
             return
         self._pending = None
+        if following == row.value:
+            self._fill_settings(key)
+            return
         if key.startswith(SHARED_ROW):
             self._change_shared(key.removeprefix(SHARED_ROW), following)
         else:
             self._change_setting(key, following)
         self._fill_settings(key)
+
+    def _row(self, key: str) -> Row | None:
+        panel = self.query_one("#settings", SettingsPanel)
+        return next((r for s in panel.sections for r in s.rows if r.id == key), None)
 
     def _change_shared(self, key: str, value: object) -> None:
         change = self._services.set_shared
@@ -1960,7 +2017,7 @@ class ChatApp(App[None]):
             if work is not None:
                 work.taking = False
                 # Words the request ended before taking run next, ahead of the queue.
-                self._queued[:0] = [(text, [], []) for text in work.steering]
+                self._queued[:0] = [(text, [], [], source) for text, source in work.steering]
                 work.steering = []
             if self._work is work:
                 self._work = None
@@ -1974,6 +2031,7 @@ class ChatApp(App[None]):
         pasted: Sequence[str] = (),
         *,
         shown: bool = False,
+        source: str = "typed",
     ) -> None:
         if self._session is None:
             self._note(f"Typed requests are off: {self._unavailable}", "warn")
@@ -1987,10 +2045,12 @@ class ChatApp(App[None]):
             now = datetime.now().astimezone().strftime("%H:%M:%S")
             count = len(pictures)
             shared = "" if not count else "a picture" if count == 1 else f"{count} pictures"
-            self._mount(Request(text, _joined("typed", now, shared)))
+            self._mount(Request(text, _joined(source, now, shared)))
             self._exchanges.append(("you", text))
         self.run_worker(
-            lambda: self._handle(text, work, pictures, pasted), thread=True, group="request"
+            lambda: self._handle(text, work, pictures, pasted, spoken=source == "spoken"),
+            thread=True,
+            group="request",
         )
 
     def _handle(
@@ -1999,6 +2059,8 @@ class ChatApp(App[None]):
         work: _Work,
         pictures: Sequence[Picture] = (),
         pasted: Sequence[str] = (),
+        *,
+        spoken: bool = False,
     ) -> None:
         session = self._session
         work.began = True
@@ -2017,7 +2079,7 @@ class ChatApp(App[None]):
         rate: float | None = None
         try:
             if session is not None:
-                reply = session.handle(text, hooks, pictures=pictures, pasted=pasted)
+                reply = session.handle(text, hooks, pictures=pictures, pasted=pasted, spoken=spoken)
                 rate = session.last_rate()
         except Exception as exc:  # ruff: ignore[blind-except] - shown in the window, never raised
             self._from_worker(self._note, f"Something went wrong: {type(exc).__name__}", "error")
@@ -2117,25 +2179,35 @@ class ChatApp(App[None]):
             case "menu":
                 self.action_complete()
                 self._input().focus()
-            case "settings-list":
-                if event.option.id is not None:
-                    self._step_setting(event.option.id, 1)
-            case "tools-list":
-                if event.option.id is not None:
-                    self._change_tool(event.option.id)
             case _:
                 pass
 
-    def on_settings_list_stepped(self, event: SettingsList.Stepped) -> None:
-        """← → or space on a setting."""
+    @on(SettingsPanel.Stepped)
+    def _settings_stepped(self, event: SettingsPanel.Stepped) -> None:
+        """← → on a setting."""
         self._step_setting(event.row_id, event.by)
 
-    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+    @on(SettingsPanel.Activated)
+    def _settings_activated(self, event: SettingsPanel.Activated) -> None:
+        """Enter or space on a setting, or a value picked from its list."""
+        if event.picked:
+            self._step_setting(event.row_id, 0, event.value, picked=True)
+        else:
+            row = self._row(event.row_id)
+            self._step_setting(event.row_id, 1 if row is not None and row.toggle else 0)
+
+    @on(SettingsPanel.Redrawn)
+    def _settings_redrawn(self) -> None:
+        """The screen's keys may have changed, and the hint line says which work."""
+        self._tick()
+
+    @on(SettingsPanel.Moved)
+    def _settings_moved(self, event: SettingsPanel.Moved) -> None:
         """Moving off a risky setting that asked to be turned on leaves it off."""
         pending = self._pending
-        if event.option_list.id == "settings-list" and pending and pending.key != event.option.id:
+        if pending is not None and pending.key != event.row_id:
             self._pending = None
-            self._fill_settings(event.option.id or pending.key)
+            self._fill_settings(event.row_id or pending.key)
 
     def action_yes(self) -> None:
         """1: answer the open question yes."""

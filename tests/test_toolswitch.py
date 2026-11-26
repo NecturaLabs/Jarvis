@@ -84,3 +84,27 @@ def test_cycling_never_takes_a_tool_below_its_shipped_class() -> None:
         seen.append(_setting(config, "write_file").label)
 
     assert seen == ["needs the confirm key", "off", "asks first"]
+
+
+def test_stepping_back_is_the_cycle_the_other_way_and_never_below_the_shipped_class() -> None:
+    config = _config()
+    web = _setting(config, "web_search")
+    assert web.preceding() is OpClass.DENY  # round the ring from on
+    assert _setting(config, "stop_process").preceding() is OpClass.DENY  # one choice: itself
+    seen: list[str] = []
+    for _ in range(3):
+        setting = _setting(config, "write_file")
+        config = with_class(config, setting, setting.preceding())
+        seen.append(_setting(config, "write_file").label)
+
+    assert seen == [
+        "off",
+        "needs the confirm key",
+        "asks first",
+    ]  # never "on", which it ships above
+    for name in ("web_search", "write_file"):
+        setting = _setting(config, name)
+        assert (
+            _setting(with_class(config, setting, setting.following()), name).preceding()
+            is setting.state
+        )

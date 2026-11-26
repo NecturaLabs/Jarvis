@@ -29,6 +29,7 @@ from jarvis import (
     cliout,
     config,
     control,
+    handoff,
     models,
     modes,
     paths,
@@ -37,7 +38,7 @@ from jarvis import (
     t3push,
     update,
 )
-from jarvis.activity import AuditTail
+from jarvis.activity import VOICE_VIA, AuditTail
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.app import (
     SetupError,
@@ -63,6 +64,7 @@ from jarvis.operations import OperationError
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.pc.hearing import Listening, PcHearing
 from jarvis.pc.screenshot import folders as screenshot_folders
+from jarvis.pc.workspace import workspace_path, workspace_problem
 from jarvis.policy import OpClass, is_yes
 from jarvis.schedule import JobStore
 from jarvis.secretfile import (
@@ -697,6 +699,7 @@ def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
             return 2
     config.save(updated)
     ensure_api_key(strata_key_file())
+    _setup_workspace(updated)
     if updated.strata.run_config == Path():
         print(f"config: {paths.config_file()}")
         print(
@@ -720,6 +723,34 @@ def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
     result = _setup_units(STRATA_UNIT, JARVIS_UNIT, enable=args.enable)
     _setup_spotify(updated, failed=result)
     return result
+
+
+def _setup_workspace(cfg: config.Config) -> None:
+    """Make Jarvis's workspace folder if it is missing, and say if it cannot be used."""
+    folder = workspace_path(cfg.files, Path.home())
+    problem = workspace_problem(folder, create=True)
+    if problem:
+        print(
+            f"jarvis: files.workspace {folder} {problem}; fix that or point it elsewhere",
+            file=sys.stderr,
+        )
+    else:
+        print(f"workspace: {folder}")
+
+
+def _workspace_check(cfg: config.Config) -> tuple[bool, str, str]:
+    """The doctor's check of Jarvis's workspace: a folder of the owner's alone, or not made yet."""
+    folder = workspace_path(cfg.files, Path.home())
+    problem = workspace_problem(folder, create=False)
+    if problem:
+        return (
+            False,
+            f"workspace {folder} {problem}",
+            "fix the folder, or set files.workspace to another one",
+        )
+    if not folder.is_dir():
+        return True, f"workspace {folder} (made when Jarvis starts)", ""
+    return True, f"workspace {folder}", ""
 
 
 def _setup_units(*units: str, enable: bool) -> int:
@@ -840,6 +871,7 @@ def _setup_remote(args: argparse.Namespace, cfg: config.Config) -> int:
         if args.remote is not None:
             services.write_remote_key(cfg, key)
         config.save(cfg)
+    _setup_workspace(cfg)
     print(f"config: {paths.config_file()}\nvoice unit: {unit}")
     active = args.enable and _unit_state(JARVIS_UNIT) == "active"
     code = _setup_units(JARVIS_UNIT, enable=args.enable)
@@ -943,7 +975,11 @@ def _chat_status(cfg: config.Config) -> str:
     if cfg.strata.mode == "remote":
         return f"voice {voice} · {_probe_strata(cfg).report(cfg.model.model)}"
     model = _strata(cfg).status() if _unit_state(STRATA_UNIT) == "active" else None
-    return f"voice {voice} · model {model or 'server not running'}"
+    line = f"voice {voice} · model {model or 'server not running'}"
+    answer = control.send("status", timeout=1.0)
+    if model == "loaded" and answer is not None and answer.get("paused") is True:
+        line += " · paused: it unloads when no request is running"
+    return line
 
 
 def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
@@ -982,9 +1018,11 @@ class _Shared:
     key: str
     label: str
     values: tuple[object, ...]
-    heading: str  # the heading /config shows it under
+    heading: str  # the tab /config shows it under
     about: str
     risky: str = ""  # what turning it on means, said before it is turned on
+    unit: str = ""  # "seconds": shown as 30 s, 10 min, 4 h
+    zero: str = ""  # the word /config shows for 0, where 0 means something
 
 
 SHARED_SETTINGS: tuple[_Shared, ...] = (
@@ -1002,29 +1040,32 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Take requests from PC audio",
         (False, True),
         "Listening",
-        "Jarvis also hears requests spoken in the PC's own audio, such as someone in a call or "
-        "a video. Whatever they ask to be done always needs your yes.",
+        "Jarvis also hears requests spoken in the PC's own audio, such as a call or a video. "
+        "Whatever they ask to be done always needs your yes.",
         "Jarvis will take requests from voices in the PC's audio, such as a call or a video; "
         "each of their actions still needs your yes.",
     ),
     _Shared(
         "audio",
         "pc_audio_recall_s",
-        "Recall PC audio (seconds)",
+        "Recall PC audio",
         (0, 10, 30, 60),
         "Listening",
         "Keep the last seconds of PC audio in memory so Jarvis can hear what was just said "
-        "(needs PC audio on); 0 keeps none.",
+        "(needs PC audio on); none keeps nothing.",
         "Jarvis will keep the last seconds of the PC's audio in memory.",
+        "seconds",
+        "none",
     ),
     _Shared(
         "browser",
         "idle_close_s",
-        "Close the browser after (seconds)",
+        "Close the browser after",
         (30.0, 60.0, 120.0, 300.0),
         "Chat",
         "How long the headless browser stays open after its last use, in the chat and by "
-        "voice; then it closes with its profile and pages. The chat takes it when it opens again.",
+        "voice; the chat takes it when it opens again.",
+        unit="seconds",
     ),
     _Shared(
         "agent",
@@ -1041,19 +1082,21 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Act without asking first",
         (False, True),
         "Safety",
-        "On: Jarvis acts without asking for your yes, even after reading a web page or a file. "
-        "A tool that needs the confirm key still waits for it, and a tool that is off stays off.",
+        "Jarvis acts without your yes, even after reading a web page or a file. "
+        "A tool needing the confirm key still waits; an off tool stays off.",
         "Jarvis will act without asking you first, even when a web page or a file could have "
         "steered it.",
     ),
     _Shared(
         "coding",
         "back_after_s",
-        "Leave coding mode after (seconds)",
+        "Leave coding mode after",
         (0.0, 600.0, 1800.0, 3600.0, 14400.0),
         "Mode",
-        "Jarvis goes back to normal mode after coding mode went unused this long; 0 stays in "
-        "coding mode until you switch (/model normal).",
+        "After coding mode goes unused this long, Jarvis goes back to normal mode. never: it "
+        "stays until you switch (/model normal).",
+        unit="seconds",
+        zero="never",
     ),
     _Shared(
         "coding.chat",
@@ -1061,9 +1104,8 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Switch mode by itself in the chat",
         (False, True),
         "Mode",
-        "The model moves a request that is programming work to coding mode, and back when you "
-        "say the work is over. Off: only /model and `jarvis model` switch. Takes effect when "
-        "the chat next starts.",
+        "The model moves programming work to coding mode and back. Off: only /model and "
+        "`jarvis model` switch. The chat takes it when it next opens.",
     ),
     _Shared(
         "coding.voice",
@@ -1072,7 +1114,7 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         (False, True),
         "Mode",
         "The same for spoken requests. With a coding model of its own, a switch loads another "
-        "model, so the request that caused it waits in silence for the load.",
+        "model, so the request waits in silence for the load.",
         "Spoken requests that are programming work will switch the mode by themselves, and "
         "Jarvis is silent while a separate coding model loads.",
     ),
@@ -1111,6 +1153,8 @@ def _shared_settings() -> list[SharedSetting]:
             item.heading,
             item.about,
             item.risky,
+            item.unit,
+            item.zero,
         )
         for item in SHARED_SETTINGS
     ]
@@ -1139,14 +1183,72 @@ def _set_shared(key: str, value: object) -> None:
         audit.record("setting_changed", setting=key, was=was, to=value, source="chat")
 
 
-def _apply_from_chat() -> None:
-    """Restart the voice service so it takes what the chat's settings changed.
+APPLIES_WHEN_IDLE = (
+    "Settings saved. They apply when Jarvis is idle: the voice service restarts then, "
+    "even if this window is closed."
+)
+PENDING_CHECK_S = 5.0  # how often the voice service looks for a restart that waits for it
+RESTART_WAIT_S = 30.0  # how long it waits to be stopped by a restart systemd accepted
+
+
+def _apply_from_chat() -> str:
+    """Restart the voice service so it takes what the chat's settings changed; never cut a request.
+
+    A restart ends a spoken request in flight. It is made while no voice request can begin
+    (`modes.voice_idle`); with one under way, a note is left (`paths.restart_pending_file`) and
+    the voice service restarts itself once it is idle (`_restart_when_pending`), whether this
+    window is still open or not, and later changes ride on the same restart. The answer is the
+    line that says so, else "".
 
     Raises:
         RestartError: the restart failed, so the voice service runs on the old settings.
     """
-    if not _restart_if_running():
-        raise RestartError(RESTART_FAILED)
+    note = paths.restart_pending_file()
+    with modes.voice_idle() as idle:
+        if idle:
+            note.unlink(missing_ok=True)
+            if not _restart_if_running():
+                raise RestartError(RESTART_FAILED)
+            return ""
+    write_atomic(note, "settings changed\n", 0o600)
+    return APPLIES_WHEN_IDLE
+
+
+def _watch_for_restart_note(loop: VoiceLoop, stop: threading.Event) -> None:
+    """Start the thread that restarts the voice service for settings the chat changed."""
+    threading.Thread(
+        target=_restart_when_pending, args=(loop, stop), name="jarvis-restart-pending", daemon=True
+    ).start()
+
+
+def _restart_when_pending(loop: VoiceLoop, stop: threading.Event) -> None:
+    """Restart the voice service for settings the chat changed, once no request is under way.
+
+    A look is one `stat` of the note every `PENDING_CHECK_S`. The restart is asked of systemd
+    without waiting for it, while no voice request can begin; once systemd accepted it the note
+    goes, and the lock is kept until this process is stopped, so no request begins in the
+    moments before. A restart that was refused leaves the note for the next look. Whatever goes
+    wrong is logged and the thread goes on.
+    """
+    note = paths.restart_pending_file()
+    while not stop.wait(PENDING_CHECK_S):
+        try:
+            if note.exists() and str(loop.state) == "idle":
+                _restart_now(note, stop)
+        except Exception:
+            log.exception("could not restart for the settings the chat changed")
+
+
+def _restart_now(note: Path, stop: threading.Event) -> None:
+    with modes.voice_idle() as idle:
+        if not idle:
+            return
+        log.info("restarting for the settings the chat changed")
+        if _restart_if_running(no_block=True):
+            note.unlink(missing_ok=True)
+            stop.wait(RESTART_WAIT_S)  # the unit stops this process: no request begins meanwhile
+        else:
+            log.warning("the voice service did not restart: %s", RESTART_FAILED)
 
 
 def chat_archive_dir() -> Path:
@@ -1315,6 +1417,15 @@ def cmd_acp(args: argparse.Namespace) -> int:
     )
 
 
+def _export_folder(cfg: config.Config) -> Path:
+    """Where the chat saves an exported conversation: the workspace, else ~/Documents or home."""
+    folder = workspace_path(cfg.files, Path.home())
+    if not workspace_problem(folder, create=True):
+        return folder
+    documents = Path.home() / "Documents"
+    return documents if documents.is_dir() else Path.home()
+
+
 def cmd_chat(_args: argparse.Namespace) -> int:
     """Open the chat window: typed requests, and everything Jarvis does, live."""
     from jarvis.chat.app import ChatApp, Services
@@ -1332,7 +1443,6 @@ def cmd_chat(_args: argparse.Namespace) -> int:
             pictures = built.pictures
     except SetupError as exc:
         unavailable = str(exc)
-    documents = Path.home() / "Documents"
     services = Services(
         status=lambda: _chat_status(cfg),
         details=lambda: _chat_details(cfg),
@@ -1349,7 +1459,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         apply=_apply_from_chat,
         history=InputHistory(paths.state_dir() / "chat-history", cfg.chat.history_size),
         archive=_chat_archive(cfg.chat.archive_keep),
-        export_dir=documents if documents.is_dir() else Path.home(),
+        export_dir=_export_folder(cfg),
         paste=clipboard.read,
         pictures=pictures,
         screenshots=_screenshot_folders(Path.home(), os.environ),
@@ -1357,7 +1467,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         twelve_hour=cfg.clock.twelve_hour,
         announcements=control.subscribe,
     )
-    ChatApp(
+    window = ChatApp(
         AuditTail(paths.audit_file()),
         agent,
         unavailable=unavailable,
@@ -1365,7 +1475,27 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         settings=cfg.chat,
         services=services,
         session_id=session_id,
-    ).run()
+    )
+    audit = AuditLog(paths.audit_file(), tags={"via": "chat", "session": session_id})
+
+    def take(words: str) -> handoff.State:
+        # Written first: the request it starts follows it in the log, marked as spoken.
+        audit.record("chat_handoff_received", text=words)
+        state = window.take_handoff(words)
+        audit.record("chat_handoff_placed", state=state.value)
+        return state
+
+    listener = handoff.ChatListener(
+        session_id, take, refused=lambda why: audit.record("chat_handoff_refused", reason=why)
+    )
+    try:
+        listener.start()  # the voice service hands spoken instructions over here
+    except OSError as exc:
+        log.warning("the chat cannot take spoken hand-offs: %s", exc)
+    try:
+        window.run()
+    finally:
+        listener.close()
     return 0
 
 
@@ -1499,6 +1629,16 @@ def _remote_status(
     return lambda: _probe_fields(model.probe(), model.config.model)
 
 
+def _load_for_run() -> config.Config:
+    """Load the config for the voice service, after dropping the restart note it makes true.
+
+    What a note stood for is saved in the config already; one written after the drop is kept
+    for the watcher.
+    """
+    paths.restart_pending_file().unlink(missing_ok=True)
+    return _load_client()
+
+
 def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] - the voice service's parts, wired together here
     """Run the voice loop until stopped."""
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
@@ -1515,14 +1655,14 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
     from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, which loads numpy and ONNX Runtime
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    cfg = _load_client()
+    cfg = _load_for_run()
     # The hint is the agent's, built after the transcribers that `pc_audio_listen` needs; it is
     # first asked for once a request is heard.
     request, answer = _transcribers(cfg, lambda: jarvis.hint())  # ruff: ignore[unnecessary-lambda] - `jarvis` is built below
     mic = PausableMic(Microphone(cfg.audio.source, stall_s=MIC_STALL_S))
     listening = _pc_listening(cfg, answer, paused=lambda: mic.paused)
     try:
-        jarvis = build(cfg, units=StrataUnits(), listening=listening)
+        jarvis = build(cfg, via=VOICE_VIA, units=StrataUnits(), listening=listening)
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
@@ -1649,6 +1789,7 @@ def _run_until_stopped(
     from jarvis.audio import FallbackWake  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     try:
+        _watch_for_restart_note(loop, stop_requested)
         voxtype.start()
         loop.run(stop_requested.is_set)
     except Exception:
@@ -1961,6 +2102,7 @@ def essential_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], l
         *(_model_url(cfg) if local else []),
         *(_model_checks(cfg) if local else []),
         *(_coding_checks(cfg) if local else []),
+        _workspace_check(cfg),
         *tool_checks,
         *sing_checks,
         *_source_checks(cfg),
@@ -2818,14 +2960,18 @@ class RestartError(RuntimeError):
     """The voice service did not restart after a change, so it runs on the old settings."""
 
 
-def _restart_if_running() -> bool:
-    """Restart the voice service if it runs; return False when that restart failed."""
+def _restart_if_running(*, no_block: bool = False) -> bool:
+    """Restart the voice service if it runs; return False when that restart failed.
+
+    With `no_block` the call returns once systemd has accepted the restart, which is what the
+    voice service itself needs: the unit's own SIGTERM cannot then read as a failure.
+    """
     if _unit_state(JARVIS_UNIT) != "active":
         return True
     # A restart counts against the start limit (5 in 15 min): clear it first, so a few
     # config changes in a row do not leave the voice service stopped.
     _systemctl("reset-failed", JARVIS_UNIT)
-    if _systemctl("restart", JARVIS_UNIT) != 0:
+    if _systemctl(*(["--no-block"] if no_block else []), "restart", JARVIS_UNIT) != 0:
         print(f"jarvis: {RESTART_FAILED}", file=sys.stderr)
         return False
     return True
@@ -2919,8 +3065,10 @@ def set_tool(
     return now
 
 
-def _next_tool_setting(name: str) -> ToolSetting:
-    """Move one tool on to its next setting (on, asks first, needs the key, off), for the chat.
+def _next_tool_setting(name: str, by: int = 1) -> ToolSetting:
+    """Move one tool on (`by` 1) or back (`by` -1) round its settings, for the chat.
+
+    The settings are on, asks first, needs the key, off, never below how the tool ships.
 
     Raises:
         ConfigError: as `set_tool`.
@@ -2929,7 +3077,8 @@ def _next_tool_setting(name: str) -> ToolSetting:
     if found is None:
         msg = f"no tool is called {name!r}"
         raise config.ConfigError(msg)
-    return set_tool(name, found.following(), source="chat", restart=False)
+    moved = found.following() if by > 0 else found.preceding()
+    return set_tool(name, moved, source="chat", restart=False)
 
 
 def cmd_tools(args: argparse.Namespace) -> int:

@@ -1,5 +1,6 @@
 """Builds Jarvis from its config: model, operations, prompt, audit log and agent."""
 
+import logging
 import os
 import shutil
 from dataclasses import dataclass, replace
@@ -7,7 +8,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from jarvis import __version__, calc, modes, osskills, paths, services, skills
+from jarvis import __version__, calc, handoff, modes, osskills, paths, services, skills
 from jarvis.about import AboutOps
 from jarvis.agent import SWITCH_MODEL, Agent, Limits, Setup
 from jarvis.audit import AuditLog
@@ -35,6 +36,7 @@ from jarvis.pc.stats import StatsOps
 from jarvis.pc.volume import VolumeOps
 from jarvis.pc.watch import ScreenWatch
 from jarvis.pc.windows import WindowOps
+from jarvis.pc.workspace import Ledger, workspace_in_use, workspace_path, workspace_problem
 from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
@@ -62,6 +64,8 @@ if TYPE_CHECKING:
     from jarvis.config import ChatConfig, Config
     from jarvis.model import ModelStatus
 
+
+log = logging.getLogger(__name__)
 
 MAX_REPLY_CHARS = 4000
 CHARS_PER_REPLY_TOKEN = 8  # generous: the token cap, not this, keeps a reply to length
@@ -251,6 +255,7 @@ def system_prompt(
         .read_text(encoding="utf-8")
         .rstrip("\n"),
         "pc_audio": _pc_audio_rule(config, channel),
+        "workspace": _workspace_rule(config),
     }
     text = core + "\n" + style
     if coding:
@@ -483,9 +488,20 @@ def files_boundary(config: Config, home: Path | None = None) -> Boundary:
 
     Jarvis's own state and config folders are never in it: its settings and the owner's skills
     there steer Jarvis, so no request may rewrite them through a file operation.
+
+    Jarvis's workspace is made here, mode 0700, if it is missing. One that exists but is not a
+    folder of the owner's alone (a link, another user's, writable by others) is left as it is
+    and not used; `jarvis doctor` says so.
     """
+    base = home or Path.home()
+    problem = workspace_problem(workspace_path(config.files, base), create=True)
+    if problem:
+        log.warning("files.workspace %s: it is not used until that is fixed", problem)
     return Boundary.of(
-        config.files, home or Path.home(), protected=(paths.state_dir(), paths.config_dir())
+        config.files,
+        base,
+        protected=(paths.state_dir(), paths.config_dir()),
+        workspace=not problem,
     )
 
 
@@ -542,7 +558,9 @@ def pc_operations(
         *StatsOps(Sampler()).operations(),
         *VolumeOps(_wpctl).operations(),
         *MediaOps(_playerctl).operations(),
-        *FileOps(boundary, max_chars=limits.tool_text_chars).operations(),
+        *FileOps(
+            boundary, max_chars=limits.tool_text_chars, made=Ledger(paths.workspace_ledger_file())
+        ).operations(),
         *(ProcessOps() if watching is None else watching.processes).operations(),
         *windows.operations(),
         *ScreenshotOps(
@@ -550,8 +568,23 @@ def pc_operations(
         ).operations(),
         *([] if watching is None else watching.operations()),
         *AppOps(config.apps.programs).operations(),
-        *ShellOps(config.shell, home or Path.home(), max_chars=limits.tool_text_chars).operations(),
+        *ShellOps(
+            config.shell,
+            home or Path.home(),
+            max_chars=limits.tool_text_chars,
+            workspace=boundary.workspace,
+        ).operations(),
     ]
+
+
+def _workspace_rule(config: Config) -> str:
+    """Tell the model where its workspace folder is, unless that folder cannot be used.
+
+    A sentence that begins with a space, to follow the line it ends.
+    """
+    if not workspace_in_use(config.files, Path.home()):
+        return ""
+    return f" Bare file names save in your workspace, {config.files.workspace} (always writable)."
 
 
 def _number_rule(separator: str) -> str:
@@ -698,6 +731,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
             else []
         ),
         *([quiet_operation()] if channel == "voice" else []),
+        *([handoff.operation()] if channel == "voice" else []),
         *(SingOps(singer_for(config)).operations() if channel == "voice" else []),
         *([think] if (think := think_operation(limits)) is not None else []),
         *([switch_operation(config, coding=coding)] if switches_itself(config, channel) else []),
@@ -720,10 +754,18 @@ def switches_itself(config: Config, channel: Channel) -> bool:
 # Operations offered only when their files or programs are installed (and the browser switched on),
 # known to `boundaries.classes` either way.
 INSTALLED_ONLY = frozenset({"read_skill", "os_skill", *browserops.NAMES})
-# ... and only while a setting turns them on (`audio.listen_to_pc`, `tools = "routed"`) or in
-# the voice service (the screen watches).
+# ... and only while a setting or a window turns them on (`audio.listen_to_pc`, `tools = "routed"`;
+# an open chat) or in the voice service (the screen watches).
 SETTING_ONLY = frozenset(
-    {"pc_audio_listen", SWITCH_MODEL, USE_TOOLS, "pc_watch", "pc_watches", "pc_watch_stop"}
+    {
+        "pc_audio_listen",
+        SWITCH_MODEL,
+        USE_TOOLS,
+        "pc_watch",
+        "pc_watches",
+        "pc_watch_stop",
+        handoff.NAME,
+    }
 )
 # Tools whose result is a sound, and the voice-channel callers that cannot play one (`jarvis ask`
 # prints its reply): they are not offered there, so nothing is made only to be thrown away.
@@ -849,14 +891,14 @@ def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; 
     """Return the operations an agent offers in a mode, without what is switched off.
 
     `config` is the mode's own (`modes.effective`). A tool switched off is not offered at all:
-    by `boundaries.classes`, by coding mode's `tools_off`, `sing` where the caller cannot play a
-    sound (`via`), the picture tools where it cannot show one (`jarvis acp`), and `switch_model`
-    where there is no model server to switch (`can_switch`).
+    by `boundaries.classes`, by coding mode's `tools_off`, `sing` and `chat_hand_off` where the
+    caller cannot play a sound (`via`), the picture tools where it cannot show one (`jarvis acp`),
+    and `switch_model` where there is no model server to switch (`can_switch`).
     """
     off: set[str] = {
         *switched_off(config),
         *(config.coding.tools_off if coding else ()),
-        *(MAKES_SOUND if via in SOUNDLESS else ()),
+        *(MAKES_SOUND | {handoff.NAME} if via in SOUNDLESS else ()),
         *(SHOWS_PICTURES if via == "acp" else ()),
     }
     if not can_switch:
@@ -959,10 +1001,10 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
     """Assemble the agent from the config.
 
     `via` marks every audit event of this agent with where its requests come from ("chat",
-    "ask", "acp"); the voice service leaves it out. The chat and `jarvis acp` get the chat's limits
-    and written replies; only the chat keeps its conversation across sessions (`chat.resume`; an
-    ACP session has its own, and none is kept). `session` marks the
-    agent's audit events too, so a window can tell its own from others'. With `units` (the
+    "ask", "acp", `VOICE_VIA` for the voice service, which the chat does not show). The chat and
+    `jarvis acp` get the chat's limits and written replies; only the chat keeps its conversation
+    across sessions (`chat.resume`; an ACP session has its own, and none is kept). `session`
+    marks the agent's audit events too, so a window can tell its own from others'. With `units` (the
     model server's systemd unit) the agent follows the mode Jarvis is in and can switch it;
     without, it stays in the normal mode. With `mode` it stays in that mode whatever Jarvis is in
     (`jarvis acp --coding`): it holds the answering mark and notes use of the shared model,

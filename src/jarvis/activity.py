@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, BinaryIO, cast
 if TYPE_CHECKING:
     from pathlib import Path
 
+VOICE_VIA = "voice"  # the `via` of every event the voice service's agent writes
 MAX_SHOWN_CHARS = 400
 READ_CHUNK = 1 << 16
 

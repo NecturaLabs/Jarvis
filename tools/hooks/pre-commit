@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Git pre-commit hook: refuses a commit that stages a line naming something private
-# (tools/check_private.py --staged), and one while the project's checks (`uv run .lint/check.sh`) or the
-# tests that need no hardware (`pytest -m "not local"`) fail, before CI runs the same. Skipped when the
-# commit stages no Python, stub, shell, TOML, Markdown or YAML file, no uv.lock and nothing in
-# tools/hooks/.
+# (tools/check_private.py --staged), and one while lint or the affected non-local tests fail.
+# Lint and tests are skipped when the commit stages no Python, stub, shell, TOML, Markdown or YAML
+# file, no uv.lock and nothing in .github/, docs/, src/jarvis/ or tools/.
 # Opt in with tools/install-hooks.sh, which copies this file into the repository's own hooks folder.
 # jarvis-hook: installed by tools/install-hooks.sh
 set -euo pipefail
@@ -25,15 +24,26 @@ git diff --cached --name-only -z --diff-filter=ACMRD >"${staged}"
 relevant=false
 while IFS= read -r -d '' path; do
   case "${path}" in
-    *.py | *.pyi | *.sh | *.toml | *.md | *.yml | uv.lock | */uv.lock | tools/hooks/*)
+    *.py | *.pyi | *.sh | *.toml | *.md | *.yml | uv.lock | */uv.lock | .github/* | docs/* | src/jarvis/* | tools/*)
       relevant=true
       ;;
     *) ;;
   esac
 done <"${staged}"
 if ! "${relevant}"; then
-  echo "pre-commit: skipped, no Python, shell, TOML, Markdown, YAML, uv.lock or hook file is staged." >&2
+  echo "pre-commit: skipped lint and tests, no relevant staged files." >&2
   exit 0
+fi
+
+# Select from the commit's index before unsetting GIT_INDEX_FILE for lint and pytest.
+skip_reason="no affected test files"
+if [[ ! -f tools/affected_tests.py ]]; then
+  # Installed hooks are shared with worktrees that may predate the selector.
+  : >"${staged}"
+  skip_reason="this worktree has no affected-test selector"
+elif ! uv run --quiet python tools/affected_tests.py --staged --null >"${staged}"; then
+  echo "pre-commit: could not select affected tests." >&2
+  exit 1
 fi
 
 # Git exports repository context to hooks. The tests create their own repositories; keeping GIT_DIR or
@@ -49,8 +59,22 @@ if ! uv run .lint/check.sh; then
   exit 1
 fi
 
-echo 'pre-commit: uv run pytest -q -m "not local"' >&2
-if ! PIPEWIRE_REMOTE=/nonexistent PULSE_SERVER=unix:/nonexistent uv run pytest -q -m "not local"; then
-  echo "pre-commit: a test failed; fix it and commit again." >&2
-  exit 1
+if [[ ! -s ${staged} ]]; then
+  echo "pre-commit: skipped pytest, ${skip_reason}." >&2
+  exit 0
 fi
+
+mapfile -d '' -t tests <"${staged}"
+printf 'pre-commit: uv run pytest -q -m "not local"' >&2
+printf ' %q' "${tests[@]}" >&2
+printf '\n' >&2
+pytest_status=0
+PIPEWIRE_REMOTE=/nonexistent PULSE_SERVER=unix:/nonexistent uv run pytest -q -m "not local" "${tests[@]}" || pytest_status=$?
+case "${pytest_status}" in
+  0) ;;
+  5) echo "pre-commit: no non-local tests collected from the affected files." >&2 ;;
+  *)
+    echo "pre-commit: a test failed; fix it and commit again." >&2
+    exit 1
+    ;;
+esac

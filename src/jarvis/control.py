@@ -35,11 +35,14 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from jarvis import announce
+from jarvis import announce, modes
 from jarvis.jsonutil import obj
 from jarvis.paths import runtime_dir
+
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
 
 log = logging.getLogger(__name__)
 
@@ -170,6 +173,7 @@ class Controls:
         prime: Callable[[], object] = lambda: None,
         remote_status: Callable[[], dict[str, object]] | None = None,
         background: Callable[[Callable[[], object]], None] = _in_background,
+        nobody_answering: Callable[[], AbstractContextManager[bool]] = modes.nobody_answering,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -190,6 +194,7 @@ class Controls:
         self._model_turn = threading.Lock()  # an unload and a load never overlap
         self._commands = threading.Lock()
         self._background = background
+        self._nobody_answering = nobody_answering
         self._clock = clock
         self._sleep = sleep
         self._pauses = 0
@@ -248,10 +253,18 @@ class Controls:
         deadline = self._clock() + IDLE_WAIT_S
         while self._in_flight() and self._clock() < deadline:
             self._sleep(IDLE_POLL_S)
-        with self._model_turn:
-            if pause == self._pauses and self._mic.paused:
-                log.info("paused: unloading the model")
-                self._model.unload()
+        # A request in a chat window may run for minutes (or wait for the owner's yes): the
+        # unload waits for it for as long as this pause stands, and is made while holding off
+        # any request that would begin, so no model call is ever cut. The model's turn is taken
+        # first, as `_warm` does before its prompt read takes the Answering mark: the other
+        # order would deadlock, and would hold requests off for the length of a model load.
+        while pause == self._pauses and self._mic.paused:
+            with self._model_turn, self._nobody_answering() as free:
+                if free and pause == self._pauses and self._mic.paused:
+                    log.info("paused: unloading the model")
+                    self._model.unload()
+                    return
+            self._sleep(IDLE_POLL_S)
 
     def _in_flight(self) -> bool:
         return str(self._loop.state) not in {"idle", NO_MIC}
@@ -319,7 +332,7 @@ class Controls:
         return {"paused": False, "changed": changed}
 
 
-def _peer(conn: socket.socket) -> tuple[int, int] | None:
+def peer_credentials(conn: socket.socket) -> tuple[int, int] | None:
     """Return the connecting process's PID and user ID."""
     try:
         raw = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, _UCRED.size)
@@ -330,6 +343,39 @@ def _peer(conn: socket.socket) -> tuple[int, int] | None:
 
 
 _PROC = Path("/proc")
+LOCK_FIELDS = 6  # in a line of /proc/locks that names a lock: through the device and inode
+
+
+def serving_pid(path: Path | None = None, *, proc: Path = _PROC) -> int | None:
+    """Return the PID of the process serving the control socket, or None when none does.
+
+    The serving process holds an `flock` on the socket's lock file (`ControlServer.start`); the
+    kernel lists the holder in `/proc/locks`, so a program that process started cannot pass for it.
+    """
+    try:
+        info = _lock_path(path or socket_path()).stat()
+        listed = (proc / "locks").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in listed:
+        parts = line.split()  # "3: FLOCK  ADVISORY  WRITE 4242 fd:01:7890 0 EOF"
+        if (
+            len(parts) < LOCK_FIELDS or parts[1] != "FLOCK"
+        ):  # a waiter's line has "->" in that place
+            continue
+        try:
+            major, minor, inode = parts[5].split(":")
+            if (int(major, 16), int(minor, 16), int(inode)) == (
+                os.major(info.st_dev),
+                os.minor(info.st_dev),
+                info.st_ino,
+            ):
+                return int(parts[4])
+        except ValueError:
+            continue
+    return None
+
+
 _MAX_DEPTH = 4096  # more parents than this is a loop in a broken /proc: refuse
 
 
@@ -515,7 +561,7 @@ class ControlServer:
                 log.exception("control connection failed")
 
     def _answer(self, conn: socket.socket) -> None:
-        peer = _peer(conn)
+        peer = peer_credentials(conn)
         if peer is None or peer[1] != os.getuid():
             log.warning("refused a control connection from another user")
             self._audit.record("control_refused", peer_uid=None if peer is None else peer[1])
