@@ -24,3 +24,4 @@ edited once accepted; a later decision supersedes it with a new record that link
 | [0017](0017-coding-mode.md) | A coding mode with its own model on the one model server, switched by the owner or by the model with a typed tool | accepted |
 | [0018](0018-sing-a-song-the-model-writes.md) | Sing a song the model writes as notes, with a speaking-voice singer and an optional GPU one | proposed |
 | [0019](0019-install-and-update.md) | Install and update Jarvis from a release branch | proposed |
+| [0023](0023-acp-front-end.md) | Serve Jarvis to coding apps over the Agent Client Protocol; consent stays Jarvis's own | proposed |

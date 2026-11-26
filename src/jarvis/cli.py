@@ -18,10 +18,10 @@ import threading
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TextIO
 from urllib.parse import urlsplit
 
-from jarvis import __version__, cliout, config, control, models, modes, paths, services, update
+from jarvis import __version__, acp, cliout, config, control, models, modes, paths, services, update
 from jarvis.activity import AuditTail
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.app import (
@@ -178,6 +178,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("confirm", "allow the action Jarvis is asking about (bind it to a key)"),
             ("chat", "type requests and watch what Jarvis does, live"),
             ("ask", "send one typed request, as if spoken"),
+            ("acp", "talk to Jarvis from a coding app, over ACP on stdio"),
             ("model", "show the model in use, or switch mode: normal or coding"),
         ),
     ),
@@ -223,6 +224,14 @@ _NAME_WIDTH = 15
 HELP_WIDTH = 80
 # What a command's own help adds to its one-line summary.
 _DETAILS = {
+    "acp": (
+        "A coding app starts this and talks to it on standard input and output, one JSON "
+        "message a line; never run it by hand. Each session is a chat conversation of its own "
+        "with the one Jarvis agent, answered in text. A question about an action is asked in "
+        "the reply and your next message is the answer: a clear yes runs it, anything else "
+        "cancels it. In T3 Code: Settings, Providers, Add provider, Local ACP command, with "
+        "this program and the argument acp."
+    ),
     "restart": (
         "Restarts the voice service. A stopped model server is started; a running one is "
         "restarted only when its settings changed since it started, so the model stays loaded "
@@ -932,6 +941,38 @@ def _chat_prompt(chat: config.ChatConfig) -> str:
     return system_prompt(cfg, "chat", coding=mode == "coding")
 
 
+def _claim_stdio() -> tuple[TextIO, TextIO]:
+    """Return the protocol's input and output, and leave nothing else on those two descriptors.
+
+    The protocol keeps private copies of standard input and output. Descriptor 0 then reads
+    nothing and descriptor 1 is the error output, so a program a tool starts can neither take
+    protocol lines nor write into the protocol.
+    """
+    source = os.fdopen(os.dup(0), "r", encoding="utf-8", errors="replace", newline="\n")
+    out = os.fdopen(os.dup(1), "w", encoding="utf-8", newline="\n")
+    sys.stdout.flush()
+    nothing = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(nothing, 0)
+    os.close(nothing)
+    os.dup2(2, 1)
+    return source, out
+
+
+def cmd_acp(_args: argparse.Namespace) -> int:
+    """Speak the Agent Client Protocol on standard input and output, for a coding app."""
+    cfg = _load()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+    def make(session_id: str) -> acp.AgentSession:
+        try:
+            return build(cfg, via="acp", session=session_id, units=StrataUnits()).agent
+        except SetupError as exc:
+            raise acp.StartError(str(exc)) from exc
+
+    source, out = _claim_stdio()
+    return acp.serve(source, out, make, names=(cfg.persona.name,), version=__version__)
+
+
 def cmd_chat(_args: argparse.Namespace) -> int:
     """Open the chat window: typed requests, and everything Jarvis does, live."""
     from jarvis.chat.app import ChatApp, Services
@@ -1565,6 +1606,18 @@ class DoctorReport:
         return cliout.summary(self.checks, extra=len(self.verified))
 
 
+def _t3_notes() -> list[str]:
+    """Say how to add Jarvis to T3 Code when T3 Code is set up on this PC."""
+    if not (Path.home() / ".t3").is_dir():
+        return []
+    program = shutil.which("jarvis") or "jarvis"
+    where = "Settings, Providers, Add provider"
+    head = (
+        f"note T3 Code is set up here: to talk to Jarvis in it, add a Local ACP command ({where})"
+    )
+    return [f"{head} with the executable {program} and the argument acp"]
+
+
 def doctor_report(args: argparse.Namespace) -> DoctorReport:
     """Run every check `jarvis doctor` runs; print nothing."""
     cfg = _load()
@@ -1591,7 +1644,7 @@ def doctor_report(args: argparse.Namespace) -> DoctorReport:
         )
     release_lines, unreadable = _release_lines(cfg)
     checks.extend(unreadable)
-    notes.extend([*_memlock_notes(cfg), *update.doctor_notes(cfg, launch_for_update)])
+    notes.extend([*_memlock_notes(cfg), *_t3_notes(), *update.doctor_notes(cfg, launch_for_update)])
     verified = [line.removeprefix("ok").strip() for line in release_lines if line.startswith("ok ")]
     notes.extend(line for line in release_lines if not line.startswith("ok "))
     return DoctorReport(checks, notes, verified)
@@ -2540,6 +2593,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "setup": cmd_setup,
     "spotify-login": cmd_spotify_login,
     "ask": cmd_ask,
+    "acp": cmd_acp,
     "chat": cmd_chat,
     "run": cmd_run,
     "doctor": cmd_doctor,
@@ -2600,7 +2654,7 @@ def _agent_main(words: list[str]) -> int:
 
 
 # Commands that wait on a person or follow a live stream: they have no one-line answer.
-INTERACTIVE = frozenset({"chat", "logs", "run", "ask", "speech-test", "spotify-login"})
+INTERACTIVE = frozenset({"acp", "chat", "logs", "run", "ask", "speech-test", "spotify-login"})
 
 
 def _lines(text: str) -> list[str]:

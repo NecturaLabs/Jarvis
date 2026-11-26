@@ -681,7 +681,11 @@ SETTING_ONLY = frozenset({"pc_audio_listen", SWITCH_MODEL})
 # Tools whose result is a sound, and the voice-channel callers that cannot play one (`jarvis ask`
 # prints its reply): they are not offered there, so nothing is made only to be thrown away.
 MAKES_SOUND = frozenset({"sing"})
-SOUNDLESS = frozenset({"ask", "speech-test"})
+SOUNDLESS = frozenset({"ask", "speech-test", "acp"})
+# Chat-style callers: typed requests answered in writing, with the chat's limits.
+WRITTEN = frozenset({"chat", "acp"})
+# Tools that show the owner a picture in the chat window, which `jarvis acp` has no place for.
+SHOWS_PICTURES = frozenset({"image_search", "show_image"})
 # How Jarvis answers, not tools: never switched off.
 ALWAYS_OFFERED = frozenset({"no_action", "think_harder", "stay_quiet"})
 
@@ -783,8 +787,9 @@ def build(
     """Assemble the agent from the config.
 
     `via` marks every audit event of this agent with where its requests come from ("chat",
-    "ask"); the voice service leaves it out. The chat gets the chat's limits and written replies,
-    and keeps its conversation across sessions when `chat.resume` is on. `session` marks the
+    "ask", "acp"); the voice service leaves it out. The chat and `jarvis acp` get the chat's limits
+    and written replies; only the chat keeps its conversation across sessions (`chat.resume`; an
+    ACP session has its own, and none is kept). `session` marks the
     agent's audit events too, so a window can tell its own from others'. With `units` (the
     model server's systemd unit) the agent follows the mode Jarvis is in and can switch it;
     without, it stays in the normal mode. `listening` is how the voice service hears PC audio for
@@ -825,8 +830,8 @@ def build(
             "not a tool; remove it"
         )
         raise SetupError(msg)
-    channel: Channel = "chat" if via == "chat" else "voice"
-    elsewhere = via in {"chat", "ask"}  # the voice service says reminders; is one running?
+    channel: Channel = "chat" if via in WRITTEN else "voice"
+    elsewhere = via in {*WRITTEN, "ask"}  # the voice service says reminders; is one running?
 
     def setup(
         mode: modes.Mode,
@@ -841,6 +846,7 @@ def build(
             *switched_off(cfg),
             *(cfg.coding.tools_off if coding else ()),
             *(MAKES_SOUND if via in SOUNDLESS else ()),
+            *(SHOWS_PICTURES if via == "acp" else ()),
         }
         if units is None:
             off.add(SWITCH_MODEL)
@@ -858,7 +864,7 @@ def build(
         return Setup(prompt, registry, limits, reads_pictures(cfg), strata_model(cfg, key))
 
     normal = setup("normal")
-    remembered = chat_memory_file() if channel == "chat" else None
+    remembered = chat_memory_file() if via == "chat" else None  # an ACP session has its own
     if remembered is not None and not config.chat.resume:
         remembered.unlink(missing_ok=True)
     switcher = (

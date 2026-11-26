@@ -184,12 +184,30 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis help` | List the commands by group, each with what it does (the same as `jarvis --help`); `jarvis <command> --help` explains one command and its options, and a mistyped command gets a suggestion when one is close. |
 | `jarvis ask <text>` | Send one typed request as if spoken; a question is answered `y` or `n` on the terminal, and `--yes` answers yes to confirmations, except a browser click or typing, which it still asks on the terminal (and refuses with no terminal to answer on). |
 | `jarvis chat` | Open a Textual window where you type requests and watch what Jarvis does, live. |
+| `jarvis acp` | Serve Jarvis to a coding app over the Agent Client Protocol on stdin and stdout; the app starts it, see [Using Jarvis in T3 Code](#using-jarvis-in-t3-code). |
 | `jarvis consent [ask\|bypass]` | Show or set whether Jarvis asks for a yes before a risky action or one after outside text; a `strong` action still waits for the confirm key either way. |
 | `jarvis wake [livekit\|azure]` | Show or switch the wake word model; `--model FILE` names the Azure `.table` file; `--words hey_jarvis,yo_jarvis` picks the LiveKit models that listen. |
 | `jarvis pc-audio [on\|off]` | Show or set listening to PC audio; `--apps discord,firefox` names the apps, `--all-output` listens to everything the PC plays. |
 | `jarvis run` | Run the voice loop in the foreground. This is what `jarvis.service` runs. |
 | `jarvis speech-test record\|score\|compare` | Record a private set of your own requests, score how well speech-to-text hears them (word errors, names, time), and compare two scores for a difference beyond chance. |
 | `jarvis --version` | Print the version. |
+
+### Using Jarvis in T3 Code
+
+[T3 Code](https://github.com/pingdotgg/t3code) takes any [Agent Client Protocol](https://agentclientprotocol.com)
+agent. In T3 Code open Settings, Providers, Add provider, Show more, Local ACP command. Set the executable
+to the path of `jarvis` (`which jarvis`; `jarvis doctor` prints it when T3 Code is set up on this PC), add
+one argument, `acp`, and give it a name.
+
+- Each thread is a chat conversation of its own with the same agent `jarvis chat` talks to and the model
+  Strata already serves. Jarvis answers in text; nothing is spoken, and the voice service keeps speaking
+  only for what you say aloud.
+- Attach pictures (PNG, JPEG, GIF or WebP, up to 20 MB, four a request) and Jarvis reads them as in the chat.
+- When Jarvis wants to do something that needs your yes, it asks in its reply and your next message is the
+  answer: a clear yes runs exactly that action, anything else cancels it. T3 Code's own permission buttons
+  are never used, because T3 Code answers them by itself in Full access mode.
+- Stop stops the request. Jarvis loads no MCP servers and reads no T3 Code settings, folders or tools.
+  Tool steps are not shown, only the reply, and Jarvis does not show pictures there.
 
 For a script or an AI agent, add `--agent` (or `--agent-format`) to any command, or set `JARVIS_AGENT_FORMAT=1`:
 the answer is then one line of JSON with `command`, `ok` and `exit`, plus the command's own keys or its output

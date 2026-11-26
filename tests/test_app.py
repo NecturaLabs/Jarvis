@@ -737,6 +737,21 @@ def test_sing_is_offered_only_where_its_song_can_be_heard(via: str | None, offer
     assert ("sing" in names) is offered
 
 
+def test_an_acp_session_is_a_chat_of_its_own_that_shows_no_pictures_and_keeps_no_file() -> None:
+    ensure_api_key(strata_key_file())
+    config = Config(spotify=SpotifyConfig(client_id="id"))
+
+    acp = build(config, via="acp", session="s1").agent
+    chat = build(config, via="chat", session="s2").agent
+
+    names = acp._registry.names()  # pyright: ignore[reportPrivateUsage] - what the model is given
+    assert acp._system == chat._system  # pyright: ignore[reportPrivateUsage] - the chat's written style
+    assert acp._memory_file is None  # pyright: ignore[reportPrivateUsage] - one conversation per session
+    assert chat._memory_file == app_module.chat_memory_file()  # pyright: ignore[reportPrivateUsage] - the chat's own
+    assert not {"sing", "show_image", "image_search"} & set(names)
+    assert {"show_image", "image_search"} <= set(chat._registry.names())  # pyright: ignore[reportPrivateUsage] - the chat keeps them
+
+
 def test_the_chat_prompt_follows_the_response_format() -> None:
     prompts = {
         name: system_prompt(Config(chat=ChatConfig(response_format=name)), "chat")

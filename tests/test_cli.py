@@ -225,6 +225,28 @@ def test_doctor_lines_up_its_checks_and_ends_with_a_count(
     assert lines[-1].startswith(f"{total} checks, {failed or 'none'} failed")
 
 
+def test_doctor_says_how_to_add_jarvis_to_t3_code_only_where_t3_code_is_set_up(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli.main(["doctor"])
+    assert not any("T3" in line for line in _doctor_output(capsys))
+
+    (cli.Path.home() / ".t3").mkdir()
+
+    def which(_name: str) -> str:
+        return "/opt/bin/jarvis"
+
+    monkeypatch.setattr(cli.shutil, "which", which)
+    cli.main(["doctor"])
+
+    said = [line for line in _doctor_output(capsys) if "T3 Code" in line]
+    assert len(said) == 1
+    assert said[0].startswith("note ")
+    assert "Local ACP command" in said[0]
+    assert "/opt/bin/jarvis" in said[0]
+    assert said[0].rstrip().endswith("acp")
+
+
 def test_doctor_names_the_release_of_a_model_file_it_recognises(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
