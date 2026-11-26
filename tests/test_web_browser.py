@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -19,6 +20,7 @@ from jarvis.web.browser import (
     ALLOWED_ACTIONS,
     CHROME_ARGS,
     Browser,
+    BrowserAnswerError,
     BrowserError,
     BrowserTimeoutError,
     Element,
@@ -516,6 +518,53 @@ def test_an_answer_past_the_output_cap_is_said_as_too_big(tmp_path: Path) -> Non
 
     with pytest.raises(BrowserError, match="too big"):
         made.open("https://site.example/")
+
+
+def _python(code: str) -> list[str]:
+    return [sys.executable, "-c", code]
+
+
+def test_an_answer_too_big_is_cut_off_as_it_is_read_not_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A huge page must not be held in memory whole before the cap is checked.
+    monkeypatch.setattr(browser_module, "MAX_STDOUT", 1000)
+    endless = _python("import sys\nwhile True: sys.stdout.write('x' * 65536)")
+    started = time.monotonic()
+
+    with pytest.raises(BrowserAnswerError, match="too big"):
+        browser_module.run_program(endless, stdin="", env={}, cwd=tmp_path, timeout=20)
+
+    assert time.monotonic() - started < 10
+
+
+def test_what_the_program_writes_to_its_error_stream_is_not_kept(tmp_path: Path) -> None:
+    noisy = _python("import sys\nsys.stderr.write('e' * 10_000_000)\nprint('[]')")
+
+    out = browser_module.run_program(noisy, stdin="", env={}, cwd=tmp_path, timeout=20)
+
+    assert out.strip() == "[]"
+
+
+def test_a_program_that_runs_too_long_is_stopped(tmp_path: Path) -> None:
+    slow = _python("import time\ntime.sleep(30)")
+    started = time.monotonic()
+
+    with pytest.raises(BrowserTimeoutError):
+        browser_module.run_program(slow, stdin="", env={}, cwd=tmp_path, timeout=0.5)
+
+    assert time.monotonic() - started < 5
+
+
+def test_a_session_whose_answer_was_too_big_is_closed(tmp_path: Path) -> None:
+    page = Page(text="x" * (browser_module.MAX_STDOUT + 10))
+    made, _, proxy = _browser(tmp_path, FakeAgentBrowser(page))
+
+    with pytest.raises(BrowserError, match="too big"):
+        made.open("https://site.example/")
+
+    assert proxy.stopped
+    assert not made.running
 
 
 def test_text_the_page_hides_is_left_out_as_web_read_leaves_it_out(tmp_path: Path) -> None:

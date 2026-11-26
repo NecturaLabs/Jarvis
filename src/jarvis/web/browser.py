@@ -25,12 +25,14 @@ import json
 import os
 import re
 import secrets
+import selectors
 import shutil
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import IO, TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlsplit
 
 from jarvis.operations import current_request
@@ -51,7 +53,7 @@ RESERVE_S = CLOSE_LIMIT_S + 10.0
 MIN_BATCH_S = 3.0  # less time than this left in the request, and the browser is not used
 SETTLE_MS = 1200  # after a page loads or a click: scripts that fill the page in afterwards
 MAX_OUTPUT = 60_000  # characters of a page's text kept (agent-browser's --max-output cuts no JSON)
-MAX_STDOUT = 8_000_000  # characters of one answer read at all (a page's text and its HTML)
+MAX_STDOUT = 8_000_000  # bytes of one answer read at all (a page's text and its HTML)
 MAX_NAME = 80  # characters of an element's name kept
 MAX_SCREENSHOT_BYTES = 8_000_000
 SCREEN_STEP_PX = 640  # how far one screenshot part is below the last (the window is 1280x720)
@@ -173,28 +175,61 @@ def run_program(
 ) -> str:
     """Run agent-browser and return its output (its exit status is in the JSON it prints).
 
-    An `OSError` says it could not be started.
+    The output is read as it comes, at most `MAX_STDOUT` bytes of it; what the program writes
+    to its error stream is dropped. A `BrowserTimeoutError` says it did not finish in `timeout`
+    seconds, and a `BrowserAnswerError` that it wrote more than `MAX_STDOUT`; it is stopped then.
 
     Raises:
-        BrowserTimeoutError: it did not finish in `timeout` seconds.
+        OSError: it could not be started, or its pipes could not be made.
     """
     import subprocess  # ruff: ignore[import-outside-top-level] - only a browser in use starts one, and a typed request may never need it
 
-    try:
-        done = subprocess.run(
-            list(argv),
-            input=stdin,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=dict(env),
-            cwd=cwd,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        msg = "the browser took too long"
-        raise BrowserTimeoutError(msg) from exc
-    return done.stdout
+    deadline = time.monotonic() + timeout
+    with subprocess.Popen(
+        list(argv),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env=dict(env),
+        cwd=cwd,
+    ) as process:
+        try:
+            if process.stdin is None or process.stdout is None:  # both are piped
+                msg = "the browser's pipes are missing"
+                raise OSError(msg)
+            return _read_capped(process.stdin, process.stdout, stdin.encode(), deadline)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+
+
+def _read_capped(sink: IO[bytes], source: IO[bytes], stdin: bytes, deadline: float) -> str:
+    """Send `stdin` to `sink`, then read `source` until it closes, within the caps.
+
+    Raises:
+        BrowserTimeoutError: past `deadline`.
+        BrowserAnswerError: more than `MAX_STDOUT` bytes.
+    """
+    with contextlib.suppress(BrokenPipeError):
+        sink.write(stdin)
+    with contextlib.suppress(BrokenPipeError):
+        sink.close()
+    out = bytearray()
+    with selectors.DefaultSelector() as selector:
+        selector.register(source, selectors.EVENT_READ)
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0 or not selector.select(left):
+                msg = "the browser took too long"
+                raise BrowserTimeoutError(msg)
+            chunk = os.read(source.fileno(), 1 << 16)
+            if not chunk:
+                return out.decode("utf-8", errors="replace")
+            out += chunk
+            if len(out) > MAX_STDOUT:
+                msg = "the page is too big to read"
+                raise BrowserAnswerError(msg)
 
 
 def _one_line(text: str, limit: int) -> str:
@@ -412,14 +447,15 @@ class Browser:
                 cwd=folder / "work",
                 timeout=limit,
             )
-        except BrowserTimeoutError:
+        except BrowserTimeoutError, BrowserAnswerError:
             self._shut()
             raise
         except OSError as exc:
             self._shut()
             msg = f"the browser couldn't be started: {exc.strerror or type(exc).__name__}"
             raise BrowserError(msg) from exc
-        if len(out) > MAX_STDOUT:
+        if len(out) > MAX_STDOUT:  # a runner that read it whole
+            self._shut()
             msg = "the page is too big to read"
             raise BrowserAnswerError(msg)
         return _rows(out)

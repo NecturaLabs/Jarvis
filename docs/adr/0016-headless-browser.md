@@ -121,7 +121,8 @@ quick commands.
     transparent or of no size); a name is at most 80 characters, and the list at most a third of a result.
   - Each call to agent-browser gets at most 40 s and ends 25 s before the request's own time limit
     (`agent.max_seconds`), so a click or typing with its checks, or a browser that does not answer and is
-    closed, never runs past the request.
+    closed, never runs past the request. Its answer is read as it comes, at most 8 MB, and its error
+    stream is dropped; a call past either limit is stopped and the session closed.
 - **Where.** `chat.browser` is on and `agent.browser` (voice and `jarvis ask`) is off by default. The tools
   are offered only when agent-browser is on PATH; `jarvis doctor` notes when it is missing, or has no
   Chrome to drive (`agent-browser install`). Their definitions take about 470 tokens of the chat's context.
