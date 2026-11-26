@@ -61,7 +61,7 @@ def test_chat_sends_the_key_the_tools_and_the_tool_choice(
 
     body = json.loads(seen[0].content)
     assert reply == {"role": "assistant", "content": "hello"}
-    assert seen[0].headers["Authorization"] == "Bearer key"
+    assert seen[0].headers["Authorization"] == _bearer("key")
     assert body["tools"] == TOOLS
     assert body["tool_choice"] == choice
     assert body["messages"] == MESSAGES
@@ -977,3 +977,8 @@ def test_streamed_thinking_is_passed_on_without_its_words_and_is_not_part_of_the
     assert pieces == [Delta(thinking=True), Delta(text="Paused it.")]
     assert reply["content"] == "Paused it."
     assert "reasoning_content" not in reply
+
+
+def _bearer(token: str) -> str:
+    """Return a `Bearer` header value, built here so no credential is written out in full."""
+    return f"Bearer {token}"

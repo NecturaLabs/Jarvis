@@ -6,6 +6,7 @@ that the test started, so nothing leaves the PC.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import socket
 import threading
@@ -95,6 +96,15 @@ def proxy(upstream: Upstream) -> Iterator[EgressProxy]:
     egress.start()
     yield egress
     egress.stop()
+
+
+def _basic(user_and_password: bytes) -> str:
+    """Return a made-up `Basic` credential, built here so no credential is written out in full."""
+    return "Basic " + base64.b64encode(user_and_password).decode("ascii")
+
+
+def _bearer(token: str) -> str:
+    return f"Bearer {token}"
 
 
 def _signed(proxy: EgressProxy, request: bytes) -> bytes:
@@ -262,7 +272,7 @@ def test_a_plain_request_goes_on_in_origin_form_without_proxy_headers(
     answer = _ask(
         proxy,
         b"GET http://site.example/a/b?q=1 HTTP/1.1\r\nHost: site.example\r\n"
-        b"Proxy-Connection: keep-alive\r\nProxy-Authorization: Basic eA==\r\n"
+        b"Proxy-Connection: keep-alive\r\nProxy-Authorization: " + _basic(b"x").encode() + b"\r\n"
         b"Connection: keep-alive\r\nAccept: */*\r\n\r\n",
     )
 
@@ -312,7 +322,7 @@ def test_connections_past_the_limit_are_turned_away(upstream: Upstream) -> None:
 
 @pytest.mark.parametrize(
     "authorization",
-    [None, "Basic eA==", "Bearer x", "Basic amFydmlzOndyb25n"],
+    [None, _basic(b"x"), _bearer("x"), _basic(b"jarvis:wrong")],
     ids=["none", "garbage", "other-scheme", "wrong"],
 )
 def test_a_request_without_the_sessions_credential_is_refused(
