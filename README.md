@@ -1,4 +1,4 @@
-<img src="docs/assets/jarvis-icon.svg" alt="" width="96">
+<img src="docs/assets/jarvis-icon.png" alt="" width="96">
 
 # Jarvis
 
