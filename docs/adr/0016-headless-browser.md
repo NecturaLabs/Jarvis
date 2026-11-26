@@ -130,12 +130,14 @@ quick commands.
 - **Where.** `chat.browser` is on and `agent.browser` (voice and `jarvis ask`) is off by default. The tools
   are offered only when agent-browser is on PATH; `jarvis doctor` notes when it is missing, or has no
   Chrome to drive (`agent-browser install`). Their definitions take about 470 tokens of the chat's context.
-  The chat's default `memory_tokens` went from 7000 to 6500 so that the default context still holds the
+  The two modes of one Jarvis (ADR 0017) drive the same browser, so a page opened before a switch of modes
+  is still open after it.
+  The chat's default `memory_tokens` went from 6700 to 6200 so that the default context still holds the
   whole remembered conversation.
 
 ### Previews of the owner's own builds (agreed with coding mode)
 
-Coding mode (planned) will want to open what it built. That never goes through `file://`, which would let
+Coding mode ([ADR 0017](0017-coding-mode.md)) will want to open what it built. That never goes through `file://`, which would let
 page scripts read other files, and never through this web session. A preview is a separate session whose
 proxy allows exactly one loopback port and refuses everything else, the public internet included. Behind
 that port is a read-only file server Jarvis starts over one project folder, which coding mode hands over as

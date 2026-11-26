@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 VERBOSITY = ("replies", "steps", "everything")
 EFFORT_LEVELS = ("none", "low", "medium", "high")  # as `chat.thinking` takes them
+MODES = ("normal", "coding")  # as `jarvis model` takes them
 FORMATS = ("concise", "normal", "verbose")  # as `chat.response_format` takes them
 
 
@@ -38,6 +39,12 @@ COMMANDS = (
         "how hard the model thinks before it answers: none, low, medium or high",
         "[level]",
         EFFORT_LEVELS,
+    ),
+    Command(
+        "/model",
+        "the model in use, or switch between normal and coding mode",
+        "[mode]",
+        MODES,
     ),
     Command(
         "/format",

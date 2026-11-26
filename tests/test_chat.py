@@ -7,7 +7,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from PIL import Image
 from rich.console import Console
@@ -22,6 +22,7 @@ from jarvis.app import no_action_operation
 from jarvis.audit import AuditLog
 from jarvis.chat import commands
 from jarvis.chat.app import NO_REPLY, SETTINGS, ChatApp, Services
+from jarvis.chat.archive import ChatArchive
 from jarvis.chat.clipboard import Clip, ClipboardError
 from jarvis.chat.history import InputHistory
 from jarvis.chat.widgets import (
@@ -136,6 +137,11 @@ class FakeSession:
 
     def resume(self, path: Path) -> bool:
         return self.memory.load(path)
+
+    bypass: list[bool] = field(default_factory=list[bool])
+
+    def set_bypass_consent(self, *, on: bool) -> None:
+        self.bypass.append(on)
 
 
 def _plain(renderable: object) -> str:
@@ -1170,6 +1176,53 @@ def test_effort_refuses_a_level_it_does_not_know() -> None:
     assert session.thought == []
 
 
+def test_model_shows_the_mode_and_each_modes_model() -> None:
+    services = Services(
+        model_report=lambda: ["mode: normal", "* normal: flash", "  coding: flash-coder"],
+        switch_model=lambda _to, _say: "",
+    )
+    app = _app(session=FakeSession(), services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/model")
+        await _until(pilot, lambda: _has(app, "coding: flash-coder"))
+
+    _run(test, app)
+
+
+def test_model_switches_the_mode_and_says_what_is_loading() -> None:
+    asked: list[str] = []
+
+    def switch(to: str, say: Callable[[str], None]) -> str:
+        asked.append(to)
+        say("Switching to the coding model, flash-coder. It takes about 20 seconds.")
+        return "Now in coding mode: flash-coder, loaded in 21 s."
+
+    services = Services(model_report=list, switch_model=switch)
+    app = _app(session=FakeSession(), services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/model coding")
+        await _until(pilot, lambda: _has(app, "Now in coding mode"))
+        assert _has(app, "about 20 seconds")
+
+    _run(test, app)
+    assert asked == ["coding"]
+
+
+def test_model_refuses_a_mode_it_does_not_know() -> None:
+    asked: list[str] = []
+    services = Services(model_report=list, switch_model=lambda to, _say: asked.append(to) or "")
+    app = _app(session=FakeSession(), services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/model turbo")
+        await _until(pilot, lambda: _has(app, "it is normal or coding"))
+
+    _run(test, app)
+    assert asked == []
+
+
 def test_a_voice_restart_that_fails_after_config_is_shown() -> None:
     from jarvis.chat.app import SharedSetting  # ruff: ignore[import-outside-top-level] - only this test
 
@@ -1238,6 +1291,25 @@ def test_a_risky_setting_is_turned_on_only_after_it_says_what_that_means() -> No
         assert "⚠ on" in _settings_text(app)  # marked while it is on
         await pilot.press("enter")  # turning it off asks nothing
         await _until(pilot, lambda: values["boundaries.bypass_consent"] is False)
+
+    _run(test, app)
+
+
+def test_acting_without_asking_changed_in_config_applies_to_this_chat_at_once() -> None:
+    values: dict[str, object] = {"boundaries.bypass_consent": False}
+    session = FakeSession()
+    app = _app(session=session, services=_risky_services(values))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await pilot.press("end", "enter")
+        await _until(pilot, lambda: "Turn on?" in _settings_text(app))
+        assert session.bypass == []
+        await pilot.press("enter")
+        await _until(pilot, lambda: session.bypass == [True])
+        await pilot.press("enter")
+        await _until(pilot, lambda: session.bypass == [True, False])
 
     _run(test, app)
 
@@ -1436,6 +1508,45 @@ def test_a_risky_setting_with_several_values_asks_before_leaving_off() -> None:
         await _until(pilot, lambda: values["audio.recall"] == 10)
         await pilot.press("enter")  # from one on value to another: no question
         await _until(pilot, lambda: values["audio.recall"] == 30)
+
+    _run(test, app)
+
+
+def test_a_risky_setting_is_turned_on_only_to_the_value_it_asked_about() -> None:
+    from jarvis.chat.app import SharedSetting  # ruff: ignore[import-outside-top-level] - only this test
+
+    values: dict[str, object] = {"audio.recall": 0}
+
+    def shared() -> list[SharedSetting]:
+        return [
+            SharedSetting(
+                "audio.recall",
+                "Recall",
+                (0, 10, 30, 60),
+                values["audio.recall"],
+                "Listening",
+                "",
+                "Jarvis will keep audio.",
+            )
+        ]
+
+    def change(key: str, value: object) -> None:
+        values[key] = value
+
+    services = Services(shared=shared, set_shared=change, apply=lambda: None)
+    app = _app(session=FakeSession(), services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await pilot.press("end", "right")
+        await _until(pilot, lambda: "set 10" in _settings_text(app))
+        await pilot.press("left")  # another value: asked about again, not turned on
+        await _until(pilot, lambda: "set 60" in _settings_text(app))
+        assert values["audio.recall"] == 0
+        assert "Turn on?" in _settings_text(app)
+        await pilot.press("left")
+        await _until(pilot, lambda: values["audio.recall"] == 60)
 
     _run(test, app)
 
@@ -2287,8 +2398,6 @@ def test_a_folder_name_with_a_newline_stays_in_the_question_not_the_preview(
 
 
 def test_resume_lists_earlier_conversations_and_continues_one(tmp_path: Path) -> None:
-    from jarvis.chat.archive import ChatArchive  # ruff: ignore[import-outside-top-level] - only these tests
-
     archive = ChatArchive(tmp_path / "archive", keep=10)
     earlier = Conversation(budget=1000)
     archive.record({"event": "request", "text": "my cat is called Miso"})
@@ -2314,8 +2423,6 @@ def test_resume_lists_earlier_conversations_and_continues_one(tmp_path: Path) ->
 
 
 def test_forget_all_deletes_the_archive(tmp_path: Path) -> None:
-    from jarvis.chat.archive import ChatArchive  # ruff: ignore[import-outside-top-level] - only these tests
-
     archive = ChatArchive(tmp_path / "archive", keep=10)
     memory = Conversation(budget=1000)
     archive.record({"event": "request", "text": "hello"})
@@ -2335,9 +2442,136 @@ def test_forget_all_deletes_the_archive(tmp_path: Path) -> None:
     assert archive.listed() == []
 
 
-def test_a_finished_request_is_archived_with_the_windows_own_log(tmp_path: Path) -> None:
-    from jarvis.chat.archive import ChatArchive  # ruff: ignore[import-outside-top-level] - only these tests
+def test_forget_all_also_forgets_this_conversation_so_none_of_it_is_archived_again(
+    tmp_path: Path,
+) -> None:
+    archive = ChatArchive(tmp_path / "archive", keep=10)
+    tail = FakeTail()
+    session = FakeSession()
 
+    def answer(text: str, _hooks: Hooks) -> str:
+        tail.entries.append({"event": "request", "text": text, "session": SESSION})
+        session.memory.add(Turn(text, "Noted.", "", "", 1.0))
+        return "Noted."
+
+    session.answer = answer
+    app = _app(tail, session, services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "my locker code is 4711")
+        await _until(pilot, lambda: bool(archive.listed()))
+        await _type(pilot, "/forget all")
+        await _until(pilot, lambda: _has(app, "Deleted 1 archived conversation"))
+        assert not _has(app, "my locker code is 4711")
+        await _type(pilot, "/clear")
+        await _until(pilot, lambda: _has(app, "Started a new conversation"))
+
+    _run(test, app)
+    assert session.memory.turns == []
+    assert archive.listed() == []
+
+
+def test_forget_all_waits_for_a_request_to_finish(tmp_path: Path) -> None:
+    archive = ChatArchive(tmp_path / "archive", keep=10)
+    memory = Conversation(budget=1000)
+    archive.record({"event": "request", "text": "hello"})
+    memory.add(Turn("hello", "Hi.", "", "", 1.0))
+    archive.save(memory)
+    archive.start()
+    release = threading.Event()
+
+    def answer(_text: str, _hooks: Hooks) -> str:
+        release.wait(5)
+        return "Done."
+
+    session = FakeSession(answer)
+    app = _app(session=session, services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "work on it")
+        await _until(pilot, lambda: bool(session.asked))
+        await _type(pilot, "/forget all")
+        await _until(pilot, lambda: _has(app, "Wait for the request to finish"))
+        release.set()
+
+    _run(test, app)
+    assert [a.name for a in archive.listed()] == ["hello"]
+
+
+class _WatchedArchive(ChatArchive):
+    """An archive that notes whether each save came while the agent still worked."""
+
+    def __init__(self, folder: Path, working: threading.Event) -> None:
+        super().__init__(folder, keep=10)
+        self.working = working
+        self.saved_while_working: list[bool] = []
+
+    @override
+    def save(self, memory: Conversation) -> None:
+        self.saved_while_working.append(self.working.is_set())
+        super().save(memory)
+
+
+def test_a_rename_during_a_request_is_saved_once_it_settles(tmp_path: Path) -> None:
+    working, release = threading.Event(), threading.Event()
+    archive = _WatchedArchive(tmp_path / "archive", working)
+    session = FakeSession()
+
+    def answer(text: str, _hooks: Hooks) -> str:
+        working.set()
+        release.wait(5)
+        session.memory.add(Turn(text, "Done.", "", "", 1.0))
+        working.clear()
+        return "Done."
+
+    session.answer = answer
+    app = _app(session=session, services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "plan the trip")
+        await _until(pilot, working.is_set)
+        await _type(pilot, "/rename Trip")
+        await _until(pilot, lambda: _has(app, "Named this conversation Trip"))
+        release.set()
+        await _until(pilot, lambda: bool(archive.listed()))
+
+    _run(test, app)
+    assert True not in archive.saved_while_working
+    (kept,) = archive.listed()
+    assert kept.name == "Trip"
+
+
+def test_closing_during_a_request_archives_it_once_the_agent_has_finished(tmp_path: Path) -> None:
+    working = threading.Event()
+    archive = _WatchedArchive(tmp_path / "archive", working)
+    session = FakeSession()
+
+    def answer(text: str, hooks: Hooks) -> str:
+        working.set()
+        for _ in range(500):
+            if hooks.cancelled():
+                break
+            time.sleep(0.01)
+        session.memory.add(Turn(text, "(The owner stopped the request here.)", "", "", 1.0))
+        working.clear()
+        return ""
+
+    session.answer = answer
+    app = _app(session=session, services=Services(archive=archive))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "write the report")
+        await _until(pilot, working.is_set)
+
+    _run(test, app)  # the window closes while the request runs
+    assert True not in archive.saved_while_working
+    (kept,) = archive.listed()
+    restored = Conversation(budget=1000)
+    assert restored.load(tmp_path / "archive" / f"{kept.id}.memory.json")
+    assert [t.request for t in restored.turns] == ["write the report"]
+
+
+def test_a_finished_request_is_archived_with_the_windows_own_log(tmp_path: Path) -> None:
     archive = ChatArchive(tmp_path / "archive", keep=10)
     tail = FakeTail()
     session = FakeSession()
@@ -2358,3 +2592,24 @@ def test_a_finished_request_is_archived_with_the_windows_own_log(tmp_path: Path)
     _run(test, app)
     (kept,) = archive.listed()
     assert kept.name == "pause"
+
+
+def test_forget_all_that_cannot_delete_says_so_and_forgets_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = ChatArchive(tmp_path / "archive", keep=10)
+    session = FakeSession()
+    session.memory.add(Turn("keep me", "Kept.", "", "", 1.0))
+    app = _app(FakeTail(), session, services=Services(archive=archive))
+
+    def refuse() -> int:
+        raise PermissionError
+
+    monkeypatch.setattr(archive, "forget", refuse)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/forget all")
+        await _until(pilot, lambda: _has(app, "Couldn't delete the archive"))
+
+    _run(test, app)
+    assert len(session.memory.turns) == 1

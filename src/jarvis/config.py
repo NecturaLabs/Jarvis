@@ -168,7 +168,7 @@ class ChatConfig(AgentConfig):
     max_seconds: float = Field(default=600.0, ge=10, le=3600)
     reply_tokens: int = Field(default=2048, ge=64, le=8192)
     tool_text_chars: int = Field(default=8000, ge=500, le=50000)
-    memory_tokens: int = Field(default=6500, ge=0, le=200000)
+    memory_tokens: int = Field(default=6200, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
     memory_detail: MemoryDetail = "full"
     thinking_tokens: int = Field(default=512, ge=32, le=8192)
@@ -202,6 +202,8 @@ class StrataConfig(_Section):
     # Strata's own run config for the model (`strata-<model>.json`, written by `strata launch`):
     # the model, its engine and its flags all come from it.
     run_config: SafePath = Path()
+    # The run config served in coding mode (`[coding]`); empty: coding mode keeps `run_config`.
+    coding_run_config: SafePath = Path()
     port: int = Field(default=8080, ge=1024, le=65535)
     context: int = Field(default=24576, ge=2048, le=262144)
     # Expert weights kept in VRAM, for an engine that takes a size (`--expert-vram`,
@@ -564,6 +566,75 @@ class ShellConfig(_Section):
     tasks_max: int = Field(default=256, ge=8, le=4096)
 
 
+class CodingChatConfig(_Section):
+    """What coding mode changes for a typed request, laid over `[chat]`.
+
+    Only these limits change: room for long, written programming work and more thinking.
+    Everything else stays as `[chat]` has it, and so does a limit taken out here (unset).
+    `auto` lets the model move a typed request to coding mode itself when it is programming
+    work, and back when that work is over.
+    """
+
+    max_steps: int | None = Field(default=60, ge=1, le=500)
+    max_tool_calls: int | None = Field(default=120, ge=1, le=1000)
+    max_seconds: float | None = Field(default=1800.0, ge=10, le=14400)
+    reply_tokens: int | None = Field(default=8192, ge=64, le=65536)
+    tool_text_chars: int | None = Field(default=20000, ge=500, le=200000)
+    memory_tokens: int | None = Field(default=20000, ge=0, le=200000)
+    thinking: Effort | None = "medium"
+    thinking_tokens: int | None = Field(default=1024, ge=32, le=32768)
+    thinking_max: Effort | None = None
+    thinking_raised_tokens: int | None = Field(default=4096, ge=32, le=32768)
+    auto: bool = True
+
+
+class CodingVoiceConfig(CodingChatConfig):
+    """What coding mode changes for a request that is spoken, sent with `jarvis ask` or scheduled.
+
+    Laid over `[agent]`, and small: such a request stays a quick command with its short memory.
+    It gets room to write a file and a little thinking, nothing more. `auto` is off: a model
+    switch in the middle of a spoken request is a long silence, and every spoken request after
+    it would be answered by the coding model.
+    """
+
+    max_steps: int | None = Field(default=20, ge=1, le=500)
+    max_tool_calls: int | None = Field(default=40, ge=1, le=1000)
+    max_seconds: float | None = Field(default=300.0, ge=10, le=14400)
+    reply_tokens: int | None = Field(default=4096, ge=64, le=65536)
+    tool_text_chars: int | None = Field(default=None, ge=500, le=200000)
+    memory_tokens: int | None = Field(default=None, ge=0, le=200000)
+    thinking: Effort | None = "low"
+    thinking_tokens: int | None = Field(default=512, ge=32, le=32768)
+    thinking_raised_tokens: int | None = Field(default=2048, ge=32, le=32768)
+    auto: bool = False
+
+
+class CodingConfig(_Section):
+    """Coding mode: what changes while Jarvis does programming work.
+
+    The mode is switched with `jarvis model` and the chat's `/model`, and by the model itself
+    where `chat.auto` or `voice.auto` allows it. In it `[coding.chat]` is laid over `[chat]` and
+    `[coding.voice]` over `[agent]`, the prompt gains its part
+    on programming work, and the model server runs `strata.coding_run_config` when one is set,
+    with `context` tokens of context. A value left unset here (`temperature`, `expert_vram_gib`,
+    `vram_reserve_mib` 0, an empty `memory_max`) stays as `[model]` and `[strata]` have it.
+    """
+
+    chat: CodingChatConfig = Field(default_factory=CodingChatConfig)
+    voice: CodingVoiceConfig = Field(default_factory=CodingVoiceConfig)
+    # Back to the normal mode once coding mode went unused this long; 0 never.
+    back_after_s: float = Field(default=1800.0, ge=0, le=604800)
+    context: int = Field(default=65536, ge=2048, le=262144)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    vram_reserve_mib: VramReserve = 0
+    expert_vram_gib: float | None = Field(default=None, ge=0, le=64)
+    memory_max: str = Field(default="", pattern=r"^(\d+[KMGT]?)?$")
+    reasoning_budget_tokens: int = Field(default=4096, gt=0, le=32768)
+    tools_off: list[SafeText] = Field(default_factory=list[str])  # not offered in coding mode
+    write_roots: list[RootPath] = Field(default_factory=list[str])  # besides `files.write_roots`
+    prompt: str = ""  # the owner's own instructions for programming work
+
+
 class BoundariesConfig(_Section):
     """Per-operation class overrides set by the owner, and whether Jarvis asks before acting.
 
@@ -590,6 +661,7 @@ class Config(_Section):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     chat: ChatConfig = Field(default_factory=ChatConfig)
     strata: StrataConfig = Field(default_factory=StrataConfig)
+    coding: CodingConfig = Field(default_factory=CodingConfig)
     spotify: SpotifyConfig = Field(default_factory=SpotifyConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)

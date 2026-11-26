@@ -80,9 +80,10 @@ class Request:
     came into the request so far (`"memory"` for outside text it remembers). `words` are the
     owner's own words of the request: none for one heard in PC audio or handed over with outside
     text behind it, and without the pastes that count as outside data; with the words the owner
-    typed into it while it ran (`steered`). `time_left` says how many seconds the request has left
-    before its time limit (`agent.max_seconds`), for an operation that waits as long as it is asked
-    (`pc_audio_listen`).
+    typed into it while it ran (`steered`). `time_left` says how many seconds the request has
+    left before its time limit (`agent.max_seconds`), and `cancelled` whether it was stopped, for
+    an operation that waits as long as it is asked (`pc_audio_listen`). `scheduled` marks a
+    request run when a job fell due: the owner did not ask for it just now.
     """
 
     foreign: bool
@@ -90,6 +91,8 @@ class Request:
     typed: str = ""
     steered: list[str] = field(default_factory=list[str])
     time_left: Callable[[], float] = field(default=lambda: math.inf)
+    cancelled: Callable[[], bool] = field(default=lambda: False)
+    scheduled: bool = False
 
     @property
     def words(self) -> str:
@@ -115,10 +118,17 @@ def current_request() -> Request | None:
 
 @contextmanager
 def request_scope(
-    *, foreign: bool, words: str = "", time_left: Callable[[], float] = lambda: math.inf
+    *,
+    foreign: bool,
+    words: str = "",
+    time_left: Callable[[], float] = lambda: math.inf,
+    cancelled: Callable[[], bool] = lambda: False,
+    scheduled: bool = False,
 ) -> Generator[Request]:
     """Mark everything run inside as part of one new request; `words` are the owner's own."""
-    request = Request(foreign, typed=words, time_left=time_left)
+    request = Request(
+        foreign, typed=words, time_left=time_left, cancelled=cancelled, scheduled=scheduled
+    )
     token = _CURRENT.set(request)
     try:
         yield request
@@ -138,6 +148,7 @@ class Result:
     window did not show where asked. A reply may then say what was done. `quiet` ends the
     request with nothing said: the owner asked for silence. `effort` asks the agent to let the
     model think that hard for the rest of the request (`think_harder`); the agent decides.
+    `mode` asks the agent to go on in that mode, on that mode's model (`switch_model`).
     """
 
     text: str
@@ -149,6 +160,7 @@ class Result:
     acted: bool = False
     quiet: bool = False
     effort: str = ""
+    mode: str = ""
 
 
 @dataclass(frozen=True, slots=True)

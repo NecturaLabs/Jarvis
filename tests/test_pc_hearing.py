@@ -8,14 +8,21 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
+from test_agent import ScriptedModel
 
+from jarvis.agent import Agent, Hooks
+from jarvis.app import no_action_operation
 from jarvis.audio import FRAME
+from jarvis.audit import AuditLog
 from jarvis.config import AudioConfig
 from jarvis.operations import (
     ArgumentError,
     Operation,
     OperationError,
     Registry,
+    Request,
+    Result,
+    current_request,
     request_scope,
     validate_args,
 )
@@ -267,6 +274,62 @@ def test_a_request_heard_in_pc_audio_cannot_listen_to_it() -> None:
         op.run(validate_args(op, {"seconds": 3, "when": "last"}))  # outside any request
 
     assert transcriber.heard == []
+
+
+def test_a_scheduled_request_cannot_listen_to_pc_audio() -> None:
+    transcriber = Transcriber()
+    op = _op(PcHearing(10, clock=Clock()), transcriber)
+
+    with (
+        request_scope(foreign=False, scheduled=True),
+        pytest.raises(OperationError, match=PC_AUDIO_ONLY_FOR_OWNER),
+    ):
+        op.run(validate_args(op, {"seconds": 3, "when": "last"}))
+
+    assert transcriber.heard == []
+
+
+def test_the_agent_hands_a_scheduled_request_and_its_stop_to_the_operations() -> None:
+    seen: list[Request | None] = []
+
+    def probe(_args: dict[str, Any]) -> Result:
+        seen.append(current_request())
+        return Result("probed")
+
+    probe_op = Operation("probe", "probe", {"type": "object"}, probe, OpClass.SAFE)
+    call = {"id": "c1", "type": "function", "function": {"name": "probe", "arguments": "{}"}}
+    asks = {"role": "assistant", "content": "", "tool_calls": [call]}
+    done = {"role": "assistant", "content": "Done."}
+    model = ScriptedModel([asks, done, asks, done])
+    agent = Agent(model, Registry([probe_op, no_action_operation()]), "system", AuditLog(None), {})
+    stop = threading.Event()
+    hooks = Hooks(confirm=lambda _q: False, cancelled=stop.is_set)
+
+    agent.handle("probe it", hooks, scheduled=True)
+    agent.handle("probe it", hooks)
+
+    scheduled, own = seen
+    assert scheduled is not None
+    assert own is not None
+    assert (scheduled.scheduled, own.scheduled) == (True, False)
+    assert not own.cancelled()
+    stop.set()
+    assert own.cancelled()
+
+
+def test_a_stopped_request_ends_its_listen_promptly() -> None:
+    stop = threading.Event()
+    op = _op(PcHearing(0))
+    threading.Timer(0.05, stop.set).start()
+    started = time.monotonic()
+
+    with (
+        request_scope(foreign=False, cancelled=stop.is_set),
+        pytest.raises(OperationError, match="stopped"),
+    ):
+        op.run(validate_args(op, {"seconds": MAX_LISTEN_S}))
+
+    assert time.monotonic() - started < WAIT_S  # within a check, not after a minute
 
 
 def test_without_the_voice_service_every_listen_is_refused() -> None:

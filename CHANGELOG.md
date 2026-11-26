@@ -17,10 +17,39 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   The chat's `/config` sets all three.
   A preview session for the owner's own builds (one project folder, served read-only on loopback, with a
   proxy that reaches that port alone) is ready for coding mode to use.
+- Coding mode, for programming work ([ADR 0017](docs/adr/0017-coding-mode.md)): more model calls, longer
+  replies, more thinking and a larger context, a part on programming in the prompt, and a model of its own
+  when `strata.coding_run_config` names one (`jarvis setup --coding-run-config`). `jarvis model` shows the mode
+  and each mode's model, `jarvis model coding` or `normal` switches, and so does `/model` in the chat. In the
+  chat the model moves a request that is programming work to coding mode by itself (`switch_model`,
+  `coding.chat.auto`), and back when you say the work is over; Jarvis also goes back after 30 minutes unused
+  (`coding.back_after_s`). With two models the model server restarts for a switch, so one model is in
+  memory at a time, and Jarvis says first how long the load took the last time. Every switch is audited,
+  and `jarvis doctor` checks the coding model's files; a missing model file is named for the mode Jarvis is
+  in. Settings: `[coding]`, `[coding.chat]` (laid over `[chat]`) and
+  `[coding.voice]` (laid over `[agent]`).
+- A mode switch waits for requests: none is made while the voice service, a chat window or `jarvis ask`
+  answers one, and a request that begins during a switch waits for the model server. The model's own switch
+  is made only by a call that stands alone in its reply, before any action of the request was tried, and
+  one that cannot be made leaves the request going on in the mode it is in.
+  A scheduled request never switches, and what a request read before its switch (outside text, your own
+  data) still puts the actions after it behind a yes. A switch that was killed midway is made whole by the
+  next one, and `jarvis setup` and `jarvis restart` no longer write the model server's files in the middle
+  of a switch; `jarvis restart` says when its restart of the model server cut a request.
+- `/config` in the chat has a "Mode" section: how long coding mode may go unused before Jarvis leaves it
+  (`coding.back_after_s`), and whether the model switches the mode by itself in the chat (`coding.chat.auto`)
+  and for speech (`coding.voice.auto`, asked about before it is turned on).
+- What the chat changed since it started (`/effort`, `/format`, `/config`) is kept when the mode changes, and
+  `/format` in coding mode keeps the prompt's part on programming. Coding mode still starts at its own
+  `coding.chat` values where it sets them, such as `thinking`.
 - The chat keeps every conversation in an archive (`~/.local/state/jarvis/chat-archive/`, 0600, the newest
   `chat.archive_keep` = 50) with its full log of requests, steps, results and replies. `/resume` lists them and
   `/resume 2` continues one, with what came from outside text still treated as data; `/rename` names the
-  current one, and `/forget all` deletes the archive.
+  current one, and `/forget all` deletes the archive and forgets the conversation in the window, so none of it
+  is archived again. A conversation is written only once something happened in it, never while a request
+  works on it: closing the chat mid-request archives the stopped request once the agent is done, and opening
+  and closing the chat writes no copy. Listing and the cap read only a small file per conversation, and the
+  log is added to, not rewritten. With `archive_keep = 0` the chat deletes the conversations kept before.
 - `chat.response_format` says how the chat's replies are written: `concise` (the default), `normal` or
   `verbose`. `/format verbose` and `/config` change it from the next request on; the voice keeps its own style.
 - The chat shows calls of one tool in a row as one step: "Write file "…/game.js" · 10 calls" with the newest
@@ -32,8 +61,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   `/config` saves is now audited, and the chat's activity feed shows setting and tool changes.
 - The chat's `/config` is a settings screen: sections (Chat, Voice, Listening, Safety, Tools), every value a
   setting takes with the one in force lit, when a change applies, and a line on what it does; ← and → step a
-  value. Acting without asking and taking requests from PC audio turn on only after a second Enter, once the
-  row says what that means, and are marked while they are on. The Tools list shows each tool's setting in
+  value. Acting without asking and taking requests from PC audio turn on only after the same step again to
+  the same value, once the row says what that means and which value, and are marked while they are on.
+  Acting without asking changed there applies to the open chat at once too, on or off. The Tools list shows each tool's setting in
   colour, how it ships when changed, and what it does.
 - `memory_detail` in `[agent]` and `[chat]` says what later requests keep of one: `condensed` (the request, the
   reply, what was done and what was looked up) or `full` (also its tool calls and their results). The chat keeps
@@ -46,7 +76,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   listens for up to a minute and tells you. `audio.pc_audio_recall_s` (off by default) keeps the last seconds in
   memory, so it can also tell you what was just said. The audio reaches the disk only for the moment Voxtype
   transcribes it, the words are someone else's data, and when Jarvis asks first (`bypass_consent` off) a search
-  or action after them waits for your yes.
+  or action after them waits for your yes. Only your own request can listen, never a scheduled one; a stop ends
+  a listen at once, and the words heard are not kept in the remembered conversation after that request.
 - The chat's `/config` also sets Jarvis's speaking speed, whether it acts without asking first and whether it
   takes requests from PC audio. Changes there restart the voice service once, when the settings close, instead of
   at every Enter, and its Tools list never takes a tool below how it ships.
@@ -155,8 +186,15 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   addresses, and a network it reaches without a router, such as the home network's global IPv6 prefix
   (read from the routing tables at each connection). Site-local IPv6 (`fec0::/10`), which Python counts as
   global, is refused too.
+- The chat archive survives a write that was cut short: moving a conversation kept in the first format is
+  made again from that file, a half-written log line no longer swallows the next entry, and files no
+  listed conversation owns are deleted once they are an hour old. `/forget all` that cannot delete says so
+  and forgets nothing. `/compact` is written to the archive, and `/clear`, `/resume` and `/forget all` read
+  the log's last events first, so none lands in the next conversation. A chat closed before its request
+  began is still archived.
 - A request the model answered while the conversation held outside text now keeps that mark itself: what the
-  model wrote then may repeat that text, so actions still need a yes once the turn it came from is forgotten.
+  model wrote then may repeat that text, so actions still need a yes once the turn it came from is forgotten. A
+  request stopped while the model was writing keeps the mark too once any of its words were said or shown.
 - A voice-service restart that fails after `/config` is now shown in the chat, saying the old settings still
   hold; it went to a hidden error stream before. A setting is audited only once it is saved, and acting without
   asking turned on from the chat is recorded as `consent_changed`, as `jarvis consent` records it.
@@ -167,7 +205,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   what it looked up and a note that it was stopped, so the next request does not search all over again or lose
   the task, and the audit log's `reply` says `stopped`. A stop now takes effect while the model is still
   thinking, not only once it starts to answer. In the chat, a request that ends without words says so instead
-  of showing nothing.
+  of showing nothing. A reply the model wrote whole is not marked stopped when you speak over its last words.
 - A long file is no longer lost to the reply cap. A call the cap cuts off is not run: the model is told how much
   one answer holds and writes the text in parts, adding each to the file, and the cut text no longer fills the
   context. A second cut call ends the request with a reply that says so, instead of retrying until the steps
@@ -247,8 +285,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   conversation is forgotten after five idle minutes, and `agent.memory_tokens` is now `3000` (was `6000`). A
   scheduled request shares speech's conversation and limits; `jarvis ask` remembers nothing between runs. The
   chat's own memory is unchanged.
-- The chat's default `memory_tokens` is now 6500 (was 9100), so the default 24,576-token window keeps room for
-  the thinking the model may raise to and for the new tools' and arguments' schemas, the browser's among them.
+- The chat's default `memory_tokens` is now 6200 (was 9100), so the default 24,576-token window keeps room for
+  the thinking the model may raise to and for the new tools' and arguments' schemas, the browser's and
+  `switch_model`'s among them.
   A larger `strata.context` leaves room for more.
 - Spotify names are matched by sound as well as spelling, whichever is closer, using espeak's phonemes. A
   name speech-to-text wrote as words that sound like it ("flocks days" for "Phlox Daze", "7" for "seven")

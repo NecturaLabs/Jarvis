@@ -43,11 +43,13 @@ from jarvis.chat.commands import EFFORT_LEVELS, FORMATS, VERBOSITY
 from jarvis.chat.settings import (
     NEXT_CHAT,
     NOW,
+    NOW_AND_ON_CLOSE,
     ON_CLOSE,
     SETTINGS_HINT,
     SETTINGS_LEGEND,
     TOOLS_HINT,
     TOOLS_LEGEND,
+    Pending,
     Row,
     Section,
     SettingsList,
@@ -186,6 +188,10 @@ class Session(Protocol):
         """Continue the conversation saved in `path`; return whether it was read."""
         ...
 
+    def set_bypass_consent(self, *, on: bool) -> None:
+        """Stop asking before acting (`on`), or ask again, from the next decision on."""
+        ...
+
     @property
     def memory(self) -> Conversation:
         """The remembered conversation."""
@@ -198,6 +204,9 @@ class Services:
 
     status: Callable[[], str] = lambda: ""  # the voice service and model, for the toolbar
     details: Callable[[], list[tuple[str, str]]] = list  # more for /status: (name, value)
+    model_report: Callable[[], list[str]] | None = None  # /model: the mode and the models
+    # /model <mode>: switches, passing on the line that says a model must load; returns how it went
+    switch_model: Callable[[str, Callable[[str], None]], str] | None = None
     stats: Callable[[], Stats] | None = None  # the PC's load
     save_settings: Callable[[ChatConfig], None] | None = None
     system_prompt: Callable[[ChatConfig], str] | None = None  # the model's instructions for them
@@ -251,6 +260,9 @@ class _Work:
     draft: str = ""
     steering: list[str] = field(default_factory=list[str])  # typed meanwhile, not yet taken
     taking: bool = True  # the request still takes steering; once it ends, the words wait
+    running: bool = True  # the agent still works on the conversation: it is not archived now
+    began: bool = False  # its worker started: it archives at close, once the agent is done
+    archive: bool = False  # it was asked to be archived meanwhile: once the agent is done
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +275,7 @@ class _Setting:
 
 
 TOOLS_ROW = "tools"  # the settings row that opens the list of tools
+BYPASS_CONSENT = "boundaries.bypass_consent"  # the shared setting the chat's own agent takes too
 SHARED_ROW = "jarvis:"  # the start of a row's id for one of Jarvis's own settings
 SETTINGS = (
     _Setting(
@@ -341,7 +354,13 @@ SETTINGS = (
         "every click or typing there asks you first. Needs agent-browser.",
     ),
 )
-SECTIONS = ("Chat", "Voice", "Listening", "Safety")  # the shared settings' headings, in order
+SECTIONS = (
+    "Chat",
+    "Mode",
+    "Voice",
+    "Listening",
+    "Safety",
+)  # the shared settings' headings, in order
 
 
 def _joined(*parts: str) -> str:
@@ -489,7 +508,7 @@ class ChatApp(App[None]):
         self._services = services or Services()
         self._tools_shown = False  # the settings panel lists the tools
         self._chain: Chain | None = None  # the calls of one tool in a row, shown as one step
-        self._pending: str | None = None  # a risky setting asked to be turned on, not yet confirmed
+        self._pending: Pending | None = None  # a risky setting asked to be turned on, unconfirmed
         self._changed_jarvis = False  # a setting the voice service reads changed in /config
         # Requests typed while one ran, waiting their turn: words, pictures, pastes.
         self._queued: list[tuple[str, list[Picture], list[str]]] = []
@@ -570,17 +589,36 @@ class ChatApp(App[None]):
         self._tick()
 
     def on_unmount(self) -> None:
-        """Answer a waiting question with no, stop a request and let go of the log."""
+        """Answer a waiting question with no, stop a request, archive and let go of the log.
+
+        While the agent still works on a request, its worker archives the conversation once the
+        agent is done with it (`_ran`), so the stopped request is in the archive too.
+        """
         with self._lock:
             self._closing = True
             question, self._question = self._question, None
             work = self._work
+            # A worker that never started will not archive: the window does, as with no request.
+            running = work is not None and work.running and work.began
         if question is not None:
             question.answered.set()
         if work is not None:
             work.stop.set()
-        self._archive_now()
-        self._tail.close()
+        if not running:
+            self._close_archive()
+
+    def _close_archive(self) -> None:
+        """Archive the conversation, with the log's last events, as the window closes."""
+        archive = self._services.archive
+        try:
+            if archive is not None:
+                for entry in self._tail.read():
+                    if self._session_id and entry.get("session") == self._session_id:
+                        archive.record(entry)
+                if self._session is not None:
+                    archive.save(self._session.memory)
+        finally:
+            self._tail.close()
 
     # The transcript
 
@@ -995,8 +1033,8 @@ class ChatApp(App[None]):
             self._answer(yes=False)
             return
         if self.query_one("#settings").display and self._pending is not None:
-            key, self._pending = self._pending, None  # the risky setting stays off
-            self._fill_settings(key)
+            pending, self._pending = self._pending, None  # the risky setting stays off
+            self._fill_settings(pending.key)
             return
         if self.query_one("#settings").display and self._tools_shown:
             self._fill_settings(TOOLS_ROW)  # back to the settings, on the Tools row
@@ -1081,7 +1119,7 @@ class ChatApp(App[None]):
     def _while_working(self, text: str) -> None:
         """Steer the running request with the typed words, or queue them as the next request.
 
-        Words that come with pictures or a long paste are queued: they are a request of their own.
+        Words that come with pictures or anything pasted are queued: a request of their own.
         """
         pictures = self._sent_pictures(text)
         pasted = self._sent_pastes(text)
@@ -1255,6 +1293,7 @@ class ChatApp(App[None]):
             "/context": lambda _a: self._context_note(),
             "/verbosity": self._verbosity_command,
             "/effort": self._effort_command,
+            "/model": self._model_command,
             "/format": self._format_command,
             "/resume": self._resume_command,
             "/rename": self._rename_command,
@@ -1302,9 +1341,16 @@ class ChatApp(App[None]):
         if self._work is not None:
             self._note("Wait for the request to finish, or press esc to stop it.", "warn")
             return
+        self._poll()  # the log's last events belong to the conversation that ends here
         self._archive_now()
         if self._services.archive is not None:
             self._services.archive.start()
+        self._forget_here()
+        self._note("Started a new conversation.")
+        self._draw_toolbar()
+
+    def _forget_here(self) -> None:
+        """Forget the conversation in the window and the agent's memory; start a new one."""
         if self._session is not None:
             self._session.forget()
         transcript = self.query_one("#transcript", VerticalScroll)
@@ -1314,8 +1360,6 @@ class ChatApp(App[None]):
         self._picture_number = 0
         self._input().set_text("")
         self.query_one("#welcome", Static).update(self._welcome())
-        self._note("Started a new conversation.")
-        self._draw_toolbar()
 
     def _compact(self) -> None:
         session = self._session
@@ -1327,6 +1371,9 @@ class ChatApp(App[None]):
         work = self._work
 
         def run() -> None:
+            folded = False
+            if work is not None:
+                work.began = True
             try:
                 folded = session.compact(everything=True)
             except Exception as exc:  # ruff: ignore[blind-except] - shown in the window
@@ -1339,6 +1386,9 @@ class ChatApp(App[None]):
                 )
                 self._from_worker(self._note, note)
             finally:
+                self._ran(work, changed=folded)  # the summary is the conversation now
+                if work is not None and work.archive:
+                    self._from_worker(self._archive_now)
                 self._finish(work)
 
         self.run_worker(run, thread=True, group="request")
@@ -1395,11 +1445,70 @@ class ChatApp(App[None]):
         self._set_effort(level)
         self._note(f"{self._effort_line()} From the next request on.")
 
+    def _model_command(self, argument: str) -> None:
+        """Show the mode and each mode's model, or switch between normal and coding mode.
+
+        A switch may restart the model server and load another model, so it runs like a request:
+        not beside one, and with its working line.
+        """
+        report, switch = self._services.model_report, self._services.switch_model
+        if report is None or switch is None:
+            self._note("This chat cannot switch the model.", "warn")
+            return
+        if not argument:
+            self._note("\n".join(report()))
+            return
+        mode = argument.lower()
+        if mode not in commands.MODES:
+            self._note(f"No mode {argument}; it is normal or coding.", "warn")
+            return
+        if not self._start(f"Switching to {mode} mode"):
+            return
+        work = self._work
+
+        def run() -> None:
+            try:
+                line = switch(mode, lambda said: self._from_worker(self._note, said))
+            except Exception as exc:  # ruff: ignore[blind-except] - shown in the window
+                self._from_worker(self._note, f"Couldn't switch: {type(exc).__name__}", "error")
+            else:
+                self._from_worker(self._note, line)
+            finally:
+                self._finish(work)
+
+        self.run_worker(run, thread=True, group="request")
+
     def _archive_now(self) -> None:
-        """Write the conversation into the archive as it is now."""
+        """Write the conversation into the archive as it is now, or once the agent is done.
+
+        While the agent works on it (a request, a compaction), the memory may be changing: it
+        is written once the agent is done (when the request settles), never mid-way.
+        """
+        with self._lock:
+            work = self._work
+            if work is not None and work.running:
+                work.archive = True
+                return
         archive = self._services.archive
         if archive is not None and self._session is not None:
             archive.save(self._session.memory)
+
+    def _ran(self, work: _Work | None, *, changed: bool = False) -> None:
+        """Note, from the worker, that the agent is done with the conversation.
+
+        `changed` says it changed (a request ended), so the archive writes it. When the window
+        closed meanwhile, nothing on its thread runs any more, so it is archived from here.
+        """
+        if work is None:
+            return
+        with self._lock:
+            work.running = False
+            closing = self._closing
+        archive = self._services.archive
+        if changed and archive is not None:
+            archive.touch()
+        if closing:
+            self._close_archive()
 
     def _resume_command(self, argument: str) -> None:
         """List the archived conversations, or continue the one numbered `argument`."""
@@ -1410,6 +1519,7 @@ class ChatApp(App[None]):
         if self._work is not None:
             self._note("Wait for the request to finish, or press esc to stop it.", "warn")
             return
+        self._poll()  # the log's last events belong to the conversation left here
         self._archive_now()
         kept = [a for a in archive.listed() if a.id != archive.current]
         if not argument:
@@ -1465,7 +1575,8 @@ class ChatApp(App[None]):
             return
         archive.rename(argument)
         self._archive_now()
-        self._note(f"Named this conversation {archive.name}.")
+        later = "" if archive.kept or self._busy() else "; it is archived once it has a request"
+        self._note(f"Named this conversation {archive.name}{later}.")
 
     def _forget_command(self, argument: str) -> None:
         archive = self._services.archive
@@ -1473,10 +1584,30 @@ class ChatApp(App[None]):
             self._note("The archive is off (chat.archive_keep is 0).", "warn")
             return
         if argument != "all":
-            self._note("/forget all deletes every archived conversation, this one's file too.")
+            self._note(
+                "/forget all deletes every archived conversation and forgets this one too, "
+                "as /clear does, so none of it is archived again."
+            )
             return
-        gone = archive.forget()
-        self._note(f"Deleted {gone} archived conversation{'' if gone == 1 else 's'}.")
+        if self._busy():
+            self._note("Wait for the request to finish, or press esc to stop it.", "warn")
+            return
+        self._poll()  # the log's last events are forgotten too, not recorded into the next one
+        try:
+            gone = archive.forget()
+        except OSError as exc:
+            self._note(
+                f"Couldn't delete the archive ({type(exc).__name__}); nothing was forgotten. "
+                f"Its folder is {archive.folder}.",
+                "error",
+            )
+            return
+        self._forget_here()
+        self._note(
+            f"Deleted {gone} archived conversation{'' if gone == 1 else 's'} and forgot this "
+            "one: a new conversation starts."
+        )
+        self._draw_toolbar()
 
     def _format_command(self, argument: str) -> None:
         """Show how replies are written, or set it for the requests from now on."""
@@ -1597,7 +1728,7 @@ class ChatApp(App[None]):
                     item.about,
                     item.values,
                     item.value,
-                    ON_CLOSE,
+                    NOW_AND_ON_CLOSE if item.key == BYPASS_CONSENT else ON_CLOSE,
                     risky=item.risky,
                 )
                 for item in shared
@@ -1699,8 +1830,9 @@ class ChatApp(App[None]):
     def _step_setting(self, key: str, by: int) -> None:
         """Move one setting's value `by` places (1 on, -1 back); Enter on Tools opens them.
 
-        A risky setting is turned on only by a second Enter or → once the row has said what
-        it means; any other key, or Esc, leaves it off.
+        A risky setting is turned on only by a second step to the same value once the row has
+        said what it means; a step to another value asks about that one instead, and any other
+        key, or Esc, leaves it off.
         """
         if key == TOOLS_ROW:
             self._fill_tools()
@@ -1710,8 +1842,11 @@ class ChatApp(App[None]):
         if row is None:
             return
         following = row.step(by)
-        if row.turns_on(following) and self._pending != key:
-            self._pending = key
+        asked = self._pending
+        if row.turns_on(following) and (
+            asked is None or (asked.key, asked.value) != (key, following)
+        ):
+            self._pending = Pending(key, following, by)
             self._fill_settings(key)
             return
         self._pending = None
@@ -1731,6 +1866,8 @@ class ChatApp(App[None]):
             self.notify(f"Couldn't change it: {exc}", severity="warning")
             return
         self._changed_jarvis = True
+        if key == BYPASS_CONSENT and self._session is not None:
+            self._session.set_bypass_consent(on=value is True)  # this chat's agent, at once
 
     def _change_setting(self, key: str, value: object) -> None:
         if key == "thinking":
@@ -1822,6 +1959,7 @@ class ChatApp(App[None]):
         pasted: Sequence[str] = (),
     ) -> None:
         session = self._session
+        work.began = True
         hooks = Hooks(
             confirm=self._confirm,
             waking=lambda: self._relabel(work, "Waking the model; the first answer takes longer"),
@@ -1842,6 +1980,7 @@ class ChatApp(App[None]):
         except Exception as exc:  # ruff: ignore[blind-except] - shown in the window, never raised
             self._from_worker(self._note, f"Something went wrong: {type(exc).__name__}", "error")
         finally:
+            self._ran(work, changed=True)
             seconds = self._clock() - work.started
             stopped = work.stop.is_set() and not self._closing
             self._from_worker(
@@ -1951,9 +2090,10 @@ class ChatApp(App[None]):
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         """Moving off a risky setting that asked to be turned on leaves it off."""
-        if event.option_list.id == "settings-list" and self._pending not in {None, event.option.id}:
-            key, self._pending = self._pending, None
-            self._fill_settings(event.option.id or key)
+        pending = self._pending
+        if event.option_list.id == "settings-list" and pending and pending.key != event.option.id:
+            self._pending = None
+            self._fill_settings(event.option.id or pending.key)
 
     def action_yes(self) -> None:
         """1: answer the open question yes."""
