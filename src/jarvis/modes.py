@@ -540,7 +540,23 @@ class Switcher:
             return self._remember(to, by, state, began, restarted=False)
         before = _texts()
         try:
-            services.strata_profile(effective(self._config, to))  # refused before anything changes
+            served = effective(self._config, to)
+            profile = services.strata_profile(served)  # refused before anything changes
+            if (
+                before[1] is not None
+                and (state.pending is not None or self._changes_files(profile, served, before))
+                and self._units.active()
+                and (why := self._ram_reason(served))
+            ):
+                # Refused before a file is written: the server keeps its files, so nothing they
+                # say is newer than it, and nothing reloads its model for no reason later.
+                return Switched(
+                    state.mode,
+                    error=(
+                        f"There isn't enough free memory to load the {to} model right now, so "
+                        f"Jarvis stays in {state.mode} mode. {why}"
+                    ),
+                )
             # Noted before the files change: a switch killed from here on is seen and made whole.
             _write_state(dataclasses.replace(state, pending=to))
             # After a killed switch the server may run either mode's files: it is restarted.
@@ -553,11 +569,6 @@ class Switcher:
                 self._settle(state)  # a note an earlier killed switch left stays
             return Switched(state.mode, error=f"{to} mode cannot be served: {exc}")
         running = restart and self._units.active()
-        if running and (why := self._ram_reason(effective(self._config, to))):
-            # Refused before the server stops: with its files back it keeps what it runs now.
-            if self._write_back(state.mode, restart=False):
-                self._settle(state)
-            return Switched(state.mode, error=f"Jarvis stays in {state.mode} mode: {why}")
         if running:
             say(announcement(self._config, to, restart=True))
             if not self._restart(to, state):
@@ -567,6 +578,16 @@ class Switcher:
         elif not restart:
             say(announcement(self._config, to, restart=False))
         return self._remember(to, by, state, began, restarted=running)
+
+    @staticmethod
+    def _changes_files(
+        profile: dict[str, object], served: Config, before: tuple[str | None, str | None]
+    ) -> bool:
+        """Whether writing the model server's files for `served` changes either of them."""
+        return (
+            json.dumps(profile, indent=1) + "\n" != before[0]
+            or services.strata_unit(served, paths.strata_key_file()) != before[1]
+        )
 
     def _remember(
         self, to: Mode, by: By, state: State, began: float, *, restarted: bool

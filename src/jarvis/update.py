@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from jarvis import config, modes, paths, services
+from jarvis import config, modes, paths, ramguard, services
 from jarvis.audit import AuditLog, last_event
 from jarvis.files import write_atomic, write_atomic_bytes
 
@@ -345,6 +345,30 @@ class SavedFile:
 _ERROR = (UpdateError, config.ConfigError, OSError)
 
 
+def no_room_for_the_model() -> bool:
+    """Say why the model server is not restarted, and return True, when its model would not fit.
+
+    The restart of an update reloads the model. The server that runs keeps what it loaded: it
+    holds memory a restart gives back, which counts as free here, and the files an update wrote
+    reach it with the next `jarvis restart`. Without a local server or a readable config, nothing
+    is refused.
+    """
+    try:
+        cfg = config.load()
+        if cfg.strata.mode != "local":
+            return False
+        why = ramguard.reload_reason(modes.effective(cfg, modes.current()), "update")
+    except config.ConfigError, OSError:
+        return False
+    if why:
+        print(
+            f"jarvis update: the model server was not restarted, so it keeps running what it "
+            f"loaded. {why} Run jarvis restart when there is room.",
+            file=sys.stderr,
+        )
+    return bool(why)
+
+
 class Apply:
     """Keep enough state to restore the prior checkout, files and services on failure."""
 
@@ -382,7 +406,7 @@ class Apply:
         )
         _sync(self.root, self.uv)
         _worker(self.root, "health")
-        reload_strata = self.strata and self._strata_stale()
+        reload_strata = self.strata and self._strata_stale() and not no_room_for_the_model()
         if self.strata_unit.changed() or self.voice_unit.changed() or reload_strata:
             _systemctl(self.root, "daemon-reload")
         if reload_strata:
@@ -455,7 +479,12 @@ class Apply:
         self._restore_services()
 
     def _restore_services(self) -> None:
-        """Put the generated files back and the services as they were before the update."""
+        """Put the generated files back and the services as they were before the update.
+
+        The unit comes back as the old version wrote it, with no memory check (the check belongs
+        to the new version), and a restart here only reads back a model the server held before
+        the update, so no memory check is made for it either.
+        """
         units_changed = self.strata_unit.changed() or self.voice_unit.changed()
         strata_changed = self.profile.changed() or self.strata_unit.changed()
         for saved in (self.profile, self.strata_unit, self.voice_unit):

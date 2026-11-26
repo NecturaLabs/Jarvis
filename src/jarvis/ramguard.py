@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from jarvis import config, services
+from jarvis import config, paths, services
+from jarvis.audit import AuditLog
 from jarvis.jsonutil import obj
 
 if TYPE_CHECKING:
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
 
 MEMINFO = Path("/proc/meminfo")
 CGROUP_ROOT = Path("/sys/fs/cgroup")
-EXIT_SHORT = 75  # EX_TEMPFAIL: the unit's check refuses a start that memory cannot take now
+EXIT_SHORT = services.RAM_SHORT_EXIT  # EX_TEMPFAIL: the unit's check refuses a start now
 _KIB = 1024
 _MIB = 1024**2
 _GIB = 1024**3
@@ -86,6 +87,7 @@ class Verdict:
     available: int | None
     margin: int
     allowed: bool = False
+    model: Path | None = None
 
     @property
     def known(self) -> bool:
@@ -138,6 +140,7 @@ def check(model: Path | None, strata: config.StrataConfig, *, credit: int = 0) -
         None if free is None else free + credit,
         strata.min_free_ram_mib * _MIB,
         allowed=strata.allow_low_ram,
+        model=model,
     )
 
 
@@ -145,6 +148,24 @@ def reason(model: Path | None, strata: config.StrataConfig, *, credit: int = 0) 
     """Return why the model should not load now, or "" when it may."""
     verdict = check(model, strata, credit=credit)
     return verdict.text if verdict.short else ""
+
+
+def refusal(where: str, verdict: Verdict) -> str:
+    """Audit a refused load (`ram_refused`: where, need, available, margin, the model file).
+
+    Returns the reason, or "" when `verdict` refuses nothing and nothing is recorded.
+    """
+    if not verdict.short:
+        return ""
+    AuditLog(paths.audit_file()).record(
+        "ram_refused",
+        where=where,
+        need=verdict.need,
+        available=verdict.available,
+        margin=verdict.margin,
+        path=str(verdict.model or ""),
+    )
+    return verdict.text
 
 
 def served_model(cfg: config.Config) -> Path | None:
@@ -156,12 +177,27 @@ def served_model(cfg: config.Config) -> Path | None:
     return model if model != Path() else None
 
 
-def reload_reason(cfg: config.Config) -> str:
+def server_verdict(model: Path | None, strata: config.StrataConfig) -> Verdict:
+    """Return whether `model` fits beside the memory the model server already holds.
+
+    What the server holds (a loaded model, or one still loading) is no longer in `MemAvailable`,
+    so it counts as free: the same figure whether the model is out of memory, going in or in.
+    """
+    return check(model, strata, credit=held_by_unit(services.STRATA_UNIT))
+
+
+def reload_reason(cfg: config.Config, where: str) -> str:
     """Return why the model server must not be restarted on `cfg`'s model now, or "".
 
-    The memory the running server holds is counted as free: the restart gives it back first.
+    The memory the running server holds is counted as free: the restart gives it back first. A
+    refusal is audited as coming from `where`.
     """
-    return reason(served_model(cfg), cfg.strata, credit=held_by_unit(services.STRATA_UNIT))
+    return refusal(where, server_verdict(served_model(cfg), cfg.strata))
+
+
+def switch_reason(cfg: config.Config) -> str:
+    """Return why a switch of modes must not restart the server on `cfg`'s model, or ""."""
+    return reload_reason(cfg, "mode switch")
 
 
 def _profile_model(path: Path) -> Path | None:
@@ -184,7 +220,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         cfg = config.load(args.config)
     except config.ConfigError:
         return 0  # the server's other checks and `jarvis doctor` say what is wrong with it
-    why = reason(_profile_model(args.profile), cfg.strata)
+    why = refusal("unit", check(_profile_model(args.profile), cfg.strata))
     if why:
         print(f"jarvis: {why}", file=sys.stderr)
         return EXIT_SHORT

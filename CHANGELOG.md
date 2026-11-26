@@ -302,7 +302,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   and the game's process died. `jarvis start`, `jarvis restart`, a switch of modes, a model load and the
   server's own unit (`ExecStartPre=`) now compare the model file's size with `MemAvailable` and refuse, with
   the figures and nothing started, when the load would leave less than `strata.min_free_ram_mib` (4096).
-  `strata.allow_low_ram` loads anyway; `jarvis doctor` reports the check. `jarvis setup` or `jarvis restart` writes the
+  `strata.allow_low_ram` loads anyway; `jarvis doctor` reports the check; `jarvis update` skips only the
+  server's restart when it would not fit; each refusal is audited as `ram_refused`. `jarvis setup` or `jarvis restart` writes the
   unit's check ([docs/configuration.md](docs/configuration.md#refusing-a-load-that-does-not-fit),
   [ADR 0029](docs/adr/0029-refuse-a-load-that-does-not-fit.md)).
 - With a shared Strata run config, the ACP coding provider keeps the current model mode and

@@ -27,7 +27,12 @@ or a request loading it again after an unload. Which of them are guarded, and ho
 Chosen option 3.
 
 - **The number.** The need is the size of the model file the profile serves (`--native`), which is what
-  Strata's log calls "about 39 GB". What is available is `MemAvailable` from `/proc/meminfo`: free memory plus
+  Strata's log calls "about 39 GB". This is an empirical estimate, not Strata's own figure: on the reference
+  machine the loaded server's cgroup holds 35.6 GiB of anonymous memory against a 36.5 GiB file, and the
+  second part of a split model (`--ple-gguf`) is not counted. It would change if Strata reported its need
+  (`strata serve` or `strata launch` printing a planned RAM figure), if an engine's footprint stopped
+  tracking the file (a long context, `strata.kv_resident`, the picture reader), or if the second part were
+  shown to be read into RAM too. What is available is `MemAvailable` from `/proc/meminfo`: free memory plus
   the page cache the kernel can reclaim, as the kernel counts it. A load is refused when
   `available - need < strata.min_free_ram_mib`. A file size or meminfo that cannot be read blocks nothing.
 - **A restart gives memory back.** A running server holds its loaded model, which `MemAvailable` leaves out.
@@ -42,13 +47,31 @@ Chosen option 3.
 - **The override is a config key**, `strata.allow_low_ram`, not a command-line flag: the unit's check reads the
   config when it runs, and a flag on `jarvis start` could not reach it. The owner sets it, starts, and turns it
   off again.
+- **What counts as already loaded.** The client guard and `doctor` add what the server's cgroup holds, as the
+  restart paths do, and the client asks nothing while a load of its own waits for its answer or the server
+  lists the model as loaded: the model's memory is then already out of `MemAvailable`, and refusing would be
+  wrong. A load under way in another process has taken part of its memory already, which the same credit
+  adds back.
 - **Where it is guarded.** `jarvis start` and `jarvis restart` (and the backend's) print the reason, change
   nothing and exit 1. The unit has `ExecStartPre=python -m jarvis.ramguard --config … --profile …`, which reads
   the config and the profile at run time (the profile is what the mode in force serves) and exits 75, so every
   other way of starting the unit is covered too. A switch of modes leaves the running server alone and says
   why. The client (`StrataModel.load`, `warm`, and a request that must load the model) refuses before
   asking the server, which covers the load at `jarvis run`, the wake word after an unload, and a request that
-  would let the server load lazily. `jarvis doctor` shows the check; the update's health check only notes it.
+  would let the server load lazily, and one that finds the server down beside too little memory (its unit's
+  check refused the start) answers with the reason and says to run `jarvis start`. `jarvis update` makes
+  the check before it restarts the server: a refusal keeps the server running what it loaded, skips only that
+  restart and prints the reason; the rest of the update goes ahead, and `jarvis restart` reloads when there is
+  room. `jarvis doctor` shows the check; the update's health check only notes it. A refusal in the
+  commands, the unit, the switch, the client and the update is audited as `ram_refused` with where, the
+  need, what was available, the margin and the model file.
+- **The unit's check.** It runs as `python -I -m jarvis.ramguard` (isolated: no current-directory or
+  environment path; checked against the venv's editable install, which it still finds), and the unit has
+  `RestartPreventExitStatus=75` so that a refused start is not retried into the start limit. systemd
+  documents that setting for the main process; whether it also stops the restart after a failed
+  `ExecStartPre=` was not exercised, and if it does not, the start limit bounds the retries.
+- **A refused switch writes nothing.** The switch makes the check before it writes the server's files, so a
+  refusal leaves their times alone and nothing later sees them as newer than the server.
 - **Option 4 rejected:** `MemoryMax` ends a server that already took the memory, after the other program
   lacked it; and it is set above the model's size on purpose.
 
@@ -61,4 +84,7 @@ Chosen option 3.
   the owner's services).
 - `MemAvailable` is an estimate, and the file size is not the engine's whole footprint; the margin absorbs
   the difference, and a model whose engine uses much more than its file needs a larger one.
+- An update that rolls back puts the old unit text back, which has no memory check (the check belongs to the
+  new version), and restarts the server to read the old files: a model the server held before the update, so
+  it is not checked again.
 - Strata's own load is not touched: a load started outside Jarvis (`strata` run by hand) is not guarded.

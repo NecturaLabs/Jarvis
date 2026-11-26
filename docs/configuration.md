@@ -476,10 +476,14 @@ less than `strata.min_free_ram_mib` is refused, with the figures, and nothing is
 | Where the model loads | What happens when it does not fit |
 |---|---|
 | `jarvis start`, and `jarvis restart` when the server is stopped or its settings changed | Says why on stderr, changes nothing, exits 1. The same on a backend. |
-| The model server's unit, however it is started (`systemctl --user start`, the voice service pulling it in, `jarvis update`, a crash restart) | `ExecStartPre=` runs `python -m jarvis.ramguard`, which reads the config and the profile when it starts and exits 75 with the reason in the journal. The start fails. A failed start is retried by the unit's restart policy within its start limit (five in 15 minutes), then the unit stays `failed`; `jarvis start` clears that. |
+| The model server's unit, however it is started (`systemctl --user start`, the voice service pulling it in, a crash restart) | `ExecStartPre=` runs `python -I -m jarvis.ramguard`, which reads the config and the profile when it starts and exits 75 with the reason in the journal. The start fails, and `RestartPreventExitStatus=75` asks systemd not to retry it. If systemd retries anyway, the start limit (five in 15 minutes) ends it, and the unit stays `failed`; `jarvis start` clears that. |
 | A switch of modes that restarts the server (`jarvis model`, the chat's `/model`, the model's own switch) | The server is left as it is, Jarvis stays in its mode and says why. |
-| `jarvis run` loading the model at start, the wake word loading it after `jarvis unload`, a resume | Logged, and nothing asks the server to load. The next wake word asks again. |
-| A request that finds the model unloaded | Jarvis answers that it cannot load its model for lack of memory, instead of letting the server load it. |
+| `jarvis update` restarting the server for new settings | The server is not restarted and keeps what it loaded; the rest of the update goes ahead and the reason is printed. `jarvis restart` reloads when there is room. A rollback restores the old unit, which has no check, and restarts it: that only reads back a model the server held before. |
+| `jarvis run` loading the model at start, the wake word loading it after `jarvis unload`, a resume | Logged, and nothing asks the server to load. The next wake word asks again. A server that already holds the model, or a load already under way, is never refused: its memory is no longer in `MemAvailable`. |
+| A request that finds the model unloaded, or the server down because its unit refused to start | Jarvis answers that it cannot load its model for lack of memory, and to run `jarvis start` if the server is stopped, instead of letting the server load it. |
+
+Every refusal is written to the audit log as `ram_refused` (where it came from, the need, what was available,
+the margin and the model file).
 
 `jarvis doctor` shows the check as a line (`memory for the model`) with the figures; it fails while a load
 would be refused, and in the check `jarvis update` runs afterwards it is only a note, so an update is not

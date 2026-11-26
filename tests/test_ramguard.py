@@ -6,6 +6,9 @@ Every test fakes `/proc/meminfo` and the model file's size: nothing here reads t
 """
 
 import json
+import os
+import sys
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,7 +17,7 @@ import httpx
 import pytest
 from strata_fixture import engine_run_config, install_engine
 
-from jarvis import agent, cli, config, modes, paths, ramguard, services
+from jarvis import agent, cli, config, modes, paths, ramguard, services, update
 from jarvis import audio as audio_module
 from jarvis.config import Config, StrataConfig
 from jarvis.model import ModelError, ModelMemoryError, StrataModel
@@ -593,21 +596,63 @@ def test_the_commands_switch_of_modes_is_guarded(
 
     said = cli.switch_model(cfg, "coding", lambda _line: None, "test")
 
-    assert "not enough free memory" in said
+    assert "enough free memory" in said
     assert not any(call[0] == "restart" for call in calls)
 
 
-def _client(reason: str, requests: list[str]) -> StrataModel:
-    transport = httpx.MockTransport(
-        lambda request: (requests.append(request.url.path), httpx.Response(200, json={}))[1]
-    )
+def _short() -> ramguard.Verdict:
+    return ramguard.Verdict(MODEL, 17 * GIB, 4 * GIB, model=Path("/models/model.gguf"))
+
+
+def _client(
+    verdict: ramguard.Verdict,
+    requests: list[str],
+    *,
+    state: str | None = "unloaded",
+    model_file: Path = Path("/models/model.gguf"),
+) -> StrataModel:
+    """A client whose server lists the model as `state` (None: no server) and answers any load."""
+    now = [0.0]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    def clock() -> float:
+        now[0] += 0.01
+        return now[0]
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if state is None:
+            message = "connection refused"
+            raise httpx.ConnectError(message)
+        if request.url.path.endswith("/models"):
+            listed = [] if state == "unloaded" else [{"id": "m", "status": {"value": state}}]
+            return httpx.Response(200, json={"data": listed})
+        return httpx.Response(200, json={})
+
     return StrataModel(
         config.ModelConfig(base_url="http://127.0.0.1:8080/v1"),
         "key",
-        transport=transport,
-        model_file=Path("/models/model.gguf"),
-        ram_guard=lambda _file: reason,
+        transport=httpx.MockTransport(answer),
+        model_file=model_file,
+        ram_guard=lambda _file: verdict,
+        sleep=sleep,
+        clock=clock,
     )
+
+
+def big_model_file(tmp_path: Path) -> Path:
+    """A model file that is there, for a client whose server is down."""
+    path = tmp_path / "models" / "there.gguf"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    return path
+
+
+def _asked(requests: list[str]) -> list[str]:
+    """The requests that load or use the model, leaving out the listing that says what it is."""
+    return [path for path in requests if not path.endswith("/models")]
 
 
 def test_loading_the_model_is_refused_before_the_server_is_asked(
@@ -615,9 +660,9 @@ def test_loading_the_model_is_refused_before_the_server_is_asked(
 ) -> None:
     requests: list[str] = []
 
-    assert _client("not enough free memory", requests).load() is False
+    assert _client(_short(), requests).load() is False
 
-    assert requests == []
+    assert _asked(requests) == []
     assert "not enough free memory" in caplog.text
 
 
@@ -626,11 +671,11 @@ def test_warming_the_model_at_start_gives_up_at_once_when_it_would_not_fit(
 ) -> None:
     requests: list[str] = []
     waits: list[float] = []
-    model = replace(_client("not enough free memory", requests), sleep=waits.append)
+    model = replace(_client(_short(), requests), sleep=waits.append)
 
     assert model.warm() is False
 
-    assert requests == []
+    assert _asked(requests) == []
     assert waits == []
     assert "not enough free memory" in caplog.text
 
@@ -639,20 +684,76 @@ def test_a_cold_request_does_not_make_the_server_load_into_too_little_memory() -
     requests: list[str] = []
 
     with pytest.raises(ModelMemoryError, match="not enough free memory"):
-        _client("not enough free memory", requests).chat([], [], load_s=60.0)
+        _client(_short(), requests).chat([], [], load_s=60.0)
 
-    assert requests == []
+    assert _asked(requests) == []
 
 
 def test_a_request_to_a_loaded_model_is_not_guarded() -> None:
     requests: list[str] = []
-    model = _client("not enough free memory", requests)
+    model = _client(_short(), requests)
 
     with pytest.raises(ModelError, match="without a message") as raised:
         model.chat([], [], load_s=0.0)
 
     assert not isinstance(raised.value, ModelMemoryError)
-    assert requests == ["/v1/chat/completions"]
+    assert _asked(requests) == ["/v1/chat/completions"]
+
+
+def test_warming_beside_a_server_that_holds_the_model_is_not_refused() -> None:
+    # The model is in memory, so MemAvailable already leaves it out: nothing is being loaded.
+    requests: list[str] = []
+
+    assert _client(_short(), requests, state="loaded").warm() is True
+
+    assert "/v1/load" in _asked(requests)
+
+
+def test_a_cold_request_at_a_server_that_holds_the_model_is_not_refused() -> None:
+    requests: list[str] = []
+
+    with pytest.raises(ModelError, match="without a message") as raised:
+        _client(_short(), requests, state="loaded").chat([], [], load_s=60.0)
+
+    assert not isinstance(raised.value, ModelMemoryError)
+
+
+def test_a_request_during_a_load_that_is_under_way_is_not_refused() -> None:
+    requests: list[str] = []
+    model = _client(_short(), requests)
+
+    with model._loads.asking(), pytest.raises(ModelError, match="without a message") as raised:  # pyright: ignore[reportPrivateUsage] - a load of this client that waits for its answer
+        model.chat([], [], load_s=60.0)
+
+    assert not isinstance(raised.value, ModelMemoryError)
+
+
+def test_a_load_that_joins_one_under_way_is_not_refused() -> None:
+    requests: list[str] = []
+    model = _client(_short(), requests)
+
+    with model._loads.asking():  # pyright: ignore[reportPrivateUsage] - a load of this client that waits for its answer
+        assert model.load() is True
+
+    assert _asked(requests) == []
+
+
+def test_a_server_that_is_down_beside_too_little_memory_says_why(tmp_path: Path) -> None:
+    # The unit's own check refused the start: the owner needs the reason and `jarvis start`.
+    model = replace(_client(_short(), [], state=None), model_file=big_model_file(tmp_path))
+
+    with pytest.raises(ModelMemoryError, match="not enough free memory"):
+        model.chat([], [], load_s=0.0)
+
+
+def test_a_server_that_is_down_with_memory_to_spare_is_just_down(tmp_path: Path) -> None:
+    fits = ramguard.Verdict(MODEL, 60 * GIB, 4 * GIB)
+    model = replace(_client(fits, [], state=None), model_file=big_model_file(tmp_path))
+
+    with pytest.raises(ModelError, match="unreachable") as raised:
+        model.chat([], [], load_s=0.0)
+
+    assert not isinstance(raised.value, ModelMemoryError)
 
 
 def test_the_owner_hears_why_the_model_did_not_load() -> None:
@@ -661,6 +762,7 @@ def test_the_owner_hears_why_the_model_did_not_load() -> None:
     )
 
     assert "memory" in said
+    assert "jarvis start" in said
     assert said != agent._model_failure(  # pyright: ignore[reportPrivateUsage] - what is spoken for each model error
         Exception()
     )
@@ -677,5 +779,172 @@ def test_the_model_client_of_the_app_carries_the_guard(
     model = app.strata_model(cfg, "key")
 
     assert model.ram_guard is not None
-    assert "not enough free memory" in model.ram_guard(model.served_file())
+    assert model.ram_guard(model.served_file()).short
     assert app.mode_model(cfg, "key").ram_guard is not None
+
+
+def test_the_model_client_of_the_app_counts_the_memory_the_server_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A load under way, in this process or another, has already taken its memory from MemAvailable.
+    from jarvis import app  # ruff: ignore[import-outside-top-level] - loads the voice stack, which this test file otherwise skips
+
+    cfg = local(tmp_path)
+    meminfo(tmp_path, monkeypatch, available=8 * GIB)
+    _server_memory(tmp_path, anon=MODEL)
+
+    model = app.strata_model(cfg, "key")
+
+    assert model.ram_guard is not None
+    assert not model.ram_guard(model.served_file()).short
+
+
+def _audited() -> list[dict[str, object]]:
+    path = paths.audit_file()
+    if not path.is_file():
+        return []
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    return [row for row in rows if row["event"] == "ram_refused"]
+
+
+def test_a_refused_start_is_audited_with_the_figures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local(tmp_path)
+    meminfo(tmp_path, monkeypatch, available=17 * GIB)
+    _systemctl(monkeypatch, {})
+
+    cli.main(["start"])
+
+    (row,) = _audited()
+    assert row["where"] == "start"
+    assert row["need"] == MODEL
+    assert row["available"] == 17 * GIB
+    assert row["margin"] == 4 * GIB
+    assert str(row["path"]).endswith("q4.gguf")
+
+
+def test_a_refused_restart_and_a_start_that_fits_are_audited_as_they_were(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local(tmp_path)
+    meminfo(tmp_path, monkeypatch, available=17 * GIB)
+    _systemctl(monkeypatch, {})
+    monkeypatch.setattr(cli, "_started_at", _started(None))
+
+    cli.main(["restart"])
+    meminfo(tmp_path, monkeypatch, available=64 * GIB)
+    cli.main(["start"])
+
+    assert [row["where"] for row in _audited()] == ["restart"]
+
+
+def test_a_refused_switch_is_audited(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _coding_config(tmp_path)
+    config.save(cfg)
+    _install(cfg)
+    meminfo(tmp_path, monkeypatch, available=17 * GIB)
+    _systemctl(monkeypatch, {STRATA_UNIT: "active"})
+
+    cli.switch_model(cfg, "coding", lambda _line: None, "test")
+
+    (row,) = _audited()
+    assert row["where"] == "mode switch"
+    assert str(row["path"]).endswith("coder.gguf")
+
+
+def test_the_units_refusal_is_audited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    services.write_strata_profile(local(tmp_path))
+    meminfo(tmp_path, monkeypatch, available=15 * GIB)
+
+    assert _run_guard(capsys)[0] == ramguard.EXIT_SHORT
+
+    (row,) = _audited()
+    assert row["where"] == "unit"
+
+
+def test_a_refused_client_load_is_audited_once_for_each_refusal() -> None:
+    _client(_short(), []).load()
+
+    (row,) = _audited()
+    assert row["where"] == "model load"
+    assert row["need"] == MODEL
+
+
+def test_a_load_that_is_not_refused_is_not_audited() -> None:
+    _client(_short(), [], state="loaded").warm()
+
+    assert _audited() == []
+
+
+def test_the_mode_switch_text_leads_with_what_the_model_can_say(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _coding_config(tmp_path)
+    config.save(cfg)
+    _install(cfg)
+    meminfo(tmp_path, monkeypatch, available=17 * GIB)
+    _systemctl(monkeypatch, {STRATA_UNIT: "active"})
+
+    said = cli.switch_model(cfg, "coding", lambda _line: None, "test")
+
+    assert said.startswith("There isn't enough free memory to load the coding model right now")
+    assert "strata.allow_low_ram" in said
+
+
+def test_a_refused_switch_leaves_the_servers_files_as_they_were(tmp_path: Path) -> None:
+    # Rewriting them would make the next restart (and the idle check every minute) see a change
+    # since the server started, and reload the model for nothing.
+    cfg = _coding_config(tmp_path)
+    _install(cfg)
+    old = time.time() - 1000
+    for path in (services.strata_profile_file(), services.unit_dir() / STRATA_UNIT):
+        os.utime(path, (old, old))
+
+    done = _switcher(cfg, _Units(), lambda _served: "no room").switch("coding", "owner")
+
+    assert done.error
+    assert not services.strata_changed_since(old + 500)
+    assert modes.read_state().pending is None
+
+
+def test_a_switch_that_changes_no_file_asks_nothing(tmp_path: Path) -> None:
+    cfg = _coding_config(tmp_path)
+    _install(cfg)
+
+    def ram(_served: Config) -> str:
+        pytest.fail("no restart follows, so nothing is loaded")
+
+    assert _switcher(cfg, _Units(), ram).switch("normal", "owner").mode == "normal"
+
+
+def test_the_unit_check_runs_isolated_and_a_refused_start_is_not_retried(tmp_path: Path) -> None:
+    text = services.strata_unit(local(tmp_path), paths.strata_key_file())
+
+    assert "ExecStartPre=" + sys.executable + " -I -m jarvis.ramguard" in text
+    assert f"RestartPreventExitStatus={ramguard.EXIT_SHORT}" in text.splitlines()
+
+
+def test_an_update_does_not_restart_the_server_into_too_little_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    local(tmp_path)
+    meminfo(tmp_path, monkeypatch, available=17 * GIB)
+
+    assert update.no_room_for_the_model() is True
+
+    err = capsys.readouterr().err
+    assert "not restarted" in err
+    assert "jarvis restart" in err
+    assert [row["where"] for row in _audited()] == ["update"]
+
+
+def test_an_update_restarts_the_server_when_it_fits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local(tmp_path)
+    meminfo(tmp_path, monkeypatch, available=64 * GIB)
+
+    assert update.no_room_for_the_model() is False

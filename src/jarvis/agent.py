@@ -103,7 +103,7 @@ REMOTE_MODEL_DOWN = "The remote model server isn't answering. Check the backend 
 MODEL_MISSING = "My model's file is missing, so I can't answer. Is its drive mounted?"
 MODEL_NO_ROOM = (
     "I can't load my model: there isn't enough free memory. Close something heavy, a game "
-    "maybe, and ask again."
+    "maybe, then ask again, or run jarvis start if the model server is stopped."
 )
 PICTURES_OFF = (
     "I can't see pictures here: the picture reader is off. Set the model up with its picture "

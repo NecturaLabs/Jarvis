@@ -166,7 +166,7 @@ enforced in code before any tool runs.
 - Under systemd: `strata serve --profile jarvis --ready-file …`, absolute paths, `Restart=on-failure` with backoff,
   `MemoryHigh`/`MemoryMax`. Health checks never generate, so boot and `doctor` leave the model unloaded.
 - Jarvis says "One moment, waking up" when a request finds the model unloaded; `jarvis unload` frees it at once
-  (e.g. before a game). It refuses to load when available memory is below a reserve set in config (not built).
+  (e.g. before a game). It refuses to load when the memory available would be left below `strata.min_free_ram_mib` (built, [ADR 0029](adr/0029-refuse-a-load-that-does-not-fit.md)).
 - Survives suspend/resume and engine crashes: the agent retries once after the server is ready again.
 
 ### Agent loop

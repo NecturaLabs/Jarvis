@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from jarvis import ramguard
 from jarvis.config import STRATA_CONTEXT_MAX, STRATA_CONTEXT_MIN, private_endpoint
 from jarvis.jsonutil import obj, objs
 
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.config import ModelConfig
+    from jarvis.ramguard import Verdict
 
 log = logging.getLogger(__name__)
 
@@ -370,9 +372,9 @@ class StrataModel:
     model_file: Path | None = None  # what the server loads (the run config's `--native`)
     # ... as it is now, where what the server loads changes while this client lives (a mode)
     file_of: Callable[[], Path | None] | None = None
-    # Says why the model must not load now (not enough free memory), or "" when it may; asked with
-    # the file the server loads before any load, and a local server's request that must load it.
-    ram_guard: Callable[[Path | None], str] | None = None
+    # Says whether the model fits in the memory free now, for the file the server loads; asked
+    # before any load, and by a local server's request that must load it or finds it down.
+    ram_guard: Callable[[Path | None], Verdict] | None = None
     remote: bool = False
     tls_ca: Path | None = None
     resolve: Callable[[str], list[str]] | None = None  # tests answer name lookups in place of DNS
@@ -389,10 +391,17 @@ class StrataModel:
         return self.model_file if self.file_of is None else self.file_of()
 
     def _no_room(self) -> str:
-        """Return why the model must not load now, or "" (also for a remote server's)."""
-        if self.remote or self.ram_guard is None:
+        """Return why the model must not load now, or "" (also for a remote server's).
+
+        Nothing is refused while a load of this client waits for its answer, or while the server
+        has the model: its memory is no longer in what is available, so it would look too big.
+        """
+        if self.remote or self.ram_guard is None or self._loads.pending():
             return ""
-        return self.ram_guard(self.served_file())
+        verdict = self.ram_guard(self.served_file())
+        if not verdict.short or self._listing()[1] in {"loaded", "loading"}:
+            return ""
+        return ramguard.refusal("model load", verdict)
 
     def _load_refused(self) -> bool:
         """Return whether a load must not be asked for now, saying why in the log."""
@@ -666,6 +675,8 @@ class StrataModel:
         if self.file_missing():  # systemd skips Strata then: nothing to wait for
             msg = f"model server down and its model file is missing: {self.served_file()}"
             raise ModelMissingError(msg) from error
+        if why := self._no_room():  # its unit's own check refused the start
+            raise ModelMemoryError(why) from error
         if not retry:
             msg = f"model server unreachable: {error}"
             raise ModelError(msg) from error

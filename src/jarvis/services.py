@@ -31,6 +31,7 @@ JARVIS_UNIT = "jarvis.service"
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _NEEDS_QUOTES = re.compile(r"""[\s"'\\;]""")
 _SETUP_ERROR = 2  # `jarvis run` exits with this when setup is missing; restarting cannot fix it
+RAM_SHORT_EXIT = 75  # the unit's memory check exits with this when the model would not fit
 
 
 def _checked(value: str, what: str) -> str:
@@ -609,7 +610,7 @@ def strata_unit(config: Config, key_file: Path) -> str:
     check = " ".join(
         [
             exec_program(sys.executable, "python executable"),
-            "-m jarvis.ramguard --config",
+            "-I -m jarvis.ramguard --config",
             exec_word(str(paths.config_file()), "config file"),
             "--profile",
             exec_word(str(strata_profile_file()), "profile file"),
@@ -637,6 +638,7 @@ EnvironmentFile={_path(key_file, "key file")}
 ExecStartPre={check}
 ExecStart={start}
 Restart=on-failure
+RestartPreventExitStatus={RAM_SHORT_EXIT}
 RestartSec=5
 RestartSteps=5
 RestartMaxDelaySec=120

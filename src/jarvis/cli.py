@@ -2691,7 +2691,7 @@ def _switcher(cfg: config.Config, source: str) -> modes.Switcher:
     """Return the switch of modes for a command or a window, audited as coming from `source`."""
     audit = AuditLog(paths.audit_file(), tags={"via": source})
     return modes.Switcher(
-        cfg, StrataUnits(), _strata, audit, busy=voice_busy, ram_reason=ramguard.reload_reason
+        cfg, StrataUnits(), _strata, audit, busy=voice_busy, ram_reason=ramguard.switch_reason
     )
 
 
@@ -2943,14 +2943,14 @@ def cmd_help(_args: argparse.Namespace) -> int:
 _RUNNING = {"active", "activating", "reloading"}
 
 
-def _no_room(cfg: config.Config) -> bool:
+def _no_room(cfg: config.Config, where: str) -> bool:
     """Print why the model server must not load its model now, and return True when it must not.
 
     The memory the running server holds counts as free: a restart gives it back first. A load
     that would leave less than `strata.min_free_ram_mib` is refused, as the unit's own check
     refuses it too; `strata.allow_low_ram` lets it through.
     """
-    why = ramguard.reload_reason(modes.effective(cfg, modes.current()))
+    why = ramguard.reload_reason(modes.effective(cfg, modes.current()), where)
     if why:
         print(f"jarvis: {why}", file=sys.stderr)
     return bool(why)
@@ -2961,7 +2961,7 @@ def cmd_start(_args: argparse.Namespace) -> int:
     cfg = _load()
     if cfg.strata.mode != "local":
         return _split_lifecycle("start", cfg)
-    if _unit_state(STRATA_UNIT) not in _RUNNING and _no_room(cfg):
+    if _unit_state(STRATA_UNIT) not in _RUNNING and _no_room(cfg, "start"):
         print("jarvis: nothing was started", file=sys.stderr)
         return 1
     _reset_failed(STRATA_UNIT, JARVIS_UNIT)
@@ -2985,7 +2985,7 @@ def _split_lifecycle(action: str, cfg: config.Config) -> int:
     unit = JARVIS_UNIT if remote else STRATA_UNIT
     loads = not remote and (action == "restart" or _unit_state(unit) not in _RUNNING)
     if action != "stop":
-        if loads and _no_room(cfg):
+        if loads and _no_room(cfg, action):
             print("jarvis: nothing was changed", file=sys.stderr)
             return 1
         try:
@@ -3094,7 +3094,7 @@ def cmd_restart(_args: argparse.Namespace) -> int:
         _refresh_strata()
         started = _started_at(STRATA_UNIT)
         changed = started is not None and services.strata_changed_since(started)
-        if (started is None or changed) and _no_room(cfg):
+        if (started is None or changed) and _no_room(cfg, "restart"):
             print("jarvis: nothing was restarted", file=sys.stderr)
             return 1
         cut = changed and not free
