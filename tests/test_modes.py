@@ -5,7 +5,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
 
 import pytest
 from strata_fixture import engine_run_config, install_engine, touch
@@ -197,6 +197,86 @@ def test_what_the_owner_sets_for_coding_mode_wins(tmp_path: Path) -> None:
     assert coding.strata.vram_reserve_mib == 4000
     assert coding.strata.memory_max == "30G"
     assert coding.files.write_roots == [*cfg.files.write_roots, "~/code"]
+
+
+def test_coding_mode_keeps_the_chat_memory_unless_it_sets_its_own(tmp_path: Path) -> None:
+    cfg = _config(tmp_path).model_copy(
+        update={"chat": Config().chat.model_copy(update={"memory_tokens": 24000})}
+    )
+
+    assert modes.effective(cfg, "coding").chat.memory_tokens == 24000
+
+    own = _config(tmp_path, chat={"memory_tokens": 16000})
+    assert modes.effective(own, "coding").chat.memory_tokens == 16000
+
+
+def test_coding_mode_can_set_the_model_servers_memory_and_picture_keys(tmp_path: Path) -> None:
+    cfg = _config(
+        tmp_path, kv_resident=32768, keep_in_ram=False, pictures=False, effort_position="end"
+    )
+
+    coding = modes.effective(cfg, "coding").strata
+
+    assert coding.kv_resident == 32768
+    assert coding.keep_in_ram is False
+    assert coding.pictures is False
+    assert coding.effort_position == "end"
+    profile = services.strata_profile(modes.effective(cfg, "coding"))
+    raw = profile["args"]
+    assert isinstance(raw, list)
+    args = [str(arg) for arg in cast("list[object]", raw)]
+    assert args[args.index("--kv-resident") + 1] == "32768"
+    assert profile["effort_position"] == "end"
+
+
+def test_a_switch_that_changes_only_the_unit_restarts_the_server(tmp_path: Path) -> None:
+    cfg = _config(
+        tmp_path, own_model=False, context=24576, reasoning_budget_tokens=512, keep_in_ram=False
+    )
+    _installed(cfg)
+    units = _Units()
+
+    done = _switcher(cfg, units, _Server(), _Audit()).switch("coding", "owner")
+
+    assert (done.changed, done.restarted) == (True, True)
+    assert units.restarts == 1
+    unit = (services.unit_dir() / services.STRATA_UNIT).read_text(encoding="utf-8")
+    assert "MemorySwapMax" not in unit
+
+
+def test_remote_strata_gets_none_of_coding_modes_server_keys(tmp_path: Path) -> None:
+    remote = Config(
+        strata=StrataConfig(mode="remote", url="https://models.example.org"),
+        coding=CodingConfig(kv_resident=32768, keep_in_ram=False, effort_position="end"),
+    )
+    del tmp_path
+
+    assert modes.effective(remote, "coding").strata == remote.strata
+
+
+def test_coding_mode_validates_its_server_keys_like_strata() -> None:
+    with pytest.raises(ValueError, match="20480"):
+        CodingConfig(kv_resident=1000)
+
+
+def test_coding_mode_keeps_the_strata_keys_it_leaves_unset(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    strata = cfg.strata.model_copy(
+        update={
+            "keep_in_ram": False,
+            "pictures": False,
+            "kv_resident": 24576,
+            "effort_position": "start",
+        }
+    )
+    cfg = cfg.model_copy(update={"strata": strata})
+
+    coding = modes.effective(cfg, "coding").strata
+
+    assert coding.kv_resident == cfg.strata.kv_resident
+    assert coding.keep_in_ram == cfg.strata.keep_in_ram
+    assert coding.pictures == cfg.strata.pictures
+    assert coding.effort_position == cfg.strata.effort_position
 
 
 def test_a_thinking_ceiling_never_ends_below_where_coding_starts(tmp_path: Path) -> None:

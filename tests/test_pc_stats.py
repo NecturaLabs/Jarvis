@@ -155,7 +155,7 @@ MOUNTS = (
 
 
 def _disks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mounts: str) -> list[str]:
-    monkeypatch.setattr(stats.Path, "home", staticmethod(lambda: Path("/home/someone")))
+    monkeypatch.setattr(stats.Path, "home", staticmethod(lambda: Path("/home/me")))
     usage = SimpleNamespace(total=900 * GIB, used=300 * GIB, free=600 * GIB)
 
     def disk_usage(_path: object) -> SimpleNamespace:
@@ -217,3 +217,39 @@ def test_a_plain_question_does_not_look_up_the_programs(tmp_path: Path, said: st
     op.run(validate_args(op, hit.arguments))
 
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("path", "source"),
+    [
+        ("/", ("btrfs", "/dev/mapper/root")),
+        ("/home/me", ("btrfs", "/dev/mapper/root")),
+        ("/homework", ("btrfs", "/dev/mapper/root")),  # not inside /home
+        ("/mnt/my disk/x", ("ext4", "/dev/sdc1")),
+        ("/mnt/my diskette", ("btrfs", "/dev/mapper/root")),
+    ],
+)
+def test_the_mount_a_path_is_on_is_found(path: str, source: tuple[str, str]) -> None:
+    mounts = MOUNTS + "40 26 8:33 / /mnt/my\\040disk rw - ext4 /dev/sdc1 rw\n"
+
+    assert stats._mount_source(Path(path), mounts) == source  # pyright: ignore[reportPrivateUsage]
+
+
+def test_an_overmount_wins() -> None:
+    mounts = MOUNTS + "50 27 0:50 / /home rw - tmpfs tmpfs rw\n"
+
+    assert stats._mount_source(Path("/home/me"), mounts) == ("tmpfs", "tmpfs")  # pyright: ignore[reportPrivateUsage]
+
+
+def test_without_mountinfo_equal_subvolumes_still_count_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(stats.Path, "home", staticmethod(lambda: tmp_path))
+    usage = SimpleNamespace(total=900 * GIB, used=300 * GIB, free=600 * GIB)
+
+    def disk_usage(_path: object) -> SimpleNamespace:
+        return usage
+
+    monkeypatch.setattr(stats.shutil, "disk_usage", disk_usage)
+
+    assert [d.name for d in stats.home_disks(tmp_path / "missing")] == ["~"]

@@ -517,6 +517,7 @@ the served model on the backend.
 | `context` | `65536` | The model server's context in coding mode (`strata.context` in normal mode) |
 | `temperature` | unset | The sampling temperature in coding mode; unset: `model.temperature` |
 | `vram_reserve_mib`, `expert_vram_gib`, `memory_max` | unset | The same keys of `[strata]`, for coding mode only; unset (`0`, absent, `""`): `[strata]`'s |
+| `kv_resident`, `keep_in_ram`, `pictures`, `effort_position` | unset | The same keys of `[strata]`, for coding mode only; unset (absent): `[strata]`'s. Here `0` and `""` count as set: `kv_resident = 0` keeps the whole context in VRAM in coding mode. A switch that changes one restarts the model server. Pinned RAM from a larger `kv_resident` counts against `memory_max`, so raise that too |
 | `reasoning_budget_tokens` | `4096` | Strata's cap on thinking in coding mode |
 | `tools_off` | `[]` | Tools not offered in coding mode |
 | `write_roots` | `[]` | Folders Jarvis may also write in coding mode, besides `files.write_roots` |
@@ -533,7 +534,7 @@ holds only what coding changes; a key you take out keeps the channel's own value
 | `max_seconds` | `1800.0` | `300.0` |
 | `reply_tokens` | `8192` | `4096` |
 | `tool_text_chars` | `20000` | unset |
-| `memory_tokens` | `20000` | unset |
+| `memory_tokens` | unset | unset |
 | `thinking` | `medium` | `low` |
 | `thinking_tokens` | `1024` | `512` |
 | `thinking_max` | unset | unset |
@@ -969,6 +970,11 @@ Another user's processes and the kernel's are left out; the programs Jarvis neve
 and marked ("some of its processes" when only part of a program is). A child running the same program as its
 parent (a browser's tabs) counts as that program. Nothing
 in this list can be stopped by its PID: to stop one, Jarvis looks it up by name first, as below.
+
+`pc_stats` names the three programs using the most memory and CPU the same way, so its answer is process
+data too: like a listing, it counts as outside text for the rest of that request, and a shell command
+(`pc_shell`) asked for in the same breath is refused; ask for it on its own. A plain question about the PC
+that Jarvis answers without the model leaves the programs out.
 
 ## Stopping a program
 

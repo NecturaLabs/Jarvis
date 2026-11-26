@@ -28,7 +28,7 @@ Option 3, with the owner's switch and a typed tool.
   (`~/.local/state/jarvis/mode.json`), so the voice service, each chat window and `jarvis model` agree. An
   agent looks at it when a request starts and works with that mode's prompt, tools and limits.
 - **What coding mode changes** is laid over the usual settings, never a copy of them: `[coding.chat]` over
-  `[chat]` (60 model calls, 8,192 reply tokens, `medium` thinking, 20,000 tokens of conversation) and
+  `[chat]` (60 model calls, 8,192 reply tokens, `medium` thinking, 20,000 tokens of conversation; since 2026-11-26 unset, keeping `[chat]`'s, #57) and
   `[coding.voice]` over `[agent]`; a part on programming work added to the prompt; `coding.write_roots` and
   `coding.tools_off`; and for the model server `strata.coding_run_config` (Strata's own run config for the
   coding model) and `coding.context`. Without a coding run config the mode keeps the model and changes only

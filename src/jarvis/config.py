@@ -803,7 +803,7 @@ class CodingChatConfig(_Section):
     max_seconds: float | None = Field(default=1800.0, ge=10, le=14400)
     reply_tokens: int | None = Field(default=8192, ge=64, le=65536)
     tool_text_chars: int | None = Field(default=20000, ge=500, le=200000)
-    memory_tokens: int | None = Field(default=20000, ge=0, le=200000)
+    memory_tokens: int | None = Field(default=None, ge=0, le=200000)  # unset: the chat's own
     thinking: Effort | None = "medium"
     thinking_tokens: int | None = Field(default=1024, ge=32, le=32768)
     thinking_max: Effort | None = None
@@ -840,7 +840,8 @@ class CodingConfig(_Section):
     `[coding.voice]` over `[agent]`, the prompt gains its part
     on programming work, and the model server runs `strata.coding_run_config` when one is set,
     with `context` tokens of context. A value left unset here (`temperature`, `expert_vram_gib`,
-    `vram_reserve_mib` 0, an empty `memory_max`) stays as `[model]` and `[strata]` have it.
+    `vram_reserve_mib` 0, an empty `memory_max`, `kv_resident`, `keep_in_ram`, `pictures`,
+    `effort_position`) stays as `[model]` and `[strata]` have it.
     """
 
     chat: CodingChatConfig = Field(default_factory=CodingChatConfig)
@@ -852,6 +853,10 @@ class CodingConfig(_Section):
     vram_reserve_mib: VramReserve = 0
     expert_vram_gib: float | None = Field(default=None, ge=0, le=64)
     memory_max: str = Field(default="", pattern=r"^(\d+[KMGT]?)?$")
+    kv_resident: KvResident | None = None
+    keep_in_ram: bool | None = None
+    pictures: bool | None = None
+    effort_position: Literal["", "start", "end"] | None = None
     reasoning_budget_tokens: int = Field(default=4096, gt=0, le=32768)
     tools_off: list[SafeText] = Field(default_factory=list[str])  # not offered in coding mode
     write_roots: list[RootPath] = Field(default_factory=list[str])  # besides `files.write_roots`

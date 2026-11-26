@@ -7,6 +7,7 @@ name, so the result needs no `file` or `web` origin.
 
 import contextlib
 import os
+import re
 import shutil
 import time
 from dataclasses import dataclass
@@ -59,27 +60,36 @@ class Disk:
     used: int
 
 
-def _mount_source(path: Path, mountinfo: str) -> str | None:
-    """Return the source (device) of the mount `path` is on, from /proc/self/mountinfo's text.
+def _unescape(field: str) -> str:
+    r"""Return a mountinfo field with its octal escapes (`\040` for a space) decoded."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
+def _mount_source(path: Path, mountinfo: str) -> tuple[str, str] | None:
+    """Return the file system type and source of the mount `path` is on, from mountinfo's text.
 
     Two btrfs subvolumes of one file system have their own device numbers but one source.
     """
     target = os.path.realpath(path)
-    best, source = "", None
+    best, found = "", None
     for line in mountinfo.splitlines():
         head, sep, tail = line.partition(" - ")
         fields, rest = head.split(), tail.split()
         if not sep or len(fields) < MOUNT_POINT + 1 or len(rest) < 2:  # ruff: ignore[magic-value-comparison] - fs type and source
             continue
-        point = fields[MOUNT_POINT].replace("\\040", " ")
+        point = _unescape(fields[MOUNT_POINT])
         inside = target == point or target.startswith(point.rstrip("/") + "/")
         if inside and len(point) >= len(best):
-            best, source = point, rest[1]
-    return source
+            best, found = point, (rest[0], _unescape(rest[1]))
+    return found
 
 
 def home_disks(mountinfo: Path = Path("/proc/self/mountinfo")) -> list[Disk]:
-    """Return the file systems of the home folder and the root, once each (by mount source)."""
+    """Return the file systems of the home folder and the root, once each.
+
+    One file system is known by its mount's type and source; without mountinfo, by its device
+    number or, for btrfs subvolumes (own device numbers), by an equal size and use.
+    """
     try:
         mounts = mountinfo.read_text(encoding="utf-8")
     except OSError, UnicodeDecodeError:
@@ -88,12 +98,16 @@ def home_disks(mountinfo: Path = Path("/proc/self/mountinfo")) -> list[Disk]:
     disks: list[Disk] = []
     for name, path in (("~", Path.home()), ("/", Path("/"))):
         try:
-            key: object = _mount_source(path, mounts) or path.stat().st_dev
             usage = shutil.disk_usage(path)
+            keys: tuple[object, ...] = (
+                (source,)
+                if (source := _mount_source(path, mounts)) is not None
+                else (path.stat().st_dev, (usage.total, usage.used))
+            )
         except OSError:
             continue
-        if key not in seen:
-            seen.add(key)
+        if not seen.intersection(keys):
+            seen.update(keys)
             disks.append(Disk(name, usage.total, usage.used))
     return disks
 

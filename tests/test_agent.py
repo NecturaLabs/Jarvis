@@ -2458,6 +2458,13 @@ def test_text_that_only_looks_like_a_note_is_kept(reply: str) -> None:
     assert agent.handle("hi", NO_CONFIRM) == reply
 
 
+def test_a_note_with_an_unbalanced_bracket_is_still_stripped() -> None:
+    model = ScriptedModel([_say("[looked up: web_search c++ [ syntax] Here it is.")])
+    agent, _ = _agent(model, [])
+
+    assert agent.handle("search", NO_CONFIRM) == "Here it is."
+
+
 def test_a_note_with_brackets_inside_is_stripped_whole() -> None:
     model = ScriptedModel([_say("[looked up: web_search a[1] b] Here it is.")])
     agent, _ = _agent(model, [])
