@@ -236,8 +236,8 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 [T3 Code](https://github.com/pingdotgg/t3code) takes any [Agent Client Protocol](https://agentclientprotocol.com)
 agent. In T3 Code open Settings, Providers, Add provider, Show more, Local ACP command. Set the executable
 to the path of `jarvis` (`which jarvis`; `jarvis doctor` prints it when T3 Code is set up on this PC), add
-one argument, `acp`, and give it a name. T3 Code then lists Jarvis's two modes as its models, each titled
-with the name of the model that serves it and the mode, and described by what it is for: the normal mode for everyday requests and coding
+one argument, `acp`, and give it a name. T3 Code then lists Jarvis's two modes as its models, titled
+`Normal` and `Coding` and described by the model that serves each and what it is for: the normal mode for everyday requests and coding
 mode for programming work (the coding prompt, tools and limits). Pick one per thread, with the thinking
 effort beside it: it starts at the mode's own (`none` and `medium` by default). A thread in coding mode on a
 local Strata setup uses the same switch as `/model coding` on its first request if

@@ -374,7 +374,7 @@ def test_acp_builds_the_normal_agent_that_follows_the_owners_mode(
     assert acp.switched == []
 
 
-def test_acp_lists_both_modes_by_their_models_name_purpose_and_effort(
+def test_acp_lists_both_modes_by_a_short_name_with_the_model_in_the_description(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def model_name(_cfg: config.Config, mode: str) -> str:
@@ -385,10 +385,11 @@ def test_acp_lists_both_modes_by_their_models_name_purpose_and_effort(
     acp.run(monkeypatch)
 
     assert [(m.id, m.name, m.effort) for m in acp.models] == [
-        ("normal", "normal-model · Normal", "none"),
-        ("coding", "coding-model · Coding", "medium"),
+        ("normal", "Normal", "none"),
+        ("coding", "Coding", "medium"),
     ]
-    assert all(m.description for m in acp.models)
+    assert acp.models[0].description.startswith("normal-model: ")
+    assert acp.models[1].description.startswith("coding-model: ")
     assert acp.models[0].description != acp.models[1].description
 
 
