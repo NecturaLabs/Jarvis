@@ -254,6 +254,16 @@ class ShellOps:
         self._max_chars = max_chars
         self._runner = runner
 
+    def _where(self) -> Path:
+        """Return the folder a command starts in: the workspace, or home if it is missing now."""
+        return self._start if self._start.is_dir() else self._home
+
+    def _summary(self, args: dict[str, Any]) -> str:
+        """Word the question: the command, read out, and the folder it starts in."""
+        where = self._where()
+        place = "your home folder" if where == self._home else str(where)
+        return f"run this shell command in {place}: {spelled(str(args.get('command', '')))}"
+
     def command_line(self, command: str, unit: str) -> list[str]:
         """Return the full argument list that runs `command` in the scope `unit`."""
         cfg = self._config
@@ -274,7 +284,7 @@ class ShellOps:
             "--expand-environment=no",
             f"--unit={unit}",
             f"--description={DESCRIPTION}",
-            f"--working-directory={self._start}",
+            f"--working-directory={self._where()}",
             *[part for key, value in limits.items() for part in ("-p", f"{key}={value}")],
             "--",
             SETPRIV,
@@ -379,9 +389,7 @@ class ShellOps:
                 self.run,
                 default_class=OpClass.STRONG,
                 lowest_class=OpClass.STRONG,
-                spoken_summary=lambda a: (
-                    f"run this shell command: {spelled(str(a.get('command', '')))}"
-                ),
+                spoken_summary=self._summary,
                 prepare=self._owner_request,
                 audit_text=False,
             ),

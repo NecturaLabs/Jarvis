@@ -3,7 +3,8 @@
 import json
 import os
 import stat
-from typing import TYPE_CHECKING, Any
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from test_agent import Clock, Counter, ScriptedModel
@@ -14,16 +15,14 @@ from jarvis.agent import Agent, Hooks, Limits
 from jarvis.app import files_boundary, no_action_operation, system_prompt
 from jarvis.audit import AuditLog
 from jarvis.config import DEFAULT_WORKSPACE, Config, ConfigError, FilesConfig, ShellConfig
-from jarvis.operations import Registry
-from jarvis.pc.files import Boundary, FileOps, FileRefusalError
+from jarvis.operations import UNASKED_ARG, Operation, Registry
+from jarvis.pc.files import MADE_FILE, NEW_FILE, Boundary, FileOps, FileRefusalError
 from jarvis.pc.shell import ShellOps
 from jarvis.pc.workspace import Ledger, workspace_path, workspace_problem
 from jarvis.policy import OpClass, Origin, Verdict, decide
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from jarvis.operations import Operation
 
 
 @pytest.fixture
@@ -92,6 +91,10 @@ def test_a_custom_workspace_is_in_both_roots_whatever_the_roots_say(home: Path) 
         "~/.config/jarvis/work",
         "/proc/work",
         "/sys",
+        "~/.jarvis-work",
+        "~/.cache/jarvis",
+        "~/.local/share/jarvis-work",
+        "~/.config/anything",
     ],
 )
 def test_a_workspace_that_is_home_protected_or_odd_is_refused_by_the_config(
@@ -282,14 +285,6 @@ def test_the_owners_deny_list_still_applies_in_the_workspace(home: Path) -> None
 
     with pytest.raises(FileRefusalError, match="private"):
         ops.bind_write({"path": "private-notes.md", "content": "x"})
-
-
-def test_a_hidden_workspace_under_home_is_not_shut_for_reading(home: Path) -> None:
-    ops = _ops(home, _files(workspace="~/.jarvis-work"))
-    _run(ops, path="a.md", content="mine")
-    read = Registry(ops.operations()).get("read_file") or pytest.fail("no read_file")
-
-    assert "mine" in read.run({"path": "~/.jarvis-work/a.md"}).text
 
 
 # --- when it asks -----------------------------------------------------------------------------
@@ -550,6 +545,7 @@ def test_setup_makes_the_workspace_and_says_where(
 
 def test_a_shell_command_starts_in_the_workspace_with_home_unchanged(home: Path) -> None:
     folder = home / "Documents" / "Jarvis"
+    folder.mkdir()
     ops = ShellOps(ShellConfig(enabled=True), home, max_chars=1000, workspace=folder)
     argv = ops.command_line("pwd", "jarvis-shell-1")
 
@@ -593,11 +589,268 @@ def test_a_file_swapped_after_the_call_was_bound_is_not_written(home: Path) -> N
     workspace = home / "Documents" / "Jarvis"
     ops = _ops(home, made=Ledger(home / "ledger.json"))
     _run(ops, path="a.md", content="one")
-    bound = ops.bind_write({"path": "a.md", "content": "two", "mode": "append"})
-    assert bound["made"] is True
+    bound = ops.bind_write(
+        {"path": "a.md", "content": "two", "mode": "append", UNASKED_ARG: MADE_FILE}
+    )
     (workspace / "a.md").write_text("the owner's own\n", encoding="utf-8")
 
     with pytest.raises(FileRefusalError, match="changed"):
         _write_op(ops).run(bound)
 
     assert (workspace / "a.md").read_text(encoding="utf-8") == "the owner's own\n"
+
+
+# --- review fixes: floor, bound verdict, re-judging, hidden names, links ---
+
+
+def test_the_unasked_lowering_respects_the_operations_floor() -> None:
+    floored = Operation(
+        "write_file",
+        "x",
+        {"type": "object", "properties": {}},
+        lambda _a: pytest.fail("not run"),
+        default_class=OpClass.CONFIRM,
+        lowest_class=OpClass.CONFIRM,
+    )
+
+    decision = decide(floored, "write_file", {}, untrusted_in_context=False, unasked=NEW_FILE)
+
+    assert decision.verdict is Verdict.CONFIRM
+    assert not decision.unasked
+
+
+def test_the_decision_carries_the_reason_the_operation_is_held_to() -> None:
+    op = Counter().op("write_file", cls=OpClass.CONFIRM)
+
+    assert decide(op, "write_file", {}, untrusted_in_context=False, unasked="x").unasked == "x"
+    assert not decide(op, "write_file", {}, untrusted_in_context=True, unasked="x").unasked
+
+
+def test_a_new_file_verdict_is_bound_to_the_write_and_a_file_that_appeared_is_not_touched(
+    home: Path,
+) -> None:
+    workspace = home / "Documents" / "Jarvis"
+    workspace.mkdir()
+    ops = _ops(home, made=Ledger(home / "ledger.json"))
+    write = _write_op(ops)
+    for mode in ("create", "replace", "append"):
+        name = f"{mode}.md"
+        args = {"path": name, "content": "ai", "mode": mode, UNASKED_ARG: NEW_FILE}
+        bound = ops.bind_write(args)  # the file is not there yet
+        (workspace / name).write_text("the owner's\n", encoding="utf-8")  # then it appears
+
+        with pytest.raises(FileRefusalError, match=r"already exists|changed"):
+            write.run(bound)
+        with pytest.raises(FileRefusalError, match=r"appeared|already exists"):
+            ops.bind_write(args)
+
+        assert (workspace / name).read_text(encoding="utf-8") == "the owner's\n"
+
+
+def test_a_new_file_verdict_makes_the_file_even_when_asked_to_append(home: Path) -> None:
+    ops = _ops(home)
+    bound = ops.bind_write(
+        {"path": "n.md", "content": "hi", "mode": "append", UNASKED_ARG: NEW_FILE}
+    )
+
+    assert "Created" in _write_op(ops).run(bound).text
+
+
+def test_a_made_file_verdict_is_held_to_the_file_judged(home: Path) -> None:
+    ops = _ops(home, made=Ledger(home / "ledger.json"))
+    _run(ops, path="a.md", content="one")
+    link = home / "Documents" / "Jarvis" / "second-name.md"
+    bound = ops.bind_write(
+        {"path": "a.md", "content": "x", "mode": "append", UNASKED_ARG: MADE_FILE}
+    )
+    os.link(home / "Documents" / "Jarvis" / "a.md", link)  # a second name since the judgement
+
+    with pytest.raises(FileRefusalError, match="changed"):
+        _write_op(ops).run(bound)
+
+
+def test_a_workspace_made_writable_by_others_after_start_stops_unasked_writes(home: Path) -> None:
+    ops = _ops(home)
+    workspace = home / "Documents" / "Jarvis"
+    workspace.mkdir()
+    workspace.chmod(0o700)
+    first, _ = _agent(ops, [_write("a.md"), DONE])
+    assert _asked(first) == []
+    workspace.chmod(0o770)
+
+    second, _ = _agent(ops, [_write("b.md"), DONE])
+    assert len(_asked(second)) == 1
+    with pytest.raises(FileRefusalError, match="written by other users"):
+        _write_op(ops).run(ops.bind_write({"path": "b.md", "content": "x"}))
+
+    assert not (workspace / "b.md").exists()
+
+
+def test_a_workspace_swapped_for_a_link_after_start_is_not_written_to(home: Path) -> None:
+    ops = _ops(home)
+    workspace = home / "Documents" / "Jarvis"
+    workspace.mkdir()
+    elsewhere = home / "Documents" / "Elsewhere"
+    elsewhere.mkdir()
+    workspace.rmdir()
+    workspace.symlink_to(elsewhere)
+
+    agent, _ = _agent(ops, [_write("a.md"), DONE])
+
+    assert len(_asked(agent)) == 1
+    assert not (elsewhere / "a.md").exists()
+
+
+def test_a_workspace_that_went_missing_is_made_private_again(home: Path) -> None:
+    ops = _ops(home)
+    workspace = home / "Documents" / "Jarvis"
+    old = os.umask(0)
+    try:
+        agent, _ = _agent(ops, [_write("sub/a.md"), DONE])
+        assert _asked(agent) == []
+    finally:
+        os.umask(old)
+
+    assert stat.S_IMODE(workspace.stat().st_mode) == 0o700
+    assert (workspace / "sub" / "a.md").is_file()
+
+
+def test_a_workspace_below_a_folder_others_can_write_to_is_refused(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o777)
+    folder = shared / "Jarvis"
+
+    assert "folder above it" in workspace_problem(folder, create=True)
+
+    shared.chmod(0o1777)  # sticky, like /tmp: others cannot rename what is not theirs
+    assert not workspace_problem(folder, create=True)
+
+
+@pytest.mark.parametrize("name", [".envrc", ".vscode/tasks.json", "src/.mise.toml", ".mine.md"])
+def test_a_hidden_name_in_the_workspace_is_written_only_after_a_yes(home: Path, name: str) -> None:
+    agent, audit = _agent(_ops(home), [_write(name), DONE])
+
+    assert len(_asked(agent)) == 1
+
+    assert _verdict(audit)[0] == "confirm"
+    assert not (home / "Documents" / "Jarvis" / name).exists()
+    yes, _ = _agent(_ops(home), [_write(name), DONE])
+    yes.handle("save it", Hooks(confirm=lambda _q: True))
+    assert (home / "Documents" / "Jarvis" / name).is_file()
+
+
+def test_a_link_in_the_workspace_to_an_owner_file_is_not_unasked(home: Path) -> None:
+    owner = home / "Documents" / "diary.md"
+    owner.write_text("dear diary\n", encoding="utf-8")
+    workspace = home / "Documents" / "Jarvis"
+    workspace.mkdir()
+    (workspace / "link.md").symlink_to(owner)
+    agent, audit = _agent(
+        _ops(home, made=Ledger(home / "ledger.json")), [_write("link.md", "x", "append"), DONE]
+    )
+
+    assert len(_asked(agent)) == 1
+
+    assert _verdict(audit)[0] == "confirm"
+    assert owner.read_text(encoding="utf-8") == "dear diary\n"
+
+
+def test_a_hard_link_to_an_owner_file_outside_home_is_not_unasked(
+    home: Path, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "work" / "jarvis"
+    owner = tmp_path / "owner.md"
+    owner.write_text("owner's\n", encoding="utf-8")
+    workspace.mkdir(parents=True)
+    workspace.chmod(0o700)
+    os.link(owner, workspace / "linked.md")
+    ledger = Ledger(home / "ledger.json")
+    ops = _ops(home, _files(workspace=str(workspace)), made=ledger)
+    agent, _ = _agent(ops, [_write("linked.md", "x", "append"), DONE])
+
+    assert len(_asked(agent)) == 1
+
+    assert owner.read_text(encoding="utf-8") == "owner's\n"
+
+
+def test_a_file_jarvis_made_that_got_a_second_name_asks(home: Path, tmp_path: Path) -> None:
+    ops = _ops(home, made=Ledger(home / "ledger.json"))
+    _run(ops, path="a.md", content="one")
+    os.link(home / "Documents" / "Jarvis" / "a.md", tmp_path / "other-name.md")
+    agent, _ = _agent(ops, [_write("a.md", "two", "append"), DONE])
+
+    assert len(_asked(agent)) == 1
+
+
+def test_dots_in_a_relative_write_cannot_climb_out_unasked(home: Path) -> None:
+    agent, audit = _agent(_ops(home), [_write("../outside.md"), DONE])
+
+    assert len(_asked(agent)) == 1
+
+    assert _verdict(audit)[0] == "confirm"
+    assert not (home / "Documents" / "outside.md").exists()
+
+
+def test_the_files_boundary_keeps_the_config_folder_shut(home: Path) -> None:
+    config_dir = paths.config_dir()
+    (config_dir / "skills").mkdir(parents=True)
+    boundary = files_boundary(Config(), home)
+
+    for raw in ("~/.config/jarvis/config.toml", "~/.config/jarvis/skills/mine.md"):
+        with pytest.raises(FileRefusalError):
+            boundary.writable(raw)
+        with pytest.raises(FileRefusalError):
+            boundary.readable(raw)
+
+
+def test_the_facts_say_when_the_workspace_is_not_in_use(home: Path) -> None:
+    assert "always readable and writable" in facts(Config(), "voice", Limits())
+    folder = home / "Documents" / "Jarvis"
+    folder.mkdir()
+    folder.chmod(0o777)
+
+    said = facts(Config(), "voice", Limits())
+
+    assert "always readable and writable" not in said
+    assert "not in use" in said
+
+
+def test_a_shell_question_says_where_the_command_runs_and_a_missing_workspace_means_home(
+    home: Path,
+) -> None:
+    folder = home / "Documents" / "Jarvis"
+    ops = ShellOps(ShellConfig(enabled=True), home, max_chars=1000, workspace=folder)
+    op = Registry(ops.operations()).get("pc_shell") or pytest.fail("no pc_shell")
+
+    assert "in your home folder: " in op.spoken_summary({"command": "ls"})
+    assert f"--working-directory={home}" in ops.command_line("ls", "u")
+    folder.mkdir()
+    assert f"in {folder}: " in op.spoken_summary({"command": "ls"})
+    assert f"--working-directory={folder}" in ops.command_line("ls", "u")
+
+
+def test_a_file_changed_inside_a_coarse_change_time_tick_is_not_jarvis_s(home: Path) -> None:
+    # A filesystem that keeps the change time to a second or two shows the same one before and
+    # after a quick rewrite; the modification time and the size still tell.
+    made = home / "a.md"
+    made.write_text("one\n", encoding="utf-8")
+    real = made.stat()
+    ledger = Ledger(home / "ledger.json")
+    ledger.record(made, real)
+
+    def seen(**changed: int) -> os.stat_result:
+        fields = {
+            "st_dev": real.st_dev,
+            "st_ino": real.st_ino,
+            "st_ctime_ns": real.st_ctime_ns,
+            "st_mtime_ns": real.st_mtime_ns,
+            "st_size": real.st_size,
+        } | changed
+        return cast("os.stat_result", SimpleNamespace(**fields))
+
+    assert ledger.made(made, seen())
+    assert not ledger.made(made, seen(st_size=real.st_size + 1))
+    assert not ledger.made(made, seen(st_mtime_ns=real.st_mtime_ns + 1))
+    assert not ledger.made(made, seen(st_ino=real.st_ino + 1))
+    assert not ledger.made(made, seen(st_ctime_ns=real.st_ctime_ns + 1))

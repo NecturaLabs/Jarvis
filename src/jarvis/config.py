@@ -650,8 +650,9 @@ SYSTEM_FOLDER_NAMES = ("/proc", "/sys", "/dev", "/run")  # never read or written
 def workspace_refusal(workspace: str, home: Path, protected: Iterable[Path]) -> str:
     """Return why a path may not be Jarvis's workspace, or "" when it may.
 
-    It may not be home or a folder holding it, hold or lie inside a protected folder (Jarvis's
-    own state and configuration), or use `..`. Links are resolved first, as every path is.
+    It may not be home or a folder holding it, a hidden folder under home or one inside it
+    (where programs keep settings), hold or lie inside a protected folder (Jarvis's own state
+    and configuration), or use `..`. Links are resolved first, as every path is.
     """
     text = str(home) + workspace[1:] if workspace.startswith("~") else workspace
     if ".." in PurePosixPath(text).parts:
@@ -660,6 +661,10 @@ def workspace_refusal(workspace: str, home: Path, protected: Iterable[Path]) -> 
     real_home = Path(os.path.realpath(home))
     if real_home == path or real_home.is_relative_to(path):
         return "must be a folder of its own, not your home folder or one that holds it"
+    if path.is_relative_to(real_home) and any(
+        part.startswith(".") for part in path.relative_to(real_home).parts
+    ):
+        return "must not be a hidden folder under home, or inside one (~/.config, ~/.local)"
     for folder in protected:
         shut = Path(os.path.realpath(folder))
         if path == shut or path.is_relative_to(shut) or shut.is_relative_to(path):

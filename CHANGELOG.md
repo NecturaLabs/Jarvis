@@ -13,7 +13,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   there, `/export` in the chat saves there, `pc_shell` starts there and the prompt tells the model where it
   is. A new file in it, or a later write to a file Jarvis made there, needs no yes unless outside text is in
   the request; replacing a file you put there still asks. A folder that is a link, another user's or writable
-  by others is not used and `jarvis doctor` says why. See [ADR 0025](docs/adr/0025-workspace-folder.md).
+  by others, or below a folder others can write to, is not used and `jarvis doctor` says why; hidden names there always ask. See [ADR 0025](docs/adr/0025-workspace-folder.md).
 
 - Your own skills: Markdown files in `~/.config/jarvis/skills/` are listed in the prompt and read with
   `read_skill` like the shipped ones. A file is read only when it and its folder are yours alone, it is no

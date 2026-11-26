@@ -37,6 +37,7 @@ from jarvis.model import ModelMissingError, RemoteModelError, Thinking
 from jarvis.operations import (
     REMEMBERED,
     REMEMBERED_LISTING,
+    UNASKED_ARG,
     ArgumentError,
     OperationError,
     OperationStoppedError,
@@ -2297,6 +2298,8 @@ class Agent:
             unasked=self._unasked(op, args),
         )
         decision, consent = self._consent(decision, op)
+        if decision.unasked:  # the operation holds the call to what it judged, as it runs
+            args = {**args, UNASKED_ARG: decision.unasked}
         stopped = _REFUSALS.get(decision.verdict)
         if decision.verdict is Verdict.STRONG and hooks.confirm_key is None:
             stopped = _NO_KEY

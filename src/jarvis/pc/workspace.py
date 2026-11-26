@@ -44,10 +44,35 @@ def workspace_problem(path: Path, *, create: bool) -> str:
     try:
         info = os.lstat(path)
     except FileNotFoundError:
-        return _made(path) if create else ""
+        return _made(path) if create else _parents(path)
     except OSError as exc:
         return f"cannot be read ({exc.strerror or exc})"
-    return _judged(info)
+    return _judged(info) or _parents(path)
+
+
+def workspace_in_use(config: FilesConfig, home: Path) -> bool:
+    """Whether the workspace is a folder Jarvis may use now (a missing one is made on use)."""
+    return not workspace_problem(workspace_path(config, home), create=False)
+
+
+def _parents(path: Path) -> str:
+    """Return why a folder above `path` lets someone else move or replace the workspace, or "".
+
+    A folder that group or others may write to (without the sticky bit, which keeps others from
+    renaming what is not theirs) can have the workspace renamed away and another put in its place.
+    Missing folders are skipped: they are made by this user. Links are followed first.
+    """
+    for folder in Path(os.path.realpath(path)).parents:
+        try:
+            info = os.lstat(folder)
+        except OSError:
+            continue
+        if info.st_mode & _OTHERS_WRITE and not info.st_mode & stat.S_ISVTX:
+            return (
+                f"has a folder above it, {folder}, that other users can write to "
+                "(remove group and other write with chmod go-w)"
+            )
+    return ""
 
 
 def _made(path: Path) -> str:
@@ -55,7 +80,7 @@ def _made(path: Path) -> str:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.mkdir(mode=FOLDER_MODE, exist_ok=True)
-        return _judged(os.lstat(path))
+        return _judged(os.lstat(path)) or _parents(path)
     except OSError as exc:
         return f"cannot be made ({exc.strerror or exc})"
 
@@ -74,13 +99,13 @@ def _judged(info: os.stat_result) -> str:
 
 
 class Ledger:
-    """The files Jarvis made in its workspace: path, device, inode and change time, in one file.
+    """The files Jarvis made in its workspace: path, device, inode, times and size, in one file.
 
     A file the owner replaced, or edited in any way (a rename over it, a write, a chmod), has
-    another inode or change time and so is no longer Jarvis's. A file the owner made under a
-    deleted file's name, which the filesystem may give the same inode, differs in change time,
-    which no one can set back. Another process may write the file at the same
-    moment; a lost entry only means Jarvis asks about that file as it does for the owner's.
+    another inode, change time, modification time or size and so is no longer Jarvis's. A file
+    the owner made under a deleted file's name, which the filesystem may give the same inode,
+    differs in change time, which no one can set back. Another process may write the file at the
+    same moment; a lost entry only means Jarvis asks about that file as it does for the owner's.
     """
 
     def __init__(self, file: Path) -> None:
@@ -91,16 +116,19 @@ class Ledger:
 
     @staticmethod
     def _identity(info: os.stat_result) -> list[int]:
-        return [info.st_dev, info.st_ino, info.st_ctime_ns]
+        """Return what tells this file from any other, or from itself changed.
+
+        The change time cannot be set back, but a filesystem may keep it coarsely (a second, even
+        two), so a rewrite inside that tick would pass it; the modification time and the size
+        are kept too, and a file only stays Jarvis's if every one still matches.
+        """
+        return [info.st_dev, info.st_ino, info.st_ctime_ns, info.st_mtime_ns, info.st_size]
 
     def _read(self) -> dict[str, list[int]]:
         try:
             loaded = cast("dict[str, Any]", json.loads(self._file.read_text(encoding="utf-8")))
             entries = cast("dict[str, list[int]]", loaded["files"])
-            return {
-                key: [int(device), int(inode), int(changed)]
-                for key, (device, inode, changed) in entries.items()
-            }
+            return {key: [int(part) for part in identity] for key, identity in entries.items()}
         except OSError, ValueError, KeyError, TypeError, AttributeError:
             return {}
 

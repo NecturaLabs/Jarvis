@@ -35,7 +35,7 @@ from jarvis.pc.shell import ShellOps
 from jarvis.pc.stats import StatsOps
 from jarvis.pc.volume import VolumeOps
 from jarvis.pc.windows import WindowOps
-from jarvis.pc.workspace import Ledger, workspace_path, workspace_problem
+from jarvis.pc.workspace import Ledger, workspace_in_use, workspace_path, workspace_problem
 from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
@@ -557,7 +557,7 @@ def _workspace_rule(config: Config) -> str:
 
     A sentence that begins with a space, to follow the line it ends.
     """
-    if workspace_problem(workspace_path(config.files, Path.home()), create=False):
+    if not workspace_in_use(config.files, Path.home()):
         return ""
     return f" Bare file names save in your workspace, {config.files.workspace} (always writable)."
 

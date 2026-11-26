@@ -73,6 +73,8 @@ class OperationError(Exception):
         self.origin = origin
 
 
+UNASKED_ARG = "unasked"  # the argument that hands an operation its own `unasked` reason back
+
 REMEMBERED = "memory"  # the origin of outside text a request remembers from earlier turns
 REMEMBERED_LISTING = "memory-process"  # ... when all of it was process listings
 
@@ -250,6 +252,8 @@ class Operation:
     `unasked` says, for one call's validated arguments, why that call needs no question although
     the operation is `confirm` ("a new file in the workspace"), or "" to ask as usual. The owner's
     own class for the operation, and outside text in the conversation, still win over it.
+    A call that runs on that reason gets it back in its arguments (`UNASKED_ARG`) for `prepare`
+    and `run`, which must then do only what the reason said (a "new file" fails if one appeared).
     """
 
     name: str
