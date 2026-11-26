@@ -791,6 +791,25 @@ def chat_archive_dir() -> Path:
     return paths.state_dir() / "chat-archive"
 
 
+def _chat_archive(keep: int) -> ChatArchive | None:
+    """Return the chat's archive, keeping `keep` conversations; None when it keeps none.
+
+    With 0, the conversations an earlier setting kept are deleted, as a lower cap deletes the
+    oldest past it.
+    """
+    archive = ChatArchive(chat_archive_dir(), keep)
+    if keep:
+        return archive
+    try:
+        gone = archive.forget()
+    except OSError as exc:
+        log.warning("the chat archive could not be deleted: %s", exc)
+    else:
+        if gone:
+            log.info("deleted %d archived chat conversations: chat.archive_keep is 0", gone)
+    return None
+
+
 def _save_chat_settings(chat: config.ChatConfig, followed: AgentModes | None = None) -> None:
     """Write the chat's settings into the config file as it is now on disk, and audit them.
 
@@ -853,9 +872,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         set_shared=_set_shared,
         apply=_apply_from_chat,
         history=InputHistory(paths.state_dir() / "chat-history", cfg.chat.history_size),
-        archive=ChatArchive(chat_archive_dir(), cfg.chat.archive_keep)
-        if cfg.chat.archive_keep
-        else None,
+        archive=_chat_archive(cfg.chat.archive_keep),
         export_dir=documents if documents.is_dir() else Path.home(),
         paste=clipboard.read,
         pictures=reads_pictures(cfg),

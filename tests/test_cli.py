@@ -25,8 +25,10 @@ from jarvis import voice as voice_module
 from jarvis.agent import Hooks
 from jarvis.audit import AuditLog
 from jarvis.chat.app import ChatApp
+from jarvis.chat.archive import ChatArchive
 from jarvis.cli import main
 from jarvis.confirmkey import ConfirmKey
+from jarvis.memory import Conversation
 from jarvis.operations import OperationError
 from jarvis.pc.hearing import Listening
 from jarvis.secretfile import write_private_json
@@ -738,6 +740,24 @@ def test_chat_sends_typed_requests_to_an_agent_that_marks_its_audit_events(
     agent = app._session  # pyright: ignore[reportPrivateUsage] - the chat app's agent, built on the first request
     assert agent is not None
     assert agent.handle("pause", Hooks(confirm=lambda _q: False)) == "heard pause"
+
+
+def test_a_chat_that_keeps_no_archive_deletes_the_one_kept_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = _opened_chat(monkeypatch)
+    folder = cli.chat_archive_dir()
+    earlier = ChatArchive(folder, keep=50)
+    earlier.record({"event": "request", "text": "hello"})
+    earlier.save(Conversation(budget=1000))
+    assert earlier.listed()
+    config.save(config.Config(chat=config.ChatConfig(archive_keep=0)))
+
+    assert main(["chat"]) == 0
+
+    (app,) = opened
+    assert app._services.archive is None  # pyright: ignore[reportPrivateUsage] - what the chat app was given
+    assert not list(folder.iterdir())
 
 
 def _transcribed(monkeypatch: pytest.MonkeyPatch, text: str) -> list[tuple[str, Path | None]]:
@@ -2365,6 +2385,20 @@ def test_a_setting_the_chat_could_not_save_is_not_audited(monkeypatch: pytest.Mo
         cli._next_tool_setting("write_file")  # pyright: ignore[reportPrivateUsage] - the chat's hook
 
     assert not paths.audit_file().exists() or not paths.audit_file().read_text()
+
+
+def test_a_setting_saved_from_the_chat_is_not_said_to_have_failed_when_its_audit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config.save(config.Config())
+
+    def broken(_self: AuditLog, _path: Path, _line: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(AuditLog, "_append", broken)
+    cli._set_shared("boundaries.bypass_consent", False)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    assert config.load().boundaries.bypass_consent is False
 
 
 def test_the_chats_own_settings_are_audited_once_saved() -> None:

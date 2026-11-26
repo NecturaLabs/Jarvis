@@ -43,8 +43,10 @@ words before anyone asked, so it is off by default and bounded when on. Option 1
   from before a sleep is dropped. The one place it reaches the disk is the private temporary WAV that
   `voxtype transcribe` reads, deleted straight after, as for every request. The audit log keeps the tool
   result only as a SHA-256 and a length (`audit_text=False`); the reply that follows is audited as written,
-  like every reply, and may repeat what was heard. A say-nothing hallucination (`is_phantom`) counts as no
-  speech.
+  like every reply, and may repeat what was heard. The remembered conversation keeps the words heard only for
+  the request that heard them: with `memory_detail = "full"` its kept work holds a note in their place, still
+  marked as PC audio; the reply is remembered like every reply. A say-nothing hallucination (`is_phantom`)
+  counts as no speech.
 - **Speech-to-text.** The unhinted transcriber the voice uses for a yes or no (`voxtype transcribe` with Jarvis's
   own settings). The vocabulary hint names the owner's tools and music, which another person's words need not
   hold.
@@ -58,8 +60,9 @@ words before anyone asked, so it is off by default and bounded when on. Option 1
   is shortened to end `RESERVE_S` (15 s, for its transcription and the reply) before the limit. A listen with
   under 3 seconds of that room, or a recall with no room left, is refused with a message telling the model to
   answer with what it has.
-- **Who may ask.** Only the owner: a request heard in PC audio, or one outside any request, is refused before
-  anything is heard.
+- **Who may ask.** Only the owner: a request heard in PC audio, a scheduled one (its words were written when
+  the job was added, not asked for now), or one outside any request, is refused before anything is heard. A
+  stop or a barge-in ends a listen within a check (0.2 s), as a pause does.
 - **The prompt.** With listening on, the voice prompt says whose audio Jarvis hears, that a request from there is
   that person's, and to use `pc_audio_listen` when asked. Off, it says Jarvis cannot hear PC audio.
 

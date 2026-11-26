@@ -820,14 +820,23 @@ def _audited(op: Operation | None, args: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+_HEARD = f'<data origin="{Origin.PC_AUDIO.value}">'
+HEARD_NOT_KEPT = "(What was heard is not kept after the request that heard it.)"
+
+
 def kept_work(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Return what the conversation keeps of a request's work: its messages after the request.
 
     They end after the last call whose results all came back (a request stopped while a call
     ran leaves no call without its result). A lone `no_action` call at the end is left out with
-    its result: its words are the reply the turn keeps anyway.
+    its result: its words are the reply the turn keeps anyway. What was heard in PC audio is
+    held no longer than its request (ADR 0015): its result is kept as a note, still marked as
+    PC audio, without the words.
     """
     work = answered_calls([copy.deepcopy(dict(message)) for message in messages])
+    for message in work:
+        if message.get("role") == "tool" and str(message.get("content")).startswith(_HEARD):
+            message["content"] = f"{_HEARD}{HEARD_NOT_KEPT}</data>"
     calls = [index for index, message in enumerate(work) if message.get("tool_calls")]
     if calls and all(m.get("role") == "tool" for m in work[calls[-1] + 1 :]):
         names = {
@@ -910,6 +919,8 @@ class _Turn:
     stuck: bool = False
     cold: bool = False  # the model must load first: the next model call may wait for that too
     answered: bool = False  # a model call returned: the model is in and working
+    wrote: bool = False  # the model wrote words of the reply: a call returned, or one stopped
+    stopped: bool = False  # cancelled before its reply was whole: what was said is all there is
     last: bool = False  # the request's last step: the model may only answer
     declined: bool = False
     tried: bool = False  # a call that could change something: an action, or a tool not offered
@@ -1087,6 +1098,14 @@ class Agent:
         fresh = Limits.of(section, self._limits.context_tokens)
         self._limits = replace(self._limits, thinking=fresh.thinking, raised=fresh.raised)
         self._memory.budget = self._memory_budget()  # an answer's room includes its thinking
+
+    def set_bypass_consent(self, *, on: bool) -> None:
+        """Ask before acting again (`on` False), or stop asking, from the next decision on.
+
+        For a chat whose `/config` changed `boundaries.bypass_consent`: the change is audited
+        where it is saved.
+        """
+        self._bypass_consent = on
 
     @property
     def memory(self) -> Conversation:
@@ -1289,11 +1308,12 @@ class Agent:
         found on a page is that page's words). A request the model answered while the
         conversation held outside text is marked as drawing on it too (`REMEMBERED`, or
         `process` for listings alone), as is its file text: what the model wrote then may repeat
-        that text, and the mark stays after the turn it came from is forgotten.
+        that text, and the mark stays after the turn it came from is forgotten. One stopped
+        while the model wrote is marked the same once any of its words were passed on.
         """
         outside = turn.outside
         memory = self._memory
-        if turn.answered and outside in {"", Origin.PROCESS.value}:
+        if turn.wrote and outside in {"", Origin.PROCESS.value}:
             if memory.holds_outside_text_but(Origin.PROCESS.value):
                 outside = REMEMBERED
             elif memory.holds_outside_text:
@@ -1361,7 +1381,11 @@ class Agent:
         with (
             self._modes.answering(),
             request_scope(
-                foreign=foreign, words=own, time_left=lambda: self._ends - self._clock()
+                foreign=foreign,
+                words=own,
+                time_left=lambda: self._ends - self._clock(),
+                cancelled=hooks.cancelled,
+                scheduled=scheduled,
             ) as request,
         ):
             for seen in sorted(steered_by):
@@ -1454,7 +1478,7 @@ class Agent:
             # The request starts again in the new mode: its prompt, tools, limits and time.
             return self._answer(text, hooks, source, shared, turn.steered)
         self._deliver(reply, hooks, turn)
-        self._close(_with_pictures(words if outside else text, pictures), reply, hooks, turn)
+        self._close(_with_pictures(words if outside else text, pictures), reply, turn)
         self._fit_memory(turn, hooks)
         self._modes.used()
         return reply
@@ -1474,13 +1498,14 @@ class Agent:
         self._written = [0, 0.0]
         return started
 
-    def _close(self, asked: str, reply: str, hooks: Hooks, turn: _Turn) -> None:
+    def _close(self, asked: str, reply: str, turn: _Turn) -> None:
         """Remember a request and audit its reply.
 
         A stopped request is kept too, with what it looked up and a note that it was stopped, so
-        a follow-up need not look it all up again; a request heard in PC audio never is.
+        a follow-up need not look it all up again; a request heard in PC audio never is. A reply
+        written whole is not stopped, though the owner spoke over its last words.
         """
-        stopped = hooks.cancelled()
+        stopped = turn.stopped
         full = self._limits.memory_detail == "full"
         work = kept_work(turn.messages[turn.first + 1 :]) if full else []
         # Typed words the kept work holds stay there, so the request reads as the model read it.
@@ -1574,6 +1599,7 @@ class Agent:
         try:
             for step in range(self._limits.max_steps):
                 if hooks.cancelled():
+                    turn.stopped = True
                     return ""
                 if self._clock() - turn.started > turn.limit_s:
                     return _out_of_time(turn)
@@ -1632,7 +1658,10 @@ class Agent:
                 thinking=turn.thinking,
             )
         except _Stopped:
-            return stream.spoken if stream is not None else ""
+            spoken = stream.spoken if stream is not None else ""
+            turn.wrote = turn.wrote or bool(spoken)  # those words may repeat outside text too
+            turn.stopped = True
+            return spoken
         except Exception as exc:  # ruff: ignore[blind-except] - any model failure becomes a spoken apology
             self._audit.record("model_error", error=str(exc)[:MAX_AUDIT_TEXT])
             log.warning("the model did not answer: %s", exc)
@@ -1640,7 +1669,7 @@ class Agent:
         finally:
             turn.cues.settle()
             turn.cold = False  # the first call waited for the load; the model is in after it
-        turn.answered = True
+        turn.answered = turn.wrote = True
         self._note_usage(message)
         self._audit.record("model_call", step=step, seconds=round(self._clock() - began, 2))
         calls = self._unique(objs(message.get("tool_calls")))

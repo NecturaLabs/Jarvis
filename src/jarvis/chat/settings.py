@@ -33,6 +33,7 @@ DIM = "bright_black"
 NOW = "now"  # when a change takes effect: at once
 NEXT_CHAT = "next chat"  # ... when the chat opens again
 ON_CLOSE = "on close"  # ... when the screen closes (the voice service restarts)
+NOW_AND_ON_CLOSE = "now, on close"  # ... in this chat at once, and for the voice on close
 SETTINGS_HINT = "↑↓ move · enter or → next value · ← previous · esc closes"
 SETTINGS_LEGEND = (
     "now: at once · next chat: when the chat opens again · on close: the voice service restarts"
@@ -108,11 +109,29 @@ def _choices(row: Row, *, chosen: bool) -> Text:
     return text
 
 
-def row_prompt(row: Row, widths: tuple[int, int], *, chosen: bool, pending: bool) -> Group:
+@dataclass(frozen=True, slots=True)
+class Pending:
+    """A risky setting asked to be turned on to `value` by a step `by` (1 on, -1 back)."""
+
+    key: str
+    value: object
+    by: int
+
+    def hint(self, row: Row) -> str:
+        """Return how to confirm it: the same step again, to the same value."""
+        keys = "enter or → again" if self.by > 0 else "← again"
+        what = "turn it on" if set(row.choices) == {False, True} else f"set {shown(self.value)}"
+        return f"  {keys}: {what} · esc: keep it off"
+
+
+def row_prompt(
+    row: Row, widths: tuple[int, int], *, chosen: bool, pending: Pending | None
+) -> Group:
     """Draw one setting: pointer, name, choices and when it applies, then what it does.
 
     The name and when-it-applies columns keep their width on every row, so the choices line up;
-    in a narrow window the choices wrap rather than push the rest out.
+    in a narrow window the choices wrap rather than push the rest out. A `pending` risky
+    setting says what turning it on means, and how to confirm the value asked about.
     """
     line = Table.grid(expand=True)
     line.add_column(width=2, min_width=2, no_wrap=True)
@@ -125,11 +144,11 @@ def row_prompt(row: Row, widths: tuple[int, int], *, chosen: bool, pending: bool
         _choices(row, chosen=chosen),
         Text(row.applies, style=DIM),
     )
-    if pending:
+    if pending is not None:
         about = Text.assemble(
             ("⚠ Turn on? ", f"bold {WARN}"),
             (row.risky, WARN),
-            ("  enter: turn it on · esc: keep it off", DIM),
+            (pending.hint(row), DIM),
         )
     else:
         about = Text(row.about, style="red" if row.dangerous else DIM)
@@ -163,14 +182,14 @@ class SettingsList(OptionList):
         super().__init__(id=id)
         self._rows: dict[str, Row] = {}
         self._widths = (0, 0)
-        self._pending: str | None = None
+        self._pending: Pending | None = None
         self._pointed: int | None = None
 
     def show(
         self,
         sections: Sequence[Section],
         highlighted: str | None = None,
-        pending: str | None = None,
+        pending: Pending | None = None,
     ) -> None:
         """List `sections`, pointing at the row `highlighted` (else the first one)."""
         self._rows = {row.id: row for section in sections for row in section.rows}
@@ -204,7 +223,8 @@ class SettingsList(OptionList):
         return None if option.id is None else self._rows.get(option.id)
 
     def _prompt(self, row: Row, *, chosen: bool) -> Group:
-        return row_prompt(row, self._widths, chosen=chosen, pending=row.id == self._pending)
+        pending = self._pending if self._pending and self._pending.key == row.id else None
+        return row_prompt(row, self._widths, chosen=chosen, pending=pending)
 
     @override
     def watch_highlighted(self, highlighted: int | None) -> None:

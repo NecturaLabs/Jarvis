@@ -1,6 +1,7 @@
 """The chat's archive: each conversation kept, listed, resumed with its provenance, capped."""
 
 import json
+import os
 import stat
 from typing import TYPE_CHECKING
 
@@ -30,8 +31,8 @@ def test_a_conversation_is_kept_whole_and_private(tmp_path: Path) -> None:
     assert stat.S_IMODE(folder.stat().st_mode) == 0o700
     for path in folder.iterdir():
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    log = json.loads((folder / f"{kept.id}.json").read_text())["log"]
-    assert [e["event"] for e in log] == ["request", "tool_call", "reply"]
+    lines = (folder / f"{kept.id}.log.jsonl").read_text().splitlines()
+    assert [json.loads(line)["event"] for line in lines] == ["request", "tool_call", "reply"]
 
 
 def test_nothing_is_kept_for_an_empty_conversation(tmp_path: Path) -> None:
@@ -67,7 +68,7 @@ def test_only_the_newest_conversations_are_kept(tmp_path: Path) -> None:
         archive.start()
 
     assert [a.name for a in archive.listed()] == ["request 3", "request 2"]
-    assert len(list((tmp_path / "a").iterdir())) == 4  # two files each
+    assert len(list((tmp_path / "a").iterdir())) == 6  # three files each
 
 
 def test_forget_deletes_every_kept_conversation(tmp_path: Path) -> None:
@@ -90,3 +91,187 @@ def test_a_conversation_that_cannot_be_read_is_not_resumed(tmp_path: Path) -> No
 
     assert not archive.resume(kept, Conversation(budget=1000).load)
     assert archive.current != kept
+
+
+def test_a_conversation_opened_and_closed_with_nothing_new_is_not_copied(tmp_path: Path) -> None:
+    folder = tmp_path / "a"
+    archive = ChatArchive(folder, keep=10)
+    memory = _talk(archive, "who wrote this song")
+    archive.save(memory)
+
+    for _ in range(3):  # the chat opens with the conversation it remembers, and closes again
+        reopened = ChatArchive(folder, keep=10)
+        reopened.save(memory)
+        reopened.save(memory)
+
+    assert [a.name for a in ChatArchive(folder, keep=10).listed()] == ["who wrote this song"]
+
+
+def test_a_resumed_conversation_is_written_again_only_when_it_changes(tmp_path: Path) -> None:
+    archive = ChatArchive(tmp_path / "a", keep=10)
+    archive.save(_talk(archive, "hello"))
+    first = archive.current
+    archive.start()
+    loaded = Conversation(budget=1000)
+    assert archive.resume(first, loaded.load)
+    (before,) = archive.listed()
+
+    archive.save(loaded)
+
+    assert archive.listed() == [before]
+    archive.rename("Greetings")
+    archive.save(loaded)
+    assert [a.name for a in archive.listed()] == ["Greetings"]
+
+
+def test_the_list_and_the_cap_read_no_log(tmp_path: Path) -> None:
+    folder = tmp_path / "a"
+    archive = ChatArchive(folder, keep=10)
+    memory = _talk(archive, "read the whole site")
+    for _ in range(200):
+        archive.record({"event": "tool_result", "text": "x" * 2000})
+    archive.save(memory)
+    kept = archive.current
+
+    meta = folder / f"{kept}.json"
+    assert meta.stat().st_size < 1000  # the log is not in the file the list reads
+    (folder / f"{kept}.log.jsonl").write_text("[" * 100_000)  # a log that cannot be read
+    (listed,) = archive.listed()
+    assert (listed.name, listed.requests) == ("read the whole site", 1)
+
+
+def test_the_log_is_added_to_not_rewritten(tmp_path: Path) -> None:
+    folder = tmp_path / "a"
+    archive = ChatArchive(folder, keep=10)
+    memory = _talk(archive, "first")
+    archive.save(memory)
+    archive.record({"event": "request", "text": "second"})
+    archive.save(memory)
+
+    lines = (folder / f"{archive.current}.log.jsonl").read_text().splitlines()
+    assert [json.loads(line)["event"] for line in lines] == [
+        "request",
+        "tool_call",
+        "reply",
+        "request",
+    ]
+    assert stat.S_IMODE((folder / f"{archive.current}.log.jsonl").stat().st_mode) == 0o600
+    assert archive.listed()[0].requests == 2
+
+
+def test_a_conversation_kept_in_the_first_format_is_listed_resumed_and_carried_on(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "a"
+    folder.mkdir(mode=0o700)
+    old = "20261125-214403-abcdef"
+    entries = [{"event": "request", "text": "hello"}, {"event": "reply", "text": "Hi."}]
+    meta = {
+        "version": 1,
+        "id": old,
+        "name": "hello",
+        "named": False,
+        "created": "2026-11-25T21:44:03+00:00",
+        "updated": "2026-11-25T21:44:09+00:00",
+        "log": entries,
+    }
+    for path, text in (
+        (folder / f"{old}.json", json.dumps(meta)),
+        (folder / f"{old}.memory.json", ""),
+    ):
+        path.write_text(text)
+        path.chmod(0o600)
+    memory = Conversation(budget=1000)
+    memory.add(Turn("hello", "Hi.", "", "", 1.0))
+    memory.save(folder / f"{old}.memory.json")
+    archive = ChatArchive(folder, keep=10)
+
+    (listed,) = archive.listed()
+    assert (listed.id, listed.name, listed.requests) == (old, "hello", 1)
+    assert archive.resume(old, Conversation(budget=1000).load)
+    archive.record({"event": "request", "text": "again"})
+    archive.save(memory)
+
+    lines = (folder / f"{old}.log.jsonl").read_text().splitlines()
+    assert [json.loads(line)["text"] for line in lines] == ["hello", "Hi.", "again"]
+    assert archive.listed()[0].requests == 2
+
+
+def test_a_file_nested_too_deep_to_read_is_skipped(tmp_path: Path) -> None:
+    folder = tmp_path / "a"
+    archive = ChatArchive(folder, keep=10)
+    archive.save(_talk(archive, "hello"))
+    kept = archive.current
+    archive.start()
+    deep = folder / "20261125-000000-000000.json"
+    deep.write_text("[" * 100_000)
+    deep.chmod(0o600)
+    (folder / f"{kept}.memory.json").write_text("[" * 100_000)
+
+    assert [a.id for a in archive.listed()] == [kept]
+    assert not archive.resume(kept, Conversation(budget=1000).load)
+
+
+def _first_format(folder: Path, conversation: str) -> None:
+    folder.mkdir(mode=0o700, exist_ok=True)
+    meta = {
+        "version": 1,
+        "id": conversation,
+        "name": "hello",
+        "named": False,
+        "created": "2026-11-25T21:44:03+00:00",
+        "updated": "2026-11-25T21:44:09+00:00",
+        "log": [{"event": "request", "text": "hello"}, {"event": "reply", "text": "Hi."}],
+    }
+    (folder / f"{conversation}.json").write_text(json.dumps(meta))
+    (folder / f"{conversation}.json").chmod(0o600)
+    memory = Conversation(budget=1000)
+    memory.add(Turn("hello", "Hi.", "", "", 1.0))
+    memory.save(folder / f"{conversation}.memory.json")
+
+
+def test_a_move_to_the_new_format_that_was_cut_short_is_made_again(tmp_path: Path) -> None:
+    folder, old = tmp_path / "a", "20261125-214403-abcdef"
+    _first_format(folder, old)
+    (folder / f"{old}.log.jsonl").write_text("")  # created, then the write never happened
+
+    ChatArchive(folder, keep=10).listed()
+
+    log = (folder / f"{old}.log.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["event"] for line in log] == ["request", "reply"]
+    assert (folder / f"{old}.log.jsonl").stat().st_mode & 0o777 == 0o600
+
+
+def test_an_entry_after_half_a_line_starts_on_its_own_line(tmp_path: Path) -> None:
+    archive = ChatArchive(tmp_path / "a", keep=10)
+    memory = Conversation(budget=1000)
+    memory.add(Turn("one", "Yes.", "", "", 1.0))
+    archive.record({"event": "request", "text": "one"})
+    archive.save(memory)
+    log = tmp_path / "a" / f"{archive.current}.log.jsonl"
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write('{"event": "rep')  # a write cut short
+
+    archive.record({"event": "request", "text": "two"})
+    archive.save(memory)
+
+    assert json.loads(log.read_text(encoding="utf-8").splitlines()[-1])["text"] == "two"
+
+
+def test_files_no_conversation_owns_are_deleted_once_they_are_old(tmp_path: Path) -> None:
+    folder = tmp_path / "a"
+    folder.mkdir(mode=0o700)
+    stale, fresh = folder / "20260101-000000-aaaaaa.memory.json", folder / "x.log.jsonl"
+    stale.write_text("{}")
+    fresh.write_text("")  # another window may be writing this one now
+    os.utime(stale, (0, 0))
+    archive = ChatArchive(folder, keep=10)
+    memory = Conversation(budget=1000)
+    memory.add(Turn("one", "Yes.", "", "", 1.0))
+    archive.record({"event": "request", "text": "one"})
+
+    archive.save(memory)
+
+    assert not stale.exists()
+    assert fresh.exists()
+    assert len(archive.listed()) == 1
