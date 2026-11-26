@@ -12,6 +12,8 @@ agent before merging.
 
 ## 1. The operation
 
+- Name the operation in a group of `src/jarvis/toolgroups.py` (a test fails for one no group names); the group's
+  summary says what its tools are for, so extend it when the new tool widens that.
 - Add an `Operation` (`src/jarvis/operations.py`) to the owning module's `operations()` list, for example
   `SpotifyOps.operations()` in `src/jarvis/spotify/ops.py`. Give it:
   - a `name` with its area prefix (`spotify_…`); never a name that delegates to another agent (one agent only);

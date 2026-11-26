@@ -356,6 +356,19 @@ def test_a_number_written_beside_the_listing_is_refused_as_a_guess(desktop: Fake
     assert desktop.ran == []
 
 
+def test_a_window_whose_row_was_cut_before_the_model_is_not_taken(desktop: FakeDesktop) -> None:
+    """Regression: every listed number was taken although the agent cut the listing to its cap."""
+    ops = _ops(desktop)
+    with request_scope(foreign=False) as request:
+        result = ops.list_windows({})
+        assert result.delivered is not None
+        result.delivered(result.text[: result.text.index("\n2. ") + len("\n2. fire")])
+        request.next_message()
+        assert ops.bind({"window": 1, "action": "focus"})["app"] == "kitty"
+        with pytest.raises(OperationError, match="not listed"):
+            ops.bind({"window": 2, "action": "focus"})
+
+
 def test_the_latest_listing_is_the_one_its_numbers_come_from(desktop: FakeDesktop) -> None:
     ops = _ops(desktop)
     with request_scope(foreign=False):

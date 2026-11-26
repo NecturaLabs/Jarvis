@@ -8,6 +8,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- A tool router, `tools = "routed"` in `[agent]` and `[chat]` (default `all`, nothing changes). Every tool
+  belongs to a group (music, sound, screen, apps, system, files, everyday, web, browser, schedule, guides,
+  jarvis); a routed request starts with only the core tools and a toolbox of the groups in the prompt, and
+  the same model asks for the groups it needs with `use_tools`. A tool of a group it has not asked for is
+  not run. It stays off by default until a live run shows it as accurate and not slower
+  ([ADR 0022](docs/adr/0022-tool-router.md)).
 - Your own skills: Markdown files in `~/.config/jarvis/skills/` are listed in the prompt and read with
   `read_skill` like the shipped ones. A file is read only when it and its folder are yours alone, it is no
   link, and it fits the size limits. `jarvis doctor` names any file it left out. Jarvis's file operations
@@ -245,6 +251,16 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A PID or window number counts as read only when its whole row reached the model: a listing the
+  agent cut to fit its cap no longer lets a later call take a row the model never saw. A call that
+  was refused before it could run (a listing not read yet) may be made again in a later step, and a
+  watch that would fail for want of a target, a condition or pictures is refused before the question.
+
+- `stop_process` and a process watch take only a PID from a `find_processes` listing the model has
+  read, as a window number must be: one written beside its listing, in the same message, is refused.
+  A process watch that would be refused (outside text, a PID not listed) is refused before the
+  owner is asked about it.
+
 - Web reads and the browser no longer reach a public address on one of this PC's own networks: its own
   addresses, and a network it reaches without a router, such as the home network's global IPv6 prefix
   (checked at each connection, including for embedded IPv4 addresses). Missing route or local-address
@@ -350,6 +366,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   for. A home set in `[weather]` is always the place it names.
 
 ### Changed
+
+- The chat's remembered conversation takes what the context window leaves (`chat.memory_tokens` unset
+  by default, was 5,700): a longer prompt or more tools take from it instead of failing the defaults.
+  The defaults leave it at least 5,000 tokens. A set number still caps it.
+- Jarvis puts the choice it recommends first, and marks it with its reason, whenever it offers choices.
 
 - The opt-in pre-commit hook runs only the non-local tests affected by staged files. CI runs the
   full non-local suite. Rerun `tools/install-hooks.sh` to update an installed hook.

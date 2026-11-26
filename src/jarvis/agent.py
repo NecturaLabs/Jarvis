@@ -16,10 +16,10 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from jarvis import shortcuts
-from jarvis.config import EFFORTS, MemoryDetail
+from jarvis.config import EFFORTS, MemoryDetail, ToolMode
 from jarvis.confirmkey import boot_clock
 from jarvis.jsonutil import obj, objs
 from jarvis.memory import (
@@ -50,6 +50,7 @@ from jarvis.pictures import PICTURE_TOKENS, Picture
 from jarvis.policy import TRUSTED_ORIGINS, Decision, Origin, Verdict, action_hash, decide
 from jarvis.ratelimit import ActionRate
 from jarvis.sentences import sentence_end
+from jarvis.toolgroups import CORE_NAME, USE_TOOLS, group_name
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping, Sequence
@@ -92,8 +93,8 @@ _UNKNOWN = "unknown operation"
 MAX_LOOK_UPS_KEPT = 6
 MAX_ASKED = 160  # characters of one argument
 MAX_LOOKED = 900  # characters of them all
-_NOT_LOOK_UPS = frozenset({NO_ACTION, THINK_HARDER, SWITCH_MODEL, "stay_quiet"})
-_WAYS_TO_GO_ON = frozenset({THINK_HARDER, SWITCH_MODEL})
+_NOT_LOOK_UPS = frozenset({NO_ACTION, THINK_HARDER, SWITCH_MODEL, USE_TOOLS, "stay_quiet"})
+_WAYS_TO_GO_ON = frozenset({THINK_HARDER, SWITCH_MODEL, USE_TOOLS})
 _THINKING: tuple[Literal["low", "medium", "high"], ...] = ("low", "medium", "high")
 
 MODEL_DOWN = "My model isn't answering right now."
@@ -503,6 +504,13 @@ def _wrapped(origin: str, text: str, cap: int) -> str:
     return f"{head}{body}{tail}"
 
 
+def _handed(result: Result, body: str) -> str:
+    """Return `body`, the result as the model gets it, once the operation was told (`delivered`)."""
+    if result.delivered is not None:
+        result.delivered(body)
+    return body
+
+
 def _text(message: Mapping[str, Any]) -> str:
     content: object = message.get("content")
     if isinstance(content, str):
@@ -625,12 +633,13 @@ class Limits:
     max_seconds: float = MAX_SECONDS
     reply_tokens: int = REPLY_TOKENS
     tool_text_chars: int = MAX_TOOL_TEXT
-    memory_tokens: int = MEMORY_TOKENS
+    memory_tokens: int | None = MEMORY_TOKENS  # None: what the window leaves
     memory_idle_s: float = MEMORY_IDLE_S
     context_tokens: int = CONTEXT_TOKENS
     memory_detail: MemoryDetail = "condensed"
     thinking: Thinking | None = None
     raised: tuple[Thinking, ...] = ()
+    tools: ToolMode = "all"
 
     @property
     def answer_tokens(self) -> int:
@@ -664,6 +673,7 @@ class Limits:
                     EFFORTS.index(section.thinking) : EFFORTS.index(section.thinking_max)
                 ]
             ),
+            section.tools,
         )
 
 
@@ -997,6 +1007,10 @@ class _Turn:
     steered: list[str] = field(default_factory=list[str])  # the owner's words typed in meanwhile
     stream: _ReplyStream | None = None  # the last model call's, when the reply is spoken
     thinking: Thinking | None = None  # how the next model call thinks; the model may raise it
+    loaded: tuple[str, ...] = ()  # tool groups the model asked for (`use_tools`), in that order
+    offered: tuple[str, ...] = ()  # ... of which the last model call was offered the tools
+    plain: bool = False  # a plain command runs (`_shortcut`): the owner's own words, no model call
+    refused: int = 0  # calls to tools the model was not offered: no actions, but tries all the same
     switch: str = ""  # the mode this request was moved to (`switch_model`): it is answered again
     looks: list[Picture] = field(default_factory=list[Picture])  # screenshots to show next
 
@@ -1144,13 +1158,16 @@ class Agent:
     def _memory_budget(self) -> int:
         """Return the room for the conversation: the setting, within what the window leaves.
 
+        Unset, the setting is all the window leaves.
+
         The window must also hold the prompt and tool definitions, one reply and the request's
         own work (at least two tool results at their cap).
         """
         limits = self._limits
         work = 2 * tokens("x" * limits.tool_text_chars)
         room = limits.context_tokens - CONTEXT_MARGIN - self._fixed - limits.answer_tokens - work
-        return max(0, min(limits.memory_tokens, room))
+        wanted = room if limits.memory_tokens is None else limits.memory_tokens
+        return max(0, min(wanted, room))
 
     def set_system(self, prompt: str) -> None:
         """Give the model `prompt` as its instructions from the next request on."""
@@ -1280,7 +1297,7 @@ class Agent:
                         {"role": "system", "content": self._system},
                         {"role": "user", "content": PRIME_WORDS},
                     ],
-                    self._registry.tool_schemas(),
+                    self._offered(()),
                     timeout_s=PRIME_S,
                     max_tokens=1,
                     thinking=None if thinking is None else Thinking(thinking.effort, 1),
@@ -1666,7 +1683,11 @@ class Agent:
             "function": {"name": hit.operation, "arguments": json.dumps(hit.arguments)},
         }
         turn.messages.append({"role": "assistant", "content": "", "tool_calls": [call]})
-        (result,) = self._run_calls([call], hooks, turn)
+        turn.plain = True  # matched in code from the owner's words: no group has to be asked for
+        try:
+            (result,) = self._run_calls([call], hooks, turn)
+        finally:
+            turn.plain = False
         return result.spoken or None
 
     def _converse(self, hooks: Hooks, turn: _Turn) -> str:
@@ -1683,7 +1704,11 @@ class Agent:
                 if self._clock() - turn.started > turn.limit_s:
                     return _out_of_time(turn)
                 self._take_steering(turn, hooks)
-                if step == self._limits.max_steps - 1 and step > 0 and turn.actions:
+                if (
+                    step == self._limits.max_steps - 1
+                    and step > 0
+                    and (turn.actions or turn.refused)
+                ):
                     # Rather than stop with nothing, the last call answers from what was found.
                     turn.last = True
                     turn.messages.append({"role": "user", "content": LAST_STEP_REMINDER})
@@ -1707,19 +1732,36 @@ class Agent:
                 turn.request.added(words)  # typed by the owner: an address in them is theirs
             turn.stuck = False  # new words: the model may act on them, not only answer
 
+    @property
+    def _routed(self) -> bool:
+        """Whether a request starts with only the core tools (`tools = "routed"`)."""
+        return self._limits.tools == "routed" and self._registry.get(USE_TOOLS) is not None
+
+    def _offered(self, loaded: tuple[str, ...]) -> list[dict[str, Any]]:
+        """Return the tools a model call is offered: all of them, or, routed, the core and `loaded`.
+
+        The order never depends on the order the groups were asked for (`Registry.tool_schemas`),
+        so the calls of a request, and of the next one that asks for the same groups, share the
+        longest start the server can reuse.
+        """
+        return self._registry.tool_schemas(loaded if self._routed else None)
+
     def _step(self, turn: _Turn, hooks: Hooks, step: int) -> str | None:
         """Run one model call and its tool calls; return the final reply, or None to go on.
 
         After a repeated call, and on the last step, the model may only answer: it is made to call
         `no_action`, whose `reply` is the answer, with the tool list kept so the server reuses the
         prompt it pinned (dropping the tools changes the prompt and costs seconds to read it
-        again). Any other call it returns then is not run. Where `no_action` is refused, it is
-        offered no tools instead.
+        again). That list is the one an ordinary call would have at this point: every tool, or
+        routed the core and the groups loaded so far, which may be more than the call before it
+        had when that call was `use_tools`. Any other call it returns then is not run. Where
+        `no_action` is refused, it is offered no tools instead.
         """
         only_answer = turn.stuck or turn.last
         forced = only_answer and self._reply_allowed()
-        tools = [] if only_answer and not forced else self._registry.tool_schemas()
-        self._make_room(turn)
+        turn.offered = turn.loaded
+        tools = [] if only_answer and not forced else self._offered(turn.loaded)
+        self._make_room(turn, tokens(json.dumps(tools)) if self._routed else self._schemas)
         stream = turn.stream = self._stream(turn, hooks)
         began = self._clock()
         try:
@@ -1956,14 +1998,16 @@ class Agent:
                 return f"{note}: the first part as usual, then each next one with {key} append."
         return f"{note}."
 
-    def _make_room(self, turn: _Turn) -> None:
+    def _make_room(self, turn: _Turn, schemas: int) -> None:
         """Clear the oldest tool results of this request until the next call fits the window.
 
-        Each keeps its start, so the model still sees what it was.
+        Each keeps its start, so the model still sees what it was. `schemas` is what the tool
+        definitions of this call take: routed, only those it is offered now (the remembered
+        conversation's own budget still counts them all, for the request that loads every group).
         """
         limit = self._limits.context_tokens - CONTEXT_MARGIN - self._limits.answer_tokens
         messages = turn.messages
-        used = self._schemas + sum(_cost(m) for m in messages)  # the messages hold the prompt
+        used = schemas + sum(_cost(m) for m in messages)  # the messages hold the prompt
         for message in messages[turn.first :]:
             if used <= limit:
                 return
@@ -2107,11 +2151,16 @@ class Agent:
         """
         name = str(obj(call.get("function")).get("name", ""))
         op = self._registry.get(name)
-        going_on = op is not None and name in _WAYS_TO_GO_ON
+        # A call refused as not offered did nothing and is no action tried: the model may still
+        # ask for the group and call it, or switch modes.
+        refused = op is not None and self._unoffered(op, turn)
+        going_on = op is not None and (name in _WAYS_TO_GO_ON or refused)
+        turn.refused += refused
         if going_on:
             # How hard to think, and in which mode, is not an action: the request still needs
             # its own tools.
             result = self._think_harder(turn, result) if name == THINK_HARDER else result
+            result = self._load_groups(turn, result, call) if name == USE_TOOLS else result
         else:
             turn.actions.append(f"{name if op is not None else _UNKNOWN} -> {_outcome(result)}")
         if op is not None and not op.side_effect and result.ok and name not in _NOT_LOOK_UPS:
@@ -2137,7 +2186,11 @@ class Agent:
             turn.private = turn.private or result.origin in PRIVATE_ORIGINS
             body = _wrapped(result.origin.value, text, self._limits.tool_text_chars)
         turn.messages.append(
-            {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": body}
+            {
+                "role": "tool",
+                "tool_call_id": str(call.get("id", "")),
+                "content": _handed(result, body),
+            }
         )
         return result
 
@@ -2220,6 +2273,81 @@ class Agent:
         return Result(
             f"From now on in this request you think at {wanted.effort} effort. Work the request "
             "out again, then call the tools it needs or answer."
+        )
+
+    def _load_groups(self, turn: _Turn, result: Result, call: dict[str, Any]) -> Result:
+        """Offer the tool groups a `use_tools` call asked for from the next model call on.
+
+        `result` is what the call returned: a refused or rejected call is reported as it is. A
+        group this registry has no tools in is said not to exist; one already offered is said so.
+        The model is told the names of the tools it got, as it has not seen their definitions.
+        """
+        if result is _REPEATED:
+            # The same call again: told so only when what it asks for is offered; one the owner
+            # declined stays a repeat, which is how every repeated call is treated.
+            asked = self._asked_groups(call)
+            if asked and set(asked) <= set(turn.loaded):
+                return Result("Those tools are already offered; go on with the request.")
+            return result
+        if not result.groups:
+            return result
+        have = {group.name: group for group in self._registry.groups()}
+        new = [name for name in dict.fromkeys(result.groups) if name in have]
+        fresh = [name for name in new if name not in turn.loaded]
+        missing = [name for name in result.groups if name not in have]
+        turn.loaded = (*turn.loaded, *fresh)
+        if fresh:
+            self._audit.record("tools_loaded", groups=fresh)
+        got = "; ".join(f"{name}: {', '.join(have[name].tools)}" for name in fresh)
+        parts = [
+            f"Offered from your next reply, to the end of this request: {got}." if fresh else ""
+        ]
+        if kept := [name for name in new if name not in fresh]:
+            parts.append(f"Already offered: {', '.join(kept)}.")
+        if missing:
+            parts.append(
+                f"No tools here in: {', '.join(missing)}. Groups: {', '.join(have) or 'none'}."
+            )
+        return Result(" ".join(part for part in parts if part), ok=bool(fresh or new))
+
+    def _asked_groups(self, call: dict[str, Any]) -> list[str]:
+        """Return the groups a `use_tools` call names, as far as its arguments can be read."""
+        try:
+            args = self._arguments(obj(call.get("function")))
+        except ValueError, TypeError, RecursionError:
+            return []
+        groups: object = obj(args).get("groups")
+        if not isinstance(groups, list):
+            return []
+        return [g for g in cast("list[object]", groups) if isinstance(g, str)]
+
+    def _unoffered(self, op: Operation, turn: _Turn) -> bool:
+        """Whether `op` is a tool the model was not offered in its last call (routed only).
+
+        A tool runs when its group is core or was loaded before the model call that wrote the
+        call. A plain command matched in code (`_shortcut`) is the owner's own and never refused.
+        """
+        if not self._routed or turn.plain:
+            return False
+        group = group_name(op.name)
+        return group != CORE_NAME and group not in turn.offered
+
+    def _not_offered(self, op: Operation, turn: _Turn) -> Result | None:
+        """Return what to tell the model for a call to a tool it was not offered, else None.
+
+        Such a call is not run, and the model is told how to get the tool.
+        """
+        if not self._unoffered(op, turn):
+            return None
+        group = group_name(op.name)
+        self._audit.record("tool_not_offered", op=op.name, group=group or "none")
+        if group is None:
+            return Result("Error: there is no operation with that name.", ok=False)
+        return Result(
+            f"Not run: {op.name} is in the {group} group, which you were not offered yet. Call "
+            f'use_tools with groups ["{group}"] (with any other group the request needs), then '
+            "call it again in your next reply.",
+            ok=False,
         )
 
     def _run_switch(
@@ -2391,6 +2519,8 @@ class Agent:
         if isinstance(parsed, Result):
             return parsed
         op, args = parsed
+        if (hint := self._not_offered(op, turn)) is not None:
+            return hint
         asked_for = action_hash(op.name, args)
         if asked_for in turn.seen:
             self._audit.record("tool_repeated", op=op.name, args=_audited(op, args))
@@ -2412,6 +2542,9 @@ class Agent:
             bound = self._attempt(op.prepare, op, args, asked_for)
             if isinstance(bound, _Failed):
                 stopped = bound.result
+                # Nothing ran: the same call may be made again once what refused it changed
+                # (a listing read, say); the step and call caps still bound the retries.
+                turn.seen.discard(asked_for)
             else:
                 args = bound
         digest = action_hash(op.name, args)
