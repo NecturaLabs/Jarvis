@@ -4,6 +4,7 @@ A request that is nothing but a plain command ("pause", "volume 40") takes the s
 call the model writes (validation, policy, confirmation, audit) without waiting for the model.
 """
 
+import contextlib
 import contextvars
 import copy
 import hashlib
@@ -50,6 +51,7 @@ from jarvis.sentences import sentence_end
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping, Sequence
+    from contextlib import AbstractContextManager
     from pathlib import Path
 
     from jarvis.audit import AuditLog
@@ -654,6 +656,10 @@ class Modes(Protocol):
         """Note that a request was just answered in the current mode."""
         ...
 
+    def answering(self) -> AbstractContextManager[object]:
+        """Return the mark held while a request is answered, so no switch cuts its model call."""
+        ...
+
 
 class _OneMode:
     """The modes of an agent that has only the one it was made with."""
@@ -672,6 +678,10 @@ class _OneMode:
 
     def used(self) -> None:
         pass
+
+    @staticmethod
+    def answering() -> AbstractContextManager[object]:
+        return contextlib.nullcontext()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1317,9 +1327,12 @@ class Agent:
         own = "" if handed_over else _own_words(text, self._outside_pastes(text, pasted))
         self._switched = False
         ends = self._clock() + self._limits.max_seconds
-        with request_scope(
-            foreign=foreign, words=own, time_left=lambda: ends - self._clock()
-        ) as request:
+        with (
+            self._modes.answering(),
+            request_scope(
+                foreign=foreign, words=own, time_left=lambda: ends - self._clock()
+            ) as request,
+        ):
             for seen in sorted(steered_by):
                 request.saw(seen)
             source = (origin, request, frozenset(steered_by))

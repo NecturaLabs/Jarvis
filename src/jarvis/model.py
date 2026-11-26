@@ -273,11 +273,18 @@ class StrataModel:
     sleep: Callable[[float], None] = time.sleep  # tests wait without waiting
     clock: Callable[[], float] = time.monotonic  # tests move time with their sleep
     model_file: Path | None = None  # what the server loads (the run config's `--native`)
+    # ... as it is now, where what the server loads changes while this client lives (a mode)
+    file_of: Callable[[], Path | None] | None = None
     _loads: _Loads = field(default_factory=_Loads, init=False, repr=False, compare=False)
 
     def file_missing(self) -> bool:
         """Return whether the server's model file is known and not there."""
-        return self.model_file is not None and not self.model_file.is_file()
+        file = self.served_file()
+        return file is not None and not file.is_file()
+
+    def served_file(self) -> Path | None:
+        """Return the model file the server loads now, when known."""
+        return self.model_file if self.file_of is None else self.file_of()
 
     def _client(self, timeout: float) -> httpx.Client:
         return httpx.Client(
@@ -446,7 +453,7 @@ class StrataModel:
                         return self._streamed(response, deadline, on_delta, passed_on)
             except httpx.TransportError as exc:
                 if self.file_missing():  # systemd skips Strata then: nothing to wait for
-                    msg = f"model server down and its model file is missing: {self.model_file}"
+                    msg = f"model server down and its model file is missing: {self.served_file()}"
                     raise ModelMissingError(msg) from exc
                 retry = attempt == 1 and not passed_on and not isinstance(exc, httpx.ReadTimeout)
                 if not retry:

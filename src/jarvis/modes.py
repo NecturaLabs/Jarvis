@@ -7,7 +7,8 @@ process reads, so the voice service, a chat window and `jarvis model` agree on i
 
 One model server runs, with one profile, so one model is in memory at a time: a switch that
 changes the profile restarts the server, which ends the old engine before the new one starts.
-Every switch is audited, and one taking a restart tells the owner first.
+Every switch is audited, one taking a restart tells the owner first, and none is made while any
+Jarvis process answers a request (`Answering`).
 """
 
 import contextlib
@@ -17,7 +18,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, Self, cast
 
 from jarvis import paths, services
 from jarvis.config import EFFORTS, CodingChatConfig, ConfigError
@@ -181,12 +182,78 @@ def _locked(*, wait: bool = True) -> Generator[bool]:
 
     Without `wait`, a lock another process holds is not waited for: False is yielded instead.
     """
-    path = _lock_file()
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    fd = _open_lock(_lock_file())
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+        else:
+            yield True
+    finally:
+        os.close(fd)
+
+
+def _answering_file() -> Path:
+    return paths.state_dir() / "mode-answering.lock"
+
+
+def _open_lock(path: Path) -> int:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+
+
+class Answering:
+    """One process's mark that it is answering a request, for as long as it is held.
+
+    A switch restarts the model server, which would cut the model call of a request in flight in
+    any Jarvis process: the voice service, a chat window, `jarvis ask`. Each holds this mark (a
+    shared lock on one small file) through its request, and a switch is made only while nobody
+    holds one. A request that begins during a switch waits here until the model server is back.
+    """
+
+    def __init__(self) -> None:
+        """Hold nothing yet."""
+        super().__init__()
+        self._fd: int | None = None
+        self._depth = 0
+
+    def __enter__(self) -> Self:
+        """Hold the mark; a request inside a request keeps the one already held."""
+        if self._depth == 0:
+            self._fd = _open_lock(_answering_file())
+            fcntl.flock(self._fd, fcntl.LOCK_SH)
+        self._depth += 1
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        """Let the mark go once the outermost request ends."""
+        self._depth -= 1
+        if self._depth == 0 and self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
+
+    @contextlib.contextmanager
+    def set_aside(self) -> Generator[None]:
+        """Let the mark go for a switch this request makes itself, then hold it again."""
+        fd = self._fd
+        if fd is None:
+            yield
+            return
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_SH)
+
+
+@contextlib.contextmanager
+def _nobody_answering() -> Generator[bool]:
+    """Keep requests from beginning while held; yield False when one is in flight already."""
+    fd = _open_lock(_answering_file())
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             yield False
         else:
@@ -318,9 +385,10 @@ class Switcher:
     def switch(self, to: Mode, by: By, say: Callable[[str], None] = lambda _line: None) -> Switched:
         """Put Jarvis in mode `to`; `say` gets the line for the owner before a restart.
 
-        Nothing changes when Jarvis is in that mode already, when another request is in flight
-        (`busy`), or when the mode's run config cannot be served. When the restarted server does
-        not come back, the files and the server go back to the mode before.
+        Nothing changes when Jarvis is in that mode already, when a request is in flight in any
+        Jarvis process (`busy`, `Answering`), or when the mode's run config cannot be served. When
+        the restarted server does not come back, the files and the server go back to the mode
+        before.
         """
         if self._busy():
             return Switched(current(), error=BUSY)
@@ -328,33 +396,40 @@ class Switcher:
             state = read_state()
             if state.mode == to:
                 return Switched(to)
-            began = self._clock()
-            before = _texts()
-            try:
-                restart = self._write(to, before)
-            except (ConfigError, OSError) as exc:
-                return Switched(state.mode, error=f"{to} mode cannot be served: {exc}")
-            running = restart and self._units.active()
-            if running:
-                say(announcement(self._config, to, restart=True))
-                if not self._restart(to, state):
-                    self._write_back(state.mode)
-                    return Switched(state.mode, restarted=True, error=self._failed(to, state))
-            elif not restart:
-                say(announcement(self._config, to, restart=False))
-            seconds = round(self._clock() - began, 1)
-            loads = {**state.load_s, to: seconds} if running else state.load_s
-            _write_state(State(to, by, self._now(), loads))
-            self._audit.record(
-                "mode_switched",
-                to=to,
-                was=state.mode,
-                by=by,
-                model=model_name(self._config, to),
-                restarted=running,
-                seconds=seconds,
-            )
-            return Switched(to, changed=True, restarted=running, seconds=seconds)
+            with _nobody_answering() as free:
+                if not free:
+                    return Switched(state.mode, error=BUSY)
+                return self._switch(to, by, say, state)
+
+    def _switch(self, to: Mode, by: By, say: Callable[[str], None], state: State) -> Switched:
+        """Make the switch from `state` to `to`, with the lock held and no request in flight."""
+        began = self._clock()
+        before = _texts()
+        try:
+            restart = self._write(to, before)
+        except (ConfigError, OSError) as exc:
+            return Switched(state.mode, error=f"{to} mode cannot be served: {exc}")
+        running = restart and self._units.active()
+        if running:
+            say(announcement(self._config, to, restart=True))
+            if not self._restart(to, state):
+                self._write_back(state.mode)
+                return Switched(state.mode, restarted=True, error=self._failed(to, state))
+        elif not restart:
+            say(announcement(self._config, to, restart=False))
+        seconds = round(self._clock() - began, 1)
+        loads = {**state.load_s, to: seconds} if running else state.load_s
+        _write_state(State(to, by, self._now(), loads))
+        self._audit.record(
+            "mode_switched",
+            to=to,
+            was=state.mode,
+            by=by,
+            model=model_name(self._config, to),
+            restarted=running,
+            seconds=seconds,
+        )
+        return Switched(to, changed=True, restarted=running, seconds=seconds)
 
     def back_if_idle(self) -> Switched | None:
         """Go back to the normal mode when coding mode went unused too long; else do nothing."""

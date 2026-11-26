@@ -300,7 +300,8 @@ added to the prompt, and, when you set one, a model of its own.
   --coding-run-config <its strata-<model>.json>`. Unset, coding mode keeps the usual model. With two
   models, a switch restarts the model server: the first model is out of memory before the second loads, so
   only one is ever in memory, and Jarvis says before it starts how long the load took the last time. A
-  switch is refused while the voice service is answering a request. `jarvis doctor` checks the coding
+  switch is refused while Jarvis is answering a request anywhere (the voice service, a chat window or
+  `jarvis ask`), and a request that begins during a switch waits for the model server to come back. `jarvis doctor` checks the coding
   model's files too.
 - **Every switch is audited** (`mode_switched`: from, to, by the owner, the model or the idle time, the
   model's name, whether the server restarted, the seconds).

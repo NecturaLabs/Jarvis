@@ -70,8 +70,10 @@ list is ruled out by ADR 0013.
 - Good: one server, one profile, one model in memory; the usual model and its settings are untouched.
 - Bad: a switch between two models costs a model load each way, and the system file cache cannot hold both
   models on a 64 GB PC, so the load reads the disk.
-- Bad: a chat request or `jarvis ask` in flight in another window when a switch restarts the server loses
-  its model call and is retried once; only the voice service's request is checked for.
+- Good: a switch never cuts a request. Every Jarvis process (the voice service, a chat window, `jarvis ask`)
+  holds a shared lock on one small file while it answers a request, and a switch is made only while it can
+  take that lock alone; a request that begins during a switch waits until the model server is back. A
+  request's own switch (`switch_model`) sets its own hold aside for it.
 - Bad: the model can call a request programming work when it is not; `coding.chat.auto = false` leaves the
   switch to the owner.
 - The headless browser tool (ADR 0016, on its own branch) can show the model a page it
@@ -80,7 +82,7 @@ list is ruled out by ADR 0013.
 ### Confirmation
 
 `tests/test_modes.py` (the overlay, the state, the switch with a fake unit and server: restart only on a
-change, the refusal while busy, a config that cannot be served, the way back when the server stays down,
+change, the refusal while busy or while another process answers a request, a config that cannot be served, the way back when the server stays down,
 idle return), `tests/test_coding_mode.py` (the agent answering again in the new mode, the refusals,
 following a switch made elsewhere, `jarvis model`, the doctor) and `tests/test_chat.py` (`/model`). Not
 measured: the coding model on this PC, and how often the model calls the tool when it should.

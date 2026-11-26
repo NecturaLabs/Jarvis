@@ -1,6 +1,6 @@
 """Builds Jarvis from its config: model, operations, prompt, audit log and agent."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -330,6 +330,7 @@ class AgentModes:
         self._make = make
         self._made: dict[str, Setup] = {}
         self._chat: ChatConfig | None = None
+        self._answering = modes.Answering()
 
     def restyle(self, chat: ChatConfig) -> None:
         """Build each mode's setup from `chat` from now on: what the chat's settings became.
@@ -342,7 +343,8 @@ class AgentModes:
 
     def current(self) -> str:
         """Return the mode now, going back to normal first when coding mode idled too long."""
-        self._switcher.back_if_idle()
+        with self._answering.set_aside():
+            self._switcher.back_if_idle()
         return modes.current()
 
     def setup(self, mode: str) -> Setup:
@@ -356,7 +358,14 @@ class AgentModes:
         """Switch to `to` for the model; return "" when done, else what to tell the owner."""
         if to not in modes.MODES:
             return f"There is no {to} mode."
-        return self._switcher.switch("coding" if to == "coding" else "normal", "model", say).error
+        with self._answering.set_aside():  # this request's own mark would refuse its switch
+            return self._switcher.switch(
+                "coding" if to == "coding" else "normal", "model", say
+            ).error
+
+    def answering(self) -> modes.Answering:
+        """Return this process's mark that it answers a request (`modes.Answering`)."""
+        return self._answering
 
     @staticmethod
     def used() -> None:
@@ -677,6 +686,18 @@ def strata_model(config: Config, key: str) -> StrataModel:
     )
 
 
+def mode_model(config: Config, key: str) -> StrataModel:
+    """Return the model server's client for a Jarvis that changes modes.
+
+    It talks to the server as the normal mode sets it, and knows the model file of the mode
+    Jarvis is in now: a missing file is named rightly in coding mode too.
+    """
+    files = {
+        mode: strata_model(modes.effective(config, mode), key).model_file for mode in modes.MODES
+    }
+    return replace(strata_model(config, key), file_of=lambda: files[modes.current()])
+
+
 def build(
     config: Config,
     *,
@@ -707,7 +728,7 @@ def build(
     if not key:
         msg = f"no Strata API key at {strata_key_file()}; run `jarvis setup`"
         raise SetupError(msg)
-    model = strata_model(config, key)
+    model = mode_model(config, key)
     tokens = TokenStore(config.spotify.client_id, spotify_token_file())
     ops = SpotifyOps(
         SpotifyApi(tokens, library_ttl_s=config.spotify.library_refresh_s), config.spotify

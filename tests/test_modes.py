@@ -282,6 +282,50 @@ def test_a_switch_to_the_mode_jarvis_is_in_changes_nothing(tmp_path: Path) -> No
     assert audit.events == []
 
 
+def test_no_switch_while_another_process_answers_a_request(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    _installed(cfg)
+    units = _Units()
+    switcher = _switcher(cfg, units, _Server(), _Audit())
+
+    with modes.Answering():  # as a chat window or `jarvis ask` holds it through a request
+        cut = switcher.switch("coding", "owner")
+
+    assert cut.error == modes.BUSY
+    assert (modes.current(), units.restarts, _served_model()) == ("normal", 0, "q4.gguf")
+    assert switcher.switch("coding", "owner").changed  # the request is over
+
+
+def test_a_request_switches_the_mode_itself_by_setting_its_mark_aside(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    _installed(cfg)
+    switcher = _switcher(cfg, _Units(), _Server(), _Audit())
+
+    with modes.Answering() as mine:
+        with mine.set_aside():
+            done = switcher.switch("coding", "model")
+        held_again = switcher.switch("normal", "owner")
+
+    assert done.changed
+    assert held_again.error == modes.BUSY
+
+
+def test_a_request_inside_a_request_keeps_the_mark_until_the_outer_one_ends(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    _installed(cfg)
+    switcher = _switcher(cfg, _Units(), _Server(), _Audit())
+    mine = modes.Answering()
+
+    with mine:
+        with mine:
+            pass
+        still_held = switcher.switch("coding", "owner")
+
+    assert still_held.error == modes.BUSY
+
+
 def test_no_switch_while_a_request_is_in_flight(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     _installed(cfg)
