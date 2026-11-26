@@ -20,13 +20,10 @@ import stat
 from dataclasses import dataclass
 from functools import cache
 from importlib.resources import files
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 from jarvis import paths
 from jarvis.operations import Operation, OperationError, Result
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 _FRONT = re.compile(r"\A---\n(?P<head>.*?)\n---\n(?P<body>.*)\Z", re.DOTALL)
 _DESCRIPTION = re.compile(r"^description:\s*(?P<text>.+)$", re.MULTILINE)
@@ -35,6 +32,7 @@ MAX_OWNER_SKILLS = 20
 MAX_DESCRIPTION_CHARS = 200  # one owner skill's line in the prompt
 MAX_DESCRIPTIONS_CHARS = 1600  # all owner skills' lines together, so the prompt keeps its size
 MAX_BODY_BYTES = 16_000  # one owner skill, read whole as one tool result
+MAX_SKIPPED_NOTES = 20  # the most files `jarvis doctor` names as left out
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +85,11 @@ def _read_owned(folder: int, name: str) -> str:
             or is not UTF-8 text.
     """
     try:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder)
+        fd = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC,
+            dir_fd=folder,
+        )
     except OSError as error:
         msg = "a link, which is not followed" if error.errno == errno.ELOOP else "unreadable"
         raise ValueError(msg) from error
@@ -122,7 +124,7 @@ def owner_skills(folder: Path | None = None) -> tuple[tuple[Skill, ...], list[st
     """
     where = owner_folder() if folder is None else folder
     try:
-        fd = os.open(where, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fd = os.open(where, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except FileNotFoundError:
         return (), []
     except OSError:
@@ -149,13 +151,18 @@ def owner_skills(folder: Path | None = None) -> tuple[tuple[Skill, ...], list[st
                 else:
                     why = _why_not_skill(skill, room)
             if why or skill is None:
-                skipped.append(f"{entry}: {why}")
+                skipped.append(f"{_shown(entry)}: {why}")
                 continue
             found.append(skill)
             room -= len(skill.description)
         return tuple(found), skipped
     finally:
         os.close(fd)
+
+
+def _shown(entry: str) -> str:
+    """Return a file name as it can be printed: control characters escaped."""
+    return entry if entry.isprintable() else repr(entry)
 
 
 def _why_not(name: str, taken: set[str], count: int) -> str:
@@ -178,9 +185,20 @@ def _why_not_skill(skill: Skill | None, room: int) -> str:
     return ""
 
 
+@cache
+def _owner_at(folder: str) -> tuple[Skill, ...]:
+    """Return the owner's skills in `folder`, read once per process (see `available`)."""
+    return owner_skills(Path(folder))[0]
+
+
 def available(folder: Path | None = None) -> tuple[Skill, ...]:
-    """Return every skill the model may read: the shipped ones, then the owner's."""
-    return (*shipped(), *owner_skills(folder)[0])
+    """Return every skill the model may read: the shipped ones, then the owner's.
+
+    The owner's are read once per process and folder, so the prompt and `read_skill` always
+    list the same skills; a new or changed file counts from the next start of the voice service
+    or chat window.
+    """
+    return (*shipped(), *_owner_at(str(owner_folder() if folder is None else folder)))
 
 
 def doctor_notes(folder: Path | None = None) -> list[str]:
@@ -188,7 +206,10 @@ def doctor_notes(folder: Path | None = None) -> list[str]:
     mine, skipped = owner_skills(folder)
     where = owner_folder() if folder is None else folder
     notes = [f"note your skills: {len(mine)} read from {where}"] if mine else []
-    return [*notes, *(f"note skill left out: {line}" for line in skipped)]
+    shown = [f"note skill left out: {line}" for line in skipped[:MAX_SKIPPED_NOTES]]
+    if len(skipped) > MAX_SKIPPED_NOTES:
+        shown.append(f"note {len(skipped) - MAX_SKIPPED_NOTES} more skill files left out")
+    return [*notes, *shown]
 
 
 def prompt_section(skills: tuple[Skill, ...]) -> str:

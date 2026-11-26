@@ -1,5 +1,6 @@
 """Jarvis's shipped skills: listed in the prompt, read whole on request, nothing else readable."""
 
+import os
 from typing import TYPE_CHECKING
 
 import pytest
@@ -178,3 +179,90 @@ def test_the_system_prompt_lists_the_owners_skill(
     _write(folder, "watch-sales.md", SKILL)
 
     assert "- watch-sales (yours): Watch a window" in system_prompt(Config())
+
+
+def test_a_fifo_a_folder_and_non_utf8_are_left_out(mine: Path) -> None:
+    os.mkfifo(mine / "pipe.md", 0o600)
+    (mine / "folder.md").mkdir(mode=0o700)
+    (mine / "latin.md").write_bytes(b"---\ndescription: caf\xe9\n---\n# C\n")
+    (mine / "latin.md").chmod(0o600)
+
+    found, skipped = skills.owner_skills(mine)
+
+    assert found == ()
+    assert sorted(skipped) == [
+        "folder.md: not a regular file",
+        "latin.md: not UTF-8 text",
+        "pipe.md: not a regular file",
+    ]
+
+
+def test_only_so_many_owner_skills_are_read(mine: Path) -> None:
+    for index in range(skills.MAX_OWNER_SKILLS + 1):
+        _write(mine, f"s{index:02d}.md", "---\ndescription: d\n---\n# S\n")
+
+    found, skipped = skills.owner_skills(mine)
+
+    assert len(found) == skills.MAX_OWNER_SKILLS
+    assert skipped == [f"s{skills.MAX_OWNER_SKILLS:02d}.md: only 20 skills of yours are read"]
+
+
+def test_doctor_names_at_most_so_many_left_out_files(mine: Path) -> None:
+    for index in range(skills.MAX_SKIPPED_NOTES + 5):
+        _write(mine, f"Bad{index}.md", SKILL)
+
+    notes = skills.doctor_notes(mine)
+
+    assert len(notes) == skills.MAX_SKIPPED_NOTES + 1
+    assert notes[-1] == "note 5 more skill files left out"
+
+
+def test_a_name_with_control_characters_is_printed_escaped(mine: Path) -> None:
+    _write(mine, "bad\x1b[2Jname.md", SKILL)
+
+    (line,) = skills.owner_skills(mine)[1]
+
+    assert "\x1b" not in line
+    assert line.startswith("'bad\\x1b[2Jname.md': ")
+
+
+def test_a_change_counts_from_the_next_start_so_prompt_and_tool_agree(mine: Path) -> None:
+    _write(mine, "watch-sales.md", SKILL)
+    first = skills.available(mine)
+    _write(mine, "added-later.md", SKILL)
+
+    again = skills.available(mine)
+    op = skills.skill_operation(first)
+
+    assert again == first
+    assert {s.name for s in again} == set(op.parameters["properties"]["name"]["enum"])
+
+
+def test_the_owners_skills_add_a_bounded_amount_to_the_prompt(mine: Path) -> None:
+    line = "d" * skills.MAX_DESCRIPTION_CHARS
+    for index in range(skills.MAX_OWNER_SKILLS):
+        _write(mine, f"{'n' * 37}{index:02d}.md", f"---\ndescription: {line}\n---\n# S\n")
+    shipped = len(skills.prompt_section(skills.shipped()))
+
+    grown = len(skills.prompt_section(skills.available(mine))) - shipped
+
+    per_skill = len("- ") + 40 + len(" (yours): ") + 1
+    assert grown <= skills.MAX_DESCRIPTIONS_CHARS + skills.MAX_OWNER_SKILLS * per_skill
+
+
+def test_no_file_operation_reaches_jarvis_config_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from jarvis.app import files_boundary  # ruff: ignore[import-outside-top-level]
+    from jarvis.config import Config, FilesConfig  # ruff: ignore[import-outside-top-level]
+    from jarvis.pc.files import FileRefusalError  # ruff: ignore[import-outside-top-level]
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    (tmp_path / ".config" / "jarvis" / "skills").mkdir(parents=True)
+    wide = Config(files=FilesConfig(read_roots=["~/.config"], write_roots=["~/.config"]))
+    boundary = files_boundary(wide, home=tmp_path)
+
+    with pytest.raises(FileRefusalError):
+        boundary.writable("~/.config/jarvis/skills/new.md")
+    with pytest.raises(FileRefusalError):
+        boundary.writable("~/.config/jarvis/config.toml")

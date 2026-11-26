@@ -460,8 +460,14 @@ def browser_ops(  # ruff: ignore[too-many-arguments] - what the browser is made 
 
 
 def files_boundary(config: Config, home: Path | None = None) -> Boundary:
-    """Return where the file operations may read and write; Jarvis's own state is never in it."""
-    return Boundary.of(config.files, home or Path.home(), protected=(paths.state_dir(),))
+    """Return where the file operations may read and write.
+
+    Jarvis's own state and config folders are never in it: its settings and the owner's skills
+    there steer Jarvis, so no request may rewrite them through a file operation.
+    """
+    return Boundary.of(
+        config.files, home or Path.home(), protected=(paths.state_dir(), paths.config_dir())
+    )
 
 
 def _wpctl(args: Sequence[str]) -> str:
