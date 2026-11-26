@@ -1,5 +1,6 @@
 """The tool router: groups, the toolbox, `tools = "routed"` and `use_tools`."""
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -12,21 +13,27 @@ from jarvis.app import (
     channel_limits,
     channel_registry,
     no_action_operation,
+    offered_registry,
     system_prompt,
+    unknown_overrides,
 )
 from jarvis.audit import AuditLog
 from jarvis.config import Config
+from jarvis.memory import tokens
 from jarvis.operations import Operation, Registry, Result, validate_args
 from jarvis.policy import Origin
 from jarvis.router import toolbox_section, use_tools_operation
+from jarvis.shortcuts import Shortcut
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
 from jarvis.toolgroups import CORE, GROUPS, USE_TOOLS, group_name
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
+    from jarvis.agent import _Turn  # pyright: ignore[reportPrivateUsage] - typing a spy only
     from jarvis.app import Channel
     from jarvis.config import ToolMode
 
@@ -67,6 +74,10 @@ def _registry(
         config = config.model_copy(update={"chat": config.chat.model_copy(update={"tools": mode})})
     spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
     return channel_registry(config, spotify.operations(), channel_limits(config, channel), channel)
+
+
+def _no_program(_name: str) -> None:
+    return None
 
 
 def _names(schemas: list[dict[str, Any]]) -> list[str]:
@@ -122,18 +133,44 @@ def test_a_group_with_no_tool_in_this_registry_is_not_in_the_toolbox() -> None:
     assert [g.tools for g in registry.groups()] == [("weather", "calculate")]
 
 
+# The shipped prompt with no skills listed, version "0" and the default persona, as it was before
+# the router (`{toolbox}` empty). Changing the prompt's own text changes these on purpose: replace
+# them with the new digests; they exist so that routing never changes what "all" mode sends.
+_PROMPT_SHA256 = {
+    "voice": "c8401cf662148690d8a36fad79349ef542b96bc091389fb91733220664364168",
+    "chat": "f5c751ac64b18a11a5fbbe41f2e935a0feff53c1e53a4b29cdfc65385b544b22",
+}
+
+
+def _bare_prompt(
+    monkeypatch: pytest.MonkeyPatch, channel: Channel, registry: Registry | None
+) -> str:
+    monkeypatch.setattr("jarvis.app.skills.available", lambda: ())
+    monkeypatch.setattr("jarvis.app.osskills.catalog", lambda: ())
+    monkeypatch.setattr("jarvis.app.__version__", "0")
+    return system_prompt(Config(), channel, registry=registry)
+
+
+@pytest.mark.parametrize("channel", ["voice", "chat"])
+def test_all_mode_prompt_bytes_are_the_ones_pinned_before_the_router(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, channel: Channel
+) -> None:
+    everything = _registry(monkeypatch, tmp_path, channel)
+
+    for registry in (None, everything):
+        text = _bare_prompt(monkeypatch, channel, registry)
+        assert hashlib.sha256(text.encode()).hexdigest() == _PROMPT_SHA256[channel]
+
+
 @pytest.mark.parametrize("channel", ["voice", "chat"])
 def test_the_prompt_has_the_toolbox_only_when_routed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, channel: Channel
 ) -> None:
-    everything = _registry(monkeypatch, tmp_path, channel)
     routed = _registry(monkeypatch, tmp_path, channel, routed=True)
-    plain = system_prompt(Config(), channel)
 
-    assert system_prompt(Config(), channel, registry=everything) == plain  # bytes unchanged
     box = system_prompt(Config(), channel, registry=routed)
 
-    assert box.replace(toolbox_section(routed), "", 1) == plain
+    assert box.replace(toolbox_section(routed), "", 1) == system_prompt(Config(), channel)
     assert toolbox_section(routed) in box
     assert box.index("Your toolbox") < box.index("Skills:")
 
@@ -161,11 +198,18 @@ class _Model:
     offered: list[list[str]] = field(default_factory=list[list[str]])
     schemas: list[str] = field(default_factory=list[str])
     messages: list[list[dict[str, Any]]] = field(default_factory=list[list[dict[str, Any]]])
+    required: list[bool | str] = field(default_factory=list[bool | str])
     loaded: bool = True
 
     def chat(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **_: object
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        require_tool: bool | str = False,
+        **_: object,
     ) -> dict[str, Any]:
+        self.required.append(require_tool)
         self.messages.append([dict(m) for m in messages])
         self.offered.append(_names(tools))
         self.schemas.append(json.dumps(tools))
@@ -215,8 +259,11 @@ def _routed_agent(
     *,
     mode: str = "routed",
     overrides: dict[str, str] | None = None,
+    extra: Sequence[Operation] = (),
+    limits: Limits | None = None,
 ) -> tuple[Agent, AuditLog, Registry]:
     ops = [
+        *extra,
         _op("spotify_play", ran, side_effect=True),
         _op("web_search", ran),
         _op("weather", ran),
@@ -228,7 +275,7 @@ def _routed_agent(
         ops.append(use_tools_operation(["music", "web", "everyday", "apps", "files"]))
     registry = Registry([*ops, no_action_operation()])
     audit = AuditLog(None)
-    limits = Limits(tools="routed" if mode == "routed" else "all")
+    limits = limits or Limits(tools="routed" if mode == "routed" else "all")
     return Agent(model, registry, "system", audit, overrides or {}, limits=limits), audit, registry
 
 
@@ -244,7 +291,7 @@ def test_the_first_call_offers_only_the_core_tools() -> None:
 def test_use_tools_adds_the_groups_in_the_registry_order_whatever_the_order_asked() -> None:
     orders: list[list[str]] = []
     for asked in (["web", "music"], ["music", "web"]):
-        model = _Model([_call(("use_tools", {"groups": asked})), _say("Done.")])
+        model = _Model([_call(("use_tools", {"groups": asked})), _say("It is ready.")])
         agent, _, _ = _routed_agent(model, [])
 
         agent.handle("play something and look it up", NO_CONFIRM)
@@ -316,7 +363,7 @@ def test_a_call_in_the_same_reply_as_use_tools_is_not_run_either() -> None:
 
 
 def test_use_tools_is_decided_and_audited_like_any_operation() -> None:
-    model = _Model([_call(("use_tools", {"groups": ["web", "files"]})), _say("Done.")])
+    model = _Model([_call(("use_tools", {"groups": ["web", "files"]})), _say("It is ready.")])
     agent, audit, _ = _routed_agent(model, [])
 
     agent.handle("look it up", NO_CONFIRM)
@@ -329,7 +376,7 @@ def test_use_tools_is_decided_and_audited_like_any_operation() -> None:
 
 
 def test_the_model_is_told_which_tools_it_got_and_which_groups_do_not_exist() -> None:
-    model = _Model([_call(("use_tools", {"groups": ["web"]})), _say("Done.")])
+    model = _Model([_call(("use_tools", {"groups": ["web"]})), _say("It is ready.")])
     agent, _, _ = _routed_agent(model, [])
 
     agent.handle("look it up", NO_CONFIRM)
@@ -442,3 +489,199 @@ def test_the_toolbox_group_names_are_the_use_tools_choices(
         "use_tools",
         "no_action",
     ]
+
+
+# --- review fixes ------------------------------------------------------------------------------
+
+
+def test_a_plain_command_runs_in_routed_mode_as_in_all_mode_without_the_model() -> None:
+    # Regression: a shortcut (ADR 0004) was refused as a tool of a group not asked for.
+    for mode in ("all", "routed"):
+        ran: list[str] = []
+        pause = Operation(
+            "spotify_pause",
+            "Pause.",
+            {"type": "object", "properties": {}},
+            lambda _args, ran=ran: (ran.append("pause"), Result("Paused.", spoken="Paused."))[1],
+            shortcuts=(Shortcut("pause", lambda _g: {}),),
+        )
+        model = _Model([])
+        agent, audit, _ = _routed_agent(model, ran, mode=mode, extra=[pause])
+
+        assert agent.handle("pause", NO_CONFIRM) == "Paused."
+
+        assert ran == ["pause"]
+        assert model.offered == []  # no model call
+        assert not [e for e in audit.events if e["event"] == "tool_not_offered"]
+
+
+def test_a_refused_unoffered_call_is_not_an_action_tried() -> None:
+    ran: list[str] = []
+    model = _Model(
+        [
+            _call(("stop_process", {})),
+            _call(("use_tools", {"groups": ["apps"]})),
+            _call(("stop_process", {})),
+            _say("Stopped it."),
+        ]
+    )
+    agent, _, _ = _routed_agent(model, ran)
+
+    reply = agent.handle("stop it", Hooks(confirm=lambda _q: True))
+
+    assert reply == "Stopped it."  # the refused call left no "failed attempt" behind
+    assert ran == ["stop_process"]
+    assert not agent.memory.turns[-1].actions.startswith("stop_process -> error")
+    assert "unknown" not in agent.memory.turns[-1].actions
+    assert agent.memory.turns[-1].actions.count("stop_process") == 1
+
+
+def test_a_declined_use_tools_repeated_is_a_repeat_not_already_offered() -> None:
+    model = _Model(
+        [
+            _call(("use_tools", {"groups": ["web"]})),
+            _call(("use_tools", {"groups": ["web"]})),
+            _say("No."),
+            _say("No."),
+        ]
+    )
+    agent, audit, _ = _routed_agent(model, [], overrides={"use_tools": "confirm"})
+
+    agent.handle("look it up", NO_CONFIRM)
+
+    told = [m["content"] for m in model.messages[-1] if m.get("role") == "tool"]
+    assert not any("already offered" in str(t) for t in told)
+    assert [e["event"] for e in audit.events].count("tools_loaded") == 0
+    assert "web_search" not in model.offered[-1]
+
+
+def test_a_forced_answer_keeps_the_groups_loaded_so_far() -> None:
+    # The last step may only answer, with the tool list a normal call would have.
+    model = _Model(
+        [
+            _call(("use_tools", {"groups": ["web"]})),
+            _call(("web_search", {})),
+            _call(("no_action", {"reply": "Found it."})),
+        ]
+    )
+    agent, _, _ = _routed_agent(model, [], limits=Limits(tools="routed", max_steps=3))
+
+    assert agent.handle("look it up", NO_CONFIRM) == "Found it."
+
+    assert model.required[2] == "no_action"
+    assert model.offered[2] == model.offered[1]
+    assert "web_search" in model.offered[2]
+
+
+def test_a_stuck_request_is_forced_to_answer_with_the_same_routed_tools() -> None:
+    model = _Model(
+        [
+            _call(("use_tools", {"groups": ["web"]})),
+            _call(("web_search", {})),
+            _call(("web_search", {})),  # the same call again: stuck
+            _call(("no_action", {"reply": "That is all I found."})),
+        ]
+    )
+    agent, _, _ = _routed_agent(model, [])
+
+    assert agent.handle("look it up", NO_CONFIRM) == "That is all I found."
+
+    assert model.required[3] == "no_action"
+    assert model.offered[3] == model.offered[2]
+
+
+def test_words_the_owner_steers_in_keep_the_loaded_groups() -> None:
+    sent: list[list[str]] = [[], ["and the weather"]]
+    model = _Model([_call(("use_tools", {"groups": ["web"]})), _say("It is ready.")])
+    agent, _, _ = _routed_agent(model, [])
+
+    agent.handle("look it up", Hooks(confirm=lambda _q: False, steer=lambda: sent.pop(0)))
+
+    assert "and the weather" in str(model.messages[1])  # the steer reached the second call
+    assert "web_search" in model.offered[1]  # ... which still had the group
+
+
+def test_a_group_switched_off_is_not_in_the_toolbox_or_the_choices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("jarvis.app.shutil.which", _no_program)
+    config = Config()
+    config = config.model_copy(
+        update={
+            "chat": config.chat.model_copy(update={"tools": "routed"}),
+            "boundaries": config.boundaries.model_copy(
+                update={
+                    "classes": {
+                        "schedule_add": "deny",
+                        "schedule_list": "deny",
+                        "schedule_cancel": "deny",
+                    }
+                }
+            ),
+        }
+    )
+    registry = offered_registry(config, [], "chat", coding=False, via="chat", can_switch=True)
+
+    op = registry.get(USE_TOOLS)
+
+    assert op is not None
+    assert "schedule" not in op.parameters["properties"]["groups"]["items"]["enum"]
+    assert "schedule" not in [g.name for g in registry.groups()]
+    assert "schedule_add" not in toolbox_section(registry)
+    assert "web" in op.parameters["properties"]["groups"]["items"]["enum"]
+
+
+def test_a_tool_coding_mode_switches_off_is_not_in_its_toolbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("jarvis.app.shutil.which", _no_program)
+    config = Config()
+    config = config.model_copy(
+        update={
+            "chat": config.chat.model_copy(update={"tools": "routed"}),
+            "coding": config.coding.model_copy(update={"tools_off": ["web_search", "web_read"]}),
+        }
+    )
+
+    registry = offered_registry(config, [], "chat", coding=True, via="chat", can_switch=True)
+
+    assert "web_search" not in toolbox_section(registry)
+    assert "web_search" not in registry.names()
+
+
+def test_routed_budget_counts_every_group_but_a_call_counts_what_it_is_offered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The remembered conversation's room is sized for the request that loads every group, since
+    # the window must hold it; making room inside a request counts what that call is offered.
+    counted: list[int] = []
+    made_room = Agent._make_room  # pyright: ignore[reportPrivateUsage]
+
+    def record(self: Agent, turn: _Turn, schemas: int) -> None:
+        counted.append(schemas)
+        made_room(self, turn, schemas)
+
+    monkeypatch.setattr(Agent, "_make_room", record)
+    model = _Model([_call(("use_tools", {"groups": ["web"]})), _say("It is ready.")])
+    agent, _, registry = _routed_agent(model, [])
+
+    assert agent.context_use().fixed == tokens("system") + tokens(
+        json.dumps(registry.tool_schemas())
+    )
+    agent.handle("look it up", NO_CONFIRM)
+
+    assert counted == [
+        tokens(json.dumps(registry.tool_schemas(()))),
+        tokens(json.dumps(registry.tool_schemas(("web",)))),
+    ]
+    assert counted[0] < counted[1] < agent.context_use().fixed
+
+
+def test_a_class_for_use_tools_is_not_an_unknown_name_in_all_mode() -> None:
+    config = Config().model_copy(
+        update={
+            "boundaries": Config().boundaries.model_copy(update={"classes": {"use_tools": "safe"}})
+        }
+    )
+
+    assert unknown_overrides(config, []) == []

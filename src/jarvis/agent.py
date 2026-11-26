@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from jarvis import shortcuts
 from jarvis.config import EFFORTS, MemoryDetail, ToolMode
@@ -970,6 +970,7 @@ class _Turn:
     thinking: Thinking | None = None  # how the next model call thinks; the model may raise it
     loaded: tuple[str, ...] = ()  # tool groups the model asked for (`use_tools`), in that order
     offered: tuple[str, ...] = ()  # ... of which the last model call was offered the tools
+    plain: bool = False  # a plain command runs (`_shortcut`): the owner's own words, no model call
     switch: str = ""  # the mode this request was moved to (`switch_model`): it is answered again
 
 
@@ -1638,7 +1639,11 @@ class Agent:
             "function": {"name": hit.operation, "arguments": json.dumps(hit.arguments)},
         }
         turn.messages.append({"role": "assistant", "content": "", "tool_calls": [call]})
-        (result,) = self._run_calls([call], hooks, turn)
+        turn.plain = True  # matched in code from the owner's words: no group has to be asked for
+        try:
+            (result,) = self._run_calls([call], hooks, turn)
+        finally:
+            turn.plain = False
         return result.spoken or None
 
     def _converse(self, hooks: Hooks, turn: _Turn) -> str:
@@ -1699,14 +1704,16 @@ class Agent:
         After a repeated call, and on the last step, the model may only answer: it is made to call
         `no_action`, whose `reply` is the answer, with the tool list kept so the server reuses the
         prompt it pinned (dropping the tools changes the prompt and costs seconds to read it
-        again). Any other call it returns then is not run. Where `no_action` is refused, it is
-        offered no tools instead.
+        again). That list is the one an ordinary call would have at this point: every tool, or
+        routed the core and the groups loaded so far, which may be more than the call before it
+        had when that call was `use_tools`. Any other call it returns then is not run. Where
+        `no_action` is refused, it is offered no tools instead.
         """
         only_answer = turn.stuck or turn.last
         forced = only_answer and self._reply_allowed()
         turn.offered = turn.loaded
         tools = [] if only_answer and not forced else self._offered(turn.loaded)
-        self._make_room(turn)
+        self._make_room(turn, tokens(json.dumps(tools)) if self._routed else self._schemas)
         stream = turn.stream = self._stream(turn, hooks)
         began = self._clock()
         try:
@@ -1879,14 +1886,16 @@ class Agent:
                 return f"{note}: the first part as usual, then each next one with {key} append."
         return f"{note}."
 
-    def _make_room(self, turn: _Turn) -> None:
+    def _make_room(self, turn: _Turn, schemas: int) -> None:
         """Clear the oldest tool results of this request until the next call fits the window.
 
-        Each keeps its start, so the model still sees what it was.
+        Each keeps its start, so the model still sees what it was. `schemas` is what the tool
+        definitions of this call take: routed, only those it is offered now (the remembered
+        conversation's own budget still counts them all, for the request that loads every group).
         """
         limit = self._limits.context_tokens - CONTEXT_MARGIN - self._limits.answer_tokens
         messages = turn.messages
-        used = self._schemas + sum(_cost(m) for m in messages)  # the messages hold the prompt
+        used = schemas + sum(_cost(m) for m in messages)  # the messages hold the prompt
         for message in messages[turn.first :]:
             if used <= limit:
                 return
@@ -2019,12 +2028,15 @@ class Agent:
         """
         name = str(obj(call.get("function")).get("name", ""))
         op = self._registry.get(name)
-        going_on = op is not None and name in _WAYS_TO_GO_ON
+        # A call refused as not offered did nothing and is no action tried: the model may still
+        # ask for the group and call it, or switch modes.
+        refused = op is not None and self._unoffered(op, turn)
+        going_on = op is not None and (name in _WAYS_TO_GO_ON or refused)
         if going_on:
             # How hard to think, and in which mode, is not an action: the request still needs
             # its own tools.
             result = self._think_harder(turn, result) if name == THINK_HARDER else result
-            result = self._load_groups(turn, result) if name == USE_TOOLS else result
+            result = self._load_groups(turn, result, call) if name == USE_TOOLS else result
         else:
             turn.actions.append(f"{name if op is not None else _UNKNOWN} -> {_outcome(result)}")
         if op is not None and not op.side_effect and result.ok and name not in _NOT_LOOK_UPS:
@@ -2134,7 +2146,7 @@ class Agent:
             "out again, then call the tools it needs or answer."
         )
 
-    def _load_groups(self, turn: _Turn, result: Result) -> Result:
+    def _load_groups(self, turn: _Turn, result: Result, call: dict[str, Any]) -> Result:
         """Offer the tool groups a `use_tools` call asked for from the next model call on.
 
         `result` is what the call returned: a refused or rejected call is reported as it is. A
@@ -2142,7 +2154,12 @@ class Agent:
         The model is told the names of the tools it got, as it has not seen their definitions.
         """
         if result is _REPEATED:
-            return Result("Those tools are already offered; go on with the request.")
+            # The same call again: told so only when what it asks for is offered; one the owner
+            # declined stays a repeat, which is how every repeated call is treated.
+            asked = self._asked_groups(call)
+            if asked and set(asked) <= set(turn.loaded):
+                return Result("Those tools are already offered; go on with the request.")
+            return result
         if not result.groups:
             return result
         have = {group.name: group for group in self._registry.groups()}
@@ -2164,17 +2181,36 @@ class Agent:
             )
         return Result(" ".join(part for part in parts if part), ok=bool(fresh or new))
 
+    def _asked_groups(self, call: dict[str, Any]) -> list[str]:
+        """Return the groups a `use_tools` call names, as far as its arguments can be read."""
+        try:
+            args = self._arguments(obj(call.get("function")))
+        except ValueError, TypeError, RecursionError:
+            return []
+        groups: object = obj(args).get("groups")
+        if not isinstance(groups, list):
+            return []
+        return [g for g in cast("list[object]", groups) if isinstance(g, str)]
+
+    def _unoffered(self, op: Operation, turn: _Turn) -> bool:
+        """Whether `op` is a tool the model was not offered in its last call (routed only).
+
+        A tool runs when its group is core or was loaded before the model call that wrote the
+        call. A plain command matched in code (`_shortcut`) is the owner's own and never refused.
+        """
+        if not self._routed or turn.plain:
+            return False
+        group = group_name(op.name)
+        return group != CORE_NAME and group not in turn.offered
+
     def _not_offered(self, op: Operation, turn: _Turn) -> Result | None:
         """Return what to tell the model for a call to a tool it was not offered, else None.
 
-        Routed, a tool runs only when its group is core or was asked for before the model call
-        that wrote this call. Otherwise it is not run, and the model is told how to get it.
+        Such a call is not run, and the model is told how to get the tool.
         """
-        if not self._routed:
+        if not self._unoffered(op, turn):
             return None
         group = group_name(op.name)
-        if group == CORE_NAME or group in turn.offered:
-            return None
         self._audit.record("tool_not_offered", op=op.name, group=group or "none")
         if group is None:
             return Result("Error: there is no operation with that name.", ok=False)

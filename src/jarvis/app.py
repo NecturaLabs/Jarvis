@@ -56,7 +56,7 @@ from jarvis.web.page import PageReader
 from jarvis.web.searxng import Searxng
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Collection, Sequence
 
     from jarvis.config import ChatConfig, Config
     from jarvis.model import ModelStatus
@@ -623,6 +623,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     coding: bool = False,
     listening: Listening | None = None,
     browsers: dict[str, browser.Browser] | None = None,
+    off: Collection[str] = (),
 ) -> Registry:
     """Return every operation a channel's agent is offered, sized to its limits.
 
@@ -633,6 +634,8 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     offered: into coding mode, or with `coding` (the registry of coding mode) back out of it. With
     `audio.listen_to_pc` on, the voice channel also has `pc_audio_listen`, which hears through
     `listening` (the voice service's; without it, as in `jarvis ask`, it refuses every listen).
+    Operations named in `off` are left out before anything is derived from the rest, so a routed
+    agent's `use_tools` offers, and its toolbox lists, only groups that still have a tool.
     """
     room = limits.tool_text_chars - PAGE_HEADROOM
     pages = room if channel == "chat" else min(config.research.page_chars, room)
@@ -684,7 +687,8 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
         *([switch_operation(config, coding=coding)] if switches_itself(config, channel) else []),
         no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
     ]
-    if limits.tools == "routed":  # asks for the groups this channel has, whatever is switched off
+    ops = [op for op in ops if op.name not in off]
+    if limits.tools == "routed":
         groups = [group.name for group in Registry(ops).groups()]
         ops.insert(-1, use_tools_operation(groups))
     return Registry(
@@ -700,8 +704,8 @@ def switches_itself(config: Config, channel: Channel) -> bool:
 # Operations offered only when their files or programs are installed (and the browser switched on),
 # known to `boundaries.classes` either way.
 INSTALLED_ONLY = frozenset({"read_skill", "os_skill", *browserops.NAMES})
-# ... and only while a setting turns them on (`audio.listen_to_pc`).
-SETTING_ONLY = frozenset({"pc_audio_listen", SWITCH_MODEL})
+# ... and only while a setting turns them on (`audio.listen_to_pc`, `tools = "routed"`).
+SETTING_ONLY = frozenset({"pc_audio_listen", SWITCH_MODEL, USE_TOOLS})
 # Tools whose result is a sound, and the voice-channel callers that cannot play one (`jarvis ask`
 # prints its reply): they are not offered there, so nothing is made only to be thrown away.
 MAKES_SOUND = frozenset({"sing"})
@@ -840,7 +844,8 @@ def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; 
         coding=coding,
         listening=listening,
         browsers=browsers,
-    ).without(off)
+        off=off,  # a tool switched off is not offered at all, nor counted in the router's groups
+    )
 
 
 def with_remote_metadata(config: Config, status: ModelStatus) -> Config:

@@ -45,11 +45,14 @@ Chosen option 3, as a setting: `tools = "all" | "routed"` in `[agent]` and `[cha
   then `tools_loaded`) and open to `boundaries.classes` like any other. The agent offers the named groups
   from the next call to the end of the request, always as the core tools, then the loaded groups in the
   registry's order, whatever order they were asked for in, so calls with the same groups share their whole
-  start. The forced last call keeps the tools the call before it had. A new request starts with the core
+  start. The call that may only answer (after a repeated call, or on the last step) is offered the tools an
+  ordinary call would have then, the core and the groups loaded so far, so the server keeps the prompt it pinned. A new request starts with the core
   again; the remembered conversation is unchanged.
 - **Enforcement.** A call to a tool of a group that was not offered when the call was written is not run, even
   in the same reply as the `use_tools` that asks for it. The model is told which group to ask for, and the
-  refusal is audited (`tool_not_offered`). Loading never lowers a check: a request heard from PC audio that
+  refusal is audited (`tool_not_offered`). A plain command matched in code (ADR 0004, the owner's own words, no model call) runs as in `all` mode and
+  is never refused for its group, and a refused call is no action tried: the model may still ask for the group,
+  call the tool or switch modes. Loading never lowers a check: a request heard from PC audio that
   loads `apps` still gets the same verdict for `stop_process` as before. Without `use_tools` in the registry,
   `routed` offers everything.
 - **Argument type.** The tool's `groups` is the first array argument: `validate_args` accepts a list of
@@ -67,9 +70,10 @@ live run of the same requests as the model benchmark ([models.md](../models.md))
   those that need none; and
 - no more seconds per request, prompt re-read included, for speech and for the chat.
 
-Until then `routed` is an opt-in, and the memory defaults are sized for `all`: routed keeps the same
-conservative room for the worst case, all groups loaded, so a routed chat remembers a little less by default
-(4,500 tokens of 5,700 with every optional tool on).
+Until then `routed` is an opt-in, and the memory defaults are sized for `all`: the room kept for the remembered
+conversation counts every tool definition and the toolbox, the request that loads every group, so a routed chat
+remembers a little less by default (about 4,500 tokens of 5,700 with every optional tool on). Making room
+inside a request counts only what that call is offered.
 
 ### Consequences
 
