@@ -230,7 +230,7 @@ def system_prompt(config: Config, channel: Channel = "voice", *, coding: bool = 
     style = prompts.joinpath(f"{channel}.md").read_text(encoding="utf-8")
     words = int(round(config.chat.reply_tokens * WORDS_PER_TOKEN, -1))
     fill = {
-        "skills": skills.prompt_section(skills.shipped())
+        "skills": skills.prompt_section(skills.available())
         + osskills.prompt_section(osskills.catalog()),
         "name": config.persona.name,
         "version": __version__,
@@ -465,7 +465,10 @@ def browser_ops(  # ruff: ignore[too-many-arguments] - what the browser is made 
 
 
 def files_boundary(config: Config, home: Path | None = None) -> Boundary:
-    """Return where the file operations may read and write; Jarvis's own state is never in it.
+    """Return where the file operations may read and write.
+
+    Jarvis's own state and config folders are never in it: its settings and the owner's skills
+    there steer Jarvis, so no request may rewrite them through a file operation.
 
     Jarvis's workspace is made here, mode 0700, if it is missing. One that exists but is not a
     folder of the owner's alone (a link, another user's, writable by others) is left as it is
@@ -475,7 +478,12 @@ def files_boundary(config: Config, home: Path | None = None) -> Boundary:
     problem = workspace_problem(workspace_path(config.files, base), create=True)
     if problem:
         log.warning("files.workspace %s: it is not used until that is fixed", problem)
-    return Boundary.of(config.files, base, protected=(paths.state_dir(),), workspace=not problem)
+    return Boundary.of(
+        config.files,
+        base,
+        protected=(paths.state_dir(), paths.config_dir()),
+        workspace=not problem,
+    )
 
 
 def _wpctl(args: Sequence[str]) -> str:
@@ -652,7 +660,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     web = config.model_copy(
         update={"research": config.research.model_copy(update={"page_chars": pages})}
     )
-    shipped = skills.shipped()
+    shipped = skills.available()
     guides = osskills.catalog()
     shown = chat_pictures() if channel == "chat" else None
     online = web_ops(web, shown)

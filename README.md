@@ -55,6 +55,9 @@ Jarvis is pre-1.0 software; see [Status](#status).
   screen, a workspace or one window is saved where Omarchy keeps screenshots and copied to the
   clipboard. A workspace or window that is not on screen is captured without switching to it
   (`grim` needed).
+- **Your own skills:** put instructions for a task of yours in `~/.config/jarvis/skills/<name>.md`, opening
+  with a `---` block holding a `description:` line, and Jarvis reads them when a request needs them. They
+  guide what it does and never let it do more than it otherwise could.
 - **Omarchy questions:** Jarvis answers questions about Omarchy (settings, themes, key bindings, crashes,
   building an app) from the guides Omarchy ships in `/usr/share/omarchy/default/agents/skills/`. It reads
   them as reference text and never runs a command they contain.

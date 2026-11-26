@@ -15,6 +15,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   the request; replacing a file you put there still asks. A folder that is a link, another user's or writable
   by others is not used and `jarvis doctor` says why. See [ADR 0025](docs/adr/0025-workspace-folder.md).
 
+- Your own skills: Markdown files in `~/.config/jarvis/skills/` are listed in the prompt and read with
+  `read_skill` like the shipped ones. A file is read only when it and its folder are yours alone, it is no
+  link, and it fits the size limits. `jarvis doctor` names any file it left out. Jarvis's file operations
+  never read or write its config folder. Jarvis never uses your coding agents' setup ([ADR 0024](docs/adr/0024-owner-skills.md)).
 - Serve the model from another machine you own with `jarvis setup --backend` and
   `jarvis setup --remote`. The client keeps speech, tools and policy on the PC it controls.
   The default remains all-local. Remote `doctor` and `status` show the model and connection

@@ -10,6 +10,7 @@ Every setting lives in one TOML file, validated when Jarvis reads it. This page 
 | Config file | `~/.config/jarvis/config.toml` (`$XDG_CONFIG_HOME/jarvis/`) | `jarvis setup`, `jarvis pc-audio`, or by hand |
 | Strata profile (generated) | `~/.config/jarvis/strata-profile.json` | `jarvis setup` |
 | Jarvis's own Voxtype settings (generated) | `~/.config/jarvis/voxtype.toml`, and `voxtype-speech-test.toml` for `jarvis speech-test` | `jarvis run`, at each start; `jarvis speech-test` |
+| Your own skills | `~/.config/jarvis/skills/<name>.md`, the folder and files yours alone ([ADR 0024](adr/0024-owner-skills.md)) | you, by hand; read at the next `jarvis restart` or chat window |
 | User units | `~/.config/systemd/user/jarvis.service` and `jarvis-strata.service` | `jarvis setup`, `jarvis update` |
 | Strata API key, Spotify tokens, audit log, action count, reminders and scheduled requests, Strata log | `~/.local/state/jarvis/` (`$XDG_STATE_HOME/jarvis/`): `strata.env`, `spotify-token.json`, `audit.jsonl` (and five older `audit.jsonl.1` to `.5`), `actions.json`, `schedule.json` (and its `schedule.json.lock`), `strata.log` | Jarvis; the key, token, log, count and jobs files are mode 0600 |
 | Jarvis's workspace: what it makes without a path, exported chats | `~/Documents/Jarvis` (`files.workspace`), mode 0700; its `workspace-files.json` list of files Jarvis made is in the state folder | Jarvis makes it (when it starts, at `jarvis setup`); you may use it too |
@@ -721,8 +722,8 @@ than `idle_close_s`) does nothing; ask again and Jarvis opens the page anew.
 A relative path (`notes.md`, `drafts/a.md`) means the workspace: `write_file` always writes it there, and
 `list_dir` and `read_file` look there first and under home if nothing of that name is in the workspace.
 
-Whatever the roots say, Jarvis never reads or writes keys, tokens, password stores, browser profiles
-and its own state: `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.netrc`, `.env` files, `*.pem`,
+Whatever the roots say, Jarvis never reads or writes keys, tokens, password stores, browser profiles,
+its own state and its own config folder (`~/.config/jarvis`, with your skills): `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.netrc`, `.env` files, `*.pem`,
 `*.key`, `id_rsa*` and the like, any name with `secret`, `password` or `credential` in it, shell
 history files and cookie stores, `~/.config/gh`, keyrings and browser profiles (the full lists are `SECRET_NAMES` and `SECRET_PATHS`
 in `src/jarvis/pc/files.py`). Paths are resolved through links first, so a link cannot lead out of a
