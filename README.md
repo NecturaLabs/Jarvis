@@ -69,7 +69,7 @@ Jarvis is pre-1.0 software; see [Status](#status).
   reads their top comments from the Arctic Shift archive. Start the search container once as
   [`[research]`](docs/configuration.md) says. What these send, and to whom, is in
   [docs/privacy.md](docs/privacy.md).
-- **Browser:** with [agent-browser](https://github.com/vercel-labs/agent-browser) installed, the chat opens
+- **Browser:** through [agent-browser](https://github.com/vercel-labs/agent-browser), which the installer requires, the chat opens
   pages that need a real browser (built by scripts, or used through a search box), reads them and shows you a
   picture of one. It runs headless with its own throwaway profile, reaches only public addresses, and asks
   before it clicks or types anything ([`[browser]`](docs/configuration.md#browser-the-headless-browser)).
@@ -88,8 +88,8 @@ as planned.
 
 ## Install
 
-Use an Omarchy desktop session on Arch Linux with PipeWire, WirePlumber, Voxtype, Git, uv and
-system Python 3.14. Prepare the two models the installer leaves to their own tools:
+Use an Omarchy desktop session on Arch Linux with PipeWire, WirePlumber, Voxtype, Git, uv,
+system Python 3.14 and [agent-browser](https://github.com/vercel-labs/agent-browser) (`yay -S agent-browser`). Prepare the two models the installer leaves to their own tools:
 
 1. Run `voxtype setup model` and download Whisper `small.en`, the default speech model.
 2. Install [Strata](https://github.com/niko1221/strata), run `strata launch`, and choose a model your
@@ -102,8 +102,9 @@ curl -fsSL https://raw.githubusercontent.com/NecturaLabs/Jarvis/main/install.sh 
 
 The installer checks the required commands and prints how to install any that are missing. It clones
 the `main` release branch, syncs the locked Python environment, and runs `jarvis setup`,
-`uv run tools/get_models.py` and checks the installation with `jarvis doctor`. The tool downloads and checks the SHA-256 of the default
-wake word, Silero VAD and Kokoro files (about 347 MiB combined).
+`uv run tools/get_models.py`, has agent-browser download its Chrome when it has none (`agent-browser
+install`, into your home folder), and checks the installation with `jarvis doctor`. The tool downloads and
+checks the SHA-256 of the default wake word, Silero VAD and Kokoro files (about 347 MiB combined).
 
 The default checkout is `${XDG_STATE_HOME:-$HOME/.local/state}/jarvis/checkout`. Set
 `JARVIS_INSTALL_DIR` or pass `--install-dir PATH` to choose another disk or use a clean existing checkout

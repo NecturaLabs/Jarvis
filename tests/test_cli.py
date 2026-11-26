@@ -2194,13 +2194,25 @@ def test_doctor_notes_a_missing_media_player_tool_without_failing(
     assert "pacman -S playerctl" in line
 
 
-def test_doctor_notes_a_missing_browser_without_failing(
+def test_doctor_fails_a_missing_browser(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # The browser is part of Jarvis: with it switched on (the chat's default), it must be there.
     _doctor_config(home / "models")
     lines = _doctor_with_tools(monkeypatch, capsys, {"agent-browser"})
     (line,) = [line for line in lines if "agent-browser" in line]
-    assert line.startswith("note tool agent-browser missing")
+    assert line.startswith("FAIL tool agent-browser")
+    assert "install.sh" in line or "README" in line
+
+
+def test_doctor_says_nothing_of_the_browser_when_it_is_switched_off(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _doctor_config(home / "models")
+    cfg = config.load()
+    config.save(cfg.model_copy(update={"chat": cfg.chat.model_copy(update={"browser": False})}))
+    lines = _doctor_with_tools(monkeypatch, capsys, {"agent-browser"})
+    assert not [line for line in lines if "agent-browser" in line]
 
 
 def _doctor_with_agent_browser(
@@ -2221,15 +2233,16 @@ def _doctor_with_agent_browser(
     return [line for line in _doctor_lines(capsys) if "agent-browser" in line]
 
 
-def test_doctor_notes_agent_browser_without_a_chrome_to_drive(
+def test_doctor_fails_agent_browser_without_a_chrome_to_drive(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _doctor_config(home / "models")
 
-    (line,) = _doctor_with_agent_browser(monkeypatch, capsys)
+    found, chrome = _doctor_with_agent_browser(monkeypatch, capsys)
 
-    assert line.startswith("note ")
-    assert "agent-browser install" in line
+    assert found.startswith("ok   tool agent-browser")
+    assert chrome.startswith("FAIL Chrome for agent-browser")
+    assert "agent-browser install" in chrome
 
 
 @pytest.mark.parametrize(
@@ -2241,14 +2254,17 @@ def test_doctor_notes_agent_browser_without_a_chrome_to_drive(
         ".cache/ms-playwright/chromium-1200/chrome-linux/chrome",
     ],
 )
-def test_doctor_says_nothing_of_agent_browser_with_its_chrome(
+def test_doctor_passes_agent_browser_with_its_chrome(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], chrome: str
 ) -> None:
     _doctor_config(home / "models")
     (home / chrome).parent.mkdir(parents=True)
     (home / chrome).write_bytes(b"")
 
-    assert _doctor_with_agent_browser(monkeypatch, capsys) == []
+    lines = _doctor_with_agent_browser(monkeypatch, capsys)
+
+    assert len(lines) == 2
+    assert all(line.startswith("ok ") for line in lines)
 
 
 @pytest.mark.parametrize(

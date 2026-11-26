@@ -16,6 +16,12 @@ Python with the uv lockfile, verifies the model assets it downloads by size and 
 for a Strata run config only if it cannot reuse or find one. Omarchy packages, Strata and Voxtype
 models follow their own setup procedures. Starting user services requires an explicit flag.
 
+The headless browser is part of Jarvis, not an option (the owner's decision): the installer stops
+without agent-browser, printing how to get it, and has it download its own Chrome into the home
+folder (`agent-browser install`, never `--with-deps`, which needs root). While the browser is
+switched on, `jarvis doctor` fails a missing agent-browser or Chrome, so an update to a release that
+needs it rolls back on a PC without it.
+
 Follow `main` by default. A checkout on a different release branch can select it in `[update]`.
 Fetch only that branch from the checkout's configured upstream and require a clean fast-forward.
 The daily user timer is opt-in. A process lock serializes update attempts. An apply holds the

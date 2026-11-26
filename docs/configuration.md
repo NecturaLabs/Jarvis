@@ -607,8 +607,9 @@ For pages `web_read` can't read (built by scripts) or that must be used (a searc
 drives a real Chrome through [agent-browser](https://github.com/vercel-labs/agent-browser) (Apache-2.0),
 when the `agent-browser` program is on `PATH` and has its browser (`agent-browser install`). `chat.browser`
 offers its tools in the chat (on by default) and `agent.browser` to speech and `jarvis ask` (off by
-default). Without the program they are not offered, and `jarvis doctor` notes it, as it notes a program
-with no Chrome to drive. The tools:
+default). The installer requires the program and has it download its Chrome; while either setting is on,
+`jarvis doctor` fails when the program or its Chrome is missing (without the program the tools are not
+offered). The tools:
 
 - `browser_open` opens an address a search in the conversation returned or you wrote (the same rule as
   `web_read`), follows a link the open page shows, or reads on in the page. It asks nothing.

@@ -15,6 +15,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - Preview and apply release updates with `jarvis update`. It fast-forwards a clean checkout, defers
   while the voice service is busy and restores the previous version if validation or startup fails. A daily
   user timer is available with `jarvis update --auto on` ([ADR 0019](docs/adr/0019-install-and-update.md)).
+- The headless browser is required: the installer stops without agent-browser and has it download its
+  Chrome, and `jarvis doctor` fails a missing agent-browser or Chrome while the browser is switched on.
 - Set up Jarvis without Spotify. Tools and background Spotify refresh stay off until a client ID is set.
 
 - A headless browser for pages `web_read` can't read or that must be used (a search box, a button), through

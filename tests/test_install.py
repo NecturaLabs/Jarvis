@@ -46,7 +46,10 @@ case $name:$1 in
       touch "$XDG_CONFIG_HOME/jarvis/config.toml"
     fi
     ;;
-  uv:run) ;;
+  uv:run)
+    if [[ $* == *chrome_found* ]]; then [[ -f "$INSTALL_CALLS.chrome" ]]; fi
+    ;;
+  agent-browser:install) ;;
   jarvis:doctor|jarvis:update) ;;
   sudo:*|pacman:*|curl:*) exit 91 ;;
   *) exit 90 ;;
@@ -64,7 +67,7 @@ def install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Install:
     stub = folder / "stub"
     stub.write_text(_STUB, encoding="utf-8")
     stub.chmod(0o755)
-    for name in ("git", "uv", "systemctl", "jarvis", "sudo", "pacman", "curl"):
+    for name in ("git", "uv", "systemctl", "jarvis", "sudo", "pacman", "curl", "agent-browser"):
         (folder / name).symlink_to(stub)
     for name in (
         "python3.14",
@@ -142,6 +145,33 @@ def test_missing_prerequisite_prints_command_and_never_runs_sudo(
     assert "pw-play" in done.stderr
     assert "sudo pacman -S pipewire" in done.stderr
     assert not (tmp_path / "calls").exists()
+
+
+def test_a_missing_browser_stops_the_install_with_how_to_get_it(
+    tmp_path: Path, install: Install
+) -> None:
+    (tmp_path / "bin" / "agent-browser").unlink()
+    done = install("--non-interactive")
+    assert done.returncode != 0
+    assert "agent-browser" in done.stderr
+    assert not (tmp_path / "calls").exists()
+
+
+def test_the_browser_gets_its_chrome_when_it_has_none(tmp_path: Path, install: Install) -> None:
+    run = _strata_config()
+    done = install("--non-interactive", "--run-config", str(run))
+    assert done.returncode == 0, done.stderr
+    calls = (tmp_path / "calls").read_text(encoding="utf-8")
+    assert calls.index("agent-browser install") < calls.index("jarvis doctor")
+    assert "--with-deps" not in calls  # that one runs sudo
+
+
+def test_a_browser_with_its_chrome_is_left_as_it_is(tmp_path: Path, install: Install) -> None:
+    run = _strata_config()
+    (tmp_path / "calls.chrome").touch()
+    done = install("--non-interactive", "--run-config", str(run))
+    assert done.returncode == 0, done.stderr
+    assert "agent-browser install" not in (tmp_path / "calls").read_text(encoding="utf-8")
 
 
 def test_pipe_without_tty_explains_missing_answer(tmp_path: Path, install: Install) -> None:

@@ -86,6 +86,7 @@ main() {
   local components=${JARVIS_STRATA_COMPONENTS_PARENT:-} reserve=${JARVIS_STRATA_VRAM_RESERVE_MIB:-}
   local models=${JARVIS_DATA_DIR:-} mic=${JARVIS_MIC:-} spotify=${JARVIS_SPOTIFY_CLIENT_ID:-}
   local enable=${JARVIS_ENABLE:-0} interactive=1 dry=${JARVIS_DRY_RUN:-0}
+  local chrome_found='from pathlib import Path; from jarvis.web import browser; raise SystemExit(not browser.chrome_found(Path.home()))'
   [[ ${JARVIS_NON_INTERACTIVE:-0} != 1 ]] || interactive=0
   while (($#)); do
     case $1 in
@@ -138,6 +139,7 @@ main() {
   need pw-play 'Run: sudo pacman -S pipewire'
   need pw-dump 'Run: sudo pacman -S pipewire'
   need wpctl 'Run: sudo pacman -S wireplumber'
+  need agent-browser 'Run: yay -S agent-browser (AUR), or install it as https://github.com/vercel-labs/agent-browser says'
   ((missing == 0)) || [[ ${dry} == 1 ]] || exit 1
   if [[ ${dry} != 1 ]]; then
     git check-ref-format "refs/heads/${branch}" || die 'invalid branch name.'
@@ -220,6 +222,10 @@ main() {
   fi
   run "${jarvis}" "${setup[@]}"
   run uv run --no-sync tools/get_models.py
+  # The headless browser drives a Chrome of its own, downloaded once into the home folder (no sudo).
+  if [[ ${dry} == 1 ]] || ! uv run --no-sync python -c "${chrome_found}"; then
+    run agent-browser install
+  fi
   run "${jarvis}" doctor --no-service --essential
   if [[ ${enable} == 1 ]]; then
     run "${jarvis}" setup --enable
