@@ -37,6 +37,15 @@ Chosen option: 3.
   `pc_watches` lists, `pc_watch_stop` stops one or all. A window is bound the way the window tools bind it: a
   number from the request's latest `pc_windows` that the model has read, checked again against Hyprland, never
   a guess. No phrasing or keyword is shipped for any of the three.
+- **Said on a change.** A YES is said only when the check before it was a NO (or it is the first): a
+  line that stays on screen is said once, and again only after it went away and came back. The
+  cool-down still spaces lines out.
+- **Process watches.** The owner also asked to hear when a program freezes or is killed. `of=process`
+  watches a PID `find_processes` listed (bound by its start time) and reads only `/proc/<pid>/stat`: no
+  picture and no model call. It says once when the program exits (Jarvis cannot tell closed,
+  crashed and killed apart for a program it did not start), is stopped, or waits on a disk or device for
+  30 s without a break, and when it runs again. Hyprland gives no "not responding" flag a watch could
+  read, so a program that is alive but no longer drawing is not detected.
 - **The policy class.** All three are `safe`: a watch only reads pixels and speaks, like `pc_screenshot`.
   `pc_watch` is still an action (`side_effect=True`), so outside text in the request raises it to `confirm`.
   It is refused for a request heard in PC audio and for a scheduled one, as `pc_audio_listen` is (the owner's
@@ -61,10 +70,10 @@ Chosen option: 3.
   still idle (a wake word, speech or a request makes it not): if not, it is dropped, not counted as a failure,
   and its answer is not said. A model call cannot be taken back, so a request that begins during one still
   waits for it, at most 15 seconds.
-- **What is said.** On a YES Jarvis says a fixed line built from the condition ("Heads up: <condition>."), never
+- **What is said.** On a YES Jarvis says a fixed line built from the condition ("Heads up: <condition>."), or
+  from the model's own `say` line (at most 60 characters, written with the watch, in the owner's request), never
   words read off the screen, so what the screen shows cannot put words in Jarvis's mouth. After one it stays
-  quiet for the longer of 60 seconds and three checks, so a thing that stays on screen is said once, then again
-  while it is still there; during that quiet time no picture is taken and no model call is made (a closed window
+  quiet for the longer of 60 seconds and three checks, which spaces lines out; during that quiet time no picture is taken and no model call is made (a closed window
   and the end time are still noticed). With `repeat` off the watch ends after its first line. A watched window that closes
   ends its watch, said once; three checks in a row that fail (no picture, no answer) end it too, said once.
 - **Where it runs.** In the voice service's process (`jarvis run`), between requests, as reminders do, on the
@@ -75,8 +84,8 @@ Chosen option: 3.
   moment. Watches are kept in memory, so they end with the service, and `jarvis ask` and the chat do not offer
   them. A schedule-style file would let the chat set one for a service that then runs it; it was not worth the
   second writer on a state file for a feature that is meant for a session at the PC.
-- **The cost, said plainly.** Each check is a model call with a picture, so it uses the GPU for the length of
-  one short answer. That is the owner's request, bounded: at most every 10 seconds, at most twelve hours, at most
+- **The cost, said plainly.** Each check is a model call with a picture: the picture reader reads it (on the
+  processor, for Strata's reader) and the model gives one short answer. That is the owner's request, bounded: at most every 10 seconds, at most twelve hours, at most
   two watches, and nothing at all once none runs. The result of `pc_watch` and its description say so. The
   watch is not tested against a running game's frame time, and nobody has yet measured live how many tokens
   the server reads from its cache across request, check and request again (the pinned prompt should be shared;

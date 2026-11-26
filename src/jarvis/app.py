@@ -526,7 +526,7 @@ def pc_operations(
         *VolumeOps(_wpctl).operations(),
         *MediaOps(_playerctl).operations(),
         *FileOps(boundary, max_chars=limits.tool_text_chars).operations(),
-        *ProcessOps().operations(),
+        *(ProcessOps() if watching is None else watching.processes).operations(),
         *windows.operations(),
         *ScreenshotOps(
             windows, save_folder(home or Path.home(), os.environ), shown_pictures=shown
@@ -877,7 +877,7 @@ def _screen_watch(audit: AuditLog) -> ScreenWatch:
     """Return the voice service's screen watches, over the window tools and the screen capture."""
     windows = WindowOps()
     shots = ScreenshotOps(windows, save_folder(Path.home(), os.environ))
-    return ScreenWatch(windows, shots, audit=audit)
+    return ScreenWatch(windows, shots, ProcessOps(), audit=audit)
 
 
 def build(

@@ -14,7 +14,7 @@ from jarvis.agent import PICTURES_OFF
 from jarvis.audit import AuditLog
 from jarvis.operations import ArgumentError, OperationError, Result, request_scope, validate_args
 from jarvis.pc.screenshot import ScreenshotOps
-from jarvis.pc.watch import MAX_WATCHES, NEEDS_PICTURES, ScreenWatch
+from jarvis.pc.watch import MAX_SAY, MAX_WATCHES, NEEDS_PICTURES, ScreenWatch
 from jarvis.pc.windows import WindowOps
 
 if TYPE_CHECKING:
@@ -103,7 +103,7 @@ def test_a_watch_on_a_listed_window_starts_and_says_what_it_costs(rig: Rig) -> N
     assert "the kitty window" in result.text
     assert "the build finished" in result.text
     assert "20 s" in result.text
-    assert "GPU" in result.text
+    assert "model call with a picture" in result.text
     assert rig.events() == ["watch_started"]
     assert rig.desktop.ran == []
 
@@ -209,7 +209,7 @@ def test_checks_come_at_the_set_pace(rig: Rig) -> None:
 
 def test_after_a_yes_it_stays_quiet_for_the_cool_down_then_says_it_again(rig: Rig) -> None:
     _listed_start(rig, every_s=20)  # the cool-down is the longer of 60 s and three checks
-    rig.judge.answers = [True, True, True, True]
+    rig.judge.answers = [True, False, True, True]  # it went away and came back after the cool-down
 
     said = [rig.watch.check_due()]
     for _ in range(3):
@@ -219,14 +219,14 @@ def test_after_a_yes_it_stays_quiet_for_the_cool_down_then_says_it_again(rig: Ri
     said.append(rig.watch.check_due())
 
     line = ["Heads up: the build finished."]
-    assert said == [line, [], [], line, []]  # at 0 s, quiet until 60 s, again, quiet again
-    assert len(rig.judge.shown) == 2  # no picture and no model call while it is quiet
-    assert len(rig.grim.calls) == 2
+    assert said == [line, [], [], [], line]  # said at 0 s, quiet until 60 s, gone, back at 80 s
+    assert len(rig.judge.shown) == 3  # no picture and no model call while it is quiet
+    assert len(rig.grim.calls) == 3
 
 
 def test_the_cool_down_is_three_checks_when_they_are_far_apart(rig: Rig) -> None:
     _listed_start(rig, every_s=100)
-    rig.judge.answers = [True, True, True]
+    rig.judge.answers = [True, False, True]  # gone at the second look, back at the third
 
     first = rig.watch.check_due()
     rig.clock.now += 100
@@ -234,7 +234,8 @@ def test_the_cool_down_is_three_checks_when_they_are_far_apart(rig: Rig) -> None
     rig.clock.now += 200  # 300 s after the first: three checks of 100 s
     third = rig.watch.check_due()
 
-    assert (len(first), len(second), len(third)) == (1, 0, 1)
+    assert (len(first), len(second), len(third)) == (1, 0, 0)
+    assert len(rig.judge.shown) == 2  # the second check fell in the cool-down: no look at all
 
 
 def test_a_watch_that_does_not_repeat_ends_after_its_first_yes(rig: Rig) -> None:
@@ -384,7 +385,7 @@ def test_the_operations_are_safe_and_the_listing_is_a_pure_read(rig: Rig) -> Non
     }
     assert ops["pc_watches"].side_effect is False
     assert all(not op.shortcuts for op in ops.values())
-    assert "GPU" in ops["pc_watch"].description
+    assert "model call with a picture" in ops["pc_watch"].description
 
 
 def test_a_cool_down_still_ends_a_watch_whose_window_closed_or_time_ran_out(rig: Rig) -> None:
@@ -492,3 +493,29 @@ def test_a_scheduled_request_sets_no_watch(rig: Rig) -> None:
 
 def test_the_watches_time_is_the_wall_clock_that_runs_through_a_suspend() -> None:
     assert (ScreenWatch.__init__.__kwdefaults__ or {})["clock"] is time.time
+
+
+def test_a_condition_that_stays_on_screen_is_said_once_and_again_after_it_goes(rig: Rig) -> None:
+    _listed_start(rig)
+    rig.judge.answers = [True, True, True, True, False, True]
+    said: list[str] = []
+    for _ in range(6):
+        rig.clock.now += 120  # past every cool-down: only the change from no to yes speaks
+        said += rig.watch.check_due()
+
+    assert said == ["Heads up: the build finished.", "Heads up: the build finished."]
+
+
+def test_a_watch_with_its_own_line_says_that_line_and_still_judges_the_condition(rig: Rig) -> None:
+    result = _listed_start(rig, say="the build is done.")
+    rig.judge.answers = [True]
+
+    assert '"Heads up: the build is done."' in result.text
+    assert rig.watch.check_due() == ["Heads up: the build is done."]
+    assert rig.judge.shown == [(1024, "the build finished")]  # the model is asked the condition
+    assert rig.audit.events[0]["say"] == "the build is done"
+
+
+def test_the_spoken_line_is_short_by_schema(rig: Rig) -> None:
+    with pytest.raises(ArgumentError):
+        _listed_start(rig, say="x" * (MAX_SAY + 1))

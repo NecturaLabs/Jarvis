@@ -7,14 +7,15 @@ the voice service is idle it takes a picture now and then (the same capture as `
 about it: no conversation, nothing run, the picture marked as outside data, an answer of YES or NO
 (`Judge.glance`; the tools are sent only so the server keeps its pinned prompt, and no call is ever
 run). Anything but a leading YES is a no. On a YES Jarvis says a fixed line built from the
-condition, never words read off the screen.
+condition (or the model's own short `say` line, written when the watch began), never words read off
+the screen, and only when the condition starts to show: a line that stays up is said once.
 
-Each check uses the GPU, so a watch is bounded: it checks at most every 10 seconds, ends after
-`for_min` minutes (at most 12 hours), and at most two run at once. A watch lives in the voice
-service's process (`jarvis run`) and ends with it; the other channels do not offer it. Checks are
-made only between requests, never while Jarvis speaks or is paused, and a check is dropped when a
-request begins (`voice.py` decides when). Times are the wall clock, which runs on through a
-suspend: a watch whose time passed while the PC slept ends at the first look after it.
+Each check is a model call with a picture, so a watch is bounded: it checks at most every 10
+seconds, ends after `for_min` minutes (at most 12 hours), and at most two run at once. A watch lives
+in the voice service's process (`jarvis run`) and ends with it; the other channels do not offer it.
+Checks are made only between requests, never while Jarvis speaks or is paused, and a check is
+dropped when a request begins (`voice.py` decides when). Times are the wall clock, which runs on
+through a suspend: a watch whose time passed while the PC slept ends at the first look after it.
 """
 
 import threading
@@ -25,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from jarvis.agent import PICTURES_OFF
 from jarvis.operations import Operation, OperationError, Result, current_request
 from jarvis.pc.apps import BACKGROUND, SPECIAL, WORKSPACES
+from jarvis.pc.processes import ProcessOps
 from jarvis.pc.windows import MAX_LISTED, Win, WindowOps, printable, where
 from jarvis.pictures import SHOWN_SIDE, PictureError, prepare
 from jarvis.policy import Origin
@@ -46,8 +48,13 @@ COOL_DOWN_MIN_S = (
 )
 COOL_DOWN_CHECKS = 3
 MAX_CONDITION = 120
+MAX_SAY = 60  # the spoken line the model may give instead of the condition
 FAILURES_END = 3  # checks that fail one after another end a watch
-KINDS = ("window", "workspace", "screen")
+KINDS = ("window", "workspace", "screen", "process")
+MAX_PROCESS_WATCHES = 4  # read from /proc: no picture, no model call
+STUCK_S = 30.0  # waiting on a disk or device this long, without a break, is stuck
+_STOPPED = frozenset({"T", "t"})  # stopped by a signal, or held by a debugger
+_ENDED = frozenset({"Z", "X", "x"})  # exited; a zombie only waits for its parent
 NEEDS_PICTURES = f"I can't watch the screen. {PICTURES_OFF}"
 NOT_HERE = "A watch runs only in the voice service, so it can't be set from here."
 
@@ -85,6 +92,13 @@ class Watch:
     failures: int = 0
     announced: int = 0
     active: bool = True
+    pid: int = 0  # a process watch's process: its PID, program and start time
+    program: str = ""
+    started: int = 0
+    trouble: str = ""  # what was last said about it: "", "stopped" or "stuck"
+    waiting_since: float = 0.0  # when it began waiting on a disk or device (0: it is not)
+    showing: bool = False  # the last check saw the condition: the next YES is not new
+    say: str = ""  # the model's own short line for a YES; empty says the condition
 
     def of(self) -> str:
         """Return what it looks at, in words."""
@@ -92,7 +106,33 @@ class Watch:
             return f"the {self.window.app} window"
         if self.kind == "workspace":
             return f"the windows {where(self.workspace)}"
+        if self.kind == "process":
+            return f"{self.program} (PID {self.pid})"
         return "the screen"
+
+
+def _over(watch: Watch) -> str:
+    """Return what Jarvis says when a watch's time is up."""
+    if watch.kind == "process":
+        return f"My watch on {watch.of()} is over."
+    return f"My watch for {watch.condition} is over."
+
+
+def _heads_up(watch: Watch) -> str:
+    """Return the line said when a screen watch's condition starts to show."""
+    return f"Heads up: {watch.say or watch.condition}."
+
+
+def _owner_only() -> None:
+    """Refuse unless the owner's own request is being handled (not PC audio, not a job).
+
+    Raises:
+        OperationError: it is not.
+    """
+    request = current_request()
+    if request is None or request.foreign or request.scheduled:
+        msg = "a watch is set only on the owner's own request, never from PC audio or a job"
+        raise OperationError(msg)
 
 
 def _condition(text: str) -> str:
@@ -118,6 +158,7 @@ class ScreenWatch:
         self,
         windows: WindowOps,
         shots: ScreenshotOps,
+        processes: ProcessOps | None = None,
         *,
         clock: Callable[[], float] = time.time,
         audit: _Audit | None = None,
@@ -129,6 +170,7 @@ class ScreenWatch:
         super().__init__()
         self._windows = windows
         self._shots = shots
+        self._processes = ProcessOps() if processes is None else processes
         self._clock = clock
         self._audit = audit
         self._judge: Judge | None = None
@@ -139,6 +181,11 @@ class ScreenWatch:
     def windows(self) -> WindowOps:
         """The window tools the watches bind their windows through (shared with `pc_windows`)."""
         return self._windows
+
+    @property
+    def processes(self) -> ProcessOps:
+        """The process tools a process watch binds its PID through (`find_processes`'s)."""
+        return self._processes
 
     def attach(self, judge: Judge) -> None:
         """Let the model judge the pictures (it is built after the operations)."""
@@ -160,14 +207,13 @@ class ScreenWatch:
                 watches already run, or the window or workspace is not given (or not listed in
                 this request, as for the window tools).
         """
-        request = current_request()
-        if request is None or request.foreign or request.scheduled:
-            msg = "a watch is set only on the owner's own request, never from PC audio or a job"
-            raise OperationError(msg)
+        _owner_only()
+        if str(args["of"]) == "process":
+            return self._start_process(args)
         if self._judge is None or not self._judge.sees():
             raise OperationError(NEEDS_PICTURES)
         with self._lock:
-            if len(self._shared.watches) >= MAX_WATCHES:
+            if self._screens() >= MAX_WATCHES:
                 msg = "Two watches already run. Stop one first (pc_watches lists them)."
                 raise OperationError(msg)
         kind = str(args["of"])
@@ -184,14 +230,15 @@ class ScreenWatch:
                 raise OperationError(msg)
             wanted = args["workspace"]
             workspace = SPECIAL if wanted == BACKGROUND else str(wanted)
-        condition = _condition(str(args["condition"]))
+        condition = _condition(str(args.get("condition", "")))
         if not condition:
             msg = "Say what to look for."
             raise OperationError(msg)
+        say = printable(str(args.get("say", "")), MAX_SAY).rstrip(" .!?,;:")
         now = self._clock()
         every_s = float(args["every_s"])
         with self._lock:
-            if len(self._shared.watches) >= MAX_WATCHES:
+            if self._screens() >= MAX_WATCHES:
                 msg = "Two watches already run. Stop one first (pc_watches lists them)."
                 raise OperationError(msg)
             watch = Watch(
@@ -204,18 +251,71 @@ class ScreenWatch:
                 now,  # the first look is at once
                 window,
                 workspace,
+                say=say,
             )
             self._shared.free += 1
             self._shared.watches[watch.ident] = watch
         self._record(
-            "watch_started", watch, every_s=every_s, for_min=args["for_min"], repeat=watch.repeat
+            "watch_started",
+            watch,
+            every_s=every_s,
+            for_min=args["for_min"],
+            repeat=watch.repeat,
+            say=say,
         )
-        again = "each time it shows" if watch.repeat else "the first time it shows"
+        again = "each time it starts to show" if watch.repeat else "the first time it shows"
         return Result(
             f"Watching {watch.of()} for: {condition}. Checking every {every_s:g} s for "
-            f"{args['for_min']} min (each check uses the GPU); I'll say {again}. "
-            f"Stop it with pc_watch_stop (watch {watch.ident}).",
+            f"{args['for_min']} min (each check is a model call with a picture); I'll say "
+            f'"{_heads_up(watch)}" {again}. Stop it with pc_watch_stop (watch {watch.ident}).',
             Origin.PROCESS if kind == "window" else Origin.TOOL_STATUS,
+        )
+
+    def _screens(self) -> int:
+        """Return how many watches look at the screen (the lock held)."""
+        return sum(w.kind != "process" for w in self._shared.watches.values())
+
+    def _start_process(self, args: dict[str, Any]) -> Result:
+        """Start watching a process `find_processes` listed in this request.
+
+        Raises:
+            OperationError: no PID, not listed, no longer that process, already watched, or
+                `MAX_PROCESS_WATCHES` already run.
+        """
+        if args.get("pid") is None:
+            msg = "Say which process: a PID find_processes listed in this request."
+            raise OperationError(msg)
+        pid = int(args["pid"])
+        program, started = self._processes.watched(pid)
+        now = self._clock()
+        every_s = float(args["every_s"])
+        with self._lock:
+            mine = [w for w in self._shared.watches.values() if w.kind == "process"]
+            if any(w.pid == pid and w.started == started for w in mine):
+                msg = f"{program} (PID {pid}) is already watched."
+                raise OperationError(msg)
+            if len(mine) >= MAX_PROCESS_WATCHES:
+                msg = f"{MAX_PROCESS_WATCHES} process watches already run. Stop one first."
+                raise OperationError(msg)
+            watch = Watch(
+                ident=self._shared.free,
+                kind="process",
+                condition=f"{program} exits, is stopped or gets stuck",
+                every_s=every_s,
+                repeat=True,
+                ends_at=now + float(args["for_min"]) * 60,
+                next_at=now,
+                pid=pid,
+                program=program,
+                started=started,
+            )
+            self._shared.free += 1
+            self._shared.watches[watch.ident] = watch
+        self._record("watch_started", watch, every_s=every_s, for_min=args["for_min"], pid=pid)
+        return Result(
+            f"Watching {watch.of()}: I'll say if it exits, is stopped or gets stuck, checking "
+            f"every {every_s:g} s for {args['for_min']} min (watch {watch.ident}).",
+            origin=Origin.PROCESS,
         )
 
     @staticmethod
@@ -265,15 +365,19 @@ class ScreenWatch:
             Operation(
                 "pc_watch",
                 "Tell the owner by voice when something shows up in a window pc_windows listed, "
-                "a workspace or the screen. condition: what to look for, in a few words. Each "
-                "check uses the GPU; it ends after for_min.",
+                "a workspace or the screen (condition: what to look for, in a few words; say: "
+                "optional short line to speak instead of the condition; each check is a model "
+                "call with a picture), or when a process find_processes listed exits, is stopped "
+                "or gets stuck (of=process, pid; reads /proc only). It ends after for_min.",
                 {
                     "type": "object",
                     "properties": {
                         "of": {"type": "string", "enum": list(KINDS)},
                         "window": {"type": "integer", "minimum": 1, "maximum": MAX_LISTED},
+                        "pid": {"type": "integer", "minimum": 2},
                         "workspace": {"type": "string", "enum": [*WORKSPACES, BACKGROUND]},
                         "condition": {"type": "string", "minLength": 1, "maxLength": MAX_CONDITION},
+                        "say": {"type": "string", "minLength": 1, "maxLength": MAX_SAY},
                         "every_s": {
                             "type": "integer",
                             "minimum": EVERY_MIN_S,
@@ -288,7 +392,7 @@ class ScreenWatch:
                         },
                         "repeat": {"type": "boolean", "default": True},
                     },
-                    "required": ["of", "condition"],
+                    "required": ["of"],
                     "additionalProperties": False,
                 },
                 self.start,
@@ -379,8 +483,10 @@ class ScreenWatch:
         now = self._clock()
         if now >= watch.ends_at:
             self._finish(watch, "expired")
-            return f"My watch for {watch.condition} is over."
+            return _over(watch)
         watch.next_at = now + watch.every_s
+        if watch.kind == "process":
+            return self._process_check(watch, now)
         if self._gone(watch):
             self._finish(watch, "window_gone")
             return f"The window I was watching for {watch.condition} is gone, so I've stopped."
@@ -388,14 +494,44 @@ class ScreenWatch:
             return None  # said not long ago: no picture, no model call
         shown = self._look(watch, stop)
         watch.failures = 0
-        if not shown or not watch.active:
-            return None
+        was, watch.showing = watch.showing, shown
+        if not shown or was or not watch.active:
+            return None  # said only when it starts showing: a line that stays up is said once
         watch.announced += 1
         watch.quiet_until = now + max(COOL_DOWN_MIN_S, COOL_DOWN_CHECKS * watch.every_s)
         self._record("watch_announced", watch, count=watch.announced)
         if not watch.repeat:
             self._finish(watch, "done")
-        return f"Heads up: {watch.condition}."
+        return _heads_up(watch)
+
+    def _process_check(self, watch: Watch, now: float) -> str | None:
+        """Read the process's state; say once when it exits, stops, gets stuck or runs again."""
+        state = self._processes.state_of(watch.pid, watch.started)
+        name = watch.of()
+        if state is None or state in _ENDED:
+            self._finish(watch, "process_ended")
+            return f"Heads up: {name} has exited: it closed, crashed or was killed."
+        trouble = ""
+        if state in _STOPPED:
+            trouble = "stopped"
+        elif state == "D":
+            watch.waiting_since = watch.waiting_since or now
+            trouble = "stuck" if now - watch.waiting_since >= STUCK_S else watch.trouble
+        else:
+            watch.waiting_since = 0.0
+        if trouble == watch.trouble:
+            return None
+        watch.trouble = trouble
+        watch.announced += 1
+        self._record("watch_announced", watch, count=watch.announced, state=trouble or "running")
+        if trouble == "stopped":
+            return f"Heads up: {name} is stopped, frozen until something resumes it."
+        if trouble == "stuck":
+            return (
+                f"Heads up: {name} has been stuck for {STUCK_S:g} seconds, waiting on a disk or "
+                "a device."
+            )
+        return f"{name} is running again."
 
     def _gone(self, watch: Watch) -> bool:
         """Whether the watched window is closed (or now another program's): its watch ends.

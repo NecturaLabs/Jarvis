@@ -610,6 +610,28 @@ class ProcessOps:
             msg = f"PID {pid} is never stopped: {reason}"
             raise OperationError(msg)
 
+    def watched(self, pid: int) -> tuple[str, int]:
+        """Return the program and start time of a PID `find_processes` listed in this request.
+
+        Raises:
+            OperationError: no owner's request is being handled, the PID was not listed in it, or
+                it is no longer the process that was listed.
+        """
+        program, start, _ = self._listed(self._owner_request(), pid)
+        proc = self._read(pid)
+        if proc is None or proc.start != start:
+            msg = f"PID {pid} is no longer the {program} that was listed"
+            raise OperationError(msg)
+        return program, start
+
+    def state_of(self, pid: int, start: int) -> str | None:
+        """Return the state letter (`R`, `S`, `D`, `T`, `Z`...) of the process started at `start`.
+
+        None once it is gone: another process may have its PID by then.
+        """
+        proc = self._read(pid)
+        return None if proc is None or proc.start != start else proc.state
+
     def prepare(self, args: dict[str, Any]) -> dict[str, Any]:
         """Bind the PID to the program and start time `find_processes` listed in this request.
 

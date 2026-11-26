@@ -42,13 +42,17 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - Jarvis sees its own screenshots: where its model can see pictures, `pc_screenshot` also hands it the
   picture, as outside data (a side effect after it needs a yes, like after a shared picture). The
   conversation keeps the picture's name, not the picture.
+- Process watches: `pc_watch` with `of=process` and a PID `find_processes` listed watches a program and
+  says once when it exits (it cannot tell closed, crashed and killed apart), is stopped (`T`), is stuck
+  waiting on a disk or device for 30 s (`D`), and when it runs again. Read from `/proc` only: no
+  picture, no model, no GPU; up to four, apart from the two screen watches.
 - Screen watches: ask Jarvis to tell you when something shows up in a window, a workspace or the screen
   and `pc_watch` checks now and then (`every_s`, default 20, 10 to 300; `for_min`, default 120, up to
   720; `repeat`), said by voice in a fixed line built from what you asked for, never words read off the
   screen. `pc_watches` lists and `pc_watch_stop` stops. Two at most, only in `jarvis run`, only
-  between requests (a check under way gives way to the wake word), and each check is one model call that
-  uses the GPU
-  ([ADR 0021](docs/adr/0021-screen-watch.md), proposed).
+  between requests (a check under way gives way to the wake word), said when it starts to show (a line that
+  stays up is said once), optionally in the model's own short `say` line, and each check is one model call
+  with a picture ([ADR 0021](docs/adr/0021-screen-watch.md), proposed).
 - Every `jarvis` command answers a script or an AI agent in one line of JSON with `--agent` (or
   `--agent-format`, or `JARVIS_AGENT_FORMAT=1`): `command`, `ok` and `exit`, then its own keys (`doctor`,
   `status`, `tools`, `speed`, `consent`) or its output lines, even for a wrong argument or a crash. Interactive
