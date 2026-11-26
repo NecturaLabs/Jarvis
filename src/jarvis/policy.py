@@ -46,6 +46,7 @@ class Origin(StrEnum):
     PROCESS = "process"  # program names and window titles: other programs' words
     SHELL = "shell"  # a shell command's output: anything the owner's user can read or reach
     OS_SKILL = "os_skill"  # Omarchy's guides: shipped OS text written for coding agents
+    PLUGIN_SKILL = "plugin_skill"  # a plugin's skill read on request: third-party text (ADR 0027)
 
 
 TRUSTED_ORIGINS = frozenset({Origin.SYSTEM, Origin.OWNER_SPEECH, Origin.TOOL_STATUS})

@@ -17,6 +17,7 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from jarvis import config, paths, plugins
@@ -26,14 +27,14 @@ from jarvis.update import UpdateError
 if TYPE_CHECKING:
     from argparse import Namespace
     from collections.abc import Callable, Generator, Iterable
-    from pathlib import Path
 
     from jarvis.update import Launch
 
 CLONE_S = 180
 GIT_S = 60
 FETCH_DEPTH = 100  # enough history to see that a new commit builds on the one held
-UPSTREAM = "refs/jarvis/upstream"
+MAX_CLONE_BYTES = 50 * 2**20  # a repository bigger than this (`.git` included) is not used
+_OTHERS_WRITE = 0o022
 # Everything Git is told on every call: no hooks, https only, no links written, no submodules.
 SAFE = (
     "-c",
@@ -152,81 +153,176 @@ class Git:
         return commit, date
 
 
+def _tree_bytes(folder: Path) -> int:
+    """Return the bytes of every file under `folder`, `.git` included; no link is followed."""
+    total = 0
+    for here, _dirs, names in os.walk(folder):
+        for name in names:
+            with contextlib.suppress(OSError):
+                total += (Path(here) / name).lstat().st_size
+    return total
+
+
+def _only_yours(folder: Path) -> None:
+    """Take group and other write permission off `folder` and all that is in it.
+
+    Jarvis reads only what nobody else can write (`plugins.read_file`), whatever the umask was.
+    """
+    for here, dirs, names in os.walk(folder):
+        for name in (*dirs, *names):
+            path = Path(here) / name
+            if not path.is_symlink():
+                path.chmod(path.stat().st_mode & ~_OTHERS_WRITE)
+    folder.chmod(folder.stat().st_mode & ~_OTHERS_WRITE)
+
+
+def _partial(destination: Path) -> Path:
+    return destination.parent / f".{destination.name}.partial"
+
+
+def _fill(
+    git: Git, url: str, partial: Path, check: Callable[[Path], None] | None, depth: int
+) -> str:
+    """Clone `url` into `partial`, judge it and return its commit.
+
+    Raises:
+        PluginError: Git failed, or the copy is too big or did not pass `check`.
+    """
+    git.read(
+        partial.parent,
+        "clone",
+        "--depth",
+        str(depth),
+        "--filter=blob:limit=1m",
+        "--no-recurse-submodules",
+        "--single-branch",
+        "--no-tags",
+        "--quiet",
+        "--",
+        url,
+        str(partial),
+        timeout=CLONE_S,
+    )
+    if _tree_bytes(partial) > MAX_CLONE_BYTES:
+        msg = f"the repository is bigger than {MAX_CLONE_BYTES // 2**20} MB and is not used"
+        raise PluginError(msg)
+    _only_yours(partial)
+    if check is not None:
+        check(partial)
+    return git.head(partial)[0]
+
+
+def _download(
+    git: Git, url: str, partial: Path, check: Callable[[Path], None] | None, depth: int
+) -> str:
+    """Clone `url` into the new folder `partial`, check it and return its commit.
+
+    A copy bigger than `MAX_CLONE_BYTES` or failing `check` is refused and removed.
+
+    Raises:
+        PluginError: Git failed, or the copy was refused.
+        OSError: a folder or permission could not be set.
+    """
+    parent = partial.parent
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for folder in (parent, parent.parent):
+        folder.chmod(folder.stat().st_mode & ~_OTHERS_WRITE)
+    shutil.rmtree(partial, ignore_errors=True)
+    try:
+        return _fill(git, url, partial, check, depth)
+    except PluginError, OSError:
+        shutil.rmtree(partial, ignore_errors=True)
+        raise
+
+
 def _clone(
     git: Git, url: str, destination: Path, check: Callable[[Path], None] | None = None
 ) -> str:
     """Download `url` to `destination` (which must not exist) and return its commit.
 
     The clone is made beside it and moved into place once it passed `check`, so a failure leaves
-    nothing behind and a reader never sees half of it.
+    nothing behind and a reader never sees half of it. Git failing, or the copy being refused,
+    raises `PluginError`.
 
     Raises:
-        PluginError: Git failed or the clone did not pass `check`.
-        OSError: the clone could not be moved into place.
+        OSError: a folder or permission could not be set, or the move failed.
     """
-    parent = destination.parent
-    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    partial = parent / f".{destination.name}.partial"
-    shutil.rmtree(partial, ignore_errors=True)
+    partial = _partial(destination)
+    commit = _download(git, url, partial, check, depth=1)
     try:
-        git.read(
-            parent,
-            "clone",
-            "--depth",
-            "1",
-            "--no-recurse-submodules",
-            "--single-branch",
-            "--no-tags",
-            "--quiet",
-            "--",
-            url,
-            str(partial),
-            timeout=CLONE_S,
-        )
-        if check is not None:
-            check(partial)
-        commit, _ = git.head(partial)
         partial.rename(destination)
-    except PluginError, OSError:
+    except OSError:
         shutil.rmtree(partial, ignore_errors=True)
         raise
     return commit
 
 
-def _refresh(git: Git, folder: Path) -> tuple[str, str]:
-    """Move a downloaded repository to the newest commit of its default branch.
+def _replace(git: Git, folder: Path, partial: Path, before: str) -> str:
+    """Swap the new copy in `partial` for `folder`, if it builds on the commit `before`.
 
-    Returns the commit it was at and the one it is at now.
+    Returns the new commit, which is `before` when nothing changed (the copy is then dropped).
 
     Raises:
-        PluginError: the fetch failed, or the new commit does not build on the old one.
+        PluginError: the new commit does not build on `before`.
     """
-    before = git.read(folder, "rev-parse", "--verify", "HEAD")
-    git.read(
-        folder,
-        "fetch",
-        "--depth",
-        str(FETCH_DEPTH),
-        "--no-tags",
-        "--no-recurse-submodules",
-        "--no-auto-maintenance",
-        "--no-write-fetch-head",
-        "--refmap=",
-        "origin",
-        f"+HEAD:{UPSTREAM}",
-        timeout=CLONE_S,
-    )
-    after = git.read(folder, "rev-parse", "--verify", f"{UPSTREAM}^{{commit}}")
+    after = git.head(partial)[0]
     if after == before:
-        return before, after
-    if git.run(folder, "merge-base", "--is-ancestor", before, after)[0]:
+        shutil.rmtree(partial, ignore_errors=True)
+    elif git.run(partial, "merge-base", "--is-ancestor", before, after)[0]:
         msg = (
             f"upstream no longer builds on {before[:12]} (rewritten, or over {FETCH_DEPTH} "
             f"commits ahead); delete {folder} and update again"
         )
         raise PluginError(msg)
-    git.read(folder, "merge", "--ff-only", "--quiet", UPSTREAM)
-    return before, after
+    else:
+        _swap(folder, partial)
+    return after
+
+
+def _refresh(
+    git: Git, folder: Path, url: str, check: Callable[[Path], None] | None = None
+) -> tuple[str, str]:
+    """Move a downloaded repository to the newest commit of its default branch.
+
+    The newest commit is cloned into a new folder beside the old one, checked, and only then
+    swapped in, so what is read is always the old copy whole or the new one whole. Returns the
+    commit it was at and the one it is at now.
+
+    Raises:
+        PluginError: the clone failed, or the new commit does not build on the old one.
+        OSError: a folder or permission could not be set, or the swap failed.
+    """
+    before = git.head(folder)[0]
+    partial = _partial(folder)
+    _download(git, url, partial, check, depth=FETCH_DEPTH)
+    try:
+        return before, _replace(git, folder, partial, before)
+    except PluginError, OSError:
+        shutil.rmtree(partial, ignore_errors=True)
+        raise
+
+
+def _old(folder: Path) -> Path:
+    return folder.parent / f".{folder.name}.old"
+
+
+def _swap(folder: Path, fresh: Path) -> None:
+    """Put the folder `fresh` where `folder` is, keeping the old one if that fails.
+
+    The old copy stays beside as `.<name>.old` until the next swap, so a reader that opened it
+    before the swap still reads it whole.
+
+    Raises:
+        OSError: the swap failed.
+    """
+    old = _old(folder)
+    shutil.rmtree(old, ignore_errors=True)
+    folder.rename(old)
+    try:
+        fresh.rename(folder)
+    except OSError:
+        old.rename(folder)
+        raise
 
 
 def _is_marketplace(folder: Path) -> None:
@@ -274,7 +370,7 @@ def _bring(  # ruff: ignore[too-many-arguments] - one repository: where, from wh
         if folder.exists() or folder.is_symlink():
             if not update:
                 return Change(name, "current", after=git.head(folder)[0])
-            before, after = _refresh(git, folder)
+            before, after = _refresh(git, folder, url, check)
             return Change(name, "current" if before == after else "updated", before, after)
         return Change(name, "downloaded", after=_clone(git, url, folder, check))
     except (PluginError, OSError) as error:
@@ -452,33 +548,46 @@ def _save(**changes: object) -> None:
     config.save(current.model_copy(update={"plugins": current.plugins.model_copy(update=changes)}))
 
 
+def _hinted(spec: str, called: str) -> bool:
+    """Return whether a setting's repository name is the marketplace name looked for."""
+    return spec.rstrip("/").removesuffix(".git").rsplit("/", 1)[-1] == called
+
+
 def _find(
     cfg: config.Config, ref: str, git: Git, audit: AuditLog
-) -> tuple[str, plugins.Marketplace, plugins.Entry]:
-    """Return the marketplace setting, the marketplace and the entry a `plugin@marketplace` names.
+) -> tuple[str, plugins.Marketplace, plugins.Entry, list[str]]:
+    """Return what a `plugin@marketplace` names, and which marketplaces were downloaded to find it.
 
-    A marketplace that is set but not downloaded is downloaded to find out its name.
+    The answer is the marketplace's setting, the marketplace, the entry and the settings of the
+    marketplaces downloaded.
+
+    Marketplaces already downloaded are asked first, then those whose repository is called like
+    the marketplace; one is downloaded only while the name is still unfound.
 
     Raises:
         PluginError: no set marketplace has that name, or it lists no such plugin.
     """
     name, _, called = ref.partition("@")
     root = plugins.plugins_root(cfg.data_dir)
+
+    def folder(spec: str) -> Path:
+        return root.joinpath(*plugins.marketplace_parts(spec))
+
+    have = [spec for spec in cfg.plugins.marketplaces if folder(spec).exists()]
+    missing = [spec for spec in cfg.plugins.marketplaces if spec not in have]
+    missing.sort(key=lambda spec: not _hinted(spec, called))
     failures: list[str] = []
-    for spec in cfg.plugins.marketplaces:
-        change = _bring(
-            git,
-            spec,
-            root.joinpath(*plugins.marketplace_parts(spec)),
-            plugins.address(spec),
-            update=False,
-            check=_is_marketplace,
-        )
-        if change.action == "downloaded":
+    fetched: list[str] = []
+    for spec in (*have, *missing):
+        if spec in missing:
+            change = _bring(
+                git, spec, folder(spec), plugins.address(spec), update=False, check=_is_marketplace
+            )
+            if change.action == "failed":
+                failures.append(f"{spec}: {change.error}")
+                continue
+            fetched.append(spec)
             audit.record("plugin", name=spec, result="downloaded", after=change.after)
-        if change.action == "failed":
-            failures.append(f"{spec}: {change.error}")
-            continue
         try:
             market = plugins.read_marketplace(root, spec)
         except (FileNotFoundError, plugins.MarketplaceError) as error:
@@ -490,21 +599,21 @@ def _find(
                 held = ", ".join(entry.name for entry in market.entries) or "none"
                 msg = f"marketplace {called} lists no plugin {name} (it lists: {held})"
                 raise PluginError(msg)
-            return spec, market, entry
+            return spec, market, entry, fetched
     msg = f"no marketplace named {called} is set under [plugins] in config.toml"
     raise PluginError(msg + "".join(f"; {failure}" for failure in failures))
 
 
-def _download(
+def _fetch_for(
     cfg: config.Config, ref: str, git: Git, audit: AuditLog
-) -> tuple[str, plugins.Marketplace, plugins.Entry]:
+) -> tuple[str, plugins.Marketplace, plugins.Entry, list[str]]:
     """Download what installing `ref` needs: its marketplace and, if apart, its repository.
 
     Raises:
         PluginError: it could not be found or downloaded.
     """
     with _locked():
-        spec, market, entry = _find(cfg, ref, git, audit)
+        spec, market, entry, fetched = _find(cfg, ref, git, audit)
         if entry.source.url:
             folder = plugins.plugins_root(cfg.data_dir).joinpath(
                 *plugins.plugin_parts(spec, entry.source)
@@ -513,15 +622,19 @@ def _download(
             if change.action == "failed":
                 raise PluginError(change.error)
         audit.record("plugin", name=ref, result="installed")
-    return spec, market, entry
+    return spec, market, entry, fetched
 
 
 def _install(ref: str, cfg: config.Config, launch: Launch) -> int:
     try:
-        spec, market, entry = _download(cfg, ref, Git(launch), AuditLog(paths.audit_file()))
+        spec, market, entry, fetched = _fetch_for(
+            cfg, ref, Git(launch), AuditLog(paths.audit_file())
+        )
     except PluginError as error:
         print(f"jarvis: {error}", file=sys.stderr)
         return 1
+    if fetched:
+        print(f"Downloaded marketplaces: {', '.join(fetched)}.")
     enabled = list(cfg.plugins.enabled)
     if ref not in enabled:
         enabled.append(ref)
@@ -539,7 +652,7 @@ def _install(ref: str, cfg: config.Config, launch: Launch) -> int:
     if ignored:
         print(f"Never used or run: {', '.join(ignored)}.")
     print(
-        f"Its text reaches the model only when it reads a skill; to put one in every request add "
+        "Its text reaches the model only when it reads a skill; to put one in every request add "
         f"it under [plugins.always_on] in config.toml. {market.name} is kept up to date by "
         "`jarvis update --apply` and `jarvis plugins update`."
     )
@@ -565,9 +678,9 @@ def _uninstall(ref: str, cfg: config.Config) -> int:
                     if o.endswith(f"@{market.name}")
                 )
                 if not shared:
-                    shutil.rmtree(
-                        root.joinpath(*plugins.plugin_parts(spec, entry.source)), ignore_errors=True
-                    )
+                    gone = root.joinpath(*plugins.plugin_parts(spec, entry.source))
+                    shutil.rmtree(gone, ignore_errors=True)
+                    shutil.rmtree(_old(gone), ignore_errors=True)
     on = cfg.plugins.always_on
     _save(
         enabled=left,

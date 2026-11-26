@@ -42,6 +42,7 @@ _PRIVATE_NETWORKS = tuple(
     for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7")
 )
 _DNS_HOST = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.ASCII)
+_NUMBER_LABEL = re.compile(r"[0-9]+|0x[0-9a-f]*")  # a part of a short-form IPv4 address
 _URL_PATH = re.compile(r"(?:/[a-zA-Z0-9_.~-]+)*/?")
 
 
@@ -841,8 +842,12 @@ def _public_host(source: str) -> None:
         msg = "must name a host, not an IP address"
         raise ValueError(msg)
     labels = host.split(".")
-    if len(labels) < MIN_HOST_LABELS or not all(_DNS_HOST.fullmatch(label) for label in labels):
-        msg = "must name a public host (a name with a dot)"
+    if (
+        len(labels) < MIN_HOST_LABELS
+        or not all(_DNS_HOST.fullmatch(label) for label in labels)
+        or _NUMBER_LABEL.fullmatch(labels[-1])  # 127.1 and 0x7f.1 are addresses to the resolver
+    ):
+        msg = "must name a public host (a name with a dot and a top-level name that is no number)"
         raise ValueError(msg)
     if host.endswith(_PRIVATE_SUFFIXES):
         msg = "must be a public host, not one on this machine or its network"

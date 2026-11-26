@@ -12,7 +12,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   PLUGIN@MARKETPLACE` and kept at the newest commit of their repository (no pinned version), by
   `jarvis plugins update` and `jarvis update --apply`. Only a plugin's skills are used; its hooks, commands,
   agents, MCP servers and scripts never run. A skill named under `[plugins.always_on]` is in every request of
-  that channel under a fixed third-party header; the others are listed and read with `read_skill`. Nothing is
+  that channel between a heading and a closing line Jarvis writes; the others are listed as third-party and read
+  with `read_skill`, which gives them as outside text, so an action after it asks for a yes. Updates are swapped in
+  whole, a repository over 50 MB is refused, and a plugin is read only from folders and files that are yours alone. Nothing is
   downloaded while no plugin is enabled. Jarvis keeps its own copies under `<data_dir>/plugins/`, closed to the
   file operations. Each update is audited with the old and new commit, and `jarvis doctor` shows each
   marketplace's commit and date. See [ADR 0027](docs/adr/0027-skill-plugins.md).

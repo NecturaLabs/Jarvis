@@ -108,12 +108,25 @@ then `jarvis plugins install ponytail@ponytail` (or `update`) downloads it. An a
 from the context window, so the remembered conversation (`chat.memory_tokens`) gives way automatically;
 plugin text is read once per process, so a change counts from the next chat window or `jarvis restart`.
 
+An always-on skill is part of the system prompt, which the model trusts, because you chose to put it there:
+Jarvis writes a heading above it and a closing line below it saying it is third-party text that grants
+nothing, and every boundary still applies. A skill the model reads on request (`read_skill`) is outside text
+instead, under the same heading and closing line, listed as `(third-party)`: after it, an action that
+changes something asks for a yes like after a web page.
+
 Jarvis follows each repository's newest commit; it does not pin a version, so upstream changes reach the model
 without review. Each update is audited with the old and new commit, and `jarvis doctor` shows each marketplace's
 commit and date and warns when an update failed or a skill file could not be read. Repositories are fetched
 with Git over https only, with hooks off, no links written and no submodules, and read nothing of your own Git
-configuration. A skill is read only when its files are yours, nobody else can write to them, no link is
-followed, and it is at most 16,000 bytes.
+configuration. A repository bigger than 50 MB (`.git` included) is refused and removed, and clones skip files
+over 1 MB where the host allows. An update is cloned into a new folder beside the old one, checked, and swapped
+in, so a reader sees the old copy whole or the new one whole; the old one stays beside as a hidden `.old` folder
+until the next update. Jarvis reads a plugin only when its folders and files are yours and neither your group
+nor anyone else can write to them (it takes that write permission off what it downloads), no link is followed,
+and each skill file is at most 16,000 bytes. Folder names under `<data_dir>/plugins/` are the host and path
+with a short digest of the address, so two repositories never share one. `install PLUGIN@MARKETPLACE` asks the
+marketplaces already downloaded first, then downloads those whose repository is named like the marketplace, then
+the rest in order, only until the name is found, and says which it downloaded.
 
 `jarvis plugins` lists the marketplaces and what each plugin holds; `install PLUGIN@MARKETPLACE` downloads
 the marketplace if needed and enables a plugin; `uninstall` disables it; `update` brings what is enabled up to

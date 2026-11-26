@@ -36,15 +36,23 @@ Chosen option 3.
   the `enabled` plugins, the skills `always_on` in each channel, and `auto_update`. **Nothing is fetched while
   `enabled` is empty**, so a default install contacts nobody; no third-party plugin is enabled by default.
 - **Storage.** Jarvis's own folder, `<data_dir>/plugins/`, closed to the file operations like its config and
-  state, and read once per process like the owner's skills: only the owner's regular files, opened without
-  following a link, within size limits (16,000 bytes a skill file; at most 8,000 bytes for an always-on body and
+  state, and read once per process like the owner's skills: only folders and regular files that are the owner's
+  alone (not writable by group or others), opened without following a link, within size limits (16,000 bytes a skill file; at most 8,000 bytes for an always-on body and
   12,000 for a channel's). A skill over the limit is not always-on and `jarvis doctor` says why.
 - **Use.** An always-on skill's body (front matter removed) is appended to that channel's prompt under a header
-  Jarvis writes: it is third-party text that changes how the model works and grants nothing. Any other skill is
-  listed with a short description and read with `read_skill`. A plugin's text is the owner's choice of
-  third-party guidance, and never widens an operation: policy, confirmation and audit are in code.
-- **Updates, not pinned.** Each repository is shallow-cloned once and then fast-forwarded to its default
-  branch's newest commit (a rewritten history, or more than 100 commits ahead, is a failure the owner resolves).
+  Jarvis writes and followed by a closing line Jarvis writes, so the text cannot fake its own end: it is
+  third-party text that changes how the model works and grants nothing. **An always-on skill is in the system
+  prompt, a trusted context, by the owner's choice of enabling it always-on**; the owner accepts that its text
+  steers the model like their own instructions, bounded by the policy in code. Any other skill is listed as
+  third-party with a short description and read with `read_skill`, which gives it as outside text
+  (`Origin.PLUGIN_SKILL`, not trusted) under the same heading and closing line, so an action that changes
+  something after it needs a yes, as after a web page. A plugin's text never widens an operation: policy,
+  confirmation and audit are in code.
+- **Updates, not pinned.** Each repository is shallow-cloned once and then, to update, cloned again beside
+  the old copy and swapped in whole (the old one stays as `.old` until the next update), after checking that
+  the new commit builds on the old one (a rewritten history, or more than 100 commits ahead, is a failure the
+  owner resolves). A repository over 50 MB is refused and removed; clones ask the host to skip files over 1 MB.
+  Folders under `<data_dir>/plugins/` are named by host, path and a digest of the address.
   `jarvis update --apply`, and its daily timer, do this before Jarvis's own update when `auto_update` is on;
   `jarvis plugins update` always does. Each change is audited with the commit before and after, and
   `jarvis doctor` shows each marketplace's commit and date and any failed update.
