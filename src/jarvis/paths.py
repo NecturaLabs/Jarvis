@@ -51,6 +51,16 @@ def strata_key_file() -> Path:
     return state_dir() / "strata.env"
 
 
+def backend_strata_key_file() -> Path:
+    """Return the backend service's private environment file."""
+    return state_dir() / "strata-backend.env"
+
+
+def remote_strata_key_file() -> Path:
+    """Return the remote client's private bearer key file."""
+    return state_dir() / "strata-remote.json"
+
+
 def spotify_token_file() -> Path:
     """Return the Spotify token file."""
     return state_dir() / "spotify-token.json"

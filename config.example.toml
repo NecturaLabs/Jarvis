@@ -70,6 +70,12 @@ history_size = 1000
 # The model, its engine and its flags come from Strata's own run config: run `strata launch` for
 # the model once, then point run_config at the strata-<model>.json it writes.
 [strata]
+mode = "local"
+# url = "http://127.0.0.1:18080"  # required in remote mode
+allow_plain_http = false
+# tls_ca = "/path/to/ca.pem"  # remote HTTPS only
+remote_pictures = false
+listen = "127.0.0.1"
 # home: default $XDG_DATA_HOME/strata; an absolute path.
 # components_parent: default $XDG_DATA_HOME; an absolute path.
 # run_config = "/path/to/strata/install/strata-<model>.json"

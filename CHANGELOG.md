@@ -14,6 +14,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   the same model asks for the groups it needs with `use_tools`. A tool of a group it has not asked for is
   not run. It stays off by default until a live run shows it as accurate and not slower
   ([ADR 0022](docs/adr/0022-tool-router.md)).
+- Serve the model from another machine you own with `jarvis setup --backend` and
+  `jarvis setup --remote`. The client keeps speech, tools and policy on the PC it controls.
+  The default remains all-local. Remote `doctor` and `status` show the model and connection
+  latency. A remote probe is one short attempt reused for a few seconds, so a backend that is down
+  delays a request once; an HTTPS name must resolve only to private addresses; the doctor warns about
+  a LAN-facing backend, a tunnel that ended at reboot and a leftover local Strata; an update does not
+  wait for a Strata that is on the other machine. See
+  [ADR 0020](docs/adr/0020-model-on-another-machine.md).
 - Install Jarvis with `install.sh` from a terminal or checkout. It checks prerequisites, uses the
   locked environment, fetches the default wake word, VAD and Kokoro files with SHA-256 verification
   (`tools/get_models.py`, which you can also run yourself),

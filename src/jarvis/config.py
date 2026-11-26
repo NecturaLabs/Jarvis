@@ -1,8 +1,10 @@
 """`config.toml`: versioned, validated settings with documented defaults."""
 
 import re
+import socket
 import tomllib
-from collections.abc import MutableMapping
+from collections.abc import Callable, MutableMapping
+from ipaddress import ip_address, ip_network
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal, Self, cast
 from urllib.parse import urlsplit
@@ -36,6 +38,12 @@ EFFORTS: tuple[Effort, ...] = ("none", "low", "medium", "high")  # least to most
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_PRIVATE_NETWORKS = tuple(
+    ip_network(network)
+    for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7")
+)
+_DNS_HOST = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.ASCII)
+_URL_PATH = re.compile(r"(?:/[a-zA-Z0-9_.~-]+)*/?")
 
 
 def _no_control(text: str) -> str:
@@ -59,6 +67,8 @@ VRAM_RESERVE_MIN_MIB = (
     100  # our floor, not the engine's: a smaller reserve leaves a game no real room
 )
 VRAM_RESERVE_MAX_MIB = 65536
+STRATA_CONTEXT_MIN = 2048
+STRATA_CONTEXT_MAX = 262144
 
 
 def _reserve_or_unset(mib: int) -> int:
@@ -115,7 +125,7 @@ class _Section(BaseModel):
 
 
 class ModelConfig(_Section):
-    """How Jarvis talks to its model, the local Strata server."""
+    """How Jarvis talks to Strata."""
 
     base_url: Endpoint = ""  # empty: the local Strata server (see `Config.model_base_url`)
     model: str = "jarvis"
@@ -197,9 +207,99 @@ _REPLACED_BY_RUN_CONFIG = frozenset(
 )
 
 
-class StrataConfig(_Section):
-    """How the `jarvis-strata` user service runs Strata (written into its profile by setup)."""
+def _private_address(host: str) -> bool:
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return False
+    return "%" not in host and (
+        address.is_loopback or any(address in network for network in _PRIVATE_NETWORKS)
+    )
 
+
+def resolve_addresses(host: str) -> list[str]:
+    """Return every address a host name resolves to (none when it does not resolve)."""
+    try:
+        found = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return []
+    return sorted({str(info[4][0]) for info in found})
+
+
+def private_endpoint(host: str, resolve: Callable[[str], list[str]] | None = None) -> bool:
+    """Return whether every address of `host` is on this machine or a private network.
+
+    An IP literal is judged as written; a name by everything it resolves to (`resolve`, else the
+    system's resolver), and a name that does not resolve fails.
+    """
+    try:
+        ip_address(host)
+    except ValueError:
+        addresses = (resolve or resolve_addresses)(host)
+        return bool(addresses) and all(_private_address(address) for address in addresses)
+    return _private_address(host)
+
+
+def _loopback(host: str) -> bool:
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return host == "localhost"
+
+
+def _remote_url(url: str, *, allow_plain_http: bool) -> None:
+    _no_control(url)
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+        host = parts.hostname or ""
+    except ValueError:
+        msg = "strata.url must have a valid host and port"
+        raise ValueError(msg) from None
+    authority = f"[{host}]" if ":" in host else host
+    if (
+        not url.startswith(("http://", "https://"))
+        or not host
+        or port == 0
+        or (parts.netloc.casefold() != (f"{authority}:{port}" if port is not None else authority))
+    ):
+        msg = "strata.url needs an HTTP(S) host and optional port, without credentials"
+        raise ValueError(msg)
+    if (
+        {"?", "#"}.intersection(url)
+        or not _URL_PATH.fullmatch(parts.path)
+        or ({"..", "."}.intersection(parts.path.split("/")))
+    ):
+        msg = "strata.url needs a valid path without a query or fragment"
+        raise ValueError(msg)
+    try:
+        ip_address(host)
+    except ValueError:
+        labels = host.removesuffix(".").split(".")
+        dns_name = all(_DNS_HOST.fullmatch(label) for label in labels) and not labels[-1].isdigit()
+        if not dns_name or (parts.scheme == "http" and host != "localhost"):
+            msg = "strata.url needs HTTPS for host names other than localhost"
+            raise ValueError(msg) from None
+    else:
+        if not _private_address(host):
+            msg = "strata.url must point at an address on your own machine or private network"
+            raise ValueError(msg)
+    if parts.scheme == "http" and not _loopback(host) and not allow_plain_http:
+        msg = "strata.url needs HTTPS for LAN access unless strata.allow_plain_http is true"
+        raise ValueError(msg)
+
+
+class StrataConfig(_Section):
+    """Where Strata runs, and how Jarvis serves it or connects to it."""
+
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+    mode: Literal["local", "remote", "backend"] = "local"
+    url: str = Field(default="", max_length=2048)
+    allow_plain_http: bool = False
+    tls_ca: SafePath = Path()
+    remote_pictures: bool = False
+    listen: str = "127.0.0.1"
     home: SafePath = Field(default_factory=lambda: paths.xdg_data_home() / "strata")
     components_parent: SafePath = Field(default_factory=paths.xdg_data_home)
     # Strata's own run config for the model (`strata-<model>.json`, written by `strata launch`):
@@ -208,7 +308,7 @@ class StrataConfig(_Section):
     # The run config served in coding mode (`[coding]`); empty: coding mode keeps `run_config`.
     coding_run_config: SafePath = Path()
     port: int = Field(default=8080, ge=1024, le=65535)
-    context: int = Field(default=24576, ge=2048, le=262144)
+    context: int = Field(default=24576, ge=STRATA_CONTEXT_MIN, le=STRATA_CONTEXT_MAX)
     # Expert weights kept in VRAM, for an engine that takes a size (`--expert-vram`,
     # `--vram-experts-gb`); the rest stay in RAM.
     expert_vram_gib: float = Field(default=1.0, ge=0, le=64)
@@ -236,6 +336,40 @@ class StrataConfig(_Section):
     # Read pictures with the reader the run config names; off: the profile drops it.
     pictures: bool = True
     vision_idle_s: int = Field(default=120, ge=10, le=86400)  # the reader stops after this idle
+
+    @model_validator(mode="after")
+    def _check_mode(self) -> Self:
+        """Validate the endpoint and settings for this mode.
+
+        Raises:
+            ValueError: a setting is invalid or belongs to another mode.
+        """
+        if self.mode == "remote":
+            _remote_url(self.url, allow_plain_http=self.allow_plain_http)
+            if self.tls_ca != Path() and not self.url.startswith("https://"):
+                msg = "strata.tls_ca requires an HTTPS URL"
+                raise ValueError(msg)
+        elif self.url or self.allow_plain_http or self.tls_ca != Path() or self.remote_pictures:
+            msg = "strata.url, allow_plain_http, tls_ca and remote_pictures need remote mode"
+            raise ValueError(msg)
+        if not _private_address(self.listen) or (
+            self.mode != "backend" and self.listen != "127.0.0.1"
+        ):
+            msg = "strata.listen must be a loopback or private IP address in backend mode"
+            raise ValueError(msg)
+        return self
+
+    def host(self) -> str:
+        """Return the host of `url`, a name or an address."""
+        return urlsplit(self.url).hostname or ""
+
+    def serves_beyond_loopback(self) -> bool:
+        """Whether a backend listens where other machines reach it, in cleartext HTTP."""
+        return self.mode == "backend" and not _loopback(self.listen)
+
+    def plain_lan(self) -> bool:
+        """Whether client requests and credentials travel in cleartext beyond loopback."""
+        return self.url.startswith("http://") and not _loopback(urlsplit(self.url).hostname or "")
 
     @model_validator(mode="before")
     @classmethod
@@ -678,6 +812,8 @@ class UpdateConfig(_Section):
 class Config(_Section):
     """The whole file."""
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     schema_version: int = SCHEMA_VERSION
     data_dir: SafePath = Field(default_factory=paths.default_data_dir)
     model: ModelConfig = Field(default_factory=ModelConfig)
@@ -700,12 +836,29 @@ class Config(_Section):
     boundaries: BoundariesConfig = Field(default_factory=BoundariesConfig)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
 
+    @model_validator(mode="after")
+    def _model_endpoint(self) -> Self:
+        """Keep the client pointed at the explicit remote endpoint.
+
+        Raises:
+            ValueError: the config sets model.base_url outside local mode.
+        """
+        if self.strata.mode != "local" and self.model.base_url:
+            msg = "remove model.base_url when using strata.url or backend mode"
+            raise ValueError(msg)
+        return self
+
     def strata_url(self) -> str:
-        """Return the URL of the local Strata server, on its configured port."""
-        return f"http://127.0.0.1:{self.strata.port}/v1"
+        """Return the server's OpenAI API base, including the /v1 prefix."""
+        if self.strata.mode == "remote":
+            url = self.strata.url.rstrip("/")
+            return url if urlsplit(url).path.endswith("/v1") else f"{url}/v1"
+        listen = self.strata.listen
+        host = f"[{listen}]" if ":" in listen else listen
+        return f"http://{host}:{self.strata.port}/v1"
 
     def model_base_url(self) -> str:
-        """Return the local model server's URL: the explicit setting, else Strata's own port."""
+        """Return the endpoint used by the agent (model.base_url is a local-only override)."""
         return self.model.base_url or self.strata_url()
 
 

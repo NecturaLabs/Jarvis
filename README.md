@@ -163,6 +163,20 @@ handling a request, and restores the previous checkout if its checks or service 
 Automatic daily updates are off by default. Turn them on or off with
 `.venv/bin/jarvis update --auto on|off`. See [update settings](docs/configuration.md#update).
 
+### Model on another machine
+
+Jarvis runs everything on one PC by default. To move model inference to a machine you own, install
+Strata and prepare its model there. With `jarvis` on both machines and SSH access to the backend,
+run this on the backend, substituting your run-config path and SSH destination:
+
+```sh
+jarvis setup --backend --run-config /path/to/strata-model.json --ssh-target model-box --enable
+```
+
+Run the printed command on the client. It opens an encrypted tunnel, copies the key over SSH and
+starts the voice service. The client still needs its audio files and Spotify setup. See
+[configuration](docs/configuration.md#model-on-another-machine) for direct HTTPS and troubleshooting.
+
 ## Everyday commands
 
 These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what is running and follows the log.

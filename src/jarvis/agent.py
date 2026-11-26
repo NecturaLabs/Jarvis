@@ -33,7 +33,7 @@ from jarvis.memory import (
     message_tokens,
     tokens,
 )
-from jarvis.model import ModelMissingError, Thinking
+from jarvis.model import ModelMissingError, RemoteModelError, Thinking
 from jarvis.operations import (
     REMEMBERED,
     REMEMBERED_LISTING,
@@ -99,6 +99,7 @@ _WAYS_TO_GO_ON = frozenset({THINK_HARDER, SWITCH_MODEL, USE_TOOLS})
 _THINKING: tuple[Literal["low", "medium", "high"], ...] = ("low", "medium", "high")
 
 MODEL_DOWN = "My model isn't answering right now."
+REMOTE_MODEL_DOWN = "The remote model server isn't answering. Check the backend and connection."
 MODEL_MISSING = "My model's file is missing, so I can't answer. Is its drive mounted?"
 PICTURES_OFF = (
     "I can't see pictures here: the picture reader is off. Set the model up with its picture "
@@ -269,6 +270,12 @@ def _clauses(text: str) -> list[tuple[str, bool]]:
                 )
             out.append((words, claim))
     return out or [(text, False)]
+
+
+def _model_failure(error: Exception) -> str:
+    if isinstance(error, RemoteModelError):
+        return REMOTE_MODEL_DOWN
+    return MODEL_MISSING if isinstance(error, ModelMissingError) else MODEL_DOWN
 
 
 def _out_of_time(turn: _Turn) -> str:
@@ -1724,7 +1731,7 @@ class Agent:
         except Exception as exc:  # ruff: ignore[blind-except] - any model failure becomes a spoken apology
             self._audit.record("model_error", error=str(exc)[:MAX_AUDIT_TEXT])
             log.warning("the model did not answer: %s", exc)
-            return MODEL_MISSING if isinstance(exc, ModelMissingError) else MODEL_DOWN
+            return _model_failure(exc)
         finally:
             turn.cues.settle()
             turn.cold = False  # the first call waited for the load; the model is in after it
