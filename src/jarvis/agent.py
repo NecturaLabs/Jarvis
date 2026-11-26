@@ -725,14 +725,23 @@ def _audited(op: Operation | None, args: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+_HEARD = f'<data origin="{Origin.PC_AUDIO.value}">'
+HEARD_NOT_KEPT = "(What was heard is not kept after the request that heard it.)"
+
+
 def kept_work(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Return what the conversation keeps of a request's work: its messages after the request.
 
     They end after the last call whose results all came back (a request stopped while a call
     ran leaves no call without its result). A lone `no_action` call at the end is left out with
-    its result: its words are the reply the turn keeps anyway.
+    its result: its words are the reply the turn keeps anyway. What was heard in PC audio is
+    held no longer than its request (ADR 0015): its result is kept as a note, still marked as
+    PC audio, without the words.
     """
     work = answered_calls([copy.deepcopy(dict(message)) for message in messages])
+    for message in work:
+        if message.get("role") == "tool" and str(message.get("content")).startswith(_HEARD):
+            message["content"] = f"{_HEARD}{HEARD_NOT_KEPT}</data>"
     calls = [index for index, message in enumerate(work) if message.get("tool_calls")]
     if calls and all(m.get("role") == "tool" for m in work[calls[-1] + 1 :]):
         names = {
@@ -1240,7 +1249,11 @@ class Agent:
         own = "" if handed_over else _own_words(text, self._outside_pastes(text, pasted))
         ends = self._clock() + self._limits.max_seconds
         with request_scope(
-            foreign=foreign, words=own, time_left=lambda: ends - self._clock()
+            foreign=foreign,
+            words=own,
+            time_left=lambda: ends - self._clock(),
+            cancelled=hooks.cancelled,
+            scheduled=scheduled,
         ) as request:
             for seen in sorted(steered_by):
                 request.saw(seen)

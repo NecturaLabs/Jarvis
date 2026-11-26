@@ -43,7 +43,9 @@ SLEPT_S = 2.0  # the boot clock ahead of the steady one by this much: the PC sle
 RESERVE_S = 15.0
 NOTHING_PLAYED = "Nothing played in PC audio then"
 NOTHING_SAID = "No speech was heard in PC audio then"
-PC_AUDIO_ONLY_FOR_OWNER = "only the owner can ask to listen to PC audio, not a request heard there"
+PC_AUDIO_ONLY_FOR_OWNER = (
+    "only the owner can ask to listen to PC audio, not a request heard there or a scheduled one"
+)
 
 
 def _boot_clock() -> float:
@@ -133,12 +135,15 @@ class PcHearing:
             fresh = [frame for _at, frame in self._recent]
         return fresh[-math.ceil(min(seconds, self.recall_s) / FRAME_S) :] if fresh else []
 
-    def listen(self, seconds: float) -> list[Frame] | None:
+    def listen(
+        self, seconds: float, cancelled: Callable[[], bool] = lambda: False
+    ) -> list[Frame] | None:
         """Wait for the next `seconds` of PC audio and return its frames.
 
         Waits the time asked and the grace time at most, then returns what came: none when no
         stream played meanwhile, after the whole wait. None when Jarvis was paused, stopped or
-        the PC slept meanwhile.
+        the PC slept meanwhile, or `cancelled` says the request was (checked as often as a
+        pause is).
         """
         wanted = math.ceil(seconds / FRAME_S)
         heard: list[Frame] = []
@@ -150,7 +155,8 @@ class PcHearing:
             try:
                 while self._heard is heard and len(heard) < wanted:
                     waited = self._steady() - steady
-                    if self._clock() - started - waited > SLEPT_S or self._paused():
+                    slept = self._clock() - started - waited > SLEPT_S
+                    if slept or self._paused() or cancelled():
                         return None
                     left = seconds + self._grace_s - waited
                     if left <= 0:
@@ -190,11 +196,12 @@ class HearingOps:
         """Hear the seconds asked for and return what was said in them, as PC-audio data.
 
         Raises:
-            OperationError: a request heard in PC audio, no voice service listening, Jarvis
-                paused meanwhile, or speech-to-text failed.
+            OperationError: a request heard in PC audio or a scheduled one, no voice service
+                listening, Jarvis paused or the request stopped meanwhile, or speech-to-text
+                failed.
         """
         request = current_request()
-        if request is None or request.foreign:
+        if request is None or request.foreign or request.scheduled:
             raise OperationError(PC_AUDIO_ONLY_FOR_OWNER)
         if self._listening is None:
             msg = "only the voice service hears PC audio"
@@ -215,9 +222,12 @@ class HearingOps:
         if last:
             frames: list[Frame] | None = hearing.recall(seconds)
         else:
-            frames = hearing.listen(seconds)
+            frames = hearing.listen(seconds, cancelled=request.cancelled)
         if frames is None:
-            msg = "listening stopped: Jarvis was paused or is stopping, or the PC slept"
+            msg = (
+                "listening stopped: the request was stopped, Jarvis was paused or is stopping,"
+                " or the PC slept"
+            )
             raise OperationError(msg)
         if not frames:
             return Result(f"{NOTHING_PLAYED} ({self._heard}).")

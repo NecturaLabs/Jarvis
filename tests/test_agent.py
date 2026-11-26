@@ -3844,6 +3844,21 @@ def test_kept_work_ends_after_the_last_call_whose_results_all_came_back() -> Non
     assert kept == [answered, result]
 
 
+def test_in_full_detail_what_was_heard_in_pc_audio_is_not_kept_past_its_request() -> None:
+    heard = "they said the door code is 4321"
+    listen = Counter().op("pc_audio_listen", origin=Origin.PC_AUDIO, side_effect=False, text=heard)
+    model = ScriptedModel([_call("pc_audio_listen"), _say("They gave a code.")])
+    agent, _ = _agent(model, [listen], limits=FULL)
+
+    agent.handle("what are they saying", NO_CONFIRM)
+
+    assert heard in json.dumps(model.seen[1])  # the request itself read it
+    (turn,) = agent.memory.turns
+    assert heard not in json.dumps(agent.memory.messages())
+    assert [m["role"] for m in turn.work] == ["assistant", "tool"]
+    assert (turn.outside, turn.private, turn.reply) == ("pc_audio", True, "They gave a code.")
+
+
 def test_condensing_the_conversation_says_so_and_the_meter_shows_what_is_left() -> None:
     notes: list[str] = []
     page = "x" * 900

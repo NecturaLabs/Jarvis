@@ -37,7 +37,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   listens for up to a minute and tells you. `audio.pc_audio_recall_s` (off by default) keeps the last seconds in
   memory, so it can also tell you what was just said. The audio reaches the disk only for the moment Voxtype
   transcribes it, the words are someone else's data, and when Jarvis asks first (`bypass_consent` off) a search
-  or action after them waits for your yes.
+  or action after them waits for your yes. Only your own request can listen, never a scheduled one; a stop ends
+  a listen at once, and the words heard are not kept in the remembered conversation after that request.
 - The chat's `/config` also sets Jarvis's speaking speed, whether it acts without asking first and whether it
   takes requests from PC audio. Changes there restart the voice service once, when the settings close, instead of
   at every Enter, and its Tools list never takes a tool below how it ships.

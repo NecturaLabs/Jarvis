@@ -25,7 +25,9 @@ memory until it is transcribed, and written to such a temporary file only while 
 `audio.pc_audio_recall_s` set (0, off, by default), the last that many seconds of PC audio (60 at most) are
 also held in memory while a stream plays, each frame dropped as a newer one comes, so Jarvis can tell you what
 was just said. Nothing is held while Jarvis is paused or speaks, and a pause or the end of the stream drops it
-([ADR 0015](adr/0015-listen-to-pc-audio.md)). Jarvis keeps no recordings unless you set
+([ADR 0015](adr/0015-listen-to-pc-audio.md)). The words heard are not kept in the remembered conversation after
+the request that heard them, even with `agent.memory_detail = "full"`; Jarvis's reply about them is remembered
+like every reply. Jarvis keeps no recordings unless you set
 `JARVIS_DEBUG_AUDIO_DIR`, which saves each request there (mode 0600) for debugging.
 
 The model runs in the `jarvis-strata` service on `127.0.0.1`; your requests never leave the PC to reach it.
