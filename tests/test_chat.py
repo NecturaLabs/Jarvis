@@ -19,6 +19,7 @@ from textual import events
 from textual.containers import VerticalScroll
 from textual.widgets import Markdown, OptionList, Static
 
+from jarvis.acpstore import FORGOTTEN
 from jarvis.agent import Agent, ContextUse, Declined, Hooks, NoReason
 from jarvis.announce import Announcement
 from jarvis.app import no_action_operation
@@ -3020,7 +3021,7 @@ def test_forget_all_deletes_the_kept_t3_code_sessions_too(tmp_path: Path) -> Non
         await _until(pilot, lambda: _has(app, "Deleted 1 archived conversation"))
 
     _run(test, app)
-    assert not list(kept.iterdir())
+    assert [p.name for p in kept.iterdir()] == [FORGOTTEN]  # no session, only when it forgot
 
 
 def test_forget_all_with_the_archive_off_still_deletes_the_kept_t3_code_sessions() -> None:
@@ -3038,7 +3039,7 @@ def test_forget_all_with_the_archive_off_still_deletes_the_kept_t3_code_sessions
         assert _has(app, "The archive is off")
 
     _run(test, app)
-    assert not list(kept.iterdir())
+    assert [p.name for p in kept.iterdir()] == [FORGOTTEN]  # no session, only when it forgot
     assert session.memory.turns == []
 
 
