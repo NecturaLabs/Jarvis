@@ -30,6 +30,7 @@ from jarvis.operations import (
     OperationError,
     Result,
     current_request,
+    inert,
 )
 from jarvis.pc import hyprland
 from jarvis.pc.hyprland import HYPR_TIMEOUT_S
@@ -562,7 +563,25 @@ class ProcessOps:
                 )
         if protected:
             lines.append("Also matching, but never stopped: " + "; ".join(protected) + ".")
-        return Result("\n".join(lines), Origin.PROCESS)
+        rows = {item.proc.pid: inert(self._line(item)) for item in shown}
+        return Result("\n".join(lines), Origin.PROCESS, delivered=self._reached(request, rows))
+
+    def _reached(self, request: Request | None, rows: dict[int, str]) -> Callable[[str], None]:
+        """Return what keeps only the PIDs whose whole row reached the model.
+
+        The agent cuts a long result to its cap: a PID in a row it cut, or cut short, was never
+        read, so it may not be stopped or watched.
+        """
+
+        def reached(body: str) -> None:
+            with self._lock:
+                if self._shown.request is not request:
+                    return
+                for pid, row in rows.items():
+                    if f"\n{row}" not in body:
+                        self._shown.targets.pop(pid, None)
+
+        return reached
 
     # --- stop_process ---------------------------------------------------------------------
 

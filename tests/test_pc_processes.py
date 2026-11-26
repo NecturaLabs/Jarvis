@@ -947,6 +947,24 @@ def test_run_refuses_once_outside_text_came_in_after_the_question(proc: FakeProc
     assert stopper.sent == []
 
 
+def test_a_pid_whose_row_was_cut_before_the_model_is_not_taken(proc: FakeProc) -> None:
+    """Regression: every listed PID was taken although the agent cut the listing to its cap."""
+    for pid in (4242, 4343):
+        proc.add(pid, "orbit")
+    ops = _ops(proc)
+    op = _op(ops, "find_processes")
+
+    with request_scope(foreign=False) as request:
+        result = op.run(validate_args(op, {"name": "orbit"}))
+        assert result.delivered is not None
+        last = result.text.index("- PID 4343:")
+        result.delivered(result.text[: last + len("- PID 4343: orb")])
+        request.next_message()
+        assert _bind(ops, 4242)["pid"] == 4242
+        with pytest.raises(OperationError, match="not listed"):
+            _bind(ops, 4343)
+
+
 @pytest.mark.usefixtures("owner_request")
 def test_stop_refuses_a_listed_process_that_was_replaced_before_the_question(
     proc: FakeProc,

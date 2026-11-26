@@ -58,6 +58,10 @@ _STOPPED = frozenset({"T", "t"})  # stopped by a signal, or held by a debugger
 _ENDED = frozenset({"Z", "X", "x"})  # exited; a zombie only waits for its parent
 NEEDS_PICTURES = f"I can't watch the screen. {PICTURES_OFF}"
 NOT_HERE = "A watch runs only in the voice service, so it can't be set from here."
+_NO_PID = "Say which process: a PID find_processes listed in this request."
+_NO_WINDOW = "Say which window: a number pc_windows listed in this request."
+_NO_WORKSPACE = "Say which workspace to watch."
+_NO_CONDITION = "Say what to look for."
 
 
 class Judge(Protocol):
@@ -232,19 +236,16 @@ class ScreenWatch:
         workspace = ""
         if kind == "window":
             if args.get("window") is None:
-                msg = "Say which window: a number pc_windows listed in this request."
-                raise OperationError(msg)
+                raise OperationError(_NO_WINDOW)
             window, _ = self._windows.now(self._windows.listed(int(args["window"])))
         elif kind == "workspace":
             if args.get("workspace") is None:
-                msg = "Say which workspace to watch."
-                raise OperationError(msg)
+                raise OperationError(_NO_WORKSPACE)
             wanted = args["workspace"]
             workspace = SPECIAL if wanted == BACKGROUND else str(wanted)
         condition = _condition(str(args.get("condition", "")))
         if not condition:
-            msg = "Say what to look for."
-            raise OperationError(msg)
+            raise OperationError(_NO_CONDITION)
         say = printable(str(args.get("say", "")), MAX_SAY).rstrip(" .!?,;:")
         now = self._clock()
         every_s = float(args["every_s"])
@@ -285,12 +286,31 @@ class ScreenWatch:
     def _prepare(self, args: dict[str, Any]) -> dict[str, Any]:
         """Refuse a watch that would be refused anyway before the owner is asked about it.
 
-        The refusals are `_owner_only`'s and, for a process, `ProcessOps.watched`'s: not the
-        owner's own request, outside text, or a PID not listed and read.
+        The refusals are `_owner_only`'s, `ProcessOps.watched`'s and `start`'s own: not the
+        owner's own request, outside text, a PID or window not listed and read, no target, no
+        condition, or a screen watch when the model cannot see pictures. The count of watches
+        is checked again when one starts.
+
+        Raises:
+            OperationError: the watch could not start, with what to do instead.
         """
         _owner_only()
-        if str(args["of"]) == "process" and args.get("pid") is not None:
+        kind = str(args["of"])
+        if kind == "process":
+            if args.get("pid") is None:
+                raise OperationError(_NO_PID)
             self._processes.watched(int(args["pid"]))
+            return args
+        if self._judge is None or not self._judge.sees():
+            raise OperationError(NEEDS_PICTURES)
+        if kind == "window":
+            if args.get("window") is None:
+                raise OperationError(_NO_WINDOW)
+            self._windows.listed(int(args["window"]))
+        elif kind == "workspace" and args.get("workspace") is None:
+            raise OperationError(_NO_WORKSPACE)
+        if not _condition(str(args.get("condition", ""))):
+            raise OperationError(_NO_CONDITION)
         return args
 
     def _screens(self) -> int:
@@ -305,8 +325,7 @@ class ScreenWatch:
                 `MAX_PROCESS_WATCHES` already run.
         """
         if args.get("pid") is None:
-            msg = "Say which process: a PID find_processes listed in this request."
-            raise OperationError(msg)
+            raise OperationError(_NO_PID)
         pid = int(args["pid"])
         program, started = self._processes.watched(pid)
         now = self._clock()

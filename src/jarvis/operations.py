@@ -213,7 +213,8 @@ class Result:
     `mode` asks the agent to go on in that mode, on that mode's model (`switch_model`).
     `look` is a picture the model is to see next (a screenshot just taken), when it can see
     pictures; the agent adds it to the conversation as outside data, and says in the result's
-    text whether it did.
+    text whether it did. `delivered` is told the result as the model got it, cut to the agent's
+    cap (and wrapped, for outside text), so an operation can hold to what was really read.
     """
 
     text: str
@@ -228,6 +229,7 @@ class Result:
     sound: Sound | None = None
     mode: str = ""
     look: Picture | None = None
+    delivered: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
