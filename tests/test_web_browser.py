@@ -47,6 +47,10 @@ class FakeProxy:
     def was_refused(self, host: str, port: int) -> bool:
         return f"{host}:{port}" in self._refused
 
+    @staticmethod
+    def url(port: int) -> str:
+        return f"http://jarvis:secret@127.0.0.1:{port}"
+
 
 class Page:
     """What the fake browser shows."""
@@ -192,10 +196,13 @@ def test_it_starts_headless_through_the_proxy_with_its_own_profile_and_policy(
 
     made.open("https://site.example/")
 
-    argv, _commands, _env = fake.calls[0]
+    argv, _commands, env = fake.calls[0]
     assert argv[0] == "/usr/bin/agent-browser"
     assert _option(argv, "--headed") == "false"
-    assert _option(argv, "--proxy") == f"http://127.0.0.1:{proxy.port}"
+    # With its credential, so in the environment: every user may read a program's arguments.
+    assert env["AGENT_BROWSER_PROXY"] == f"http://jarvis:secret@127.0.0.1:{proxy.port}"
+    assert "--proxy" not in argv
+    assert not any("secret" in arg for arg in argv)
     assert _option(argv, "--proxy-bypass") == "<-loopback>"
     assert "--no-webmcp" in argv
     root = (tmp_path / "browser").resolve()
@@ -265,6 +272,7 @@ def test_its_environment_has_no_display_no_sound_and_no_outside_settings(
         "AGENT_BROWSER_NO_VERSION_CHECK",
         "AGENT_BROWSER_DEFAULT_TIMEOUT",
         "AGENT_BROWSER_SOCKET_DIR",
+        "AGENT_BROWSER_PROXY",
     }
     assert env["PIPEWIRE_REMOTE"] == "/nonexistent"
     assert env["PULSE_SERVER"] == "unix:/nonexistent"

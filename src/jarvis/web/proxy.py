@@ -9,19 +9,27 @@ every address it resolves to must be public, only ports 80 and 443 are reached, 
 connection goes to the address that was checked: a name that resolves to a public address for the
 check cannot then connect to a private one.
 
+Only the session's own browser may use it: each proxy has a random credential, which the browser
+sends (`Proxy-Authorization`, after a `407`) and which no other program on this PC knows.
+
 HTTPS and secure WebSockets come as `CONNECT host:port` and are tunnelled unread (TLS runs between
 the browser and the site). Plain HTTP comes as an absolute address and is sent on with
 `Connection: close`, one request per connection. Anything else is refused. All the traffic of one
 browser session together is capped (`MAX_BYTES`), so a page cannot fill the disk with a download.
 """
 
+import base64
 import contextlib
+import hmac
+import re
+import secrets
 import selectors
 import socket
 import socketserver
 import threading
+import time
 from collections import deque
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Any, override
 from urllib.parse import urlsplit
 
 from jarvis.web.guard import BlockedDestinationError, public_addresses
@@ -32,13 +40,16 @@ if TYPE_CHECKING:
     from jarvis.web.guard import Resolver
 
 LOOPBACK = "127.0.0.1"
+USER = "jarvis"  # the credential's user name; its password is each proxy's own
 MAX_HEAD = 16 * 1024  # a request line and its headers
 MAX_BYTES = 200_000_000  # every byte of one browser session, both ways
 REFUSED_KEPT = (
     64  # hosts and ports last refused, so a page refused at its own address is told apart
 )
 MAX_CONNECTIONS = 48  # at once; Chrome opens about six per site
-HEAD_TIMEOUT_S = 10.0
+# Name lookups at once, those the system never answered (each outlives its caller) included.
+MAX_LOOKUPS = 16
+HEAD_TIMEOUT_S = 10.0  # for a whole request head, however it trickles in
 CONNECT_TIMEOUT_S = 5.0
 IDLE_TIMEOUT_S = 60.0  # a tunnel with no byte either way for this long is closed
 _CHUNK = 64 * 1024
@@ -48,6 +59,9 @@ _HOP_HEADERS = frozenset(
 )
 
 type Connector = Callable[[str, int, float], socket.socket]
+# A CONNECT target: a host name or an IP literal, and a port, nothing else (no path or query).
+_AUTHORITY = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[^\s/?#@\[\]:]+):([0-9]{1,5})")
+_MAX_PORT = 65535
 
 
 class RefusedError(Exception):
@@ -60,35 +74,63 @@ def _connect(address: str, port: int, timeout: float) -> socket.socket:
 
 
 def _split_target(target: str, default_port: int) -> tuple[str, int]:
-    """Return the host and port of `host:port` or `[v6]:port`.
+    """Return the host and port of an absolute address's `host[:port]` or `[v6][:port]`.
 
     Raises:
-        RefusedError: not a host and port.
+        RefusedError: not a host and port, or port 0.
     """
     try:
         parts = urlsplit(f"//{target}")
-        port = parts.port or default_port
+        port = parts.port if parts.port is not None else default_port
     except ValueError as exc:
         msg = "not a host and port"
         raise RefusedError(msg) from exc
     if not parts.hostname or parts.username is not None or parts.password is not None:
         msg = "not a host and port"
         raise RefusedError(msg)
+    if port == 0 or parts.path or parts.query or parts.fragment:
+        msg = "not a host and port"
+        raise RefusedError(msg)
     return parts.hostname, port
+
+
+def _authority(target: str) -> tuple[str, int]:
+    """Return the host and port of a CONNECT target, which must name both and nothing else.
+
+    Raises:
+        RefusedError: no port, port 0 or past 65535, or anything but a host and port.
+    """
+    found = _AUTHORITY.fullmatch(target)
+    if found is None or not 0 < int(found.group(2)) <= _MAX_PORT:
+        msg = "not a host and port"
+        raise RefusedError(msg)
+    return _split_target(target, 0)
 
 
 def _head(sock: socket.socket) -> tuple[bytes, bytes]:
     """Read a request's head (up to its blank line) and whatever arrived after it.
 
+    The whole head must arrive within `HEAD_TIMEOUT_S`, however slowly it trickles in.
+
     Raises:
-        RefusedError: the head is too long or the connection closed first.
+        RefusedError: the head is too long, took too long, or the connection closed first.
     """
+    deadline = time.monotonic() + HEAD_TIMEOUT_S
     data = b""
     while b"\r\n\r\n" not in data:
         if len(data) > MAX_HEAD:
             msg = "the request head is too long"
             raise RefusedError(msg)
-        chunk = sock.recv(_CHUNK)
+        left = deadline - time.monotonic()
+        if left <= 0:
+            msg = "the request head took too long"
+            raise RefusedError(msg)
+        sock.settimeout(left)
+        try:
+            chunk = sock.recv(_CHUNK)
+        except TimeoutError as exc:
+            msg = "the request head took too long"
+            raise RefusedError(msg) from exc
         if not chunk:
             msg = "the connection closed before the request"
             raise RefusedError(msg)
@@ -123,6 +165,46 @@ class _Budget:
             return self._left >= 0
 
 
+class _Server(socketserver.ThreadingTCPServer):
+    """Takes a connection slot before a thread is made for a connection; past the cap, none."""
+
+    daemon_threads = True
+
+    def __init__(
+        self,
+        handler: type[socketserver.BaseRequestHandler],
+        slots: threading.BoundedSemaphore,
+        on_full: Callable[[socket.socket], None],
+    ) -> None:
+        self.slots = slots
+        self._on_full = on_full
+        super().__init__((LOOPBACK, 0), handler)
+
+    @override
+    def process_request(
+        self, request: socket.socket | tuple[bytes, socket.socket], client_address: object
+    ) -> None:
+        if not self.slots.acquire(blocking=False):
+            if isinstance(request, socket.socket):
+                self._on_full(request)
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.slots.release()
+            raise
+
+    @override
+    def process_request_thread(
+        self, request: socket.socket | tuple[bytes, socket.socket], client_address: object
+    ) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
+
 class EgressProxy:
     """An HTTP proxy on 127.0.0.1 that reaches only public addresses on ports 80 and 443.
 
@@ -146,6 +228,8 @@ class EgressProxy:
         self._connect = connect
         self._budget = _Budget(max_bytes)
         self._slots = threading.BoundedSemaphore(max_connections)
+        self._max_connections = max_connections
+        self._lookups = threading.BoundedSemaphore(MAX_LOOKUPS)
         self._server: socketserver.ThreadingTCPServer | None = None
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -153,6 +237,20 @@ class EgressProxy:
         self._refused_hosts: deque[tuple[str, int]] = deque(maxlen=REFUSED_KEPT)
         self._stopped = False
         self._open_sockets: set[socket.socket] = set()  # both ends of every connection served
+        self._clients: set[socket.socket] = set()  # the browser's ends of them
+        self._password = secrets.token_urlsafe(24)
+        token = base64.b64encode(f"{USER}:{self._password}".encode()).decode("ascii")
+        self.authorization = f"Basic {token}"  # the browser's `Proxy-Authorization`
+
+    def url(self, port: int) -> str:
+        """Return the proxy's address with its credential, for the browser (never put in argv)."""
+        return f"http://{USER}:{self._password}@{LOOPBACK}:{port}"
+
+    @property
+    def connections(self) -> int:
+        """How many connections are being served now."""
+        with self._lock:
+            return len(self._open_sockets & self._clients)
 
     @property
     def refused(self) -> int:
@@ -186,8 +284,7 @@ class EgressProxy:
             def handle(self) -> None:
                 proxy.serve(self.request)
 
-        server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler)
-        server.daemon_threads = True
+        server = _Server(Handler, self._slots, _turn_away)
         thread = threading.Thread(
             target=server.serve_forever, args=(0.1,), name="jarvis-proxy", daemon=True
         )
@@ -229,20 +326,19 @@ class EgressProxy:
     def _untrack(self, sock: socket.socket) -> None:
         with self._lock:
             self._open_sockets.discard(sock)
+            self._clients.discard(sock)
 
     def serve(self, client: socket.socket) -> None:
-        """Handle one connection from the browser: check it, then tunnel or forward it."""
-        if not self._slots.acquire(blocking=False):
-            _reply(client, b"503 Service Unavailable")
-            return
+        """Handle one connection from the browser (its slot already taken): check, then pass on."""
         try:
             if self._track(client):
+                with self._lock:
+                    self._clients.add(client)
                 self._serve(client)
         except OSError:
             pass  # either side went away; nothing is left to tell
         finally:
             self._untrack(client)
-            self._slots.release()
             with contextlib.suppress(OSError):
                 client.close()
 
@@ -254,6 +350,13 @@ class EgressProxy:
         client.settimeout(HEAD_TIMEOUT_S)
         try:
             head, rest = _head(client)
+        except RefusedError as exc:
+            _reply(client, b"403 Forbidden", str(exc))
+            return
+        if not self._signed(head):
+            _reply(client, b"407 Proxy Authentication Required", headers=_CHALLENGE)
+            return
+        try:
             upstream, first = self._open(head, rest)
         except (RefusedError, BlockedDestinationError) as exc:
             with self._lock:
@@ -270,6 +373,16 @@ class EgressProxy:
                 self._pass_on(client, upstream, first, rest)
             finally:
                 self._untrack(upstream)
+
+    def _signed(self, head: bytes) -> bool:
+        """Return whether a request head carries this proxy's credential (in constant time)."""
+        expected = self.authorization.encode("ascii")
+        signed = False
+        for line in head.split(b"\r\n")[1:]:
+            name, _, value = line.partition(b":")
+            if name.strip().lower() == b"proxy-authorization":
+                signed |= hmac.compare_digest(value.strip(), expected)
+        return signed
 
     def _pass_on(
         self, client: socket.socket, upstream: socket.socket, first: bytes | None, rest: bytes
@@ -305,7 +418,7 @@ class EgressProxy:
             msg = "the address is not ASCII"
             raise RefusedError(msg) from exc
         if method == b"CONNECT":
-            host, port = _split_target(text, 443)
+            host, port = _authority(text)
             return self._reach(host, port), None
         try:
             parts = urlsplit(text)
@@ -336,12 +449,32 @@ class EgressProxy:
                 self._refused_hosts.append((host.lower(), port))
             raise
         for address in addresses:
+            if self._is_stopped():  # a lookup that outlived `stop` dials nothing
+                break
             try:
                 return self._connect(address, port, CONNECT_TIMEOUT_S)
             except OSError:
                 continue
         msg = f"{host!r} did not answer"
         raise RefusedError(msg)
+
+    def _is_stopped(self) -> bool:
+        with self._lock:
+            return self._stopped
+
+    def _lookup(self, host: str, port: int, **options: Any) -> list[tuple[Any, ...]]:  # ruff: ignore[any-type] - getaddrinfo's own options
+        """Resolve as `resolve` (or the system) does, holding one of `MAX_LOOKUPS` until it ends.
+
+        Raises:
+            OSError: as many lookups are running already (it then counts as not resolving).
+        """
+        if not self._lookups.acquire(blocking=False):
+            msg = "too many name lookups at once"
+            raise OSError(msg)
+        try:
+            return (self._resolve or socket.getaddrinfo)(host, port, **options)
+        finally:
+            self._lookups.release()
 
     def _allowed(self, host: str, port: int) -> list[str]:
         """Return the addresses `host` may be reached at: public ones, or a preview's one port.
@@ -350,7 +483,7 @@ class EgressProxy:
             BlockedDestinationError: anything else.
         """
         if self._local_port is None:
-            return public_addresses(host, port, self._resolve)
+            return public_addresses(host, port, self._lookup)
         if host == LOOPBACK and port == self._local_port:
             return [LOOPBACK]
         msg = f"a preview reaches only {LOOPBACK}:{self._local_port}"
@@ -401,9 +534,22 @@ def _send_all(sock: socket.socket, data: bytes) -> None:
             view = view[sent:]
 
 
-def _reply(client: socket.socket, status: bytes, reason: str = "") -> None:
+_CHALLENGE = (b'Proxy-Authenticate: Basic realm="jarvis"',)
+
+
+def _turn_away(client: socket.socket) -> None:
+    """Answer a connection past the cap, on the listening thread: never wait on it."""
+    with contextlib.suppress(OSError):
+        client.settimeout(0.5)
+    _reply(client, b"503 Service Unavailable")
+
+
+def _reply(
+    client: socket.socket, status: bytes, reason: str = "", headers: tuple[bytes, ...] = ()
+) -> None:
     """Answer the browser with a status and close; the reason is for anyone reading the log."""
     body = reason.encode("utf-8", "replace")[:200]
     head = b"HTTP/1.1 " + status + b"\r\nConnection: close\r\nContent-Type: text/plain\r\n"
+    head += b"".join(header + b"\r\n" for header in headers)
     with contextlib.suppress(OSError):
         client.sendall(head + b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)

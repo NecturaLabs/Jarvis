@@ -308,8 +308,12 @@ class Browser:
         atexit.register(self._at_exit)
         return folder
 
-    def _flags(self, folder: Path, proxy: EgressProxy) -> list[str]:
-        """Return agent-browser's options: the same on every call, so it is never relaunched."""
+    def _flags(self, folder: Path) -> list[str]:
+        """Return agent-browser's options: the same on every call, so it is never relaunched.
+
+        The proxy, with its credential, is in the environment (`_environment`), not here: a
+        program's arguments are readable by every user of this PC.
+        """
         idle = int(self._idle_s) + 60  # agent-browser's own backstop, after Jarvis's
         chrome = ["--executable-path", self._chrome] if self._chrome else []
         return [
@@ -330,8 +334,6 @@ class Browser:
             str(folder / "downloads"),
             "--action-policy",
             str(folder / "policy.json"),
-            "--proxy",
-            f"http://127.0.0.1:{proxy.port}",
             "--proxy-bypass",
             "<-loopback>",
             "--args",
@@ -342,11 +344,12 @@ class Browser:
         ]
 
     @staticmethod
-    def _environment(folder: Path) -> dict[str, str]:
+    def _environment(folder: Path, proxy: EgressProxy) -> dict[str, str]:
         """Return the browser's environment: no display, no sound server, no outside settings.
 
         Its home and XDG folders are the session's (`folder / "work"`), so nothing Chrome or
-        agent-browser keeps or downloads by default lands in the owner's.
+        agent-browser keeps or downloads by default lands in the owner's. The proxy comes with
+        its credential, which agent-browser answers the proxy's `407` with.
         """
         env = {name: os.environ[name] for name in _KEPT_ENVIRONMENT if name in os.environ}
         home = folder / "work"
@@ -359,6 +362,7 @@ class Browser:
                 "XDG_STATE_HOME": str(home / ".local" / "state"),
                 "XDG_DOWNLOAD_DIR": str(folder / "downloads"),
                 "AGENT_BROWSER_SOCKET_DIR": str(folder / "s"),
+                "AGENT_BROWSER_PROXY": proxy.url(proxy.port),
                 "PIPEWIRE_REMOTE": "/nonexistent",
                 "PULSE_SERVER": "unix:/nonexistent",
                 # agent-browser would ask a blog for Chrome's security news, past the proxy.
@@ -389,12 +393,12 @@ class Browser:
         if proxy is None:  # set with the folder
             msg = "the browser's proxy is not running"
             raise BrowserError(msg)
-        argv = [*self._flags(folder, proxy), "batch", "--bail"]
+        argv = [*self._flags(folder), "batch", "--bail"]
         try:
             out = self._run(
                 argv,
                 stdin=json.dumps(commands),
-                env=self._environment(folder),
+                env=self._environment(folder, proxy),
                 cwd=folder / "work",
                 timeout=limit,
             )
@@ -477,9 +481,9 @@ class Browser:
         if proxy is not None:
             with contextlib.suppress(BrowserError, OSError):
                 self._run(
-                    [*self._flags(folder, proxy), "close"],
+                    [*self._flags(folder), "close"],
                     stdin="",
-                    env=self._environment(folder),
+                    env=self._environment(folder, proxy),
                     cwd=folder / "work",
                     timeout=CLOSE_LIMIT_S,
                 )

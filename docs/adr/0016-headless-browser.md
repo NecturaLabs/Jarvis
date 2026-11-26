@@ -42,8 +42,14 @@ quick commands.
   as the home network's global IPv6 prefix; read from the routing tables at each connection) and the port
   is 80 or 443, and connects to the address it checked. Site-local IPv6 (`fec0::/10`), which Python counts
   as global, is refused too. HTTPS and secure WebSockets are tunnelled
-  unread. Plain HTTP goes on with `Connection: close`. Anything else is refused. One session moves at most
-  200 MB, and its connections are capped at 48 at once. Chrome gets `--proxy-server` with
+  unread (a `CONNECT` must name a host and a port and nothing else). Plain HTTP goes on with
+  `Connection: close`. Anything else is refused. Only the session's own browser may use the proxy: each
+  proxy has a random credential, which agent-browser is given in its environment (a program's arguments
+  are readable by every user of the PC) and sends after the proxy's `407`, compared in constant time; any
+  other program on the PC is answered `407`. One session moves at most 200 MB. Its connections are capped
+  at 48 at once, a slot taken before a thread is made for one; a request head must arrive whole within
+  10 s, and at most 16 name lookups run at once, counting those the system never answered. A lookup that
+  ends after the proxy stopped dials nothing. Chrome gets `--proxy-server` with
   `--proxy-bypass-list=<-loopback>`, so loopback goes through the proxy too, and a host-resolver rule that
   resolves no name itself. WebRTC may not send UDP past the proxy, and QUIC is off. A page's scripts,
   frames, images, WebSockets and redirects therefore reach neither Strata (127.0.0.1:8080), SearXNG

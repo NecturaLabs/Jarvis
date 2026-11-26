@@ -95,8 +95,10 @@ def test_it_listens_on_loopback_and_answers_only_reads(served: FolderServer) -> 
 
 
 def _ask(proxy: EgressProxy, request: bytes) -> bytes:
+    line, _, rest = request.partition(b"\r\n")
+    signed = line + b"\r\nProxy-Authorization: " + proxy.authorization.encode() + b"\r\n" + rest
     with socket.create_connection(("127.0.0.1", proxy.port), timeout=5) as client:
-        client.sendall(request)
+        client.sendall(signed)
         data = b""
         while chunk := client.recv(4096):
             data += chunk
