@@ -36,6 +36,7 @@ from jarvis.pc.windows import WindowOps
 from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
+from jarvis.router import toolbox_section, use_tools_operation
 from jarvis.schedule import JobStore, ScheduleOps
 from jarvis.secretfile import read_api_key
 from jarvis.services import StrataSetupError, read_run_config, reads_pictures
@@ -45,6 +46,7 @@ from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
 from jarvis.sysinfo import Sampler
+from jarvis.toolgroups import USE_TOOLS
 from jarvis.web import browser, browserops
 from jarvis.web.arctic import ArcticShift
 from jarvis.web.guard import public_client
@@ -207,19 +209,29 @@ def _served_model(config: Config) -> str:
     return f"the {name} model" if name else "a local model"
 
 
-def system_prompt(config: Config, channel: Channel = "voice", *, coding: bool = False) -> str:
+def system_prompt(
+    config: Config,
+    channel: Channel = "voice",
+    *,
+    coding: bool = False,
+    registry: Registry | None = None,
+) -> str:
     """Render the shipped prompt for a channel with the owner's persona, skills and addendum.
 
     The voice prompt asks for short spoken replies; the chat prompt for written Markdown that fits
     the chat's reply budget, as brief or as full as `chat.response_format` says. In coding mode
     the prompt gains its part on programming work, and the owner's own instructions for it
-    (`coding.prompt`).
+    (`coding.prompt`). Given the `registry` of a routed agent (one with `use_tools`), it holds a
+    toolbox of that registry's tool groups (`jarvis.router`); every other prompt is unchanged.
     """
     prompts = files("jarvis").joinpath("prompts")
     core = prompts.joinpath("core.md").read_text(encoding="utf-8")
     style = prompts.joinpath(f"{channel}.md").read_text(encoding="utf-8")
     words = int(round(config.chat.reply_tokens * WORDS_PER_TOKEN, -1))
     fill = {
+        "toolbox": toolbox_section(registry)
+        if registry is not None and registry.get(USE_TOOLS) is not None
+        else "",
         "skills": skills.prompt_section(skills.shipped())
         + osskills.prompt_section(osskills.catalog()),
         "name": config.persona.name,
@@ -621,50 +633,49 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     browsing = browser_ops(
         config, online, channel, page_chars=pages, shown=shown, sessions=browsers
     )
+    ops = [
+        *spotify,
+        *online.operations(),
+        *(browsing.operations() if browsing is not None else []),
+        *pc_operations(config, limits, shown=shown),
+        *calc.operations(config.format),
+        *AboutOps(config, channel, limits, refused=files_boundary(config).secret).operations(),
+        *ScheduleOps(
+            JobStore(paths.schedule_file()),
+            twelve_hour=config.clock.twelve_hour,
+            voice_running=voice_running,
+        ).operations(),
+        *([skills.skill_operation(shipped)] if shipped else []),
+        *(
+            [
+                osskills.os_skill_operation(
+                    guides,
+                    max_chars=limits.tool_text_chars,
+                    root=osskills.ROOT,
+                    owner=osskills.OWNER,
+                )
+            ]
+            if guides
+            else []
+        ),
+        *(
+            HearingOps(
+                listening, heard=pc_audio_heard(config), max_chars=limits.tool_text_chars
+            ).operations()
+            if channel == "voice" and config.audio.listen_to_pc
+            else []
+        ),
+        *([quiet_operation()] if channel == "voice" else []),
+        *(SingOps(singer_for(config)).operations() if channel == "voice" else []),
+        *([think] if (think := think_operation(limits)) is not None else []),
+        *([switch_operation(config, coding=coding)] if switches_itself(config, channel) else []),
+        no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
+    ]
+    if limits.tools == "routed":  # asks for the groups this channel has, whatever is switched off
+        groups = [group.name for group in Registry(ops).groups()]
+        ops.insert(-1, use_tools_operation(groups))
     return Registry(
-        [
-            *spotify,
-            *online.operations(),
-            *(browsing.operations() if browsing is not None else []),
-            *pc_operations(config, limits, shown=shown),
-            *calc.operations(config.format),
-            *AboutOps(config, channel, limits, refused=files_boundary(config).secret).operations(),
-            *ScheduleOps(
-                JobStore(paths.schedule_file()),
-                twelve_hour=config.clock.twelve_hour,
-                voice_running=voice_running,
-            ).operations(),
-            *([skills.skill_operation(shipped)] if shipped else []),
-            *(
-                [
-                    osskills.os_skill_operation(
-                        guides,
-                        max_chars=limits.tool_text_chars,
-                        root=osskills.ROOT,
-                        owner=osskills.OWNER,
-                    )
-                ]
-                if guides
-                else []
-            ),
-            *(
-                HearingOps(
-                    listening, heard=pc_audio_heard(config), max_chars=limits.tool_text_chars
-                ).operations()
-                if channel == "voice" and config.audio.listen_to_pc
-                else []
-            ),
-            *([quiet_operation()] if channel == "voice" else []),
-            *(SingOps(singer_for(config)).operations() if channel == "voice" else []),
-            *([think] if (think := think_operation(limits)) is not None else []),
-            *(
-                [switch_operation(config, coding=coding)]
-                if switches_itself(config, channel)
-                else []
-            ),
-            no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
-        ],
-        resets=(online.reset, *((browsing.reset,) if browsing is not None else ())),
+        ops, resets=(online.reset, *((browsing.reset,) if browsing is not None else ()))
     )
 
 
@@ -683,7 +694,7 @@ SETTING_ONLY = frozenset({"pc_audio_listen", SWITCH_MODEL})
 MAKES_SOUND = frozenset({"sing"})
 SOUNDLESS = frozenset({"ask", "speech-test"})
 # How Jarvis answers, not tools: never switched off.
-ALWAYS_OFFERED = frozenset({"no_action", "think_harder", "stay_quiet"})
+ALWAYS_OFFERED = frozenset({"no_action", "think_harder", "stay_quiet", USE_TOOLS})
 
 
 def switched_off(config: Config) -> set[str]:
@@ -772,6 +783,43 @@ def mode_model(config: Config, key: str) -> StrataModel:
     return replace(strata_model(config, key), file_of=lambda: files[modes.current()])
 
 
+def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; the rest is keyword-only
+    config: Config,
+    spotify: list[Operation],
+    channel: Channel,
+    *,
+    coding: bool,
+    via: str | None,
+    can_switch: bool,
+    voice_running: Callable[[], bool] = lambda: True,
+    listening: Listening | None = None,
+    browsers: dict[str, browser.Browser] | None = None,
+) -> Registry:
+    """Return the operations an agent offers in a mode, without what is switched off.
+
+    `config` is the mode's own (`modes.effective`). A tool switched off is not offered at all:
+    by `boundaries.classes`, by coding mode's `tools_off`, `sing` where the caller cannot play a
+    sound (`via`), and `switch_model` where there is no model server to switch (`can_switch`).
+    """
+    off: set[str] = {
+        *switched_off(config),
+        *(config.coding.tools_off if coding else ()),
+        *(MAKES_SOUND if via in SOUNDLESS else ()),
+    }
+    if not can_switch:
+        off.add(SWITCH_MODEL)
+    return channel_registry(
+        config,
+        spotify,
+        channel_limits(config, channel),
+        channel,
+        voice_running=voice_running,
+        coding=coding,
+        listening=listening,
+        browsers=browsers,
+    ).without(off)
+
+
 def build(
     config: Config,
     *,
@@ -837,24 +885,18 @@ def build(
         base = config if chat is None else config.model_copy(update={"chat": chat})
         cfg = modes.effective(base, mode)
         limits = channel_limits(cfg, channel)
-        off: set[str] = {
-            *switched_off(cfg),
-            *(cfg.coding.tools_off if coding else ()),
-            *(MAKES_SOUND if via in SOUNDLESS else ()),
-        }
-        if units is None:
-            off.add(SWITCH_MODEL)
-        registry = channel_registry(
+        registry = offered_registry(
             cfg,
             available if cfg.spotify.client_id else [],
-            limits,
             channel,
-            voice_running=voice_service_running if elsewhere else lambda: True,
             coding=coding,
+            via=via,
+            can_switch=units is not None,
+            voice_running=voice_service_running if elsewhere else lambda: True,
             listening=listening,
             browsers=browsers,
-        ).without(off)  # a tool switched off is not offered at all
-        prompt = system_prompt(cfg, channel, coding=coding)
+        )
+        prompt = system_prompt(cfg, channel, coding=coding, registry=registry)
         return Setup(prompt, registry, limits, reads_pictures(cfg), strata_model(cfg, key))
 
     normal = setup("normal")

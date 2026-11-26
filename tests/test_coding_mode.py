@@ -17,6 +17,7 @@ from jarvis.app import (
     channel_registry,
     mode_model,
     no_action_operation,
+    offered_registry,
     switch_operation,
     system_prompt,
     unknown_overrides,
@@ -740,7 +741,8 @@ def test_the_chat_renders_its_prompt_for_the_mode_jarvis_is_in(installed: Config
     assert "You are in coding mode" not in usual
     assert "You are in coding mode" in coding
     served = modes.effective(installed.model_copy(update={"chat": chat}), "coding")
-    assert coding == system_prompt(served, "chat", coding=True)
+    tools = offered_registry(served, [], "chat", coding=True, via="chat", can_switch=True)
+    assert coding == system_prompt(served, "chat", coding=True, registry=tools)
 
 
 @dataclass

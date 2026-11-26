@@ -30,6 +30,7 @@ from jarvis.app import (
     chat_memory_file,
     chat_pictures,
     echoes_hint,
+    offered_registry,
     spotify_operations,
     strata_model,
     system_prompt,
@@ -929,7 +930,15 @@ def _chat_prompt(chat: config.ChatConfig) -> str:
     """Render the chat's instructions for these settings, in the mode Jarvis is in now."""
     mode = modes.current()
     cfg = modes.effective(config.load().model_copy(update={"chat": chat}), mode)
-    return system_prompt(cfg, "chat", coding=mode == "coding")
+    registry = offered_registry(
+        cfg,
+        spotify_operations(cfg),
+        "chat",
+        coding=mode == "coding",
+        via="chat",
+        can_switch=True,
+    )
+    return system_prompt(cfg, "chat", coding=mode == "coding", registry=registry)
 
 
 def cmd_chat(_args: argparse.Namespace) -> int:

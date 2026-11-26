@@ -7,9 +7,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from jarvis.policy import OpClass, Origin
+from jarvis.toolgroups import CORE_NAME, GROUPS, ToolGroup, group_name
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterable, Mapping
+    from collections.abc import Callable, Collection, Generator, Iterable, Mapping
 
     from jarvis.shortcuts import Shortcut
 
@@ -210,6 +211,7 @@ class Result:
     `sound` is played to the owner in the reply, after the words spoken before it; a channel
     that cannot play sound turns the result into a failure the model is told about.
     `mode` asks the agent to go on in that mode, on that mode's model (`switch_model`).
+    `groups` asks the agent to offer those tool groups for the rest of the request (`use_tools`).
     """
 
     text: str
@@ -223,6 +225,7 @@ class Result:
     effort: str = ""
     sound: Sound | None = None
     mode: str = ""
+    groups: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,6 +332,21 @@ def _check_integer(name: str, spec: dict[str, Any], value: object) -> int:
     return number
 
 
+def _check_array(name: str, spec: dict[str, Any], value: object) -> list[object]:
+    # A list of scalars, each checked against `items`, of at most `maxItems` (10).
+    if not isinstance(value, list):
+        raise ArgumentError(f"{name} must be a list")
+    items = cast("list[object]", value)
+    if len(items) < spec.get("minItems", 0):
+        raise ArgumentError(f"{name} needs at least {spec['minItems']} item(s)")
+    if len(items) > spec.get("maxItems", 10):
+        raise ArgumentError(f"{name} has too many items")
+    item_spec: dict[str, Any] = spec.get("items", {})
+    if item_spec.get("type") not in {"string", "integer", "boolean"}:
+        raise ArgumentError(f"{name} has an unsupported type")
+    return [_check_value(name, item_spec, item) for item in items]
+
+
 def _check_value(name: str, spec: dict[str, Any], value: object) -> object:
     kind = spec.get("type")
     if kind == "string":
@@ -339,6 +357,8 @@ def _check_value(name: str, spec: dict[str, Any], value: object) -> object:
         if not isinstance(value, bool):
             raise ArgumentError(f"{name} must be true or false")
         return value
+    if kind == "array":
+        return _check_array(name, spec, value)
     raise ArgumentError(f"{name} has an unsupported type")
 
 
@@ -377,6 +397,10 @@ class Registry:
         super().__init__()
         self._ops = {op.name: op for op in ops}
         self._resets = tuple(resets)
+        self._by_group: dict[str, list[Operation]] = {}
+        for op in self._ops.values():
+            if (group := group_name(op.name)) is not None:
+                self._by_group.setdefault(group, []).append(op)
 
     def reset(self) -> None:
         """Make the operations forget what they keep from the conversation (search results)."""
@@ -393,9 +417,39 @@ class Registry:
         kept = [op for name, op in self._ops.items() if name not in dropped]
         return Registry(kept, resets=self._resets)
 
-    def tool_schemas(self) -> list[dict[str, Any]]:
-        """Return every operation as an OpenAI tool."""
-        return [op.tool_schema() for op in self._ops.values()]
+    def tool_schemas(self, loaded: Collection[str] | None = None) -> list[dict[str, Any]]:
+        """Return the operations as OpenAI tools: every one, or the core and the `loaded` groups.
+
+        Given `loaded`, the order is fixed whatever order the groups were loaded in: the core
+        tools, then each loaded group's in the order the groups first appear in this registry, so
+        calls with the same groups share their whole start. An operation no group names is never
+        offered that way (a test makes sure there is none).
+        """
+        if loaded is None:
+            return [op.tool_schema() for op in self._ops.values()]
+        wanted = [CORE_NAME, *(g.name for g in self.groups() if g.name in loaded)]
+        return [op.tool_schema() for name in wanted for op in self._by_group.get(name, [])]
+
+    def groups(self) -> list[ToolGroup]:
+        """Return the tool groups this registry has, apart from the core, as it has them.
+
+        Each lists only the operations present here, in order, and the groups come in the order
+        their first operation appears: the canonical order the tools are offered in.
+        """
+        declared = {group.name: group for group in GROUPS}
+        return [
+            ToolGroup(name, declared[name].summary, tuple(op.name for op in ops))
+            for name, ops in self._by_group.items()
+            if name in declared
+        ]
+
+    def core_names(self) -> list[str]:
+        """Return the names of the core tools this registry has, which every request is offered."""
+        return [op.name for op in self._by_group.get(CORE_NAME, [])]
+
+    def ungrouped(self) -> list[str]:
+        """Return the operations no tool group names."""
+        return [name for name in self._ops if group_name(name) is None]
 
     def names(self) -> list[str]:
         """Return the operation names."""
