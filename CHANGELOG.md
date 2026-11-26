@@ -29,8 +29,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   Strata already serves, answered in text. Pictures work as in the chat. A question about an action is asked
   in the reply and your next message is the answer; a permission button in the app never stands for your yes
   ([ADR 0023](docs/adr/0023-acp-front-end.md)). `jarvis doctor` says how to add it when T3 Code is set up.
-- `jarvis acp` lists Jarvis's normal and coding modes as the app's models, each under the name of the model
-  that serves it and what it is for, with a thinking effort that starts at the mode's own (`none` and
+- `jarvis acp` lists Jarvis's normal and coding modes as the app's models, each titled with the name of the
+  model that serves it and the mode (`model · Coding`), described by what it is for, with a thinking effort that starts at the mode's own (`none` and
   `medium` by default), so T3 Code shows Jarvis once. A thread in coding mode works with the coding prompt,
   `[coding.chat]` limits, tools and write roots; `--coding` makes coding mode the first choice. Where
   coding mode has a model of its own, a thread's first request in it loads that model as `/model coding`

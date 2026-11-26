@@ -1388,11 +1388,15 @@ ACP_PURPOSE: dict[modes.Mode, str] = {
 
 
 def _acp_models(cfg: config.Config, *, coding_first: bool) -> list[acp.ModelChoice]:
-    """Return Jarvis's modes as a coding app lists them: model name, purpose, starting effort."""
+    """Return Jarvis's modes as a coding app lists them: model name, purpose, starting effort.
+
+    The title is the model's name and the mode's (`model · Coding`), since an app may show only
+    the title, and both modes may run the same model.
+    """
     choices = [
         acp.ModelChoice(
             mode,
-            modes.model_name(cfg, mode),
+            f"{modes.model_name(cfg, mode)} · {mode.capitalize()}",
             ACP_PURPOSE[mode],
             modes.effective(cfg, mode).chat.thinking,
         )

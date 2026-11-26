@@ -382,8 +382,8 @@ def test_acp_lists_both_modes_by_their_models_name_purpose_and_effort(
     acp.run(monkeypatch)
 
     assert [(m.id, m.name, m.effort) for m in acp.models] == [
-        ("normal", "normal-model", "none"),
-        ("coding", "coding-model", "medium"),
+        ("normal", "normal-model · Normal", "none"),
+        ("coding", "coding-model · Coding", "medium"),
     ]
     assert all(m.description for m in acp.models)
     assert acp.models[0].description != acp.models[1].description
