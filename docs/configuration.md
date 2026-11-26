@@ -495,7 +495,9 @@ The browser runs headless and muted, opens no window, and uses a throwaway profi
 through a proxy Jarvis runs on loopback, which reaches only public addresses on ports 80 and 443, so a
 page cannot reach this PC (Strata, SearXNG) or your home network. Downloads, uploads, page scripts run by
 Jarvis, cookies and other tabs are refused. It closes after `idle_close_s`, and when the conversation is
-forgotten, so it uses nothing between requests. [ADR 0016](adr/0016-headless-browser.md) has the details.
+forgotten, so it uses nothing between requests. A yes given after it closed (a question left open longer
+than `idle_close_s`) does nothing; ask again and Jarvis opens the page anew.
+[ADR 0016](adr/0016-headless-browser.md) has the details.
 
 ## `[files]`: the folders Jarvis may read and write
 

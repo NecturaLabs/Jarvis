@@ -367,6 +367,49 @@ def test_each_use_puts_the_idle_close_off(tmp_path: Path) -> None:
     assert timers.made[-1][2][0]
 
 
+def test_an_idle_timer_that_fired_as_a_command_ran_closes_nothing(tmp_path: Path) -> None:
+    # It fired while the second command held the browser, too late to be cancelled: that command
+    # has just used the browser, so the browser stays for a full idle time after it.
+    fake = FakeAgentBrowser()
+    made, timers, proxy = _browser(tmp_path, fake)
+    made.open("https://site.example/")
+    _seconds, fired, _state = timers.made[-1]
+    made.open("https://site.example/two")
+
+    fired()
+
+    assert made.running
+    assert made.view is not None
+    assert not proxy.stopped
+    assert fake.calls[-1][0][-1] != "close"
+
+
+def _click_button(made: Browser) -> object:
+    return made.click(BUTTON, "https://site.example/")
+
+
+def _type_cats(made: Browser) -> object:
+    return made.fill(BOX, "https://site.example/", "cats", submit=True)
+
+
+@pytest.mark.parametrize("act", [_click_button, _type_cats], ids=["click", "fill"])
+def test_a_yes_after_the_browser_closed_idle_starts_no_browser(
+    tmp_path: Path, act: Callable[[Browser], object]
+) -> None:
+    # The question outlasted the idle time: the page the yes was for is gone with the browser.
+    fake = FakeAgentBrowser(Page(refs=dict(PAGE_REFS)))
+    made, timers, _ = _browser(tmp_path, fake)
+    made.open("https://site.example/")
+    timers.fire()
+    calls = len(fake.calls)
+
+    with pytest.raises(BrowserError, match="closed"):
+        act(made)
+
+    assert len(fake.calls) == calls
+    assert not made.running
+
+
 def test_a_timeout_closes_the_session(tmp_path: Path) -> None:
     fake = FakeAgentBrowser()
     fake.timeout = True

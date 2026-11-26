@@ -68,8 +68,9 @@ quick commands.
     `confirm`, and it is `always_ask`: the owner is asked even with `boundaries.bypass_consent` on. The
     question names the element, its site and the exact words ('Should I type "red shoes" into the
     searchbox "Search" on shop.example and press Enter?'). The yes is bound to that element on that page:
-    if the page changed meanwhile, nothing is done. Typing is `outbound`, at most 200 characters, never into
-    a password, hidden or file field.
+    if the page changed meanwhile, or the browser closed while the owner was asked (a question open longer
+    than `idle_close_s`), nothing is done and no new browser is started for it. Typing is `outbound`, at
+    most 200 characters, never into a password, hidden or file field.
   - Everything the browser returns is web text (`Origin.WEB`), cut to the channel's room for one result.
 - **Where.** `chat.browser` is on and `agent.browser` (voice and `jarvis ask`) is off by default. The tools
   are offered only when agent-browser is on PATH; `jarvis doctor` notes when it is missing. Their

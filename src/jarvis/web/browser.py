@@ -224,6 +224,7 @@ class Browser:
         self._dir: Path | None = None
         self._proxy: EgressProxy | None = None
         self._timer: threading.Timer | None = None
+        self._uses = 0  # counts the idle timers set, so only the latest one closes anything
         self._view: View | None = None
 
     @property
@@ -355,8 +356,20 @@ class Browser:
             return
         if self._timer is not None:
             self._timer.cancel()
-        self._timer = self._make_timer(self._idle_s, self.close)
+        self._uses += 1
+        use = self._uses
+        self._timer = self._make_timer(self._idle_s, lambda: self._expire(use))
         self._timer.start()
+
+    def _expire(self, use: int) -> None:
+        """Close the session for the idle timer set at `use`, unless a later command reset it.
+
+        A timer that fired while a command held the browser waits for it, then finds that the
+        command set a new timer: it closes nothing.
+        """
+        with self._lock:
+            if use == self._uses:
+                self._shut()
 
     def close(self) -> None:
         """Close the browser, stop its proxy and delete its folder (its profile and downloads)."""
@@ -499,6 +512,17 @@ class Browser:
                 raise BrowserError(msg)
             return self._checked(urljoin(view.url, href))
 
+    def _still_open(self) -> None:
+        """Check that the page a yes was given for is still open.
+
+        Raises:
+            BrowserError: the browser closed meanwhile (idle while the owner was asked, or the
+                conversation was forgotten); a new browser would show another page.
+        """
+        if self._view is None:
+            msg = "the browser closed while waiting for the yes; open the page again"
+            raise BrowserError(msg)
+
     def _same(self, expect: Element, url: str) -> None:
         """Check that the page is still at `url` and shows `expect` under its reference.
 
@@ -519,6 +543,7 @@ class Browser:
         `BrowserError` that the page changed or the click failed.
         """
         with self._lock:
+            self._still_open()
             try:
                 self._same(expect, url)
             finally:
@@ -537,6 +562,7 @@ class Browser:
             msg = f"{expect.said()} takes no typing"
             raise BrowserError(msg)
         with self._lock:
+            self._still_open()
             try:
                 self._same(expect, url)
                 rows = self._batch([["get", "attr", f"@{expect.ref}", "type"]])
