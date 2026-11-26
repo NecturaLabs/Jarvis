@@ -901,6 +901,7 @@ class _Run:
     loops: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
     audit: AuditLog = field(default_factory=lambda: AuditLog(None))
     listening: list[Listening | None] = field(default_factory=list[Listening | None])
+    watch: object = field(default_factory=object)  # the service's screen watches, as built
 
     def part(self, *args: object, **kwargs: object) -> _Part:
         made = _Part(*args, **kwargs)
@@ -947,7 +948,13 @@ def _cmd_run(
     ops = SimpleNamespace(start_refresh=run.refresh.append)
     agent = SimpleNamespace(prime=run.primed.set)
     jarvis = SimpleNamespace(
-        agent=agent, model=model, ops=ops, hint=lambda: "", audit=run.audit, switcher=None
+        agent=agent,
+        model=model,
+        ops=ops,
+        hint=lambda: "",
+        audit=run.audit,
+        switcher=None,
+        watch=run.watch,
     )
 
     def build(
@@ -1056,6 +1063,7 @@ def test_the_run_reopens_a_lost_microphone_and_notices_one_gone_silent(
     (mic,) = run.kinds["Microphone"]
     assert mic.kwargs["stall_s"] == audio_module.MIC_STALL_S
     assert callable(run.loops[0]["reopen"])
+    assert run.loops[0]["watching"] is run.watch  # the loop makes the screen watches' checks
 
 
 @pytest.mark.parametrize(

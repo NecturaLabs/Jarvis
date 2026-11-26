@@ -52,8 +52,16 @@ Jarvis is pre-1.0 software; see [Status](#status).
   anything beside a fullscreen window, nor the fullscreen window itself, since a fullscreen game can crash
   when that happens. A screenshot of the
   screen, a workspace or one window is saved where Omarchy keeps screenshots and copied to the
-  clipboard. A workspace or window that is not on screen is captured without switching to it
-  (`grim` needed).
+  clipboard, and Jarvis looks at it too when its model can see pictures. A workspace or window that is
+  not on screen is captured without switching to it (`grim` needed). Ask it to tell you when
+  something shows up in a window or on the screen, and while `jarvis run` is up it checks now and
+  then (every 20 seconds by default, for two hours by default, two watches at most) and says so;
+  each check is a model call with a picture ([ADR 0021](docs/adr/0021-screen-watch.md)). It can also watch a program
+  you name and say when it exits (closed, crashed or killed), is stopped, or is stuck waiting on a disk
+  or device at three checks in a row over at least 30 seconds, and when it runs again; that reads only `/proc`, with no picture and no model.
+- **Your own skills:** put instructions for a task of yours in `~/.config/jarvis/skills/<name>.md`, opening
+  with a `---` block holding a `description:` line, and Jarvis reads them when a request needs them. They
+  guide what it does and never let it do more than it otherwise could.
 - **Omarchy questions:** Jarvis answers questions about Omarchy (settings, themes, key bindings, crashes,
   building an app) from the guides Omarchy ships in `/usr/share/omarchy/default/agents/skills/`. It reads
   them as reference text and never runs a command they contain.

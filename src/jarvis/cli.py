@@ -23,7 +23,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from jarvis import __version__, cliout, config, control, models, modes, paths, services, update
+from jarvis import (
+    __version__,
+    cliout,
+    config,
+    control,
+    models,
+    modes,
+    paths,
+    services,
+    skills,
+    update,
+)
 from jarvis.activity import AuditTail
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.app import (
@@ -32,6 +43,7 @@ from jarvis.app import (
     chat_memory_file,
     chat_pictures,
     echoes_hint,
+    offered_registry,
     spotify_operations,
     strata_model,
     system_prompt,
@@ -927,7 +939,15 @@ def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
         ("mode", f"{mode} (/model switches)"),
         ("model", f"{services.model_name(served)}, {served.strata.context:,} tokens of context"),
         ("replies", f"up to {chat.reply_tokens:,} tokens, {chat.max_steps} model calls"),
-        ("memory", f"{chat.memory_detail}, up to {chat.memory_tokens:,} tokens"),
+        (
+            "memory",
+            f"{chat.memory_detail}, "
+            + (
+                "as much as the window leaves"
+                if chat.memory_tokens is None
+                else f"up to {chat.memory_tokens:,} tokens"
+            ),
+        ),
         ("config", str(paths.config_file())),
         ("conversation", str(chat_memory_file())),
         ("archive", f"{chat_archive_dir()}, up to {cfg.chat.archive_keep} conversations"),
@@ -1168,7 +1188,15 @@ def _chat_prompt(chat: config.ChatConfig) -> str:
     """Render the chat's instructions for these settings, in the mode Jarvis is in now."""
     mode = modes.current()
     cfg = modes.effective(config.load().model_copy(update={"chat": chat}), mode)
-    return system_prompt(cfg, "chat", coding=mode == "coding")
+    registry = offered_registry(
+        cfg,
+        spotify_operations(cfg),
+        "chat",
+        coding=mode == "coding",
+        via="chat",
+        can_switch=True,
+    )
+    return system_prompt(cfg, "chat", coding=mode == "coding", registry=registry)
 
 
 def cmd_chat(_args: argparse.Namespace) -> int:
@@ -1454,6 +1482,7 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
         keys=keys,
         due=jobs.take_due,
         schedule_ready=jobs.may_be_due,
+        watching=jarvis.watch,
     )
     handler = control.Controls(
         loop,
@@ -1952,6 +1981,7 @@ def doctor_report(args: argparse.Namespace) -> DoctorReport:
     else:
         notes.extend(_remote_notes(cfg, no_service=args.no_service))
     notes.extend(update.doctor_notes(cfg, launch_for_update))
+    notes.extend(skills.doctor_notes())
     verified = [line.removeprefix("ok").strip() for line in release_lines if line.startswith("ok ")]
     notes.extend(line for line in release_lines if not line.startswith("ok "))
     return DoctorReport(checks, notes, verified)
