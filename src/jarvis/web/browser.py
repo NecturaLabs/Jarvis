@@ -23,6 +23,7 @@ import atexit
 import contextlib
 import json
 import os
+import re
 import secrets
 import shutil
 import tempfile
@@ -30,7 +31,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 from jarvis.operations import current_request
 from jarvis.web.page import Hidden, PageError, check_url, hidden_parts, without_hidden
@@ -57,6 +58,14 @@ SCREEN_STEP_PX = 640  # how far one screenshot part is below the last (the windo
 MAX_PARTS = 20
 # The roles text may be typed into; anything else (a button, a link, a password) is refused.
 TYPABLE = frozenset({"textbox", "searchbox", "combobox"})
+# Input types never typed into; a password field's role is a plain `textbox`.
+UNTYPABLE = frozenset({"password", "hidden", "file"})
+# A link's line in `snapshot -i -u`'s text: its name (a JSON string, so nothing the page wrote can
+# end it), then `[…ref=eN, url=…]`. The address is the browser's own (`this.href`), which has no
+# whitespace when it is http or https; the `]` after it closes the brackets.
+_LINK_LINE = re.compile(
+    r'\s*- link(?: "(?:[^"\\]|\\.)*")? \[(?:[a-z]+(?:=[^,\]]*)?, )*ref=(e\d+), url=(\S*)'
+)
 # agent-browser's action names: only the commands this module sends, nothing else.
 ALLOWED_ACTIONS = (
     "navigate",
@@ -69,6 +78,7 @@ ALLOWED_ACTIONS = (
     "screenshot",
     "click",
     "fill",
+    "focus",
     "press",
     "scroll",
     "wait",
@@ -123,11 +133,6 @@ class Element:
     role: str
     name: str
 
-    def said(self) -> str:
-        """Name it as the owner hears it: `the button "Search"`."""
-        label = f' "{self.name}"' if self.name else ""
-        return f"the {self.role}{label}"
-
 
 @dataclass(frozen=True, slots=True)
 class View:
@@ -137,6 +142,11 @@ class View:
     title: str
     text: str
     elements: tuple[Element, ...]
+    links: tuple[tuple[str, str], ...] = ()  # each link's ref and where the browser has it go
+
+    def goes_to(self, ref: str) -> str:
+        """Return the full address a link goes to, as the browser resolved it ("" for none)."""
+        return next((url for found, url in self.links if found == ref), "")
 
     @property
     def host(self) -> str:
@@ -527,7 +537,11 @@ class Browser:
         hidden = hidden_parts(_field(html, "html"), MAX_NAME)
         page_text = without_hidden(_field(text, "text"), hidden)[:MAX_OUTPUT]
         view = View(
-            address, _one_line(_field(title, "title"), 160), page_text, _shown(snapshot, hidden)
+            address,
+            _one_line(_field(title, "title"), 160),
+            page_text,
+            _shown(snapshot, hidden),
+            _links(snapshot),
         )
         self._view = view
         return view
@@ -537,7 +551,7 @@ class Browser:
         ["get", "title"],
         ["get", "text", "body"],
         ["get", "html", "body"],
-        ["snapshot", "-i"],
+        ["snapshot", "-i", "-u"],
     )
 
     def _act(self, commands: list[list[str]], what: str, *, acting: bool = False) -> View:
@@ -602,7 +616,10 @@ class Browser:
             raise BrowserError(str(exc)) from exc
 
     def href(self, ref: str) -> str:
-        """Return where a link on the current page points, in full, unchecked ("" for nowhere).
+        """Return where a link on the current page goes, in full, unchecked ("" for nowhere).
+
+        It is the browser's own address for it (resolved against the page's base address, a
+        `<base href>` included, or its frame's), from the last look at the page.
 
         Raises:
             BrowserError: no page is open, or the element is not a link.
@@ -613,12 +630,25 @@ class Browser:
             if view is None or found is None or found.role != "link":
                 msg = "that is not a link on the page now; look at the page again"
                 raise BrowserError(msg)
+            return view.goes_to(ref)
+
+    def input_type(self, ref: str) -> str:
+        """Return a field's input type (`password`, `text`, "" for none), lower case.
+
+        Raises:
+            BrowserError: no page is open, or the browser could not read it.
+        """
+        with self._lock:
+            self._still_open()
             try:
-                rows = self._batch([_href_command(ref)])
-                self._done(rows, 1, "read that link")
+                rows = self._batch([["get", "attr", f"@{ref}", "type"]])
+            except BrowserTimeoutError as exc:
+                msg = "the browser didn't answer"
+                raise BrowserError(msg) from exc
             finally:
                 self._idle()
-            return _joined(view.url, rows[0])
+            self._done(rows, 1, "read that field")
+            return _field(rows[0], "value").strip().lower()
 
     def link(self, ref: str) -> str:
         """Return the full address a link on the current page points to, to open it.
@@ -646,11 +676,13 @@ class Browser:
 
     def _same(
         self, expect: Element, url: str, also: Sequence[list[str]] = ()
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[View, list[dict[str, Any]]]:
         """Check that the page is still at `url` and shows `expect` under its reference.
 
-        `also` runs in the same call, after the page is looked at; their rows are returned. It
-        only reads the page: nothing has been done when it fails, a timeout included.
+        agent-browser keeps a ref for one element of one document: an element the page replaced
+        has a new ref, and the old one is gone. `also` runs in the same call, after the page is
+        looked at; the view and their rows are returned. It only reads the page: nothing has
+        been done when it fails, a timeout included.
 
         Raises:
             BrowserError: the page moved on or the element changed, so the yes no longer fits, or
@@ -667,7 +699,7 @@ class Browser:
         if view.url != url or view.element(expect.ref) != expect:
             msg = "the page changed since; look at it again before acting"
             raise BrowserError(msg)
-        return rows[look:]
+        return view, rows[look:]
 
     def click(self, expect: Element, url: str, href: str | None = None) -> View:
         """Click an element the owner agreed to, if the page still shows it, and return the page.
@@ -682,10 +714,10 @@ class Browser:
         with self._lock:
             self._still_open()
             try:
-                rows = self._same(expect, url, [] if href is None else [_href_command(expect.ref)])
+                view, _rows = self._same(expect, url)
             finally:
                 self._idle()
-            if href is not None and _joined(url, rows[0]) != href:
+            if href is not None and view.goes_to(expect.ref) != href:
                 msg = "that link points somewhere else now; look at the page again"
                 raise BrowserError(msg)
             return self._act([["click", f"@{expect.ref}"]], "click that", acting=True)
@@ -699,20 +731,22 @@ class Browser:
             BrowserError: the page changed, the element takes no text, or typing failed.
         """
         if expect.role not in TYPABLE:
-            msg = f"{expect.said()} takes no typing"
+            msg = "that element takes no typing"  # its name is the page's words, not said here
             raise BrowserError(msg)
         with self._lock:
             self._still_open()
             try:
-                rows = self._same(expect, url, [["get", "attr", f"@{expect.ref}", "type"]])
+                _view, rows = self._same(expect, url, [["get", "attr", f"@{expect.ref}", "type"]])
             finally:
                 self._idle()
-            if _field(rows[0], "value").strip().lower() in {"password", "hidden", "file"}:
+            if _field(rows[0], "value").strip().lower() in UNTYPABLE:
                 msg = "Jarvis doesn't type into password fields"
                 raise BrowserError(msg)
             commands = [["fill", f"@{expect.ref}", "--", text]]
             if submit:
-                commands.append(["press", "Enter"])
+                # Enter goes to whatever has focus, which the page may have moved as it was typed
+                # into: the field is focused again first, in the same call.
+                commands += [["focus", f"@{expect.ref}"], ["press", "Enter"]]
             return self._act(commands, "type there", acting=True)
 
     def screenshot(self, part: int) -> bytes:
@@ -750,14 +784,18 @@ class Browser:
             return data
 
 
-def _href_command(ref: str) -> list[str]:
-    return ["get", "attr", f"@{ref}", "href"]
-
-
-def _joined(page: str, row: Mapping[str, Any]) -> str:
-    """Return the full address a `get attr href` row names, against `page`; "" for none."""
-    href = _field(row, "value").strip()
-    return urljoin(page, href) if href else ""
+def _links(snapshot: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    """Return each link's ref and address from a `snapshot -i -u` row's text."""
+    result = snapshot.get("result")
+    tree = cast("dict[str, object]", result).get("snapshot") if isinstance(result, dict) else None
+    if not isinstance(tree, str):
+        return ()
+    found: list[tuple[str, str]] = []
+    for line in tree.splitlines():
+        match = _LINK_LINE.match(line)
+        if match is not None and match.group(2).endswith("]"):
+            found.append((match.group(1), match.group(2)[:-1]))
+    return tuple(found)
 
 
 def _time_for_batch() -> float:

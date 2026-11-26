@@ -88,10 +88,21 @@ quick commands.
     question names the element, its site and the exact words ('Should I type "red shoes" into the
     searchbox "Search" on shop.example and press Enter?'), and for a link where it goes, since its name can
     say anything ('Should I click the link "More" on shop.example, which goes to pay.example/checkout?').
+    Where a link goes is the browser's own address for it (`this.href`, from `snapshot -u`), resolved
+    against the page's `<base href>` or its frame as a click would be, never joined by Jarvis.
     The yes is bound to that element on that page, and a link to that address: if the page changed
     meanwhile, or the browser closed while the owner was asked (a question open longer than
-    `idle_close_s`), nothing is done and no new browser is started for it. Typing is `outbound`, at most
-    200 characters, never into a password, hidden or file field. Once a click or typing is sent, a browser
+    `idle_close_s`), nothing is done and no new browser is started for it. agent-browser keeps one ref for
+    one element of one document, so an element the page replaced has a new ref and is not clicked; the
+    check runs a moment before the click, in the call before it, and a page that swaps the element in that
+    moment for one of the same role and name gets the click (agent-browser then finds the element by role
+    and name); binding the click to the node itself would take a script in the page, which the action
+    policy keeps off. What a click or a key does on a page is the page's own to decide either way. Typing is
+    `outbound`, at most 200 characters, never into a password, hidden or file field, which is refused
+    before the question (in the accessibility tree a password field is a plain text box, so its input type
+    is read). Enter goes to whatever has focus, so the field is focused again just before it, in the same
+    call as the typing. Messages Jarvis writes for the model about an element never carry its name, which
+    is the page's words. Once a click or typing is sent, a browser
     that does not answer, an answer too big or garbled to read, or a later step that fails (typing went in,
     Enter did not) is an uncertain outcome for the model, never a failure that invites a second yes; a check
     before acting that times out has done nothing and says so.

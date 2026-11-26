@@ -16,7 +16,14 @@ from urllib.parse import urlsplit
 from jarvis.operations import Operation, OperationError, Result, UncertainOutcomeError, cut_inert
 from jarvis.pictures import SHOWN_SIDE, PictureError, prepare
 from jarvis.policy import OpClass, Origin
-from jarvis.web.browser import MAX_PARTS, TYPABLE, BrowserError, Element, UncertainActionError
+from jarvis.web.browser import (
+    MAX_PARTS,
+    TYPABLE,
+    UNTYPABLE,
+    BrowserError,
+    Element,
+    UncertainActionError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -229,7 +236,8 @@ class BrowserOps:
 
         Raises:
             OperationError: no page is open, the page shows no such element, or text is to be
-                typed into an element that takes none.
+                typed into an element that takes none, or into a password, hidden or file field
+                (refused before the question).
         """
         view = self._browser.view
         ref = _ref(args.get("element", ""))
@@ -239,8 +247,17 @@ class BrowserOps:
             raise OperationError(msg)
         typing = bool(str(args.get("text", "")).strip())
         if typing and element.role not in TYPABLE:
-            msg = f"{element.said()} takes no typing; pick a text box."
+            # Not the element's name: that is the page's words, and this message is Jarvis's own.
+            msg = f"Element {ref} takes no typing; pick a text box."
             raise OperationError(msg)
+        if typing:
+            try:
+                kind = self._browser.input_type(ref)
+            except BrowserError as exc:
+                raise OperationError(f"Couldn't read that field: {exc}.") from exc
+            if kind in UNTYPABLE:
+                msg = "Jarvis never types into a password, hidden or file field."
+                raise OperationError(msg)
         bound = {
             **args,
             "element": ref,
