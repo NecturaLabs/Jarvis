@@ -8,6 +8,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- A todo list and a choice picker in the chat. Jarvis keeps a todo list for work of several steps (`todo_write`:
+  up to 20 tasks, one in progress), shown above the input and folded to one line when all is done or the window is
+  short; Ctrl+T folds and opens it; `/compact` keeps it and `/clear` empties it. It can put a choice to you
+  (`ask_owner`: 2 to 4 options, always with its recommended one marked and listed first, `Other` added, several
+  at once if asked) and carries on while it waits, or pauses the request for the answer. With no answer in
+  `chat.ask_timeout_s` (default 300 s, `0` waits for ever, set in `/config` too) the question closes with a note
+  and Jarvis goes on with what it judges best. An answer is never a yes to an action, and the countdown stops
+  while one is asked about. Chat only. See [ADR 0026](docs/adr/0026-ask-the-owner-never-consent.md).
 - Skill plugins: skills from marketplaces in the Claude Code format, enabled with `jarvis plugins install
   PLUGIN@MARKETPLACE` and kept at the newest commit of their repository (no pinned version), by
   `jarvis plugins update` and `jarvis update --apply`. Only a plugin's skills are used; its hooks, commands,

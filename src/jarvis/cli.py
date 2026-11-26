@@ -1515,11 +1515,13 @@ def cmd_chat(_args: argparse.Namespace) -> int:
     session_id = secrets.token_hex(8)
     agent = None
     followed = None
+    todos = questions = None
     unavailable = ""
     pictures = reads_pictures(cfg)
     try:
         built = build(cfg, via="chat", session=session_id, units=StrataUnits())
         agent, followed = built.agent, built.modes
+        todos, questions = built.todos, built.questions
         if cfg.strata.mode == "remote":
             pictures = built.pictures
     except SetupError as exc:
@@ -1547,6 +1549,8 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         shown=chat_pictures(),
         twelve_hour=cfg.clock.twelve_hour,
         announcements=control.subscribe,
+        todos=todos,
+        questions=questions,
     )
     window = ChatApp(
         AuditTail(paths.audit_file()),

@@ -24,14 +24,24 @@ class ToolGroup:
 
 
 # What every request may need, so it is always offered: the ways to answer and to go on (answer
-# with no tool, stay silent, hand a spoken request to the open chat, think harder, move to coding
-# mode, load a group). `switch_model` must
+# with no tool, stay silent, hand a spoken request to the open chat, keep the chat's todo list, ask
+# the owner to choose, think harder, move to coding mode, load a group). `switch_model` must
 # be the first and only call of its reply, so a detour through `use_tools` would only cost a call.
 CORE = ToolGroup(
     CORE_NAME,
     "How you answer and go on: answer without a tool, stay quiet, hand the request to the open "
-    "chat, think harder, switch modes, load more tools.",
-    ("no_action", "stay_quiet", "chat_hand_off", "think_harder", "switch_model", USE_TOOLS),
+    "chat, keep the chat's todo list, ask the owner to choose, think harder, switch modes, load "
+    "more tools.",
+    (
+        "no_action",
+        "stay_quiet",
+        "chat_hand_off",
+        "todo_write",
+        "ask_owner",
+        "think_harder",
+        "switch_model",
+        USE_TOOLS,
+    ),
 )
 
 GROUPS = (

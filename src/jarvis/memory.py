@@ -42,6 +42,9 @@ FILE_VERSION = 1
 _ROLES = frozenset({"assistant", "tool", "user"})
 # What starts the owner's words typed while a request ran, as the request's work holds them.
 STEERED = "(The owner adds, while you work on this request:)"
+# ... and what starts a note of Jarvis's own that joined it: the owner's pick among options the
+# model wrote, or that a question went unanswered. Never the owner's typed words.
+NOTED = "(Jarvis's note, not the owner's words, while you work on this request:)"
 _WRAPPED_ORIGIN = re.compile(r'<data origin="([a-z_]{1,32})">')
 # Results that may hold the owner's own data: the turn is marked private, so text that leaves the PC
 # waits for a yes. A shell command's output can be any file the owner's user can read, and PC audio
@@ -111,7 +114,7 @@ class Turn:
         steered = [
             str(m["content"])
             for m in self.work
-            if m.get("role") == "user" and str(m.get("content", "")).startswith(STEERED)
+            if m.get("role") == "user" and str(m.get("content", "")).startswith((STEERED, NOTED))
         ]
         self.request = "\n".join([self.request, *steered])
         self.work = []

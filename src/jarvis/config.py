@@ -204,6 +204,9 @@ class ChatConfig(AgentConfig):
     while_working: Literal["steer", "queue"] = "steer"
     # How replies are written: brief, as the request needs, or explained in full (the prompt).
     response_format: Literal["concise", "normal", "verbose"] = "concise"
+    # How long a question the model put to the owner (`ask_owner`) waits for an answer before it
+    # closes and the model goes on with what it judges best; 0 waits forever.
+    ask_timeout_s: float = Field(default=300.0, ge=0, le=86400)
     history_size: int = Field(default=1000, ge=0, le=100000)  # typed lines ↑ brings back
     # Chat conversations kept in the archive for /resume and reading back; 0 keeps none.
     archive_keep: int = Field(default=50, ge=0, le=1000)

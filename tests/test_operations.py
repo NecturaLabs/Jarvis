@@ -197,3 +197,50 @@ def test_a_request_scope_ends_even_when_the_request_fails() -> None:
     with pytest.raises(RuntimeError), request_scope(foreign=False):
         raise RuntimeError
     assert current_request() is None
+
+
+ROWS = _op(
+    {
+        "rows": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1, "maxLength": 5},
+                    "state": {"type": "string", "enum": ["a", "b"]},
+                },
+                "required": ["name", "state"],
+            },
+        }
+    },
+    ["rows"],
+)
+
+
+def test_an_array_of_objects_is_checked_item_by_item() -> None:
+    good = {"rows": [{"name": " one ", "state": "a"}, {"name": "two", "state": "b"}]}
+
+    assert validate_args(ROWS, good) == {
+        "rows": [{"name": "one", "state": "a"}, {"name": "two", "state": "b"}]
+    }
+    for bad in (
+        {"rows": ["one"]},  # not an object
+        {"rows": [{"name": "one"}]},  # a missing key
+        {"rows": [{"name": "one", "state": "c"}]},  # outside the enum
+        {"rows": [{"name": "toolong", "state": "a"}]},  # too long
+        {"rows": [{"name": "one", "state": "a", "extra": 1}]},  # an unknown key
+        {"rows": [{"name": "x", "state": "a"}] * 4},  # too many
+    ):
+        with pytest.raises(ArgumentError):
+            validate_args(ROWS, bad)
+
+
+def test_time_a_call_waited_for_the_owner_is_taken_once() -> None:
+    with request_scope(foreign=False) as request:
+        request.waited(30.0)
+        request.waited(12.5)
+        request.waited(-4.0)  # never takes time away
+
+        assert request.take_waited() == pytest.approx(42.5)
+        assert request.take_waited() == pytest.approx(0.0)

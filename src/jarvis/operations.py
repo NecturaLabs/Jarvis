@@ -26,6 +26,14 @@ def inert(text: str) -> str:
     return text.replace("<", "&lt;").replace(">", "&gt;")
 
 
+def one_line(text: str) -> str:
+    """Return model-written text for a window: one line, each control character a space.
+
+    A terminal acts on escape sequences, so words the model wrote for the owner to read carry none.
+    """
+    return " ".join("".join(ch if ch.isprintable() else " " for ch in text).split())
+
+
 def inert_chars(text: str) -> int:
     """Return how long `text` is once `inert` spells out its angle brackets."""
     return len(text) + 3 * (text.count("<") + text.count(">"))
@@ -114,6 +122,7 @@ class Request:
     scheduled: bool = False
     # Held in lists: the rest is frozen. Messages run, calls in the running message, actions tried.
     _messages: list[int] = field(default_factory=lambda: [0, 1, 0])
+    _waited: list[float] = field(default_factory=lambda: [0.0])
 
     @property
     def message(self) -> int:
@@ -139,6 +148,15 @@ class Request:
         """Note that a call that could change something was tried."""
         self._messages[2] += 1
 
+    def waited(self, seconds: float) -> None:
+        """Note that a call waited `seconds` for the owner, time the request's limit leaves out."""
+        self._waited[0] += max(0.0, seconds)
+
+    def take_waited(self) -> float:
+        """Return the seconds waited for the owner since the last call, and start counting again."""
+        seconds, self._waited[0] = self._waited[0], 0.0
+        return seconds
+
     @property
     def words(self) -> str:
         """The owner's own words of the request, with those typed into it while it ran."""
@@ -151,6 +169,21 @@ class Request:
     def added(self, words: str) -> None:
         """Note words the owner typed into the request while it ran, as their own."""
         self.steered.append(words)
+
+
+@dataclass(frozen=True, slots=True)
+class Notice:
+    """Words that join a request in progress and are not the owner's own typed words.
+
+    An answer the owner picked from options the model wrote, or Jarvis's own note that a question
+    went unanswered. `origin` says whose words they are (Jarvis's own status text unless it
+    passes on outside text) and `kind` names what happened, for the audit log. The agent shows
+    them to the model but never counts them as the owner's words (`Request.words`).
+    """
+
+    text: str
+    kind: str
+    origin: Origin = Origin.TOOL_STATUS
 
 
 _CURRENT: ContextVar[Request | None] = ContextVar("jarvis_request", default=None)
@@ -370,7 +403,7 @@ def _check_integer(name: str, spec: dict[str, Any], value: object) -> int:
 
 
 def _check_array(name: str, spec: dict[str, Any], value: object) -> list[object]:
-    # A list of scalars, each checked against `items`, of at most `maxItems` (10).
+    # A list of scalars or flat objects, each checked against `items`, of at most `maxItems` (10).
     if not isinstance(value, list):
         raise ArgumentError(f"{name} must be a list")
     items = cast("list[object]", value)
@@ -379,9 +412,25 @@ def _check_array(name: str, spec: dict[str, Any], value: object) -> list[object]
     if len(items) > spec.get("maxItems", 10):
         raise ArgumentError(f"{name} has too many items")
     item_spec: dict[str, Any] = spec.get("items", {})
-    if item_spec.get("type") not in {"string", "integer", "boolean"}:
+    if item_spec.get("type") not in {"string", "integer", "boolean", "object"}:
         raise ArgumentError(f"{name} has an unsupported type")
     return [_check_value(name, item_spec, item) for item in items]
+
+
+def _check_object(name: str, spec: dict[str, Any], value: object) -> dict[str, object]:
+    # An item of an array: only the keys its `properties` name, `required` ones present.
+    if not isinstance(value, dict):
+        raise ArgumentError(f"{name} must be an object")
+    props: dict[str, dict[str, Any]] = spec.get("properties", {})
+    cleaned: dict[str, object] = {}
+    for key, item in cast("dict[str, object]", value).items():
+        if key not in props:
+            raise ArgumentError(f"{name} has an unknown key {key!r}")
+        cleaned[key] = _check_value(f"{name}.{key}", props[key], item)
+    missing = [key for key in spec.get("required", []) if key not in cleaned]
+    if missing:
+        raise ArgumentError(f"{name} is missing {', '.join(missing)}")
+    return cleaned
 
 
 def _check_value(name: str, spec: dict[str, Any], value: object) -> object:
@@ -396,6 +445,8 @@ def _check_value(name: str, spec: dict[str, Any], value: object) -> object:
         return value
     if kind == "array":
         return _check_array(name, spec, value)
+    if kind == "object":
+        return _check_object(name, spec, value)
     raise ArgumentError(f"{name} has an unsupported type")
 
 

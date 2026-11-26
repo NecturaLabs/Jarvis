@@ -24,6 +24,7 @@ from jarvis import __version__, app, cli, config, models, modes, paths, services
 from jarvis import audio as audio_module
 from jarvis import voice as voice_module
 from jarvis.agent import Hooks
+from jarvis.askowner import Questions
 from jarvis.audit import AuditLog
 from jarvis.chat.app import ChatApp
 from jarvis.chat.archive import ChatArchive
@@ -34,6 +35,7 @@ from jarvis.operations import OperationError
 from jarvis.pc.hearing import Listening
 from jarvis.secretfile import write_private_json
 from jarvis.services import strata_profile_file
+from jarvis.todos import TodoList
 from jarvis.voice import PcListener
 
 if TYPE_CHECKING:
@@ -1103,6 +1105,7 @@ def test_chat_sends_typed_requests_to_an_agent_that_marks_its_audit_events(
 ) -> None:
     opened = _opened_chat(monkeypatch)
     built: list[tuple[str | None, str]] = []
+    todos, questions = TodoList(), Questions()
 
     def build(
         _config: object, *, via: str | None = None, session: str = "", **_kwargs: object
@@ -1112,13 +1115,17 @@ def test_chat_sends_typed_requests_to_an_agent_that_marks_its_audit_events(
         def handle(text: str, _hooks: Hooks) -> str:
             return f"heard {text}"
 
-        return SimpleNamespace(agent=SimpleNamespace(handle=handle), modes=None)
+        return SimpleNamespace(
+            agent=SimpleNamespace(handle=handle), modes=None, todos=todos, questions=questions
+        )
 
     monkeypatch.setattr(cli, "build", build)
 
     assert main(["chat"]) == 0
 
     (app,) = opened
+    assert app._services.todos is todos  # pyright: ignore[reportPrivateUsage] - what the window was given to show
+    assert app._services.questions is questions  # pyright: ignore[reportPrivateUsage] - what the window was given to show
     ((via, session),) = built
     assert via == "chat"
     assert session

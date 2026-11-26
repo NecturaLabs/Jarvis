@@ -3,7 +3,7 @@
 import json
 from typing import TYPE_CHECKING, Any
 
-from jarvis.memory import KEEP_RECENT, STEERED, Conversation, Turn, message_tokens, tokens
+from jarvis.memory import KEEP_RECENT, NOTED, STEERED, Conversation, Turn, message_tokens, tokens
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -408,3 +408,16 @@ def test_work_left_out_keeps_the_words_the_owner_typed_meanwhile() -> None:
 
     assert conversation.turns[0].work == []
     assert conversation.turns[0].request == f"find it\n{STEERED} the blue one"
+
+
+def test_work_left_out_keeps_a_note_of_an_answer_apart_from_the_owners_words() -> None:
+    note = {"role": "user", "content": f"{NOTED} the owner picked: Alpha."}
+    turn = Turn("find it", "Hi.", "read -> ok", "", 1.0, work=[*_work("read", "x" * 900), note])
+    conversation = Conversation(budget=turn.cost(work=False) + 100)
+    conversation.add(turn)
+
+    conversation.drop_to_fit()
+
+    assert conversation.turns[0].work == []
+    assert conversation.turns[0].request == f"find it\n{NOTED} the owner picked: Alpha."
+    assert not conversation.turns[0].request.count(STEERED)

@@ -64,6 +64,12 @@ Jarvis is pre-1.0 software; see [Status](#status).
   calls ([ADR 0021](docs/adr/0021-screen-watch.md)). It can also watch a program
   you name and say when it exits (closed, crashed or killed), is stopped, or is stuck waiting on a disk
   or device at three checks in a row over at least 30 seconds, and when it runs again; that reads only `/proc`, with no picture and no model.
+- **Chat todo list and questions:** in the chat window, Jarvis keeps a todo list for work of several steps
+  above the input (Ctrl+T folds it) and puts a choice to you as a picker, with the option it would pick marked
+  `(Recommended)`, when it needs your decision. It carries on with what does not depend on the answer, and with no
+  answer in five minutes (`chat.ask_timeout_s`) goes on with its own pick. An answer is never a yes to an action:
+  those are asked on their own ([configuration](docs/configuration.md#the-todo-list-and-questions-in-the-chat),
+  [ADR 0026](docs/adr/0026-ask-the-owner-never-consent.md)).
 - **Your own skills:** put instructions for a task of yours in `~/.config/jarvis/skills/<name>.md`, opening
   with a `---` block holding a `description:` line, and Jarvis reads them when a request needs them. They
   guide what it does and never let it do more than it otherwise could.
@@ -215,7 +221,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis logs` | Follow the live log (Ctrl+C to leave). |
 | `jarvis help` | List the commands by group, each with what it does (the same as `jarvis --help`); `jarvis <command> --help` explains one command and its options, and a mistyped command gets a suggestion when one is close. |
 | `jarvis ask <text>` | Send one typed request as if spoken; a question is answered `y` or `n` on the terminal, and `--yes` answers yes to confirmations, except a browser click or typing, which it still asks on the terminal (and refuses with no terminal to answer on). |
-| `jarvis chat` | Open a Textual window where you type requests and watch what Jarvis does, live. Spoken requests are the voice's own and do not show there; ask Jarvis to pass something to the chat and it hands your words to the open window ([ADR 0028](docs/adr/0028-voice-and-chat-as-two-channels.md)). |
+| `jarvis chat` | Open a Textual window where you type requests and watch what Jarvis does, live. Spoken requests are the voice's own and do not show there; ask Jarvis to pass something to the chat and it hands your words to the open window ([ADR 0028](docs/adr/0028-voice-and-chat-as-two-channels.md)). The window also shows Jarvis's todo list (Ctrl+T) and questions it puts to you. |
 | `jarvis acp` | Serve Jarvis to a coding app over the Agent Client Protocol on stdin and stdout; the app starts it, see [Using Jarvis in T3 Code](#using-jarvis-in-t3-code). |
 | `jarvis consent [ask\|bypass]` | Show or set whether Jarvis asks for a yes before a risky action or one after outside text; a `strong` action still waits for the confirm key either way. |
 | `jarvis wake [livekit\|azure]` | Show or switch the wake word model; `--model FILE` names the Azure `.table` file; `--words hey_jarvis,yo_jarvis` picks the LiveKit models that listen. |
