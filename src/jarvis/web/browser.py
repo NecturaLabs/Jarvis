@@ -48,8 +48,8 @@ CLOSE_LIMIT_S = 15.0
 RESERVE_S = CLOSE_LIMIT_S + 10.0
 MIN_BATCH_S = 3.0  # less time than this left in the request, and the browser is not used
 SETTLE_MS = 1200  # after a page loads or a click: scripts that fill the page in afterwards
-MAX_OUTPUT = 60_000  # characters of page text or snapshot agent-browser returns
-MAX_STDOUT = 2_000_000
+MAX_OUTPUT = 60_000  # characters of a page's text kept (agent-browser's --max-output cuts no JSON)
+MAX_STDOUT = 2_000_000  # characters of one answer read at all
 MAX_NAME = 80  # characters of an element's name kept
 MAX_SCREENSHOT_BYTES = 8_000_000
 SCREEN_STEP_PX = 640  # how far one screenshot part is below the last (the window is 1280x720)
@@ -170,7 +170,7 @@ def run_program(
     except subprocess.TimeoutExpired as exc:
         msg = "the browser took too long"
         raise BrowserTimeoutError(msg) from exc
-    return done.stdout[:MAX_STDOUT]
+    return done.stdout
 
 
 def _one_line(text: str, limit: int) -> str:
@@ -301,8 +301,6 @@ class Browser:
             "--args",
             "\n".join(CHROME_ARGS),
             "--no-webmcp",
-            "--max-output",
-            str(MAX_OUTPUT),
             "--idle-timeout",
             f"{idle}s",
         ]
@@ -331,7 +329,7 @@ class Browser:
         Raises:
             BrowserTimeoutError: it did not finish in time (the browser is then closed).
             BrowserError: the request has no time left for it (nothing was sent), it could not
-                start, or its answer was not what agent-browser writes.
+                start, its answer is too big to read, or not what agent-browser writes.
         """
         limit = _time_for_batch()
         if limit < MIN_BATCH_S:
@@ -358,6 +356,9 @@ class Browser:
             self._shut()
             msg = f"the browser couldn't be started: {exc.strerror or type(exc).__name__}"
             raise BrowserError(msg) from exc
+        if len(out) > MAX_STDOUT:
+            msg = "the page is too big to read"
+            raise BrowserError(msg)
         return _rows(out)
 
     def _idle(self) -> None:
@@ -440,7 +441,8 @@ class Browser:
             raise BrowserError(msg)
         result = snapshot.get("result")
         elements = _elements(cast("dict[str, Any]", result)) if isinstance(result, dict) else ()
-        view = View(address, _one_line(_field(title, "title"), 160), _field(text, "text"), elements)
+        page_text = _field(text, "text")[:MAX_OUTPUT]
+        view = View(address, _one_line(_field(title, "title"), 160), page_text, elements)
         self._view = view
         return view
 

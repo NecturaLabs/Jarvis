@@ -316,6 +316,24 @@ def test_opening_returns_what_the_page_shows(tmp_path: Path) -> None:
     assert made.view == view
 
 
+def test_a_long_page_text_is_cut_to_the_cap(tmp_path: Path) -> None:
+    # agent-browser's --max-output does not cut what `--json` returns, so Jarvis cuts it.
+    page = Page(text="word " * 40_000)
+    made, _, _ = _browser(tmp_path, FakeAgentBrowser(page))
+
+    view = made.open("https://site.example/")
+
+    assert 0 < len(view.text) <= browser_module.MAX_OUTPUT
+
+
+def test_an_answer_past_the_output_cap_is_said_as_too_big(tmp_path: Path) -> None:
+    page = Page(text="x" * (browser_module.MAX_STDOUT + 10))
+    made, _, _ = _browser(tmp_path, FakeAgentBrowser(page))
+
+    with pytest.raises(BrowserError, match="too big"):
+        made.open("https://site.example/")
+
+
 def test_an_error_page_is_said_as_unreachable(tmp_path: Path) -> None:
     fake = FakeAgentBrowser(Page())
     fake.on["open"] = lambda _c: setattr(fake.page, "url", "chrome-error://chromewebdata/")
