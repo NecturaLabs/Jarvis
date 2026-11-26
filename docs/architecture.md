@@ -313,5 +313,8 @@ falls under its catch-all entry, so a change anywhere still asks for review). Th
 - the PC-operation tools: `pc/`, above all `pc/files.py`, `pc/processes.py` and `pc/shell.py`;
 - pictures: `pictures.py`, which decodes picture bytes anyone may have made, and `chat/clipboard.py`,
   which starts `wl-paste`.
+- the remembered conversation and its provenance marks: `memory.py`, and the chat's archive of it with
+  your private data, `chat/archive.py`;
+- the chat window, which can turn `bypass_consent` on: `chat/app.py` and `chat/settings.py`.
 
 Report a vulnerability as [SECURITY.md](../SECURITY.md) says.

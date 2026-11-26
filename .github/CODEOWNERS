@@ -31,4 +31,8 @@
 /src/jarvis/pc/processes.py      @Nectura
 /src/jarvis/pictures.py          @Nectura
 /src/jarvis/chat/clipboard.py    @Nectura
+/src/jarvis/chat/app.py          @Nectura
+/src/jarvis/chat/archive.py      @Nectura
+/src/jarvis/chat/settings.py     @Nectura
+/src/jarvis/memory.py            @Nectura
 /deploy/                         @Nectura
