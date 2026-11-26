@@ -230,6 +230,21 @@ def test_the_toolbar_never_cuts_a_word_however_narrow_the_window() -> None:
     assert _plain(toolbar("", stats, use, 12)).strip() == "9.1k/24.6k"
 
 
+def test_the_compacts_soon_warning_gives_way_before_the_context_is_cut() -> None:
+    stats = Stats(7.5, 53.0, 33 * GIB, 60 * GIB, Gpu(41, 10 * GIB, 20 * GIB, 67.0))
+    use = ContextUse(20000, 24576, 5100, 11000, 12000, 9, summarized=False)
+
+    for width in (60, 44, 36, 26, 20, 12):
+        line = toolbar("", stats, use, width)
+        assert line.cell_len <= width, width
+        assert "24.6k" in _plain(line), width  # the context itself stays
+    assert "compacts soon" in _plain(toolbar("", stats, use, 120))
+    assert (
+        _plain(toolbar("", stats, use, 20)).rstrip().endswith("!")
+    )  # a mark where the words do not fit
+    assert "compacts soon" not in _plain(toolbar("", stats, use, 20))
+
+
 def test_the_footer_drops_the_least_useful_part_first_and_never_cuts_a_word() -> None:
     hints = (
         "? for shortcuts · every step and its result (ctrl+o)",

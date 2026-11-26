@@ -341,7 +341,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   on-or-off setting over and opens a short list of values for any other (← → still step through them).
   A space typed into the search is part of it. Times read as 30 s, 10 min or 4 h. The tools are a Tools tab
   (Enter or → moves one on, ← back). The footer grows to hold the longest text, and in a narrow window the tab
-  row scrolls (`‹ ›`) so the active tab stays in view. It works at 80 columns by 24 rows, scrolling
+  row scrolls (`‹ ›`) so the active tab stays in view. The restart note is never cut: the text on
+  what a setting does is shortened first. It works at 80 columns by 24 rows, scrolling
   the list while the footer stays.
 - The lines under the input are set in the box's columns: hints at the left, the status ending at the box's right
   edge, and the PC's load and the context on the next line, with fixed-width figures, one quiet `·` between

@@ -507,12 +507,13 @@ class _Fit:
     label: str = "context"
     vram: bool = True
     ram: bool = True
+    warn: str = "compacts soon"  # what the context says when it is nearly full; "" says nothing
 
 
 # From the widest window down, each step drops the least useful thing left: the temperatures,
 # half the context meter, the tenths of a gigabyte, the processor, the graphics card's load, the
-# meter itself, the memory figures, and last the word before the tokens. Whole items go, never
-# part of one, so the line never wraps or ends mid-word.
+# meter itself, the memory figures, the word before the tokens, and last "compacts soon" for a
+# mark. Whole items go, never part of one, so the line never wraps or ends mid-word.
 FITS = (
     _Fit(),
     _Fit(temperatures=False),
@@ -531,6 +532,28 @@ FITS = (
         label="",
         vram=False,
         ram=False,
+    ),
+    _Fit(
+        temperatures=False,
+        meter=0,
+        tenths=False,
+        cpu=False,
+        gpu=False,
+        label="",
+        vram=False,
+        ram=False,
+        warn="!",
+    ),
+    _Fit(
+        temperatures=False,
+        meter=0,
+        tenths=False,
+        cpu=False,
+        gpu=False,
+        label="",
+        vram=False,
+        ram=False,
+        warn="",
     ),
 )
 
@@ -586,9 +609,10 @@ def _context(use: ContextUse, fit: _Fit) -> Text:
     text.append(
         f"{used:>{len(window)}}/{window}" if fit.label else f"{used}/{window}", style="bright_black"
     )
-    if use.memory_budget and use.memory >= WARN_AT * use.memory_budget:
-        text.append(SEPARATOR, style="bright_black")
-        text.append("compacts soon", style="yellow")
+    nearly_full = use.memory_budget and use.memory >= WARN_AT * use.memory_budget
+    if nearly_full and fit.warn:
+        text.append(SEPARATOR if len(fit.warn) > 1 else " ", style="bright_black")
+        text.append(fit.warn, style="yellow")
     return text
 
 

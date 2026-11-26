@@ -129,9 +129,10 @@ row (↑ from the first setting). Typing anywhere searches the settings of every
 the search. In a narrow window the tabs scroll, marked `‹ ›`, so the one you are on stays in view.
 Each setting is one line, its name at the left and only its value in an aligned column, the one the keyboard is on
 marked with `❯`. What the selected setting does, and when a change applies (at once, the next time the chat opens,
-or when the voice service restarts as the screen closes), are said once in the footer under the list. Enter or
-space turns an on-or-off setting over; on one with more values Enter opens a short list of them (↑↓ choose, Enter
-picks, Esc leaves it as it was), and ← → still step through the values. Times are said as 30 s, 10 min or 4 h, and
+or when the voice service restarts as the screen closes), are said once in the footer under the list. Enter
+turns an on-or-off setting over, and so does space, but only when nothing is being searched (a space in a search
+is part of it); on one with more values Enter opens a short list of them (↑↓ choose, Enter or space picks, Esc
+leaves it as it was), and ← → still step through the values. Times are said as 30 s, 10 min or 4 h, and
 a 0 that means something is said as such ("never", "none"). Changes are saved as you make them; when one needs the
 voice service to restart, the footer says "The voice service restarts when you close settings" until you do.
 
@@ -154,7 +155,7 @@ services' status at the right, ending at the box's right edge; below them the PC
 context at the right, ending at the same edge. Every figure has a fixed width, so nothing moves as numbers change.
 In a narrow window whole items go, the least useful first (temperatures, half the context meter, the tenths of a
 gigabyte, the processor, the graphics card's load, the memory figures, then the context to a bare count; the
-status's second part, then the longer hint), never half a word. The command menu has a frame of its own, in line with the box.
+status's second part, then the longer hint; `compacts soon` ends as a `!`), never half a word. The command menu has a frame of its own, in line with the box.
 
 `/resume` lists the archived conversations, newest first (when, name, how many requests), and `/resume 2`
 continues the second: the model gets that conversation back as it was, so what came from outside text then

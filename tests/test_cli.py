@@ -2470,6 +2470,21 @@ def test_a_tool_changed_from_the_chat_is_audited_as_such_and_restarts_nothing_ye
     assert restarts == []
 
 
+def test_a_tool_stepped_back_from_the_chat_goes_the_other_way_round_its_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config.save(config.Config(spotify=config.SpotifyConfig(client_id="id")))
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: None)
+
+    back = cli._next_tool_setting("write_file", -1)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    on = cli._next_tool_setting("write_file")  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    assert back.label == "off"  # asks first, back round the ring: never lowered to on
+    assert on.label == "asks first"  # and on again from off
+    events = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
+    assert [(e["was"], e["to"]) for e in events] == [("confirm", "deny"), ("deny", "confirm")]
+
+
 def test_the_chat_sets_jarvis_settings_and_audits_them(monkeypatch: pytest.MonkeyPatch) -> None:
     config.save(config.Config())
     monkeypatch.setattr(cli, "_restart_if_running", lambda: None)

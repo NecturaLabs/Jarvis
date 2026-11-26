@@ -12,10 +12,12 @@ risky setting (acting without asking, taking requests from PC audio) is marked w
 turning it on asks first: the footer says what it will do, and only a second Enter turns it on.
 """
 
+import io
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, override
 
 from rich.cells import cell_len
+from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 from textual import events  # ruff: ignore[typing-only-third-party-import] - Textual reads handler annotations
@@ -52,6 +54,9 @@ APPLIES = {
     NOW_AND_ON_CLOSE: "Applies at once, and to the voice when you close settings.",
 }
 RESTART_NOTE = "The voice service restarts when you close settings."
+RESTART_NOTE_SHORT = "Restarts when you close settings."
+FOOTER_LINES = 8  # the most the footer may take; `#settings-footer` has the same `max-height`
+_MEASURE = Console(width=80, file=io.StringIO())  # to count the lines a text wraps to
 TOOL_ROW = "tool:"  # the start of a row's id for one tool
 TOOLS = "Tools"
 HINTS = (
@@ -627,8 +632,9 @@ class SettingsPanel(Vertical):
             self.post_message(self.Moved(event.option.id))
 
     def on_resize(self) -> None:
-        """A new width may need other tabs in view."""
+        """A new width may need other tabs in view and a shorter footer."""
         self._redraw_header()
+        self._redraw_footer()
 
     def _visible_tabs(self) -> tuple[int, int]:
         """Return the first and last tab to draw: all of them, or a run round the active one.
@@ -688,29 +694,62 @@ class SettingsPanel(Vertical):
         self.query_one("#settings-search", Static).update(search)
 
     def _redraw_footer(self) -> None:
-        """Say what the selected setting does and when, in one place; a warning if it has one."""
-        footer = Text()
+        """Say what the selected setting does and when, in one place; a warning if it has one.
+
+        What the owner must read whole goes last and always shows: the danger prompt's key hint,
+        when a change applies, and that the voice service restarts. If all of it is more than the
+        footer may hold (`FOOTER_LINES`), the text on what the setting does is cut short with an
+        ellipsis, never what follows it.
+        """
+        head = Text()
+        tail: list[Text] = []
         row = self.row
         picking = self._picking
         if picking is not None:
-            footer.append(picking.about, style=DIM)
-            footer.append(f"\n{APPLIES[picking.applies]}", style=DIM)
+            head.append(picking.about, style=DIM)
+            tail.append(Text(APPLIES[picking.applies], style=DIM))
         elif row is not None:
             pending = self._pending if self._pending and self._pending.key == row.id else None
             if pending is not None:
-                footer.append(f"{SIGN} Turn on? ", style=f"bold {WARN}")
-                footer.append(row.risky, style=WARN)
-                footer.append(f"\n{pending.hint(row)}", style=DIM)
+                head.append(f"{SIGN} Turn on? ", style=f"bold {WARN}")
+                head.append(row.risky, style=WARN)
+                tail.append(Text(pending.hint(row), style=DIM))
             else:
                 if row.dangerous:
-                    footer.append(f"{SIGN} ", style=DANGER)
-                    footer.append(row.about, style="red")
+                    head.append(f"{SIGN} ", style=DANGER)
+                    head.append(row.about, style="red")
                 else:
-                    footer.append(row.about, style=DIM)
-                footer.append(f"\n{APPLIES[row.applies]}", style=DIM)
+                    head.append(row.about, style=DIM)
+                tail.append(Text(APPLIES[row.applies], style=DIM))
             if self._search:
                 section = next((s.title for s in self._sections if row in s.rows), "")
-                footer.append(f"  In {section}.", style=DIM)
+                tail[-1].append(f"  In {section}.", style=DIM)
+        width = self.query_one("#settings-footer", Static).size.width or self.size.width
         if self._restart:
-            footer.append(f"\n{RESTART_NOTE}", style=WARN)
+            note = Text(RESTART_NOTE, style=WARN)
+            if _lines(note, width) > 1:
+                note = Text(RESTART_NOTE_SHORT, style=WARN)
+            tail.append(note)
+        footer = _fitted(head, tail, width)
         self.query_one("#settings-footer", Static).update(footer)
+
+
+def _lines(text: Text, width: int) -> int:
+    """How many lines `text` takes when wrapped to `width` cells."""
+    if width <= 0:
+        return text.plain.count("\n") + 1
+    return len(text.wrap(_MEASURE, width))
+
+
+def _fitted(head: Text, tail: list[Text], width: int) -> Text:
+    """Return `head` and then each of `tail` on a line of its own, `head` cut to leave room."""
+    after = Text("\n").join(tail) if tail else Text()
+    room = FOOTER_LINES - _lines(after, width) - (1 if tail else 0)
+    kept = len(head.plain)
+    shown = head
+    while kept > 0 and _lines(shown, width) > max(1, room):
+        kept = max(0, kept - max(1, width // 2))
+        shown = head[:kept]
+        shown.rstrip()
+        shown.append("…", style=DIM)
+    return Text("\n").join([shown, after]) if tail else shown

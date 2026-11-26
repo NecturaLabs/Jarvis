@@ -1741,12 +1741,16 @@ def _full_services(
     from jarvis.cli import SHARED_SETTINGS  # ruff: ignore[import-outside-top-level] - only these tests
     from jarvis.config import Config  # ruff: ignore[import-outside-top-level] - only these tests
     from jarvis.policy import OpClass  # ruff: ignore[import-outside-top-level] - only these tests
-    from jarvis.toolswitch import ToolSetting  # ruff: ignore[import-outside-top-level] - only these tests
+    from jarvis.toolswitch import (  # ruff: ignore[import-outside-top-level] - only these tests
+        ToolSetting,
+        tool_settings,
+    )
 
     cfg = Config()
+    real = max(tool_settings(cfg, []), key=lambda tool: len(tool.summary))  # the longest summary
     tools = {
         "web_search": ToolSetting(
-            "web_search", "Search the web", OpClass.SAFE, OpClass.SAFE, tuple(OpClass)
+            "web_search", real.summary, OpClass.SAFE, OpClass.SAFE, tuple(OpClass)
         ),
         "write_file": ToolSetting(
             "write_file", "Write a file", OpClass.CONFIRM, OpClass.CONFIRM, tuple(OpClass)
@@ -1829,7 +1833,7 @@ async def _in_size(
 
 def test_a_narrow_window_still_shows_the_active_tab_and_the_whole_danger_prompt() -> None:
     async def body() -> None:
-        for size in ((44, 24), (50, 24)):
+        for size in ((40, 24), (44, 24), (50, 24)):
 
             async def check(app: ChatApp, pilot: Pilot[None], size: tuple[int, int]) -> None:
                 tabs = app.query_one("#settings-tabs", Static)
@@ -1850,9 +1854,22 @@ def test_a_narrow_window_still_shows_the_active_tab_and_the_whole_danger_prompt(
     asyncio.run(body())
 
 
+def _holds(app: ChatApp, about: str, size: tuple[int, int]) -> None:
+    """The footer shows the restart note whole and last, then the about text or the start of it."""
+    footer = app.query_one("#settings-footer", Static)
+    shown = _squeezed(_drawn(footer))
+    assert shown.endswith("whenyouclosesettings."), size  # never cut
+    assert "Applies" in shown, size
+    assert footer.region.height <= 8, size
+    if size[0] >= 60:
+        assert _squeezed(about) in shown, size  # room for all of it
+    else:
+        assert _squeezed(about)[:20] in shown, size  # trimmed with an ellipsis, not the note
+
+
 def test_the_footer_grows_to_hold_the_longest_setting_with_the_restart_note() -> None:
     async def body() -> None:
-        for size in ((60, 24), (80, 24)):
+        for size in ((40, 24), (44, 24), (60, 24), (80, 24)):
 
             async def check(app: ChatApp, pilot: Pilot[None], size: tuple[int, int]) -> None:
                 from jarvis.cli import SHARED_SETTINGS  # ruff: ignore[import-outside-top-level] - only this test
@@ -1867,16 +1884,12 @@ def test_the_footer_grows_to_hold_the_longest_setting_with_the_restart_note() ->
                         break
                     await pilot.press("down")
                 await pilot.pause(0.05)
-                shown = _squeezed(_drawn(app.query_one("#settings-footer", Static)))
-                assert _squeezed(longest) in shown, size
-                assert "restartswhenyoucloseset" in shown, size
-                assert "Applies" in shown, size
+                _holds(app, longest, size)
                 await _open_tab(pilot, "Tools")
                 await pilot.pause(0.05)
                 assert panel.row is not None
-                shown = _squeezed(_drawn(app.query_one("#settings-footer", Static)))
-                assert _squeezed(panel.row.about) in shown, size
-                assert "restartswhenyoucloseset" in shown, size
+                assert len(panel.row.about) > 100  # the real longest summary and the suffix
+                _holds(app, panel.row.about, size)
 
             await _in_size(size, _full_services({}), check)
 
