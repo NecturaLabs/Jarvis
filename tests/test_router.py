@@ -151,7 +151,7 @@ def test_a_group_with_no_tool_in_this_registry_is_not_in_the_toolbox() -> None:
 # them with the new digests; they exist so that routing never changes what "all" mode sends.
 _PROMPT_SHA256 = {
     "voice": "25cd7af190be010b1c6d6146f53f2cb818667d2a5dfc23d8120228ba911d5528",
-    "chat": "02a71a2c5fdbb4c83698a6ae0764a18c9dc61077a48d8f94bd012f335097e5fe",
+    "chat": "9241f2679ccece0884e83be4de3f76c9cab9fbc78d4b54268e7c12c0159b518b",
 }
 
 

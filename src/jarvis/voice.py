@@ -66,7 +66,12 @@ _TABLE_RULE = re.compile(
     r"^[ \t]*\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?[ \t]*$", re.MULTILINE
 )
 _TABLE_ROW = re.compile(r"^[ \t]*\|(.+?)\|?[ \t]*$", re.MULTILINE)
-_RANGE = re.compile(r"(?<=\d)\s?[\u2012\u2013]\s?(?=\d)")
+# An en dash read "to": unspaced between words or figures (Mon to Fri, 9am to 5pm, $5 to $10), or
+# spaced between a figure, a time or a unit sign and a figure (-5 to -3, 9 a.m. to 5 p.m.).
+_RANGE = re.compile(
+    r"(?<=[\w°%.])[\u2012\u2013](?=[\w$€£\u2212+-])"
+    r"|(?:(?<=[\d%°])|(?<=[ap]\.m\.)|(?<=\d[ap]m))\s?[\u2012\u2013]\s?(?=[$€£\u2212+-]?\d)"
+)
 # A long dash anywhere, or a hyphen set off by spaces between words (between numbers it is a minus).
 _DASH = re.compile(r"\s*,?\s*[\u2012-\u2015]\s*|(?<=[^\d\s]),?\s+-{1,2}\s+(?=\D)")
 _ARROW = re.compile(r"\s*(?:\u2192|->)\s*")
@@ -134,8 +139,8 @@ def speakable(text: str) -> str:
     for _ in range(3):
         text = _MD_EMPHASIS.sub(r"\2", text)
     text = _NOT_SPOKEN.sub("", text)
-    text = _UNIT.sub(_unit_words, text)
-    text = _ARROW.sub(" to ", _RANGE.sub(" to ", text))
+    text = _UNIT.sub(_unit_words, _RANGE.sub(" to ", text))  # a range before its unit signs
+    text = _ARROW.sub(" to ", text)
     text = _ABOUT.sub("about ", _DASH.sub(", ", text))
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     joined = " ".join(line if line[-1] in ".!?:;," else f"{line}." for line in lines[:-1])

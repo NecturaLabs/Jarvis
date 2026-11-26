@@ -172,12 +172,12 @@ def test_what_is_near_its_limit_is_named(tmp_path: Path) -> None:
 
     assert result.text.startswith(
         "Worth a look: the CPU is hot (93 °C); memory is nearly full (95%); "
-        "video memory is nearly full (95%); disk ~ is nearly full (96%).\n"
+        "video memory is nearly full (95%); the home disk is nearly full (96%).\n"
     )
     assert "Nothing is near its limit" not in result.text
     assert result.spoken.startswith(
-        "The CPU is hot, memory is nearly full, video memory is nearly full and disk ~ is "
-        "nearly full. The CPU is at"
+        "The CPU is hot, memory is nearly full, video memory is nearly full and the home "
+        "disk is nearly full. The CPU is at"
     )
 
 

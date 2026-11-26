@@ -36,6 +36,15 @@ def test_a_runaway_reply_is_cut_before_it_is_cleaned() -> None:
         ("Queued five songs - starting now.", "Queued five songs, starting now."),
         ("That is 48 - 31, so 17.", "That is 48 - 31, so 17."),
         ("It was fine, \u2014 mostly.", "It was fine, mostly."),
+        ("Open 9 a.m.\u20135 p.m.", "Open 9 a.m. to 5 p.m."),
+        ("Open 9 a.m. \u2013 5 p.m.", "Open 9 a.m. to 5 p.m."),
+        ("Open 9am\u20135pm.", "Open 9am to 5pm."),
+        ("Mon\u2013Fri.", "Mon to Fri."),
+        ("From 2020\u2013present.", "From 2020 to present."),
+        ("It costs $5\u2013$10.", "It costs $5 to $10."),
+        ("Lows of \u22125\u2013\u22123 \u00b0C.", "Lows of \u22125 to \u22123 degrees Celsius."),
+        ("Lows of \u22125 \u2013 \u22123 \u00b0C.", "Lows of \u22125 to \u22123 degrees Celsius."),
+        ("Highs of 5\u00b0 \u2013 10\u00b0.", "Highs of 5 degrees to 10 degrees."),
     ],
 )
 def test_a_dash_is_a_pause_or_a_range_never_a_run_on(reply: str, spoken: str) -> None:

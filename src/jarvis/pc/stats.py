@@ -39,7 +39,7 @@ MINUTE_S = 60
 
 
 def _plain(_groups: dict[str, str]) -> dict[str, Any]:
-    """A plain question hears only the spoken sentence: the busiest programs are not looked up."""
+    """A plain question gets the short report, spoken or laid out for a window: no programs."""
     return {"programs": False}
 
 
@@ -337,6 +337,10 @@ class StatsOps:
         ]
 
 
+# The disks by name in a verdict, which is also spoken: a voice would read "~" and "/" as signs.
+_DISK_WORDS = {"~": "the home disk", "/": "the root disk"}
+
+
 def _strained(sample: Stats, disks: list[Disk], *, swamped: bool) -> list[tuple[str, str]]:
     """Return what is near its limit, each as words and the figure that says so ("" for none)."""
     found: list[tuple[str, str]] = []
@@ -354,7 +358,7 @@ def _strained(sample: Stats, disks: list[Disk], *, swamped: bool) -> list[tuple[
     if vram_used is not None and vram_total and vram_used >= NEARLY_FULL * vram_total:
         found.append(("video memory is nearly full", _share(vram_used, vram_total)))
     found.extend(
-        (f"disk {d.name} is nearly full", _share(d.used, d.total))
+        (f"{_DISK_WORDS.get(d.name, f'disk {d.name}')} is nearly full", _share(d.used, d.total))
         for d in disks
         if d.total and d.used >= NEARLY_FULL * d.total
     )

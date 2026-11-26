@@ -341,7 +341,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   stripped when the model copies them, as "[actions taken: …]" already was. So is the `<data origin="…">`
   wrapper memory puts round a reply that drew on outside text, with the notes inside it: a reply that
   copied it showed the tag in the chat and the note in T3 Code, and a voice would have read both out.
-  Such a start is no longer spoken or drafted while the reply is being written.
+  A reply that begins with such a note or tag is held back from speech and drafts until it is cleaned.
 - Spoken replies: a dash is a pause instead of a run-on (between numbers it is "to"), a unit sign after a
   number is said as its word ("22 °C" as "22 degrees Celsius", "12 km/h" as "12 kilometres per hour",
   "48 GB" as "48 gigabytes") instead of spelled out, a web address is said as its site, and a table's
@@ -491,7 +491,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   gives sizes the same way. A plain question about the PC typed in the chat or T3 Code, which Jarvis
   answers without the model, now shows that verdict and a labelled line for each part instead of the
   sentence written for the voice (`Result.written`).
-- The weather now leaves out what says nothing: a feels-like temperature within 2 degrees of the real one,
+- The weather now leaves out what says nothing: a feels-like temperature less than 2 degrees from the real one,
   and precipitation when there is none.
 - `/config` in the chat is set as Claude Code's settings screen is: the sections are tabs across the top
   (Tab and Shift+Tab, or ← → on the tab row), typing anywhere searches every section, and each setting is
