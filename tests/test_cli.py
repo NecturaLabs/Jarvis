@@ -13,7 +13,7 @@ import types
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Self, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import numpy as np
 import pytest
@@ -199,15 +199,22 @@ def _doctor_config(data: Path) -> None:
     config.save(config.Config(data_dir=data, spotify=config.SpotifyConfig(client_id="abc")))
 
 
-def _doctor_lines(capsys: pytest.CaptureFixture[str]) -> list[str]:
+def _doctor_output(capsys: pytest.CaptureFixture[str]) -> list[str]:
     return capsys.readouterr().out.splitlines()
+
+
+def _doctor_lines(capsys: pytest.CaptureFixture[str]) -> list[str]:
+    """The doctor's check and note lines, without its closing count (which names what failed)."""
+    *lines, closing = _doctor_output(capsys)
+    assert " check" in closing, closing
+    return lines
 
 
 def test_doctor_lines_up_its_checks_and_ends_with_a_count(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     cli.main(["doctor"])
-    lines = _doctor_lines(capsys)
+    lines = _doctor_output(capsys)
 
     checks = [line for line in lines if line[:5] in {"ok   ", "FAIL ", "note "}]
     assert checks
@@ -215,7 +222,7 @@ def test_doctor_lines_up_its_checks_and_ends_with_a_count(
     failed = sum(line.startswith("FAIL") for line in lines)
     total = sum(line[:5] in {"ok   ", "FAIL "} for line in lines)
     assert not any(line.startswith("ok  ") and line[4] != " " for line in lines)
-    assert lines[-1] == f"{total} checks, {failed} failed"
+    assert lines[-1].startswith(f"{total} checks, {failed or 'none'} failed")
 
 
 def test_doctor_names_the_release_of_a_model_file_it_recognises(
@@ -229,13 +236,13 @@ def test_doctor_names_the_release_of_a_model_file_it_recognises(
 
     cli.main(["doctor"])
 
-    out = _doctor_lines(capsys)
+    out = _doctor_output(capsys)
     assert any(
         line.startswith("ok   hey_jarvis.onnx: ") and "Example wake 9.9" in line and "MIT" in line
         for line in out
     )
     assert not any("not a known release" in line for line in out)
-    assert out[-1].endswith(" failed")
+    assert " failed" in out[-1]
     total = sum(line[:5] in {"ok   ", "FAIL "} for line in out)
     assert out[-1].startswith(f"{total} checks, ")
 
@@ -2733,3 +2740,46 @@ def test_essential_doctor_does_not_require_spotify_login(
     lines = _doctor_lines(capsys)
     assert any(line.startswith("note") and "Spotify login" in line for line in lines)
     assert not any(line.startswith("FAIL") and "Spotify" in line for line in lines)
+
+
+def _agent_answer(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
+    out = capsys.readouterr().out
+    assert out.count("\n") == 1, out  # one line, nothing else around it
+    return json.loads(out)
+
+
+def test_the_doctor_gives_an_agent_each_check_and_fails_as_it_does_for_people(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config.save(config.Config(data_dir=tmp_path / "missing"))
+
+    code = main(["doctor", "--agent", "--no-service"])
+
+    answer = _agent_answer(capsys)
+    assert code == 1
+    assert answer["ok"] is False
+    assert answer["exit"] == 1
+    failed = [c for c in answer["checks"] if c["status"] == "fail"]
+    assert failed
+    assert all(set(c) == {"status", "what", "fix"} for c in answer["checks"])
+    assert all(c["fix"] for c in failed)
+    assert answer["summary"].startswith(f"{len(answer['checks'])} checks")
+
+
+def test_the_doctor_tells_people_what_failed_in_its_last_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config.save(config.Config(data_dir=tmp_path / "missing"))
+
+    assert main(["doctor", "--no-service"]) == 1
+
+    lines = capsys.readouterr().out.splitlines()
+    assert ", failed" not in lines[-1]
+    assert " failed: " in lines[-1]
+    assert all(line[:5] in {"ok   ", "FAIL ", "note "} for line in lines[:-1])
+
+
+def test_colour_never_reaches_a_pipe(capsys: pytest.CaptureFixture[str]) -> None:
+    main(["doctor", "--no-service"])
+
+    assert "\x1b[" not in capsys.readouterr().out

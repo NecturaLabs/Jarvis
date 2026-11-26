@@ -40,6 +40,7 @@ class ToolSetting:
     state: OpClass
     shipped: OpClass
     choices: tuple[OpClass, ...]
+    description: str = ""  # what the model is told it does, whole (`summary` is its start)
 
     @property
     def label(self) -> str:
@@ -83,6 +84,7 @@ def tool_settings(config: Config, spotify: list[Operation]) -> list[ToolSetting]
             effective_class(op, config.boundaries.classes),
             effective_class(op, {}),
             tuple(c for c in OpClass if effective_class(op, {name: c.value}) is c),
+            op.description,
         )
         for name, op in sorted(ops.items())
     ]

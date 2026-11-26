@@ -17,6 +17,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   user timer is available with `jarvis update --auto on` ([ADR 0019](docs/adr/0019-install-and-update.md)).
 - The headless browser is required: the installer stops without agent-browser and has it download its
   Chrome, and `jarvis doctor` fails a missing agent-browser or Chrome while the browser is switched on.
+- Every `jarvis` command answers a script or an AI agent in one line of JSON with `--agent` (or
+  `--agent-format`, or `JARVIS_AGENT_FORMAT=1`): `command`, `ok` and `exit`, then its own keys (`doctor`,
+  `status`, `tools`, `speed`, `consent`) or its output lines, even for a wrong argument or a crash. Interactive
+  commands refuse it. The `jarvis-cli` skill tells coding agents how to read and keep it.
 - Set up Jarvis without Spotify. Tools and background Spotify refresh stay off until a client ID is set.
 
 - A headless browser for pages `web_read` can't read or that must be used (a search box, a button), through
@@ -311,6 +315,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- `jarvis doctor` ends with the names of the checks that failed, not only their count, writes every note
+  the same way (`note …`), and colours its status words on a terminal (never in a pipe or with `NO_COLOR`).
 - Speech keeps a short memory for quick commands: `agent.memory_idle_s` is now `300.0` (was `1800.0`), so the
   conversation is forgotten after five idle minutes, and `agent.memory_tokens` is now `3000` (was `6000`). A
   scheduled request shares speech's conversation and limits; `jarvis ask` remembers nothing between runs. The

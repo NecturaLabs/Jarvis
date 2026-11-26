@@ -2,6 +2,7 @@
 
 import argparse
 import contextlib
+import io
 import json
 import logging
 import math
@@ -14,12 +15,13 @@ import signal
 import subprocess
 import sys
 import threading
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from jarvis import __version__, config, control, models, modes, paths, services, update
+from jarvis import __version__, cliout, config, control, models, modes, paths, services, update
 from jarvis.activity import AuditTail
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.app import (
@@ -316,6 +318,15 @@ def build_parser() -> argparse.ArgumentParser:
         for _group, commands in COMMAND_GROUPS
         for name, summary in commands
     }
+    for each in (parser, *made.values()):  # before or after the command, as an agent writes it
+        each.add_argument(
+            "--agent",
+            "--agent-format",
+            dest="agent",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help=f"answer in one line of JSON for an agent (or set {cliout.AGENT_ENV}=1)",
+        )
 
     setup = made["setup"]
     setup.add_argument(
@@ -1527,12 +1538,31 @@ def strata_status(cfg: config.Config) -> str | None:
 def print_checks(checks: Sequence[tuple[bool, str, str]]) -> int:
     """Print the checks and return their failure count."""
     for ok, what, fix in checks:
-        print(f"{'ok' if ok else 'FAIL':4} {what}" + ("" if ok else f"  -> {fix}"))
+        print(cliout.check(what, fix, ok=ok))
     return sum(not ok for ok, _, _ in checks)
 
 
-def cmd_doctor(args: argparse.Namespace) -> int:
-    """Print one line per check with its fix; never loads the model."""
+@dataclass(frozen=True, slots=True)
+class DoctorReport:
+    """What `jarvis doctor` found: its checks, its notes, and how many releases it verified."""
+
+    checks: list[tuple[bool, str, str]]
+    notes: list[str]
+    verified: list[str]  # "name: release, sha256 verified", one per file it matched
+
+    @property
+    def failed(self) -> int:
+        """How many checks failed."""
+        return sum(not ok for ok, _, _ in self.checks)
+
+    @property
+    def summary(self) -> str:
+        """The closing line: how many checks ran and which failed."""
+        return cliout.summary(self.checks, extra=len(self.verified))
+
+
+def doctor_report(args: argparse.Namespace) -> DoctorReport:
+    """Run every check `jarvis doctor` runs; print nothing."""
     cfg = _load()
     checks, notes = essential_checks(cfg)
     if cfg.spotify.client_id:
@@ -1557,17 +1587,22 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         )
     release_lines, unreadable = _release_lines(cfg)
     checks.extend(unreadable)
-    failed = print_checks(checks)
-    for line in [
-        *notes,
-        *_memlock_notes(cfg),
-        *update.doctor_notes(cfg, launch_for_update),
-        *release_lines,
-    ]:
-        print(line)
-    verified = sum(line.startswith("ok ") for line in release_lines)
-    print(f"{len(checks) + verified} checks, {failed} failed")
-    return int(bool(failed))
+    notes.extend([*_memlock_notes(cfg), *update.doctor_notes(cfg, launch_for_update)])
+    verified = [line.removeprefix("ok").strip() for line in release_lines if line.startswith("ok ")]
+    notes.extend(line for line in release_lines if not line.startswith("ok "))
+    return DoctorReport(checks, notes, verified)
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Print one line per check with its fix, then the notes; never loads the model."""
+    report = doctor_report(args)
+    print_checks(report.checks)
+    for line in report.verified:
+        print(cliout.check(line, ok=True))
+    for line in report.notes:
+        print(cliout.note(line))
+    print(report.summary)
+    return int(bool(report.failed))
 
 
 FETCH_MODELS = "uv run tools/get_models.py (or see docs/models.md)"  # the fix for a missing model
@@ -2523,7 +2558,137 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the `jarvis` command and return its exit code."""
-    args = build_parser().parse_args(argv)
+    words = sys.argv[1:] if argv is None else list(argv)
+    if cliout.agent_mode(asked=any(word in AGENT_FLAGS for word in words)):
+        return _agent_main(words)
+    args = build_parser().parse_args(words)
     if args.command is None:
         return cmd_overview(args)
     return COMMANDS[args.command](args)
+
+
+AGENT_FLAGS = frozenset({"--agent", "--agent-format"})
+
+
+def _agent_main(words: list[str]) -> int:
+    """`main` for an agent: even a mistyped command line is answered in one line of JSON."""
+    out, err = io.StringIO(), io.StringIO()
+    args: argparse.Namespace | None = None
+    code = 2
+    with cliout.captured(out, err):
+        try:
+            args = build_parser().parse_args(words)
+        except SystemExit as exc:  # --help, or arguments argparse refused
+            code = exc.code if isinstance(exc.code, int) else 2
+    if args is not None:
+        return answer_agent(args)
+    command = next((word for word in words if word in COMMANDS), None)
+    cliout.emit(
+        {
+            "command": command,
+            "ok": code == 0,
+            "exit": code,
+            "output": _lines(out.getvalue()),
+            "errors": _lines(err.getvalue()),
+        }
+    )
+    return code
+
+
+# Commands that wait on a person or follow a live stream: they have no one-line answer.
+INTERACTIVE = frozenset({"chat", "logs", "run", "ask", "speech-test", "spotify-login"})
+
+
+def _lines(text: str) -> list[str]:
+    return [cliout.strip(line) for line in text.splitlines() if line.strip()]
+
+
+def _agent_speed(_args: argparse.Namespace) -> dict[str, object]:
+    return {"speech_speed": config.load().audio.speech_speed}
+
+
+def _agent_consent(_args: argparse.Namespace) -> dict[str, object]:
+    bypass = config.load().boundaries.bypass_consent
+    return {"consent": "bypassed" if bypass else "asks", "said": CONSENT_SAID[bypass]}
+
+
+def _tool_entry(s: ToolSetting) -> dict[str, object]:
+    return {
+        "name": s.name,
+        "setting": s.label,
+        "state": s.state.value,
+        "shipped": s.shipped.value,
+        "changed": s.state is not s.shipped,
+        "description": s.description or s.summary,
+    }
+
+
+def _agent_tools(args: argparse.Namespace) -> dict[str, object]:
+    rows = _tool_settings(config.load())
+    if args.name is not None:
+        return {"tool": next((_tool_entry(s) for s in rows if s.name == args.name), None)}
+    return {"tools": [_tool_entry(s) for s in rows]}
+
+
+# Commands whose answer has fields of its own; any other command's answer carries its lines.
+AGENT_FIELDS: dict[str, Callable[[argparse.Namespace], dict[str, object]]] = {
+    "speed": _agent_speed,
+    "consent": _agent_consent,
+    "tools": _agent_tools,
+}
+
+
+def answer_agent(args: argparse.Namespace) -> int:
+    """Run the command and write its answer as one line of JSON (`jarvis.cliout`)."""
+    name = args.command or "status"
+    if name in INTERACTIVE:
+        said = f"{name} is interactive: run it in a terminal, without --agent"
+        cliout.emit({"command": name, "ok": False, "exit": 2, "errors": [said]})
+        return 2
+    out, err = io.StringIO(), io.StringIO()
+    answer: dict[str, object] = {"command": name}
+    with cliout.captured(out, err):
+        try:
+            code = _run_for_agent(name, args, answer)
+        except SystemExit as exc:  # a command that gives up the way argparse does
+            code = exc.code if isinstance(exc.code, int) else 1
+            if isinstance(exc.code, str):
+                print(exc.code, file=sys.stderr)
+        except Exception:  # ruff: ignore[blind-except] - the agent still gets its one line, and the traceback
+            code = 1
+            traceback.print_exc()
+    answer |= {"ok": code == 0, "exit": code}
+    printed, errors = _lines(out.getvalue()), _lines(err.getvalue())
+    if name == "status" and printed:
+        answer |= json.loads(printed[-1])
+    elif name not in AGENT_FIELDS and name != "doctor":
+        answer["output"] = printed
+    if errors or (name not in AGENT_FIELDS and name not in {"doctor", "status"}):
+        answer["errors"] = errors
+    cliout.emit(answer)
+    return code
+
+
+def _run_for_agent(name: str, args: argparse.Namespace, answer: dict[str, object]) -> int:
+    """Run command `name`, adding its own fields to `answer`; return its exit code."""
+    if name == "doctor":
+        report = doctor_report(args)
+        answer |= _doctor_fields(report)
+        return int(bool(report.failed))
+    if name == "status":
+        args.json = True
+        return cmd_status(args)
+    code = COMMANDS[name](args)
+    if code == 0 and name in AGENT_FIELDS:
+        answer |= AGENT_FIELDS[name](args)
+    return code
+
+
+def _doctor_fields(report: DoctorReport) -> dict[str, object]:
+    checks = [
+        {"status": "ok" if ok else "fail", "what": what, "fix": "" if ok else fix}
+        for ok, what, fix in report.checks
+    ]
+    checks += [{"status": "ok", "what": line, "fix": ""} for line in report.verified]
+    notes = [cliout.strip(cliout.note(line))[len("note ") :] for line in report.notes]
+    return {"checks": checks, "notes": notes, "summary": report.summary}

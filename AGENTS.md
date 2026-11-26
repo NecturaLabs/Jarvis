@@ -67,7 +67,8 @@ These hold on the maintainer's machine; elsewhere, use your own folders and keep
 - Docs and `CHANGELOG.md` change in the same commit as the behaviour; `docs/README.md` says which docs are kept true.
 - Recipes: the `add-operation` skill for anything Jarvis can do, `add-dependency-or-voice` before adding a package,
   model or voice, `run-silent` before any `jarvis` command other than `--help`, `doctor` or `status` (it lists
-  which ones act on the owner's setup). Skills live in `.claude/skills/` with a byte-identical copy in
+  which ones act on the owner's setup), `jarvis-cli` to read a command's answer (`--agent`, one JSON line) or change
+  what one prints. Skills live in `.claude/skills/` with a byte-identical copy in
   `.agents/skills/`, and agents in `.claude/agents/` with a Codex copy in `.codex/agents/`; change both together.
 
 ## Git

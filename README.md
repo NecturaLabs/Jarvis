@@ -172,7 +172,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis confirm` | Allow the one action Jarvis is waiting on with "Press the confirm key". Bind it to a key ([configuration](docs/configuration.md#the-confirm-key-jarvis-confirm)). |
 | `jarvis unload` | Free the model's memory now, for example before a game. |
 | `jarvis model` | Show the mode (normal or coding), each mode's model and whether it is loaded; `jarvis model coding` and `jarvis model normal` switch ([configuration](docs/configuration.md#coding-coding-mode)). |
-| `jarvis doctor` | Check every part without loading the model: one line per check (`ok`, `FAIL` with its fix, or `note`), then how many failed. |
+| `jarvis doctor` | Check every part without loading the model: one line per check (`ok`, `FAIL` with its fix, or `note`), then how many checks ran and which failed. |
 | `jarvis logs` | Follow the live log (Ctrl+C to leave). |
 | `jarvis help` | List the commands by group, each with what it does (the same as `jarvis --help`); `jarvis <command> --help` explains one command and its options, and a mistyped command gets a suggestion when one is close. |
 | `jarvis ask <text>` | Send one typed request as if spoken; a question is answered `y` or `n` on the terminal, and `--yes` answers yes to confirmations, except a browser click or typing, which it still asks on the terminal (and refuses with no terminal to answer on). |
@@ -183,6 +183,10 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis run` | Run the voice loop in the foreground. This is what `jarvis.service` runs. |
 | `jarvis speech-test record\|score\|compare` | Record a private set of your own requests, score how well speech-to-text hears them (word errors, names, time), and compare two scores for a difference beyond chance. |
 | `jarvis --version` | Print the version. |
+
+For a script or an AI agent, add `--agent` (or `--agent-format`) to any command, or set `JARVIS_AGENT_FORMAT=1`:
+the answer is then one line of JSON with `command`, `ok` and `exit`, plus the command's own keys or its output
+lines. Colour appears only on a terminal, and never with `NO_COLOR` set. The `jarvis-cli` skill lists the keys.
 
 ## Docs
 
@@ -252,7 +256,8 @@ holds the product rules, commands, workflow and boundaries.
 - **Agents** (`.claude/agents/`, mirrored for Codex in `.codex/agents/`): `jarvis-reviewer` (read-only review of a
   finished change) and `jarvis-slop-check` (the words of a pull request, docs and spoken replies).
 - **Skills** (`.claude/skills/`, mirrored in `.agents/skills/`): `add-operation` (a new thing Jarvis can do),
-  `add-dependency-or-voice` (licence and pin checks) and `run-silent` (running Jarvis without sound or windows).
+  `add-dependency-or-voice` (licence and pin checks), `run-silent` (running Jarvis without sound or windows) and
+  `jarvis-cli` (reading a command's answer with `--agent`, and changing what a command prints).
 - **Tools** (`tools/`): `tools/check.sh` is the one command an agent runs before calling work done.
 
 ## Community
