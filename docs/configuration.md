@@ -1062,7 +1062,7 @@ jobs in it and refuses to add one, rather than writing over the newer jobs. Why 
 ## `[acp]`: Jarvis in T3 Code
 
 `jarvis acp` ([ADR 0023](adr/0023-acp-front-end.md)) is what T3 Code starts for a Jarvis provider. It lists
-the normal and coding modes as two models, each by its run config's model name and what it is for, and a
+the normal and coding modes as two models, titled `Normal` and `Coding`, each described by its run config's model name and what it is for, and a
 thinking effort that starts at the mode's `thinking` (`[chat]`, and `[coding.chat]` over it). A session in
 coding mode works as the chat does in coding mode: the coding prompt, `[coding.chat]` over `[chat]`,
 `coding.tools_off` and `coding.write_roots`. `jarvis acp --coding` makes coding mode the first choice. On the first request, the provider reloads the configuration and compares the resolved

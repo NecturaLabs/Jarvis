@@ -1381,7 +1381,7 @@ class _CodingFirst:
             return self._ready, line
 
 
-# What each mode is for, as a coding app lists it under the model's name.
+# What each mode is for, as a coding app lists it after the model's name.
 ACP_PURPOSE: dict[modes.Mode, str] = {
     "normal": "Everyday requests: questions, the web, music and the PC",
     "coding": "Programming work: the coding prompt, tools and room for long tasks",

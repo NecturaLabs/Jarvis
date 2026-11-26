@@ -386,7 +386,8 @@ def test_acp_lists_both_modes_by_a_short_name_with_the_model_in_the_description(
         ("normal", "Normal", "none"),
         ("coding", "Coding", "medium"),
     ]
-    assert [m.description.split(":")[0] for m in acp.models] == ["normal-model", "coding-model"]
+    assert acp.models[0].description.startswith("normal-model: ")
+    assert acp.models[1].description.startswith("coding-model: ")
     assert acp.models[0].description != acp.models[1].description
 
 
