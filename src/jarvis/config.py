@@ -133,6 +133,10 @@ class ModelConfig(_Section):
     temperature: float = Field(default=0.2, ge=0, le=2)
 
 
+# The least room the chat's defaults leave the remembered conversation (`chat.memory_tokens` unset).
+CHAT_MEMORY_FLOOR = 5000
+
+
 class AgentConfig(_Section):
     """How much one spoken request may do, and how much of the talk Jarvis remembers.
 
@@ -155,7 +159,7 @@ class AgentConfig(_Section):
     tool_text_chars: int = Field(default=3000, ge=500, le=50000)  # of one tool result
     # Speech is short-term memory for quick commands: a follow-up comes within a minute or two,
     # and after five idle minutes an old exchange is likelier to mislead the next command.
-    memory_tokens: int = Field(default=3000, ge=0, le=200000)
+    memory_tokens: int | None = Field(default=3000, ge=0, le=200000)  # unset: what fits
     memory_idle_s: float = Field(default=300.0, ge=0)  # forget after this long unused; 0 never
     memory_detail: MemoryDetail = "condensed"
     thinking: Effort = "none"
@@ -181,7 +185,9 @@ class ChatConfig(AgentConfig):
     max_seconds: float = Field(default=600.0, ge=10, le=3600)
     reply_tokens: int = Field(default=2048, ge=64, le=8192)
     tool_text_chars: int = Field(default=8000, ge=500, le=50000)
-    memory_tokens: int = Field(default=5700, ge=0, le=200000)
+    # Unset: what the window leaves beside the prompt, a reply and the request's work. The defaults
+    # leave at least CHAT_MEMORY_FLOOR (tested); a longer prompt takes from the memory instead.
+    memory_tokens: int | None = Field(default=None, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
     memory_detail: MemoryDetail = "full"
     thinking_tokens: int = Field(default=512, ge=32, le=8192)

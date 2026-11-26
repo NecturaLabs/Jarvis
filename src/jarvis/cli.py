@@ -939,7 +939,15 @@ def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
         ("mode", f"{mode} (/model switches)"),
         ("model", f"{services.model_name(served)}, {served.strata.context:,} tokens of context"),
         ("replies", f"up to {chat.reply_tokens:,} tokens, {chat.max_steps} model calls"),
-        ("memory", f"{chat.memory_detail}, up to {chat.memory_tokens:,} tokens"),
+        (
+            "memory",
+            f"{chat.memory_detail}, "
+            + (
+                "as much as the window leaves"
+                if chat.memory_tokens is None
+                else f"up to {chat.memory_tokens:,} tokens"
+            ),
+        ),
         ("config", str(paths.config_file())),
         ("conversation", str(chat_memory_file())),
         ("archive", f"{chat_archive_dir()}, up to {cfg.chat.archive_keep} conversations"),

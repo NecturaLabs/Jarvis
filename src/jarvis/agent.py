@@ -626,7 +626,7 @@ class Limits:
     max_seconds: float = MAX_SECONDS
     reply_tokens: int = REPLY_TOKENS
     tool_text_chars: int = MAX_TOOL_TEXT
-    memory_tokens: int = MEMORY_TOKENS
+    memory_tokens: int | None = MEMORY_TOKENS  # None: what the window leaves
     memory_idle_s: float = MEMORY_IDLE_S
     context_tokens: int = CONTEXT_TOKENS
     memory_detail: MemoryDetail = "condensed"
@@ -1151,13 +1151,16 @@ class Agent:
     def _memory_budget(self) -> int:
         """Return the room for the conversation: the setting, within what the window leaves.
 
+        Unset, the setting is all the window leaves.
+
         The window must also hold the prompt and tool definitions, one reply and the request's
         own work (at least two tool results at their cap).
         """
         limits = self._limits
         work = 2 * tokens("x" * limits.tool_text_chars)
         room = limits.context_tokens - CONTEXT_MARGIN - self._fixed - limits.answer_tokens - work
-        return max(0, min(limits.memory_tokens, room))
+        wanted = room if limits.memory_tokens is None else limits.memory_tokens
+        return max(0, min(wanted, room))
 
     def set_system(self, prompt: str) -> None:
         """Give the model `prompt` as its instructions from the next request on."""

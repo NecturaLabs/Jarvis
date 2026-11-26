@@ -357,6 +357,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- The chat's remembered conversation takes what the context window leaves (`chat.memory_tokens` unset
+  by default, was 5,700): a longer prompt or more tools take from it instead of failing the defaults.
+  The defaults leave it at least 5,000 tokens. A set number still caps it.
+- Jarvis puts the choice it recommends first, and marks it with its reason, whenever it offers choices.
+
 - The chat's default `memory_tokens` is now 5700 (was 6200), so the default 24,576-token window
   still holds it beside the new window and screenshot tools.
 - `jarvis doctor` ends with the names of the checks that failed, not only their count, writes every note

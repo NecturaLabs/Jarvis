@@ -72,7 +72,7 @@ live run of the same requests as the model benchmark ([models.md](../models.md))
 
 Until then `routed` is an opt-in, and the memory defaults are sized for `all`: the room kept for the remembered
 conversation counts every tool definition and the toolbox, the request that loads every group, so a routed chat
-remembers a little less by default (about 4,500 tokens of 5,700 with every optional tool on). Making room
+remembers a little less by default (about 4,500 tokens, with every optional tool on, when it was capped at 5,700). Making room
 inside a request counts only what that call is offered.
 
 ### Consequences
