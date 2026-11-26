@@ -162,6 +162,20 @@ class _Found:
     children: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class Usage:
+    """One program's use of the PC: its processes, resident memory (bytes) and CPU.
+
+    `cpu_percent` is its share of the whole processor, every thread counted, as `pc_stats` gives
+    the processor's own load.
+    """
+
+    name: str
+    processes: int
+    rss: int
+    cpu_percent: float
+
+
 @dataclass(slots=True)
 class _Program:
     """The owner's processes of one program, added up, for a listing without a name."""
@@ -293,6 +307,7 @@ class ProcessOps:
         ticks_per_s: int | None = None,
         sleep: Callable[[float], None] = time.sleep,
         page_size: int | None = None,
+        cpus: int | None = None,
     ) -> None:
         """Read processes under `proc` as the owner `uid`; Jarvis's own PID is `self_pid`."""
         super().__init__()
@@ -305,6 +320,7 @@ class ProcessOps:
         self._ticks = ticks_per_s or os.sysconf("SC_CLK_TCK")
         self._sleep = sleep
         self._page = page_size or os.sysconf("SC_PAGE_SIZE")
+        self._cpus = cpus or os.cpu_count() or 1
         self._lock = threading.Lock()
         self._shown = _Shown()
 
@@ -586,9 +602,21 @@ class ProcessOps:
             top = parent
         return top
 
+    def _cpu_scale(self) -> float:
+        """Return what one CPU tick in the sample is as a share of the whole processor (percent)."""
+        return 100 / self._ticks / CPU_SAMPLE_S / self._cpus
+
+    def usage(self) -> list[Usage]:
+        """Return every running program of the owner's with its memory and CPU use now."""
+        scale = self._cpu_scale()
+        return [
+            Usage(item.name, len(item.pids), item.rss, item.ticks * scale)
+            for item in self._programs()
+        ]
+
     def _program_line(self, item: _Program, windows: dict[int, Window]) -> str:
         size = f"{item.rss / GIB:.1f} GiB" if item.rss >= GIB else f"{item.rss // MIB} MiB"
-        cpu = 100 * item.ticks / self._ticks / CPU_SAMPLE_S
+        cpu = item.ticks * self._cpu_scale()
         count = len(item.pids)
         parts = [
             f"- {item.name}: {count} process{'es' if count != 1 else ''}",

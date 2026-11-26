@@ -177,6 +177,7 @@ def _ops(
     stopper: FakeStopper | None = None,
     windows: list[Window] | None = None,
     sleep: Callable[[float], None] = lambda _s: None,
+    cpus: int = 1,
 ) -> ProcessOps:
     return ProcessOps(
         proc=proc.root,
@@ -188,6 +189,7 @@ def _ops(
         ticks_per_s=TICKS,
         sleep=sleep,
         page_size=PAGE,
+        cpus=cpus,
     )
 
 
@@ -1699,3 +1701,15 @@ def test_the_listing_arguments_are_checked() -> None:
         validate_args(op, {"sort": "size"})
     with pytest.raises(ArgumentError):
         validate_args(op, {"count": 0})
+
+
+def test_cpu_is_a_share_of_the_whole_processor(proc: FakeProc) -> None:
+    _desktop(proc)
+
+    def busy(_seconds: float) -> None:
+        proc.add(3200, "notes", start=700_000, rss_kib=50 * 1024, utime=40)  # 0.4 s of one core
+
+    ops = _ops(proc, sleep=busy, cpus=4)
+
+    (notes,) = [u for u in ops.usage() if u.name == "notes"]
+    assert notes.cpu_percent == pytest.approx(20.0)  # 80% of one core is 20% of four

@@ -1,11 +1,14 @@
 """`pc_stats`: what the PC is and how busy it is, read from fake /proc and /sys trees."""
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
 from jarvis import shortcuts
 from jarvis.operations import Registry, validate_args
+from jarvis.pc import stats
+from jarvis.pc.processes import Usage
 from jarvis.pc.stats import Disk, StatsOps
 from jarvis.policy import OpClass, Origin
 from jarvis.sysinfo import Sampler
@@ -110,3 +113,55 @@ def test_plain_questions_about_the_pc_need_no_model(tmp_path: Path, said: str) -
 
     assert hit is not None
     assert hit.operation == "pc_stats"
+
+
+def test_pc_stats_says_what_is_free_the_swap_and_who_uses_the_most(tmp_path: Path) -> None:
+    proc, sys = _tree(tmp_path)
+    (proc / "meminfo").write_text(
+        f"MemTotal: {64 * 1024 * 1024} kB\nMemAvailable: {12 * 1024 * 1024} kB\n"
+        f"SwapTotal: {8 * 1024 * 1024} kB\nSwapFree: {6 * 1024 * 1024} kB\n",
+        encoding="utf-8",
+    )
+    usage = [
+        Usage("model-server", 1, 36 * GIB, 0.0),
+        Usage("browser", 12, 2 * GIB, 74.0),
+        Usage("editor", 3, 512 * 1024**2, 9.0),
+        Usage("idle-thing", 1, 100 * 1024**2, 0.0),
+    ]
+    ops = StatsOps(
+        Sampler(proc, sys), proc=proc, wait=_Ticks(proc), disks=list, usage=lambda: usage
+    )
+    (op,) = ops.operations()
+
+    text = op.run(validate_args(op, {})).text
+
+    assert "12.0 GiB available" in text
+    assert "Swap: 2.0 of 8.0 GiB used" in text
+    assert "Most memory: model-server 36.0 GiB, browser 2.0 GiB, editor 512 MiB." in text
+    assert "Most CPU: browser 74%, editor 9%." in text  # an idle program is left out
+
+
+def test_pc_stats_without_a_process_reader_still_answers(tmp_path: Path) -> None:
+    ops, _ = _stats(tmp_path)
+    (op,) = ops.operations()
+
+    text = op.run(validate_args(op, {})).text
+
+    assert "Most memory" not in text
+    assert "Swap" not in text  # no swap counters in this /proc
+
+
+def test_two_subvolumes_of_one_file_system_are_one_disk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(stats.Path, "home", staticmethod(lambda: home))
+    usage = SimpleNamespace(total=900 * GIB, used=300 * GIB, free=600 * GIB)
+
+    def disk_usage(_path: object) -> SimpleNamespace:
+        return usage
+
+    monkeypatch.setattr(stats.shutil, "disk_usage", disk_usage)
+
+    assert [d.name for d in stats.home_disks()] == ["~"]

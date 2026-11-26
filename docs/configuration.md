@@ -961,7 +961,7 @@ window = "\\bspotify\\b"                 # matched, case-blind, with a window's 
 
 Ask in any words what is running, or what uses the most memory or CPU, and Jarvis lists your running
 programs (`find_processes` without a name, `safe`): each program once, with its processes added up, how much
-memory they use and their CPU use over half a second, its window's title and when it last started. The list is
+memory they use and their share of the whole processor over half a second, its window's title and when it last started. The list is
 sorted by memory, CPU or newest (`sort`), shows 12 by default (`count`, up to 40) and says how many more run.
 Another user's processes and the kernel's are left out; the programs Jarvis never stops (below) are listed
 and marked. A child running the same program as its parent (a browser's tabs) counts as that program. Nothing

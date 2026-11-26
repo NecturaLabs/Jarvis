@@ -12,6 +12,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   memory and CPU use added up, sorted by memory, CPU or newest (`sort`, `count`). Jarvis can answer what is
   running or what uses the most; the listing binds no PID, so stopping one still goes through a by-name find
   and the confirm key.
+- `pc_stats` also gives the memory still available, swap, and the three programs using the most memory and
+  the most CPU (as a share of the whole processor, like its own load).
 
 - Skill plugins: skills from marketplaces in the Claude Code format, enabled with `jarvis plugins install
   PLUGIN@MARKETPLACE` and kept at the newest commit of their repository (no pinned version), by
@@ -302,6 +304,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A reply no longer starts with "[looked up: …]": the notes memory puts before a remembered reply are
+  stripped when the model copies them, as "[actions taken: …]" already was.
+- `pc_stats` lists a file system once when the home folder and the root are two btrfs subvolumes of it.
 - With a shared Strata run config, the ACP coding provider keeps the current model mode and
   uses the normal context budget. Coding requests hold off automatic model restarts while they answer.
 - ACP cancel and close stop deferred prompts and suppress late chunks. Confirmation answers are

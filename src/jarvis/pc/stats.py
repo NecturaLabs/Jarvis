@@ -19,10 +19,14 @@ from jarvis.shortcuts import Shortcut
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from jarvis.pc.processes import Usage
     from jarvis.sysinfo import Sampler, Specs, Stats
 
 GIB = 1024**3
 CPU_WINDOW_S = 0.25  # between the two samples a CPU share needs
+TOP = 3  # programs named as using the most memory and CPU
+BUSY_PERCENT = 1.0  # a program below this much CPU is not named as busy
+MIB = 1024**2
 DAY_S = 86400
 HOUR_S = 3600
 MINUTE_S = 60
@@ -47,8 +51,12 @@ class Disk:
 
 
 def home_disks() -> list[Disk]:
-    """Return the file systems of the home folder and the root, once each."""
-    seen: set[int] = set()
+    """Return the file systems of the home folder and the root, once each.
+
+    Two btrfs subvolumes of one file system have their own device numbers but the same size and
+    use, so either match counts as the same file system.
+    """
+    seen: set[object] = set()
     disks: list[Disk] = []
     for name, path in (("~", Path.home()), ("/", Path("/"))):
         try:
@@ -56,10 +64,14 @@ def home_disks() -> list[Disk]:
             usage = shutil.disk_usage(path)
         except OSError:
             continue
-        if device not in seen:
-            seen.add(device)
+        if device not in seen and (usage.total, usage.used) not in seen:
+            seen.update((device, (usage.total, usage.used)))
             disks.append(Disk(name, usage.total, usage.used))
     return disks
+
+
+def _size(value: int) -> str:
+    return f"{_gib(value)} GiB" if value >= GIB else f"{value // MIB} MiB"
 
 
 def _gib(value: int) -> str:
@@ -92,13 +104,18 @@ class StatsOps:
         proc: Path = Path("/proc"),
         wait: Callable[[float], None] = time.sleep,
         disks: Callable[[], list[Disk]] = home_disks,
+        usage: Callable[[], list[Usage]] | None = None,
     ) -> None:
-        """Read through `sampler` and `proc`; `wait` and `disks` are for tests."""
+        """Read through `sampler` and `proc`; `usage` names the programs that use the most.
+
+        `wait` and `disks` are for tests.
+        """
         super().__init__()
         self._sampler = sampler
         self._proc = proc
         self._wait = wait
         self._disks = disks
+        self._usage = usage
 
     def _read(self, name: str) -> list[str]:
         try:
@@ -113,7 +130,8 @@ class StatsOps:
             self._wait(CPU_WINDOW_S)
             sample = self._sampler.sample()
         specs = self._sampler.specs()
-        lines = [*self._cpu_lines(specs, sample), *self._memory_lines(sample)]
+        lines = [*self._cpu_lines(specs, sample), *self._memory_lines(sample), self._swap_line()]
+        lines.extend(self._top_lines())
         lines.extend(
             f"Disk {d.name}: {round(d.used / GIB)} of {round(d.total / GIB)} GiB used "
             f"({_share(d.used, d.total)}), {round((d.total - d.used) / GIB)} GiB free."
@@ -143,13 +161,55 @@ class StatsOps:
             cpu.append(f"load {' / '.join(load)} (1, 5, 15 min) on {os.cpu_count() or '?'} threads")
         return [head + ".", f"CPU: {', '.join(cpu)}." if cpu else ""]
 
+    def _swap_line(self) -> str:
+        values: dict[str, int] = {}
+        try:
+            text = (self._proc / "meminfo").read_text(encoding="utf-8")
+        except OSError, UnicodeDecodeError:
+            return ""
+        for line in text.splitlines():
+            key, _, rest = line.partition(":")
+            with contextlib.suppress(ValueError, IndexError):
+                values[key] = int(rest.split()[0]) * 1024  # kB
+        total, free = values.get("SwapTotal"), values.get("SwapFree")
+        if not total or free is None:
+            return ""
+        used = total - free
+        return f"Swap: {_gib(used)} of {_gib(total)} GiB used ({_share(used, total)})."
+
+    def _top_lines(self) -> list[str]:
+        """Name the programs using the most memory and CPU, when a process reader is given."""
+        if self._usage is None:
+            return []
+        try:
+            usage = self._usage()
+        except OSError:
+            return []
+        lines: list[str] = []
+        by_memory = sorted(usage, key=lambda u: -u.rss)[:TOP]
+        if by_memory:
+            lines.append(
+                "Most memory: " + ", ".join(f"{u.name} {_size(u.rss)}" for u in by_memory) + "."
+            )
+        busy = [
+            u for u in sorted(usage, key=lambda u: -u.cpu_percent) if u.cpu_percent >= BUSY_PERCENT
+        ]
+        if busy:
+            lines.append(
+                "Most CPU: "
+                + ", ".join(f"{u.name} {round(u.cpu_percent)}%" for u in busy[:TOP])
+                + "."
+            )
+        return lines
+
     @staticmethod
     def _memory_lines(sample: Stats) -> list[str]:
         lines: list[str] = []
         if sample.ram_used is not None and sample.ram_total:
+            free = sample.ram_total - sample.ram_used
             lines.append(
                 f"Memory: {_gib(sample.ram_used)} of {_gib(sample.ram_total)} GiB used "
-                f"({_share(sample.ram_used, sample.ram_total)})."
+                f"({_share(sample.ram_used, sample.ram_total)}), {_gib(free)} GiB available."
             )
         gpu = sample.gpu
         if gpu is None:
@@ -173,8 +233,9 @@ class StatsOps:
         return [
             Operation(
                 "pc_stats",
-                "This PC's specs and how busy it is now: CPU, memory, graphics card and VRAM, "
-                "temperatures, disks and uptime.",
+                "This PC's specs and how busy it is now: CPU, memory and swap, graphics card "
+                "and VRAM, temperatures, disks, uptime, and the programs using the most memory "
+                "and CPU.",
                 {"type": "object", "properties": {}, "additionalProperties": False},
                 self.stats,
                 side_effect=False,
