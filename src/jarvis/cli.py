@@ -43,6 +43,7 @@ from jarvis.app import (
     chat_memory_file,
     chat_pictures,
     echoes_hint,
+    offered_registry,
     spotify_operations,
     strata_model,
     system_prompt,
@@ -969,7 +970,15 @@ def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
         ("mode", f"{mode} (/model switches)"),
         ("model", f"{services.model_name(served)}, {served.strata.context:,} tokens of context"),
         ("replies", f"up to {chat.reply_tokens:,} tokens, {chat.max_steps} model calls"),
-        ("memory", f"{chat.memory_detail}, up to {chat.memory_tokens:,} tokens"),
+        (
+            "memory",
+            f"{chat.memory_detail}, "
+            + (
+                "as much as the window leaves"
+                if chat.memory_tokens is None
+                else f"up to {chat.memory_tokens:,} tokens"
+            ),
+        ),
         ("config", str(paths.config_file())),
         ("conversation", str(chat_memory_file())),
         ("archive", f"{chat_archive_dir()}, up to {cfg.chat.archive_keep} conversations"),
@@ -1202,7 +1211,15 @@ def _chat_prompt(chat: config.ChatConfig) -> str:
     """Render the chat's instructions for these settings, in the mode Jarvis is in now."""
     mode = modes.current()
     cfg = modes.effective(config.load().model_copy(update={"chat": chat}), mode)
-    return system_prompt(cfg, "chat", coding=mode == "coding")
+    registry = offered_registry(
+        cfg,
+        spotify_operations(cfg),
+        "chat",
+        coding=mode == "coding",
+        via="chat",
+        can_switch=True,
+    )
+    return system_prompt(cfg, "chat", coding=mode == "coding", registry=registry)
 
 
 def _export_folder(cfg: config.Config) -> Path:
@@ -1496,6 +1513,7 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
         keys=keys,
         due=jobs.take_due,
         schedule_ready=jobs.may_be_due,
+        watching=jarvis.watch,
     )
     handler = control.Controls(
         loop,

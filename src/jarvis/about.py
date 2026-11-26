@@ -112,6 +112,11 @@ def section_of(text: str, section: str) -> str | None:
     return "\n\n".join(kept) if kept else None
 
 
+def _memory(tokens: int | None) -> str:
+    """Return how much of the conversation is remembered, in words."""
+    return "as many tokens as the window leaves" if tokens is None else f"{tokens} tokens"
+
+
 def _yes(value: object) -> str:
     return "on" if value else "off"
 
@@ -196,7 +201,7 @@ def facts(config: Config, channel: str, limits: Limits) -> str:
         ),
         (
             f"Limits here: {limits.max_steps} model calls and {limits.max_tool_calls} tool calls"
-            f" per request, {limits.reply_tokens} tokens per reply, {limits.memory_tokens} tokens"
+            f" per request, {limits.reply_tokens} tokens per reply, {_memory(limits.memory_tokens)}"
             f" of remembered conversation, kept {_DETAIL[limits.memory_detail]}."
         ),
         (

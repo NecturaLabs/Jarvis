@@ -9,8 +9,9 @@ is moved, resized or focused. Only the owner's own request takes one, never one 
 audio.
 
 The picture is saved as a PNG where Omarchy saves screenshots, named as Omarchy names them, and
-copied to the clipboard (`wl-copy`); the chat also shows it. The model is told what was taken,
-never what it shows: it cannot see it.
+copied to the clipboard (`wl-copy`); the chat also shows it. The model is told what was taken;
+where it can see pictures the agent shows it the picture in the next message, as outside data
+(`Result.look`), else the result says it cannot see it.
 """
 
 import contextlib
@@ -31,7 +32,7 @@ from jarvis.policy import Origin
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from jarvis.pictures import PictureCache
+    from jarvis.pictures import Picture, PictureCache
 
 GRIM_TIMEOUT_S = 10.0
 COPY_TIMEOUT_S = 5.0
@@ -228,6 +229,28 @@ class ScreenshotOps:
         visible = "" if shown(window, desktop.monitors()) else f", {where(window.workspace)}"
         return self._window(window), f"the {window.app} window{visible}", True
 
+    def capture(self, kind: str, *, workspace: str = "", window: Win | None = None) -> bytes:
+        """Return a PNG of the screen, a workspace (`workspace`) or one window, saved nowhere.
+
+        The same capture as `pc_screenshot`, for a screen watch: only `grim` reads frames (a
+        window by `-T`, a monitor by `-o`), so nothing is focused, moved or resized.
+
+        Raises:
+            CaptureError: nothing to capture, or `grim` failed.
+        """
+        if kind == "window":
+            if window is None:
+                msg = "no window to capture"
+                raise CaptureError(msg)
+            data = self._window(window)
+        elif kind == "workspace":
+            desktop = self._windows.desktop
+            data = self._workspace(workspace, desktop.monitors(), desktop.windows())
+        else:
+            data = self._capture([])
+        _decoded(data)
+        return data
+
     def _save(self, data: bytes) -> Path:
         self._folder.mkdir(parents=True, exist_ok=True)
         stamp = self._now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -264,6 +287,9 @@ class ScreenshotOps:
             msg = f"Couldn't save the screenshot: {exc.strerror or type(exc).__name__}."
             raise OperationError(msg) from exc
         copied = self._copy(data)
+        look: Picture | None = None
+        with contextlib.suppress(PictureError):  # saved and copied all the same
+            look = prepare(data, path.name)
         picture = ""
         if self._shown is not None:
             with contextlib.suppress(PictureError, OSError):  # saved and copied all the same
@@ -272,7 +298,7 @@ class ScreenshotOps:
         text = (
             f"Saved a screenshot of {what} to {path}{also}."
             + (" It shows in the chat." if picture else "")
-            + " You can't see it."
+            + ("" if look is not None else " You can't see it.")
         )
         spoken = (
             ""
@@ -286,6 +312,7 @@ class ScreenshotOps:
             spoken=spoken,
             picture=picture,
             caption=f"{what} · {path.name}" if picture else "",
+            look=look,
         )
 
     def operations(self) -> list[Operation]:
@@ -294,7 +321,7 @@ class ScreenshotOps:
             Operation(
                 "pc_screenshot",
                 "Take a screenshot: the screen, a workspace (even off screen), a window "
-                "pc_windows listed, or the focused one. Saved and copied; you can't see it.",
+                "pc_windows listed, or the focused one. Saved and copied; you see it next.",
                 {
                     "type": "object",
                     "properties": {
