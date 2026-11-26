@@ -35,6 +35,7 @@ from jarvis import (
     modes,
     paths,
     pluginsync,
+    ramguard,
     services,
     skills,
     t3push,
@@ -2139,6 +2140,31 @@ def _model_bytes(cfg: config.Config) -> float:
         return float("inf")
 
 
+def _ram_report(
+    cfg: config.Config, *, essential: bool
+) -> tuple[list[tuple[bool, str, str]], list[str]]:
+    """Return the doctor's line on whether the model fits in the memory available now.
+
+    A server that runs holds its model, so its memory counts as free (`ramguard.held_by_unit`).
+    The update's health check only notes it: an update is not undone because a game is running.
+    """
+    served = modes.effective(cfg, modes.current()) if cfg.strata.mode == "local" else cfg
+    verdict = ramguard.check(
+        ramguard.served_model(served),
+        cfg.strata,
+        credit=ramguard.held_by_unit(STRATA_UNIT),
+    )
+    if not verdict.known:
+        return [], []
+    what = f"memory for the model ({verdict.summary})"
+    if essential and verdict.short:
+        return [], [
+            f"note {what}: close a game or other heavy program, or set strata.allow_low_ram"
+        ]
+    fix = "close a game or other heavy program, or set strata.allow_low_ram = true"
+    return [(not verdict.short, what, fix)], []
+
+
 def _memlock_notes(cfg: config.Config) -> list[str]:
     """Note that the model cannot be locked in RAM when the user manager's limit keeps it out."""
     limit = _user_memlock_limit()
@@ -2338,7 +2364,9 @@ def doctor_report(args: argparse.Namespace) -> DoctorReport:
     release_lines, unreadable = _release_lines(cfg)
     checks.extend(unreadable)
     if cfg.strata.mode == "local":
-        notes.extend(_memlock_notes(cfg))
+        ram_checks, ram_notes = _ram_report(cfg, essential=args.essential)
+        checks.extend(ram_checks)
+        notes.extend([*ram_notes, *_memlock_notes(cfg)])
     else:
         notes.extend(_remote_notes(cfg, no_service=args.no_service))
     notes.extend([*_t3_notes(cfg), *update.doctor_notes(cfg, launch_for_update)])
@@ -2358,7 +2386,8 @@ def _backend_report(
             update.wait_for(lambda: strata_status(cfg))
         checks.append(_split_model_check(cfg))
     notes = [_PLAIN_BACKEND] if cfg.strata.serves_beyond_loopback() else []
-    return DoctorReport(checks, [*notes, *_memlock_notes(cfg)], [])
+    ram_checks, ram_notes = _ram_report(cfg, essential=False)
+    return DoctorReport([*checks, *ram_checks], [*notes, *ram_notes, *_memlock_notes(cfg)], [])
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -2661,7 +2690,9 @@ class StrataUnits:
 def _switcher(cfg: config.Config, source: str) -> modes.Switcher:
     """Return the switch of modes for a command or a window, audited as coming from `source`."""
     audit = AuditLog(paths.audit_file(), tags={"via": source})
-    return modes.Switcher(cfg, StrataUnits(), _strata, audit, busy=voice_busy)
+    return modes.Switcher(
+        cfg, StrataUnits(), _strata, audit, busy=voice_busy, ram_reason=ramguard.reload_reason
+    )
 
 
 def model_report(cfg: config.Config) -> list[str]:
@@ -2909,11 +2940,30 @@ def cmd_help(_args: argparse.Namespace) -> int:
     return 0
 
 
+_RUNNING = {"active", "activating", "reloading"}
+
+
+def _no_room(cfg: config.Config) -> bool:
+    """Print why the model server must not load its model now, and return True when it must not.
+
+    The memory the running server holds counts as free: a restart gives it back first. A load
+    that would leave less than `strata.min_free_ram_mib` is refused, as the unit's own check
+    refuses it too; `strata.allow_low_ram` lets it through.
+    """
+    why = ramguard.reload_reason(modes.effective(cfg, modes.current()))
+    if why:
+        print(f"jarvis: {why}", file=sys.stderr)
+    return bool(why)
+
+
 def cmd_start(_args: argparse.Namespace) -> int:
-    """Start both services."""
+    """Start both services, unless loading the model would take the memory a program needs."""
     cfg = _load()
     if cfg.strata.mode != "local":
         return _split_lifecycle("start", cfg)
+    if _unit_state(STRATA_UNIT) not in _RUNNING and _no_room(cfg):
+        print("jarvis: nothing was started", file=sys.stderr)
+        return 1
     _reset_failed(STRATA_UNIT, JARVIS_UNIT)
     code = _systemctl("start", STRATA_UNIT, JARVIS_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
@@ -2933,7 +2983,11 @@ def cmd_stop(_args: argparse.Namespace) -> int:
 def _split_lifecycle(action: str, cfg: config.Config) -> int:
     remote = cfg.strata.mode == "remote"
     unit = JARVIS_UNIT if remote else STRATA_UNIT
+    loads = not remote and (action == "restart" or _unit_state(unit) not in _RUNNING)
     if action != "stop":
+        if loads and _no_room(cfg):
+            print("jarvis: nothing was changed", file=sys.stderr)
+            return 1
         try:
             if _prepare_split_unit(cfg, action):
                 return 1
@@ -3040,6 +3094,9 @@ def cmd_restart(_args: argparse.Namespace) -> int:
         _refresh_strata()
         started = _started_at(STRATA_UNIT)
         changed = started is not None and services.strata_changed_since(started)
+        if (started is None or changed) and _no_room(cfg):
+            print("jarvis: nothing was restarted", file=sys.stderr)
+            return 1
         cut = changed and not free
         code = _systemctl("restart" if changed else "start", STRATA_UNIT)
     code = code or _systemctl("restart", JARVIS_UNIT)

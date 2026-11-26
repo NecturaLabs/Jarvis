@@ -297,6 +297,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The model server no longer loads a model into memory that is not there. With a game running and 13 to 20 GB
+  of RAM available, starting Strata read about 39 GB of experts into RAM, the kernel failed page allocations
+  and the game's process died. `jarvis start`, `jarvis restart`, a switch of modes, a model load and the
+  server's own unit (`ExecStartPre=`) now compare the model file's size with `MemAvailable` and refuse, with
+  the figures and nothing started, when the load would leave less than `strata.min_free_ram_mib` (4096).
+  `strata.allow_low_ram` loads anyway; `jarvis doctor` reports the check. `jarvis setup` or `jarvis restart` writes the
+  unit's check ([docs/configuration.md](docs/configuration.md#refusing-a-load-that-does-not-fit),
+  [ADR 0029](docs/adr/0029-refuse-a-load-that-does-not-fit.md)).
 - With a shared Strata run config, the ACP coding provider keeps the current model mode and
   uses the normal context budget. Coding requests hold off automatic model restarts while they answer.
 - ACP cancel and close stop deferred prompts and suppress late chunks. Confirmation answers are

@@ -606,6 +606,15 @@ def strata_unit(config: Config, key_file: Path) -> str:
             exec_word(str(strata_ready_file()), "ready file"),
         ]
     )
+    check = " ".join(
+        [
+            exec_program(sys.executable, "python executable"),
+            "-m jarvis.ramguard --config",
+            exec_word(str(paths.config_file()), "config file"),
+            "--profile",
+            exec_word(str(strata_profile_file()), "profile file"),
+        ]
+    )
     memory = _path(s.memory_max, "memory_max")
     limit = memory_limit(memory)
     in_ram = _KEEP_IN_RAM if s.keep_in_ram else ""
@@ -625,6 +634,7 @@ Type=exec
 Environment=PIPEWIRE_REMOTE=/nonexistent
 Environment=PULSE_SERVER=unix:/nonexistent
 EnvironmentFile={_path(key_file, "key file")}
+ExecStartPre={check}
 ExecStart={start}
 Restart=on-failure
 RestartSec=5

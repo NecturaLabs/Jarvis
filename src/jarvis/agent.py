@@ -33,7 +33,7 @@ from jarvis.memory import (
     message_tokens,
     tokens,
 )
-from jarvis.model import ModelMissingError, RemoteModelError, Thinking
+from jarvis.model import ModelMemoryError, ModelMissingError, RemoteModelError, Thinking
 from jarvis.operations import (
     REMEMBERED,
     REMEMBERED_LISTING,
@@ -101,6 +101,10 @@ _THINKING: tuple[Literal["low", "medium", "high"], ...] = ("low", "medium", "hig
 MODEL_DOWN = "My model isn't answering right now."
 REMOTE_MODEL_DOWN = "The remote model server isn't answering. Check the backend and connection."
 MODEL_MISSING = "My model's file is missing, so I can't answer. Is its drive mounted?"
+MODEL_NO_ROOM = (
+    "I can't load my model: there isn't enough free memory. Close something heavy, a game "
+    "maybe, and ask again."
+)
 PICTURES_OFF = (
     "I can't see pictures here: the picture reader is off. Set the model up with its picture "
     "reader in Strata and strata.pictures in the config, then run jarvis setup and jarvis restart."
@@ -289,6 +293,8 @@ def _clauses(text: str) -> list[tuple[str, bool]]:
 def _model_failure(error: Exception) -> str:
     if isinstance(error, RemoteModelError):
         return REMOTE_MODEL_DOWN
+    if isinstance(error, ModelMemoryError):
+        return MODEL_NO_ROOM
     return MODEL_MISSING if isinstance(error, ModelMissingError) else MODEL_DOWN
 
 

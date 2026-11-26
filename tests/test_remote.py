@@ -155,6 +155,8 @@ Environment=XDG_DATA_HOME=<home>/data
 Environment=PIPEWIRE_REMOTE=/nonexistent
 Environment=PULSE_SERVER=unix:/nonexistent
 EnvironmentFile=<home>/state/jarvis/strata.env
+ExecStartPre=<bin>/python -m jarvis.ramguard --config <home>/config/jarvis/config.toml --profile \
+<home>/config/jarvis/strata-profile.json
 ExecStart=<home>/data/strata/terminal/current/bin/strata serve --profile \
 <home>/config/jarvis/strata-profile.json \\
   --ready-file <home>/state/jarvis/strata-ready.json

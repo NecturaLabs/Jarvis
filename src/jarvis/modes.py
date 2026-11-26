@@ -435,7 +435,9 @@ class Switcher:
     """Switches the mode for one Jarvis process: the files, the model server, the state, the audit.
 
     `units` is the model server's unit, `server` makes the client of a config's model server, and
-    `busy` says whether another request is in flight (a switch would cut its model call).
+    `busy` says whether another request is in flight (a switch would cut its model call), and
+    `ram_reason` says why the model of a mode's config must not load into the memory that is free
+    now ("" when it may): a restart that would load it is then not made.
     """
 
     def __init__(  # ruff: ignore[too-many-arguments] - collaborators, each a test seam
@@ -446,6 +448,7 @@ class Switcher:
         audit: Audit,
         *,
         busy: Callable[[], bool] = lambda: False,
+        ram_reason: Callable[[Config], str] = lambda _config: "",
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], float] = time.time,
@@ -457,6 +460,7 @@ class Switcher:
         self._server = server
         self._audit = audit
         self._busy = busy
+        self._ram_reason = ram_reason
         self._clock = clock
         self._sleep = sleep
         self._now = now
@@ -549,6 +553,11 @@ class Switcher:
                 self._settle(state)  # a note an earlier killed switch left stays
             return Switched(state.mode, error=f"{to} mode cannot be served: {exc}")
         running = restart and self._units.active()
+        if running and (why := self._ram_reason(effective(self._config, to))):
+            # Refused before the server stops: with its files back it keeps what it runs now.
+            if self._write_back(state.mode, restart=False):
+                self._settle(state)
+            return Switched(state.mode, error=f"Jarvis stays in {state.mode} mode: {why}")
         if running:
             say(announcement(self._config, to, restart=True))
             if not self._restart(to, state):
