@@ -5,7 +5,8 @@ a file here is not listed.
 
 | Script | What it does | Run by |
 |---|---|---|
-| `check.sh` | Everything CI runs, in one command, with audio cut. Exits 1 on a failure and 3 when a check could not run: the advisories check without PyPI, the workflow check without `actionlint`. | you, before calling work done |
+| `check.sh` | Everything CI runs, in one command, with audio cut. Exits 1 on a failure and 3 when a check could not run: the advisories check without PyPI, the workflow check without `actionlint`. | you, for CI-equivalent checks |
+| `affected_tests.py` | Lists tests changed directly or selected through imports and packaged data references. Takes changed paths or `--staged`. | `hooks/`, you |
 | `check_licences.py` | Every installed package's licence is compatible with GPL-3.0-or-later, and `uv.lock` resolves only from PyPI. | `check.sh`, CI |
 | `check_docs.py` | Every doc is in `docs/README.md`, every ADR in `docs/adr/README.md`, every module in `docs/architecture.md`, every script here; links and backticked paths resolve; skills match their `.agents/` copy. | `check.sh`, CI |
 | `get_models.py` | Downloads the wake word, VAD and Kokoro files the config uses into `data_dir` from their pinned releases over HTTPS (redirects only to GitHub's hosts), resuming a partial file, and keeps each only once its size and SHA-256 match `jarvis.models`; a file already there that differs is left alone. | `install.sh`; you, with `uv run tools/get_models.py` |
@@ -17,7 +18,7 @@ a file here is not listed.
 | `wake_ungated.py` | Runs the wake word trainer without its two gated test sets (ESC-50, GTZAN) until access is granted (#37); stops if the trainer is not the version it was checked against. | `wake_train.sh --ungated` |
 | `wake_bench.py` | Benchmarks wake word models on local voices they never heard (clean, quiet, with TV and music at 10 to 0 dB, with echo, far away), on Jarvis's own replies and on about 24 h of real media, and replays the media through the models together as Jarvis listens. Prints counts with 95 % intervals: false wakes an hour on media the threshold was not picked on, recall per condition, voice group and text, and paired differences between models. | the maintainer, [wake training](../docs/playbook/wake-training.md) |
 | `install-hooks.sh` | Copies the hooks in `tools/hooks/` into this clone's own hooks folder, shared by its worktrees (`--uninstall` removes the copies). Run it again after a hook changes: a copy does not follow the branch. | you, once, if you want the hooks, and after a hook changes |
-| `hooks/` | `pre-commit` runs lint and tests when the commit stages code or docs; `commit-msg` checks the Conventional Commits subject and warns on a missing sign-off; all three, with `pre-push`, refuse private details. | git, after `install-hooks.sh` |
+| `hooks/` | `pre-commit` runs lint and affected non-local tests. `commit-msg` checks the Conventional Commits subject and warns on a missing sign-off. All three hooks, including `pre-push`, refuse private details. | git, after `install-hooks.sh` |
 | `check_private.py` | Nothing about one person or machine: real e-mail addresses and home folders, this PC's host name and home, the global git identity, and the terms in the maintainer's private list (`.git/info/private-terms`, never committed). `--staged`, `--message` and `--push` check a commit or a push. | `check.sh`, CI, the hooks |
 | `check_pr_commits.py` | Every non-merge commit in a range has a Conventional Commits subject with a listed type, and, with `--signoff required`, a sign-off naming its author. | CI (`pull-request-commits.yml`), you |
 | `ci-tool-install.sh` | Pinned downloads of uv, the shell checkers and actionlint, verified by sha256. | CI |

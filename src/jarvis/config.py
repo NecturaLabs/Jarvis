@@ -1,9 +1,10 @@
 """`config.toml`: versioned, validated settings with documented defaults."""
 
+import os
 import re
 import socket
 import tomllib
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, Iterable, MutableMapping
 from ipaddress import ip_address, ip_network
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal, Self, cast
@@ -32,6 +33,7 @@ OpClassName = Literal["safe", "confirm", "strong", "deny"]
 type Effort = Literal["none", "low", "medium", "high"]
 # What later requests keep of one: its request, reply, actions and look-ups, or also its work.
 type MemoryDetail = Literal["condensed", "full"]
+type ToolMode = Literal["all", "routed"]
 EFFORTS: tuple[Effort, ...] = ("none", "low", "medium", "high")  # least to most thinking
 
 
@@ -132,6 +134,10 @@ class ModelConfig(_Section):
     temperature: float = Field(default=0.2, ge=0, le=2)
 
 
+# The least room the chat's defaults leave the remembered conversation (`chat.memory_tokens` unset).
+CHAT_MEMORY_FLOOR = 5000
+
+
 class AgentConfig(_Section):
     """How much one spoken request may do, and how much of the talk Jarvis remembers.
 
@@ -143,7 +149,8 @@ class AgentConfig(_Section):
     how hard the model thinks before each answer at the start of a request (`none` answers at once),
     and `thinking_tokens` the most it may think then, on top of the reply's room. The model may
     raise its own effort for the rest of a request, up to `thinking_max` (the same as `thinking`:
-    never); a raised call thinks up to `thinking_raised_tokens`.
+    never); a raised call thinks up to `thinking_raised_tokens`. With `tools = "routed"` a request
+    starts with only the core tools and the model asks for the groups it needs (`use_tools`).
     """
 
     max_steps: int = Field(default=8, ge=1, le=100)  # model calls in one request
@@ -153,7 +160,7 @@ class AgentConfig(_Section):
     tool_text_chars: int = Field(default=3000, ge=500, le=50000)  # of one tool result
     # Speech is short-term memory for quick commands: a follow-up comes within a minute or two,
     # and after five idle minutes an old exchange is likelier to mislead the next command.
-    memory_tokens: int = Field(default=3000, ge=0, le=200000)
+    memory_tokens: int | None = Field(default=3000, ge=0, le=200000)  # unset: what fits
     memory_idle_s: float = Field(default=300.0, ge=0)  # forget after this long unused; 0 never
     memory_detail: MemoryDetail = "condensed"
     thinking: Effort = "none"
@@ -161,6 +168,7 @@ class AgentConfig(_Section):
     thinking_max: Effort = "high"
     thinking_raised_tokens: int = Field(default=768, ge=32, le=8192)
     browser: bool = False  # offer the headless browser tools (`[browser]`), when installed
+    tools: ToolMode = "all"  # offer every tool on every call, or only the groups the model asks for
 
     @model_validator(mode="after")
     def _ceiling_above_start(self) -> Self:
@@ -178,7 +186,9 @@ class ChatConfig(AgentConfig):
     max_seconds: float = Field(default=600.0, ge=10, le=3600)
     reply_tokens: int = Field(default=2048, ge=64, le=8192)
     tool_text_chars: int = Field(default=8000, ge=500, le=50000)
-    memory_tokens: int = Field(default=5700, ge=0, le=200000)
+    # Unset: what the window leaves beside the prompt, a reply and the request's work. The defaults
+    # leave at least CHAT_MEMORY_FLOOR (tested); a longer prompt takes from the memory instead.
+    memory_tokens: int | None = Field(default=None, ge=0, le=200000)
     memory_idle_s: float = Field(default=0.0, ge=0)
     memory_detail: MemoryDetail = "full"
     thinking_tokens: int = Field(default=512, ge=32, le=8192)
@@ -642,6 +652,34 @@ def _check_deny(entry: str) -> str:
 
 DenyEntry = Annotated[SafeText, AfterValidator(_check_deny)]
 
+DEFAULT_WORKSPACE = "~/Documents/Jarvis"
+SYSTEM_FOLDER_NAMES = ("/proc", "/sys", "/dev", "/run")  # never read or written, nor a workspace
+
+
+def workspace_refusal(workspace: str, home: Path, protected: Iterable[Path]) -> str:
+    """Return why a path may not be Jarvis's workspace, or "" when it may.
+
+    It may not be home or a folder holding it, a hidden folder under home or one inside it
+    (where programs keep settings), hold or lie inside a protected folder (Jarvis's own state
+    and configuration), or use `..`. Links are resolved first, as every path is.
+    """
+    text = str(home) + workspace[1:] if workspace.startswith("~") else workspace
+    if ".." in PurePosixPath(text).parts:
+        return "must not contain '..'"
+    path = Path(os.path.realpath(text))
+    real_home = Path(os.path.realpath(home))
+    if real_home == path or real_home.is_relative_to(path):
+        return "must be a folder of its own, not your home folder or one that holds it"
+    if path.is_relative_to(real_home) and any(
+        part.startswith(".") for part in path.relative_to(real_home).parts
+    ):
+        return "must not be a hidden folder under home, or inside one (~/.config, ~/.local)"
+    for folder in protected:
+        shut = Path(os.path.realpath(folder))
+        if path == shut or path.is_relative_to(shut) or shut.is_relative_to(path):
+            return f"must not be, hold or lie inside {shut}, which Jarvis keeps for itself"
+    return ""
+
 
 class FilesConfig(_Section):
     """The folders Jarvis may read and write (`~` is the owner's home).
@@ -652,13 +690,24 @@ class FilesConfig(_Section):
     and folders under home (shell history, app logins and caches live there) are not read
     unless `hidden_allow` names them; by default it opens the desktop's own settings. Writing
     asks first, unless `boundaries.bypass_consent` is on, and never touches a hidden file or
-    folder.
+    folder. The `workspace` is Jarvis's own folder, always readable and writable (ADR 0025): what
+    Jarvis makes without a path goes there, and it never asks before making a new file in it.
     """
 
     read_roots: list[RootPath] = Field(default_factory=lambda: ["~"])
     write_roots: list[RootPath] = Field(default_factory=lambda: ["~/Documents"])
     deny: list[DenyEntry] = Field(default_factory=list[str])
     hidden_allow: list[SafeText] = Field(default_factory=lambda: list(DESKTOP_SETTINGS))
+    workspace: RootPath = DEFAULT_WORKSPACE
+
+    @model_validator(mode="after")
+    def _workspace_is_not_protected(self) -> Self:
+        shut = (paths.state_dir(), paths.config_dir(), *map(Path, SYSTEM_FOLDER_NAMES))
+        refusal = workspace_refusal(self.workspace, Path.home(), shut)
+        if refusal:
+            msg = f"files.workspace {refusal}"
+            raise ValueError(msg)
+        return self
 
 
 def _check_window(pattern: str) -> str:

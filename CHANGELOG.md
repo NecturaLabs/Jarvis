@@ -8,6 +8,18 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- A tool router, `tools = "routed"` in `[agent]` and `[chat]` (default `all`, nothing changes). Every tool
+  belongs to a group (music, sound, screen, apps, system, files, everyday, web, browser, schedule, guides,
+  jarvis); a routed request starts with only the core tools and a toolbox of the groups in the prompt, and
+  the same model asks for the groups it needs with `use_tools`. A tool of a group it has not asked for is
+  not run. It stays off by default until a live run shows it as accurate and not slower
+  ([ADR 0022](docs/adr/0022-tool-router.md)).
+- Give Jarvis a workspace folder, `files.workspace` (default `~/Documents/Jarvis`, made mode 0700), that is
+  always readable and writable whatever the roots say. A file written with a bare name or relative path goes
+  there, `/export` in the chat saves there, `pc_shell` starts there and the prompt tells the model where it
+  is. A new file in it, or a later write to a file Jarvis made there, needs no yes unless outside text is in
+  the request; replacing a file you put there still asks. A folder that is a link, another user's or writable
+  by others, or below a folder others can write to, is not used and `jarvis doctor` says why; hidden names there always ask. See [ADR 0025](docs/adr/0025-workspace-folder.md).
 - The voice service and the chat work as two channels that cooperate ([ADR 0028](docs/adr/0028-voice-and-chat-as-two-channels.md)).
   A spoken request no longer shows in an open chat window. `chat_hand_off`, offered to speech only while a chat window is open,
   hands your spoken words for the chat's own work to that window as your own input: it joins the request the window is running
@@ -45,6 +57,20 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - `pc_screenshot` takes a picture of the screen, a workspace or one window. A window or workspace
   that is not on screen is captured off-screen without switching to it. The picture is saved where
   Omarchy keeps screenshots, copied to the clipboard and shown in the chat.
+- Jarvis sees its own screenshots: where its model can see pictures, `pc_screenshot` also hands it the
+  picture, as outside data (a side effect after it needs a yes, like after a shared picture). The
+  conversation keeps the picture's name, not the picture.
+- Process watches: `pc_watch` with `of=process` and a PID `find_processes` listed watches a program and
+  says once when it exits (it cannot tell closed, crashed and killed apart), is stopped (`T`), is stuck
+  waiting on a disk or device (`D`) at three checks in a row over at least 30 s, and when it runs again.
+  Read from `/proc` only: no picture, no model, no GPU; up to four, apart from the two screen watches.
+- Screen watches: ask Jarvis to tell you when something shows up in a window, a workspace or the screen
+  and `pc_watch` checks now and then (`every_s`, default 20, 10 to 300; `for_min`, default 120, up to
+  720; `repeat`), said by voice in a fixed line built from what you asked for, never words read off the
+  screen. `pc_watches` lists and `pc_watch_stop` stops. Two at most, only in `jarvis run`, only
+  between requests (a check under way gives way to the wake word), said when it starts to show (a line that
+  stays up is said once), optionally in the model's own short `say` line, and each check is one model call
+  with a picture ([ADR 0021](docs/adr/0021-screen-watch.md), proposed).
 - Every `jarvis` command answers a script or an AI agent in one line of JSON with `--agent` (or
   `--agent-format`, or `JARVIS_AGENT_FORMAT=1`): `command`, `ok` and `exit`, then its own keys (`doctor`,
   `status`, `tools`, `speed`, `consent`) or its output lines, even for a wrong argument or a crash. Interactive
@@ -237,6 +263,16 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A PID or window number counts as read only when its whole row reached the model: a listing the
+  agent cut to fit its cap no longer lets a later call take a row the model never saw. A call that
+  was refused before it could run (a listing not read yet) may be made again in a later step, and a
+  watch that would fail for want of a target, a condition or pictures is refused before the question.
+
+- `stop_process` and a process watch take only a PID from a `find_processes` listing the model has
+  read, as a window number must be: one written beside its listing, in the same message, is refused.
+  A process watch that would be refused (outside text, a PID not listed) is refused before the
+  owner is asked about it.
+
 - Web reads and the browser no longer reach a public address on one of this PC's own networks: its own
   addresses, and a network it reaches without a router, such as the home network's global IPv6 prefix
   (checked at each connection, including for embedded IPv4 addresses). Missing route or local-address
@@ -343,10 +379,30 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- `/config` in the chat is set as Claude Code's settings screen is: the sections are tabs across the top
+  (Tab and Shift+Tab, or ← → on the tab row), typing anywhere searches every section, and each setting is
+  one line with its value in an aligned column and `❯` on the one the keyboard is on. What it does and when a
+  change applies are said once under the list, a risky setting is marked `⚠` beside its value, and "the
+  voice service restarts when you close settings" shows only while a change waits for it. Enter turns an
+  on-or-off setting over and opens a short list of values for any other (← → still step through them).
+  A space typed into the search is part of it. Times read as 30 s, 10 min or 4 h. The tools are a Tools tab
+  (Enter or → moves one on, ← back). The footer grows to hold the longest text, and in a narrow window the tab
+  row scrolls (`‹ ›`) so the active tab stays in view. The restart note is never cut: the text on
+  what a setting does is shortened first. It works at 80 columns by 24 rows, scrolling
+  the list while the footer stays.
+- The lines under the input are set in the box's columns: hints at the left, the status ending at the box's right
+  edge, and the PC's load and the context on the next line, with fixed-width figures, one quiet `·` between
+  items and whole items dropped, never half a word, in a narrow window. The command menu has a frame of its own
+  in line with the box, and a long description ends in `…`.
+- `config.example.toml` lists `while_working`, `response_format` and `archive_keep`.
+- The chat's remembered conversation takes what the context window leaves (`chat.memory_tokens` unset
+  by default, was 5,700): a longer prompt or more tools take from it instead of failing the defaults.
+  The defaults leave it at least 5,000 tokens. A set number still caps it.
+- Jarvis puts the choice it recommends first, and marks it with its reason, whenever it offers choices.
+- The opt-in pre-commit hook runs only the non-local tests affected by staged files. CI runs the
+  full non-local suite. Rerun `tools/install-hooks.sh` to update an installed hook.
 - A setting changed in the chat's `/config` restarts the voice service only once the voice loop is idle (a note the voice service acts on, even if the window closed), and `jarvis pause`
   frees the model only once no request anywhere (a chat window's included) is being answered.
-- The chat's default `memory_tokens` is now 5700 (was 6200), so the default 24,576-token window
-  still holds it beside the new window and screenshot tools.
 - `jarvis doctor` ends with the names of the checks that failed, not only their count, writes every note
   the same way (`note …`), and colours its status words on a terminal (never in a pipe or with `NO_COLOR`).
 - Speech keeps a short memory for quick commands: `agent.memory_idle_s` is now `300.0` (was `1800.0`), so the

@@ -13,6 +13,7 @@ Every setting lives in one TOML file, validated when Jarvis reads it. This page 
 | Your own skills | `~/.config/jarvis/skills/<name>.md`, the folder and files yours alone ([ADR 0024](adr/0024-owner-skills.md)) | you, by hand; read at the next `jarvis restart` or chat window |
 | User units | `~/.config/systemd/user/jarvis.service` and `jarvis-strata.service` | `jarvis setup`, `jarvis update` |
 | Strata API key, Spotify tokens, audit log, action count, reminders and scheduled requests, Strata log | `~/.local/state/jarvis/` (`$XDG_STATE_HOME/jarvis/`): `strata.env`, `spotify-token.json`, `audit.jsonl` (and five older `audit.jsonl.1` to `.5`), `actions.json`, `schedule.json` (and its `schedule.json.lock`), `strata.log` | Jarvis; the key, token, log, count and jobs files are mode 0600 |
+| Jarvis's workspace: what it makes without a path, exported chats | `~/Documents/Jarvis` (`files.workspace`), mode 0700; its `workspace-files.json` list of files Jarvis made is in the state folder | Jarvis makes it (when it starts, at `jarvis setup`); you may use it too |
 | Wake, VAD and voice model files | `data_dir`; the installer sets it to `$XDG_STATE_HOME/jarvis/models` on a fresh install | `uv run tools/get_models.py` or [manual model setup](models.md) |
 
 [`config.example.toml`](../config.example.toml) in the repository lists every key at its default, with no
@@ -94,7 +95,7 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 | `max_seconds` | `90.0` | 10 to 3600 | Longest one request may take (180 s more when the model must load first). Time spent asking you and waiting for your yes or the confirm key does not count. Once an action has run, the model still gets at least 15 s to say how it went, and a request that runs out of time after one says what it did. |
 | `reply_tokens` | `400` | 64 to 8192 | Most tokens the model writes in one answer. The prompt asks for replies that fit; a reply the cap ends anyway is kept and says it was cut short. A tool call the cap cuts off (a long file being written) is not run: the model is told how much one answer holds and writes the text in parts, adding each to the file; a second cut call ends the request and says so. |
 | `tool_text_chars` | `3000` | 500 to 50000 | Most characters of one tool result the model reads. |
-| `memory_tokens` | `3000` | 0 to 200000 | Room the remembered conversation may take of the context window. When a reply makes it outgrow that, the oldest requests' tool calls and results (kept with `memory_detail = "full"`) are left out first, down to three quarters of the room, the latest request's only when it alone does not fit; when it still does not fit, the model summarizes the oldest turns right after the reply, while it is spoken and on its own time (the latest two stay word for word); if that fails, the oldest are dropped. A request that finds it over its room (a plain command's turns, a saved conversation) is given the newest turns that fit, and the summary follows its reply. Jarvis uses less when the window cannot hold it beside the prompt, a reply and two tool results. |
+| `memory_tokens` | `3000` | 0 to 200000, or unset | Room the remembered conversation may take of the context window; left out of the file in `[chat]`, as much as the window leaves. When a reply makes it outgrow that, the oldest requests' tool calls and results (kept with `memory_detail = "full"`) are left out first, down to three quarters of the room, the latest request's only when it alone does not fit; when it still does not fit, the model summarizes the oldest turns right after the reply, while it is spoken and on its own time (the latest two stay word for word); if that fails, the oldest are dropped. A request that finds it over its room (a plain command's turns, a saved conversation) is given the newest turns that fit, and the summary follows its reply. Jarvis uses less when the window cannot hold it beside the prompt, a reply and two tool results. |
 | `memory_detail` | `condensed` | `condensed`, `full` | What later requests keep of one. `condensed`: the request, the reply, what was done and what was looked up. `full`: also its tool calls and their results, as the model read them, so a follow-up has the pages, files and outputs a request read without fetching them again, and the model server reuses what it already read of them. Outside text in them stays data and keeps actions behind a yes while it is remembered. A request in full detail takes more of `memory_tokens`; when it runs short, the oldest work goes first, and the chat says in one line what it condensed. |
 | `memory_idle_s` | `300.0` | 0 or more | Forget the conversation after this long without a request (time the PC spends asleep counts); `0` never forgets. Speech is short-term memory for quick commands: a follow-up ("louder", "the next one", "what was that song?") comes within a minute or two, and after five idle minutes an old exchange is likelier to steer the next command wrong than to help. `jarvis ask` remembers nothing between runs; a scheduled request shares speech's conversation and these limits. |
 | `thinking` | `none` | `none`, `low`, `medium`, `high` | How hard the model thinks before each answer at the start of a request (Strata's reasoning effort). `none` answers at once; on everyday requests thinking made answers slower and no more accurate ([models.md](models.md#thinking)). Thinking is never spoken or shown, and costs time: at about 65 tokens a second, the full cap below is about 3 s more before the first words of each model call. |
@@ -102,6 +103,7 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 | `thinking_max` | `high` | `none`, `low`, `medium`, `high`, and not below `thinking` | The most the model may raise its own effort to, for the rest of one request, when it judges the request needs careful thought (several steps, a name it may have misheard, a correction, a try that failed). It does so with the `think_harder` tool, which is offered only when this is above `thinking`: set it to the same as `thinking` to keep one effort. The effort never drops within a request, and each request starts at `thinking` again. Raising to `low` or `high` can cost the model one more read of its whole prompt on Qwen3.8 ([models.md](models.md#thinking)). The tool's class is `safe`; `think_harder = "deny"` under `[boundaries.classes]` also switches it off. |
 | `thinking_raised_tokens` | `768` | 32 to 8192 | The most the model thinks before each answer once it raised its effort: about 12 s at most for speech. A raised call never gets less than `thinking_tokens` when a request starts above `none`. The context keeps room for the larger of the two. |
 | `browser` | `false` | `true`, `false` | Offer the headless browser tools (`browser_open`, `browser_act`; see [`[browser]`](#browser-the-headless-browser)) to spoken requests and `jarvis ask`, when agent-browser is installed. Off by default: speech is for quick commands, and clicking or typing on a page always waits for your spoken yes. |
+| `tools` | `all` | `all`, `routed` | Which tools each model call offers. `all`: every tool, every call. `routed`: a request starts with only the core tools (`no_action`, `stay_quiet`, `chat_hand_off` while a chat window is open, `think_harder`, `switch_model`, `use_tools`), the system prompt holds a toolbox of the tool groups, and the model calls `use_tools` with the groups the request needs; their tools are offered from its next call to the end of that request, and a tool of a group it has not asked for is not run. It sends about 6,600 fewer tokens a call, and the model server re-reads the prompt after the system text when the tools change, so it is an experiment ([ADR 0022](adr/0022-tool-router.md)). `use_tools` is a `safe` tool like any other and cannot be switched off while `routed`. Also valid in `[chat]`. |
 
 A spoken reply that drew on outside text (a web page, a song name) is remembered as data, as in the chat: a
 follow-up such as "what was the second one?" has it, and while it is remembered an action the model chooses
@@ -128,7 +130,7 @@ until it ends; the chat's status line says so.
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `5700` (what the default 24,576-token window holds beside the raised thinking's room, the browser tools and the window and screenshot tools; less when a thinking cap is larger; with a larger `strata.context` a larger value has room for more of the earlier requests' work), `memory_detail` `full`, `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, `browser` `true` (the headless browser tools, `browser_screenshot` too, when agent-browser is installed), plus:
+`memory_tokens` unset (as much as the window leaves beside the prompt, the tools, a reply, two tool results and the raised thinking's room: with the default 24,576-token window, at least 5,000 tokens, which a test holds; less when a thinking cap is larger, more with a larger `strata.context`; set a number to cap it), `memory_detail` `full`, `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, `browser` `true` (the headless browser tools, `browser_screenshot` too, when agent-browser is installed), plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -140,18 +142,39 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 | `archive_keep` | `50` | 0 to 1000 | Chat conversations kept in `~/.local/state/jarvis/chat-archive/` (0600) for `/resume` and reading back: each with its full log of requests, steps, results and replies. Older ones are deleted; `0` keeps none, deletes those kept before when the chat opens, and turns `/resume` off. `/forget all` deletes them all and forgets the conversation in the window too. A conversation is written once it has a request; opening and closing the chat writes no copy of the one it remembers. |
 | `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, with what was pasted into each, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
 
-`/config` in the chat opens the settings in sections, each setting with its values, when a change applies
-and a line on what it does; ↑↓ move, Enter or → takes the next value, ← the one before, Esc closes. Under
-Chat it changes `verbosity`, `toolbar`, `while_working` and `thinking` at once, and `reply_tokens`,
-`max_steps`, `memory_detail`, `resume` and `browser` from the next time the chat opens, writing them here.
-Under Chat it also sets `browser.idle_close_s` (30, 60, 120 or 300 seconds), under Voice
-`audio.speech_speed` and `agent.browser`, under Listening and Safety `audio.listen_to_pc` (off by default)
-and `boundaries.bypass_consent`, and under Tools each tool's setting; the voice service restarts once to take
-these when the screen closes, and the open chat takes `bypass_consent` at once (what Jarvis says about its
-own setup, `about_jarvis`, follows when the chat next opens).
-Acting without asking and taking requests from PC audio are turned on only by the same step again to the same
-value (a second Enter or →, or ← after ←), after the row says what that means and which value, and are marked in
-red while they are on; a step to another value asks about that one instead. A restart that fails is said in the chat.
+`/config` in the chat opens the settings as Claude Code's own settings screen does. The sections (Chat, Mode,
+Voice, Listening, Safety, Tools) are tabs across the top: Tab and Shift+Tab switch them, and so do ← → on the tab
+row (↑ from the first setting). Typing anywhere searches the settings of every section (a space makes it a search for several words); Esc clears
+the search. In a narrow window the tabs scroll, marked `‹ ›`, so the one you are on stays in view.
+Each setting is one line, its name at the left and only its value in an aligned column, the one the keyboard is on
+marked with `❯`. What the selected setting does, and when a change applies (at once, the next time the chat opens,
+or when the voice service restarts as the screen closes), are said once in the footer under the list. Enter
+turns an on-or-off setting over, and so does space, but only when nothing is being searched (a space in a search
+is part of it); on one with more values Enter opens a short list of them (↑↓ choose, Enter or space picks, Esc
+leaves it as it was), and ← → still step through the values. Times are said as 30 s, 10 min or 4 h, and
+a 0 that means something is said as such ("never", "none"). Changes are saved as you make them; when one needs the
+voice service to restart, the footer says "The voice service restarts when you close settings" until you do.
+
+Under Chat it changes `verbosity`, `toolbar`, `while_working`, `response_format` and `thinking` at once, and
+`reply_tokens`, `max_steps`, `memory_detail`, `resume` and `browser` from the next time the chat opens, writing
+them here. Under Chat it also sets `browser.idle_close_s` (30 s, 1, 2 or 5 min), under Mode `coding.back_after_s`
+and the two `auto` switches, under Voice `audio.speech_speed` and `agent.browser`, under Listening
+`audio.listen_to_pc` (off by default) and `audio.pc_audio_recall_s`, under Safety `boundaries.bypass_consent`,
+and under Tools each tool's setting; the voice service restarts once to take these when the screen closes, and
+the open chat takes `bypass_consent` at once (what Jarvis says about its own setup, `about_jarvis`, follows when
+the chat next opens). Acting without asking and taking requests from PC audio are turned on only by the same step
+again to the same value (a second Enter, or → after →, ← after ←), after the footer says what that means and which
+value; they are marked `⚠` next to the value while they are on, and a step to another value asks about that one
+instead. A restart that fails is said in the chat. `max_tool_calls`, `max_seconds`, `tool_text_chars`,
+`memory_tokens`, `memory_idle_s`, `thinking_tokens`, `thinking_max`, `thinking_raised_tokens`, `history_size` and
+`archive_keep` are set in the file only.
+
+The lines under the input are set in its box's columns: hints at the left, from the text's own column, and the
+services' status at the right, ending at the box's right edge; below them the PC's load at the left and the
+context at the right, ending at the same edge. Every figure has a fixed width, so nothing moves as numbers change.
+In a narrow window whole items go, the least useful first (temperatures, half the context meter, the tenths of a
+gigabyte, the processor, the graphics card's load, the memory figures, then the context to a bare count; the
+status's second part, then the longer hint; `compacts soon` ends as a `!`), never half a word. The command menu has a frame of its own, in line with the box.
 
 `/resume` lists the archived conversations, newest first (when, name, how many requests), and `/resume 2`
 continues the second: the model gets that conversation back as it was, so what came from outside text then
@@ -730,8 +753,12 @@ than `idle_close_s`) does nothing; ask again and Jarvis opens the page anew.
 |---|---|---|---|
 | `read_roots` | `["~"]` | `~`, paths under `~/`, absolute paths | Folders whose files Jarvis may list and read (`list_dir`, `read_file`). |
 | `write_roots` | `["~/Documents"]` | the same | Folders Jarvis may create files in, or replace or add to them (`write_file`, asked first unless `bypass_consent` is on). |
+| `workspace` | `~/Documents/Jarvis` | `~`, a path under `~/`, an absolute path | Jarvis's own folder: always readable and writable whatever the roots say, and where a file written with a bare name or relative path goes. It is made mode 0700 if missing. It must be a real folder (not a link) of yours that nobody else can write to, under folders nobody else can write to or owns, root aside (unless sticky, like `/tmp`), else it is not used and `jarvis doctor` says why and which folder to `chmod go-w` (a group-writable `~` or `~/Documents` is refused even if the group is only you); it is judged again at every write. It may not be home, a hidden folder under home or inside one, hold or lie inside Jarvis's state or config folders, or use `..`. Inside it, hidden names are allowed but always asked about (secret names and `.git`, `.hg`, `.svn` are not allowed), and Jarvis does not ask before making a new file or changing one it made (with one name on disk), unless outside text is in the request or you set `write_file`'s class yourself. Replacing or adding to a file you put there asks as usual ([ADR 0025](adr/0025-workspace-folder.md)). Also the folder `/export` in the chat saves to and where `pc_shell` starts (home if it is missing or a link when the command is prepared; the question says where, and the run uses that folder). |
 | `deny` | `[]` | shell-style patterns | More names (`diary*`), paths under home (`.config/app`, `~/Documents/private`) or absolute paths (`/data/finance`) never read or written, with what is inside them. A trailing slash or a leading `./` makes no difference. An entry that could never match (`..` in it, `~` alone, another user's `~name`) is refused when the config loads. |
 | `hidden_allow` | the desktop's settings: `.config/hypr`, `omarchy`, `waybar`, `walker`, `mako`, `swayosd`, `kitty`, `alacritty`, `ghostty`, `foot`, `btop`, `fastfetch`, `jarvis` | paths under home, shell-style | The hidden files and folders directly under home Jarvis may read (`.config/app` and the like). Everything else hidden there (shell history, app logins, cookies, caches) stays shut; `[]` shuts them all. A hidden folder deeper down (`~/Projects/site/.git`) is not shut by this; secret names still are. |
+
+A relative path (`notes.md`, `drafts/a.md`) means the workspace: `write_file` always writes it there, and
+`list_dir` and `read_file` look there first and under home if nothing of that name is in the workspace.
 
 Whatever the roots say, Jarvis never reads or writes keys, tokens, password stores, browser profiles,
 its own state and its own config folder (`~/.config/jarvis`, with your skills): `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.netrc`, `.env` files, `*.pem`,
@@ -787,7 +814,7 @@ A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` wit
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
 its shipped class, which is `safe` for every operation but `write_file`, `browser_act` and `pc_window_close` (`confirm`) and `stop_process`
 (`strong`): `spotify_*`, `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`,
-`pc_stats`, `pc_volume`, `pc_media`, `pc_audio_listen`, `pc_windows`, `pc_window`, `pc_screenshot`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`,
+`pc_stats`, `pc_volume`, `pc_media`, `pc_audio_listen`, `pc_windows`, `pc_window`, `pc_screenshot`, `pc_watch`, `pc_watches`, `pc_watch_stop`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`,
 `sing`, `browser_open`, `browser_screenshot`; set one to `deny` to switch it off: it is then
 not offered to the model at all. `no_action`, `think_harder` and `stay_quiet` are how Jarvis answers, not tools, and
 cannot be switched off. `stop_process`
@@ -803,8 +830,8 @@ reddit_search = "deny"
 ```
 
 Without editing the file: `jarvis tools` lists every tool with its setting, and `jarvis tools NAME on|ask|key|off`
-sets one (`default` puts it back as shipped); in `jarvis chat`, `/config` has a Tools list where Enter moves a tool
-on to its next setting, from as shipped to stricter and back, never below how it ships (that takes `jarvis tools
+sets one (`default` puts it back as shipped); in `jarvis chat`, `/config` has a Tools tab where Enter or → moves a tool
+on to its next setting and ← back, from as shipped to stricter and round, never below how it ships (that takes `jarvis tools
 NAME on`). Either way the change is audited (`tool_class_changed`, with the old setting and where it was made).
 The command restarts the voice service at once; the chat restarts it once, when its settings close, and, while a spoken request is under way, leaves a note that the voice service acts on once it is idle, also when the window has closed (the window says "They apply when Jarvis is idle"). An open chat
 takes the change the next time it opens.

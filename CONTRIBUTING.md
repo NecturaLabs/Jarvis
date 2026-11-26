@@ -88,7 +88,7 @@ tools/check.sh           # everything CI runs: lint, types, workflows, tests, RE
 uv run .lint/check.sh    # lint only: Ruff (every rule), format check, pyright strict, shell and editorconfig
 actionlint               # the workflow files in .github/workflows/, with shellcheck over their run: steps
 uv run pytest -q -m "not local"   # tests only
-tools/install-hooks.sh   # optional: run the checks before each commit and check the subject format
+tools/install-hooks.sh   # optional: install lint, affected-test and commit-message checks
 ```
 
 `.lint/check.sh` lints tracked files only, so `git add` new files first. CI runs [actionlint](https://github.com/rhysd/actionlint)
@@ -99,6 +99,11 @@ your own setup. [tools/README.md](tools/README.md) lists every script. Every che
 pull request can merge; fix findings rather than silencing them. Where a suppression is deliberate, put it on
 the narrowest line and give the reason beside it, as the existing `# ruff: ignore[...] - reason` comments do.
 Do not edit `.lint/`; project lint settings go in `ruff.toml` and `pyrightconfig.json`.
+
+The pre-commit hook runs lint and selects non-local tests from staged paths. It skips pytest when
+no test files are affected. To see the selection, run `uv run python tools/affected_tests.py --staged`.
+CI runs the full non-local suite. Rerun `tools/install-hooks.sh` after updating to refresh the installed
+hooks.
 
 Tests marked `local` need this project's real hardware or services (Strata, Voxtype, audio, Spotify) and
 never run in CI. You do not need to run them; if your change touches that code, say in the pull request that

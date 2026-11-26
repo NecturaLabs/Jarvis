@@ -44,6 +44,7 @@ from jarvis.app import (
     chat_memory_file,
     chat_pictures,
     echoes_hint,
+    offered_registry,
     spotify_operations,
     strata_model,
     system_prompt,
@@ -61,6 +62,7 @@ from jarvis.operations import OperationError
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.pc.hearing import Listening, PcHearing
 from jarvis.pc.screenshot import folders as screenshot_folders
+from jarvis.pc.workspace import workspace_path, workspace_problem
 from jarvis.policy import OpClass, is_yes
 from jarvis.schedule import JobStore
 from jarvis.secretfile import (
@@ -678,6 +680,7 @@ def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
             return 2
     config.save(updated)
     ensure_api_key(strata_key_file())
+    _setup_workspace(updated)
     if updated.strata.run_config == Path():
         print(f"config: {paths.config_file()}")
         print(
@@ -701,6 +704,34 @@ def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
     result = _setup_units(STRATA_UNIT, JARVIS_UNIT, enable=args.enable)
     _setup_spotify(updated, failed=result)
     return result
+
+
+def _setup_workspace(cfg: config.Config) -> None:
+    """Make Jarvis's workspace folder if it is missing, and say if it cannot be used."""
+    folder = workspace_path(cfg.files, Path.home())
+    problem = workspace_problem(folder, create=True)
+    if problem:
+        print(
+            f"jarvis: files.workspace {folder} {problem}; fix that or point it elsewhere",
+            file=sys.stderr,
+        )
+    else:
+        print(f"workspace: {folder}")
+
+
+def _workspace_check(cfg: config.Config) -> tuple[bool, str, str]:
+    """The doctor's check of Jarvis's workspace: a folder of the owner's alone, or not made yet."""
+    folder = workspace_path(cfg.files, Path.home())
+    problem = workspace_problem(folder, create=False)
+    if problem:
+        return (
+            False,
+            f"workspace {folder} {problem}",
+            "fix the folder, or set files.workspace to another one",
+        )
+    if not folder.is_dir():
+        return True, f"workspace {folder} (made when Jarvis starts)", ""
+    return True, f"workspace {folder}", ""
 
 
 def _setup_units(*units: str, enable: bool) -> int:
@@ -821,6 +852,7 @@ def _setup_remote(args: argparse.Namespace, cfg: config.Config) -> int:
         if args.remote is not None:
             services.write_remote_key(cfg, key)
         config.save(cfg)
+    _setup_workspace(cfg)
     print(f"config: {paths.config_file()}\nvoice unit: {unit}")
     active = args.enable and _unit_state(JARVIS_UNIT) == "active"
     code = _setup_units(JARVIS_UNIT, enable=args.enable)
@@ -943,7 +975,15 @@ def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
         ("mode", f"{mode} (/model switches)"),
         ("model", f"{services.model_name(served)}, {served.strata.context:,} tokens of context"),
         ("replies", f"up to {chat.reply_tokens:,} tokens, {chat.max_steps} model calls"),
-        ("memory", f"{chat.memory_detail}, up to {chat.memory_tokens:,} tokens"),
+        (
+            "memory",
+            f"{chat.memory_detail}, "
+            + (
+                "as much as the window leaves"
+                if chat.memory_tokens is None
+                else f"up to {chat.memory_tokens:,} tokens"
+            ),
+        ),
         ("config", str(paths.config_file())),
         ("conversation", str(chat_memory_file())),
         ("archive", f"{chat_archive_dir()}, up to {cfg.chat.archive_keep} conversations"),
@@ -959,9 +999,11 @@ class _Shared:
     key: str
     label: str
     values: tuple[object, ...]
-    heading: str  # the heading /config shows it under
+    heading: str  # the tab /config shows it under
     about: str
     risky: str = ""  # what turning it on means, said before it is turned on
+    unit: str = ""  # "seconds": shown as 30 s, 10 min, 4 h
+    zero: str = ""  # the word /config shows for 0, where 0 means something
 
 
 SHARED_SETTINGS: tuple[_Shared, ...] = (
@@ -979,29 +1021,32 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Take requests from PC audio",
         (False, True),
         "Listening",
-        "Jarvis also hears requests spoken in the PC's own audio, such as someone in a call or "
-        "a video. Whatever they ask to be done always needs your yes.",
+        "Jarvis also hears requests spoken in the PC's own audio, such as a call or a video. "
+        "Whatever they ask to be done always needs your yes.",
         "Jarvis will take requests from voices in the PC's audio, such as a call or a video; "
         "each of their actions still needs your yes.",
     ),
     _Shared(
         "audio",
         "pc_audio_recall_s",
-        "Recall PC audio (seconds)",
+        "Recall PC audio",
         (0, 10, 30, 60),
         "Listening",
         "Keep the last seconds of PC audio in memory so Jarvis can hear what was just said "
-        "(needs PC audio on); 0 keeps none.",
+        "(needs PC audio on); none keeps nothing.",
         "Jarvis will keep the last seconds of the PC's audio in memory.",
+        "seconds",
+        "none",
     ),
     _Shared(
         "browser",
         "idle_close_s",
-        "Close the browser after (seconds)",
+        "Close the browser after",
         (30.0, 60.0, 120.0, 300.0),
         "Chat",
         "How long the headless browser stays open after its last use, in the chat and by "
-        "voice; then it closes with its profile and pages. The chat takes it when it opens again.",
+        "voice; the chat takes it when it opens again.",
+        unit="seconds",
     ),
     _Shared(
         "agent",
@@ -1018,19 +1063,21 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Act without asking first",
         (False, True),
         "Safety",
-        "On: Jarvis acts without asking for your yes, even after reading a web page or a file. "
-        "A tool that needs the confirm key still waits for it, and a tool that is off stays off.",
+        "Jarvis acts without your yes, even after reading a web page or a file. "
+        "A tool needing the confirm key still waits; an off tool stays off.",
         "Jarvis will act without asking you first, even when a web page or a file could have "
         "steered it.",
     ),
     _Shared(
         "coding",
         "back_after_s",
-        "Leave coding mode after (seconds)",
+        "Leave coding mode after",
         (0.0, 600.0, 1800.0, 3600.0, 14400.0),
         "Mode",
-        "Jarvis goes back to normal mode after coding mode went unused this long; 0 stays in "
-        "coding mode until you switch (/model normal).",
+        "After coding mode goes unused this long, Jarvis goes back to normal mode. never: it "
+        "stays until you switch (/model normal).",
+        unit="seconds",
+        zero="never",
     ),
     _Shared(
         "coding.chat",
@@ -1038,9 +1085,8 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Switch mode by itself in the chat",
         (False, True),
         "Mode",
-        "The model moves a request that is programming work to coding mode, and back when you "
-        "say the work is over. Off: only /model and `jarvis model` switch. Takes effect when "
-        "the chat next starts.",
+        "The model moves programming work to coding mode and back. Off: only /model and "
+        "`jarvis model` switch. The chat takes it when it next opens.",
     ),
     _Shared(
         "coding.voice",
@@ -1049,7 +1095,7 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         (False, True),
         "Mode",
         "The same for spoken requests. With a coding model of its own, a switch loads another "
-        "model, so the request that caused it waits in silence for the load.",
+        "model, so the request waits in silence for the load.",
         "Spoken requests that are programming work will switch the mode by themselves, and "
         "Jarvis is silent while a separate coding model loads.",
     ),
@@ -1088,6 +1134,8 @@ def _shared_settings() -> list[SharedSetting]:
             item.heading,
             item.about,
             item.risky,
+            item.unit,
+            item.zero,
         )
         for item in SHARED_SETTINGS
     ]
@@ -1234,7 +1282,24 @@ def _chat_prompt(chat: config.ChatConfig) -> str:
     """Render the chat's instructions for these settings, in the mode Jarvis is in now."""
     mode = modes.current()
     cfg = modes.effective(config.load().model_copy(update={"chat": chat}), mode)
-    return system_prompt(cfg, "chat", coding=mode == "coding")
+    registry = offered_registry(
+        cfg,
+        spotify_operations(cfg),
+        "chat",
+        coding=mode == "coding",
+        via="chat",
+        can_switch=True,
+    )
+    return system_prompt(cfg, "chat", coding=mode == "coding", registry=registry)
+
+
+def _export_folder(cfg: config.Config) -> Path:
+    """Where the chat saves an exported conversation: the workspace, else ~/Documents or home."""
+    folder = workspace_path(cfg.files, Path.home())
+    if not workspace_problem(folder, create=True):
+        return folder
+    documents = Path.home() / "Documents"
+    return documents if documents.is_dir() else Path.home()
 
 
 def cmd_chat(_args: argparse.Namespace) -> int:
@@ -1254,7 +1319,6 @@ def cmd_chat(_args: argparse.Namespace) -> int:
             pictures = built.pictures
     except SetupError as exc:
         unavailable = str(exc)
-    documents = Path.home() / "Documents"
     services = Services(
         status=lambda: _chat_status(cfg),
         details=lambda: _chat_details(cfg),
@@ -1271,7 +1335,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         apply=_apply_from_chat,
         history=InputHistory(paths.state_dir() / "chat-history", cfg.chat.history_size),
         archive=_chat_archive(cfg.chat.archive_keep),
-        export_dir=documents if documents.is_dir() else Path.home(),
+        export_dir=_export_folder(cfg),
         paste=clipboard.read,
         pictures=pictures,
         screenshots=_screenshot_folders(Path.home(), os.environ),
@@ -1550,6 +1614,7 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
         keys=keys,
         due=jobs.take_due,
         schedule_ready=jobs.may_be_due,
+        watching=jarvis.watch,
     )
     handler = control.Controls(
         loop,
@@ -1912,6 +1977,7 @@ def essential_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], l
         *(_model_url(cfg) if local else []),
         *(_model_checks(cfg) if local else []),
         *(_coding_checks(cfg) if local else []),
+        _workspace_check(cfg),
         *tool_checks,
         *sing_checks,
         *_source_checks(cfg),
@@ -2844,8 +2910,10 @@ def set_tool(
     return now
 
 
-def _next_tool_setting(name: str) -> ToolSetting:
-    """Move one tool on to its next setting (on, asks first, needs the key, off), for the chat.
+def _next_tool_setting(name: str, by: int = 1) -> ToolSetting:
+    """Move one tool on (`by` 1) or back (`by` -1) round its settings, for the chat.
+
+    The settings are on, asks first, needs the key, off, never below how the tool ships.
 
     Raises:
         ConfigError: as `set_tool`.
@@ -2854,7 +2922,8 @@ def _next_tool_setting(name: str) -> ToolSetting:
     if found is None:
         msg = f"no tool is called {name!r}"
         raise config.ConfigError(msg)
-    return set_tool(name, found.following(), source="chat", restart=False)
+    moved = found.following() if by > 0 else found.preceding()
+    return set_tool(name, moved, source="chat", restart=False)
 
 
 def cmd_tools(args: argparse.Namespace) -> int:

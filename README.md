@@ -38,7 +38,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
 - **Your PC:** ask how the PC is doing, in any words, for its CPU, graphics card, VRAM, memory,
   temperatures and disks. Jarvis can list and read your files (your home folder by default, hidden ones
   only for the desktop's own settings) and create or change text files in `~/Documents`, asking first unless you turned questions
-  off. Keys, tokens, shell history and browser profiles are never read ([`[files]`](docs/configuration.md)).
+  off. It has a workspace folder of its own (`~/Documents/Jarvis`, `files.workspace`), where what it makes goes by default and
+  where a new file never waits on a question. Keys, tokens, shell history and browser profiles are never read ([`[files]`](docs/configuration.md)).
   Ask it in any words to close, end or kill a program: Jarvis lists the programs of yours that
   match, asks which one when there are several, and stops only that one once you press the confirm key. It
   never stops the desktop, the sound server, dictation or itself, and nothing heard from PC audio can stop a
@@ -52,8 +53,13 @@ Jarvis is pre-1.0 software; see [Status](#status).
   anything beside a fullscreen window, nor the fullscreen window itself, since a fullscreen game can crash
   when that happens. A screenshot of the
   screen, a workspace or one window is saved where Omarchy keeps screenshots and copied to the
-  clipboard. A workspace or window that is not on screen is captured without switching to it
-  (`grim` needed).
+  clipboard, and Jarvis looks at it too when its model can see pictures. A workspace or window that is
+  not on screen is captured without switching to it (`grim` needed). Ask it to tell you when
+  something shows up in a window or on the screen, and while `jarvis run` is up it checks now and
+  then (every 20 seconds by default, for two hours by default, two watches at most) and says so;
+  each check is a model call with a picture ([ADR 0021](docs/adr/0021-screen-watch.md)). It can also watch a program
+  you name and say when it exits (closed, crashed or killed), is stopped, or is stuck waiting on a disk
+  or device at three checks in a row over at least 30 seconds, and when it runs again; that reads only `/proc`, with no picture and no model.
 - **Your own skills:** put instructions for a task of yours in `~/.config/jarvis/skills/<name>.md`, opening
   with a `---` block holding a `description:` line, and Jarvis reads them when a request needs them. They
   guide what it does and never let it do more than it otherwise could.
@@ -255,8 +261,9 @@ uv run pytest -q -m "not local"   # unit tests
 ```
 
 Tests marked `local` need real hardware and services and never run in CI (`uv run pytest -m local`).
-`tools/check.sh` runs everything CI runs, in one command; `tools/install-hooks.sh` adds opt-in git hooks (lint,
-tests, the commit subject and a private-details check).
+`tools/check.sh` runs everything CI runs in one command. `tools/install-hooks.sh` adds opt-in git hooks
+for lint, affected non-local tests, the commit subject and private details. Rerun the installer to
+refresh an existing copy of the hooks.
 
 ## Project layout
 

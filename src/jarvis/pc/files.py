@@ -14,6 +14,11 @@ are in the conversation, and so does sending text off the PC (`policy.decide`), 
 turned questions off. Hidden files and folders under home stay shut unless `files.hidden_allow`
 opens them.
 
+Jarvis's workspace (`files.workspace`) is always readable and writable, and a path with no
+folder (a bare name, a relative path) is written there. Inside it a hidden name is no bar (only
+secrets and version-control folders are), and a call that makes a new file, or writes one Jarvis
+made, needs no question (`FileOps.unasked`, ADR 0025).
+
 Writing is `confirm`: it asks first unless the owner turned questions off
 (`boundaries.bypass_consent`). The question names the resolved path, the folders the write would
 make and, for `replace`, the old file's size; the write runs only if that path still resolves to
@@ -37,22 +42,27 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
-from jarvis.config import deny_pattern
+from jarvis.config import SYSTEM_FOLDER_NAMES, ConfigError, deny_pattern, workspace_refusal
 from jarvis.operations import (
     DATA_WRAP_CHARS,
+    UNASKED_ARG,
     Operation,
     OperationError,
     Result,
     cut_inert,
     inert_chars,
 )
+from jarvis.pc.workspace import folder_problem, workspace_path, workspace_problem
 from jarvis.policy import OpClass, Origin
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
     from jarvis.config import FilesConfig
+    from jarvis.pc.workspace import Ledger
 
+NEW_FILE = "a new file in the workspace"  # `FileOps.unasked`: the reasons a write needs no yes
+MADE_FILE = "a file Jarvis made in the workspace"
 MAX_PATH = 1000
 MAX_CONTENT = 20000
 MAX_ENTRIES = 200
@@ -138,7 +148,9 @@ SECRET_PATHS = (
 )
 
 
-SYSTEM_FOLDERS = (Path("/proc"), Path("/sys"), Path("/dev"), Path("/run"))
+SYSTEM_FOLDERS = tuple(Path(name) for name in SYSTEM_FOLDER_NAMES)
+# Folders whose contents run programs (hooks): never written, even in the workspace.
+_VERSION_CONTROL = frozenset({".git", ".hg", ".svn"})
 
 
 class FileRefusalError(OperationError):
@@ -206,10 +218,14 @@ def _printable(line: str) -> str:
     return text if len(text) <= PREVIEW_WIDTH else text[: PREVIEW_WIDTH - 1] + "\u2026"
 
 
-def _open_folder(folder: Path, *, create: int = 0) -> int:
+def _open_folder(
+    folder: Path, *, create: int = 0, vet: tuple[int, Callable[[int], None]] | None = None
+) -> int:
     """Open a resolved folder one name at a time from `/`, following no link on the way.
 
     The last `create` names may be missing; they are made (mode `FOLDER_MODE`) as they are met.
+    `vet` is a name's place on the way and a check to run on that folder as opened, which raises
+    to stop (the descriptor is then closed).
     What `os.open` and `os.mkdir` raise passes through: `FileNotFoundError` for a missing folder
     that may not be made, `ELOOP` for a link on the way and `ENOTDIR` for a name that is no folder.
     """
@@ -220,6 +236,12 @@ def _open_folder(folder: Path, *, create: int = 0) -> int:
             inner = _open_inner(fd, name, make=index >= len(names) - create)
         finally:
             os.close(fd)
+        if vet is not None and vet[0] == index:
+            try:
+                vet[1](inner)
+            except BaseException:
+                os.close(inner)
+                raise
         fd = inner
     return fd
 
@@ -252,25 +274,76 @@ class Boundary:
     deny_paths: tuple[str, ...] = ()  # the owner's paths, absolute (under home when written so)
     protected: tuple[Path, ...] = ()
     hidden_allow: tuple[str, ...] = ()
+    workspace: Path | None = None  # Jarvis's own folder: in both roots, hidden names allowed
+    workspace_given: Path | None = None  # ... as the config writes it, links not followed
 
     @classmethod
-    def of(cls, config: FilesConfig, home: Path, *, protected: Iterable[Path] = ()) -> Boundary:
-        """Return the boundary a `[files]` section sets; `protected` folders are never touched."""
+    def of(
+        cls,
+        config: FilesConfig,
+        home: Path,
+        *,
+        protected: Iterable[Path] = (),
+        workspace: bool = True,
+    ) -> Boundary:
+        """Return the boundary a `[files]` section sets; `protected` folders are never touched.
+
+        The workspace is added to both roots unless `workspace` is off (its folder is unsafe).
+
+        Raises:
+            ConfigError: the workspace is, holds or lies inside a protected folder.
+        """
         home = Path(os.path.realpath(home))
+        shut = (*protected, *SYSTEM_FOLDERS)
+        refusal = workspace_refusal(config.workspace, home, shut)
+        if refusal:
+            msg = f"files.workspace {refusal}"
+            raise ConfigError(msg)
 
         def expand(root: str) -> Path:
             text = str(home) + root[1:] if root.startswith("~") else root
             return Path(os.path.realpath(text))
 
         deny = [deny_pattern(entry) for entry in config.deny]
+        folder = expand(config.workspace) if workspace else None
+        extra = () if folder is None else (folder,)
         return cls(
             home,
-            tuple(expand(root) for root in config.read_roots),
-            tuple(expand(root) for root in config.write_roots),
+            tuple(dict.fromkeys((*(expand(root) for root in config.read_roots), *extra))),
+            tuple(dict.fromkeys((*(expand(root) for root in config.write_roots), *extra))),
             tuple(d for d in deny if "/" not in d),
             tuple(_anchored(d, home) for d in deny if "/" in d),
-            tuple(Path(os.path.realpath(path)) for path in (*protected, *SYSTEM_FOLDERS)),
+            tuple(Path(os.path.realpath(path)) for path in shut),
             tuple(config.hidden_allow),
+            folder,
+            workspace_path(config, home) if workspace else None,
+        )
+
+    def workspace_trouble(self) -> str:
+        """Return why the workspace is not, now, a folder of the owner's alone, or "".
+
+        A missing one is no trouble (it is made, mode 0700, on the next write).
+        """
+        given = self.workspace_given
+        if given is None:
+            return "is not in use"
+        problem = workspace_problem(given, create=False)
+        if not problem and Path(os.path.realpath(given)) != self.workspace:
+            problem = "is not where it was when Jarvis started"
+        return problem
+
+    def hidden_in_workspace(self, path: Path) -> bool:
+        """Return whether a path in the workspace has a hidden name (a dot) below the folder."""
+        if self.workspace is None or not self.in_workspace(path):
+            return False
+        return any(part.startswith(".") for part in path.relative_to(self.workspace).parts)
+
+    def in_workspace(self, path: Path) -> bool:
+        """Return whether a resolved path is inside the workspace (the folder itself is not)."""
+        return (
+            self.workspace is not None
+            and path.is_relative_to(self.workspace)
+            and path != self.workspace
         )
 
     def show(self, path: Path) -> str:
@@ -279,8 +352,11 @@ class Boundary:
             return "~"
         return f"~/{path.relative_to(self.home)}" if path.is_relative_to(self.home) else str(path)
 
-    def _resolve(self, raw: str) -> Path:
+    def _resolve(self, raw: str, *, write: bool = False) -> Path:
         """Return what a path the model gave means, through every link that exists.
+
+        A path with no folder (`notes.md`, `drafts/a.md`) is in the workspace. To read, it is
+        there only if something of that name is, else under home, as before the workspace.
 
         Raises:
             FileRefusalError: the path is empty or names another user's home.
@@ -295,8 +371,15 @@ class Boundary:
             msg = f"{text} is outside the folders I may use."
             raise FileRefusalError(msg)
         elif not text.startswith("/"):
-            text = str(self.home / text)
+            text = str(self._relative(text, write=write))
         return Path(os.path.realpath(text))
+
+    def _relative(self, text: str, *, write: bool) -> Path:
+        """Return where a relative path is: the workspace for a write, or a read that finds it."""
+        if self.workspace is None:
+            return self.home / text
+        inside = self.workspace / text
+        return inside if write or os.path.lexists(inside) else self.home / text
 
     def _base(self, path: Path) -> Path | None:
         """Return the folder a path is judged from: home, else the deepest root holding it."""
@@ -373,13 +456,21 @@ class Boundary:
         Raises:
             FileRefusalError: it is outside the write roots, hidden or private.
         """
-        path = self._resolve(raw)
+        path = self._resolve(raw, write=True)
+        if path == self.workspace:
+            msg = f"{self.show(path)} is my workspace folder, not a file."
+            raise FileRefusalError(msg)
         roots = [root for root in self.write_roots if path.is_relative_to(root) and path != root]
         if not roots:
             msg = f"{self.show(path)} is outside the folders I may write to."
             raise FileRefusalError(msg)
-        below = path.relative_to(max(roots, key=lambda root: len(root.parts))).parts
-        if any(part.startswith(".") for part in below):
+        root = max(roots, key=lambda root: len(root.parts))
+        below = path.relative_to(root).parts
+        if root == self.workspace:
+            if _VERSION_CONTROL.intersection(part.casefold() for part in below):
+                msg = f"{self.show(path)} is inside a version-control folder, so I don't write it."
+                raise FileRefusalError(msg)
+        elif any(part.startswith(".") for part in below):
             msg = f"{self.show(path)} is a hidden file or folder, so I don't write it."
             raise FileRefusalError(msg)
         if self.secret(path):
@@ -450,13 +541,16 @@ class FileOps:
     """`list_dir`, `read_file` and `write_file` within a `Boundary`.
 
     `max_chars` is the room for one result, so a long file is read in parts the model can ask for.
+    `made` remembers the files Jarvis made in its workspace; without it only a new file there
+    is written unasked, never a later write to it.
     """
 
-    def __init__(self, boundary: Boundary, *, max_chars: int) -> None:
+    def __init__(self, boundary: Boundary, *, max_chars: int, made: Ledger | None = None) -> None:
         """Work within `boundary`, giving at most `max_chars` characters a result."""
         super().__init__()
         self._boundary = boundary
         self._max_chars = max_chars
+        self._made = made
 
     # --- reading ------------------------------------------------------------------------------
 
@@ -649,6 +743,9 @@ class FileOps:
         new_folders = 0
         while not path.parents[new_folders].exists():
             new_folders += 1
+        if args.get(UNASKED_ARG) == NEW_FILE and os.path.lexists(path):
+            msg = f"{shown} appeared just now, so I didn't write it without asking."
+            raise FileRefusalError(msg)
         bound = {**args, "path": str(path), "mode": mode, "new_folders": new_folders}
         if mode == "replace":
             try:
@@ -658,6 +755,128 @@ class FileOps:
             else:
                 bound["old_size"], bound["old_file"] = old.st_size, _identity(old)
         return bound
+
+    def unasked(self, args: dict[str, Any]) -> str:
+        """Return why a write needs no question, or "" when it asks as usual (ADR 0025).
+
+        In the workspace a write that makes a new file, or changes one Jarvis made there, is the
+        owner's own request done in Jarvis's own folder: nothing of theirs is lost. Replacing or
+        adding to a file the owner put there, or one Jarvis made that was swapped, changed or
+        given a second name since, asks. So does a hidden name (`.envrc`, `.vscode`: files that
+        act on their own) and any write while the workspace is no longer the owner's alone.
+        The policy still asks after outside text, whatever this says; the write itself holds to
+        what is said here (`bind_write`, `write_file`).
+        """
+        try:
+            path = self._boundary.writable(str(args["path"]))
+        except FileRefusalError, KeyError:
+            return ""
+        if (
+            not self._boundary.in_workspace(path)
+            or self._boundary.hidden_in_workspace(path)
+            or self._boundary.workspace_trouble()
+        ):
+            return ""
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            return NEW_FILE
+        except OSError:
+            return ""
+        return MADE_FILE if self._ours(path, info) else ""
+
+    def _ours(self, path: Path, info: os.stat_result) -> bool:
+        """Whether `info` describes a regular file with one name that Jarvis made at `path`."""
+        return (
+            self._made is not None
+            and stat.S_ISREG(info.st_mode)
+            and info.st_nlink == 1
+            and self._made.made(path, info)
+        )
+
+    def _remembered(self, path: Path, folder: int, claim: object) -> bool:
+        """Return whether the file at `path`, before a write, is new or one Jarvis made.
+
+        A write that was let through unasked (`claim`) must still find what was judged.
+
+        Raises:
+            FileRefusalError: the write was bound as to a file Jarvis made, and that file is not
+                the one now there (swapped, changed or given a second name since).
+        """
+        if not self._boundary.in_workspace(path) or self._made is None:
+            return False
+        try:
+            info = os.stat(path.name, dir_fd=folder, follow_symlinks=False)
+        except FileNotFoundError:
+            ours = True
+        except OSError:
+            ours = False
+        else:
+            ours = self._ours(path, info)
+        if claim == MADE_FILE and not ours:
+            msg = f"{self._boundary.show(path)} changed after you were asked, so I didn't write it."
+            raise FileRefusalError(msg)
+        return ours
+
+    def _remember(self, path: Path, folder: int) -> None:
+        """Note that the file just written at `path` is Jarvis's."""
+        if self._made is None:
+            return
+        with contextlib.suppress(OSError):
+            self._made.record(path, os.stat(path.name, dir_fd=folder, follow_symlinks=False))
+
+    def _ready_workspace(self, path: Path, shown: str) -> tuple[int, Callable[[int], None]] | None:
+        """Before a write into the workspace: judge the folder again, and make it if it is gone.
+
+        Returns the check to run on the workspace folder as `_open_folder` opens it, so the
+        folder written through is the one judged here, or None for a path outside it.
+
+        Raises:
+            FileRefusalError: the workspace is no longer a folder of the owner's alone, or cannot
+                be made.
+        """
+        boundary, given = self._boundary, self._boundary.workspace_given
+        if not boundary.in_workspace(path) or given is None or boundary.workspace is None:
+            return None
+        problem = boundary.workspace_trouble() or workspace_problem(given, create=True)
+        judged = (0, 0)
+        if not problem:
+            try:
+                info = os.lstat(given)
+            except OSError as exc:
+                problem = f"cannot be read ({exc.strerror or exc})"
+            else:
+                judged = (info.st_dev, info.st_ino)
+        if problem:
+            msg = f"My workspace {problem}, so I didn't write {shown}."
+            raise FileRefusalError(msg)
+
+        def vet(fd: int) -> None:
+            """Judge the workspace folder as opened: the one judged just now, still the owner's.
+
+            Raises:
+                FileRefusalError: it is another folder than the one judged, or no longer safe.
+            """
+            info = os.fstat(fd)
+            reason = (
+                "is not the folder it was a moment ago"
+                if (info.st_dev, info.st_ino) != judged
+                else folder_problem(info)
+            )
+            if reason:
+                msg = f"My workspace {reason}, so I didn't write {shown}."
+                raise FileRefusalError(msg)
+
+        return len(boundary.workspace.parts) - 2, vet
+
+    def _verifier(self, path: Path, changed: str) -> Callable[[os.stat_result], None]:
+        """Return the check that a file opened for a "made by Jarvis" write is still that file."""
+
+        def verify(info: os.stat_result) -> None:
+            if not self._ours(path, info):
+                raise FileRefusalError(changed)
+
+        return verify
 
     def write_summary(self, args: dict[str, Any]) -> str:
         """Return the confirmation question's words: how, which file, how much, what is made."""
@@ -707,12 +926,18 @@ class FileOps:
         changed = f"{shown} changed after you were asked, so I didn't write it."
         if again != path:
             raise FileRefusalError(changed)
+        vet = self._ready_workspace(path, shown)
         content = str(args["content"])
         if not content.endswith("\n"):
             content += "\n"
-        mode = str(args.get("mode", "create"))
+        claim = args.get(UNASKED_ARG)
+        # A write let through as "a new file" makes the file exclusively, whatever its mode: one
+        # that appeared since is the owner's, and was never asked about.
+        mode = "create" if claim == NEW_FILE else str(args.get("mode", "create"))
         try:
-            folder = _open_folder(path.parent, create=int(args.get("new_folders") or 0))
+            folder = _open_folder(path.parent, create=int(args.get("new_folders") or 0), vet=vet)
+        except FileRefusalError:
+            raise
         except OSError as exc:
             if exc.errno in _SWAPPED or isinstance(exc, FileNotFoundError):
                 raise FileRefusalError(changed) from exc
@@ -724,9 +949,13 @@ class FileOps:
             shown,
             single=path.is_relative_to(self._boundary.home),
             old=_named(args.get("old_size"), args.get("old_file")),
+            verify=self._verifier(path, changed) if claim == MADE_FILE else None,
         )
         try:
+            ours = self._remembered(path, folder, claim)
             _write(target, content.encode("utf-8"), mode)
+            if ours:
+                self._remember(path, folder)
         except FileExistsError as exc:
             msg = f"{shown} already exists; say whether to replace it or add to it."
             raise FileRefusalError(msg) from exc
@@ -820,6 +1049,7 @@ class FileOps:
                 prepare=self.bind_write,
                 preview=self.write_preview,
                 hashed=frozenset({"content"}),
+                unasked=self.unasked,
             ),
         ]
 
@@ -833,6 +1063,7 @@ class _Target:
     shown: str
     single: bool  # refuse a file with a second name on disk (under home)
     old: tuple[int, ...] | None  # for `replace`: the file the question named (`_state`), or none
+    verify: Callable[[os.stat_result], None] | None = None  # for the file as opened (a made one)
 
 
 def _identity(info: os.stat_result) -> list[int]:
@@ -878,6 +1109,8 @@ def _write(target: _Target, data: bytes, mode: str) -> None:
     folder, name = target.folder, target.name
     if mode == "replace":
         old = _check_replaced(target)
+        if old is not None and target.verify is not None:
+            target.verify(old)
         carried = None if old is None else stat.S_IMODE(old.st_mode) & _CARRIED_MODE
         temp = f".{name}.{secrets.token_hex(6)}.tmp"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -900,6 +1133,12 @@ def _write(target: _Target, data: bytes, mode: str) -> None:
         if not stat.S_ISREG(info.st_mode):
             msg = f"{target.shown} is not a regular file, so I don't write it."
         raise FileRefusalError(msg)
+    if mode == "append" and target.verify is not None:
+        try:  # the file as opened, not as looked at a moment ago, is what was judged
+            target.verify(info)
+        except FileRefusalError:
+            os.close(fd)
+            raise
     _fill(fd, data)
 
 

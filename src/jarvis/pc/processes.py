@@ -30,6 +30,7 @@ from jarvis.operations import (
     OperationError,
     Result,
     current_request,
+    inert,
 )
 from jarvis.pc import hyprland
 from jarvis.pc.hyprland import HYPR_TIMEOUT_S
@@ -166,6 +167,7 @@ class _Shown:
     targets: dict[int, tuple[str, int, str]] = field(
         default_factory=dict[int, tuple[str, int, str]]
     )
+    message: int = 0  # the model message whose call listed them last (a watch needs it read)
 
 
 class Stopper(Protocol):
@@ -528,6 +530,7 @@ class ProcessOps:
             request = current_request()
             if self._shown.request is not request:
                 self._shown = _Shown(request)
+            self._shown.message = request.message if request is not None else 0
             for item in shown:
                 title = "" if item.by_name or item.window is None else item.window.title
                 self._shown.targets[item.proc.pid] = (
@@ -560,7 +563,25 @@ class ProcessOps:
                 )
         if protected:
             lines.append("Also matching, but never stopped: " + "; ".join(protected) + ".")
-        return Result("\n".join(lines), Origin.PROCESS)
+        rows = {item.proc.pid: inert(self._line(item)) for item in shown}
+        return Result("\n".join(lines), Origin.PROCESS, delivered=self._reached(request, rows))
+
+    def _reached(self, request: Request | None, rows: dict[int, str]) -> Callable[[str], None]:
+        """Return what keeps only the PIDs whose whole row reached the model.
+
+        The agent cuts a long result to its cap: a PID in a row it cut, or cut short, was never
+        read, so it may not be stopped or watched.
+        """
+
+        def reached(body: str) -> None:
+            with self._lock:
+                if self._shown.request is not request:
+                    return
+                for pid, row in rows.items():
+                    if f"\n{row}" not in body:
+                        self._shown.targets.pop(pid, None)
+
+        return reached
 
     # --- stop_process ---------------------------------------------------------------------
 
@@ -583,13 +604,28 @@ class ProcessOps:
             raise OperationError(msg)
         return request
 
-    def _listed(self, request: Request, pid: int) -> tuple[str, int, str]:
+    def _listed(self, request: Request, pid: int, verb: str = "stop") -> tuple[str, int, str]:
+        """Return what `find_processes` listed for `pid` in `request`, read by the model.
+
+        A PID written beside its listing, in the same model message, is a guess: refused, as a
+        window number is.
+
+        Raises:
+            OperationError: the PID was not listed in this request, or not read yet.
+        """
         with self._lock:
             target = self._shown.targets.get(pid) if self._shown.request is request else None
+            unread = target is not None and request.message <= self._shown.message
         if target is None:
             msg = (
-                f"PID {pid} was not listed by find_processes in this request. Call "
-                "find_processes with the name the owner said first, and stop only a PID it lists."
+                f"PID {pid} was not listed by find_processes in this request. Call find_processes "
+                f"with the name the owner said first, and {verb} only a PID it lists."
+            )
+            raise OperationError(msg)
+        if unread:
+            msg = (
+                "The process list was not read yet: call find_processes alone, read it, then use "
+                "a PID from it."
             )
             raise OperationError(msg)
         return target
@@ -609,6 +645,57 @@ class ProcessOps:
         if reason is not None:
             msg = f"PID {pid} is never stopped: {reason}"
             raise OperationError(msg)
+
+    def watched(self, pid: int) -> tuple[str, int]:
+        """Return the program and start time of a PID `find_processes` listed in this request.
+
+        The listing must have been read: a PID written beside it, in the same model message, is
+        a guess, as for the window tools.
+
+        Raises:
+            OperationError: no owner's request is being handled, it holds outside text, the PID
+                was not listed in it or not read yet, or it is no longer the process listed.
+        """
+        request = current_request()
+        if request is None or request.foreign or request.scheduled:
+            msg = (
+                "a process is watched only on the owner's own request, never from PC audio or a job"
+            )
+            raise OperationError(msg)
+        outside = request.outside - {Origin.PROCESS.value, REMEMBERED_LISTING}
+        if outside:
+            msg = (
+                "a process is watched only on the owner's own words, and this request also holds "
+                f"outside text ({', '.join(sorted(outside))}); no watch was set. Ask the owner to "
+                "say which program to watch in a request of its own."
+            )
+            raise OperationError(msg)
+        program, start, _ = self._listed(request, pid, "watch")
+        proc = self._read(pid)
+        if proc is None or proc.start != start:
+            msg = f"PID {pid} is no longer the {program} that was listed"
+            raise OperationError(msg)
+        return program, start
+
+    def state_of(self, pid: int, start: int) -> str | None:
+        """Return the state letter (`R`, `S`, `D`, `T`, `Z`...) of the process started at `start`.
+
+        None once it is gone: another process may have its PID by then.
+        """
+        proc = self._read(pid)
+        if proc is None or proc.start != start:
+            return None
+        if proc.state == "Z" and self._threads(pid) > 1:
+            return "S"  # its first thread ended, the others run: the program has not exited
+        return proc.state
+
+    def _threads(self, pid: int) -> int:
+        """Return how many threads the process has, from its `status` (1 when it does not say)."""
+        for line in self._text(pid, "status").splitlines():
+            if line.startswith("Threads:"):
+                with contextlib.suppress(ValueError, IndexError):
+                    return int(line.split()[1])
+        return 1
 
     def prepare(self, args: dict[str, Any]) -> dict[str, Any]:
         """Bind the PID to the program and start time `find_processes` listed in this request.

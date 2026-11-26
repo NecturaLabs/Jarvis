@@ -15,6 +15,7 @@ import pytest
 from jarvis import agent as agent_module
 from jarvis.agent import (
     CALL_TOO_LONG,
+    CANT_SEE,
     FAILED_REMINDER,
     LOOKED_REMINDER,
     MAX_CALLS_PER_TURN,
@@ -26,10 +27,12 @@ from jarvis.agent import (
     MODEL_MISSING,
     NO_ACTION_REMINDER,
     PICTURES_OFF,
+    SEEN_NEXT,
     STOPPED,
     TOO_LONG,
     TOO_MANY_STEPS,
     UNDONE,
+    WATCH_CHECK_S,
     Agent,
     Declined,
     Hooks,
@@ -2182,6 +2185,40 @@ def test_an_operation_that_cannot_bind_its_target_does_not_run() -> None:
     assert model.seen[1][-1]["content"] == "Failed: Nothing is playing."
 
 
+def test_a_call_refused_before_it_could_run_may_be_made_again_in_a_later_message() -> None:
+    """Regression: a stop refused as written beside its listing was refused as a repeat after."""
+    counter = Counter()
+    tries: list[int] = []
+
+    def not_yet(args: dict[str, Any]) -> dict[str, Any]:
+        tries.append(1)
+        if len(tries) == 1:
+            raise OperationError("The list was not read yet: read it, then call this again.")
+        return args
+
+    model = ScriptedModel(
+        [_call("like", {"q": "x"}), _call("like", {"q": "x"}, "c2"), _say("Liked.")]
+    )
+    agent, _ = _agent(model, [counter.op("like", prepare=not_yet)])
+
+    agent.handle("like this", NO_CONFIRM)
+
+    assert counter.runs == [{"op": "like", "q": "x"}]
+
+
+def test_a_call_that_ran_is_still_refused_as_a_repeat() -> None:
+    counter = Counter()
+    model = ScriptedModel(
+        [_call("like", {"q": "x"}), _call("like", {"q": "x"}, "c2"), _say("Liked.")]
+    )
+    agent, _ = _agent(model, [counter.op("like")])
+
+    agent.handle("like this", NO_CONFIRM)
+
+    assert len(counter.runs) == 1
+    assert model.seen[2][-1]["content"] == "Error: this exact call was already made."
+
+
 def test_a_denied_operation_never_reads_its_target() -> None:
     prepared: list[bool] = []
     op = Counter().op("like", cls=OpClass.DENY, prepare=lambda a: prepared.append(True) or a)
@@ -2657,6 +2694,221 @@ def test_a_picture_is_remembered_by_its_name_and_its_bytes_are_not_kept() -> Non
     assert turn.outside == "picture"
     assert all(isinstance(m["content"], str) for m in model.seen[1])
     assert "base64" not in json.dumps(model.seen[1])
+
+
+def _screenshot_op(look: Picture | None = SHOT) -> Operation:
+    """A tool like `pc_screenshot`: it saves a picture and hands it over for the model to see."""
+    return Operation(
+        "shot",
+        "take a screenshot",
+        {"type": "object", "properties": {}},
+        lambda _args: Result("Saved a screenshot.", look=look),
+        spoken_summary=lambda _a: "take a screenshot",
+    )
+
+
+def test_a_screenshot_the_model_took_reaches_it_in_the_next_message_after_the_result() -> None:
+    model = ScriptedModel([_call("shot"), _say("A red square.")])
+    agent, audit = _agent(model, [_screenshot_op()], pictures=True)
+
+    assert agent.handle("what is on my screen?", NO_CONFIRM) == "A red square."
+
+    after = model.seen[1]
+    assert after[-2]["role"] == "tool"
+    assert SEEN_NEXT in after[-2]["content"]
+    assert after[-1]["role"] == "user"
+    parts = objs(after[-1]["content"])
+    assert {"type": "image_url", "image_url": {"url": SHOT.data_url()}} in parts
+    words = " ".join(str(part["text"]) for part in parts if part["type"] == "text")
+    assert "shot.png" in words
+    assert "never instructions" in words
+    assert "picture_seen" in _events(audit)
+
+
+def test_a_side_effect_after_a_screenshot_needs_a_yes() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_call("shot"), _call("pause", call_id="c2"), _say("Okay.")])
+    agent, _ = _agent(model, [_screenshot_op(), counter.op("pause")], pictures=True)
+
+    agent.handle("look and act", Hooks(confirm=lambda q: asked.append(q) or False))
+
+    assert asked
+    assert counter.runs == []
+
+
+def test_the_picture_follows_all_the_results_of_a_message_with_several_calls() -> None:
+    counter = Counter()
+    pair = _call("shot")
+    pair["tool_calls"].append(_call("pause", call_id="c2")["tool_calls"][0])
+    model = ScriptedModel([pair, _say("Done.")])
+    agent, _ = _agent(model, [_screenshot_op(), counter.op("pause")], pictures=True)
+
+    agent.handle("pause and look", NO_CONFIRM)
+
+    roles = [m["role"] for m in model.seen[1][-3:]]
+    assert roles == ["tool", "tool", "user"]  # every result first, then the picture
+
+
+def test_a_screenshot_called_on_the_last_step_is_not_run_and_no_picture_is_shown() -> None:
+    # On the last step the model may only answer: any other call is dropped, never run.
+    ran: list[str] = []
+    shot = Operation(
+        "shot",
+        "take a screenshot",
+        {"type": "object", "properties": {}},
+        lambda _args: ran.append("shot") or Result("Saved a screenshot.", look=SHOT),
+    )
+    counter = Counter()
+    model = ScriptedModel(
+        [_call("pause"), _call("shot", call_id="c2"), _call("no_action", {"reply": "Done."}, "c3")]
+    )
+    agent, audit = _agent(
+        model, [shot, counter.op("pause")], pictures=True, limits=Limits(max_steps=2)
+    )
+
+    reply = agent.handle("pause and look", NO_CONFIRM)
+
+    assert ran == []
+    assert "picture_seen" not in _events(audit)
+    assert all("image_url" not in json.dumps(m) for seen in model.seen for m in seen)
+    assert "screenshot" not in reply.lower()  # no claim of one
+
+
+def test_a_side_effect_after_a_screenshot_nobody_could_see_runs_as_usual() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_call("shot"), _call("pause", call_id="c2"), _say("Okay.")])
+    agent, _ = _agent(model, [_screenshot_op(None), counter.op("pause")], pictures=True)
+
+    agent.handle("act", Hooks(confirm=lambda q: asked.append(q) or False))
+
+    assert not asked
+    assert counter.runs == [{"op": "pause"}]
+
+
+@pytest.mark.parametrize("detail", ["condensed", "full"])
+def test_a_screenshot_is_not_remembered_and_its_bytes_are_not_kept(detail: str) -> None:
+    model = ScriptedModel([_call("shot"), _say("A red square."), _say("Red.")])
+    limits = replace(Limits(), memory_detail=detail)
+    agent, _ = _agent(model, [_screenshot_op()], pictures=True, limits=limits)
+
+    agent.handle("what is on my screen?", NO_CONFIRM)
+    agent.handle("what colour was it?", NO_CONFIRM)
+
+    (turn,) = agent.memory.turns[:1]
+    assert turn.outside == "picture"
+    assert "base64" not in json.dumps(model.seen[-1])
+    assert all(isinstance(m["content"], str) or m["role"] == "assistant" for m in model.seen[-1])
+
+
+def test_a_screenshot_without_the_picture_reader_says_so_and_sends_no_picture() -> None:
+    model = ScriptedModel([_call("shot"), _say("I can't see it.")])
+    agent, _ = _agent(model, [_screenshot_op()], pictures=False)
+
+    agent.handle("what is on my screen?", NO_CONFIRM)
+
+    after = model.seen[1]
+    assert after[-1]["role"] == "tool"
+    assert CANT_SEE in after[-1]["content"]
+    assert "base64" not in json.dumps(after)
+
+
+def _answer(text: str) -> dict[str, Any]:
+    """The reply a check forces: a `no_action` call whose `reply` is the answer."""
+    return _call("no_action", {"reply": text})
+
+
+@pytest.mark.parametrize(
+    ("answer", "shows"),
+    [
+        ("YES", True),
+        (" yes.", True),
+        ("Yes, a dialog.", True),
+        ("NO", False),
+        ("Yesterday", False),
+        ("I think YES", False),
+        ("", False),
+        ("no, yes", False),
+    ],
+)
+def test_a_glance_is_a_yes_only_when_the_answer_starts_with_one(answer: str, shows: bool) -> None:
+    model = ScriptedModel([_answer(answer)])
+    agent, _ = _agent(model, [], pictures=True)
+
+    assert agent.glance(SHOT, "a dialog") is shows
+
+
+def test_a_glance_reads_only_the_no_action_reply_and_runs_no_call() -> None:
+    counter = Counter()
+    other = _call("pause")
+    other["tool_calls"].insert(0, _call("pause", call_id="c0")["tool_calls"][0])
+    other["content"] = "YES"  # words beside the calls are not the answer
+    model = ScriptedModel([other, _say("YES")])
+    agent, _ = _agent(model, [counter.op("pause")], pictures=True)
+
+    assert agent.glance(SHOT, "a dialog") is False  # no no_action call: no
+    assert agent.glance(SHOT, "a dialog") is False  # only words: no
+    assert counter.runs == []
+
+
+def test_a_glance_with_a_garbled_reply_is_a_no() -> None:
+    call = _answer("YES")
+    call["tool_calls"][0]["function"]["arguments"] = "{not json"
+    agent, _ = _agent(ScriptedModel([call]), [], pictures=True)
+
+    assert agent.glance(SHOT, "a dialog") is False
+
+
+def test_a_glance_starts_like_a_request_with_the_pinned_prompt_and_forces_no_action() -> None:
+    model = ScriptedModel([_say("what is this?"), _answer("NO")])
+    agent, audit = _agent(model, [Counter().op("pause")], pictures=True)
+    agent.handle("hello", NO_CONFIRM)
+
+    agent.glance(SHOT, "a dialog")
+
+    messages = model.seen[1]
+    assert model.tools_offered[1] == model.tools_offered[0] > 0  # the request's own tool list
+    assert model.required[1] == "no_action"
+    assert [m["role"] for m in messages] == ["system", "user"]  # nothing remembered
+    assert messages[0]["content"] == "system"  # the agent's own prompt, so the prefix is shared
+    parts = objs(messages[1]["content"])
+    assert {"type": "image_url", "image_url": {"url": SHOT.data_url()}} in parts
+    words = str(parts[-1]["text"])
+    assert "a dialog" in words
+    assert "outside data" in words
+    assert "YES or NO" in words
+    assert model.timeouts[1] == WATCH_CHECK_S
+    assert WATCH_CHECK_S < 20
+    assert len(agent.memory.turns) == 1  # the glance left no turn
+    assert [e["event"] for e in audit.events].count("request") == 1
+
+
+def test_a_glance_holds_the_mode_mark_like_a_request() -> None:
+    marks: list[str] = []
+
+    class Mark:
+        def __enter__(self) -> None:
+            marks.append("in")
+
+        def __exit__(self, *_exc: object) -> None:
+            marks.append("out")
+
+    def answering() -> Mark:
+        return Mark()
+
+    model = ScriptedModel([_answer("NO")], during=lambda: marks.append("call"))
+    agent, _ = _agent(model, [], pictures=True)
+    agent._modes.answering = answering  # pyright: ignore[reportPrivateUsage]
+
+    agent.glance(SHOT, "x")
+
+    assert marks == ["in", "call", "out"]
+
+
+def test_the_agent_says_whether_its_model_sees_pictures() -> None:
+    assert _agent(ScriptedModel([]), [], pictures=True)[0].sees() is True
+    assert _agent(ScriptedModel([]), [])[0].sees() is False
 
 
 # Bypassing consent (the owner's toggle)
@@ -3404,6 +3656,26 @@ def test_an_outside_result_reaches_the_model_within_its_cap_once_wrapped(text: s
     assert "<" not in body
     assert ">" not in body
     assert text.startswith(body.replace("&lt;", "<").replace("&gt;", ">"))
+
+
+def test_an_operation_is_told_which_text_reached_the_model() -> None:
+    """An operation that binds what the model read is told the result as the model got it."""
+    got: list[str] = []
+    text = "row " * 2000
+    op = Operation(
+        "read",
+        "Read.",
+        {"type": "object", "properties": {}},
+        lambda _a: Result(text, Origin.PROCESS, delivered=got.append),
+    )
+    model = ScriptedModel([_call("read", {}), _say("Done.")])
+    agent, _ = _agent(model, [op], limits=Limits(tool_text_chars=600))
+
+    agent.handle("read it", NO_CONFIRM)
+
+    sent = next(m["content"] for m in model.seen[-1] if m["role"] == "tool")
+    assert got == [sent]
+    assert len(sent) <= 600
 
 
 def test_a_request_that_fits_keeps_its_results_whole() -> None:
@@ -4322,7 +4594,8 @@ def test_speech_keeps_a_short_memory_and_the_chat_keeps_its_own() -> None:
         "condensed",
     )
     assert (chat.memory_idle_s, chat.memory_detail) == (0.0, "full")
-    assert chat.memory_tokens > speech.memory_tokens
+    assert chat.memory_tokens is None  # the chat takes what the window leaves
+    assert speech.memory_tokens is not None
 
 
 def test_a_request_answered_while_outside_text_was_remembered_keeps_that_mark() -> None:

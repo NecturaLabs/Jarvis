@@ -28,6 +28,7 @@ from jarvis.operations import (
     OperationError,
     Registry,
     Result,
+    current_request,
     request_scope,
     validate_args,
 )
@@ -103,6 +104,7 @@ class FakeProc:
         flags: int = 0,
         cgroup: str = APP,
         state: str = "S",
+        threads: int = 1,
     ) -> None:
         folder = self.root / str(pid)
         folder.mkdir(exist_ok=True)
@@ -112,7 +114,8 @@ class FakeProc:
         (folder / "stat").write_text(stat, encoding="utf-8")
         real, effective, saved, fs = uids or (uid, uid, uid, uid)
         (folder / "status").write_text(
-            f"Name:\t{comm}\nState:\t{state}\nUid:\t{real}\t{effective}\t{saved}\t{fs}\n",
+            f"Name:\t{comm}\nState:\t{state}\nUid:\t{real}\t{effective}\t{saved}\t{fs}\n"
+            f"Threads:\t{threads}\n",
             encoding="utf-8",
         )
         (folder / "comm").write_text(comm[:15] + "\n", encoding="utf-8")
@@ -182,9 +185,18 @@ def _op(ops: ProcessOps, name: str) -> Operation:
     return next(op for op in ops.operations() if op.name == name)
 
 
-def _find(ops: ProcessOps, name: str) -> str:
+def _list(ops: ProcessOps, name: str) -> str:
     op = _op(ops, "find_processes")
     return op.run(validate_args(op, {"name": name})).text
+
+
+def _find(ops: ProcessOps, name: str) -> str:
+    """List the processes, then go on as the model's next message would, having read the list."""
+    text = _list(ops, name)
+    request = current_request()
+    if request is not None:
+        request.next_message()
+    return text
 
 
 def _bind(ops: ProcessOps, pid: int, *, force: bool = False) -> dict[str, Any]:
@@ -935,6 +947,24 @@ def test_run_refuses_once_outside_text_came_in_after_the_question(proc: FakeProc
     assert stopper.sent == []
 
 
+def test_a_pid_whose_row_was_cut_before_the_model_is_not_taken(proc: FakeProc) -> None:
+    """Regression: every listed PID was taken although the agent cut the listing to its cap."""
+    for pid in (4242, 4343):
+        proc.add(pid, "orbit")
+    ops = _ops(proc)
+    op = _op(ops, "find_processes")
+
+    with request_scope(foreign=False) as request:
+        result = op.run(validate_args(op, {"name": "orbit"}))
+        assert result.delivered is not None
+        last = result.text.index("- PID 4343:")
+        result.delivered(result.text[: last + len("- PID 4343: orb")])
+        request.next_message()
+        assert _bind(ops, 4242)["pid"] == 4242
+        with pytest.raises(OperationError, match="not listed"):
+            _bind(ops, 4343)
+
+
 @pytest.mark.usefixtures("owner_request")
 def test_stop_refuses_a_listed_process_that_was_replaced_before_the_question(
     proc: FakeProc,
@@ -1548,3 +1578,13 @@ def test_the_real_stopper_holds_and_waits_on_a_process_without_signalling_it() -
 def test_the_real_stopper_reports_a_pid_that_does_not_exist() -> None:
     with pytest.raises(ProcessLookupError):
         PidfdStopper().open(4_194_304)
+
+
+def test_a_pid_written_beside_its_listing_is_not_stopped(proc: FakeProc) -> None:
+    proc.add(4242, "orbit")
+    ops = _ops(proc)
+
+    with request_scope(foreign=False):
+        _list(ops, "orbit")  # the model has not read the list yet: the PID would be a guess
+        with pytest.raises(OperationError, match="not read yet"):
+            _bind(ops, 4242)

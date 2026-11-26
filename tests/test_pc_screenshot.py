@@ -92,7 +92,9 @@ def test_the_screen_is_saved_with_omarchys_name_and_copied(
     assert saved.stat().st_mode & 0o777 == 0o600
     assert result.origin is Origin.TOOL_STATUS
     assert f"to {saved} and copied it to the clipboard" in result.text
-    assert result.text.endswith("You can't see it.")
+    assert "can't see it" not in result.text  # the agent says whether the model sees it
+    assert result.look is not None
+    assert result.look.name == saved.name
     assert (
         result.spoken
         == "Took a screenshot of the screen; it's in Screenshots and on the clipboard."

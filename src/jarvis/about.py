@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from jarvis import __version__, paths, services
 from jarvis.operations import Operation, OperationError, Result
+from jarvis.pc.workspace import workspace_path, workspace_problem
 from jarvis.policy import Origin
 
 if TYPE_CHECKING:
@@ -111,6 +112,11 @@ def section_of(text: str, section: str) -> str | None:
     return "\n\n".join(kept) if kept else None
 
 
+def _memory(tokens: int | None) -> str:
+    """Return how much of the conversation is remembered, in words."""
+    return "as many tokens as the window leaves" if tokens is None else f"{tokens} tokens"
+
+
 def _yes(value: object) -> str:
     return "on" if value else "off"
 
@@ -139,6 +145,18 @@ def _model_lines(config: Config) -> list[str]:
         f" kept loaded for {strata.idle_unload_s} s when idle."
     )
     return [served, f"Strata run config: {run.path}."]
+
+
+def _workspace_fact(config: Config) -> str:
+    """Say what the workspace is now: always readable and writable only while it is in use."""
+    folder = config.files.workspace
+    problem = workspace_problem(workspace_path(config.files, Path.home()), create=False)
+    if problem:
+        return f"Your workspace {folder} is not in use: it {problem}."
+    return (
+        f"Your workspace {folder} is always readable and writable, and a bare file name is"
+        " saved there."
+    )
 
 
 def facts(config: Config, channel: str, limits: Limits) -> str:
@@ -178,12 +196,12 @@ def facts(config: Config, channel: str, limits: Limits) -> str:
         ),
         (
             f"Files: read in {', '.join(files.read_roots) or 'nowhere'}; written in"
-            f" {', '.join(files.write_roots) or 'nowhere'}. Shell command:"
-            f" {_yes(config.shell.enabled)}."
+            f" {', '.join(files.write_roots) or 'nowhere'}. {_workspace_fact(config)}"
+            f" Shell command: {_yes(config.shell.enabled)}."
         ),
         (
             f"Limits here: {limits.max_steps} model calls and {limits.max_tool_calls} tool calls"
-            f" per request, {limits.reply_tokens} tokens per reply, {limits.memory_tokens} tokens"
+            f" per request, {limits.reply_tokens} tokens per reply, {_memory(limits.memory_tokens)}"
             f" of remembered conversation, kept {_DETAIL[limits.memory_detail]}."
         ),
         (

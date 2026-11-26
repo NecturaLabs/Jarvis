@@ -242,7 +242,8 @@ def test_the_key_question_reads_every_character() -> None:
     op = _op(_ops(FakeRunner()))
 
     assert op.spoken_summary({"command": "ls *.txt | wc -l"}) == (
-        "run this shell command: ls space star dot txt space pipe space wc space dash l"
+        "run this shell command in your home folder: "
+        "ls space star dot txt space pipe space wc space dash l"
     )
 
 
@@ -364,7 +365,7 @@ def test_it_runs_once_after_the_confirm_key_with_the_command_in_the_question() -
 
     assert len(runner.calls) == 1
     ((question, _action),) = key.asked
-    assert question == "Should I run this shell command: df space dash h?"
+    assert question == "Should I run this shell command in your home folder: df space dash h?"
     call = next(e for e in audit.events if e["event"] == "tool_call")
     assert call["verdict"] == "strong"
 

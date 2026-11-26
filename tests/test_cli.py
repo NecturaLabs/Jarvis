@@ -902,6 +902,7 @@ class _Run:
     audit: AuditLog = field(default_factory=lambda: AuditLog(None))
     listening: list[Listening | None] = field(default_factory=list[Listening | None])
     vias: list[object] = field(default_factory=list[object])
+    watch: object = field(default_factory=object)  # the service's screen watches, as built
 
     def part(self, *args: object, **kwargs: object) -> _Part:
         made = _Part(*args, **kwargs)
@@ -948,7 +949,13 @@ def _cmd_run(
     ops = SimpleNamespace(start_refresh=run.refresh.append)
     agent = SimpleNamespace(prime=run.primed.set)
     jarvis = SimpleNamespace(
-        agent=agent, model=model, ops=ops, hint=lambda: "", audit=run.audit, switcher=None
+        agent=agent,
+        model=model,
+        ops=ops,
+        hint=lambda: "",
+        audit=run.audit,
+        switcher=None,
+        watch=run.watch,
     )
 
     def build(
@@ -1058,6 +1065,7 @@ def test_the_run_reopens_a_lost_microphone_and_notices_one_gone_silent(
     (mic,) = run.kinds["Microphone"]
     assert mic.kwargs["stall_s"] == audio_module.MIC_STALL_S
     assert callable(run.loops[0]["reopen"])
+    assert run.loops[0]["watching"] is run.watch  # the loop makes the screen watches' checks
 
 
 @pytest.mark.parametrize(
@@ -2470,6 +2478,21 @@ def test_a_tool_changed_from_the_chat_is_audited_as_such_and_restarts_nothing_ye
     (event,) = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
     assert (event["was"], event["to"], event["source"]) == ("confirm", "strong", "chat")
     assert restarts == []
+
+
+def test_a_tool_stepped_back_from_the_chat_goes_the_other_way_round_its_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config.save(config.Config(spotify=config.SpotifyConfig(client_id="id")))
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: None)
+
+    back = cli._next_tool_setting("write_file", -1)  # pyright: ignore[reportPrivateUsage] - the chat's hook
+    on = cli._next_tool_setting("write_file")  # pyright: ignore[reportPrivateUsage] - the chat's hook
+
+    assert back.label == "off"  # asks first, back round the ring: never lowered to on
+    assert on.label == "asks first"  # and on again from off
+    events = [json.loads(line) for line in paths.audit_file().read_text().splitlines()]
+    assert [(e["was"], e["to"]) for e in events] == [("confirm", "deny"), ("deny", "confirm")]
 
 
 def test_the_chat_sets_jarvis_settings_and_audits_them(monkeypatch: pytest.MonkeyPatch) -> None:
