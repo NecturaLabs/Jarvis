@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 from test_sing_psola import Voice as SpeechVoice
 
-from jarvis import modes, voice
+from jarvis import announce, modes, voice
 from jarvis.agent import MODEL_MISSING, Declined, NoReason
 from jarvis.agent import Agent as RealAgent
 from jarvis.app import no_action_operation
@@ -3705,6 +3705,34 @@ def test_a_due_reminder_is_said_after_a_chime_and_audited() -> None:
     assert [(e["event"], e["id"], e["action"]) for e in audit.events] == [
         ("schedule_due", 3, "remind")
     ]
+
+
+def test_a_due_reminder_is_published_for_text_front_ends_as_well_as_said(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hub = announce.Hub()
+    monkeypatch.setattr(announce, "HUB", hub)
+    speaker = Speaker()
+    jobs = DueJobs([Due(_job(3, "remind", "take the bread out"), 5.0)])
+
+    _run(_loop(Agent(), Mic(*[SILENCE] * 3), speaker, due=jobs))
+
+    assert speaker.said == ["Reminder: take the bread out"]
+    assert [(a.kind, a.text) for a in hub.recent()] == [
+        ("reminder", "Reminder: take the bread out")
+    ]
+
+
+def test_a_missed_reminder_and_a_due_request_publish_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hub = announce.Hub()
+    monkeypatch.setattr(announce, "HUB", hub)
+    jobs = DueJobs([Due(_job(2, "do", "pause the music"), 1.0)])
+
+    _run(_loop(Agent(lambda _t, _h, _o: "Paused."), Mic(SILENCE), Speaker(), due=jobs))
+
+    assert hub.recent() == []
 
 
 def test_a_late_reminder_says_how_late_it_is() -> None:

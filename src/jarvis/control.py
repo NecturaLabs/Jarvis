@@ -11,6 +11,14 @@ its control group). That is no guarantee: a program can leave both (a `systemd-r
 `hyprctl dispatch exec`), and any program running as the owner can run `jarvis confirm`. An
 operation that starts programs must not let the model start them that way (#19).
 
+`subscribe` is the one request that keeps its connection: the service answers `{"ok": true,
+"subscribed": true}` and then writes one JSON line for each announcement (`jarvis.announce`: a
+reminder, a watch alert) as it is made, `{"announcement": {"id", "at", "kind", "text"}}`, until the
+client closes. With `"after": N` in the request, the remembered announcements numbered above N
+come first. A subscriber that cannot keep up loses its oldest lines (a `{"dropped": n}` line says
+how many) and never slows the voice loop; at most `MAX_SUBSCRIBERS` stream at once. The same
+same-user rule as every request applies.
+
 The public state, which the Omarchy bar reads (#14), is one of `STATES`.
 """
 
@@ -19,6 +27,7 @@ import fcntl
 import json
 import logging
 import os
+import select
 import socket
 import stat
 import struct
@@ -28,6 +37,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
+from jarvis import announce
 from jarvis.jsonutil import obj
 from jarvis.paths import runtime_dir
 
@@ -35,8 +45,12 @@ log = logging.getLogger(__name__)
 
 STATES = ("idle", "listening", "thinking", "speaking", "paused", "model loading", "unavailable")
 COMMANDS = ("status", "pause", "resume", "hush", "confirm")
+SUBSCRIBE = "subscribe"  # the one request that stays open and streams announcements
+MAX_SUBSCRIBERS = 8
+STREAM_POLL_S = 1.0  # how often a stream looks whether its client has gone
 MAX_LINE = 1024  # bytes of one request
 TIMEOUT_S = 2.0  # how long one connection may take to send its line
+MAX_STREAM_LINE = 64 * 1024  # bytes of one line of a stream
 _UCRED = struct.Struct("3i")  # pid, uid, gid
 
 # The voice loop's states (voice.State values) as the bar shows them.
@@ -366,6 +380,27 @@ def _command(line: bytes | None) -> str | None:
     return command if isinstance(command, str) else None
 
 
+def _after(line: bytes | None) -> int | None:
+    """Return the announcement number a `subscribe` asks to continue after, or None."""
+    if line is None:
+        return None
+    try:
+        after = obj(json.loads(line)).get("after")
+    except ValueError:
+        return None
+    return after if isinstance(after, int) and not isinstance(after, bool) and after >= 0 else None
+
+
+def _client_gone(conn: socket.socket) -> bool:
+    """Whether the client of a streaming connection closed it (what it sends is ignored)."""
+    if not select.select([conn], [], [], 0)[0]:
+        return False
+    try:
+        return not conn.recv(4096)
+    except OSError:
+        return True
+
+
 class ControlServer:
     """Serves the control socket on a thread of its own until `close`."""
 
@@ -376,8 +411,11 @@ class ControlServer:
         audit: _Audit | None = None,
         *,
         started_by_jarvis: Callable[[int], bool] = started_by_jarvis,
+        hub: announce.Hub | None = None,
     ) -> None:
         """Answer each known command with `handler(command)`; `path` defaults to `socket_path`.
+
+        `subscribe` streams the announcements of `hub` (this process's `announce.HUB` by default).
 
         A connection refused for coming from another user, or a `confirm` from a program
         `started_by_jarvis`, is recorded in `audit`.
@@ -387,6 +425,8 @@ class ControlServer:
         self._started_by_jarvis = started_by_jarvis
         self.path = path or socket_path()
         self._audit = audit or _NoAudit()
+        self._hub = hub or announce.HUB
+        self._streams = threading.BoundedSemaphore(MAX_SUBSCRIBERS)
         self._sock: socket.socket | None = None
         self._lock_fd: int | None = None
         self._thread: threading.Thread | None = None
@@ -465,7 +505,11 @@ class ControlServer:
             self._audit.record("control_refused", peer_uid=None if peer is None else peer[1])
             return
         conn.settimeout(TIMEOUT_S)
-        command = _command(_read_line(conn))
+        line = _read_line(conn)
+        command = _command(line)
+        if command == SUBSCRIBE:
+            self._stream(conn, _after(line))
+            return
         if command is None:
             reply: Mapping[str, Any] = {"ok": False, "error": "send one JSON line with a command"}
         elif command not in COMMANDS:
@@ -483,6 +527,25 @@ class ControlServer:
                 log.exception("control command %s failed", command)
                 reply = {"ok": False, "error": f"{command} failed; see the log"}
         conn.sendall(json.dumps(reply).encode() + b"\n")
+
+    def _stream(self, conn: socket.socket, after: int | None) -> None:
+        """Write each announcement as one JSON line until the client goes, or this closes."""
+        if not self._streams.acquire(blocking=False):
+            refusal = {"ok": False, "error": f"at most {MAX_SUBSCRIBERS} subscribers at once"}
+            conn.sendall(json.dumps(refusal).encode() + b"\n")
+            return
+        try:
+            with self._hub.subscribe(after) as feed:
+                conn.sendall(json.dumps({"ok": True, "subscribed": True}).encode() + b"\n")
+                while not self._closed.is_set() and not _client_gone(conn):
+                    if lost := feed.take_dropped():
+                        conn.sendall(json.dumps({"dropped": lost}).encode() + b"\n")
+                    item = feed.get(STREAM_POLL_S)
+                    if item is not None:
+                        line = json.dumps({"announcement": item.to_json()})
+                        conn.sendall(line.encode() + b"\n")  # a client that stalls times out
+        finally:
+            self._streams.release()
 
     def close(self) -> None:
         """Stop answering and remove the socket."""
@@ -522,6 +585,104 @@ def send(command: str, path: Path | None = None, timeout: float = 10.0) -> dict[
         return obj(json.loads(line))
     except ValueError:
         return {"ok": False, "error": "Jarvis's answer could not be read"}
+
+
+class Feed:
+    """A subscription to the running Jarvis's announcements: iterate it, and `close` it."""
+
+    def __init__(self, conn: socket.socket, pending: bytes) -> None:
+        """Read announcements from `conn`, which already read `pending` past its first line."""
+        super().__init__()
+        self._conn = conn
+        self._buffer = pending
+        self._lock = threading.Lock()
+        self.dropped = 0  # announcements the service dropped for being read too slowly
+
+    def __iter__(self) -> Feed:
+        """Iterate over the announcements as they come."""
+        return self
+
+    def __next__(self) -> announce.Announcement:
+        """Return the next announcement, waiting for it.
+
+        Raises:
+            StopIteration: the service ended the stream, or this was closed.
+        """
+        while True:
+            line = self._line()
+            if line is None:
+                raise StopIteration
+            found = _json_object(line)
+            if isinstance(found.get("dropped"), int):
+                self.dropped += found["dropped"]
+                continue
+            item = announce.Announcement.from_json(found.get("announcement"))
+            if item is not None:
+                return item
+
+    def _line(self) -> bytes | None:
+        while b"\n" not in self._buffer:
+            if len(self._buffer) > MAX_STREAM_LINE:
+                return None  # not what the service writes
+            try:
+                chunk = self._conn.recv(4096)
+            except OSError:
+                return None
+            if not chunk:
+                return None
+            self._buffer += chunk
+        line, _, self._buffer = self._buffer.partition(b"\n")
+        return line
+
+    def close(self) -> None:
+        """Close the connection; a read waiting on it ends."""
+        with contextlib.suppress(OSError):
+            self._conn.shutdown(socket.SHUT_RDWR)
+        self._conn.close()
+
+
+def _json_object(line: bytes) -> dict[str, Any]:
+    try:
+        return obj(json.loads(line))
+    except ValueError:
+        return {}
+
+
+def _subscribed(conn: socket.socket, request: dict[str, object]) -> bytes | None:
+    """Ask for the stream; return what followed the answer's line, or None if it was refused."""
+    conn.sendall(json.dumps(request).encode() + b"\n")
+    data = b""
+    while b"\n" not in data:
+        chunk = conn.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    first, _, rest = data.partition(b"\n")
+    return rest if _json_object(first).get("subscribed") is True else None
+
+
+def subscribe(
+    path: Path | None = None, *, after: int | None = None, timeout: float = 10.0
+) -> Feed | None:
+    """Follow the running Jarvis's announcements; None when none runs or it refuses.
+
+    With `after`, the announcements it remembers above that number come first.
+    """
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    conn.settimeout(timeout)
+    request: dict[str, object] = {"command": SUBSCRIBE}
+    if after is not None:
+        request["after"] = after
+    try:
+        conn.connect(str(path or socket_path()))
+        rest = _subscribed(conn, request)
+    except OSError:
+        rest = None
+    if rest is None:
+        conn.close()
+        return None
+    conn.settimeout(None)  # waits for the next announcement for as long as it takes
+    return Feed(conn, rest)
 
 
 def _read_reply(conn: socket.socket) -> bytes:

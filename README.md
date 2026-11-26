@@ -208,6 +208,10 @@ one argument, `acp`, and give it a name.
   are never used, because T3 Code answers them by itself in Full access mode.
 - Stop stops the request. Jarvis loads no MCP servers and reads no T3 Code settings, folders or tools.
   Tool steps are not shown, only the reply, and Jarvis does not show pictures there.
+- Reminders (and later watch alerts) Jarvis says aloud also reach every open thread as `Jarvis: <line>`. T3 Code
+  shows nothing that arrives while no request is open, so the line waits for your next message and comes
+  first in the reply (after the reply when it arrives during one). It is the text front end of the same
+  announcement the voice service speaks, not a desktop notification.
 
 For a script or an AI agent, add `--agent` (or `--agent-format`) to any command, or set `JARVIS_AGENT_FORMAT=1`:
 the answer is then one line of JSON with `command`, `ok` and `exit`, plus the command's own keys or its output

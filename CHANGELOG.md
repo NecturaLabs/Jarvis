@@ -13,6 +13,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   Strata already serves, answered in text. Pictures work as in the chat. A question about an action is asked
   in the reply and your next message is the answer; a permission button in the app never stands for your yes
   ([ADR 0023](docs/adr/0023-acp-front-end.md)). `jarvis doctor` says how to add it when T3 Code is set up.
+- Reminders also reach open text front ends: the voice service publishes each line it says as an
+  announcement, the control socket streams them to a subscriber (`subscribe`), and `jarvis acp` writes each as
+  `Jarvis: <line>` into every session's next reply, since T3 Code shows nothing that arrives between requests.
+  Still no desktop notifications.
 - Install Jarvis with `install.sh` from a terminal or checkout. It checks prerequisites, uses the
   locked environment, fetches the default wake word, VAD and Kokoro files with SHA-256 verification
   (`tools/get_models.py`, which you can also run yourself),

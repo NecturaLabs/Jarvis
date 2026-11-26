@@ -9,6 +9,12 @@ Owned here: the transport, `initialize`, `session/new`, `session/prompt` and `se
 Anything else is "method not found". Jarvis loads no MCP servers and no sessions are kept across
 runs, so `mcpServers` and `cwd` are ignored and `loadSession` is off.
 
+Announcements (a reminder, a watch alert: `jarvis.announce`) the voice service makes reach every
+open session as "Jarvis: <line>" in the reply. T3 Code drops message chunks that arrive outside a
+prompt (read from its v0.1.11 ACP client: assistant updates are shown only while a `session/prompt`
+is open), so a line waits for the session's next prompt and is written first in its reply, or after
+the reply when it arrives during one. It never lands in the middle of a reply.
+
 A request is the owner's own typed words, so it has the chat's provenance. A picture block is
 decoded under a size limit and checked like any chat picture (`jarvis.pictures`).
 
@@ -35,7 +41,9 @@ from jarvis.pictures import MAX_FILE_BYTES, Picture, PictureError, prepare
 from jarvis.policy import is_yes
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
+
+    from jarvis.announce import Announcement
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +53,8 @@ MAX_BASE64 = MAX_FILE_BYTES * 4 // 3 + 4  # characters of one picture
 MAX_IMAGES = 4
 MAX_TEXT = 100_000  # characters of one prompt
 MAX_SESSIONS = 32
+MAX_PENDING = 50  # announcements a session keeps for its next prompt
+FEED_RETRY_S = 10.0  # how long to wait before looking again for the running Jarvis
 QUESTION_S = 300.0  # how long a question waits for the owner's next prompt
 CANCEL_WAIT_S = 10.0  # how long a new prompt waits for a cancelled request to end
 CLOSE_WAIT_S = 10.0
@@ -77,6 +87,18 @@ class AgentSession(Protocol):
 
     def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
         """Answer one typed request and return the reply."""
+        ...
+
+
+class Feed(Protocol):
+    """The running Jarvis's announcements (`control.subscribe`): iterate it, `close` it to stop."""
+
+    def __iter__(self) -> Iterator[Announcement]:
+        """Iterate over the announcements as they come."""
+        ...
+
+    def close(self) -> None:
+        """Stop; a read waiting for the next announcement ends."""
         ...
 
 
@@ -120,12 +142,13 @@ class _Session:
     agent: AgentSession
     lock: threading.Lock = field(default_factory=threading.Lock)
     run: _Run | None = None
+    pending: list[str] = field(default_factory=list[str])  # announcements for the next prompt
 
 
 class AcpServer:
     """One ACP connection: reads messages, answers them, writes them under one lock."""
 
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-arguments] - a connection's collaborators and options
         self,
         make_agent: Callable[[str], AgentSession],
         out: TextIO,
@@ -133,11 +156,15 @@ class AcpServer:
         names: Sequence[str] = (),
         version: str = "",
         question_s: float = QUESTION_S,
+        follow: Callable[[], Feed | None] | None = None,
+        retry_s: float = FEED_RETRY_S,
     ) -> None:
         """Serve sessions whose agents `make_agent` makes (it takes the session's id).
 
         `names` are what the assistant is called, so "yes, Jarvis" is a yes; `question_s` is how
-        long a question waits for its answer.
+        long a question waits for its answer. `follow` opens the running Jarvis's announcements
+        (None when it is not running, and it is tried again every `retry_s`); each is passed on
+        to every session.
         """
         super().__init__()
         self._make_agent = make_agent
@@ -150,11 +177,17 @@ class AcpServer:
         self._threads: list[threading.Thread] = []
         self._threads_lock = threading.Lock()
         self._closing = threading.Event()
+        self._follow = follow
+        self._retry_s = retry_s
+        self._feed: Feed | None = None
+        self._feed_lock = threading.Lock()
 
     # The transport
 
     def serve(self, source: TextIO) -> None:
         """Read messages from `source` until it ends, then stop every request in flight."""
+        if self._follow is not None:
+            self._spawn(self._listen, self._follow, name="acp-announcements")
         try:
             while line := self._read(source):
                 if line.strip():
@@ -165,6 +198,10 @@ class AcpServer:
     def close(self) -> None:
         """Stop every request and wait a little for its thread."""
         self._closing.set()
+        with self._feed_lock:
+            feed = self._feed
+        if feed is not None:
+            feed.close()
         for session in list(self._sessions.values()):
             self._cancel(session)
         with self._threads_lock:
@@ -178,6 +215,42 @@ class AcpServer:
             self._threads = [t for t in self._threads if t.is_alive()]
             self._threads.append(thread)
         thread.start()
+
+    def _listen(self, follow: Callable[[], Feed | None]) -> None:
+        """Pass on the running Jarvis's announcements, looking for it again when it goes."""
+        while not self._closing.is_set():
+            try:
+                feed = follow()
+            except OSError:
+                feed = None
+            if feed is not None:
+                with self._feed_lock:
+                    self._feed = feed
+                try:
+                    if not self._closing.is_set():
+                        for item in feed:
+                            self._announce(item.text)
+                except OSError, ValueError:
+                    log.info("the announcements stopped", exc_info=True)
+                finally:
+                    with self._feed_lock:
+                        self._feed = None
+                    feed.close()
+            self._closing.wait(self._retry_s)
+
+    def _announce(self, text: str) -> None:
+        """Keep a line for every session's next prompt."""
+        for session in list(self._sessions.values()):
+            with session.lock:
+                session.pending.append(f"Jarvis: {text}")
+                del session.pending[:-MAX_PENDING]
+
+    def _flush(self, session: _Session, run: _Run) -> None:
+        """Write the announcements that came while no reply was being written."""
+        with session.lock:
+            lines, session.pending = session.pending, []
+        for line in lines:
+            self._write(session, run, (SEPARATOR if run.total else "") + line)
 
     def _read(self, source: TextIO) -> str:
         """Return the next line; one too long is answered with an error and skipped whole."""
@@ -302,24 +375,24 @@ class AcpServer:
         old = session.run
         if old is not None and old.cancel.is_set():
             old.finished.wait(CANCEL_WAIT_S)  # a request just stopped ends at its next check
+        answering: _Question | None = None
         with session.lock:
             run = session.run
             if run is None:
                 run = session.run = _Run()
-                fresh = True
             else:
-                question = run.question
-                if question is None or question.answered.is_set():
+                answering = run.question
+                if answering is None or answering.answered.is_set():
                     raise _Rpc(BUSY, "a request is still being answered")
                 # The owner's words answer the question; they are not a request of their own.
-                question.answer = is_yes(_words(blocks), self._names)
+                answering.answer = is_yes(_words(blocks), self._names)
                 run.attached = True
-                question.answered.set()
-                fresh = False
-        if fresh:
+        if answering is None:
             self._spawn(self._begin, request_id, session, run, blocks, name="acp-prompt")
-        else:
-            self._spawn(self._wait, request_id, run, name="acp-answer")
+            return
+        self._flush(session, run)  # before the request goes on and writes
+        answering.answered.set()
+        self._spawn(self._wait, request_id, run, name="acp-answer")
 
     def _begin(
         self, request_id: str | int, session: _Session, run: _Run, blocks: list[dict[str, Any]]
@@ -341,6 +414,7 @@ class AcpServer:
             self._release(session, run)
             self._result(request_id, {"stopReason": "cancelled"})
             return
+        self._flush(session, run)
         self._spawn(self._work, session, run, text, pictures, name="acp-request")
         self._wait(request_id, run)
 
@@ -376,6 +450,7 @@ class AcpServer:
             reply = session.agent.handle(text, hooks, pictures=pictures)
             if not run.cancel.is_set():
                 self._finish(session, run, reply)
+                self._flush(session, run)  # what came while it was answering
         except Exception as exc:
             log.exception("a request failed")
             run.error = type(exc).__name__
@@ -422,6 +497,7 @@ class AcpServer:
     def _ask(self, session: _Session, run: _Run, text: str) -> bool | Declined:
         """Ask the owner in the reply; the next prompt is the answer (`QUESTION_S` to give it)."""
         question = _Question(text)
+        self._flush(session, run)  # the prompt ends with the question: nothing is written after
         with session.lock:
             if run.cancel.is_set() or self._closing.is_set():
                 return Declined(NoReason.CLOSED)
@@ -528,14 +604,19 @@ def _picture(block: dict[str, Any], number: int) -> Picture:
         raise _Refused(msg) from exc
 
 
-def serve(
+def serve(  # ruff: ignore[too-many-arguments] - what one connection is given
     source: TextIO,
     out: TextIO,
     make_agent: Callable[[str], AgentSession],
     *,
     names: Sequence[str] = (),
     version: str = "",
+    follow: Callable[[], Feed | None] | None = None,
 ) -> int:
-    """Serve one ACP connection over `source` and `out`; return the exit code (0 at its end)."""
-    AcpServer(make_agent, out, names=names, version=version).serve(source)
+    """Serve one ACP connection over `source` and `out`; return the exit code (0 at its end).
+
+    `follow` opens the running Jarvis's announcements (`control.subscribe`), tried again while
+    none runs.
+    """
+    AcpServer(make_agent, out, names=names, version=version, follow=follow).serve(source)
     return 0

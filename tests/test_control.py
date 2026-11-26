@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +17,7 @@ import httpx
 import numpy as np
 import pytest
 
-from jarvis import cli, control, voice
+from jarvis import announce, cli, control, voice
 from jarvis.audio import FRAME, AudioError, MicPausedError, PausableMic
 from jarvis.audit import AuditLog
 from jarvis.config import Config, ModelConfig
@@ -1283,3 +1284,140 @@ def test_a_wake_word_s_load_reads_no_prompt_ahead_of_the_request_it_starts() -> 
 
     assert model.loads == 1
     assert not primed
+
+
+# Announcements: `subscribe` keeps the connection and streams each line as it is made.
+
+
+def _serving_announcements(hub: announce.Hub) -> control.ControlServer:
+    server = control.ControlServer(lambda _command: {}, hub=hub)
+    server.start()
+    return server
+
+
+def test_subscribe_streams_each_announcement_until_the_client_closes() -> None:
+    hub = announce.Hub()
+    server = _serving_announcements(hub)
+    try:
+        feed = control.subscribe(server.path, timeout=WAIT_S)
+        assert feed is not None
+        hub.publish("Reminder: tea", announce.REMINDER)
+        hub.publish("Mail is waiting", announce.WATCH)
+
+        first, second = next(feed), next(feed)
+        assert (first.id, first.kind, first.text) == (1, "reminder", "Reminder: tea")
+        assert second.text == "Mail is waiting"
+
+        feed.close()
+        deadline = time.monotonic() + WAIT_S
+        while hub.subscribers() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert hub.subscribers() == 0  # the service let go of it
+    finally:
+        server.close()
+
+
+def test_subscribe_with_after_replays_what_the_service_remembers() -> None:
+    hub = announce.Hub()
+    for text in ("a", "b", "c"):
+        hub.publish(text, announce.REMINDER)
+    server = _serving_announcements(hub)
+    try:
+        feed = control.subscribe(server.path, after=1, timeout=WAIT_S)
+        assert feed is not None
+        hub.publish("d", announce.REMINDER)
+
+        assert [next(feed).text for _ in range(3)] == ["b", "c", "d"]
+        feed.close()
+    finally:
+        server.close()
+
+
+def test_a_subscriber_that_cannot_keep_up_loses_its_oldest_lines_and_is_told() -> None:
+    hub = announce.Hub(queue=2)
+    for number in range(1, 6):
+        hub.publish(f"line {number}", announce.WATCH)
+    server = _serving_announcements(hub)
+    try:
+        feed = control.subscribe(server.path, after=0, timeout=WAIT_S)  # all five, room for two
+        assert feed is not None
+
+        assert [next(feed).text for _ in range(2)] == ["line 4", "line 5"]
+        assert feed.dropped == 3
+        feed.close()
+    finally:
+        server.close()
+
+
+def test_publishing_never_waits_for_a_subscriber_that_reads_nothing() -> None:
+    hub = announce.Hub()
+    server = _serving_announcements(hub)
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.settimeout(WAIT_S)
+            conn.connect(str(server.path))
+            conn.sendall(b'{"command": "subscribe"}\n')
+            _read_line(conn)
+            started = time.monotonic()
+            for number in range(2000):
+                hub.publish(f"line {number} " + "x" * 1500, announce.WATCH)
+
+            assert time.monotonic() - started < 2.0
+    finally:
+        server.close()
+
+
+def test_only_so_many_subscribers_stream_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(control, "MAX_SUBSCRIBERS", 1)
+    hub = announce.Hub()
+    server = _serving_announcements(hub)
+    try:
+        first = control.subscribe(server.path, timeout=WAIT_S)
+        assert first is not None
+        assert control.subscribe(server.path, timeout=WAIT_S) is None
+        first.close()
+    finally:
+        server.close()
+
+
+def test_subscribe_is_none_when_no_jarvis_runs(tmp_path: Path) -> None:
+    assert control.subscribe(tmp_path / "none.sock", timeout=0.2) is None
+
+
+def test_closing_the_server_ends_a_stream() -> None:
+    hub = announce.Hub()
+    server = _serving_announcements(hub)
+    feed = control.subscribe(server.path, timeout=WAIT_S)
+    assert feed is not None
+
+    server.close()
+
+    assert list(feed) == []  # the stream ended instead of waiting for more
+    feed.close()
+
+
+def test_a_subscribe_from_another_user_is_refused_like_every_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+
+    def another_user(_conn: socket.socket) -> tuple[int, int]:
+        return 1, os.getuid() + 1
+
+    monkeypatch.setattr(control, "_peer", another_user)
+    hub = announce.Hub()
+    server = _serving_announcements(hub)
+    try:
+        assert control.subscribe(server.path, timeout=WAIT_S) is None
+        assert hub.subscribers() == 0
+    finally:
+        server.close()
+
+
+def _read_line(conn: socket.socket) -> bytes:
+    data = b""
+    while b"\n" not in data:
+        chunk = conn.recv(1)
+        if not chunk:
+            break
+        data += chunk
+    return data

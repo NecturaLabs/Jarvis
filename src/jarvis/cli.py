@@ -970,7 +970,9 @@ def cmd_acp(_args: argparse.Namespace) -> int:
             raise acp.StartError(str(exc)) from exc
 
     source, out = _claim_stdio()
-    return acp.serve(source, out, make, names=(cfg.persona.name,), version=__version__)
+    return acp.serve(
+        source, out, make, names=(cfg.persona.name,), version=__version__, follow=control.subscribe
+    )
 
 
 def cmd_chat(_args: argparse.Namespace) -> int:

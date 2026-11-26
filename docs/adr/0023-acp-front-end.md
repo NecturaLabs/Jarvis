@@ -42,6 +42,20 @@ Add `jarvis acp`, a front end to the agent `jarvis chat` already has.
   only a clear yes (`is_yes`) runs the action, anything else cancels it, and that prompt is not a new
   request. A cancel, a closed connection or five minutes without an answer is a no. A `strong` action still
   needs the confirm key, which `jarvis acp` cannot press, so it is refused as in `jarvis ask`.
+- **Announcements reach it too.** The product rule "replies by voice only; no desktop notifications"
+  becomes (owner's change, 2026-11-26): Jarvis speaks its replies and its announcements, and the
+  announcements (reminders, watch alerts) also go to the open text front ends, the chat window and T3 Code
+  through `jarvis acp`. There are still no desktop notifications. `announce.py` holds the announcements the
+  voice service makes (`publish(text, kind)`, a ring of the last 50 in memory, a bounded queue per
+  subscriber that drops its oldest line when full, so the voice loop never waits for a reader). The
+  control socket gains `subscribe`, which keeps the connection and streams each announcement as one JSON
+  line until the client closes (the same owner-only socket as every request, at most 8 at once).
+  `jarvis acp` follows it, looking again every ten seconds while Jarvis is not running, and keeps each line
+  as "Jarvis: <line>" for every open session. T3 Code v0.1.11 drops assistant message chunks that arrive
+  while no `session/prompt` is open (its ACP client shows them only between a prompt's start and end), so a
+  line is written first in the session's next reply, or after the reply when it came during one, never
+  inside a reply being written, and before a waiting question's answer goes on. It is not seen until the
+  owner's next message; ACP gives a client no other way to show a line. A session keeps its latest 50.
 - **Tool steps are not shown.** The agent's hooks give no step events, so `tool_call` updates are left
   out; the reply is the text.
 
@@ -51,6 +65,10 @@ Add `jarvis acp`, a front end to the agent `jarvis chat` already has.
   what Jarvis does.
 - An answer that is not a yes is not also treated as a request: "no, do this instead" cancels the action,
   and the owner asks again.
+- An announcement is seen in T3 Code only after the owner's next message there. The voice still says it
+  aloud when it is made.
+- Only what the voice service publishes is announced; a program that wants to announce something calls
+  `announce.publish` in that process (the reminders do).
 - A client that sends a second prompt while a request runs gets an error, not a queued request.
 - Every ACP session builds an agent (a few small clients), so the number of sessions is capped.
 - A client that supports only a newer protocol version than 1 is answered with version 1 and decides

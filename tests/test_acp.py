@@ -18,10 +18,11 @@ from test_pictures import claimed_png
 from jarvis import acp
 from jarvis.acp import AcpServer, StartError
 from jarvis.agent import Declined, Hooks
+from jarvis.announce import Announcement
 from jarvis.jsonutil import obj
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
     from pathlib import Path
 
     from jarvis.pictures import Picture
@@ -51,6 +52,8 @@ class Client:
         *,
         version: str = "",
         question_s: float = acp.QUESTION_S,
+        follow: Callable[[], acp.Feed | None] | None = None,
+        retry_s: float = 0.01,
     ) -> None:
         super().__init__()
         self.agent = agent or FakeAgent(lambda _t, _h, _p: "ok")
@@ -64,7 +67,14 @@ class Client:
         self.seen: list[dict[str, Any]] = []
         self._out = os.fdopen(write_out, "w", encoding="utf-8")
         self._source = os.fdopen(read_in, "r", encoding="utf-8")
-        self.server = AcpServer(self._make, self._out, version=version, question_s=question_s)
+        self.server = AcpServer(
+            self._make,
+            self._out,
+            version=version,
+            question_s=question_s,
+            follow=follow,
+            retry_s=retry_s,
+        )
         self._serving = threading.Thread(
             target=self.server.serve, args=(self._source,), daemon=True
         )
@@ -143,6 +153,28 @@ class Client:
             for m in self.seen
             if m.get("method") == "session/update"
         )
+
+
+class FakeFeed:
+    """The running Jarvis's announcements, as a test hands them out."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.items: queue.Queue[Announcement | None] = queue.Queue()
+        self.closed = threading.Event()
+        self._number = 0
+
+    def push(self, words: str, kind: str = "reminder") -> None:
+        self._number += 1
+        self.items.put(Announcement(self._number, 1.0, kind, words))
+
+    def __iter__(self) -> Iterator[Announcement]:
+        while (item := self.items.get()) is not None:
+            yield item
+
+    def close(self) -> None:
+        self.closed.set()
+        self.items.put(None)
 
 
 def text(words: str) -> dict[str, Any]:
@@ -595,6 +627,125 @@ def test_closing_the_input_stops_a_request_in_flight() -> None:
     client.close()
 
     assert stopped.is_set()
+
+
+# Announcements
+
+
+def pending(client: Client, session: str) -> list[str]:
+    return list(client.server._sessions[session].pending)  # pyright: ignore[reportPrivateUsage] - what waits
+
+
+def test_an_announcement_between_prompts_waits_and_leads_the_next_reply() -> None:
+    feed = FakeFeed()
+    with Client(FakeAgent(lambda _t, _h, _p: "Here you go."), follow=lambda: feed) as client:
+        session = client.start()
+        feed.push("Reminder: take the bread out")
+        until(lambda: bool(pending(client, session)), "the announcement arrived")
+
+        time.sleep(0.1)
+        assert client.messages.empty()  # T3 drops what arrives outside a prompt: nothing is sent
+
+        client.response(client.prompt(session, text("hello")))
+
+        assert client.said() == "Jarvis: Reminder: take the bread out\n\nHere you go."
+        assert pending(client, session) == []
+        assert client.agent.calls == [("hello", [])]  # the announcement is not part of the request
+
+
+def test_an_announcement_during_a_request_is_written_after_its_reply_not_inside_it() -> None:
+    feed = FakeFeed()
+    release = threading.Event()
+
+    def script(_text: str, hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        assert hooks.draft is not None
+        hooks.draft("The answer is")
+        release.wait(WAIT_S)
+        return "The answer is forty-two."
+
+    with Client(FakeAgent(script), follow=lambda: feed) as client:
+        session = client.start()
+        request = client.prompt(session, text("question"))
+        until(lambda: bool(client.agent.calls), "the request began")
+        feed.push("Firefox stopped responding", "process")
+        until(lambda: bool(pending(client, session)), "the announcement arrived")
+        release.set()
+
+        assert client.response(request)["result"] == {"stopReason": "end_turn"}
+        assert client.said() == "The answer is forty-two.\n\nJarvis: Firefox stopped responding"
+
+
+def test_every_open_session_gets_an_announcement() -> None:
+    feed = FakeFeed()
+    with Client(follow=lambda: feed) as client:
+        first = client.start()
+        second = obj(client.ask("session/new", {"cwd": "/", "mcpServers": []})["result"])[
+            "sessionId"
+        ]
+        feed.push("Reminder: stretch")
+        until(lambda: bool(pending(client, first) and pending(client, second)), "both got it")
+
+        client.response(client.prompt(first, text("hi")))
+        client.response(client.prompt(second, text("hi")))
+
+        assert client.said().count("Jarvis: Reminder: stretch") == 2
+
+
+def test_an_announcement_that_came_during_a_question_is_written_before_the_answer_runs() -> None:
+    ran: list[str] = []
+    feed = FakeFeed()
+    with Client(FakeAgent(closing_script(ran)), follow=lambda: feed) as client:
+        session = client.start()
+        client.response(client.prompt(session, text("close notes")))
+        feed.push("Reminder: stretch")
+        until(lambda: bool(pending(client, session)), "the announcement arrived")
+        client.response(client.prompt(session, text("yes")))
+
+        said = client.said()
+        assert said.index("Jarvis: Reminder: stretch") < said.index("Closed it.")
+        assert ran == ["closed"]
+
+
+def test_a_session_keeps_only_the_latest_announcements() -> None:
+    feed = FakeFeed()
+    with Client(follow=lambda: feed) as client:
+        session = client.start()
+        for number in range(acp.MAX_PENDING + 5):
+            feed.push(f"line {number}")
+        until(
+            lambda: pending(client, session)[-1:] == [f"Jarvis: line {acp.MAX_PENDING + 4}"],
+            "all came",
+        )
+
+        assert len(pending(client, session)) == acp.MAX_PENDING
+        assert pending(client, session)[0] == "Jarvis: line 5"
+
+
+def test_the_running_jarvis_is_looked_for_again_when_it_was_not_there_or_went() -> None:
+    first, second = FakeFeed(), FakeFeed()
+    feeds: list[FakeFeed | None] = [None, first, second]
+
+    def follow() -> acp.Feed | None:
+        return feeds.pop(0) if feeds else None
+
+    with Client(follow=follow) as client:
+        session = client.start()
+        until(lambda: len(feeds) == 1, "the first feed was taken")
+        first.push("one")
+        until(lambda: pending(client, session) == ["Jarvis: one"], "one arrived")
+        first.items.put(None)  # the service went away
+        until(first.closed.is_set, "the feed was let go")
+        second.push("two")
+        until(lambda: pending(client, session)[-1:] == ["Jarvis: two"], "two arrived")
+
+
+def test_closing_the_connection_lets_go_of_the_announcements() -> None:
+    feed = FakeFeed()
+    client = Client(follow=lambda: feed)
+    client.start()
+    client.close()
+
+    assert feed.closed.is_set()
 
 
 # The command
