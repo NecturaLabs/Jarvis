@@ -53,7 +53,9 @@ behind the same speech setting, as the Piper-licence risk below asked.
   and research come after it works.
 - Light on the PC so gaming stays decent at any time: no GPU or CPU use while idle and no heavy CPU use between
   requests (decided 2026-11-21: a loaded idle model may hold RAM and VRAM; Jarvis must run beside games). The tasks are simple, so a small model is enough.
-- Replies by voice (Piper); no desktop notifications.
+- Jarvis speaks its replies and its announcements (reminders, watch alerts). Announcements also go to the open
+  text front ends, the chat window and T3 Code through `jarvis acp` (owner's change, 2026-11-26, [ADR 0023](adr/0023-acp-front-end.md)).
+  Still no desktop notifications.
 - The owner speaks freely and never repeats a set phrase: the model decides what a request means. No new fixed
   phrasings or keyword lists for spoken requests; a new ability is a typed tool the model picks.
 - Model kept loaded (owner decision, 2026-11-21, replacing "idle by default, including after reboot"): `jarvis run`

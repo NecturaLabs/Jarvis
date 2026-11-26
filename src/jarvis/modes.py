@@ -173,10 +173,12 @@ def _overlay(section: AgentConfig, over: CodingChatConfig) -> dict[str, object]:
 
 def own_model(config: Config) -> bool:
     """Whether coding mode serves a model of its own (`strata.coding_run_config`)."""
-    return config.strata.mode == "local" and config.strata.coding_run_config not in {
-        Path(),
-        config.strata.run_config,
-    }
+    strata = config.strata
+    return (
+        strata.mode == "local"
+        and strata.coding_run_config != Path()
+        and os.path.realpath(strata.coding_run_config) != os.path.realpath(strata.run_config)
+    )
 
 
 def model_name(config: Config, mode: Mode) -> str:

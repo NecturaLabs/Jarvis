@@ -26,5 +26,8 @@ edited once accepted; a later decision supersedes it with a new record that link
 | [0019](0019-install-and-update.md) | Install and update Jarvis from a release branch | proposed |
 | [0020](0020-model-on-another-machine.md) | Optionally serve Strata on another machine owned by the user, with the Jarvis client on the PC it controls | proposed |
 | [0021](0021-screen-watch.md) | Watch a window or the screen and say when something shows up, with one check by the same model that runs no call | proposed |
-| [0024](0024-owner-skills.md) | Read the owner's own skills from Jarvis's config folder | accepted |
 | [0022](0022-tool-router.md) | Let the model route itself through tool groups, off by default until measured | proposed |
+| [0023](0023-acp-front-end.md) | Serve Jarvis to coding apps over the Agent Client Protocol; consent stays Jarvis's own | proposed |
+| [0024](0024-owner-skills.md) | Read the owner's own skills from Jarvis's config folder | accepted |
+| [0025](0025-workspace-folder.md) | Give Jarvis a workspace folder it can always write in, where a new file needs no yes | proposed |
+| [0028](0028-voice-and-chat-as-two-channels.md) | Voice and chat as two cooperating channels: a spoken request is its own, and a typed tool hands the owner's words to the open chat | proposed |

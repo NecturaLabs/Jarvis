@@ -33,7 +33,7 @@ def home(tmp_path: Path) -> Path:
 def _ops(
     home: Path, *, max_chars: int = 2000, protected: tuple[Path, ...] = (), **files: list[str]
 ) -> FileOps:
-    config = FilesConfig(**files)
+    config = FilesConfig.model_validate(files)
     return FileOps(Boundary.of(config, home, protected=protected), max_chars=max_chars)
 
 

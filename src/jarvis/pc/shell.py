@@ -19,14 +19,13 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Protocol
 
 from jarvis.operations import Operation, OperationError, Result, current_request, cut_inert
 from jarvis.policy import OpClass, Origin
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from jarvis.config import ShellConfig
 
 log = logging.getLogger(__name__)
@@ -234,17 +233,64 @@ class ShellOps:
     """`pc_shell` over the owner's `[shell]` settings; nothing when it is off."""
 
     def __init__(
-        self, config: ShellConfig, home: Path, *, max_chars: int, runner: Runner = run_in_scope
+        self,
+        config: ShellConfig,
+        home: Path,
+        *,
+        max_chars: int,
+        runner: Runner = run_in_scope,
+        workspace: Path | None = None,
     ) -> None:
-        """Run commands as `config` limits them, in `home`, keeping `max_chars` of output."""
+        """Run commands as `config` limits them, keeping `max_chars` of output.
+
+        A command's home is `home`; it starts in `workspace` (Jarvis's own folder) when there is
+        one, so what it makes without a path lands there, else in `home`.
+        """
         super().__init__()
         self._config = config
         self._home = home
+        self._start = workspace or home
         self._max_chars = max_chars
         self._runner = runner
 
-    def command_line(self, command: str, unit: str) -> list[str]:
-        """Return the full argument list that runs `command` in the scope `unit`."""
+    def _where(self) -> Path:
+        """Return the folder a command starts in: the workspace, or home if it is not a folder.
+
+        The workspace counts only as itself: a folder that is a link now, or whose path leads
+        through one, is not it.
+        """
+        start = self._start
+        try:
+            plain = (
+                start.is_dir() and not start.is_symlink() and Path(os.path.realpath(start)) == start
+            )
+        except OSError:
+            plain = False
+        return start if plain else self._home
+
+    def _shown(self, folder: Path) -> str:
+        """Say a folder the way the owner does: home, or `~/…` under it, else the path."""
+        if folder == self._home:
+            return "your home folder"
+        if folder.is_relative_to(self._home):
+            return f"~/{folder.relative_to(self._home)}"
+        return str(folder)
+
+    def _summary(self, args: dict[str, Any]) -> str:
+        """Word the question: the command, read out, and the folder it starts in."""
+        where = Path(str(args["start"])) if args.get("start") else self._where()
+        command = spelled(str(args.get("command", "")))
+        return f"run this shell command in {self._shown(where)}: {command}"
+
+    def _prepare(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Check the request, then bind the folder the command will start in.
+
+        The question and the run both read it from the arguments, so they name the same folder.
+        """
+        return {**self._owner_request(args), "start": str(self._where())}
+
+    def command_line(self, command: str, unit: str, start: Path | None = None) -> list[str]:
+        """Return the full argument list that runs `command` in the scope `unit`, from `start`."""
         cfg = self._config
         limits = {
             "MemoryMax": f"{cfg.memory_max_mib}M",
@@ -263,7 +309,7 @@ class ShellOps:
             "--expand-environment=no",
             f"--unit={unit}",
             f"--description={DESCRIPTION}",
-            f"--working-directory={self._home}",
+            f"--working-directory={start or self._where()}",
             *[part for key, value in limits.items() for part in ("-p", f"{key}={value}")],
             "--",
             SETPRIV,
@@ -314,9 +360,16 @@ class ShellOps:
         """
         self._owner_request(args)
         command = str(args["command"])
+        start = Path(str(args["start"])) if args.get("start") else self._where()
+        if start != self._where():
+            msg = (
+                f"the folder the command would start in changed since you were asked "
+                f"({self._shown(start)}); nothing was run"
+            )
+            raise OperationError(msg)
         unit = f"jarvis-shell-{secrets.token_hex(6)}"
         try:
-            argv = self.command_line(command, unit)
+            argv = self.command_line(command, unit, start)
             ran = self._runner(argv, unit, self._config.timeout_s, self._max_chars * 4)
         except OSError as exc:
             msg = f"the command could not be started: {exc.strerror or exc}"
@@ -368,10 +421,8 @@ class ShellOps:
                 self.run,
                 default_class=OpClass.STRONG,
                 lowest_class=OpClass.STRONG,
-                spoken_summary=lambda a: (
-                    f"run this shell command: {spelled(str(a.get('command', '')))}"
-                ),
-                prepare=self._owner_request,
+                spoken_summary=self._summary,
+                prepare=self._prepare,
                 audit_text=False,
             ),
         ]

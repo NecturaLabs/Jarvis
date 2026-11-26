@@ -20,22 +20,25 @@ import threading
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TextIO
 from urllib.parse import urlsplit
 
 from jarvis import (
     __version__,
+    acp,
     cliout,
     config,
     control,
+    handoff,
     models,
     modes,
     paths,
     services,
     skills,
+    t3push,
     update,
 )
-from jarvis.activity import AuditTail
+from jarvis.activity import VOICE_VIA, AuditTail
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.app import (
     SetupError,
@@ -61,6 +64,7 @@ from jarvis.operations import OperationError
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.pc.hearing import Listening, PcHearing
 from jarvis.pc.screenshot import folders as screenshot_folders
+from jarvis.pc.workspace import workspace_path, workspace_problem
 from jarvis.policy import OpClass, is_yes
 from jarvis.schedule import JobStore
 from jarvis.secretfile import (
@@ -88,6 +92,7 @@ if TYPE_CHECKING:
     from jarvis.audio import FallbackWake, Speaker, VoxtypeWatch, WakeWord
     from jarvis.chat.app import SharedSetting
     from jarvis.model import StrataModel
+    from jarvis.pictures import Picture
     from jarvis.voice import VoiceLoop
 
 log = logging.getLogger(__name__)
@@ -202,6 +207,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("confirm", "allow the action Jarvis is asking about (bind it to a key)"),
             ("chat", "type requests and watch what Jarvis does, live"),
             ("ask", "send one typed request, as if spoken"),
+            ("acp", "talk to Jarvis from a coding app, over ACP on stdio"),
             ("model", "show the model in use, or switch mode: normal or coding"),
         ),
     ),
@@ -247,6 +253,15 @@ _NAME_WIDTH = 15
 HELP_WIDTH = 80
 # What a command's own help adds to its one-line summary.
 _DETAILS = {
+    "acp": (
+        "A coding app starts this and talks to it on standard input and output, one JSON "
+        "message a line; never run it by hand. Each session is a chat conversation of its own "
+        "with the one Jarvis agent, answered in text. A question about an action is asked in "
+        "the reply and your next message is the answer: a clear yes runs it, anything else "
+        "cancels it. In T3 Code: Settings, Providers, Add provider, Local ACP command, with "
+        "this program and the argument acp; add it a second time with the arguments acp "
+        "--coding for programming work (coding mode in every session)."
+    ),
     "restart": (
         "Restarts the voice service. A stopped model server is started; a running one is "
         "restarted only when its settings changed since it started, so the model stays loaded "
@@ -479,6 +494,12 @@ def build_parser() -> argparse.ArgumentParser:
         "confirm key a strong action waits for, and a browser click or typing is still asked here",
     )
 
+    made["acp"].add_argument(
+        "--coding",
+        action="store_true",
+        help="every session works in coding mode: the coding prompt, limits and tools, and the "
+        "coding model when it has one of its own",
+    )
     made["status"].add_argument(
         "--json", action="store_true", help="print one JSON object (for a status bar)"
     )
@@ -678,6 +699,7 @@ def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
             return 2
     config.save(updated)
     ensure_api_key(strata_key_file())
+    _setup_workspace(updated)
     if updated.strata.run_config == Path():
         print(f"config: {paths.config_file()}")
         print(
@@ -701,6 +723,34 @@ def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
     result = _setup_units(STRATA_UNIT, JARVIS_UNIT, enable=args.enable)
     _setup_spotify(updated, failed=result)
     return result
+
+
+def _setup_workspace(cfg: config.Config) -> None:
+    """Make Jarvis's workspace folder if it is missing, and say if it cannot be used."""
+    folder = workspace_path(cfg.files, Path.home())
+    problem = workspace_problem(folder, create=True)
+    if problem:
+        print(
+            f"jarvis: files.workspace {folder} {problem}; fix that or point it elsewhere",
+            file=sys.stderr,
+        )
+    else:
+        print(f"workspace: {folder}")
+
+
+def _workspace_check(cfg: config.Config) -> tuple[bool, str, str]:
+    """The doctor's check of Jarvis's workspace: a folder of the owner's alone, or not made yet."""
+    folder = workspace_path(cfg.files, Path.home())
+    problem = workspace_problem(folder, create=False)
+    if problem:
+        return (
+            False,
+            f"workspace {folder} {problem}",
+            "fix the folder, or set files.workspace to another one",
+        )
+    if not folder.is_dir():
+        return True, f"workspace {folder} (made when Jarvis starts)", ""
+    return True, f"workspace {folder}", ""
 
 
 def _setup_units(*units: str, enable: bool) -> int:
@@ -821,6 +871,7 @@ def _setup_remote(args: argparse.Namespace, cfg: config.Config) -> int:
         if args.remote is not None:
             services.write_remote_key(cfg, key)
         config.save(cfg)
+    _setup_workspace(cfg)
     print(f"config: {paths.config_file()}\nvoice unit: {unit}")
     active = args.enable and _unit_state(JARVIS_UNIT) == "active"
     code = _setup_units(JARVIS_UNIT, enable=args.enable)
@@ -924,7 +975,11 @@ def _chat_status(cfg: config.Config) -> str:
     if cfg.strata.mode == "remote":
         return f"voice {voice} · {_probe_strata(cfg).report(cfg.model.model)}"
     model = _strata(cfg).status() if _unit_state(STRATA_UNIT) == "active" else None
-    return f"voice {voice} · model {model or 'server not running'}"
+    line = f"voice {voice} · model {model or 'server not running'}"
+    answer = control.send("status", timeout=1.0)
+    if model == "loaded" and answer is not None and answer.get("paused") is True:
+        line += " · paused: it unloads when no request is running"
+    return line
 
 
 def _chat_details(cfg: config.Config) -> list[tuple[str, str]]:
@@ -963,9 +1018,11 @@ class _Shared:
     key: str
     label: str
     values: tuple[object, ...]
-    heading: str  # the heading /config shows it under
+    heading: str  # the tab /config shows it under
     about: str
     risky: str = ""  # what turning it on means, said before it is turned on
+    unit: str = ""  # "seconds": shown as 30 s, 10 min, 4 h
+    zero: str = ""  # the word /config shows for 0, where 0 means something
 
 
 SHARED_SETTINGS: tuple[_Shared, ...] = (
@@ -983,29 +1040,32 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Take requests from PC audio",
         (False, True),
         "Listening",
-        "Jarvis also hears requests spoken in the PC's own audio, such as someone in a call or "
-        "a video. Whatever they ask to be done always needs your yes.",
+        "Jarvis also hears requests spoken in the PC's own audio, such as a call or a video. "
+        "Whatever they ask to be done always needs your yes.",
         "Jarvis will take requests from voices in the PC's audio, such as a call or a video; "
         "each of their actions still needs your yes.",
     ),
     _Shared(
         "audio",
         "pc_audio_recall_s",
-        "Recall PC audio (seconds)",
+        "Recall PC audio",
         (0, 10, 30, 60),
         "Listening",
         "Keep the last seconds of PC audio in memory so Jarvis can hear what was just said "
-        "(needs PC audio on); 0 keeps none.",
+        "(needs PC audio on); none keeps nothing.",
         "Jarvis will keep the last seconds of the PC's audio in memory.",
+        "seconds",
+        "none",
     ),
     _Shared(
         "browser",
         "idle_close_s",
-        "Close the browser after (seconds)",
+        "Close the browser after",
         (30.0, 60.0, 120.0, 300.0),
         "Chat",
         "How long the headless browser stays open after its last use, in the chat and by "
-        "voice; then it closes with its profile and pages. The chat takes it when it opens again.",
+        "voice; the chat takes it when it opens again.",
+        unit="seconds",
     ),
     _Shared(
         "agent",
@@ -1022,19 +1082,21 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Act without asking first",
         (False, True),
         "Safety",
-        "On: Jarvis acts without asking for your yes, even after reading a web page or a file. "
-        "A tool that needs the confirm key still waits for it, and a tool that is off stays off.",
+        "Jarvis acts without your yes, even after reading a web page or a file. "
+        "A tool needing the confirm key still waits; an off tool stays off.",
         "Jarvis will act without asking you first, even when a web page or a file could have "
         "steered it.",
     ),
     _Shared(
         "coding",
         "back_after_s",
-        "Leave coding mode after (seconds)",
+        "Leave coding mode after",
         (0.0, 600.0, 1800.0, 3600.0, 14400.0),
         "Mode",
-        "Jarvis goes back to normal mode after coding mode went unused this long; 0 stays in "
-        "coding mode until you switch (/model normal).",
+        "After coding mode goes unused this long, Jarvis goes back to normal mode. never: it "
+        "stays until you switch (/model normal).",
+        unit="seconds",
+        zero="never",
     ),
     _Shared(
         "coding.chat",
@@ -1042,9 +1104,8 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Switch mode by itself in the chat",
         (False, True),
         "Mode",
-        "The model moves a request that is programming work to coding mode, and back when you "
-        "say the work is over. Off: only /model and `jarvis model` switch. Takes effect when "
-        "the chat next starts.",
+        "The model moves programming work to coding mode and back. Off: only /model and "
+        "`jarvis model` switch. The chat takes it when it next opens.",
     ),
     _Shared(
         "coding.voice",
@@ -1053,7 +1114,7 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         (False, True),
         "Mode",
         "The same for spoken requests. With a coding model of its own, a switch loads another "
-        "model, so the request that caused it waits in silence for the load.",
+        "model, so the request waits in silence for the load.",
         "Spoken requests that are programming work will switch the mode by themselves, and "
         "Jarvis is silent while a separate coding model loads.",
     ),
@@ -1092,6 +1153,8 @@ def _shared_settings() -> list[SharedSetting]:
             item.heading,
             item.about,
             item.risky,
+            item.unit,
+            item.zero,
         )
         for item in SHARED_SETTINGS
     ]
@@ -1120,14 +1183,72 @@ def _set_shared(key: str, value: object) -> None:
         audit.record("setting_changed", setting=key, was=was, to=value, source="chat")
 
 
-def _apply_from_chat() -> None:
-    """Restart the voice service so it takes what the chat's settings changed.
+APPLIES_WHEN_IDLE = (
+    "Settings saved. They apply when Jarvis is idle: the voice service restarts then, "
+    "even if this window is closed."
+)
+PENDING_CHECK_S = 5.0  # how often the voice service looks for a restart that waits for it
+RESTART_WAIT_S = 30.0  # how long it waits to be stopped by a restart systemd accepted
+
+
+def _apply_from_chat() -> str:
+    """Restart the voice service so it takes what the chat's settings changed; never cut a request.
+
+    A restart ends a spoken request in flight. It is made while no voice request can begin
+    (`modes.voice_idle`); with one under way, a note is left (`paths.restart_pending_file`) and
+    the voice service restarts itself once it is idle (`_restart_when_pending`), whether this
+    window is still open or not, and later changes ride on the same restart. The answer is the
+    line that says so, else "".
 
     Raises:
         RestartError: the restart failed, so the voice service runs on the old settings.
     """
-    if not _restart_if_running():
-        raise RestartError(RESTART_FAILED)
+    note = paths.restart_pending_file()
+    with modes.voice_idle() as idle:
+        if idle:
+            note.unlink(missing_ok=True)
+            if not _restart_if_running():
+                raise RestartError(RESTART_FAILED)
+            return ""
+    write_atomic(note, "settings changed\n", 0o600)
+    return APPLIES_WHEN_IDLE
+
+
+def _watch_for_restart_note(loop: VoiceLoop, stop: threading.Event) -> None:
+    """Start the thread that restarts the voice service for settings the chat changed."""
+    threading.Thread(
+        target=_restart_when_pending, args=(loop, stop), name="jarvis-restart-pending", daemon=True
+    ).start()
+
+
+def _restart_when_pending(loop: VoiceLoop, stop: threading.Event) -> None:
+    """Restart the voice service for settings the chat changed, once no request is under way.
+
+    A look is one `stat` of the note every `PENDING_CHECK_S`. The restart is asked of systemd
+    without waiting for it, while no voice request can begin; once systemd accepted it the note
+    goes, and the lock is kept until this process is stopped, so no request begins in the
+    moments before. A restart that was refused leaves the note for the next look. Whatever goes
+    wrong is logged and the thread goes on.
+    """
+    note = paths.restart_pending_file()
+    while not stop.wait(PENDING_CHECK_S):
+        try:
+            if note.exists() and str(loop.state) == "idle":
+                _restart_now(note, stop)
+        except Exception:
+            log.exception("could not restart for the settings the chat changed")
+
+
+def _restart_now(note: Path, stop: threading.Event) -> None:
+    with modes.voice_idle() as idle:
+        if not idle:
+            return
+        log.info("restarting for the settings the chat changed")
+        if _restart_if_running(no_block=True):
+            note.unlink(missing_ok=True)
+            stop.wait(RESTART_WAIT_S)  # the unit stops this process: no request begins meanwhile
+        else:
+            log.warning("the voice service did not restart: %s", RESTART_FAILED)
 
 
 def chat_archive_dir() -> Path:
@@ -1191,6 +1312,120 @@ def _chat_prompt(chat: config.ChatConfig) -> str:
     return system_prompt(cfg, "chat", coding=mode == "coding", registry=registry)
 
 
+def _claim_stdio() -> tuple[TextIO, TextIO]:
+    """Return the protocol's input and output, and leave nothing else on those two descriptors.
+
+    The protocol keeps private copies of standard input and output. Descriptor 0 then reads
+    nothing and descriptor 1 is the error output, so a program a tool starts can neither take
+    protocol lines nor write into the protocol.
+    """
+    source = os.fdopen(os.dup(0), "r", encoding="utf-8", errors="replace", newline="\n")
+    out = os.fdopen(os.dup(1), "w", encoding="utf-8", newline="\n")
+    sys.stdout.flush()
+    nothing = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(nothing, 0)
+    os.close(nothing)
+    os.dup2(2, 1)
+    return source, out
+
+
+class _CodingFirst:
+    """Puts the model server on the coding model once, before a `jarvis acp --coding` request."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._ready: config.Config | None = None
+
+    def ready(self, hooks: Hooks) -> tuple[config.Config | None, str]:
+        """Return the config ready to use and any line from the first switch."""
+        with self._lock:
+            if hooks.cancelled() or self._ready is not None:
+                return self._ready, ""
+            cfg = config.load()
+            if not modes.own_model(cfg):
+                self._ready = cfg
+                return cfg, ""
+            hooks.waking()
+            if hooks.cancelled():
+                return None, ""
+            # The same switch as the chat's /model coding, for the owner; nothing is said aloud.
+            line = switch_model(
+                cfg, "coding", lambda _line: None, "acp", only_if=lambda: not hooks.cancelled()
+            )
+            if hooks.cancelled():
+                return None, ""
+            if line.startswith(("Now in", "Already in")):
+                self._ready = cfg
+            return self._ready, line
+
+
+class _CodingSession:
+    """An agent whose first request waits for the coding model, and says how that went."""
+
+    def __init__(self, cfg: config.Config, session_id: str, first: _CodingFirst) -> None:
+        super().__init__()
+        self._config = cfg
+        self._session_id = session_id
+        self._agent = build(cfg, via="acp", session=session_id, mode="coding").agent
+        self._first = first
+
+    def handle(self, text: str, hooks: Hooks, *, pictures: Sequence[Picture] = ()) -> str:
+        """Answer `text` on the coding model; a switch that failed is the answer instead."""
+        cfg, line = self._first.ready(hooks)
+        if cfg is None or hooks.cancelled():
+            return line
+        if cfg != self._config:
+            try:
+                self._agent = build(cfg, via="acp", session=self._session_id, mode="coding").agent
+            except SetupError as exc:
+                return str(exc)
+            self._config = cfg
+        if line and hooks.draft is not None:
+            hooks.draft(line)
+        if hooks.cancelled():
+            return ""
+        return self._agent.handle(text, hooks, pictures=pictures)
+
+
+def cmd_acp(args: argparse.Namespace) -> int:
+    """Speak the Agent Client Protocol on standard input and output, for a coding app."""
+    cfg = _load()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    first = _CodingFirst() if args.coding else None
+
+    def make(session_id: str) -> acp.AgentSession:
+        try:
+            if first is None:
+                return build(cfg, via="acp", session=session_id, units=StrataUnits()).agent
+            return _CodingSession(cfg, session_id, first)
+        except SetupError as exc:
+            raise acp.StartError(str(exc)) from exc
+
+    # Also made when nothing is pushed: it tells a forged message from a real one.
+    pusher = t3push.T3Push(cfg.acp.t3_command, cfg.acp.t3_provider, enabled=cfg.acp.push_to_t3)
+    source, out = _claim_stdio()
+    return acp.serve(
+        source,
+        out,
+        make,
+        names=(cfg.persona.name,),
+        version=__version__,
+        follow=control.subscribe,
+        pusher=pusher,
+        record=AuditLog(paths.audit_file(), tags={"via": "acp"}).record,
+    )
+
+
+def _export_folder(cfg: config.Config) -> Path:
+    """Where the chat saves an exported conversation: the workspace, else ~/Documents or home."""
+    folder = workspace_path(cfg.files, Path.home())
+    if not workspace_problem(folder, create=True):
+        return folder
+    documents = Path.home() / "Documents"
+    return documents if documents.is_dir() else Path.home()
+
+
 def cmd_chat(_args: argparse.Namespace) -> int:
     """Open the chat window: typed requests, and everything Jarvis does, live."""
     from jarvis.chat.app import ChatApp, Services
@@ -1208,7 +1443,6 @@ def cmd_chat(_args: argparse.Namespace) -> int:
             pictures = built.pictures
     except SetupError as exc:
         unavailable = str(exc)
-    documents = Path.home() / "Documents"
     services = Services(
         status=lambda: _chat_status(cfg),
         details=lambda: _chat_details(cfg),
@@ -1225,14 +1459,15 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         apply=_apply_from_chat,
         history=InputHistory(paths.state_dir() / "chat-history", cfg.chat.history_size),
         archive=_chat_archive(cfg.chat.archive_keep),
-        export_dir=documents if documents.is_dir() else Path.home(),
+        export_dir=_export_folder(cfg),
         paste=clipboard.read,
         pictures=pictures,
         screenshots=_screenshot_folders(Path.home(), os.environ),
         shown=chat_pictures(),
         twelve_hour=cfg.clock.twelve_hour,
+        announcements=control.subscribe,
     )
-    ChatApp(
+    window = ChatApp(
         AuditTail(paths.audit_file()),
         agent,
         unavailable=unavailable,
@@ -1240,7 +1475,27 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         settings=cfg.chat,
         services=services,
         session_id=session_id,
-    ).run()
+    )
+    audit = AuditLog(paths.audit_file(), tags={"via": "chat", "session": session_id})
+
+    def take(words: str) -> handoff.State:
+        # Written first: the request it starts follows it in the log, marked as spoken.
+        audit.record("chat_handoff_received", text=words)
+        state = window.take_handoff(words)
+        audit.record("chat_handoff_placed", state=state.value)
+        return state
+
+    listener = handoff.ChatListener(
+        session_id, take, refused=lambda why: audit.record("chat_handoff_refused", reason=why)
+    )
+    try:
+        listener.start()  # the voice service hands spoken instructions over here
+    except OSError as exc:
+        log.warning("the chat cannot take spoken hand-offs: %s", exc)
+    try:
+        window.run()
+    finally:
+        listener.close()
     return 0
 
 
@@ -1374,6 +1629,16 @@ def _remote_status(
     return lambda: _probe_fields(model.probe(), model.config.model)
 
 
+def _load_for_run() -> config.Config:
+    """Load the config for the voice service, after dropping the restart note it makes true.
+
+    What a note stood for is saved in the config already; one written after the drop is kept
+    for the watcher.
+    """
+    paths.restart_pending_file().unlink(missing_ok=True)
+    return _load_client()
+
+
 def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] - the voice service's parts, wired together here
     """Run the voice loop until stopped."""
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
@@ -1390,14 +1655,14 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
     from jarvis.voice import PcListener, VoiceLoop  # ruff: ignore[import-outside-top-level] - imports jarvis.audio, which loads numpy and ONNX Runtime
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    cfg = _load_client()
+    cfg = _load_for_run()
     # The hint is the agent's, built after the transcribers that `pc_audio_listen` needs; it is
     # first asked for once a request is heard.
     request, answer = _transcribers(cfg, lambda: jarvis.hint())  # ruff: ignore[unnecessary-lambda] - `jarvis` is built below
     mic = PausableMic(Microphone(cfg.audio.source, stall_s=MIC_STALL_S))
     listening = _pc_listening(cfg, answer, paused=lambda: mic.paused)
     try:
-        jarvis = build(cfg, units=StrataUnits(), listening=listening)
+        jarvis = build(cfg, via=VOICE_VIA, units=StrataUnits(), listening=listening)
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
@@ -1524,6 +1789,7 @@ def _run_until_stopped(
     from jarvis.audio import FallbackWake  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
 
     try:
+        _watch_for_restart_note(loop, stop_requested)
         voxtype.start()
         loop.run(stop_requested.is_set)
     except Exception:
@@ -1836,6 +2102,7 @@ def essential_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], l
         *(_model_url(cfg) if local else []),
         *(_model_checks(cfg) if local else []),
         *(_coding_checks(cfg) if local else []),
+        _workspace_check(cfg),
         *tool_checks,
         *sing_checks,
         *_source_checks(cfg),
@@ -1922,6 +2189,27 @@ class DoctorReport:
         return cliout.summary(self.checks, extra=len(self.verified))
 
 
+def _t3_notes(cfg: config.Config) -> list[str]:
+    """Say how to add Jarvis to T3 Code when T3 Code is set up on this PC, and what is off."""
+    if not t3push.t3_home().is_dir():
+        return []
+    program = shutil.which("jarvis") or "jarvis"
+    where = "Settings, Providers, Add provider"
+    head = (
+        f"note T3 Code is set up here: to talk to Jarvis in it, add a Local ACP command ({where})"
+    )
+    notes = [
+        (
+            f"{head} with the executable {program} and the argument acp; "
+            "add it again with the arguments acp --coding for programming work"
+        )
+    ]
+    pusher = t3push.T3Push(cfg.acp.t3_command, cfg.acp.t3_provider)
+    if cfg.acp.push_to_t3 and (problem := pusher.provider_problem()):
+        notes.append(f"note {problem}")
+    return notes
+
+
 def _remote_notes(cfg: config.Config, *, no_service: bool) -> list[str]:
     """Notes for a client whose model runs on another machine."""
     notes: list[str] = []
@@ -1972,7 +2260,7 @@ def doctor_report(args: argparse.Namespace) -> DoctorReport:
         notes.extend(_memlock_notes(cfg))
     else:
         notes.extend(_remote_notes(cfg, no_service=args.no_service))
-    notes.extend(update.doctor_notes(cfg, launch_for_update))
+    notes.extend([*_t3_notes(cfg), *update.doctor_notes(cfg, launch_for_update)])
     notes.extend(skills.doctor_notes())
     verified = [line.removeprefix("ok").strip() for line in release_lines if line.startswith("ok ")]
     notes.extend(line for line in release_lines if not line.startswith("ok "))
@@ -2284,14 +2572,23 @@ def model_report(cfg: config.Config) -> list[str]:
     return lines
 
 
-def switch_model(cfg: config.Config, to: str, say: Callable[[str], None], source: str) -> str:
-    """Switch to mode `to` for the owner and return the line that says how it went."""
+def switch_model(
+    cfg: config.Config,
+    to: str,
+    say: Callable[[str], None],
+    source: str,
+    *,
+    only_if: Callable[[], bool] = lambda: True,
+) -> str:
+    """Switch to mode `to` for the owner if `only_if` still allows it under the mode lock."""
     if to not in modes.MODES:
         return f"No mode {to}: it is normal or coding."
     wanted: modes.Mode = "coding" if to == "coding" else "normal"
-    done = _switcher(cfg, source).switch(wanted, "owner", say)
+    done = _switcher(cfg, source).switch(wanted, "owner", say, only_if=only_if)
     if done.error:
         return done.error
+    if done.mode != wanted:
+        return ""  # the request was stopped before the switch
     name = modes.model_name(cfg, done.mode)
     if cfg.strata.mode == "remote":
         return (
@@ -2663,14 +2960,18 @@ class RestartError(RuntimeError):
     """The voice service did not restart after a change, so it runs on the old settings."""
 
 
-def _restart_if_running() -> bool:
-    """Restart the voice service if it runs; return False when that restart failed."""
+def _restart_if_running(*, no_block: bool = False) -> bool:
+    """Restart the voice service if it runs; return False when that restart failed.
+
+    With `no_block` the call returns once systemd has accepted the restart, which is what the
+    voice service itself needs: the unit's own SIGTERM cannot then read as a failure.
+    """
     if _unit_state(JARVIS_UNIT) != "active":
         return True
     # A restart counts against the start limit (5 in 15 min): clear it first, so a few
     # config changes in a row do not leave the voice service stopped.
     _systemctl("reset-failed", JARVIS_UNIT)
-    if _systemctl("restart", JARVIS_UNIT) != 0:
+    if _systemctl(*(["--no-block"] if no_block else []), "restart", JARVIS_UNIT) != 0:
         print(f"jarvis: {RESTART_FAILED}", file=sys.stderr)
         return False
     return True
@@ -2764,8 +3065,10 @@ def set_tool(
     return now
 
 
-def _next_tool_setting(name: str) -> ToolSetting:
-    """Move one tool on to its next setting (on, asks first, needs the key, off), for the chat.
+def _next_tool_setting(name: str, by: int = 1) -> ToolSetting:
+    """Move one tool on (`by` 1) or back (`by` -1) round its settings, for the chat.
+
+    The settings are on, asks first, needs the key, off, never below how the tool ships.
 
     Raises:
         ConfigError: as `set_tool`.
@@ -2774,7 +3077,8 @@ def _next_tool_setting(name: str) -> ToolSetting:
     if found is None:
         msg = f"no tool is called {name!r}"
         raise config.ConfigError(msg)
-    return set_tool(name, found.following(), source="chat", restart=False)
+    moved = found.following() if by > 0 else found.preceding()
+    return set_tool(name, moved, source="chat", restart=False)
 
 
 def cmd_tools(args: argparse.Namespace) -> int:
@@ -3069,6 +3373,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "setup": cmd_setup,
     "spotify-login": cmd_spotify_login,
     "ask": cmd_ask,
+    "acp": cmd_acp,
     "chat": cmd_chat,
     "run": cmd_run,
     "doctor": cmd_doctor,
@@ -3129,7 +3434,7 @@ def _agent_main(words: list[str]) -> int:
 
 
 # Commands that wait on a person or follow a live stream: they have no one-line answer.
-INTERACTIVE = frozenset({"chat", "logs", "run", "ask", "speech-test", "spotify-login"})
+INTERACTIVE = frozenset({"acp", "chat", "logs", "run", "ask", "speech-test", "spotify-login"})
 
 
 def _lines(text: str) -> list[str]:

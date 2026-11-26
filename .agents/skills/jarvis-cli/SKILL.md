@@ -39,7 +39,7 @@ stdout and stderr lines, colour removed. A crash puts its traceback in `errors`.
 | `speed` | `speech_speed` |
 | `consent` | `consent` (`bypassed` or `asks`), `said` |
 
-`chat`, `logs`, `run`, `ask`, `speech-test` and `spotify-login` wait on a person or follow a live
+`acp`, `chat`, `logs`, `run`, `ask`, `speech-test` and `spotify-login` wait on a person or follow a live
 stream: with `--agent` they do nothing and answer `exit` 2. Read the journal with
 `journalctl --user -u jarvis -n 100 --no-pager` instead of `jarvis logs`.
 

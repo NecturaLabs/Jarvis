@@ -9,15 +9,16 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
 ## Commands
 
 - Install the environment: `uv sync`
-- Everything CI runs, in one command, before calling work done: `tools/check.sh` (lint, tests without `local`,
-  `reuse lint`, the licence, docs and advisories checks). It lints **tracked** files only, so `git add` new files first.
-  Exit 1 is a failure; exit 3 means a check could not run (no `actionlint`, or PyPI unreachable): report that
-  check as not run, never as passed.
-- Lint only (Ruff with every rule, `ruff format --check`, pyright strict, shell and editorconfig):
-  `uv run .lint/check.sh`
-- Tests: `uv run pytest -q -m "not local"`; `tests/conftest.py` cuts audio, network and your home folder for each test.
+- For CI-equivalent checks, `tools/check.sh` runs everything CI runs (lint, tests without `local`,
+  `reuse lint`, the licence, docs and advisories checks). Exit 1 is a failure. Exit 3 means a check
+  could not run because `actionlint` is missing or PyPI is unreachable. Report the skipped check.
+- Agents run only affected tests plus `uv run .lint/check.sh` (owner, 2026-11-26). Pass the changed
+  paths to `uv run python tools/affected_tests.py <paths>`, then run the listed files with
+  `uv run pytest -q -m "not local" <test files>`. Skip pytest when the list is empty.
+  Lint checks **tracked** files only, so `git add` new files first. `tests/conftest.py` cuts audio,
+  network and access to your home folder for each test.
 - Single test: `uv run pytest tests/test_cli.py::test_version_prints_package_version -q`
-- Opt-in git hooks (lint and tests before a commit, the subject format): `tools/install-hooks.sh`
+- Opt-in git hooks (lint and affected tests before a commit, the subject format): `tools/install-hooks.sh`
 - CLI: `uv run jarvis --version`
 - Tests marked `local` need this PC's hardware or services and never run in CI: `uv run pytest -m local`.
 

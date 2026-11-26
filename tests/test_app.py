@@ -1,14 +1,14 @@
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import pytest
 from test_pc_windows import FakeDesktop
 
-from jarvis import __version__, control, osskills, paths
+from jarvis import __version__, control, modes, osskills, paths
 from jarvis import app as app_module
-from jarvis.agent import THINK_HARDER, Agent, Hooks
+from jarvis.agent import NO_ACTION, SWITCH_MODEL, THINK_HARDER, Agent, Hooks
 from jarvis.app import (
     MAX_HINT_CHARS,
     PAGE_HEADROOM,
@@ -36,6 +36,7 @@ from jarvis.config import (
     AudioConfig,
     BoundariesConfig,
     ChatConfig,
+    CodingConfig,
     Config,
     FilesConfig,
     OpClassName,
@@ -752,6 +753,108 @@ def test_sing_is_offered_only_where_its_song_can_be_heard(via: str | None, offer
     names = build(config, via=via).agent._registry.names()  # pyright: ignore[reportPrivateUsage] - what the model is given
 
     assert ("sing" in names) is offered
+
+
+def test_an_acp_session_is_a_chat_of_its_own_that_shows_no_pictures_and_keeps_no_file() -> None:
+    ensure_api_key(strata_key_file())
+    config = Config(spotify=SpotifyConfig(client_id="id"))
+
+    acp = build(config, via="acp", session="s1").agent
+    chat = build(config, via="chat", session="s2").agent
+
+    names = acp._registry.names()  # pyright: ignore[reportPrivateUsage] - what the model is given
+    assert acp._system == chat._system  # pyright: ignore[reportPrivateUsage] - the chat's written style
+    assert acp._memory_file is None  # pyright: ignore[reportPrivateUsage] - one conversation per session
+    assert chat._memory_file == app_module.chat_memory_file()  # pyright: ignore[reportPrivateUsage] - the chat's own
+    assert not {"sing", "show_image", "image_search"} & set(names)
+    assert {"show_image", "image_search"} <= set(chat._registry.names())  # pyright: ignore[reportPrivateUsage] - the chat keeps them
+
+
+def test_a_fixed_coding_agent_is_the_coding_chat_and_leaves_the_mode_file_alone() -> None:
+    ensure_api_key(strata_key_file())
+    config = Config(spotify=SpotifyConfig(client_id="id"))
+    assert not modes.state_file().exists()
+
+    coding = build(config, via="acp", session="s1", mode="coding").agent
+    plain = build(config, via="acp", session="s2").agent
+
+    code = system_prompt(modes.effective(config, "coding"), "chat", coding=True)
+    assert coding._system == code  # pyright: ignore[reportPrivateUsage] - the coding prompt part
+    assert "You are in coding mode" in code
+    assert plain._system == system_prompt(config, "chat")  # pyright: ignore[reportPrivateUsage] - none for the normal one
+    limits = coding._limits  # pyright: ignore[reportPrivateUsage] - the coding overlay on [chat]
+    assert limits.max_steps == config.coding.chat.max_steps
+    assert limits.reply_tokens == config.coding.chat.reply_tokens
+    assert coding._memory_file is None  # pyright: ignore[reportPrivateUsage] - still its own conversation
+    assert SWITCH_MODEL not in coding._registry.names()  # pyright: ignore[reportPrivateUsage] - it stays put
+    assert modes.current() == "normal"
+    assert not modes.state_file().exists()  # building and asking never wrote the owner's mode
+
+
+def test_a_fixed_coding_agent_drops_what_coding_mode_switches_off() -> None:
+    ensure_api_key(strata_key_file())
+    config = Config(spotify=SpotifyConfig(client_id="id"))
+    names = build(config, via="acp", session="s1").agent._registry.names()  # pyright: ignore[reportPrivateUsage] - what the model is given
+    victim = next(name for name in names if name.startswith(("web", "fetch", "search")))
+    coding = config.model_copy(update={"coding": CodingConfig(tools_off=[victim])})
+
+    fixed = build(coding, via="acp", session="s2", mode="coding").agent
+    plain = build(coding, via="acp", session="s3").agent
+
+    assert victim not in fixed._registry.names()  # pyright: ignore[reportPrivateUsage] - switched off in coding mode
+    assert victim in plain._registry.names()  # pyright: ignore[reportPrivateUsage] - the normal mode keeps it
+
+
+def test_a_fixed_coding_request_holds_the_answering_mark_and_refreshes_coding_idle_time(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ensure_api_key(strata_key_file())
+    modes.state_file().parent.mkdir(parents=True, exist_ok=True)
+    modes.state_file().write_text('{"mode":"coding","used":1}', encoding="utf-8")
+    config = Config(coding=CodingConfig(back_after_s=60))
+    run = tmp_path / "coding.json"
+    config = config.model_copy(
+        update={"strata": config.strata.model_copy(update={"coding_run_config": run})}
+    )
+    assert modes.idle_too_long(config, now=100)
+    free_during_chat: list[bool] = []
+
+    class Model(_Model):
+        remote = False
+
+        @override
+        def chat(
+            self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **_: object
+        ) -> dict[str, Any]:
+            self.seen.append(messages)
+            del tools
+            with modes.nobody_answering() as free:
+                free_during_chat.append(free)
+            return _tool(NO_ACTION, {"reply": "Hello there."})
+
+    model = Model([])
+
+    def fake_model(_cfg: Config, _key: str) -> Model:
+        return model
+
+    monkeypatch.setattr(app_module, "strata_model", fake_model)
+    monkeypatch.setattr(app_module, "mode_model", fake_model)
+    agent = build(config, via="acp", mode="coding").agent
+
+    assert agent.handle("hello", Hooks(confirm=lambda _q: False)) == "Hello there."
+    assert free_during_chat
+    assert not any(free_during_chat)
+    assert modes.read_state().used > 1
+    with modes.nobody_answering() as free:
+        assert free
+
+
+def test_a_fixed_same_model_coding_agent_budgets_for_the_normal_context() -> None:
+    ensure_api_key(strata_key_file())
+    config = Config(coding=CodingConfig(context=65536))
+    agent = build(config, via="acp", mode="coding").agent
+
+    assert agent._limits.context_tokens == config.strata.context  # pyright: ignore[reportPrivateUsage] - the request budget
 
 
 def test_the_chat_prompt_follows_the_response_format() -> None:
