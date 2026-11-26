@@ -69,6 +69,7 @@ class Win:
     focused: bool = False
     fullscreen: bool = False
     floating: bool = False
+    pid: int = 0
 
     @property
     def app(self) -> str:
@@ -137,7 +138,7 @@ def _win(client: dict[str, object]) -> Win | None:
     ):
         return None
     stable, klass, title = client.get("stableId"), client.get("class"), client.get("title")
-    monitor = client.get("monitor")
+    monitor, pid = client.get("monitor"), client.get("pid")
     x, y = _pair(client.get("at")) or (0, 0)
     width, height = _pair(client.get("size")) or (0, 0)
     return Win(
@@ -155,6 +156,7 @@ def _win(client: dict[str, object]) -> Win | None:
         fullscreen=_above_zero(client.get("fullscreen"))
         or _above_zero(client.get("fullscreenClient")),
         floating=client.get("floating") is True,
+        pid=pid if isinstance(pid, int) else 0,
     )
 
 

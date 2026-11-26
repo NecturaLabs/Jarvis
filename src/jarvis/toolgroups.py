@@ -64,8 +64,17 @@ GROUPS = (
     ),
     ToolGroup(
         "screen",
-        "Windows and the screen: list, focus, move and close windows, and take a screenshot.",
-        ("pc_windows", "pc_window", "pc_window_close", "pc_screenshot"),
+        "Windows and the screen: list, focus, move and close windows, take screenshots, "
+        "and watch for screen conditions, window freezes or process trouble.",
+        (
+            "pc_windows",
+            "pc_window",
+            "pc_window_close",
+            "pc_screenshot",
+            "pc_watch",
+            "pc_watches",
+            "pc_watch_stop",
+        ),
     ),
     ToolGroup(
         "apps",

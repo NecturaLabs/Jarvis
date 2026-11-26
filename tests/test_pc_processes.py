@@ -105,11 +105,14 @@ class FakeProc:
         cgroup: str = APP,
         state: str = "S",
         threads: int = 1,
+        utime: int = 0,
+        stime: int = 0,
     ) -> None:
         folder = self.root / str(pid)
         folder.mkdir(exist_ok=True)
         # Fields 3 to 22 of /proc/<pid>/stat; the rest are zeros.
         rest = [state, str(ppid), "0", "0", "0", "0", str(flags), *["0"] * 12, str(start)]
+        rest[11:13] = [str(utime), str(stime)]
         stat = f"{pid} ({comm}) {' '.join(rest)} {' '.join(['0'] * 30)}\n"
         (folder / "stat").write_text(stat, encoding="utf-8")
         real, effective, saved, fs = uids or (uid, uid, uid, uid)

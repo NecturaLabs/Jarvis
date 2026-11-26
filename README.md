@@ -57,7 +57,9 @@ Jarvis is pre-1.0 software; see [Status](#status).
   not on screen is captured without switching to it (`grim` needed). Ask it to tell you when
   something shows up in a window or on the screen, and while `jarvis run` is up it checks now and
   then (every 20 seconds by default, for two hours by default, two watches at most) and says so;
-  each check is a model call with a picture ([ADR 0021](docs/adr/0021-screen-watch.md)). It can also watch a program
+  only a changed picture goes to the model. Ask it to watch a window for a freeze and it can
+  say when the picture seems frozen and when it moves again. A freeze-only watch uses no model
+  calls ([ADR 0021](docs/adr/0021-screen-watch.md)). It can also watch a program
   you name and say when it exits (closed, crashed or killed), is stopped, or is stuck waiting on a disk
   or device at three checks in a row over at least 30 seconds, and when it runs again; that reads only `/proc`, with no picture and no model.
 - **Your own skills:** put instructions for a task of yours in `~/.config/jarvis/skills/<name>.md`, opening
