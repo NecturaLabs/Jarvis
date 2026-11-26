@@ -78,7 +78,7 @@ GROUPS = (
     ),
     ToolGroup(
         "apps",
-        "Programs: open one where the owner says, find running ones and stop one.",
+        "Programs: open one where the owner says, list or find running ones and stop one.",
         ("open_app", "find_processes", "stop_process"),
     ),
     ToolGroup(
