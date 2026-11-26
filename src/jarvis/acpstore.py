@@ -6,6 +6,7 @@ The chat's `/forget all` deletes what is kept here, so these helpers sit apart f
 
 import logging
 import re
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -15,6 +16,9 @@ log = logging.getLogger(__name__)
 
 MAX_KEPT = 200  # sessions kept on disk for `session/load`, the newest
 SESSION_ID = re.compile(r"jarvis-[0-9a-f]{12}")  # what `session/new` makes, and nothing else
+STALE_TEMP_S = 3600.0  # a temp file this old is no writer's: `write_atomic` renames within moments
+# What `write_atomic` leaves when a crash stops it: ".<file>.<8 random characters>.tmp".
+_TEMP = re.compile(r"\.jarvis-[0-9a-f]{12}\..+\.[a-z0-9_]{8}\.tmp")
 
 
 def forget_kept(store: Path) -> int:
@@ -26,6 +30,7 @@ def forget_kept(store: Path) -> int:
         if SESSION_ID.fullmatch(path.name.split(".", 1)[0]):
             gone += path.name.count(".") == 1  # the meta file, one per session
             path.unlink(missing_ok=True)
+    _remove_temps(store, None)
     return gone
 
 
@@ -41,3 +46,23 @@ def prune(store: Path) -> None:
                 path.unlink(missing_ok=True)
     except OSError as exc:
         log.warning("old sessions could not be removed: %s", exc)
+    try:
+        _remove_temps(store, STALE_TEMP_S)
+    except OSError as exc:
+        log.warning("stale temp files could not be removed: %s", exc)
+
+
+def _remove_temps(store: Path, older_than_s: float | None) -> None:
+    """Delete the temp files `write_atomic` left in `store`, all or those older than `older_than_s`.
+
+    A writer renames its temp file within moments, so the age keeps a live one safe.
+    """
+    now = time.time()
+    for path in store.glob(".jarvis-*"):
+        if not _TEMP.fullmatch(path.name):
+            continue
+        try:
+            if older_than_s is None or now - path.stat().st_mtime >= older_than_s:
+                path.unlink(missing_ok=True)
+        except FileNotFoundError:  # its writer finished meanwhile
+            continue
