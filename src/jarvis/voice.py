@@ -70,7 +70,8 @@ _TABLE_ROW = re.compile(r"^[ \t]*\|(.+?)\|?[ \t]*$", re.MULTILINE)
 # spaced between a figure, a time or a unit sign and a figure (-5 to -3, 9 a.m. to 5 p.m.).
 _RANGE = re.compile(
     r"(?<=[\w°%.])[\u2012\u2013](?=[\w$€£\u2212+-])"
-    r"|(?:(?<=[\d%°])|(?<=[ap]\.m\.)|(?<=\d[ap]m))\s?[\u2012\u2013]\s?(?=[$€£\u2212+-]?\d)"
+    r"|(?:(?<=[\d%°])|(?<=°[CF])|(?<=[aApP]\.[mM]\.)|(?<=\d[aApP][mM])|(?<=\d [aApP][mM]))"
+    r"\s?[\u2012\u2013]\s?(?=[$€£\u2212+-]?\d)"
 )
 # A long dash anywhere, or a hyphen set off by spaces between words (between numbers it is a minus).
 _DASH = re.compile(r"\s*,?\s*[\u2012-\u2015]\s*|(?<=[^\d\s]),?\s+-{1,2}\s+(?=\D)")

@@ -45,6 +45,8 @@ def test_a_runaway_reply_is_cut_before_it_is_cleaned() -> None:
         ("Lows of \u22125\u2013\u22123 \u00b0C.", "Lows of \u22125 to \u22123 degrees Celsius."),
         ("Lows of \u22125 \u2013 \u22123 \u00b0C.", "Lows of \u22125 to \u22123 degrees Celsius."),
         ("Highs of 5\u00b0 \u2013 10\u00b0.", "Highs of 5 degrees to 10 degrees."),
+        ("From 22 \u00b0C \u2013 25 \u00b0C.", "From 22 degrees Celsius to 25 degrees Celsius."),
+        ("Open 9 AM \u2013 5 PM.", "Open 9 AM to 5 PM."),
     ],
 )
 def test_a_dash_is_a_pause_or_a_range_never_a_run_on(reply: str, spoken: str) -> None:
