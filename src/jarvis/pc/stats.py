@@ -7,6 +7,7 @@ name, so the result needs no `file` or `web` origin.
 
 import contextlib
 import os
+import re
 import shutil
 import time
 from dataclasses import dataclass
@@ -14,25 +15,38 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jarvis.operations import Operation, Result
+from jarvis.policy import Origin
 from jarvis.shortcuts import Shortcut
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from jarvis.pc.processes import Usage
     from jarvis.sysinfo import Sampler, Specs, Stats
 
 GIB = 1024**3
 CPU_WINDOW_S = 0.25  # between the two samples a CPU share needs
+TOP = 3  # programs named as using the most memory and CPU
+BUSY_PERCENT = 1.0  # a program below this much CPU is not named as busy
+MIB = 1024**2
+MOUNT_POINT = 4  # the mount point's field in a /proc/self/mountinfo line
 DAY_S = 86400
 HOUR_S = 3600
 MINUTE_S = 60
 
+
+def _plain(_groups: dict[str, str]) -> dict[str, Any]:
+    """A plain question hears only the spoken sentence: the busiest programs are not looked up."""
+    return {"programs": False}
+
+
 _STATS = (
-    Shortcut(r"(?:how is|hows) (?:my |the )?(?:pc|computer|system) (?:doing|running)"),
-    Shortcut(r"(?:my |the )?(?:pc|computer|system) (?:stats|status|load|usage|specs)"),
+    Shortcut(r"(?:how is|hows) (?:my |the )?(?:pc|computer|system) (?:doing|running)", _plain),
+    Shortcut(r"(?:my |the )?(?:pc|computer|system) (?:stats|status|load|usage|specs)", _plain),
     Shortcut(
         r"(?:(?:whats|what is) (?:my |the )?)?(?:cpu|gpu|vram|ram|memory) "
-        r"(?:usage|load|temperature|temp)"
+        r"(?:usage|load|temperature|temp)",
+        _plain,
     ),
 )
 
@@ -46,20 +60,60 @@ class Disk:
     used: int
 
 
-def home_disks() -> list[Disk]:
-    """Return the file systems of the home folder and the root, once each."""
-    seen: set[int] = set()
+def _unescape(field: str) -> str:
+    r"""Return a mountinfo field with its octal escapes (`\040` for a space) decoded."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
+def _mount_source(path: Path, mountinfo: str) -> tuple[str, str] | None:
+    """Return the file system type and source of the mount `path` is on, from mountinfo's text.
+
+    Two btrfs subvolumes of one file system have their own device numbers but one source.
+    """
+    target = os.path.realpath(path)
+    best, found = "", None
+    for line in mountinfo.splitlines():
+        head, sep, tail = line.partition(" - ")
+        fields, rest = head.split(), tail.split()
+        if not sep or len(fields) < MOUNT_POINT + 1 or len(rest) < 2:  # ruff: ignore[magic-value-comparison] - fs type and source
+            continue
+        point = _unescape(fields[MOUNT_POINT])
+        inside = target == point or target.startswith(point.rstrip("/") + "/")
+        if inside and len(point) >= len(best):
+            best, found = point, (rest[0], _unescape(rest[1]))
+    return found
+
+
+def home_disks(mountinfo: Path = Path("/proc/self/mountinfo")) -> list[Disk]:
+    """Return the file systems of the home folder and the root, once each.
+
+    One file system is known by its mount's type and source; without mountinfo, by its device
+    number or, for btrfs subvolumes (own device numbers), by an equal size and use.
+    """
+    try:
+        mounts = mountinfo.read_text(encoding="utf-8")
+    except OSError, UnicodeDecodeError:
+        mounts = ""
+    seen: set[object] = set()
     disks: list[Disk] = []
     for name, path in (("~", Path.home()), ("/", Path("/"))):
         try:
-            device = path.stat().st_dev
             usage = shutil.disk_usage(path)
+            keys: tuple[object, ...] = (
+                (source,)
+                if (source := _mount_source(path, mounts)) is not None
+                else (path.stat().st_dev, (usage.total, usage.used))
+            )
         except OSError:
             continue
-        if device not in seen:
-            seen.add(device)
+        if not seen.intersection(keys):
+            seen.update(keys)
             disks.append(Disk(name, usage.total, usage.used))
     return disks
+
+
+def _size(value: int) -> str:
+    return f"{_gib(value)} GiB" if value >= GIB else f"{value // MIB} MiB"
 
 
 def _gib(value: int) -> str:
@@ -92,13 +146,18 @@ class StatsOps:
         proc: Path = Path("/proc"),
         wait: Callable[[float], None] = time.sleep,
         disks: Callable[[], list[Disk]] = home_disks,
+        usage: Callable[[], list[Usage]] | None = None,
     ) -> None:
-        """Read through `sampler` and `proc`; `wait` and `disks` are for tests."""
+        """Read through `sampler` and `proc`; `usage` names the programs that use the most.
+
+        `wait` and `disks` are for tests.
+        """
         super().__init__()
         self._sampler = sampler
         self._proc = proc
         self._wait = wait
         self._disks = disks
+        self._usage = usage
 
     def _read(self, name: str) -> list[str]:
         try:
@@ -106,14 +165,20 @@ class StatsOps:
         except OSError, UnicodeDecodeError:
             return []
 
-    def stats(self, _args: dict[str, Any]) -> Result:
-        """Report the PC's specs and its load now."""
+    def stats(self, args: dict[str, Any]) -> Result:
+        """Report the PC's specs and its load now, and with `programs` the busiest programs.
+
+        Program names are other programs' words, so a result that names them carries the
+        `process` origin, as `find_processes` does.
+        """
         sample = self._sampler.sample()
         if sample.cpu_percent is None:
             self._wait(CPU_WINDOW_S)
             sample = self._sampler.sample()
         specs = self._sampler.specs()
-        lines = [*self._cpu_lines(specs, sample), *self._memory_lines(sample)]
+        lines = [*self._cpu_lines(specs, sample), *self._memory_lines(sample), self._swap_line()]
+        top = self._top_lines() if args.get("programs", True) else []
+        lines.extend(top)
         lines.extend(
             f"Disk {d.name}: {round(d.used / GIB)} of {round(d.total / GIB)} GiB used "
             f"({_share(d.used, d.total)}), {round((d.total - d.used) / GIB)} GiB free."
@@ -122,7 +187,10 @@ class StatsOps:
         up = self._read("uptime")[:1]
         with contextlib.suppress(ValueError):
             lines.append(f"Up {_uptime(float(up[0]))}." if up else "")
-        return Result("\n".join(line for line in lines if line), spoken=_spoken(sample))
+        text = "\n".join(line for line in lines if line)
+        if top:
+            return Result(text, Origin.PROCESS, spoken=_spoken(sample))
+        return Result(text, spoken=_spoken(sample))
 
     def _cpu_lines(self, specs: Specs, sample: Stats) -> list[str]:
         about = [specs.cpu_model or "Processor"]
@@ -143,13 +211,57 @@ class StatsOps:
             cpu.append(f"load {' / '.join(load)} (1, 5, 15 min) on {os.cpu_count() or '?'} threads")
         return [head + ".", f"CPU: {', '.join(cpu)}." if cpu else ""]
 
+    def _swap_line(self) -> str:
+        values: dict[str, int] = {}
+        try:
+            text = (self._proc / "meminfo").read_text(encoding="utf-8")
+        except OSError, UnicodeDecodeError:
+            return ""
+        for line in text.splitlines():
+            key, _, rest = line.partition(":")
+            with contextlib.suppress(ValueError, IndexError):
+                values[key] = int(rest.split()[0]) * 1024  # kB
+        total, free = values.get("SwapTotal"), values.get("SwapFree")
+        if not total or free is None:
+            return ""
+        used = total - free
+        return f"Swap: {_gib(used)} of {_gib(total)} GiB used ({_share(used, total)})."
+
+    def _top_lines(self) -> list[str]:
+        """Name the programs using the most memory and CPU, when a process reader is given."""
+        if self._usage is None:
+            return []
+        try:
+            usage = self._usage()
+        except OSError:
+            return []
+        lines: list[str] = []
+        by_memory = sorted(usage, key=lambda u: -u.rss)[:TOP]
+        if by_memory:
+            lines.append(
+                "Most memory (resident): "
+                + ", ".join(f"{u.name} {_size(u.rss)}" for u in by_memory)
+                + "."
+            )
+        busy = [
+            u for u in sorted(usage, key=lambda u: -u.cpu_percent) if u.cpu_percent >= BUSY_PERCENT
+        ]
+        if busy:
+            lines.append(
+                "Most CPU: "
+                + ", ".join(f"{u.name} {round(u.cpu_percent)}%" for u in busy[:TOP])
+                + "."
+            )
+        return lines
+
     @staticmethod
     def _memory_lines(sample: Stats) -> list[str]:
         lines: list[str] = []
         if sample.ram_used is not None and sample.ram_total:
+            free = sample.ram_total - sample.ram_used
             lines.append(
                 f"Memory: {_gib(sample.ram_used)} of {_gib(sample.ram_total)} GiB used "
-                f"({_share(sample.ram_used, sample.ram_total)})."
+                f"({_share(sample.ram_used, sample.ram_total)}), {_gib(free)} GiB available."
             )
         gpu = sample.gpu
         if gpu is None:
@@ -173,9 +285,20 @@ class StatsOps:
         return [
             Operation(
                 "pc_stats",
-                "This PC's specs and how busy it is now: CPU, memory, graphics card and VRAM, "
-                "temperatures, disks and uptime.",
-                {"type": "object", "properties": {}, "additionalProperties": False},
+                "This PC's specs and how busy it is now: CPU, memory and swap, graphics card "
+                "and VRAM, temperatures, disks, uptime, and the programs using the most memory "
+                "and CPU.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "programs": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "false: leave out the busiest programs",
+                        }
+                    },
+                    "additionalProperties": False,
+                },
                 self.stats,
                 side_effect=False,
                 spoken_summary=lambda _a: "check the PC",

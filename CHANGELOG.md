@@ -8,6 +8,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `find_processes` without a name lists every running program of the owner's, each with its processes'
+  memory and CPU use added up, sorted by memory, CPU or newest (`sort`, `count`). Jarvis can answer what is
+  running or what uses the most; the listing binds no PID, so stopping one still goes through a by-name find
+  and the confirm key.
+- `pc_stats` also gives the memory still available, swap, and the three programs using the most memory and
+  the most CPU (as a share of the whole processor, like its own load). Program names are other programs'
+  words, so such a result is `process` data; a plain question answered without the model leaves them out.
+
 - Skill plugins: skills from marketplaces in the Claude Code format, enabled with `jarvis plugins install
   PLUGIN@MARKETPLACE` and kept at the newest commit of their repository (no pinned version), by
   `jarvis plugins update` and `jarvis update --apply`. Only a plugin's skills are used; its hooks, commands,
@@ -310,6 +318,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   server's restart when it would not fit; each refusal is audited as `ram_refused`. `jarvis setup` or `jarvis restart` writes the
   unit's check ([docs/configuration.md](docs/configuration.md#refusing-a-load-that-does-not-fit),
   [ADR 0029](docs/adr/0029-refuse-a-load-that-does-not-fit.md)).
+- A reply no longer starts with "[looked up: …]": the notes memory puts before a remembered reply are
+  stripped when the model copies them, as "[actions taken: …]" already was.
+- `pc_stats` lists a file system once (by its mount source) when the home folder and the root are two btrfs
+  subvolumes of it.
 - Coding mode no longer lowers the chat's memory: `[coding.chat] memory_tokens` is unset by default, so it
   keeps `chat.memory_tokens` unless set. `[coding]` can now set `kv_resident`, `keep_in_ram`, `pictures` and
   `effort_position` for coding mode, like `[strata]` (#57).

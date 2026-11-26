@@ -572,14 +572,15 @@ def pc_operations(
     """
     boundary = files_boundary(config, home)
     windows = WindowOps() if watching is None else watching.windows
+    processes = ProcessOps() if watching is None else watching.processes
     return [
-        *StatsOps(Sampler()).operations(),
+        *StatsOps(Sampler(), usage=processes.usage).operations(),
         *VolumeOps(_wpctl).operations(),
         *MediaOps(_playerctl).operations(),
         *FileOps(
             boundary, max_chars=limits.tool_text_chars, made=Ledger(paths.workspace_ledger_file())
         ).operations(),
-        *(ProcessOps() if watching is None else watching.processes).operations(),
+        *processes.operations(),
         *windows.operations(),
         *ScreenshotOps(
             windows, save_folder(home or Path.home(), os.environ), shown_pictures=shown
