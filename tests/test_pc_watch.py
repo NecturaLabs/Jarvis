@@ -1,5 +1,6 @@
 """The screen watch tools: capture, clock and model faked, the compositor never asked to act."""
 
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -219,7 +220,8 @@ def test_after_a_yes_it_stays_quiet_for_the_cool_down_then_says_it_again(rig: Ri
 
     line = ["Heads up: the build finished."]
     assert said == [line, [], [], line, []]  # at 0 s, quiet until 60 s, again, quiet again
-    assert len(rig.judge.shown) == 5
+    assert len(rig.judge.shown) == 2  # no picture and no model call while it is quiet
+    assert len(rig.grim.calls) == 2
 
 
 def test_the_cool_down_is_three_checks_when_they_are_far_apart(rig: Rig) -> None:
@@ -383,3 +385,110 @@ def test_the_operations_are_safe_and_the_listing_is_a_pure_read(rig: Rig) -> Non
     assert ops["pc_watches"].side_effect is False
     assert all(not op.shortcuts for op in ops.values())
     assert "GPU" in ops["pc_watch"].description
+
+
+def test_a_cool_down_still_ends_a_watch_whose_window_closed_or_time_ran_out(rig: Rig) -> None:
+    _listed_start(rig, for_min=3)
+    rig.judge.answers = [True]
+    rig.watch.check_due()  # said: quiet for 60 s
+    rig.clock.now += 20
+    rig.desktop.open = [w for w in rig.desktop.open if w.address != "0xa1"]
+
+    assert "gone" in rig.watch.check_due()[0]
+    assert len(rig.judge.shown) == 1
+
+
+def test_a_check_the_voice_service_stops_makes_no_picture_and_is_due_again(rig: Rig) -> None:
+    _listed_start(rig)
+
+    assert rig.watch.check_due(lambda: True) == []
+
+    assert (rig.grim.calls, rig.judge.shown) == ([], [])
+    assert rig.watch.ready() is True  # still due: not pushed back, not a failure
+    assert "watch_check_failed" not in rig.events()
+
+
+@pytest.mark.parametrize("stops_after", [1, 2, 3])
+def test_a_check_is_dropped_whenever_the_service_stops_being_idle(
+    rig: Rig, stops_after: int
+) -> None:
+    # Asked before the picture, before the model and after its answer: a request began meanwhile.
+    _listed_start(rig)
+    rig.judge.answers = [True]
+    asked: list[None] = []
+
+    def stop() -> bool:
+        asked.append(None)
+        return len(asked) > stops_after
+
+    # check_due asks once first, then _look asks before capture, before the model and after it.
+    assert rig.watch.check_due(stop) == []
+
+    assert rig.watch.ready() is True
+    assert "watch_announced" not in rig.events()
+    assert "watch_check_failed" not in rig.events()
+    assert (len(rig.grim.calls), len(rig.judge.shown)) == (
+        min(stops_after - 1, 1),
+        min(max(stops_after - 2, 0), 1),
+    )
+
+
+def test_a_watch_stopped_while_another_is_checked_is_not_checked_or_audited_twice(
+    rig: Rig,
+) -> None:
+    with request_scope(foreign=False):
+        rig.start(of="screen", condition="a")
+        rig.start(of="workspace", workspace="2", condition="b")
+    original = rig.judge.glance
+
+    def glance_then_stop_all(picture: Picture, condition: str) -> bool:
+        answer = original(picture, condition)
+        rig.stop()
+        return answer
+
+    rig.judge.glance = glance_then_stop_all
+    rig.judge.answers = [True, True]
+
+    assert rig.watch.check_due() == []
+
+    assert rig.grim.calls == [[]]  # the second watch was never looked at
+    assert rig.events().count("watch_stopped") == 2  # once for each, said by the owner's stop
+    assert rig.events().count("watch_announced") == 0
+
+
+def test_a_failed_read_of_the_windows_is_a_failed_check_and_three_end_the_watch(
+    rig: Rig,
+) -> None:
+    _listed_start(rig)
+    rig.desktop.readable = False
+
+    said: list[list[str]] = []
+    for _ in range(3):
+        said.append(rig.watch.check_due())
+        rig.clock.now += 20
+
+    assert [len(lines) for lines in said] == [0, 0, 1]
+    assert rig.events().count("watch_check_failed") == 3
+    assert rig.watch.ready() is False
+
+
+def test_the_next_look_is_one_pace_after_a_failed_check(rig: Rig) -> None:
+    _listed_start(rig)
+    rig.grim.fails = True
+    rig.watch.check_due()
+
+    assert rig.watch.ready() is False
+    rig.clock.now += 20
+    assert rig.watch.ready() is True
+
+
+def test_a_scheduled_request_sets_no_watch(rig: Rig) -> None:
+    with (
+        request_scope(foreign=False, scheduled=True),
+        pytest.raises(OperationError, match="own request"),
+    ):
+        rig.start(of="screen", condition="x")
+
+
+def test_the_watches_time_is_the_wall_clock_that_runs_through_a_suspend() -> None:
+    assert (ScreenWatch.__init__.__kwdefaults__ or {})["clock"] is time.time

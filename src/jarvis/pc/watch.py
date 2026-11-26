@@ -4,14 +4,17 @@ The owner asks, in any words, to be told when something shows up in a window, a 
 the screen; the model starts a watch with its own short description of what to look for. While
 the voice service is idle it takes a picture now and then (the same capture as `pc_screenshot`:
 `grim` only reads frames, nothing is focused, moved or resized) and asks the model one question
-about it: no tools, no conversation, the picture marked as outside data, an answer of YES or NO
-(`Judge.glance`). Anything but a leading YES is a no. On a YES Jarvis says a fixed line built from
-the condition, never words read off the screen.
+about it: no conversation, nothing run, the picture marked as outside data, an answer of YES or NO
+(`Judge.glance`; the tools are sent only so the server keeps its pinned prompt, and no call is ever
+run). Anything but a leading YES is a no. On a YES Jarvis says a fixed line built from the
+condition, never words read off the screen.
 
 Each check uses the GPU, so a watch is bounded: it checks at most every 10 seconds, ends after
 `for_min` minutes (at most 12 hours), and at most two run at once. A watch lives in the voice
 service's process (`jarvis run`) and ends with it; the other channels do not offer it. Checks are
-made only between requests, never while Jarvis speaks or is paused (`voice.py` decides when).
+made only between requests, never while Jarvis speaks or is paused, and a check is dropped when a
+request begins (`voice.py` decides when). Times are the wall clock, which runs on through a
+suspend: a watch whose time passed while the PC slept ends at the first look after it.
 """
 
 import threading
@@ -97,6 +100,10 @@ def _condition(text: str) -> str:
     return printable(text, MAX_CONDITION).rstrip(" .!?,;:")
 
 
+class _AbandonedError(Exception):
+    """A check was dropped because the voice service stopped being idle; it is not a failure."""
+
+
 @dataclass(slots=True)
 class _Shared:
     watches: dict[int, Watch] = field(default_factory=dict[int, Watch])
@@ -112,10 +119,13 @@ class ScreenWatch:
         windows: WindowOps,
         shots: ScreenshotOps,
         *,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = time.time,
         audit: _Audit | None = None,
     ) -> None:
-        """Capture through `shots`, find windows through `windows`, read time from `clock`."""
+        """Capture through `shots`, find windows through `windows`, read time from `clock`.
+
+        The clock is the wall clock, which runs on through a suspend, as reminders do.
+        """
         super().__init__()
         self._windows = windows
         self._shots = shots
@@ -151,8 +161,8 @@ class ScreenWatch:
                 this request, as for the window tools).
         """
         request = current_request()
-        if request is None or request.foreign:
-            msg = "a watch is set only on the owner's own request, never from PC audio"
+        if request is None or request.foreign or request.scheduled:
+            msg = "a watch is set only on the owner's own request, never from PC audio or a job"
             raise OperationError(msg)
         if self._judge is None or not self._judge.sees():
             raise OperationError(NEEDS_PICTURES)
@@ -234,8 +244,7 @@ class ScreenWatch:
             found = [
                 w for w in self._shared.watches.values() if wanted is None or w.ident == wanted
             ]
-            for watch in found:
-                self._end(watch)
+            found = [w for w in found if self._end(w)]
         if not found:
             return Result(
                 "No such watch." if wanted is not None else "No watches are running.", ok=False
@@ -245,10 +254,10 @@ class ScreenWatch:
         names = ", ".join(str(w.ident) for w in found)
         return Result(f"Stopped watch {names}.")
 
-    def _end(self, watch: Watch) -> None:
-        """Take `watch` out (the lock is held)."""
+    def _end(self, watch: Watch) -> bool:
+        """Take `watch` out (the lock is held); False when it was out already."""
         watch.active = False
-        self._shared.watches.pop(watch.ident, None)
+        return self._shared.watches.pop(watch.ident, None) is not None
 
     def operations(self) -> list[Operation]:
         """Return `pc_watch`, `pc_watches` and `pc_watch_stop`."""
@@ -316,11 +325,13 @@ class ScreenWatch:
                 w.next_at <= now or w.ends_at <= now for w in self._shared.watches.values()
             )
 
-    def check_due(self) -> list[str]:
+    def check_due(self, stop: Callable[[], bool] = lambda: False) -> list[str]:
         """Check every watch that is due; return the lines Jarvis is to say, in order.
 
-        Each check takes a picture and makes one model call. The caller makes sure nothing else
-        is happening (no request, nothing spoken, not paused).
+        Each check takes a picture and makes one model call. `stop` says the voice service is no
+        longer idle (the wake word, speech, a request): it is asked before each picture and each
+        model call, and a check it stops is dropped, not counted as a failure; the watch is due
+        again at once.
         """
         now = self._clock()
         with self._lock:
@@ -328,38 +339,57 @@ class ScreenWatch:
                 return []
             due = [w for w in self._shared.watches.values() if w.next_at <= now or w.ends_at <= now]
             self._shared.checking = True
+        lines: list[str] = []
         try:
-            lines = [line for watch in due if (line := self._check(watch)) is not None]
+            for watch in due:
+                if stop():
+                    break
+                if (line := self._check(watch, stop)) is not None:
+                    lines.append(line)
         finally:
             with self._lock:
                 self._shared.checking = False
         return lines
 
-    def _finish(self, watch: Watch, reason: str) -> None:
+    def _finish(self, watch: Watch, reason: str) -> bool:
+        """End `watch` and audit why; False when it had already ended (nothing is audited)."""
         with self._lock:
-            self._end(watch)
-        self._record("watch_stopped", watch, reason=reason)
+            ended = self._end(watch)
+        if ended:
+            self._record("watch_stopped", watch, reason=reason)
+        return ended
 
-    def _check(self, watch: Watch) -> str | None:
-        """Make one check of `watch`; return what to say, or None."""
+    def _check(self, watch: Watch, stop: Callable[[], bool]) -> str | None:
+        """Make one check of `watch`; return what to say, or None.
+
+        Whatever goes wrong in it counts as a failed check, never as a crash of the voice loop.
+        """
+        if not watch.active:  # stopped while an earlier watch was being checked
+            return None
+        due_at = watch.next_at
+        try:
+            return self._checked(watch, stop)
+        except _AbandonedError:
+            watch.next_at = due_at
+            return None
+        except Exception as exc:  # ruff: ignore[blind-except] - a failed capture or model call is a failed check, never a crash of the voice loop
+            return self._failed(watch, str(exc))
+
+    def _checked(self, watch: Watch, stop: Callable[[], bool]) -> str | None:
         now = self._clock()
         if now >= watch.ends_at:
             self._finish(watch, "expired")
             return f"My watch for {watch.condition} is over."
         watch.next_at = now + watch.every_s
-        gone = self._gone(watch)
-        if gone:
+        if self._gone(watch):
             self._finish(watch, "window_gone")
             return f"The window I was watching for {watch.condition} is gone, so I've stopped."
-        try:
-            shown = self._look(watch)
-        except Exception as exc:  # ruff: ignore[blind-except] - a failed capture or model call is a failed check, never a crash of the voice loop
-            return self._failed(watch, str(exc))
+        if now < watch.quiet_until:
+            return None  # said not long ago: no picture, no model call
+        shown = self._look(watch, stop)
         watch.failures = 0
         if not shown or not watch.active:
             return None
-        if now < watch.quiet_until:
-            return None  # said not long ago
         watch.announced += 1
         watch.quiet_until = now + max(COOL_DOWN_MIN_S, COOL_DOWN_CHECKS * watch.every_s)
         self._record("watch_announced", watch, count=watch.announced)
@@ -368,39 +398,50 @@ class ScreenWatch:
         return f"Heads up: {watch.condition}."
 
     def _gone(self, watch: Watch) -> bool:
-        """Whether the watched window is closed (or now another program's): its watch ends."""
+        """Whether the watched window is closed (or now another program's): its watch ends.
+
+        Hyprland not giving its windows raises, which the check counts as failed.
+        """
         window = watch.window
         if window is None:
             return False
-        try:
-            windows = self._windows.desktop.windows()
-        except OperationError:
-            return False  # not read just now: the capture fails the same way, and is counted
+        windows = self._windows.desktop.windows()
         current = next((w for w in windows if w.address == window.address), None)
         if current is None or current.klass != window.klass:
             return True
         watch.window = current
         return False
 
-    def _look(self, watch: Watch) -> bool:
+    def _look(self, watch: Watch, stop: Callable[[], bool]) -> bool:
         """Take the picture and ask the model about it; any failure is the caller's to count.
 
         Raises:
             PictureError: the model cannot see pictures now.
+            _AbandonedError: `stop` says the service is busy; the answer, if any, is dropped.
         """
         judge = self._judge
         if judge is None or not judge.sees():
             msg = "the picture reader is off"
             raise PictureError(msg)
+        if stop():
+            raise _AbandonedError
         data = self._shots.capture(watch.kind, workspace=watch.workspace, window=watch.window)
         picture = prepare(data, "watch.png", max_side=SHOWN_SIDE)
-        return judge.glance(picture, watch.condition)
+        if stop():
+            raise _AbandonedError
+        shown = judge.glance(picture, watch.condition)
+        if stop():
+            raise _AbandonedError  # a request began meanwhile: this answer is not worth saying
+        return shown
 
     def _failed(self, watch: Watch, why: str) -> str | None:
         """Count a check that did not finish; three in a row end the watch, said once."""
+        if not watch.active:
+            return None
         watch.failures += 1
         self._record("watch_check_failed", watch, error=why[:200], failures=watch.failures)
         if watch.failures < FAILURES_END:
             return None
-        self._finish(watch, "failed")
+        if not self._finish(watch, "failed"):
+            return None
         return f"I can't check the screen for {watch.condition} any more, so I've stopped."

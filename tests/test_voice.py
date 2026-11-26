@@ -3891,14 +3891,16 @@ class Screens:
     checks: int = 0
     broken: bool = False
     asked: int = 0
+    stops: list[object] = field(default_factory=list[object])
 
     def ready(self) -> bool:
         self.asked += 1
         return self.due
 
-    def check_due(self) -> list[str]:
+    def check_due(self, stop: Callable[[], bool]) -> list[str]:
         self.checks += 1
         self.due = False
+        self.stops.append(stop)
         if self.broken:
             msg = "the model server is down"
             raise RuntimeError(msg)
@@ -3939,7 +3941,7 @@ def test_no_check_is_made_while_jarvis_speaks_is_paused_or_the_owner_dictates() 
         )
     )
 
-    assert (screens.checks, screens.asked, speaker.said) == (0, 0, [])
+    assert (screens.checks, speaker.said) == (0, [])
 
 
 @pytest.mark.parametrize("quiet", ["busy", "paused", "dictating", "meeting", "locked"])
@@ -3949,9 +3951,11 @@ def test_a_check_waits_for_each_of_them_alone(quiet: str) -> None:
     flags = {"busy": False, "paused": False, "dictating": False, "meeting": False, "locked": False}
     flags[quiet] = True
     speaker.busy = flags["busy"]
+    clock = Clock()
     mic = Mic(
         *[SILENCE] * 6,
         lambda: flags.update({quiet: False}),
+        clock.advance(10),  # past the few seconds the lock's answer is kept
         lambda: setattr(speaker, "busy", False),
         Idle(lambda: bool(speaker.said)),
     )
@@ -3966,6 +3970,7 @@ def test_a_check_waits_for_each_of_them_alone(quiet: str) -> None:
             dictating=lambda: flags["dictating"],
             meeting=lambda: flags["meeting"],
             locked=lambda: flags["locked"],
+            clock=clock,
         )
     )
 
@@ -4008,3 +4013,127 @@ def test_lines_made_while_the_owner_dictates_wait_until_it_is_over() -> None:
     _run(_loop(Agent(), mic, speaker, watching=screens, dictating=dictating.is_set))
 
     assert speaker.said == ["Heads up: x."]
+
+
+def test_nothing_due_and_nothing_to_say_asks_nothing_per_frame() -> None:
+    # The lock check starts a program: it must not run on every audio frame.
+    screens = Screens(due=False)
+    asked: list[str] = []
+
+    def probe(name: str, answer: bool | None) -> Callable[[], bool | None]:
+        def ask() -> bool | None:
+            asked.append(name)
+            return answer
+
+        return ask
+
+    _run(
+        _loop(
+            Agent(),
+            Mic(*[SILENCE] * 50),
+            Speaker(),
+            watching=screens,
+            locked=cast("Callable[[], bool]", probe("locked", False)),
+            dictating=probe("dictating", False),
+            meeting=cast("Callable[[], bool]", probe("meeting", False)),
+        )
+    )
+
+    assert asked == []
+    assert screens.checks == 0
+
+
+def test_the_lock_is_asked_once_per_few_seconds_while_a_check_is_waited_for() -> None:
+    screens = Screens()
+    locks: list[int] = []
+    flags = {"locked": True}
+
+    def locked() -> bool:
+        locks.append(1)
+        return flags["locked"]
+
+    clock = Clock()
+    mic = Mic(
+        *[SILENCE] * 30,  # locked all this time: asked once, not 30 times
+        lambda: flags.update({"locked": False}),
+        clock.advance(6),
+        Idle(lambda: screens.checks == 1),
+    )
+
+    _run(_loop(Agent(), mic, Speaker(), watching=screens, locked=locked, clock=clock))
+
+    assert len(locks) == 2  # once while locked, once after the answer went stale
+
+
+def test_no_check_starts_within_a_few_seconds_of_a_request() -> None:
+    screens = Screens()
+    speaker = Speaker()
+    clock = Clock()
+    jobs = DueJobs([Due(_job(1, "remind", "stretch"), 0.0)])
+    mic = Mic(
+        *[SILENCE] * 10,
+        lambda: _no_check_yet(screens),
+        clock.advance(11),
+        Idle(lambda: screens.checks == 1),
+    )
+
+    _run(_loop(Agent(), mic, speaker, watching=screens, due=jobs, clock=clock))
+
+    assert speaker.said[:1] == ["Reminder: stretch"]
+
+
+def _no_check_yet(screens: Screens) -> None:
+    assert screens.checks == 0
+
+
+def test_a_check_under_way_is_dropped_when_a_request_begins() -> None:
+    dropped = threading.Event()
+    started = threading.Event()
+
+    class Waiting(Screens):
+        @override
+        def check_due(self, stop: Callable[[], bool]) -> list[str]:
+            self.checks += 1
+            self.due = False
+            started.set()
+            for _ in range(2000):
+                if stop():
+                    dropped.set()
+                    return []
+                threading.Event().wait(0.002)
+            return []
+
+    screens = Waiting()
+    jobs = DueJobs([Due(_job(1, "remind", "stretch"), 0.0)], ready=started.is_set)
+    speaker = Speaker()
+    mic = Mic(SILENCE, Idle(dropped.is_set))
+
+    _run(_loop(Agent(), mic, speaker, watching=screens, due=jobs))
+
+    assert dropped.is_set()
+    assert speaker.said == ["Reminder: stretch"]
+
+
+def test_a_check_is_dropped_when_the_wake_word_is_heard() -> None:
+    dropped = threading.Event()
+    started = threading.Event()
+
+    class Waiting(Screens):
+        @override
+        def check_due(self, stop: Callable[[], bool]) -> list[str]:
+            self.checks += 1
+            self.due = False
+            started.set()
+            for _ in range(2000):
+                if stop():
+                    dropped.set()
+                    return []
+                threading.Event().wait(0.002)
+            return []
+
+    screens = Waiting()
+    mic = Mic(*[SILENCE] * 3, Idle(started.is_set), *REQUEST, Idle(dropped.is_set))
+
+    _run(_loop(Agent(), mic, Speaker(), watching=screens))
+
+    assert dropped.is_set()

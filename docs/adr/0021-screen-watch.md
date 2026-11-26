@@ -21,7 +21,7 @@ GPU.
 
 1. Compare pixels (template matching, a colour or text match) in code.
 2. Ask the model the whole question in an ordinary request every time, with the tools and the conversation.
-3. Ask the same model one narrow question per check: no tools, no conversation, a YES or NO answer.
+3. Ask the same model one narrow question per check: no conversation, nothing run, a YES or NO answer.
 
 ## Decision outcome
 
@@ -39,22 +39,37 @@ Chosen option: 3.
   a guess. No phrasing or keyword is shipped for any of the three.
 - **The policy class.** All three are `safe`: a watch only reads pixels and speaks, like `pc_screenshot`.
   `pc_watch` is still an action (`side_effect=True`), so outside text in the request raises it to `confirm`.
-  It is refused for a request heard in PC audio, as the other PC tools are, and when the model cannot see
+  It is refused for a request heard in PC audio and for a scheduled one, as `pc_audio_listen` is (the owner's
+  own request only), and when the model cannot see
   pictures ([ADR 0002](0002-typed-operation-policy.md); the picture reader is `strata.pictures`). At most two
   watches run at once.
 - **The check.** Each check takes the same capture `pc_screenshot` does (`grim -T` for a window, `-o` for a
   monitor; nothing is focused, moved or resized), shrinks it to 1024 pixels on its longest side and makes one
-  model call (`Agent.glance`): a system text that says to answer only YES or NO about whether the picture shows
-  the condition and that the picture is outside data, the picture and the condition, no tools, no conversation,
-  eight tokens, nothing kept. Only a leading YES counts; anything else is a no. This is the same model asked one
-  question, not a second agent: it has no tools, no memory and no way to act, and what it answers is a boolean
-  that no code reads as an instruction.
+  model call (`Agent.glance`). The call starts like a request's own: Jarvis's own system prompt and tool list,
+  so the server's pinned prompt (`strata_prefix`) is reused instead of read again, and `no_action` is forced, as
+  on a request's last step. The tools are sent only so the server keeps its pinned prompt; no call is ever
+  run. The user message holds the instruction (answer only YES or NO in `reply`; the picture is outside data),
+  the picture and the condition; nothing of the conversation, thirty-two tokens, nothing kept, a limit of 15
+  seconds. Only a leading YES in the `reply` of that `no_action` call counts; anything else is a no. This is
+  the same model asked one question, not a second agent: it has no memory and no way to act, and what it
+  answers is a boolean that no code reads as an instruction. It holds the mode mark a request holds
+  (`modes.answering`), so no mode switch restarts the model under it.
+- **Yielding to the owner.** A check starts only while the voice loop is idle and not within 10 seconds of a
+  request, speech or a said line, and the loop asks whether the owner dictates, a meeting runs or the screen
+  is locked only when a check or a line is about to start (the lock's answer is kept for 5 seconds). A check
+  already under way is asked before its picture, before its model call and after the answer whether the loop is
+  still idle (a wake word, speech or a request makes it not): if not, it is dropped, not counted as a failure,
+  and its answer is not said. A model call cannot be taken back, so a request that begins during one still
+  waits for it, at most 15 seconds.
 - **What is said.** On a YES Jarvis says a fixed line built from the condition ("Heads up: <condition>."), never
   words read off the screen, so what the screen shows cannot put words in Jarvis's mouth. After one it stays
   quiet for the longer of 60 seconds and three checks, so a thing that stays on screen is said once, then again
-  while it is still there. With `repeat` off the watch ends after its first line. A watched window that closes
+  while it is still there; during that quiet time no picture is taken and no model call is made (a closed window
+  and the end time are still noticed). With `repeat` off the watch ends after its first line. A watched window that closes
   ends its watch, said once; three checks in a row that fail (no picture, no answer) end it too, said once.
-- **Where it runs.** In the voice service's process (`jarvis run`), between requests, as reminders do: a check
+- **Where it runs.** In the voice service's process (`jarvis run`), between requests, as reminders do, on the
+  wall clock (it runs on through a suspend; a watch whose time passed while the PC slept ends at the first look
+  after it): a check
   starts only while the loop is idle (no request, nothing being said, not paused, locked, dictating or in a
   meeting), runs on a thread of its own so the microphone is still read, and its line is said at the next idle
   moment. Watches are kept in memory, so they end with the service, and `jarvis ask` and the chat do not offer
@@ -63,7 +78,9 @@ Chosen option: 3.
 - **The cost, said plainly.** Each check is a model call with a picture, so it uses the GPU for the length of
   one short answer. That is the owner's request, bounded: at most every 10 seconds, at most twelve hours, at most
   two watches, and nothing at all once none runs. The result of `pc_watch` and its description say so. The
-  watch is not tested against a running game's frame time; until it is, this ADR stays proposed.
+  watch is not tested against a running game's frame time, and nobody has yet measured live how many tokens
+  the server reads from its cache across request, check and request again (the pinned prompt should be shared;
+  the picture message after it is read each time). Until both are measured, this ADR stays proposed.
 - **Audit.** Starting, stopping (with why: the owner, the time, the window, failures, a first line with
   `repeat` off), each announcement and each failed check are audited. Passed checks are not: one every 20
   seconds would bury the log.

@@ -11,6 +11,7 @@ import contextlib
 import functools
 import itertools
 import logging
+import math
 import os
 import queue
 import re
@@ -109,6 +110,8 @@ PRE_ROLL_FRAMES = 5
 # then the request was said straight after the wake word and may start inside the tail.
 TAIL_GAP_FRAMES = 2
 WAKE_DEDUPE_S = 2.0
+SCREEN_GRACE_S = 10.0  # no screen check starts this soon after a request, speech or a line
+SCREEN_LOCK_CACHE_S = 5.0  # how long the answer to "is the screen locked" is kept
 SORRY_INTERNAL = "Sorry, something went wrong on my side."
 NO_SPEECH = "no speech"  # why a capture that timed out before any speech ended
 PC_SPEECH_BLOCKED = "I heard voices from the PC over that, so I didn't count it."
@@ -209,8 +212,8 @@ class Watching(Protocol):
         """Whether a check is due now (cheap: asked between audio frames)."""
         ...
 
-    def check_due(self) -> list[str]:
-        """Make the checks that are due; return the lines to say."""
+    def check_due(self, stop: Callable[[], bool]) -> list[str]:
+        """Make the checks that are due, dropping one when `stop()` turns true; return the lines."""
         ...
 
 
@@ -222,6 +225,10 @@ class _Screens:
     lines: list[str] = field(default_factory=list[str])
     thread: threading.Thread | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+    activity: int = 0  # counts what is not idleness: a wake word, a request, a line said
+    active_at: float = -math.inf  # when the last of them happened (the loop's clock)
+    locked_at: float = -math.inf  # when the screen lock was last asked about, and what it said
+    locked: bool = False
 
 
 class _Speaker(Protocol):
@@ -794,6 +801,7 @@ class VoiceLoop:
         while request is not None:
             self._answered = False
             self._muted = False
+            self._note_activity()
             try:
                 request()
             except MicPausedError:
@@ -806,6 +814,7 @@ class VoiceLoop:
                     self._try_say(SORRY_INTERNAL)
             finally:
                 self.state = State.IDLE
+                self._note_activity()
             request = self._next_request()
 
     def _next_request(self) -> Callable[[], None] | None:
@@ -1133,25 +1142,48 @@ class VoiceLoop:
         self._wake.reset()
         return True
 
-    def _screen_quiet(self) -> bool:
-        """Whether nothing else is going on.
+    def _note_activity(self) -> None:
+        """Note that something other than idleness happened: a screen check in progress drops."""
+        screens = self._screens
+        if screens is not None:
+            screens.activity += 1
+            screens.active_at = self._clock()
 
-        Jarvis is not speaking or paused, the owner is not dictating, no meeting runs and the
-        screen is not locked.
+    def _screen_locked(self, screens: _Screens) -> bool:
+        """Whether the screen is locked, asked at most every few seconds (it starts a program)."""
+        now = self._clock()
+        if now - screens.locked_at >= SCREEN_LOCK_CACHE_S:
+            screens.locked, screens.locked_at = self._locked(), now
+        return screens.locked
+
+    def _screen_quiet(self, screens: _Screens, *, grace: bool) -> bool:
+        """Whether nothing else is going on; asked only when a line or a check is about to start.
+
+        Jarvis is not speaking or paused, with `grace` nothing happened in the last few seconds,
+        the owner is not dictating, no meeting runs and the screen is not locked (asked last: it
+        is the dearest).
         """
-        return not (
-            self._speaker.busy
-            or self._paused()
-            or self._locked()
-            or self._dictating() is not False
-            or self._meeting()
-        )
+        if self._speaker.busy or self._paused():
+            return False
+        if grace and self._clock() - screens.active_at < SCREEN_GRACE_S:
+            return False
+        if self._dictating() is not False or self._meeting():
+            return False
+        return not self._screen_locked(screens)
 
-    @staticmethod
-    def _screen_check(screens: _Screens) -> None:
-        """Make the checks that are due (on the check's own thread) and keep what they say."""
+    def _screen_check(self, screens: _Screens) -> None:
+        """Make the checks that are due (on the check's own thread) and keep what they say.
+
+        A check is dropped as soon as the loop is no longer idle: something was heard, a request
+        began or Jarvis speaks.
+        """
+        seen = screens.activity
+
+        def busy() -> bool:
+            return screens.activity != seen or self.state is not State.IDLE or self._speaker.busy
+
         try:
-            lines = screens.watching.check_due()
+            lines = screens.watching.check_due(busy)
         except Exception:
             log.exception("a screen watch's check failed")
             return
@@ -1161,34 +1193,48 @@ class VoiceLoop:
     def _served_watch(self) -> bool:
         """Say what the screen watches found, and start the next check when one is due.
 
-        Checks start only while the loop is idle; a line is said between requests, as a reminder
-        is. Returns whether something was said.
+        Asked between every two audio frames, so with nothing to say and nothing due it answers
+        at once, without asking whether the owner dictates or the screen is locked. A check starts
+        only while the loop is idle (not within a few seconds of anything else); a line is said
+        between requests, as a reminder is. Returns whether something was said.
         """
         screens = self._screens
-        if screens is None or not self._screen_quiet():
+        if screens is None:
             return False
         with screens.lock:
-            lines, screens.lines = screens.lines, []
-        if lines:
-            with modes.voice_request() as admitted:
-                if not admitted:
-                    with screens.lock:
-                        screens.lines[:0] = lines
-                    return False
-                for line in lines:
-                    self._requests += 1
-                    self._serve(functools.partial(self._say_watch, line))
-            self._mic.drain()
-            self._wake.reset()
-            return True
-        if (screens.thread is None or not screens.thread.is_alive()) and screens.watching.ready():
-            screens.thread = threading.Thread(
-                target=self._screen_check, args=(screens,), name="jarvis-screen-watch", daemon=True
-            )
-            screens.thread.start()
+            waiting = bool(screens.lines)
+        running = screens.thread is not None and screens.thread.is_alive()
+        if not waiting and (running or not screens.watching.ready()):
+            return False
+        if not self._screen_quiet(screens, grace=not waiting):
+            return False
+        if waiting:
+            return self._said_watch(screens)
+        screens.thread = threading.Thread(
+            target=self._screen_check, args=(screens,), name="jarvis-screen-watch", daemon=True
+        )
+        screens.thread.start()
         return False
 
-    def _say_watch(self, line: str) -> None:
+    def _said_watch(self, screens: _Screens) -> bool:
+        """Say the lines the checks made; they stay for later when no request may start now."""
+        with screens.lock:
+            lines, screens.lines = screens.lines, []
+        with modes.voice_request() as admitted:
+            if not admitted:
+                with screens.lock:
+                    screens.lines[:0] = lines
+                return False
+            for line in lines:
+                self._requests += 1
+                self._serve(functools.partial(self._announce, line))
+        self._mic.drain()
+        self._wake.reset()
+        return True
+
+    def _announce(self, line: str) -> None:
+        """Say a line a screen watch made, after a chime: the one way a watch line is said."""
+        self._note_activity()
         self.state = State.SPEAK
         self._chime()
         self._say(line)
@@ -1484,6 +1530,7 @@ class VoiceLoop:
             except queue.Empty:
                 pass
             else:
+                self._note_activity()
                 if self._ignored_while_locked("a PC-audio request"):
                     continue
                 self._requests += 1
@@ -1493,6 +1540,7 @@ class VoiceLoop:
             if self._served_due() or self._served_watch():
                 continue
             if self._wake.heard(frame):
+                self._note_activity()  # a screen check under way gives way
                 if self._ignored_while_locked("the wake word") or self._ignored_while_dictating(
                     "the wake word"
                 ):

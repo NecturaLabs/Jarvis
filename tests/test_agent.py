@@ -32,6 +32,7 @@ from jarvis.agent import (
     TOO_LONG,
     TOO_MANY_STEPS,
     UNDONE,
+    WATCH_CHECK_S,
     Agent,
     Declined,
     Hooks,
@@ -2715,6 +2716,31 @@ def test_the_picture_follows_all_the_results_of_a_message_with_several_calls() -
     assert roles == ["tool", "tool", "user"]  # every result first, then the picture
 
 
+def test_a_screenshot_called_on_the_last_step_is_not_run_and_no_picture_is_shown() -> None:
+    # On the last step the model may only answer: any other call is dropped, never run.
+    ran: list[str] = []
+    shot = Operation(
+        "shot",
+        "take a screenshot",
+        {"type": "object", "properties": {}},
+        lambda _args: ran.append("shot") or Result("Saved a screenshot.", look=SHOT),
+    )
+    counter = Counter()
+    model = ScriptedModel(
+        [_call("pause"), _call("shot", call_id="c2"), _call("no_action", {"reply": "Done."}, "c3")]
+    )
+    agent, audit = _agent(
+        model, [shot, counter.op("pause")], pictures=True, limits=Limits(max_steps=2)
+    )
+
+    reply = agent.handle("pause and look", NO_CONFIRM)
+
+    assert ran == []
+    assert "picture_seen" not in _events(audit)
+    assert all("image_url" not in json.dumps(m) for seen in model.seen for m in seen)
+    assert "screenshot" not in reply.lower()  # no claim of one
+
+
 def test_a_side_effect_after_a_screenshot_nobody_could_see_runs_as_usual() -> None:
     counter = Counter()
     asked: list[str] = []
@@ -2754,6 +2780,11 @@ def test_a_screenshot_without_the_picture_reader_says_so_and_sends_no_picture() 
     assert "base64" not in json.dumps(after)
 
 
+def _answer(text: str) -> dict[str, Any]:
+    """The reply a check forces: a `no_action` call whose `reply` is the answer."""
+    return _call("no_action", {"reply": text})
+
+
 @pytest.mark.parametrize(
     ("answer", "shows"),
     [
@@ -2768,29 +2799,77 @@ def test_a_screenshot_without_the_picture_reader_says_so_and_sends_no_picture() 
     ],
 )
 def test_a_glance_is_a_yes_only_when_the_answer_starts_with_one(answer: str, shows: bool) -> None:
-    model = ScriptedModel([_say(answer)])
+    model = ScriptedModel([_answer(answer)])
     agent, _ = _agent(model, [], pictures=True)
 
     assert agent.glance(SHOT, "a dialog") is shows
 
 
-def test_a_glance_is_one_call_with_no_tools_and_no_memory_and_the_picture_as_data() -> None:
-    model = ScriptedModel([_say("what is this?"), _say("NO")])
+def test_a_glance_reads_only_the_no_action_reply_and_runs_no_call() -> None:
+    counter = Counter()
+    other = _call("pause")
+    other["tool_calls"].insert(0, _call("pause", call_id="c0")["tool_calls"][0])
+    other["content"] = "YES"  # words beside the calls are not the answer
+    model = ScriptedModel([other, _say("YES")])
+    agent, _ = _agent(model, [counter.op("pause")], pictures=True)
+
+    assert agent.glance(SHOT, "a dialog") is False  # no no_action call: no
+    assert agent.glance(SHOT, "a dialog") is False  # only words: no
+    assert counter.runs == []
+
+
+def test_a_glance_with_a_garbled_reply_is_a_no() -> None:
+    call = _answer("YES")
+    call["tool_calls"][0]["function"]["arguments"] = "{not json"
+    agent, _ = _agent(ScriptedModel([call]), [], pictures=True)
+
+    assert agent.glance(SHOT, "a dialog") is False
+
+
+def test_a_glance_starts_like_a_request_with_the_pinned_prompt_and_forces_no_action() -> None:
+    model = ScriptedModel([_say("what is this?"), _answer("NO")])
     agent, audit = _agent(model, [Counter().op("pause")], pictures=True)
     agent.handle("hello", NO_CONFIRM)
 
     agent.glance(SHOT, "a dialog")
 
-    (messages,) = model.seen[1:]
-    assert model.tools_offered[1] == 0
+    messages = model.seen[1]
+    assert model.tools_offered[1] == model.tools_offered[0] > 0  # the request's own tool list
+    assert model.required[1] == "no_action"
     assert [m["role"] for m in messages] == ["system", "user"]  # nothing remembered
-    assert "outside data" in messages[0]["content"]
+    assert messages[0]["content"] == "system"  # the agent's own prompt, so the prefix is shared
     parts = objs(messages[1]["content"])
     assert {"type": "image_url", "image_url": {"url": SHOT.data_url()}} in parts
-    assert "a dialog" in str(parts[-1]["text"])
-    assert model.max_tokens[1] is not None
+    words = str(parts[-1]["text"])
+    assert "a dialog" in words
+    assert "outside data" in words
+    assert "YES or NO" in words
+    assert model.timeouts[1] == WATCH_CHECK_S
+    assert WATCH_CHECK_S < 20
     assert len(agent.memory.turns) == 1  # the glance left no turn
     assert [e["event"] for e in audit.events].count("request") == 1
+
+
+def test_a_glance_holds_the_mode_mark_like_a_request() -> None:
+    marks: list[str] = []
+
+    class Mark:
+        def __enter__(self) -> None:
+            marks.append("in")
+
+        def __exit__(self, *_exc: object) -> None:
+            marks.append("out")
+
+    def answering() -> Mark:
+        return Mark()
+
+    model = ScriptedModel([_answer("NO")], during=lambda: marks.append("call"))
+    agent, _ = _agent(model, [], pictures=True)
+    agent._modes.answering = answering  # pyright: ignore[reportPrivateUsage]
+
+    agent.glance(SHOT, "x")
+
+    assert marks == ["in", "call", "out"]
 
 
 def test_the_agent_says_whether_its_model_sees_pictures() -> None:
