@@ -2960,14 +2960,22 @@ def _no_room(cfg: config.Config, where: str) -> bool:
     return bool(why)
 
 
-def _skipped(cfg: config.Config, where: str) -> bool:
-    """Return whether the model server's unit skipped a start that systemd reported as made.
+def _not_started(cfg: config.Config, where: str) -> bool:
+    """Say so and return True when `systemctl` reported a start and the model server is not running.
 
-    The unit's memory check skips the start without failing it, so `systemctl start` says 0 with
-    the server stopped. The reason is then the memory again: it is printed, as for a refusal up
-    front, when the unit is not running and the load would not fit now.
+    A unit whose condition fails is skipped without failing, so `systemctl start` says 0 with the
+    server stopped: the memory check of its unit, a model file that is not there. When the load
+    would not fit now, that reason is printed, as for a refusal up front.
     """
-    return _unit_state(STRATA_UNIT) not in _RUNNING and _no_room(cfg, where)
+    if _unit_state(STRATA_UNIT) in _RUNNING:
+        return False
+    print(
+        "jarvis: the model server did not start; see jarvis doctor and "
+        "journalctl --user -u jarvis-strata",
+        file=sys.stderr,
+    )
+    _no_room(cfg, where)
+    return True
 
 
 def cmd_start(_args: argparse.Namespace) -> int:
@@ -2981,7 +2989,7 @@ def cmd_start(_args: argparse.Namespace) -> int:
     _reset_failed(STRATA_UNIT, JARVIS_UNIT)
     code = _systemctl("start", STRATA_UNIT, JARVIS_UNIT)
     print(f"jarvis: {_unit_state(JARVIS_UNIT)}, model server: {_unit_state(STRATA_UNIT)}")
-    return code or int(_skipped(cfg, "start"))
+    return code or int(_not_started(cfg, "start"))
 
 
 def cmd_stop(_args: argparse.Namespace) -> int:
@@ -3015,7 +3023,7 @@ def _split_lifecycle(action: str, cfg: config.Config) -> int:
     code = _systemctl(action, unit)
     label = "jarvis" if remote else "Strata backend"
     print(f"{label}: {_unit_state(unit)}")
-    return code or int(action != "stop" and not remote and _skipped(cfg, action))
+    return code or int(action != "stop" and not remote and _not_started(cfg, action))
 
 
 def _prepare_split_unit(cfg: config.Config, action: str) -> int:
@@ -3113,7 +3121,7 @@ def cmd_restart(_args: argparse.Namespace) -> int:
             return 1
         cut = changed and not free
         code = _systemctl("restart" if changed else "start", STRATA_UNIT)
-        if not code and _skipped(cfg, "restart"):
+        if not code and _not_started(cfg, "restart"):
             print("jarvis: the voice service was not restarted", file=sys.stderr)
             return 1
     code = code or _systemctl("restart", JARVIS_UNIT)

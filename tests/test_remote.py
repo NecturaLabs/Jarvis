@@ -29,13 +29,13 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
 
-    def inactive(_unit: str) -> str:
-        return "inactive"
+    def running(_unit: str) -> str:
+        return "active"  # a start systemd reports as made leaves the unit running
 
     def systemctl(*_args: str) -> int:
         return 0
 
-    monkeypatch.setattr(cli, "_unit_state", inactive)
+    monkeypatch.setattr(cli, "_unit_state", running)
     monkeypatch.setattr(cli, "_systemctl", systemctl)
     return tmp_path
 
@@ -155,7 +155,8 @@ Environment=XDG_DATA_HOME=<home>/data
 Environment=PIPEWIRE_REMOTE=/nonexistent
 Environment=PULSE_SERVER=unix:/nonexistent
 EnvironmentFile=<home>/state/jarvis/strata.env
-ExecCondition=<bin>/python -I -m jarvis.ramguard --config <home>/config/jarvis/config.toml \
+ExecCondition=/bin/sh -c "\\"$$@\\"; [ $$? -eq 75 ] && exit 75; exit 0" sh <bin>/python -I -m \
+jarvis.ramguard --config <home>/config/jarvis/config.toml \
 --profile <home>/config/jarvis/strata-profile.json
 ExecStart=<home>/data/strata/terminal/current/bin/strata serve --profile \
 <home>/config/jarvis/strata-profile.json \\

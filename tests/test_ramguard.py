@@ -293,6 +293,31 @@ def test_the_units_check_serves_the_model_in_the_profile_not_the_one_of_the_conf
     assert _run_guard(capsys) == (0, "")
 
 
+@pytest.mark.parametrize("what", ["a folder", "bytes", "args", "no arguments"])
+def test_the_units_check_fails_open_whatever_goes_wrong(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], what: str
+) -> None:
+    # An exit of 1 to 254 would skip the start: only a refusal for memory may exit with a code.
+    services.write_strata_profile(local(tmp_path))
+    meminfo(tmp_path, monkeypatch, available=15 * GIB)
+    config_file, profile = paths.config_file(), services.strata_profile_file()
+    argv = ["--config", str(config_file), "--profile", str(profile)]
+    match what:
+        case "a folder":
+            config_file.unlink()
+            config_file.mkdir()
+        case "bytes":
+            config_file.write_bytes(b"\xff\xfe\x00")
+        case "args":
+            profile.write_text('{"args": 5}', encoding="utf-8")
+        case _:
+            argv = []
+
+    assert ramguard.main(argv) == 0
+
+    assert "memory check could not run" in capsys.readouterr().err
+
+
 def test_the_units_check_blocks_nothing_when_it_cannot_tell(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -301,13 +326,16 @@ def test_the_units_check_blocks_nothing_when_it_cannot_tell(
 
 def _systemctl(monkeypatch: pytest.MonkeyPatch, states: dict[str, str]) -> list[tuple[str, ...]]:
     calls: list[tuple[str, ...]] = []
+    began: set[str] = set()
 
     def systemctl(*args: str) -> int:
         calls.append(args)
+        if args[0] in {"start", "restart"}:
+            began.update(args[1:])  # a start systemd reports as made leaves the unit running
         return 0
 
     def state(unit: str) -> str:
-        return states.get(unit, "inactive")
+        return "active" if unit in began else states.get(unit, "inactive")
 
     monkeypatch.setattr(cli, "_systemctl", systemctl)
     monkeypatch.setattr(cli, "_unit_state", state)
@@ -718,6 +746,15 @@ def test_a_cold_request_at_a_server_that_holds_the_model_is_not_refused() -> Non
     assert not isinstance(raised.value, ModelMemoryError)
 
 
+def test_a_request_while_the_server_says_loading_is_not_refused() -> None:
+    requests: list[str] = []
+
+    with pytest.raises(ModelError, match="without a message") as raised:
+        _client(_short(), requests, state="loading").chat([], [], load_s=60.0)
+
+    assert not isinstance(raised.value, ModelMemoryError)
+
+
 def test_a_request_during_a_load_that_is_under_way_is_not_refused() -> None:
     requests: list[str] = []
     model = _client(_short(), requests)
@@ -821,7 +858,26 @@ def test_a_refused_start_is_audited_with_the_figures(
     assert row["need"] == MODEL
     assert row["available"] == 17 * GIB
     assert row["margin"] == 4 * GIB
+    assert row["credit"] == 0
     assert str(row["path"]).endswith("q4.gguf")
+
+
+def test_a_refusal_records_the_memory_the_server_gave_back_in_what_was_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local(tmp_path)
+    meminfo(tmp_path, monkeypatch, available=2 * GIB)
+    _server_memory(tmp_path, anon=3 * GIB)
+    _systemctl(monkeypatch, {STRATA_UNIT: "active"})
+    monkeypatch.setattr(cli, "_started_at", _started(1.0))
+    cfg = config.load()
+    _install(cfg)
+
+    cli.main(["restart"])
+
+    (row,) = _audited()
+    assert row["credit"] == 3 * GIB
+    assert row["available"] == 5 * GIB
 
 
 def test_a_refused_restart_and_a_start_that_fits_are_audited_as_they_were(
@@ -910,14 +966,50 @@ def test_a_refused_switch_leaves_the_servers_files_as_they_were(tmp_path: Path) 
     assert modes.read_state().pending is None
 
 
+def _alike_coding_config(tmp_path: Path) -> Config:
+    """A config whose coding mode writes the very files the normal mode does."""
+    cfg = local(tmp_path)
+    return cfg.model_copy(
+        update={
+            "coding": config.CodingConfig(
+                context=cfg.strata.context,
+                reasoning_budget_tokens=cfg.strata.reasoning_budget_tokens,
+            )
+        }
+    )
+
+
 def test_a_switch_that_changes_no_file_asks_nothing(tmp_path: Path) -> None:
-    cfg = _coding_config(tmp_path)
+    cfg = _alike_coding_config(tmp_path)
     _install(cfg)
 
     def ram(_served: Config) -> str:
         pytest.fail("no restart follows, so nothing is loaded")
 
-    assert _switcher(cfg, _Units(), ram).switch("normal", "owner").mode == "normal"
+    done = _switcher(cfg, _Units(), ram).switch("coding", "owner")
+
+    assert done.mode == "coding"
+    assert not done.restarted
+
+
+def test_a_switch_after_a_killed_one_restarts_and_asks_even_with_the_same_files(
+    tmp_path: Path,
+) -> None:
+    cfg = _alike_coding_config(tmp_path)
+    _install(cfg)
+    modes._write_state(  # pyright: ignore[reportPrivateUsage] - what a switch killed halfway leaves
+        replace(modes.read_state(), pending="coding")
+    )
+    asked: list[str] = []
+
+    def ram(served: Config) -> str:
+        asked.append(services.model_name(served))
+        return "no room"
+
+    done = _switcher(cfg, _Units(), ram).switch("coding", "owner")
+
+    assert asked
+    assert "no room" in done.error
 
 
 def test_the_unit_check_runs_isolated_and_a_refused_start_is_skipped_not_failed(
@@ -927,10 +1019,16 @@ def test_the_unit_check_runs_isolated_and_a_refused_start_is_skipped_not_failed(
     # does not retry it into the start limit (probed with transient units: no restarts).
     text = services.strata_unit(local(tmp_path), paths.strata_key_file())
 
-    assert "ExecCondition=" + sys.executable + " -I -m jarvis.ramguard" in text
+    (line,) = (x for x in text.splitlines() if x.startswith("ExecCondition="))
+    assert line.startswith("ExecCondition=/bin/sh -c ")
+    assert f" sh {sys.executable} -I -m jarvis.ramguard --config " in line
     assert "ExecStartPre" not in text
     assert "RestartPreventExitStatus=75" not in text
     assert 1 <= ramguard.EXIT_SHORT <= 254
+
+
+def _systemctl_ok(*_args: str) -> int:
+    return 0
 
 
 def _inactive(_unit: str) -> str:
@@ -967,6 +1065,84 @@ def test_start_does_not_report_success_when_the_unit_skipped_its_start(
 
     assert "not enough free memory" in capsys.readouterr().err
     assert ("start", STRATA_UNIT, "jarvis.service") in calls
+
+
+def test_start_does_not_report_success_when_the_server_did_not_start_for_any_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Memory fits both times: the unit was skipped (or failed) for another reason.
+    local(tmp_path)
+    monkeypatch.setattr(cli, "_systemctl", _systemctl_ok)
+    monkeypatch.setattr(cli, "_unit_state", _inactive)
+
+    assert cli.main(["start"]) == 1
+
+    err = capsys.readouterr().err
+    assert "the model server did not start" in err
+    assert "journalctl" in err
+
+
+def test_restart_does_not_report_success_when_the_server_did_not_start_for_any_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    local(tmp_path)
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(*args: str) -> int:
+        calls.append(args)
+        return 0
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+    monkeypatch.setattr(cli, "_unit_state", _inactive)
+    monkeypatch.setattr(cli, "_started_at", _started(None))
+
+    assert cli.main(["restart"]) == 1
+
+    assert "the model server did not start" in capsys.readouterr().err
+    assert ("restart", "jarvis.service") not in calls
+
+
+def _backend(tmp_path: Path) -> Config:
+    cfg = local(tmp_path)
+    cfg = cfg.model_copy(update={"strata": cfg.strata.model_copy(update={"mode": "backend"})})
+    config.save(cfg)
+    return cfg
+
+
+def test_a_backends_restart_is_refused_up_front_with_too_little_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _backend(tmp_path)
+    meminfo(tmp_path, monkeypatch, available=17 * GIB)
+    calls = _systemctl(monkeypatch, {STRATA_UNIT: "active"})
+
+    assert cli.main(["restart"]) == 1
+
+    assert not any(call[0] in {"start", "restart"} for call in calls)
+    assert "not enough free memory" in capsys.readouterr().err
+
+
+def test_a_backends_restart_does_not_report_success_when_the_unit_skipped_its_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _backend(tmp_path)
+    _skipped_start(tmp_path, monkeypatch, on="restart")
+
+    assert cli.main(["restart"]) == 1
+
+    assert "not enough free memory" in capsys.readouterr().err
+
+
+def test_a_backends_start_for_another_reason_is_not_success_either(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _backend(tmp_path)
+    monkeypatch.setattr(cli, "_systemctl", _systemctl_ok)
+    monkeypatch.setattr(cli, "_unit_state", _inactive)
+
+    assert cli.main(["start"]) == 1
+
+    assert "the model server did not start" in capsys.readouterr().err
 
 
 def test_restart_does_not_report_success_when_the_unit_skipped_its_start(

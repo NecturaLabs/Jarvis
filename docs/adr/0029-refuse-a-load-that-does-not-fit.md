@@ -47,7 +47,10 @@ Chosen option 3.
 - **The override is a config key**, `strata.allow_low_ram`, not a command-line flag: the unit's check reads the
   config when it runs, and a flag on `jarvis start` could not reach it. The owner sets it, starts, and turns it
   off again.
-- **What counts as already loaded.** The client guard and `doctor` add what the server's cgroup holds, as the
+- **What counts as already loaded.** The client guard and `doctor` add what the server's cgroup holds (always,
+  also for a running server that lists the model as unloaded: Strata lists a load that another process began as
+  unloaded too, so the load's growing memory cannot be told apart from an idle server's few hundred MiB, and
+  crediting it never costs more than the margin), as the
   restart paths do, and the client asks nothing while a load of its own waits for its answer or the server
   lists the model as loaded: the model's memory is then already out of `MemAvailable`, and refusing would be
   wrong. A load under way in another process has taken part of its memory already, which the same credit
@@ -75,9 +78,18 @@ Chosen option 3.
   `ExecCondition=` that exits 75 skips the start: `systemctl start` exits 0, there are no restarts, the unit
   stays `inactive` and the journal says "Skipped due to 'exec-condition'" with the check's reason. So a
   refused start is not retried, and the reason is in the journal. An `ExecCondition=` that exits 1 to 254
-  skips the start, so a crash of the check itself (a Python traceback exits 1, a venv that moved exits 203)
-  also skips it quietly and leaves the server stopped, with the error in the journal; an exit of 255 or a
-  signal fails the unit.
+  skips the start, so a check that crashes (a Python traceback exits 1, a venv that moved exits 203) would
+  also skip it quietly and leave the server stopped. The check therefore **fails open**, twice. `main` catches
+  every exception and `SystemExit` (a config that is a folder or not UTF-8, a profile with `"args": 5`, bad
+  arguments), says on stderr that the memory check could not run and exits 0. And the command is wrapped:
+  `/bin/sh -c '"$@"; [ $? -eq 75 ] && exit 75; exit 0' sh python -I -m jarvis.ramguard …`, so that only the
+  check's own 75 skips the start and anything else, a missing interpreter (203) included, lets the server
+  start. The quoting was run through systemd with transient user units and a stand-in check: 75 skipped
+  the start; 0, 1, 2, 255 and a program that is not there started it.
+- **`jarvis start` and `jarvis restart` never report a stopped server as started.** After a `systemctl` that
+  says 0, a model server that is not running is a failure: "the model server did not start; see jarvis
+  doctor and journalctl", with the memory reason when the load would not fit. That covers a skipped unit
+  whatever the cause (the memory check, a model file that is not there), on a backend too.
 - **A refused switch writes nothing.** The switch makes the check before it writes the server's files, so a
   refusal leaves their times alone and nothing later sees them as newer than the server.
 - **Option 4 rejected:** `MemoryMax` ends a server that already took the memory, after the other program

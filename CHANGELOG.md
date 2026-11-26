@@ -315,7 +315,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   server's own unit (`ExecCondition=`, which skips the start instead of failing and retrying it) now compare the model file's size with `MemAvailable` and refuse, with
   the figures and nothing started, when the load would leave less than `strata.min_free_ram_mib` (4096).
   `strata.allow_low_ram` loads anyway; `jarvis doctor` reports the check; `jarvis update` skips only the
-  server's restart when it would not fit; each refusal is audited as `ram_refused`. `jarvis setup` or `jarvis restart` writes the
+  server's restart when it would not fit; each refusal is audited as `ram_refused`; the unit's check fails open, and `jarvis start` and `jarvis restart` report a server that did not start. `jarvis setup` or `jarvis restart` writes the
   unit's check ([docs/configuration.md](docs/configuration.md#refusing-a-load-that-does-not-fit),
   [ADR 0029](docs/adr/0029-refuse-a-load-that-does-not-fit.md)).
 - A reply no longer starts with "[looked up: …]": the notes memory puts before a remembered reply are

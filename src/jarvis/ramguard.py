@@ -89,6 +89,7 @@ class Verdict:
     margin: int
     allowed: bool = False
     model: Path | None = None
+    credit: int = 0  # what `available` includes of the memory a stopping server gives back
 
     @property
     def known(self) -> bool:
@@ -142,6 +143,7 @@ def check(model: Path | None, strata: config.StrataConfig, *, credit: int = 0) -
         strata.min_free_ram_mib * _MIB,
         allowed=strata.allow_low_ram,
         model=model,
+        credit=credit,
     )
 
 
@@ -164,6 +166,7 @@ def refusal(where: str, verdict: Verdict) -> str:
         need=verdict.need,
         available=verdict.available,
         margin=verdict.margin,
+        credit=verdict.credit,
         path=str(verdict.model or ""),
     )
     return verdict.text
@@ -211,8 +214,7 @@ def _profile_model(path: Path) -> Path | None:
     return run.model if run.model != Path() else None
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run the unit's check: 0 to start the server, `EXIT_SHORT` (with the reason) not to."""
+def _check(argv: Sequence[str] | None) -> int:
     parser = argparse.ArgumentParser(prog="python -m jarvis.ramguard")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--profile", type=Path, required=True)
@@ -226,6 +228,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"jarvis: {why}", file=sys.stderr)
         return EXIT_SHORT
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the unit's check: 0 to start the server, `EXIT_SHORT` (with the reason) not to.
+
+    It fails open. The unit runs it as an `ExecCondition=`, where any exit of 1 to 254 skips the
+    start, so only a refusal for memory may exit with a code: a check that cannot run says so on
+    stderr and lets the server start.
+    """
+    try:
+        return _check(argv)
+    except SystemExit, Exception:  # ruff: ignore[blind-except] - nothing but a refusal may skip the start
+        print(
+            "jarvis: the memory check could not run, so the model server starts without it",
+            file=sys.stderr,
+        )
+        return 0
 
 
 if __name__ == "__main__":
