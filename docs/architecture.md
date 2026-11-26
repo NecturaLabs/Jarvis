@@ -172,7 +172,7 @@ Jarvis speaks, the `jarvis-barge-in` thread reads the mic and listens for the wa
 `audio.barge_in_threshold`; hearing it hushes the speaker, cancels the request and makes `_serve` take a new
 one (`SPEAK` to `CAPTURE`). A stretch of speech that ends without it logs the closest score heard from
 `NEAR_MISS` (0.2) up. A request the agent answers with no words, or one where the owner asked for quiet
-(`stay_quiet`, which the agent passes on through `Hooks.quiet` even when words were heard first), opens no
+(`stay_quiet`, which the agent passes on through `Hooks.quiet` even when words were heard first; it also hushes what was queued, unless a song was queued in the request, which then plays in full), opens no
 follow-up window. It reads frames only while speech plays or an operation makes a sound (`Hooks.making_sound`, at the usual wake score then, since nothing plays), so it never takes one the loop
 needs, and a sentence the speaker found wake-like (`Speaker.interruptible`) is not spoken over while it plays and for `GUARD_TAIL_S` (1 s) after. After
 speech that was not interrupted, `_end_speaking` drains the capture so Jarvis cannot hear itself. A

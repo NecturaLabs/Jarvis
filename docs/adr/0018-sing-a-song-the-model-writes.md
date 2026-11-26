@@ -47,7 +47,9 @@ CPU singer instead of leaving the owner without a song.
   and only the words sung in it (the score gives each word's seconds), so only a stretch that sounds like it
   cannot be spoken over: a song that names the assistant once is guarded around that word alone, with an
   Azure keyword model too, which wakes on the name without "Hey". A song plays as it was made, its rests
-  included; only a sentence's padding is trimmed.
+  included; only a sentence's padding is trimmed. The model may end a request with no words after a song,
+  `stay_quiet` included: that ends it in silence without the hush that drops what is queued, so the song plays
+  in full. Only the wake word, `jarvis hush` and a pause stop a song once it is queued.
 - **The two engines.** `[sing] engine` is `auto`, `speech` or `soulx`.
   - `speech` (`src/jarvis/sing/psola.py`): Kokoro says the words, Praat's overlap-add stretches each vowel to its
     note and sets its pitch. It uses the Kokoro files Jarvis already has and the new `praat-parselmouth`

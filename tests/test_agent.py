@@ -3827,6 +3827,42 @@ def test_a_sound_a_tool_made_is_played_before_the_reply_that_follows_it() -> Non
     assert tool["content"] == "Singing now."
 
 
+@pytest.mark.parametrize("together", [False, True], ids=["after-it", "beside-it"])
+def test_a_song_then_silence_keeps_the_song_and_says_nothing_more(together: bool) -> None:
+    heard: list[object] = []
+    hushes: list[str] = []
+    quiet: list[str] = []
+    both = _call("sing")
+    both["tool_calls"] += _call("stay_quiet", call_id="c2")["tool_calls"]
+    steps = [both] if together else [_call("sing"), _call("stay_quiet", call_id="c2")]
+    agent, _ = _agent(ScriptedModel(steps), [_singing(), quiet_operation()])
+
+    reply = agent.handle(
+        "sing, then say nothing",
+        Hooks(
+            confirm=lambda _q: False,
+            speak=heard.append,
+            play=heard.append,
+            hush=lambda: hushes.append("hush"),
+            quiet=lambda: quiet.append("quiet"),
+        ),
+    )
+
+    assert not reply
+    assert heard == [SONG]
+    assert not hushes  # the song queued in this request is not cut off
+    assert quiet == ["quiet"]
+
+
+def test_silence_asked_for_without_a_song_still_hushes_what_was_said() -> None:
+    hushes: list[str] = []
+    agent, _ = _agent(ScriptedModel([_call("stay_quiet")]), [quiet_operation()])
+
+    agent.handle("Shut up.", Hooks(confirm=lambda _q: False, hush=lambda: hushes.append("hush")))
+
+    assert hushes == ["hush"]
+
+
 def test_a_channel_that_cannot_play_sound_tells_the_model_nothing_was_sung() -> None:
     model = ScriptedModel([_call("sing"), _say("I can only sing by voice.")])
     agent, audit = _agent(model, [_singing()])

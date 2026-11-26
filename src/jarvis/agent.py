@@ -832,6 +832,7 @@ class _Turn:
     answered: bool = False  # a model call returned: the model is in and working
     last: bool = False  # the request's last step: the model may only answer
     declined: bool = False
+    played: bool = False  # a sound an operation made (a song) was queued to be heard
     tried: bool = False  # a call that could change something: an action, or a tool not offered
     succeeded: bool = False  # an action succeeded; a look-up alone changes nothing
     done: list[str] = field(default_factory=list[str])  # the spoken sentences of those actions
@@ -1556,7 +1557,8 @@ class Agent:
         results = self._run_calls(calls, hooks, turn)
         if any(result.quiet for result in results):
             self._cut(stream)  # the owner asked for silence: no reply, not even words before it
-            hooks.hush()
+            if not turn.played:  # a song asked for in this request still plays, in full
+                hooks.hush()
             hooks.quiet()
             return ""
         answer = self._no_action_reply(calls, results)
@@ -1753,13 +1755,13 @@ class Agent:
         for group in self._side_by_side(calls):
             ran = self._run_group(group, hooks, turn, taint=taint)
             results += (
-                self._record(call, self._play(result, hooks), turn)
+                self._record(call, self._play(result, hooks, turn), turn)
                 for call, result in zip(group, ran, strict=True)
             )
         turn.stuck = any(result is _REPEATED for result in results)
         return results
 
-    def _play(self, result: Result, hooks: Hooks) -> Result:
+    def _play(self, result: Result, hooks: Hooks, turn: _Turn) -> Result:
         """Play the sound a result carries; a channel that cannot play it gets a failure instead."""
         if result.sound is None:
             return result
@@ -1768,6 +1770,7 @@ class Agent:
             return Result(NO_SOUND, ok=False)
         if not hooks.cancelled():
             hooks.play(result.sound)
+            turn.played = True
         return replace(result, sound=None)  # played: the conversation keeps only its words
 
     def _record(self, call: dict[str, Any], result: Result, turn: _Turn) -> Result:
