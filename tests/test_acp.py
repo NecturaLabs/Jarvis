@@ -2033,3 +2033,105 @@ def test_a_session_that_cannot_be_kept_still_gives_its_reply(tmp_path: Path) -> 
         answer = client.response(client.prompt(session, text("hello")))
         assert answer["result"]["stopReason"] == "end_turn"
         assert "reply to hello" in client.said()
+
+
+def test_a_session_open_when_the_kept_ones_were_forgotten_starts_afresh_and_keeps_only_that(
+    tmp_path: Path,
+) -> None:
+    agent = ClearableAgent()
+    store = tmp_path / "acp"
+    with Client(agent, store=store) as client:
+        session = client.start()
+        _finished(client, client.prompt(session, text("secret")))
+        assert any(store.glob(f"{session}.*"))
+
+        acpstore.forget_kept(store)  # the chat's /forget all
+
+        assert not any(store.glob(f"{session}.*"))
+        _finished(client, client.prompt(session, text("again")))
+    assert agent.forgotten == 1  # what it remembered was forgotten before it answered
+    assert agent.turns == [("again", "reply to again")]
+    kept = json.loads((store / f"{session}.chat.memory.json").read_text(encoding="utf-8"))
+    assert kept == [["again", "reply to again"]]
+
+
+def test_a_reply_that_began_before_the_kept_sessions_were_forgotten_is_not_written_back(
+    tmp_path: Path,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow(_text: str, _hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        started.set()
+        assert release.wait(WAIT_S)
+        return "done"
+
+    agent = ClearableAgent()
+    agent.script = slow
+    store = tmp_path / "acp"
+    with Client(agent, store=store) as client:
+        session = client.start()
+        request = client.prompt(session, text("work"))
+        assert started.wait(WAIT_S)
+
+        acpstore.forget_kept(store)
+        release.set()
+
+        assert client.response(request)["result"]["stopReason"] == "end_turn"
+    assert not any(store.glob(f"{session}.*"))
+
+
+def test_a_session_forgotten_while_it_is_being_written_leaves_nothing_behind(
+    tmp_path: Path,
+) -> None:
+    store = tmp_path / "acp"
+
+    class Forgotten(ClearableAgent):
+        @override
+        def save(self, path: Path) -> None:
+            super().save(path)
+            acpstore.forget_kept(store)  # the owner's /forget all, between two of its files
+
+    with Client(Forgotten(), store=store) as client:
+        session = client.start()
+        _finished(client, client.prompt(session, text("hello")))
+
+    assert not any(store.glob(f"{session}.*"))
+
+
+def test_a_conversation_begun_after_the_kept_sessions_were_forgotten_is_kept(
+    tmp_path: Path,
+) -> None:
+    agent = ClearableAgent()
+    store = tmp_path / "acp"
+    with Client(agent, store=store) as client:
+        old = client.start()
+        _finished(client, client.prompt(old, text("before")))
+        acpstore.forget_kept(store)
+
+        new = client.start()
+        _finished(client, client.prompt(new, text("after")))
+        _finished(client, client.prompt(new, text("and after")))
+
+    assert any(store.glob(f"{new}.*.memory.json"))
+    assert agent.forgotten == 0  # a session begun after the forget has nothing to forget
+    assert not any(store.glob(f"{old}.*"))
+
+
+def test_a_session_loaded_after_the_kept_sessions_were_forgotten_is_not_cleared_again(
+    tmp_path: Path,
+) -> None:
+    store = tmp_path / "acp"
+    with Client(ClearableAgent(), store=store) as first:
+        session = first.start()
+        _finished(first, first.prompt(session, text("one")))
+    acpstore.forget_kept(store)
+    later = ClearableAgent()
+    with Client(later, store=store) as second:
+        second.ask("initialize", {"protocolVersion": 1})
+        second.ask("session/load", {"sessionId": session, "cwd": "/", "mcpServers": []})
+        _finished(second, second.prompt(session, text("two")))
+        _finished(second, second.prompt(session, text("three")))
+    assert later.forgotten == 0
+    kept = json.loads((store / f"{session}.chat.memory.json").read_text(encoding="utf-8"))
+    assert kept == [["two", "reply to two"], ["three", "reply to three"]]

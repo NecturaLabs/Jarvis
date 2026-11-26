@@ -161,3 +161,14 @@ T3 Code treats any error as a failed thread. The chat's privacy settings cover t
 them, also with `chat.archive_keep = 0`, where sessions kept before would otherwise stay until the
 next `jarvis acp` starts. `/clear`, the command the protocol lets a client offer, forgets one session
 without the model.
+
+A running `jarvis acp` still holds its sessions' turns in memory when `/forget all` deletes the files,
+and its next reply would write them back. So `forget_kept` first writes the time to a `forgotten` file in
+the folder (and puts the earlier time back if the deletion fails, since then nothing was forgotten), and
+each session remembers when it was opened or loaded. A session opened before that time forgets what it
+remembered before its next request begins (`acp_forgotten` in the audit log) and then keeps its new turns
+as a new conversation; a reply that was already being answered when the files were deleted is not
+written, and files written while the deletion ran are taken back. A session opened or loaded after
+the time is never touched, so no conversation the owner did not forget is lost. The time is a file because
+`jarvis acp` and the chat window are separate processes; clearing the agent's memory at once would need
+a channel to every running `jarvis acp`, and the check at the start of a request needs none.

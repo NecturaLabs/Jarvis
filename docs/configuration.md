@@ -1115,7 +1115,9 @@ newest 200), so when T3 Code starts a new `jarvis acp` for a thread it already h
 restarts, the thread opens again with its conversation (`session/load`) and goes on. `/clear` in the
 thread forgets the conversation and starts it afresh, as in the chat window; Jarvis offers it in T3 Code's
 command list and runs it itself, without the model, also while a question waits (it is declined) or a
-stopped request ends. With `chat.archive_keep = 0` no session is kept.
+stopped request ends. With `chat.archive_keep = 0` no session is kept. After the chat's `/forget all`, a thread
+that is open in a running `jarvis acp` forgets what it remembered before its next reply and keeps only what
+is said after.
 
 `jarvis acp` can show an announcement (a reminder) as soon as it is
 made, once you turn `push_to_t3` on, by sending it into the newest open T3 Code thread of the project a session was opened in whose

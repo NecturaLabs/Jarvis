@@ -55,7 +55,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, TextIO, runtime_checkable
 
-from jarvis.acpstore import SESSION_ID, prune
+from jarvis.acpstore import SESSION_ID, forget_session, forgotten_at, prune
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.announce import Announcement
 from jarvis.config import EFFORTS
@@ -241,6 +241,7 @@ class _Session:
     model: str = ""  # the chosen `ModelChoice.id`, "" when the server offers none
     effort: str = ""
     agents: dict[str, AgentSession] = field(default_factory=dict[str, AgentSession])
+    synced: float = field(default_factory=time.time)  # when its memory last matched the store
 
     def keep(self, note: Announcement | Delivery) -> None:
         """Keep this copy of the announcement for the next reply."""
@@ -545,6 +546,7 @@ class AcpServer:
         if full and all(session.run is not None for session in self._sessions.values()):
             raise _Rpc(INTERNAL_ERROR, f"at most {MAX_SESSIONS} sessions at once, all busy")
         session_id = f"jarvis-{secrets.token_hex(6)}"
+        opened = time.time()
         first = self._models[0] if self._models else None
         model = first.id if first is not None else ""
         agent = self._agent_for(session_id, model)
@@ -554,7 +556,7 @@ class AcpServer:
             self._evict_idle()
         cwd = params.get("cwd")
         folder = cwd if isinstance(cwd, str) and cwd.startswith("/") and "\0" not in cwd else ""
-        session = _Session(session_id, agent, cwd=folder, model=model)
+        session = _Session(session_id, agent, cwd=folder, model=model, synced=opened)
         if first is not None:
             session.effort = first.effort
             session.agents[model] = agent
@@ -582,14 +584,37 @@ class AcpServer:
         self._result(request_id, {"stopReason": "end_turn"})
 
     def _forget(self, session: _Session) -> None:
-        agents = session.agents or {session.model: session.agent}
-        for agent in agents.values():
-            if isinstance(agent, Forgets):
-                agent.forget()
+        self._forget_memory(session)
         if self._store is not None:
             for path in self._store.glob(f"{session.id}.*.memory.json"):
                 path.unlink(missing_ok=True)
         self._audit("acp_cleared", session=session.id)
+
+    @staticmethod
+    def _forget_memory(session: _Session) -> None:
+        """Make every agent of the session forget its conversation; it matches the store again."""
+        agents = session.agents or {session.model: session.agent}
+        for agent in agents.values():
+            if isinstance(agent, Forgets):
+                agent.forget()
+        session.synced = time.time()
+
+    def _answer(
+        self, session: _Session, hooks: Hooks, text: str, pictures: Sequence[Picture]
+    ) -> str:
+        """Return the agent's reply to a request.
+
+        The agent first forgets what it remembers when the kept sessions were forgotten after the
+        session was opened.
+        """
+        if self._forgotten(session):
+            self._forget_memory(session)
+            self._audit("acp_forgotten", session=session.id)
+        return session.agent.handle(text, hooks, pictures=pictures)
+
+    def _forgotten(self, session: _Session) -> bool:
+        """Whether the kept sessions were forgotten after this one's memory was read or cleared."""
+        return self._store is not None and forgotten_at(self._store) > session.synced
 
     def _agent_for(self, session_id: str, model: str) -> AgentSession:
         """Make a session's agent for `model`, with its kept conversation when there is one.
@@ -614,16 +639,13 @@ class AcpServer:
     def _keep(self, session: _Session) -> None:
         """Write the session's conversations and its mode and effort to the store."""
         store = self._store
-        if store is None:
-            return
-        agents = session.agents or {session.model: session.agent}
-        meta = {"model": session.model, "effort": session.effort, "at": time.time()}
+        if store is None or self._forgotten(session):
+            return  # forgotten since it was read: what it remembers is not written back
         try:
-            store.mkdir(mode=0o700, parents=True, exist_ok=True)
-            for model, agent in agents.items():
-                if isinstance(agent, Kept):
-                    agent.save(self._kept_file(store, session.id, model))
-            write_atomic(store / f"{session.id}.json", json.dumps(meta), mode=0o600)
+            self._write_kept(store, session)
+            if self._forgotten(session):  # forgotten while it wrote: take it back
+                forget_session(store, session.id)
+                return
         except OSError as exc:
             log.warning("the session could not be kept: %s", exc)
             return
@@ -631,6 +653,15 @@ class AcpServer:
             log.exception("the session could not be kept")
             return
         prune(store)
+
+    def _write_kept(self, store: Path, session: _Session) -> None:
+        agents = session.agents or {session.model: session.agent}
+        meta = {"model": session.model, "effort": session.effort, "at": time.time()}
+        store.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for model, agent in agents.items():
+            if isinstance(agent, Kept):
+                agent.save(self._kept_file(store, session.id, model))
+        write_atomic(store / f"{session.id}.json", json.dumps(meta), mode=0o600)
 
     @staticmethod
     def _kept_meta(store: Path, session_id: str) -> dict[str, Any]:
@@ -656,6 +687,7 @@ class AcpServer:
         full = len(self._sessions) >= MAX_SESSIONS
         if full and all(session.run is not None for session in self._sessions.values()):
             raise _Rpc(INTERNAL_ERROR, f"at most {MAX_SESSIONS} sessions at once, all busy")
+        opened = time.time()  # before the kept files are read: a forget after it is seen
         meta = self._kept_meta(self._store, session_id) if self._store is not None else {}
         choice = next((m for m in self._models if m.id == meta.get("model")), None)
         choice = choice or (self._models[0] if self._models else None)
@@ -669,7 +701,9 @@ class AcpServer:
             self._evict_idle()
         cwd = params.get("cwd")
         folder = cwd if isinstance(cwd, str) and cwd.startswith("/") and "\0" not in cwd else ""
-        session = _Session(session_id, agent, cwd=folder, model=model, effort=str(effort or ""))
+        session = _Session(
+            session_id, agent, cwd=folder, model=model, effort=str(effort or ""), synced=opened
+        )
         if choice is not None:
             session.agents[model] = agent
         self._sessions[session_id] = session
@@ -1025,7 +1059,7 @@ class AcpServer:
             condensed=lambda note: self._note(session, run, note),
         )
         try:
-            reply = session.agent.handle(text, hooks, pictures=pictures)
+            reply = self._answer(session, hooks, text, pictures)
             self._keep(session)
             if not run.cancel.is_set():
                 self._finish(session, run, reply)
