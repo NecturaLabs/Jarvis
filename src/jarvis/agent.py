@@ -242,7 +242,8 @@ _COPIED_HEAD = re.compile(
     r'|<data origin="[a-z_]*">\s*)+',
     re.IGNORECASE,
 )
-_COPIED_TAIL = re.compile(r"\s*</data>\s*$")
+_DATA_TAG = re.compile(r"(?P<space>\s*)(?:(?P<open><data(?:\s[^>]*)?>)|</data>)(?P<after>\s*)")
+_COPIED_START = re.compile(r"<(?:d(?:a(?:t(?:a)?)?)?)?$|<data\s[^>]*$")
 _REPLY_KEY = '{"reply":"'
 _REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
 _WRAPPED = re.compile(r'(?P<head><data origin="[a-z_]+">)(?P<body>.*)</data>', re.DOTALL)
@@ -305,14 +306,34 @@ def _clauses(text: str) -> list[tuple[str, bool]]:
 def own_words(reply: str) -> str:
     """Return a reply without what the model copied from how memory shows an earlier reply.
 
-    That is the notes before it and, round a reply that drew on outside text, the data wrapper.
+    That is the notes before it and, round a reply that drew on outside text, the data wrapper:
+    its opening tag at the start and the closing tag that pairs with it, wherever that is.
     Only a reply that starts with them is changed: a tag further in is the reply's own words.
     """
     head = _COPIED_HEAD.match(reply)
     if head is None:
         return reply
     rest = reply[head.end() :]
-    return _COPIED_TAIL.sub("", rest) if "<" in head.group() else rest
+    wrappers = head.group().count("<data")
+    if not wrappers:
+        return rest
+    parts: list[str] = []
+    own = 0  # opening tags of the reply's own, whose closing tag is its own too
+    done = 0
+    for tag in _DATA_TAG.finditer(rest):
+        if tag.group("open"):
+            own += 1
+        elif own:
+            own -= 1
+        else:
+            gap = tag.group("space") + tag.group("after")
+            joined = "" if tag.end() == len(rest) else "\n" if "\n" in gap else gap and " "
+            parts.extend((rest[done : tag.start()], joined))
+            done = tag.end()
+            wrappers -= 1
+            if not wrappers:
+                break
+    return "".join((*parts, rest[done:]))
 
 
 def _model_failure(error: Exception) -> str:
@@ -500,7 +521,11 @@ class _ReplyStream:
         if self._held:
             return
         words = self._words()
-        if words is None or words.startswith(("[", "<")):  # not a reply, or memory's marks copied
+        if words is not None and words.startswith("<"):
+            words = own_words(words)  # a wrapper copied from memory is not spoken
+            if _COPIED_START.match(words):
+                return  # it may yet turn out to be a wrapper: wait for more
+        if words is None or words.startswith("["):  # not a reply, or memory's notes copied
             self._held = words is not None or self._source == "reply"
             return
         while (end := sentence_end(words, len(self.spoken))) is not None:
