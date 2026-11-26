@@ -502,6 +502,8 @@ def test_the_toolbox_group_names_are_the_use_tools_choices(
     assert enum == [group.name for group in registry.groups()]
     assert group_name("use_tools") == "core"
     assert registry.core_names() == [
+        "todo_write",
+        "ask_owner",
         "think_harder",
         "switch_model",
         "use_tools",

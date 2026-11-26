@@ -8,6 +8,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- A todo list and a choice picker in the chat. Jarvis keeps a todo list for work of several steps (`todo_write`:
+  up to 20 tasks, one in progress), shown above the input and folded to one line when all is done or the window is
+  short; Ctrl+T folds and opens it; `/compact` keeps it and `/clear` empties it. It can put a choice to you
+  (`ask_owner`: 2 to 4 options, always with its recommended one marked and listed first, `Other` added, several
+  at once if asked) and carries on while it waits, or pauses the request for the answer. With no answer in
+  `chat.ask_timeout_s` (default 300 s, `0` waits for ever, set in `/config` too) the question closes with a note
+  and Jarvis goes on with what it judges best. An answer is never a yes to an action, and the countdown stops
+  while one is asked about. Chat only. See [ADR 0026](docs/adr/0026-ask-the-owner-never-consent.md).
 - `find_processes` without a name lists every running program of the owner's, each with its processes'
   memory and CPU use added up, sorted by memory, CPU or newest (`sort`, `count`). Jarvis can answer what is
   running or what uses the most; the listing binds no PID, so stopping one still goes through a by-name find
@@ -311,6 +319,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 - T3 Code's model menu lists Jarvis's modes as `Normal` and `Coding`, short enough to read; the model's
   name moved into each mode's description, where it no longer cuts the title off.
+- The model no longer switches modes, either way, to answer a question about them. A needless switch
+  restarts the model server.
 - A T3 Code thread goes on after Jarvis or T3 Code restarts. `jarvis acp` keeps each session's
   conversation and answers `session/load`, so the app reopens the thread instead of failing with
   "Provider session failed to open"; the remembered turns are sent back and the conversation goes on.

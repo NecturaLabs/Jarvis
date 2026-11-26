@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, BinaryIO, cast
 
+from jarvis.memory import NOTED
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -202,6 +204,8 @@ def _action(op: object) -> str:
 
 def _request(entry: dict[str, object]) -> _Line:
     words = full_text(entry.get("text", ""))
+    if entry.get("source") == "note":  # Jarvis's own note began it: not something the owner said
+        return "note", words.removeprefix(NOTED).strip(), False, ""
     if entry.get("origin") == "pc_audio":
         return "pc", words, False, "PC audio"
     if entry.get("via") in {"chat", "ask"}:

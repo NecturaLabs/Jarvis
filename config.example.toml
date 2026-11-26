@@ -85,6 +85,9 @@ response_format = "concise"
 history_size = 1000
 # Chat conversations kept for /resume; 0 keeps none.
 archive_keep = 50
+# Seconds a question Jarvis puts to you (a picker) waits before it closes and Jarvis goes on with
+# what it judges best; 0 waits forever.
+ask_timeout_s = 300
 
 # How the jarvis-strata service runs the model; `jarvis setup` writes these into its profile.
 # The model, its engine and its flags come from Strata's own run config: run `strata launch` for

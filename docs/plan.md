@@ -31,7 +31,7 @@ voice service ([0011](adr/0011-reminders-and-scheduled-requests.md)); speech hea
 ([0003](adr/0003-pc-audio-is-not-the-owner.md)); plain commands skip the model
 ([0004](adr/0004-model-free-path-for-plain-commands.md); no new ones, [0013](adr/0013-free-speech-no-new-shortcuts.md)); no hosted backend
 ([0005](adr/0005-local-only.md)); a coding mode with its own model on the one model server, switched by the owner
-or by the model ([0017](adr/0017-coding-mode.md)); a tool router, `tools = "routed"` (every operation in a group, a toolbox in the prompt and `use_tools`), built and off by default until a live benchmark shows it as accurate and not slower ([0022](adr/0022-tool-router.md)). Also built: a vocabulary hint for speech-to-text, a check that a spoken
+or by the model ([0017](adr/0017-coding-mode.md)); a todo list and a choice picker in the chat, with a timer, whose answers are never consent ([0026](adr/0026-ask-the-owner-never-consent.md)); a tool router, `tools = "routed"` (every operation in a group, a toolbox in the prompt and `use_tools`), built and off by default until a live benchmark shows it as accurate and not slower ([0022](adr/0022-tool-router.md)). Also built: a vocabulary hint for speech-to-text, a check that a spoken
 reply does not claim an action no tool did, and `jarvis doctor` hashing model files against pinned releases.
 
 Where the code settled a number the plan left open: a request stops after 90 s, or 270 s when the model must load first (plan: 60 s), the conversation

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from jarvis import (
     __version__,
+    askowner,
     calc,
     handoff,
     modes,
@@ -22,6 +23,7 @@ from jarvis import (
 )
 from jarvis.about import AboutOps
 from jarvis.agent import SWITCH_MODEL, Agent, Limits, Setup
+from jarvis.askowner import Questions
 from jarvis.audit import AuditLog
 from jarvis.model import StrataModel
 from jarvis.operations import (
@@ -60,6 +62,9 @@ from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
 from jarvis.sysinfo import Sampler
+from jarvis.todos import NAME as TODO_NAME
+from jarvis.todos import TodoList
+from jarvis.todos import operation as todo_operation
 from jarvis.toolgroups import USE_TOOLS
 from jarvis.web import browser, browserops
 from jarvis.web.arctic import ArcticShift
@@ -163,7 +168,8 @@ def switch_operation(config: Config, *, coding: bool) -> Operation:
         about = (
             "Call this alone when the owner says the programming work is over or asks for the "
             f"{back_to} back, however they put it. Jarvis leaves coding mode and you answer "
-            "again there. Never while programming work is still asked for."
+            "again there. Never while programming work is still asked for, or for a question "
+            "about the modes."
         )
     else:
         about = (
@@ -171,7 +177,8 @@ def switch_operation(config: Config, *, coding: bool) -> Operation:
             "writing, changing or fixing code, building a program, site, game or script, or "
             "going on with a software project, however the owner puts it. Jarvis moves to "
             f"coding mode ({modes.model_name(config, 'coding')}, more room to think and write) "
-            "and you work the request out again there. Never for anything else."
+            "and you work the request out again there. Never for anything else, a question "
+            "about the modes included."
         )
     if config.strata.mode == "remote":
         about += " This changes Jarvis's settings. Strata continues serving the same model."
@@ -362,6 +369,8 @@ class Jarvis:
     modes: AgentModes | None = None  # the chat tells it when its settings change (`restyle`)
     pictures: bool = False
     watch: ScreenWatch | None = None  # the voice service's screen watches (`pc_watch`)
+    todos: TodoList | None = None  # the chat's todo list, which its window shows
+    questions: Questions | None = None  # the chat's picker: its window answers and ticks it
 
 
 class AgentModes:
@@ -690,6 +699,8 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     browsers: dict[str, browser.Browser] | None = None,
     off: Collection[str] = (),
     watching: ScreenWatch | None = None,
+    todos: TodoList | None = None,
+    questions: Questions | None = None,
 ) -> Registry:
     """Return every operation a channel's agent is offered, sized to its limits.
 
@@ -703,7 +714,8 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     Operations named in `off` are left out before anything is derived from the rest, so a routed
     agent's `use_tools` offers, and its toolbox lists, only groups that still have a tool.
     The screen watch tools (`pc_watch` and two more) are offered only with `watching`, the voice
-    service's: a watch lives in that process.
+    service's: a watch lives in that process. The chat channel also has `todo_write` and
+    `ask_owner`, over the window's `todos` and `questions` (fresh ones when not given).
     """
     room = limits.tool_text_chars - PAGE_HEADROOM
     pages = room if channel == "chat" else min(config.research.page_chars, room)
@@ -751,6 +763,14 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
         ),
         *([quiet_operation()] if channel == "voice" else []),
         *([handoff.operation()] if channel == "voice" else []),
+        *(
+            [
+                todo_operation(todos or TodoList()),
+                askowner.operation(questions or Questions(config.chat.ask_timeout_s)),
+            ]
+            if channel == "chat"
+            else []
+        ),
         *(SingOps(singer_for(config)).operations() if channel == "voice" else []),
         *([think] if (think := think_operation(limits)) is not None else []),
         *([switch_operation(config, coding=coding)] if switches_itself(config, channel) else []),
@@ -761,7 +781,13 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
         groups = [group.name for group in Registry(ops).groups()]
         ops.insert(-1, use_tools_operation(groups))
     return Registry(
-        ops, resets=(online.reset, *((browsing.reset,) if browsing is not None else ()))
+        ops,
+        resets=(
+            online.reset,
+            *((browsing.reset,) if browsing is not None else ()),
+            *((todos.clear,) if todos is not None else ()),
+            *((questions.reset,) if questions is not None else ()),
+        ),
     )
 
 
@@ -794,6 +820,8 @@ SOUNDLESS = frozenset({"ask", "speech-test", "acp"})
 WRITTEN = frozenset({"chat", "acp"})
 # Tools that show the owner a picture in the chat window, which `jarvis acp` has no place for.
 SHOWS_PICTURES = frozenset({"image_search", "show_image"})
+# Tools that draw in the chat window itself (the todo panel, the picker), which no other caller has.
+CHAT_WINDOW_ONLY = frozenset({TODO_NAME, askowner.NAME})
 # How Jarvis answers, not tools: never switched off.
 ALWAYS_OFFERED = frozenset({"no_action", "think_harder", "stay_quiet", USE_TOOLS})
 
@@ -907,12 +935,15 @@ def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; 
     listening: Listening | None = None,
     browsers: dict[str, browser.Browser] | None = None,
     watching: ScreenWatch | None = None,
+    todos: TodoList | None = None,
+    questions: Questions | None = None,
 ) -> Registry:
     """Return the operations an agent offers in a mode, without what is switched off.
 
     `config` is the mode's own (`modes.effective`). A tool switched off is not offered at all:
     by `boundaries.classes`, by coding mode's `tools_off`, `sing` and `chat_hand_off` where the
     caller cannot play a sound (`via`), the picture tools where it cannot show one (`jarvis acp`),
+    the todo list and the picker (`todo_write`, `ask_owner`) anywhere but in the chat window,
     and `switch_model` where there is no model server to switch (`can_switch`).
     """
     off: set[str] = {
@@ -920,6 +951,7 @@ def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; 
         *(config.coding.tools_off if coding else ()),
         *(MAKES_SOUND | {handoff.NAME} if via in SOUNDLESS else ()),
         *(SHOWS_PICTURES if via == "acp" else ()),
+        *(CHAT_WINDOW_ONLY if via != "chat" else ()),
     }
     if not can_switch:
         off.add(SWITCH_MODEL)
@@ -933,6 +965,8 @@ def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; 
         listening=listening,
         browsers=browsers,
         watching=watching,
+        todos=todos,
+        questions=questions,
         off=off,  # a tool switched off is not offered at all, nor counted in the router's groups
     )
 
@@ -1051,6 +1085,8 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
     watch = _screen_watch(audit) if via is None else None  # only the voice service runs watches
     elsewhere = via in {*WRITTEN, "ask"}  # the voice service says reminders; is one running?
     shared_profile = mode is not None and not modes.own_model(config)
+    todos = TodoList() if via == "chat" else None  # both modes share them: one conversation
+    questions = Questions(config.chat.ask_timeout_s) if via == "chat" else None
 
     def setup(
         mode: modes.Mode,
@@ -1074,6 +1110,8 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
             listening=listening,
             browsers=browsers,
             watching=watch,
+            todos=todos,
+            questions=questions,
         )
         prompt = system_prompt(cfg, channel, coding=coding, registry=registry)
         client = model if shared_profile and model.remote else strata_model(cfg, key)
@@ -1130,4 +1168,6 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
         agent_modes,
         normal.pictures,
         watch,
+        todos,
+        questions,
     )

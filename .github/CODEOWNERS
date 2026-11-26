@@ -19,6 +19,7 @@
 /src/jarvis/confirmkey.py        @Nectura
 /src/jarvis/control.py           @Nectura
 /src/jarvis/handoff.py           @Nectura
+/src/jarvis/askowner.py          @Nectura
 /src/jarvis/shortcuts.py         @Nectura
 /src/jarvis/ratelimit.py         @Nectura
 /src/jarvis/audit.py             @Nectura

@@ -165,7 +165,7 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 | `thinking_max` | `high` | `none`, `low`, `medium`, `high`, and not below `thinking` | The most the model may raise its own effort to, for the rest of one request, when it judges the request needs careful thought (several steps, a name it may have misheard, a correction, a try that failed). It does so with the `think_harder` tool, which is offered only when this is above `thinking`: set it to the same as `thinking` to keep one effort. The effort never drops within a request, and each request starts at `thinking` again. Raising to `low` or `high` can cost the model one more read of its whole prompt on Qwen3.8 ([models.md](models.md#thinking)). The tool's class is `safe`; `think_harder = "deny"` under `[boundaries.classes]` also switches it off. |
 | `thinking_raised_tokens` | `768` | 32 to 8192 | The most the model thinks before each answer once it raised its effort: about 12 s at most for speech. A raised call never gets less than `thinking_tokens` when a request starts above `none`. The context keeps room for the larger of the two. |
 | `browser` | `false` | `true`, `false` | Offer the headless browser tools (`browser_open`, `browser_act`; see [`[browser]`](#browser-the-headless-browser)) to spoken requests and `jarvis ask`, when agent-browser is installed. Off by default: speech is for quick commands, and clicking or typing on a page always waits for your spoken yes. |
-| `tools` | `all` | `all`, `routed` | Which tools each model call offers. `all`: every tool, every call. `routed`: a request starts with only the core tools (`no_action`, `stay_quiet`, `chat_hand_off` while a chat window is open, `think_harder`, `switch_model`, `use_tools`), the system prompt holds a toolbox of the tool groups, and the model calls `use_tools` with the groups the request needs; their tools are offered from its next call to the end of that request, and a tool of a group it has not asked for is not run. It sends about 6,600 fewer tokens a call, and the model server re-reads the prompt after the system text when the tools change, so it is an experiment ([ADR 0022](adr/0022-tool-router.md)). `use_tools` is a `safe` tool like any other and cannot be switched off while `routed`. Also valid in `[chat]`. |
+| `tools` | `all` | `all`, `routed` | Which tools each model call offers. `all`: every tool, every call. `routed`: a request starts with only the core tools (`no_action`, `stay_quiet`, `chat_hand_off` while a chat window is open, `todo_write` and `ask_owner` in the chat window, `think_harder`, `switch_model`, `use_tools`), the system prompt holds a toolbox of the tool groups, and the model calls `use_tools` with the groups the request needs; their tools are offered from its next call to the end of that request, and a tool of a group it has not asked for is not run. It sends about 6,600 fewer tokens a call, and the model server re-reads the prompt after the system text when the tools change, so it is an experiment ([ADR 0022](adr/0022-tool-router.md)). `use_tools` is a `safe` tool like any other and cannot be switched off while `routed`. Also valid in `[chat]`. |
 
 A spoken reply that drew on outside text (a web page, a song name) is remembered as data, as in the chat: a
 follow-up such as "what was the second one?" has it, and while it is remembered an action the model chooses
@@ -201,8 +201,44 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 | `toolbar` | `true` | `true`, `false` | The line under the input with the PC's CPU, GPU, VRAM and RAM use, temperatures, and how full the model's context is. In a narrow window it leaves out the temperatures first, so it stays on one line. |
 | `while_working` | `steer` | `steer`, `queue` | What Enter does while a request runs. `steer`: the words join that request as yours, before the model's next call; words it ended before taking run next. `queue`: they wait and run as the next request. Words sent with a picture or with anything pasted into them, however short, are always queued. Esc still stops the request; queued words then run. `/config` changes it. |
 | `response_format` | `concise` | `concise`, `normal`, `verbose` | How the model writes chat replies: briefly, in a few sentences and without headings; as much as the request needs; or explained in full, with headings for a long answer. `/format` and `/config` change it, from the next request on. The voice keeps its own short spoken style. |
+| `ask_timeout_s` | `300` | 0 to 86400 | Seconds a question Jarvis puts to you (`ask_owner`, a picker above the input) waits for an answer before it closes, shows a note, and Jarvis goes on with what it judges best, the option it marked as recommended unless something else is better. `0` waits for ever. The countdown shows on the picker and stops while the chat asks you yes or no about an action. `/config` changes it at once, for the next question. See [the todo list and questions](#the-todo-list-and-questions-in-the-chat). |
 | `archive_keep` | `50` | 0 to 1000 | Chat conversations kept in `~/.local/state/jarvis/chat-archive/` (0600) for `/resume` and reading back: each with its full log of requests, steps, results and replies. Older ones are deleted; `0` keeps none, deletes those kept before when the chat opens, and turns `/resume` off; it also keeps no T3 Code sessions (`jarvis acp`). `/forget all` deletes them all, T3 Code's kept sessions too, and forgets the conversation in the window. A conversation is written once it has a request; opening and closing the chat writes no copy of the one it remembers. |
 | `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, with what was pasted into each, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
+
+### The todo list and questions in the chat
+
+Two tools exist only in the chat window (`jarvis chat`): not by voice, not in `jarvis ask`, and not in `jarvis acp`,
+which has no window to draw them in. Both are class `safe`, change nothing outside the chat, are audited like any call
+and can be switched off with `todo_write = "deny"` or `ask_owner = "deny"` under `[boundaries.classes]`.
+
+- **`todo_write`** keeps the conversation's todo list: up to 20 tasks, each `pending`, `in_progress` or `completed`,
+  at most one in progress. The model sends the whole list each time and keeps it current as it works on a request
+  of several steps. The list shows as a compact panel above the input: `☐` waiting, `▶` in progress (lit), `☑`
+  done (dim and struck through). With every task done, or in a window 24 rows tall or less, it folds to one line
+  (how many are done and what is being done now); it is hidden while empty and while `/config` is open. **Ctrl+T**
+  folds an open list or opens a folded one, and the choice holds until `/clear`. The list goes with the
+  conversation: `/compact` leaves it, `/clear` and `/resume` empty it.
+- **`ask_owner`** puts a question with 2 to 4 options to you as a picker above the input, titled with a header of at
+  most 12 characters. The option Jarvis would pick comes first, marked `(Recommended)`; the model must always say
+  which. The chat adds `Other (type an answer)`. Keys: ↑ ↓ and Enter, a number picks that row, Esc closes the
+  question (Jarvis then goes on with its own pick; Esc again stops the request, and Ctrl+C stops a request
+  that waits on a question at once). In a multiple-choice question,
+  a number, Enter or space marks an option and Enter on `Done` sends. Under `Other`, type your answer and press
+  Enter, or Esc to go back. Everything in a question is the model's text, shown as plain text. A key pressed as the
+  picker appears (less than 0.4 s) is not a pick.
+  - Without `wait` (the default) the question shows and Jarvis carries on with what does not depend on it. Your
+    answer joins the request that is running before its next model call, or starts a request if none runs.
+  - With `wait`, the request pauses on the question. The wait counts against neither the request's time limit nor its
+    steps.
+  - With no answer in `ask_timeout_s` the question closes with a note in the transcript, and Jarvis is told, as
+    its own status text and not as your words, to go on with what it judges best and say what it chose.
+  - **An answer is never a yes.** What you pick, or a timeout, reaches the model as a note; it never answers the
+    yes or no that an action asks, which is asked on its own, about that exact action, as always, and the
+    countdown stops while it waits. Your pick is not counted among your own words either (a web address in an
+    option you picked is not one you wrote), but what you type under Other is. A request that a timeout or
+    Esc starts is not yours either: what acts only on your own request (a shell command, opening a program,
+    changing a window, a screenshot, stopping a process) refuses it. A question written after Jarvis read outside
+    text says so on the picker. See [ADR 0026](adr/0026-ask-the-owner-never-consent.md).
 
 `/config` in the chat opens the settings as Claude Code's own settings screen does. The sections (Chat, Mode,
 Voice, Listening, Safety, Tools) are tabs across the top: Tab and Shift+Tab switch them, and so do ← → on the tab
@@ -217,7 +253,7 @@ leaves it as it was), and ← → still step through the values. Times are said 
 a 0 that means something is said as such ("never", "none"). Changes are saved as you make them; when one needs the
 voice service to restart, the footer says "The voice service restarts when you close settings" until you do.
 
-Under Chat it changes `verbosity`, `toolbar`, `while_working`, `response_format` and `thinking` at once, and
+Under Chat it changes `verbosity`, `toolbar`, `while_working`, `response_format`, `thinking` and `ask_timeout_s` at once, and
 `reply_tokens`, `max_steps`, `memory_detail`, `resume` and `browser` from the next time the chat opens, writing
 them here. Under Chat it also sets `browser.idle_close_s` (30 s, 1, 2 or 5 min), under Mode `coding.back_after_s`
 and the two `auto` switches, under Voice `audio.speech_speed` and `agent.browser`, under Listening

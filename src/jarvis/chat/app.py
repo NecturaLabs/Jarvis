@@ -21,6 +21,7 @@ import inspect
 import logging
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
@@ -35,7 +36,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
-from textual.widgets import OptionList, Static
+from textual.widgets import Input, OptionList, Static
 
 from jarvis.acp import forget_kept
 from jarvis.activity import VOICE_VIA, Shown, call_target, describe, full_text, working_label
@@ -59,6 +60,7 @@ from jarvis.chat.settings import (
 from jarvis.chat.widgets import (
     CHEVRON,
     STAR,
+    AskList,
     Chain,
     ChoiceList,
     Entry,
@@ -68,6 +70,7 @@ from jarvis.chat.widgets import (
     PromptArea,
     Reply,
     Request,
+    TodoPanel,
     footer_line,
     meter,
     tokens_short,
@@ -77,6 +80,7 @@ from jarvis.chat.widgets import (
 )
 from jarvis.config import ChatConfig
 from jarvis.handoff import HandoffError, State
+from jarvis.memory import NOTED, STEERED
 from jarvis.paths import acp_sessions_dir
 from jarvis.pictures import PictureError, newest, pasted_path, prepare, read_file
 
@@ -89,12 +93,15 @@ if TYPE_CHECKING:
 
     from jarvis.agent import ContextUse
     from jarvis.announce import Announcement
+    from jarvis.askowner import Question, Questions
     from jarvis.chat.archive import Archived, ChatArchive
     from jarvis.chat.clipboard import Clip
     from jarvis.chat.history import InputHistory
     from jarvis.memory import Conversation
+    from jarvis.operations import Notice
     from jarvis.pictures import Picture, PictureCache
     from jarvis.sysinfo import Stats
+    from jarvis.todos import Todo, TodoList
     from jarvis.toolswitch import ToolSetting
 
 log = logging.getLogger(__name__)
@@ -105,7 +112,9 @@ STATUS_S = 10.0
 STATS_S = 2.0
 TICK_S = 0.12
 ANNOUNCEMENTS_RETRY_S = 10.0  # how long to wait before looking again for the voice service
+ASK_TICK_S = 0.5  # how often a question's countdown is looked at and drawn
 ARM_S = 0.4  # a choice made sooner than this after a question appears was meant for something else
+NOTES = frozenset({"answer", "timed_out", "closed"})  # the sources of a request begun by a note
 STILL_WORKING = "I'm still working on the last request; esc stops it."
 NO_REPLY = "The request ended without a reply."
 MAX_RESUME_LISTED = 15
@@ -132,6 +141,7 @@ SHORTCUTS = (
     ("/", "commands, tab completes"),
     ("ctrl+v", "paste text or a picture"),
     ("ctrl+o", "show more or less of the work"),
+    ("ctrl+t", "fold or open the todo list"),
     ("ctrl+l", "redraw"),
     ("ctrl+c", "clear the input; twice to leave"),
 )
@@ -157,7 +167,7 @@ class Tail(Protocol):
 class Session(Protocol):
     """What the window needs of its agent."""
 
-    def handle(
+    def handle(  # ruff: ignore[too-many-arguments] - a request's words and where they came from
         self,
         text: str,
         hooks: Hooks,
@@ -165,10 +175,14 @@ class Session(Protocol):
         pictures: Sequence[Picture] = (),
         pasted: Sequence[str] = (),
         spoken: bool = False,
+        noted: str = "",
+        typed: str = "",
     ) -> str:
         """Answer one request, with any pictures the owner attached, and return the reply.
 
-        `spoken` marks words the voice service handed over: the owner's, said aloud.
+        `spoken` marks words the voice service handed over: the owner's, said aloud. `noted`
+        names Jarvis's own note of an answer to a question it put to the owner, or of none
+        ("answer", "timed_out", "closed"); `typed` is what the owner typed under Other then.
         """
         ...
 
@@ -245,6 +259,8 @@ class Services:
     twelve_hour: bool = True  # "done 7:37 PM" under a reply, or "done 19:37"
     # Opens the voice service's announcements (a reminder it says): each is shown as a dim line.
     announcements: Callable[[], _Announcements | None] | None = None
+    todos: TodoList | None = None  # the conversation's todo list, shown above the input
+    questions: Questions | None = None  # the picker for the model's questions (`ask_owner`)
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,6 +298,7 @@ class _Work:
     draft: str = ""
     # (words, source) typed or spoken meanwhile, not yet taken
     steering: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
+    notices: list[Notice] = field(default_factory=list["Notice"])  # answers to its questions
     taking: bool = True  # the request still takes steering; once it ends, the words wait
     running: bool = True  # the agent still works on the conversation: it is not archived now
     began: bool = False  # its worker started: it archives at close, once the agent is done
@@ -295,6 +312,8 @@ class _Setting:
     values: tuple[object, ...]
     live: bool  # takes effect now, not the next time the chat opens
     about: str
+    unit: str = ""  # "seconds": shown as 30 s, 10 min
+    zero: str = ""  # what 0 is called, where 0 means something
 
 
 BYPASS_CONSENT = "boundaries.bypass_consent"  # the shared setting the chat's own agent takes too
@@ -337,6 +356,16 @@ SETTINGS = (
         live=True,
         about="How hard the model thinks before it answers; it may raise this itself for a hard "
         "request. Also /effort.",
+    ),
+    _Setting(
+        "ask_timeout_s",
+        "Question timeout",
+        (60, 300, 900, 1800, 0),
+        live=True,
+        about="How long a question Jarvis puts to you waits for an answer before it goes on "
+        "with its own pick.",
+        unit="seconds",
+        zero="never",
     ),
     _Setting(
         "reply_tokens",
@@ -383,6 +412,23 @@ SECTIONS = (
     "Listening",
     "Safety",
 )  # the shared settings' headings, in order
+
+
+def _segments(request: str) -> list[tuple[str, str]]:
+    """Split a remembered request into the owner's words ("you") and Jarvis's notes ("note").
+
+    The conversation keeps the words typed while a request ran, and the notes that joined it,
+    each after a line that names them (`STEERED`, `NOTED`).
+    """
+    found: list[tuple[str, list[str]]] = [("you", [])]
+    for line in request.split("\n"):
+        if line.startswith(NOTED):
+            found.append(("note", [line.removeprefix(NOTED).strip()]))
+        elif line.startswith(STEERED):
+            found.append(("you", [line.removeprefix(STEERED).strip()]))
+        else:
+            found[-1][1].append(line)
+    return [(kind, "\n".join(lines).strip()) for kind, lines in found if "".join(lines).strip()]
 
 
 def _joined(*parts: str) -> str:
@@ -450,10 +496,11 @@ class ChatApp(App[None]):
     Screen.-everything .level-steps, Screen.-everything .level-everything { display: block; }
 
     #working { height: auto; margin: 1 1 0 1; color: ansi_cyan; }
-    #question, #settings {
+    #question, #settings, #ask {
         height: auto; margin: 1 1 0 1; padding: 0 1;
         border: round ansi_yellow; border-title-color: ansi_yellow;
     }
+    #todos { height: auto; margin: 1 1 0 1; padding: 0 1; }
     #settings {
         height: 1fr; border: round ansi_bright_black; border-title-color: ansi_default;
         border-title-style: bold;
@@ -464,8 +511,12 @@ class ChatApp(App[None]):
         height: 1fr; margin: 1 0 0 0; border: none; padding: 0; background: ansi_default;
     }
     #settings-footer { height: auto; min-height: 4; max-height: 8; margin: 1 0 0 0; }
-    #question-text { height: auto; margin: 0 0 1 0; }
-    #choices { height: auto; border: none; padding: 0; background: ansi_default; }
+    #question-text, #ask-text { height: auto; margin: 0 0 1 0; }
+    #choices, #ask-choices { height: auto; border: none; padding: 0; background: ansi_default; }
+    #ask-other {
+        height: 1; border: none; padding: 0; background: ansi_default; color: ansi_default;
+    }
+    #ask-other:focus { border: none; background: ansi_default; }
     .panel-hint { height: auto; margin: 1 0 0 0; color: ansi_bright_black; }
     #prompt { height: auto; margin: 1 1 0 1; padding: 0 1; border: round ansi_bright_black; }
     #caret { width: 2; padding: 0; color: ansi_bright_black; text-style: bold; }
@@ -504,6 +555,7 @@ class ChatApp(App[None]):
         Binding("escape", "escape", show=False, priority=True),
         Binding("ctrl+o", "verbosity", show=False, priority=True),
         Binding("ctrl+l", "redraw", show=False, priority=True),
+        Binding("ctrl+t", "todos", show=False, priority=True),
     ]
 
     def __init__(  # ruff: ignore[too-many-arguments] - collaborators and keyword-only settings
@@ -539,7 +591,7 @@ class ChatApp(App[None]):
         self._pending: Pending | None = None  # a risky setting asked to be turned on, unconfirmed
         self._changed_jarvis = False  # a setting the voice service reads changed in /config
         # Requests typed while one ran, waiting their turn: words, pictures, pastes.
-        self._queued: list[tuple[str, list[Picture], list[str], str]] = []
+        self._queued: list[tuple[str, list[Picture], list[str], str, str]] = []  # + typed answer
         self._session_id = session_id
         self._poll_s = poll_s
         self._status_s = status_s
@@ -551,6 +603,12 @@ class ChatApp(App[None]):
         self._announce_stop = threading.Event()
         self._announce_feed: _Announcements | None = None
         self._question: _Question | None = None
+        self._ask: Question | None = None  # the model's question that is open
+        self._ask_marked: set[int] = set()  # the options marked, when several may be
+        self._ask_shown = float("-inf")  # when the picker last appeared: a key sooner is not for it
+        self._ask_typing = False  # the picker's own input is open (Other)
+        self._todo_items: tuple[Todo, ...] = ()
+        self._window_thread = 0
         self._recall = 0  # how far back ↑ has gone; 0 is the line being written
         self._draft = ""
         self._draft_pastes: list[str] = []  # what was pasted into the draft, while ↑ is away
@@ -573,6 +631,12 @@ class ChatApp(App[None]):
             with Vertical(id="menu-frame"):
                 yield PointerList(id="menu")
         yield Static("", id="working", markup=False)
+        yield TodoPanel(id="todos")
+        with Vertical(id="ask"):
+            yield Static("", id="ask-text", markup=False)
+            yield AskList(id="ask-choices")
+            yield Input(placeholder="Type your answer, enter sends, esc goes back", id="ask-other")
+            yield Static("", id="ask-hint", classes="panel-hint", markup=False)
         with Vertical(id="question"):
             yield Static("", id="question-text", markup=False)
             yield ChoiceList(id="choices")
@@ -595,9 +659,29 @@ class ChatApp(App[None]):
 
     def on_mount(self) -> None:
         """Open with the welcome card and the remembered conversation, then follow the log."""
-        for widget in ("#working", "#question", "#settings", "#menu", "#shortcuts", "#pictures"):
+        self._window_thread = threading.get_ident()
+        for widget in (
+            "#working",
+            "#todos",
+            "#ask",
+            "#question",
+            "#settings",
+            "#menu",
+            "#shortcuts",
+            "#pictures",
+        ):
             self.query_one(widget).display = False
+        self.query_one("#ask-other").display = False
         self.query_one("#question").border_title = f"{self._name} asks"
+        self.query_one("#ask-choices", AskList).on_number = self._ask_number
+        self.query_one("#ask-choices", AskList).on_space = self._ask_space
+        if self._services.todos is not None:
+            self._services.todos.subscribe(lambda items: self._on_window(self._show_todos, items))
+        if self._services.questions is not None:
+            self._services.questions.attach(
+                _AskView(self._on_window, self._open_ask, self._close_ask, self._deliver_notice)
+            )
+            self.set_interval(ASK_TICK_S, self._ask_tick)
         self.query_one("#settings").border_title = "Settings"
         self._apply_verbosity()
         self._follow_announcements()
@@ -647,6 +731,10 @@ class ChatApp(App[None]):
         agent is done with it (`_ran`), so the stopped request is in the archive too.
         """
         self._announce_stop.set()
+        asks = self._services.questions
+        if asks is not None:
+            asks.reset()
+            asks.attach(None)
         feed = self._announce_feed
         if feed is not None:
             feed.close()
@@ -716,9 +804,14 @@ class ChatApp(App[None]):
         if memory.summary:
             self._mount(Note(self._labelled("Earlier, in short", memory.summary)))
         for turn in memory.turns[-RESUMED_TURNS:]:
-            self._mount(Request(turn.request, "earlier"))
+            for kind, words in _segments(turn.request):
+                if kind == "note":  # Jarvis's own note to the model, never what the owner said
+                    self._note(words)
+                else:
+                    self._mount(Request(words, "earlier"))
+                    self._exchanges.append(("you", words))
             self._mount(Reply(turn.reply))
-            self._exchanges += [("you", turn.request), ("jarvis", turn.reply)]
+            self._exchanges.append(("jarvis", turn.reply))
 
     @staticmethod
     def _labelled(label: str, text: str) -> Table:
@@ -910,6 +1003,7 @@ class ChatApp(App[None]):
         """Fit the footer and the toolbar to the new width."""
         self._tick()
         self._draw_toolbar()
+        self._draw_todos()
 
     def _from_worker(self, update: Callable[..., object], *args: object) -> None:
         """Run `update` on the window's thread, from a worker; nothing once the window is gone.
@@ -926,6 +1020,14 @@ class ChatApp(App[None]):
 
         with contextlib.suppress(RuntimeError):  # the window has closed
             self.call_from_thread(run)
+
+    def _on_window(self, update: Callable[..., object], *args: object) -> None:
+        """Run `update` on the window's thread: at once when called from it, else from a worker."""
+        if threading.get_ident() == self._window_thread:
+            with contextlib.suppress(NoMatches):  # the window is closing
+                update(*args)
+        else:
+            self._from_worker(update, *args)
 
     def _bottom(self) -> None:
         """While the shortcuts are open, let them take the footer's place.
@@ -960,7 +1062,7 @@ class ChatApp(App[None]):
             working.display = False
             variants = (
                 ()
-                if self._question is not None
+                if self._question is not None or self._ask_visible()
                 else self.query_one("#settings", SettingsPanel).hint
                 if self.query_one("#settings").display
                 else MENU_HINTS
@@ -978,7 +1080,7 @@ class ChatApp(App[None]):
         seconds = int(self._clock() - work.started)
         frame = SPINNER[int(self._clock() / TICK_S) % len(SPINNER)]
         stopping = work.stop.is_set()
-        asking = self._question is not None
+        asking = self._question is not None or (self._ask is not None and self._ask.wait)
         label = "Stopping" if stopping else "Waiting for your answer" if asking else work.label
         line = Text.assemble((f"{frame} {label}…", "cyan"), (f" ({seconds}s", "bright_black"))
         if not stopping and not asking:
@@ -1103,6 +1205,9 @@ class ChatApp(App[None]):
         if self._question is not None:
             self._answer(yes=False)
             return
+        if self._ask_visible():
+            self._ask_escape()
+            return
         if self.query_one("#settings").display and self._pending is not None:
             pending, self._pending = self._pending, None  # the risky setting stays off
             self._fill_settings(pending.key)
@@ -1122,7 +1227,16 @@ class ChatApp(App[None]):
             self._tick()
 
     def action_interrupt(self) -> None:
-        """Ctrl+C: clear what is typed; on an empty input, leave when pressed twice."""
+        """Ctrl+C: stop a request waiting on a question; else clear what is typed, or leave.
+
+        On an empty input, a second press within a moment leaves.
+        """
+        work = self._work
+        ask = self._ask
+        if ask is not None and ask.wait and work is not None and not work.stop.is_set():
+            work.stop.set()  # the waiting call sees it and withdraws the question
+            self._tick()
+            return
         prompt = self._input()
         if prompt.text:
             prompt.set_text("")
@@ -1155,6 +1269,28 @@ class ChatApp(App[None]):
         """Ctrl+L: draw the whole window again."""
         self.refresh(layout=True)
         self.screen.refresh(layout=True)
+
+    def action_todos(self) -> None:
+        """Ctrl+T: fold the todo list to one line, or open it again."""
+        if self.query_one("#todos", TodoPanel).toggle():
+            self._draw_todos()
+
+    def _show_todos(self, items: tuple[Todo, ...]) -> None:
+        """The list changed: draw it again (hidden when empty; an empty list resets the fold)."""
+        if not items:
+            self.query_one("#todos", TodoPanel).folded = None
+        self._todo_items = items
+        self._draw_todos()
+        self.call_after_refresh(self._follow_down)
+
+    def _draw_todos(self) -> None:
+        with contextlib.suppress(NoMatches):  # a timer's or a resize's call, as the window closes
+            self.query_one("#todos", TodoPanel).draw(
+                self._todo_items,
+                max(0, self.size.width - 4),
+                self.size.height,
+                room=not self.query_one("#settings").display,
+            )
 
     def on_prompt_area_submitted(self, event: PromptArea.Submitted) -> None:
         """Run a command or send a request."""
@@ -1218,7 +1354,7 @@ class ChatApp(App[None]):
             if steer and work is not None:
                 work.steering.append((text, source))
             else:
-                self._queued.append((text, list(pictures), list(pasted), source))
+                self._queued.append((text, list(pictures), list(pasted), source, ""))
         self._mount(Request(text, _joined(source, now, "steering" if steer else "queued")))
         self._exchanges.append(("you", text))
         return steer
@@ -1253,13 +1389,23 @@ class ChatApp(App[None]):
             taken, work.steering = work.steering, []
         return [text for text, _source in taken]
 
+    def _take_notices(self, work: _Work) -> list[Notice]:
+        with self._lock:
+            taken, work.notices = work.notices, []
+        return taken
+
     def _next_queued(self) -> None:
         """Start the next queued request, if any, once the window is idle."""
         with self._lock:
             if self._work is not None or not self._queued:
                 return
-            text, pictures, pasted, source = self._queued.pop(0)
-        self._request(text, pictures, pasted, shown=True, source=source)
+            item = self._queued.pop(0)
+        text, pictures, pasted, source, typed = item
+        if not self._request(
+            text, pictures, pasted, shown=True, source=source, warn=False, typed=typed
+        ):
+            with self._lock:  # another request took the window first: this one waits its turn
+                self._queued.insert(0, item)
 
     def _sent_pastes(self, text: str) -> list[str]:
         """Return what was pasted into `text`, once per paste, and forget it.
@@ -1819,7 +1965,8 @@ class ChatApp(App[None]):
         self._fill_settings()
         self.query_one("#stage").display = False
         panel.display = True
-        self.query_one("#prompt").display = False
+        self._sync_panels()
+        self._draw_todos()
         panel.options.focus()
         self._tick()
 
@@ -1833,6 +1980,8 @@ class ChatApp(App[None]):
                 setting.values,
                 getattr(self._settings, setting.key),
                 NOW if setting.live else NEXT_CHAT,
+                unit=setting.unit,
+                zero=setting.zero,
             )
             for setting in SETTINGS
         )
@@ -1899,8 +2048,9 @@ class ChatApp(App[None]):
         self._pending = None
         self.query_one("#settings").display = False
         self.query_one("#stage").display = True
-        self.query_one("#prompt").display = True
-        self._input().focus()
+        self._sync_panels()
+        self._draw_todos()
+        self._focus_main()
         self._tick()
         self.call_after_refresh(self._follow_down)
 
@@ -1987,6 +2137,8 @@ class ChatApp(App[None]):
         if key == "response_format":
             self._set_format(str(value))
             return
+        if key == "ask_timeout_s" and self._services.questions is not None:
+            self._services.questions.timeout_s = float(str(value))  # the next question's
         self._settings = self._settings.model_copy(update={key: value})
         if key == "verbosity":
             self._apply_verbosity()
@@ -2010,7 +2162,7 @@ class ChatApp(App[None]):
         with self._lock:
             return self._work is not None
 
-    def _start(self, label: str) -> bool:
+    def _start(self, label: str, *, warn: bool = True) -> bool:
         with self._lock:
             if self._work is not None:
                 busy = True
@@ -2018,7 +2170,8 @@ class ChatApp(App[None]):
                 busy = False
                 self._work = _Work(self._clock(), label)
         if busy:
-            self._note(STILL_WORKING, "warn")
+            if warn:
+                self._note(STILL_WORKING, "warn")
             return False
         self._ticker = self.set_interval(TICK_S, self._tick)
         self._tick()
@@ -2029,14 +2182,17 @@ class ChatApp(App[None]):
             if work is not None:
                 work.taking = False
                 # Words the request ended before taking run next, ahead of the queue.
-                self._queued[:0] = [(text, [], [], source) for text, source in work.steering]
+                self._queued[:0] = [
+                    (text, [], [], source, "") for text, source in work.steering
+                ] + [(notice.text, [], [], notice.kind, notice.words) for notice in work.notices]
                 work.steering = []
+                work.notices = []
             if self._work is work:
                 self._work = None
         self._from_worker(self._idle)
         self._from_worker(self._next_queued)
 
-    def _request(
+    def _request(  # ruff: ignore[too-many-arguments] - a request's words and where they came from
         self,
         text: str,
         pictures: Sequence[Picture] = (),
@@ -2044,15 +2200,18 @@ class ChatApp(App[None]):
         *,
         shown: bool = False,
         source: str = "typed",
-    ) -> None:
+        warn: bool = True,
+        typed: str = "",
+    ) -> bool:
+        """Start a request; return False when another one holds the window (nothing was started)."""
         if self._session is None:
             self._note(f"Typed requests are off: {self._unavailable}", "warn")
-            return
-        if not self._start("Thinking"):
-            return
+            return True
+        if not self._start("Thinking", warn=warn):
+            return False
         work = self._work
         if work is None:
-            return
+            return True
         if not shown:  # a queued request was shown when it was typed
             now = datetime.now().astimezone().strftime("%H:%M:%S")
             count = len(pictures)
@@ -2060,12 +2219,21 @@ class ChatApp(App[None]):
             self._mount(Request(text, _joined(source, now, shared)))
             self._exchanges.append(("you", text))
         self.run_worker(
-            lambda: self._handle(text, work, pictures, pasted, spoken=source == "spoken"),
+            lambda: self._handle(
+                text,
+                work,
+                pictures,
+                pasted,
+                spoken=source == "spoken",
+                noted=source if source in NOTES else "",
+                typed=typed,
+            ),
             thread=True,
             group="request",
         )
+        return True
 
-    def _handle(
+    def _handle(  # ruff: ignore[too-many-arguments] - a request's words and where they came from
         self,
         text: str,
         work: _Work,
@@ -2073,6 +2241,8 @@ class ChatApp(App[None]):
         pasted: Sequence[str] = (),
         *,
         spoken: bool = False,
+        noted: str = "",
+        typed: str = "",
     ) -> None:
         session = self._session
         work.began = True
@@ -2085,13 +2255,22 @@ class ChatApp(App[None]):
             hush=lambda: self._from_worker(self._drop_draft, work),
             preview=True,
             steer=lambda: self._take_steering(work),
+            notices=lambda: self._take_notices(work),
             condensed=lambda note: self._from_worker(self._note, note),
         )
         reply = ""
         rate: float | None = None
         try:
             if session is not None:
-                reply = session.handle(text, hooks, pictures=pictures, pasted=pasted, spoken=spoken)
+                reply = session.handle(
+                    text,
+                    hooks,
+                    pictures=pictures,
+                    pasted=pasted,
+                    spoken=spoken,
+                    noted=noted,
+                    typed=typed,
+                )
                 rate = session.last_rate()
         except Exception as exc:  # ruff: ignore[blind-except] - shown in the window, never raised
             self._from_worker(self._note, f"Something went wrong: {type(exc).__name__}", "error")
@@ -2159,7 +2338,9 @@ class ChatApp(App[None]):
                 return Declined(NoReason.CLOSED)
             self._question = question
         self._from_worker(self._open_question, question)
-        question.answered.wait()  # answered no when the window closes
+        asks = self._services.questions
+        with asks.holding() if asks is not None else nullcontext():  # a question's clock waits
+            question.answered.wait()  # answered no when the window closes
         return question.answer
 
     def _open_question(self, question: _Question) -> None:
@@ -2173,7 +2354,7 @@ class ChatApp(App[None]):
         choices.show([("1. Yes",), ("2. No",)], ("",), ["yes", "no"], highlighted=1)
         choices.on_typed = self._typing_over_question
         self.query_one("#question").display = True
-        self.query_one("#prompt").display = False
+        self._sync_panels()
         choices.focus()
         self._tick()
 
@@ -2188,6 +2369,8 @@ class ChatApp(App[None]):
         match event.option_list.id:
             case "choices":
                 self._answer(yes=event.option.id == "yes")
+            case "ask-choices":
+                self._ask_select(event.option.id)
             case "menu":
                 self.action_complete()
                 self._input().focus()
@@ -2239,7 +2422,227 @@ class ChatApp(App[None]):
             self._question = None
         question.answer = yes
         self.query_one("#question").display = False
-        self.query_one("#prompt").display = True
-        self._input().focus()
+        self._ask_shown = self._clock()  # the picker, if one waits, shows again: arm it
+        self._sync_panels()
+        self._focus_main()
         question.answered.set()
         self._tick()
+
+    # A question of the model's: a picker, with its answer sent to the model and nowhere else
+
+    def _ask_visible(self) -> bool:
+        return self._ask is not None and bool(self.query_one("#ask").display)
+
+    def _sync_panels(self) -> None:
+        """Show the one panel that owns the bottom: a confirmation, else settings, else the picker.
+
+        A yes or no to an action comes first and the picker waits behind it, its clock stopped.
+        """
+        settings = bool(self.query_one("#settings").display)
+        confirming = self._question is not None
+        ask = self._ask is not None and not confirming and not settings
+        self.query_one("#ask").display = ask
+        self.query_one("#prompt").display = not (confirming or settings or ask)
+
+    def _focus_main(self) -> None:
+        """Put the focus where the keys belong: the yes or no, the picker, or the input."""
+        if self._question is not None:
+            self.query_one("#choices", ChoiceList).focus()
+        elif self._ask_visible():
+            self.query_one("#ask-other" if self._ask_typing else "#ask-choices").focus()
+        elif not self.query_one("#settings").display:
+            self._input().focus()
+
+    def _open_ask(self, question: Question) -> None:
+        """Show a question: its words as plain text, the recommended option first.
+
+        The window keeps the question only once the picker is drawn, so a failure here leaves
+        the input as it was.
+        """
+        self.query_one("#ask").border_title = Text(f"{self._name} asks: {question.header}")
+        words = Text(question.text, style="bold")
+        if question.outside:
+            words.append("\nWritten after reading outside text.", style="bright_black")
+        self.query_one("#ask-text", Static).update(words)
+        self.query_one("#ask-other", Input).value = ""
+        self._ask_marked = set()
+        self._ask_typing = False
+        self._ask = question
+        try:
+            self._fill_ask(0)
+            self._ask_shown = self._clock()
+            self._sync_panels()
+        except Exception:
+            self._ask = None
+            self._sync_panels()
+            raise
+        self._focus_main()
+        self._draw_ask_hint()
+        self._tick()
+
+    def _fill_ask(self, highlighted: int) -> None:
+        question = self._ask
+        if question is None:
+            return
+        rows: list[tuple[str, ...]] = []
+        ids: list[str] = []
+        for place, original in enumerate(question.order, 1):
+            option = question.options[original]
+            box = (f"[{'x' if original in self._ask_marked else ' '}] ") if question.multi else ""
+            rec = " (Recommended)" if original == question.recommended else ""
+            rows.append((f"{place}. {box}{option.label}{rec}", option.description))
+            ids.append(f"opt-{original}")
+        rows.append((f"{len(rows) + 1}. Other (type an answer)", ""))
+        ids.append("other")
+        if question.multi:
+            rows.append(("   Done", ""))
+            ids.append("done")
+        choices = self.query_one("#ask-choices", AskList)
+        choices.display = not self._ask_typing
+        choices.show(rows, ("", "bright_black"), ids, highlighted=highlighted)
+        self.query_one("#ask-other").display = self._ask_typing
+
+    def _draw_ask_hint(self) -> None:
+        question, asks = self._ask, self._services.questions
+        if question is None or asks is None:
+            return
+        left = asks.remaining(question)
+        if left is None:
+            clock = ""
+        else:
+            minutes, seconds = divmod(int(left + 0.999), 60)
+            clock = f" · answer within {minutes}:{seconds:02d}"
+        if self._ask_typing:
+            keys = "enter sends · esc goes back"
+        elif question.multi:
+            keys = "1-9 or space marks · enter on Done sends · esc closes"
+        else:
+            keys = "1-9 or enter picks · esc closes"
+        with contextlib.suppress(NoMatches):
+            self.query_one("#ask-hint", Static).update(Text(keys + clock, style="bright_black"))
+
+    def _ask_tick(self) -> None:
+        """Run the question's clock; it closes itself when the time is up."""
+        asks = self._services.questions
+        if asks is None:
+            return
+        asks.expire()
+        self._draw_ask_hint()
+
+    def _ask_armed(self) -> bool:
+        """Whether a key may pick: one pressed as the picker appeared was meant for elsewhere."""
+        return self._clock() - self._ask_shown >= ARM_S
+
+    def _ask_select(self, row: str | None, *, from_number: bool = False) -> None:
+        """Act on a row of the picker: an option, Other, or Done."""
+        question, asks = self._ask, self._services.questions
+        if question is None or asks is None or not self._ask_armed() or not self._ask_visible():
+            return
+        if row == "other":
+            self._ask_typing = True
+            self._fill_ask(0)
+            self.query_one("#ask-other", Input).focus()
+            self._draw_ask_hint()
+            return
+        if row == "done":
+            if self._ask_marked:
+                asks.answer(question, sorted(self._ask_marked))
+            return
+        if row is None or not row.startswith("opt-"):
+            return
+        original = int(row.removeprefix("opt-"))
+        if not question.multi:
+            asks.answer(question, [original])
+            return
+        self._ask_marked ^= {original}
+        pointed = self.query_one("#ask-choices", AskList).highlighted or 0
+        self._fill_ask(pointed if not from_number else min(pointed, len(question.options)))
+
+    def _ask_row(self, place: int) -> str | None:
+        """Return the id of the row `place` (from 0) in the picker, as listed."""
+        choices = self.query_one("#ask-choices", AskList)
+        if 0 <= place < choices.option_count:
+            return choices.get_option_at_index(place).id
+        return None
+
+    def _ask_number(self, place: int) -> None:
+        self._ask_select(self._ask_row(place), from_number=True)
+
+    def _ask_space(self) -> None:
+        question = self._ask
+        choices = self.query_one("#ask-choices", AskList)
+        if question is not None and question.multi and choices.highlighted is not None:
+            self._ask_select(self._ask_row(choices.highlighted))
+
+    @on(Input.Submitted, "#ask-other")
+    def _ask_typed(self, event: Input.Submitted) -> None:
+        """Enter in the picker's own input: send the typed answer, with any options marked."""
+        question, asks = self._ask, self._services.questions
+        if question is None or asks is None or not self._ask_armed():
+            return
+        event.stop()
+        asks.answer(question, sorted(self._ask_marked), event.value)
+
+    def _ask_escape(self) -> None:
+        """Esc: leave the typed answer, else close the question; Jarvis then goes on on its own."""
+        question, asks = self._ask, self._services.questions
+        if question is None or asks is None:
+            return
+        if self._ask_typing:
+            self._ask_typing = False
+            self._fill_ask(0)
+            self._focus_main()
+            self._draw_ask_hint()
+            return
+        asks.dismiss(question)
+
+    def _close_ask(self, question: Question, note: str) -> None:
+        """The question ended (answered, closed, timed out or dropped): take the picker down."""
+        if self._ask is question:
+            self._ask = None
+            self._ask_typing = False
+            self._sync_panels()
+            self._focus_main()
+            self._tick()
+        if note:
+            self._note(note)
+
+    def _deliver_notice(self, notice: Notice) -> None:
+        """Hand the model what became of its question: join the request that runs, or start one."""
+        with self._lock:
+            work = self._work
+            if work is not None and work.taking:
+                work.notices.append(notice)
+                return
+            # Idle or ending: it runs next, ahead of the queue, and is never dropped.
+            self._queued.insert(0, (notice.text, [], [], notice.kind, notice.words))
+        self._next_queued()
+
+
+class _AskView:
+    """The window as `askowner.Questions` shows questions in it, from any thread.
+
+    It is given the window's own methods, and each runs on the window's thread.
+    """
+
+    def __init__(
+        self,
+        on_window: Callable[..., None],
+        shown: Callable[[Question], None],
+        closed: Callable[[Question, str], None],
+        delivered: Callable[[Notice], None],
+    ) -> None:
+        super().__init__()
+        self._on_window = on_window
+        self._shown = shown
+        self._closed = closed
+        self._delivered = delivered
+
+    def open(self, question: Question) -> None:
+        self._on_window(self._shown, question)
+
+    def close(self, question: Question, note: str) -> None:
+        self._on_window(self._closed, question, note)
+
+    def deliver(self, notice: Notice) -> None:
+        self._on_window(self._delivered, notice)

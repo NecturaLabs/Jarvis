@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from jarvis.activity import Shown
     from jarvis.agent import ContextUse
     from jarvis.sysinfo import Stats
+    from jarvis.todos import Todo
 
 DOT = "\N{BLACK CIRCLE}"  # a step or a reply
 CHEVRON = "\N{HEAVY RIGHT-POINTING ANGLE QUOTATION MARK ORNAMENT}"  # the input, a request, a choice
@@ -779,3 +780,138 @@ class ChoiceList(PointerList):
         """Note a printable key that is not a choice."""
         if self.on_typed is not None and event.is_printable and event.character not in _CHOICE_KEYS:
             self.on_typed()
+
+
+BOX_EMPTY = "\N{BALLOT BOX}"
+BOX_DONE = "\N{BALLOT BOX WITH CHECK}"
+PLAY = "\N{BLACK RIGHT-POINTING TRIANGLE}"
+SHORT_WINDOW = 24  # rows: a window this short or shorter shows the todo list as one line
+TODO_ROWS = 8  # the most tasks the panel lists; the rest are counted
+TODO_MARKS = {"pending": BOX_EMPTY, "in_progress": PLAY, "completed": BOX_DONE}
+
+
+def todo_rows_for(height: int) -> int:
+    """Return how many tasks the panel lists in a window `height` rows tall."""
+    return max(3, min(TODO_ROWS, height // 4))
+
+
+def _clipped(text: str, width: int) -> str:
+    return (
+        text
+        if cell_len(text) <= width
+        else text[: max(0, width - 1)].rstrip() + "\N{HORIZONTAL ELLIPSIS}"
+    )
+
+
+def todo_summary(items: Sequence[Todo], width: int) -> Text:
+    """Return the list as one line: how many are done and what is being done now."""
+    done = sum(1 for item in items if item.status.value == "completed")
+    current = next((item for item in items if item.status.value == "in_progress"), None)
+    waiting = next((item for item in items if item.status.value == "pending"), None)
+    line = Text(no_wrap=True, overflow="ellipsis")
+    line.append(
+        f"{BOX_DONE if done == len(items) else BOX_EMPTY} {done} of {len(items)} done", style="bold"
+    )
+    if current is not None:
+        line.append(f"{SEPARATOR}{PLAY} ", style="bright_black")
+        line.append(current.content, style=ACCENT)
+    elif waiting is not None:
+        line.append(f"{SEPARATOR}next: ", style="bright_black")
+        line.append(waiting.content)
+    line.append(f"{SEPARATOR}ctrl+t", style="bright_black")
+    if cell_len(line.plain) > width:
+        line.truncate(width, overflow="ellipsis")
+    return line
+
+
+def todo_panel(items: Sequence[Todo], width: int, rows: int) -> Text:
+    """Return the list: a heading, then up to `rows` tasks around the one being done.
+
+    Waiting tasks keep the plain box, the one in progress is lit with the accent's arrow, and
+    a finished one is dim and struck through. Tasks left out are counted on the last line.
+    """
+    done = sum(1 for item in items if item.status.value == "completed")
+    text = Text(no_wrap=True, overflow="ellipsis")
+    text.append(f"Tasks{SEPARATOR}{done} of {len(items)} done", style="bold")
+    text.append(f"{SEPARATOR}ctrl+t folds", style="bright_black")
+    first_open = next((n for n, item in enumerate(items) if item.status.value != "completed"), 0)
+    start = max(0, min(first_open - 1, len(items) - rows))
+    shown = items[start : start + rows]
+    for item in shown:
+        status = item.status.value
+        text.append("\n")
+        mark = TODO_MARKS[status]
+        body = _clipped(item.content, max(1, width - 3))
+        match status:
+            case "in_progress":
+                text.append(f"{mark} ", style=f"bold {ACCENT}")
+                text.append(body, style=f"bold {ACCENT}")
+            case "completed":
+                text.append(f"{mark} ", style="bright_black")
+                text.append(body, style="bright_black strike")
+            case _:
+                text.append(f"{mark} {body}")
+    hidden = len(items) - len(shown)
+    if hidden:
+        text.append(f"\n  and {hidden} more", style="bright_black")
+    return text
+
+
+class TodoPanel(Static):
+    """The conversation's todo list above the input: all of it, or one line; hidden when empty."""
+
+    def __init__(self, **kwargs: object) -> None:
+        """Start hidden and empty."""
+        super().__init__("", markup=False, **kwargs)  # pyright: ignore[reportArgumentType]
+        self.items: tuple[Todo, ...] = ()
+        self.folded: bool | None = None  # the owner's choice (ctrl+t); None: the window decides
+        self.expanded = False
+
+    def draw(self, items: tuple[Todo, ...], width: int, height: int, *, room: bool = True) -> None:
+        """Show `items` for a window `width` by `height`; no `room`: another panel is open.
+
+        The list folds to one line when every task is done or the window is short, unless the
+        owner chose with ctrl+t.
+        """
+        self.items = items
+        auto = all(item.status.value == "completed" for item in items) or height <= SHORT_WINDOW
+        folded = auto if self.folded is None else self.folded
+        self.expanded = bool(items) and not folded
+        self.display = bool(items) and room
+        if not items:
+            return
+        self.update(
+            todo_summary(items, width)
+            if folded
+            else todo_panel(items, width, todo_rows_for(height))
+        )
+
+    def toggle(self) -> bool:
+        """Fold or unfold by the owner's hand (ctrl+t); return whether there is a list to change."""
+        if not self.items:
+            return False
+        shown_open = self.expanded
+        self.folded = shown_open
+        return True
+
+
+class AskList(PointerList):
+    """The options of a question: ↑ ↓ and Enter; a number picks; space marks, when several may be.
+
+    The window answers through the callbacks, which get the row's place.
+    """
+
+    on_number: Callable[[int], None] | None = None
+    on_space: Callable[[], None] | None = None
+
+    def on_key(self, event: events.Key) -> None:
+        """Take a digit as a pick of that row, and a space as a mark on the row pointed at."""
+        char = event.character
+        if char is not None and char.isdigit() and char != "0" and self.on_number is not None:
+            event.stop()
+            event.prevent_default()
+            self.on_number(int(char) - 1)
+        elif char == " " and self.on_space is not None:
+            event.stop()
+            event.prevent_default()
+            self.on_space()

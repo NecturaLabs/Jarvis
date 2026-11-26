@@ -348,6 +348,28 @@ def test_a_command_that_cannot_start_is_a_failure_not_a_crash() -> None:
         _op(ops).run({"command": "true"})
 
 
+@pytest.mark.parametrize("noted", ["timed_out", "closed"])
+def test_a_request_that_went_on_alone_after_a_question_runs_nothing(noted: str) -> None:
+    runner = FakeRunner()
+
+    with (
+        request_scope(foreign=False, noted=noted),
+        pytest.raises(OperationError, match="owner's own request"),
+    ):
+        _op(_ops(runner)).run({"command": "ls -la"})
+
+    assert runner.calls == []
+
+
+def test_a_request_begun_from_the_owners_answer_runs_the_command() -> None:
+    runner = FakeRunner()
+
+    with request_scope(foreign=False, noted="answer"):
+        _op(_ops(runner)).run({"command": "ls -la"})
+
+    assert len(runner.calls) == 1
+
+
 def test_a_request_heard_in_pc_audio_runs_nothing() -> None:
     runner = FakeRunner()
 
