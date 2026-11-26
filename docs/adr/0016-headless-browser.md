@@ -72,6 +72,9 @@ quick commands.
     than `idle_close_s`), nothing is done and no new browser is started for it. Typing is `outbound`, at
     most 200 characters, never into a password, hidden or file field.
   - Everything the browser returns is web text (`Origin.WEB`), cut to the channel's room for one result.
+  - Each call to agent-browser gets at most 40 s and ends 25 s before the request's own time limit
+    (`agent.max_seconds`), so a click or typing with its checks, or a browser that does not answer and is
+    closed, never runs past the request.
 - **Where.** `chat.browser` is on and `agent.browser` (voice and `jarvis ask`) is off by default. The tools
   are offered only when agent-browser is on PATH; `jarvis doctor` notes when it is missing. Their
   definitions take about 470 tokens of the chat's context. The chat's default `memory_tokens` went from 7000

@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urljoin, urlsplit
 
+from jarvis.operations import current_request
 from jarvis.web.page import PageError, check_url
 from jarvis.web.proxy import EgressProxy
 
@@ -37,10 +38,14 @@ if TYPE_CHECKING:
 
 PROGRAM = "agent-browser"
 NAMESPACE = "jarvis"
-# One batch of commands, launching the browser included; inside the agent's 90 s for a request.
+# One batch of commands, launching the browser included, at most; less near the request's end.
 BATCH_LIMIT_S = 40.0
 ACTION_TIMEOUT_MS = 15_000  # agent-browser's own limit for one command
 CLOSE_LIMIT_S = 15.0
+# Each batch ends this long before the request's own time limit: room to close a browser that
+# did not answer, and for the model to say what happened.
+RESERVE_S = CLOSE_LIMIT_S + 10.0
+MIN_BATCH_S = 3.0  # less time than this left in the request, and the browser is not used
 SETTLE_MS = 1200  # after a page loads or a click: scripts that fill the page in afterwards
 MAX_OUTPUT = 60_000  # characters of page text or snapshot agent-browser returns
 MAX_STDOUT = 2_000_000
@@ -316,17 +321,21 @@ class Browser:
         )
         return env
 
-    def _batch(
-        self, commands: list[list[str]], *, limit: float = BATCH_LIMIT_S
-    ) -> list[dict[str, Any]]:
+    def _batch(self, commands: list[list[str]]) -> list[dict[str, Any]]:
         """Run commands in one agent-browser call, stopping at the first that fails.
 
+        It gets `BATCH_LIMIT_S`, or less when the request has less time left (`RESERVE_S` kept).
         Returns one row per command that ran: `success`, `result` and `error`.
 
         Raises:
             BrowserTimeoutError: it did not finish in time (the browser is then closed).
-            BrowserError: it could not start, or its answer was not what agent-browser writes.
+            BrowserError: the request has no time left for it (nothing was sent), it could not
+                start, or its answer was not what agent-browser writes.
         """
+        limit = _time_for_batch()
+        if limit < MIN_BATCH_S:
+            msg = "there's no time left in this request to use the browser"
+            raise BrowserError(msg)
         folder = self._start()
         proxy = self._proxy
         if proxy is None:  # set with the folder
@@ -523,18 +532,24 @@ class Browser:
             msg = "the browser closed while waiting for the yes; open the page again"
             raise BrowserError(msg)
 
-    def _same(self, expect: Element, url: str) -> None:
+    def _same(
+        self, expect: Element, url: str, also: Sequence[list[str]] = ()
+    ) -> list[dict[str, Any]]:
         """Check that the page is still at `url` and shows `expect` under its reference.
+
+        `also` runs in the same call, after the page is looked at; their rows are returned.
 
         Raises:
             BrowserError: the page moved on or the element changed, so the yes no longer fits.
         """
-        rows = self._batch([list(c) for c in self._LOOK])
-        self._done(rows, len(self._LOOK), "look at the page")
-        view = self._read(rows)
+        look = len(self._LOOK)
+        rows = self._batch([*(list(c) for c in self._LOOK), *also])
+        self._done(rows, look + len(also), "look at the page")
+        view = self._read(rows[:look])
         if view.url != url or view.element(expect.ref) != expect:
             msg = "the page changed since; look at it again before acting"
             raise BrowserError(msg)
+        return rows[look:]
 
     def click(self, expect: Element, url: str) -> View:
         """Click an element the owner agreed to, if the page still shows it, and return the page.
@@ -564,9 +579,7 @@ class Browser:
         with self._lock:
             self._still_open()
             try:
-                self._same(expect, url)
-                rows = self._batch([["get", "attr", f"@{expect.ref}", "type"]])
-                self._done(rows, 1, "look at that field")
+                rows = self._same(expect, url, [["get", "attr", f"@{expect.ref}", "type"]])
             finally:
                 self._idle()
             if _field(rows[0], "value").strip().lower() in {"password", "hidden", "file"}:
@@ -610,6 +623,13 @@ class Browser:
             finally:
                 path.unlink(missing_ok=True)
             return data
+
+
+def _time_for_batch() -> float:
+    """Return the seconds one batch may take: `BATCH_LIMIT_S`, within the request's time."""
+    request = current_request()
+    left = request.time_left() if request is not None else BATCH_LIMIT_S + RESERVE_S
+    return min(BATCH_LIMIT_S, left - RESERVE_S)
 
 
 def _port(port: int | None, scheme: str) -> int:

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, override
 
 import pytest
 
+from jarvis.operations import request_scope
 from jarvis.web import browser as browser_module
 from jarvis.web.browser import (
     ALLOWED_ACTIONS,
@@ -651,3 +652,51 @@ def test_a_click_refused_before_it_happened_is_a_plain_failure(tmp_path: Path) -
         made.click(BUTTON, "https://site.example/")
 
     assert not isinstance(raised.value, BrowserTimeoutError)
+
+
+# --- time -------------------------------------------------------------------------------------
+
+
+class SlowAgentBrowser(FakeAgentBrowser):
+    """Takes `took` seconds of the request's time for each call, and records what it was given."""
+
+    def __init__(self, page: Page, left: float, took: float) -> None:
+        super().__init__(page)
+        self.left, self.took = left, took
+        self.given: list[tuple[float, float]] = []  # (the request's time left, the call's limit)
+
+    @override
+    def __call__(
+        self, argv: Sequence[str], *, stdin: str, env: Mapping[str, str], cwd: Path, timeout: float
+    ) -> str:
+        self.given.append((self.left, timeout))
+        self.left -= self.took
+        return super().__call__(argv, stdin=stdin, env=env, cwd=cwd, timeout=timeout)
+
+
+def test_a_click_or_typing_and_its_checks_end_inside_the_request(tmp_path: Path) -> None:
+    fake = SlowAgentBrowser(Page(refs=dict(PAGE_REFS)), left=200, took=30)
+    made, _, _ = _browser(tmp_path, fake)
+    made.open("https://site.example/")
+    fake.left = 75.0
+    fake.given.clear()
+
+    with request_scope(foreign=False, time_left=lambda: fake.left):
+        made.fill(BOX, "https://site.example/", "cats", submit=True)
+
+    assert len(fake.given) == 2  # the checks in one call, the typing in the next
+    for left, limit in fake.given:
+        assert limit <= left - browser_module.RESERVE_S
+
+
+def test_the_browser_is_not_used_when_the_request_has_no_time_left(tmp_path: Path) -> None:
+    fake = FakeAgentBrowser(Page(refs=dict(PAGE_REFS)))
+    made, _, _ = _browser(tmp_path, fake)
+
+    with (
+        request_scope(foreign=False, time_left=lambda: browser_module.RESERVE_S + 1),
+        pytest.raises(BrowserError, match="time"),
+    ):
+        made.open("https://site.example/")
+
+    assert fake.calls == []
