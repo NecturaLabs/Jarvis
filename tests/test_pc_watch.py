@@ -519,3 +519,22 @@ def test_a_watch_with_its_own_line_says_that_line_and_still_judges_the_condition
 def test_the_spoken_line_is_short_by_schema(rig: Rig) -> None:
     with pytest.raises(ArgumentError):
         _listed_start(rig, say="x" * (MAX_SAY + 1))
+
+
+def test_the_question_names_the_line_a_watch_will_say(rig: Rig) -> None:
+    op = next(o for o in rig.watch.operations() if o.name == "pc_watch")
+    asked = {"of": "screen", "condition": "the build finished", "say": "go check the build"}
+
+    assert op.spoken_summary is not None
+    assert "go check the build" in op.spoken_summary(asked)
+
+
+def test_a_screen_watch_without_a_condition_is_refused(rig: Rig) -> None:
+    with request_scope(foreign=False), pytest.raises(OperationError, match="what to look for"):
+        rig.start(of="screen")
+
+
+def test_the_listing_shows_the_line_a_watch_will_say(rig: Rig) -> None:
+    _listed_start(rig, say="go check the build")
+
+    assert "go check the build" in rig.watch.list_watches({}).text

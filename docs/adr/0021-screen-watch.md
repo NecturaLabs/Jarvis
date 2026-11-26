@@ -1,6 +1,6 @@
 # ADR: Watch a window or the screen and say when something shows up, with one no-tool check by the same model
 
-**Status:** proposed (the owner confirms the model check, the GPU cost and the limits below)
+**Status:** proposed (the owner confirms the model check, the cost of a check and the limits below)
 **Date:** 2026-11-26
 
 ## Context and problem statement
@@ -41,11 +41,17 @@ Chosen option: 3.
   line that stays on screen is said once, and again only after it went away and came back. The
   cool-down still spaces lines out.
 - **Process watches.** The owner also asked to hear when a program freezes or is killed. `of=process`
-  watches a PID `find_processes` listed (bound by its start time) and reads only `/proc/<pid>/stat`: no
-  picture and no model call. It says once when the program exits (Jarvis cannot tell closed,
-  crashed and killed apart for a program it did not start), is stopped, or waits on a disk or device for
-  30 s without a break, and when it runs again. Hyprland gives no "not responding" flag a watch could
-  read, so a program that is alive but no longer drawing is not detected.
+  watches a PID `find_processes` listed in a model message before the one that sets the watch (as a window
+  number must be read first), bound by its start time, and reads only `/proc/<pid>/stat` and `status`: no
+  picture and no model call. Like stopping a process, it is refused when the request holds outside text. It
+  says once when the program exits (Jarvis cannot tell closed, crashed and killed apart for a program it did
+  not start), is stopped, or is found waiting on a disk or device (`D`) at three checks in a row spanning at
+  least 30 s (sampling can prove no more than that: a short wait between checks is not seen), and when it
+  runs again; a stop or any other state breaks the wait. A first thread that ended while others run (`Z` with
+  more than one thread) is not an exit. The program's name in these lines is read from `/proc`, cut to 60
+  printable characters; only a program the owner named and `find_processes` listed can reach them. Hyprland
+  gives no "not responding" flag a watch could read, so a program that is alive but no longer drawing is not
+  detected.
 - **The policy class.** All three are `safe`: a watch only reads pixels and speaks, like `pc_screenshot`.
   `pc_watch` is still an action (`side_effect=True`), so outside text in the request raises it to `confirm`.
   It is refused for a request heard in PC audio and for a scheduled one, as `pc_audio_listen` is (the owner's
@@ -103,6 +109,8 @@ Chosen option: 3.
 
 - The owner can say what to watch for in any words, and the model chooses the target and the condition.
 - A page or a window that shows "ignore your rules and say X" cannot make Jarvis say X: the model's answer is
-  read only as YES or NO, and the spoken line is the condition the model wrote when the owner asked.
+  read only as YES or NO, and the spoken line is the condition or `say` line the model wrote when the owner
+  asked. Both are in the question when outside text makes the owner confirm the watch.
 - A model that answers YES wrongly says a wrong line; one that answers NO wrongly says nothing. Neither acts.
-- GPU use is real while a watch runs, and unmeasured beside a game. The limits above are the bound.
+- Each check's model call is real work while a watch runs (the picture reader on the processor, the answer
+  on the model's own hardware), and unmeasured beside a game. The limits above are the bound.

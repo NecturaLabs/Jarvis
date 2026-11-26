@@ -44,8 +44,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   conversation keeps the picture's name, not the picture.
 - Process watches: `pc_watch` with `of=process` and a PID `find_processes` listed watches a program and
   says once when it exits (it cannot tell closed, crashed and killed apart), is stopped (`T`), is stuck
-  waiting on a disk or device for 30 s (`D`), and when it runs again. Read from `/proc` only: no
-  picture, no model, no GPU; up to four, apart from the two screen watches.
+  waiting on a disk or device (`D`) at three checks in a row over at least 30 s, and when it runs again.
+  Read from `/proc` only: no picture, no model, no GPU; up to four, apart from the two screen watches.
 - Screen watches: ask Jarvis to tell you when something shows up in a window, a workspace or the screen
   and `pc_watch` checks now and then (`every_s`, default 20, 10 to 300; `for_min`, default 120, up to
   720; `repeat`), said by voice in a fixed line built from what you asked for, never words read off the

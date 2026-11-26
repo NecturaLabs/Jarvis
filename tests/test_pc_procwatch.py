@@ -10,7 +10,7 @@ from test_pc_watch import FakeJudge, Time
 from test_pc_windows import FakeDesktop
 
 from jarvis.audit import AuditLog
-from jarvis.operations import OperationError, Result, request_scope, validate_args
+from jarvis.operations import OperationError, Result, current_request, request_scope, validate_args
 from jarvis.pc.processes import ProcessOps
 from jarvis.pc.screenshot import ScreenshotOps
 from jarvis.pc.watch import MAX_PROCESS_WATCHES, MAX_WATCHES, STUCK_S, ScreenWatch
@@ -32,6 +32,15 @@ def _ops(proc: FakeProc) -> ProcessOps:
 def _find(ops: ProcessOps, name: str) -> str:
     op = next(o for o in ops.operations() if o.name == "find_processes")
     return op.run(validate_args(op, {"name": name})).text
+
+
+def _read(ops: ProcessOps, name: str) -> str:
+    """List the processes, then go on as the model's next message would, having read the list."""
+    text = _find(ops, name)
+    request = current_request()
+    assert request is not None
+    request.next_message()
+    return text
 
 
 class Rig:
@@ -61,15 +70,17 @@ class Rig:
 
     def listed_start(self, pid: int = GAME, **args: Any) -> Result:  # ruff: ignore[any-type] - the arguments a test sets
         with request_scope(foreign=False):
-            _find(self.processes, "somegame")
+            _read(self.processes, "somegame")
             return self.start(pid=pid, **args)
 
     def tick(self, seconds: float = 20) -> list[str]:
         self.clock.now += seconds
         return self.watch.check_due()
 
-    def set_state(self, state: str) -> None:
-        self.proc.add(GAME, "somegame", argv=["/opt/somegame/somegame"], state=state)
+    def set_state(self, state: str, threads: int = 1) -> None:
+        self.proc.add(
+            GAME, "somegame", argv=["/opt/somegame/somegame"], state=state, threads=threads
+        )
 
 
 @pytest.fixture
@@ -166,16 +177,97 @@ def test_process_watches_have_their_own_cap(rig: Rig) -> None:
     for offset in range(1, MAX_PROCESS_WATCHES):
         rig.proc.add(GAME + offset, "somegame", argv=["/opt/somegame/somegame"])
     with request_scope(foreign=False):
-        _find(rig.processes, "somegame")
+        _read(rig.processes, "somegame")
         for offset in range(MAX_PROCESS_WATCHES):
             rig.start(pid=GAME + offset)
     rig.proc.add(GAME + 99, "somegame", argv=["/opt/somegame/somegame"])
     with pytest.raises(OperationError, match="process watches already run"):
         rig.listed_start(pid=GAME + 99)
-    assert MAX_PROCESS_WATCHES > MAX_WATCHES  # a process watch uses no GPU
 
 
 def test_it_ends_after_for_min(rig: Rig) -> None:
     rig.listed_start(for_min=1)
 
     assert rig.tick(61) == ["My watch on somegame (PID 4242) is over."]
+
+
+def test_a_pid_written_beside_its_listing_is_refused(rig: Rig) -> None:
+    with request_scope(foreign=False):
+        _find(rig.processes, "somegame")  # the model has not read the list yet
+        with pytest.raises(OperationError, match="not read yet"):
+            rig.start(pid=GAME)
+
+
+def test_a_scheduled_job_sets_no_process_watch(rig: Rig) -> None:
+    with request_scope(foreign=False, scheduled=True), pytest.raises(OperationError, match="job"):
+        rig.start(pid=GAME)
+
+
+def test_outside_text_refuses_a_process_watch_in_words_about_watching(rig: Rig) -> None:
+    with request_scope(foreign=False) as request:
+        request.saw("web")
+        _read(rig.processes, "somegame")
+        with pytest.raises(OperationError, match="outside") as refused:
+            rig.start(pid=GAME)
+    assert "watch" in str(refused.value)
+    assert "stop" not in str(refused.value)
+
+
+def test_a_listed_process_that_ended_before_the_watch_is_refused(rig: Rig) -> None:
+    with request_scope(foreign=False):
+        _read(rig.processes, "somegame")
+        rig.proc.remove(GAME)
+        with pytest.raises(OperationError, match="no longer"):
+            rig.start(pid=GAME)
+
+
+def test_two_screen_watches_and_the_process_watches_run_together(rig: Rig) -> None:
+    for offset in range(1, MAX_PROCESS_WATCHES):
+        rig.proc.add(GAME + offset, "somegame", argv=["/opt/somegame/somegame"])
+    with request_scope(foreign=False):
+        for _ in range(MAX_WATCHES):
+            rig.watch.start(
+                {
+                    "of": "screen",
+                    "condition": "a dialog",
+                    "every_s": 20,
+                    "for_min": 60,
+                    "repeat": True,
+                }
+            )
+        _read(rig.processes, "somegame")
+        for offset in range(MAX_PROCESS_WATCHES):
+            rig.start(pid=GAME + offset)
+
+    listed = rig.watch.list_watches({}).text.splitlines()
+    assert len(listed) == MAX_WATCHES + MAX_PROCESS_WATCHES
+
+
+def test_a_stop_breaks_the_wait_on_a_disk(rig: Rig) -> None:
+    rig.listed_start(every_s=10)
+    rig.set_state("D")
+    assert rig.tick(10) == []
+    rig.set_state("T")
+    assert "is stopped" in rig.tick(10)[0]
+    rig.set_state("D")
+    assert rig.tick(10) == ["somegame (PID 4242) is running again."]  # resumed, if waiting
+    assert rig.tick(10) == []  # the wait began again at the last check, not the first
+    assert rig.tick(10) == []
+    assert "stuck for 30 seconds" in rig.tick(10)[0]
+
+
+def test_stuck_needs_three_checks_in_a_row_whatever_the_pace(rig: Rig) -> None:
+    rig.listed_start(every_s=300)
+    rig.set_state("D")
+    assert rig.tick(300) == []
+    assert rig.tick(300) == []  # two looks 300 s apart prove no wait of 300 s
+    assert "stuck for 600 seconds" in rig.tick(300)[0]
+
+
+def test_a_main_thread_that_ended_while_others_run_is_not_an_exit(rig: Rig) -> None:
+    rig.listed_start()
+    rig.set_state("Z", threads=4)
+
+    assert rig.tick() == []
+    rig.set_state("Z", threads=1)
+    assert "has exited" in rig.tick()[0]

@@ -52,7 +52,8 @@ MAX_SAY = 60  # the spoken line the model may give instead of the condition
 FAILURES_END = 3  # checks that fail one after another end a watch
 KINDS = ("window", "workspace", "screen", "process")
 MAX_PROCESS_WATCHES = 4  # read from /proc: no picture, no model call
-STUCK_S = 30.0  # waiting on a disk or device this long, without a break, is stuck
+STUCK_S = 30.0  # waiting on a disk or device this long, at every check, is stuck
+STUCK_CHECKS = 3  # ... and at least this many checks in a row: two looks prove no wait between
 _STOPPED = frozenset({"T", "t"})  # stopped by a signal, or held by a debugger
 _ENDED = frozenset({"Z", "X", "x"})  # exited; a zombie only waits for its parent
 NEEDS_PICTURES = f"I can't watch the screen. {PICTURES_OFF}"
@@ -96,7 +97,8 @@ class Watch:
     program: str = ""
     started: int = 0
     trouble: str = ""  # what was last said about it: "", "stopped" or "stuck"
-    waiting_since: float = 0.0  # when it began waiting on a disk or device (0: it is not)
+    waiting_since: float = 0.0  # the first check of this wait on a disk or device (0: none)
+    waits: int = 0  # checks in a row that found it waiting
     showing: bool = False  # the last check saw the condition: the next YES is not new
     say: str = ""  # the model's own short line for a YES; empty says the condition
 
@@ -116,6 +118,15 @@ def _over(watch: Watch) -> str:
     if watch.kind == "process":
         return f"My watch on {watch.of()} is over."
     return f"My watch for {watch.condition} is over."
+
+
+def _summary(args: dict[str, Any]) -> str:
+    """Return what the owner is asked to allow: what is watched and, when given, the line said."""
+    if args.get("of") == "process":
+        return f"watch process {args.get('pid', '')} and say if it exits, stops or gets stuck"
+    asked = f"watch for {args.get('condition', 'something')}"
+    say = printable(str(args.get("say", "")), MAX_SAY).rstrip(" .!?,;:")
+    return f'{asked} and then say "Heads up: {say}."' if say else asked
 
 
 def _heads_up(watch: Watch) -> str:
@@ -332,7 +343,9 @@ class ScreenWatch:
             return Result("No watches are running.")
         lines = [
             f"{w.ident}. {w.of()} for: {w.condition} (every {w.every_s:g} s, {self._left(w, now)}, "
-            f"{'each time' if w.repeat else 'once'}, said {w.announced}x)"
+            f"{'each time' if w.repeat else 'once'}, said {w.announced}x"
+            + (f', saying "{_heads_up(w)}"' if w.say else "")
+            + ")"
             for w in watches
         ]
         return Result("\n".join(lines), Origin.PROCESS)
@@ -396,7 +409,7 @@ class ScreenWatch:
                     "additionalProperties": False,
                 },
                 self.start,
-                spoken_summary=lambda a: f"watch for {a.get('condition', 'something')}",
+                spoken_summary=_summary,
             ),
             Operation(
                 "pc_watches",
@@ -512,13 +525,15 @@ class ScreenWatch:
             self._finish(watch, "process_ended")
             return f"Heads up: {name} has exited: it closed, crashed or was killed."
         trouble = ""
-        if state in _STOPPED:
-            trouble = "stopped"
-        elif state == "D":
+        if state == "D":
             watch.waiting_since = watch.waiting_since or now
-            trouble = "stuck" if now - watch.waiting_since >= STUCK_S else watch.trouble
+            watch.waits += 1
+            waited = now - watch.waiting_since >= STUCK_S and watch.waits >= STUCK_CHECKS
+            # Still stuck, newly stuck, or not yet: a stopped program waiting again was resumed.
+            trouble = "stuck" if waited or watch.trouble == "stuck" else ""
         else:
-            watch.waiting_since = 0.0
+            watch.waiting_since, watch.waits = 0.0, 0  # any other state breaks the wait
+            trouble = "stopped" if state in _STOPPED else ""
         if trouble == watch.trouble:
             return None
         watch.trouble = trouble
@@ -528,8 +543,8 @@ class ScreenWatch:
             return f"Heads up: {name} is stopped, frozen until something resumes it."
         if trouble == "stuck":
             return (
-                f"Heads up: {name} has been stuck for {STUCK_S:g} seconds, waiting on a disk or "
-                "a device."
+                f"Heads up: {name} has been stuck for {now - watch.waiting_since:.0f} seconds, "
+                "waiting on a disk or a device at every check."
             )
         return f"{name} is running again."
 

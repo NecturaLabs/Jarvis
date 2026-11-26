@@ -166,6 +166,7 @@ class _Shown:
     targets: dict[int, tuple[str, int, str]] = field(
         default_factory=dict[int, tuple[str, int, str]]
     )
+    message: int = 0  # the model message whose call listed them last (a watch needs it read)
 
 
 class Stopper(Protocol):
@@ -528,6 +529,7 @@ class ProcessOps:
             request = current_request()
             if self._shown.request is not request:
                 self._shown = _Shown(request)
+            self._shown.message = request.message if request is not None else 0
             for item in shown:
                 title = "" if item.by_name or item.window is None else item.window.title
                 self._shown.targets[item.proc.pid] = (
@@ -613,11 +615,43 @@ class ProcessOps:
     def watched(self, pid: int) -> tuple[str, int]:
         """Return the program and start time of a PID `find_processes` listed in this request.
 
+        The listing must have been read: a PID written beside it, in the same model message, is
+        a guess, as for the window tools.
+
         Raises:
-            OperationError: no owner's request is being handled, the PID was not listed in it, or
-                it is no longer the process that was listed.
+            OperationError: no owner's request is being handled, it holds outside text, the PID
+                was not listed in it or not read yet, or it is no longer the process listed.
         """
-        program, start, _ = self._listed(self._owner_request(), pid)
+        request = current_request()
+        if request is None or request.foreign or request.scheduled:
+            msg = (
+                "a process is watched only on the owner's own request, never from PC audio or a job"
+            )
+            raise OperationError(msg)
+        outside = request.outside - {Origin.PROCESS.value, REMEMBERED_LISTING}
+        if outside:
+            msg = (
+                "a process is watched only on the owner's own words, and this request also holds "
+                f"outside text ({', '.join(sorted(outside))}); no watch was set. Ask the owner to "
+                "say which program to watch in a request of its own."
+            )
+            raise OperationError(msg)
+        with self._lock:
+            target = self._shown.targets.get(pid) if self._shown.request is request else None
+            unread = target is not None and request.message <= self._shown.message
+        if target is None:
+            msg = (
+                f"PID {pid} was not listed by find_processes in this request. Call "
+                "find_processes with the name the owner said first, and watch only a PID it lists."
+            )
+            raise OperationError(msg)
+        if unread:
+            msg = (
+                "The process list was not read yet: call find_processes alone, read it, then use "
+                "a PID from it."
+            )
+            raise OperationError(msg)
+        program, start, _ = target
         proc = self._read(pid)
         if proc is None or proc.start != start:
             msg = f"PID {pid} is no longer the {program} that was listed"
@@ -630,7 +664,19 @@ class ProcessOps:
         None once it is gone: another process may have its PID by then.
         """
         proc = self._read(pid)
-        return None if proc is None or proc.start != start else proc.state
+        if proc is None or proc.start != start:
+            return None
+        if proc.state == "Z" and self._threads(pid) > 1:
+            return "S"  # its first thread ended, the others run: the program has not exited
+        return proc.state
+
+    def _threads(self, pid: int) -> int:
+        """Return how many threads the process has, from its `status` (1 when it does not say)."""
+        for line in self._text(pid, "status").splitlines():
+            if line.startswith("Threads:"):
+                with contextlib.suppress(ValueError, IndexError):
+                    return int(line.split()[1])
+        return 1
 
     def prepare(self, args: dict[str, Any]) -> dict[str, Any]:
         """Bind the PID to the program and start time `find_processes` listed in this request.

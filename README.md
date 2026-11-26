@@ -58,7 +58,7 @@ Jarvis is pre-1.0 software; see [Status](#status).
   then (every 20 seconds by default, for two hours by default, two watches at most) and says so;
   each check is a model call with a picture ([ADR 0021](docs/adr/0021-screen-watch.md)). It can also watch a program
   you name and say when it exits (closed, crashed or killed), is stopped, or is stuck waiting on a disk
-  or device for 30 seconds, and when it runs again; that reads only `/proc`, with no picture and no model.
+  or device at three checks in a row over at least 30 seconds, and when it runs again; that reads only `/proc`, with no picture and no model.
 - **Your own skills:** put instructions for a task of yours in `~/.config/jarvis/skills/<name>.md`, opening
   with a `---` block holding a `description:` line, and Jarvis reads them when a request needs them. They
   guide what it does and never let it do more than it otherwise could.
