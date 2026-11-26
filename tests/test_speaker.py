@@ -572,3 +572,13 @@ def test_a_wake_phrase_across_two_chunks_of_a_song_is_still_guarded(tmp_path: Pa
         _end(pid_file)
 
     assert guarded
+
+
+def test_a_sound_with_nothing_in_it_is_checked_without_an_error(tmp_path: Path) -> None:
+    speaker = Speaker(_voice, player=_taking(tmp_path / "pid", tmp_path / "heard.raw"))
+    try:
+        spans = speaker._wake_spans(b"", RATE, "", 0, chunked=False)  # pyright: ignore[reportPrivateUsage]
+    finally:
+        speaker.hush()
+
+    assert spans == []

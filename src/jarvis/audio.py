@@ -2238,7 +2238,7 @@ class Speaker:
         A sentence is checked whole; a song (`chunked`) in chunks of `SONG_CHUNK_S`.
         """
         total = len(pcm) // 2
-        step = int(SONG_CHUNK_S * rate) if chunked else total
+        step = max(1, int(SONG_CHUNK_S * rate) if chunked else total)  # a sound may be empty
         spans: list[tuple[float, float]] = []
         for first in range(0, total, step):
             if not self._current(run):
