@@ -244,6 +244,7 @@ _COPIED_HEAD = re.compile(
 )
 _DATA_TAG = re.compile(r"(?P<space>\s*)(?:(?P<open><data(?:\s[^>]*)?>)|</data>)(?P<after>\s*)")
 _COPIED_START = re.compile(r"<(?:d(?:a(?:t(?:a)?)?)?)?$|<data\s[^>]*$")
+_NOTE_STARTS = ("[actions taken:", "[looked up:")
 _REPLY_KEY = '{"reply":"'
 _REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
 _WRAPPED = re.compile(r'(?P<head><data origin="[a-z_]+">)(?P<body>.*)</data>', re.DOTALL)
@@ -334,6 +335,27 @@ def own_words(reply: str) -> str:
             if not wrappers:
                 break
     return "".join((*parts, rest[done:]))
+
+
+def _may_be_copied(words: str) -> bool:
+    """Whether `words` could still grow into a note or a data wrapper copied from memory.
+
+    That is a start of one, or a note whose closing bracket has not come: brackets inside a note
+    open and close, so it ends where they are even again.
+    """
+    if _COPIED_START.match(words):
+        return True
+    low = words.lower()
+    if any(note.startswith(low) for note in _NOTE_STARTS):
+        return True
+    if not low.startswith(_NOTE_STARTS):
+        return False
+    depth = 0
+    for char in words:
+        depth += (char == "[") - (char == "]")
+        if depth == 0:
+            return False
+    return True
 
 
 def _model_failure(error: Exception) -> str:
@@ -521,13 +543,13 @@ class _ReplyStream:
         if self._held:
             return
         words = self._words()
-        if words is not None and words.startswith("<"):
-            words = own_words(words)  # a wrapper copied from memory is not spoken
-            if _COPIED_START.match(words):
-                return  # it may yet turn out to be a wrapper: wait for more
-        if words is None or words.startswith("["):  # not a reply, or memory's notes copied
-            self._held = words is not None or self._source == "reply"
+        if words is None:  # not a reply
+            self._held = self._source == "reply"
             return
+        if words.startswith(("<", "[")):
+            words = own_words(words)  # what memory's marks put round a reply is not spoken
+            if _may_be_copied(words):
+                return  # it may yet turn out to be a note or a wrapper: wait for more
         while (end := sentence_end(words, len(self.spoken))) is not None:
             piece = words[len(self.spoken) : end]
             if end > self._max_chars or (not self._may_claim and claims_action(piece)):

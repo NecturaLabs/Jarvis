@@ -344,8 +344,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   wrapper memory puts round a reply that drew on outside text, with the notes inside it: a reply that
   copied it showed the tag in the chat and the note in T3 Code, and a voice would have read both out.
   The wrapper's closing tag goes wherever it falls in the reply, not only at its end. A reply that begins with
-  a note is held back from speech and drafts until it is cleaned; one that begins with "<" waits only while it
-  could still be a wrapper, and is spoken as it is written otherwise.
+  "[" or "<" waits only while it could still be a copied note or wrapper, and is spoken as it is written
+  otherwise, with a copied note or wrapper left out.
 - Spoken replies: a dash is a pause instead of a run-on (between numbers it is "to"), a unit sign after a
   number is said as its word ("22 °C" as "22 degrees Celsius", "12 km/h" as "12 kilometres per hour",
   "48 GB" as "48 gigabytes") instead of spelled out, a web address is said as its site, and a table's

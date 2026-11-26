@@ -181,14 +181,14 @@ def test_a_no_action_the_owner_switched_off_is_never_streamed() -> None:
     assert "Hello there." not in ear.heard
 
 
-def test_an_actions_note_the_model_copied_is_held_and_never_spoken() -> None:
+def test_an_actions_note_the_model_copied_is_never_spoken() -> None:
     counter = Counter()
     model = ScriptedModel([_call("pause"), _say("[actions taken: pause -> ok] Paused. Enjoy.")])
     ear = Ear(model)
     agent, _ = _agent(model, [counter.op("pause")])
 
     assert agent.handle("pause", ear.hooks()) == "Paused. Enjoy."
-    assert ear.heard == ["Paused. Enjoy."]
+    assert ear.heard == ["Paused.", "Enjoy."]
 
 
 def test_a_cancelled_request_stops_the_stream_and_keeps_only_what_was_said() -> None:

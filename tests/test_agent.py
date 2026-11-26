@@ -2620,6 +2620,55 @@ def test_an_open_data_tag_that_is_not_a_wrapper_is_spoken_in_the_end(as_call: bo
     assert heard == ['<data origin="web" >Tags are shown.', "Then more.</data>"]
 
 
+@pytest.mark.parametrize("as_call", [False, True], ids=["text", "reply call"])
+def test_a_reply_that_starts_with_a_plain_bracket_is_spoken_as_it_is_written(
+    as_call: bool,
+) -> None:
+    text = "[Pause] is the button you want. Press it once. Then it is done."
+    model = ScriptedModel([_call("no_action", {"reply": text}) if as_call else _say(text)])
+
+    after, heard = _streamed(model)
+
+    assert heard == ["[Pause] is the button you want.", "Press it once.", "Then it is done."]
+    assert ["[Pause] is the button you want."] in after
+
+
+@pytest.mark.parametrize("as_call", [False, True], ids=["text", "reply call"])
+@pytest.mark.parametrize(
+    "copied",
+    [
+        "[actions taken: none] [looked up: kettle] ",
+        "[Actions Taken: none (nothing was changed)] ",
+        "[looked up: web_search a[1] b] ",
+        '[actions taken: none] <data origin="web">[looked up: kettle] ',
+    ],
+)
+def test_a_copied_note_is_spoken_as_it_is_written_without_the_note(
+    copied: str, as_call: bool
+) -> None:
+    text = f"{copied}All fine here. Nothing to report. Truly."
+    model = ScriptedModel([_call("no_action", {"reply": text}) if as_call else _say(text)])
+
+    after, heard = _streamed(model)
+
+    assert heard == ["All fine here.", "Nothing to report.", "Truly."]
+    assert ["All fine here."] in after
+    assert all("[" not in "".join(words) for words in after)
+
+
+@pytest.mark.parametrize("as_call", [False, True], ids=["text", "reply call"])
+def test_a_copied_note_with_an_unbalanced_bracket_is_spoken_clean_at_the_end(
+    as_call: bool,
+) -> None:
+    text = "[looked up: web_search c++ [ syntax] Here it is. And more."
+    model = ScriptedModel([_call("no_action", {"reply": text}) if as_call else _say(text)])
+
+    after, heard = _streamed(model)
+
+    assert " ".join(heard) == "Here it is. And more."
+    assert all("[" not in "".join(words) for words in after)
+
+
 def test_a_data_tag_the_model_wrote_on_its_own_is_spoken_once_it_is_not_a_wrapper() -> None:
     text = "<data> is the tag it uses. It wraps outside text. Nothing else."
 
