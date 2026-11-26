@@ -5,9 +5,10 @@ after a search box or a button. For those, Jarvis drives a real Chrome through a
 these fences, each in code:
 
 - Headless, muted and with no display variables: it can open no window and make no sound.
-- Its own throwaway profile in the user's runtime folder, deleted when the browser closes: never
-  the owner's browser, cookies or logins. Its download folder is read-only, so a download a page
-  starts fails instead of being saved.
+- Its own throwaway profile and home folder in the user's runtime folder, deleted once the
+  browser has ended: never the owner's browser, cookies, logins or Downloads. Its download folder
+  is read-only, and so is its home's Downloads, so a download a page starts fails instead of
+  being saved. Each launch has its own agent-browser session and socket folder.
 - Every connection it makes goes through `jarvis.web.proxy`, which reaches only public addresses
   on ports 80 and 443; loopback goes through the proxy too, and Chrome resolves no name itself,
   so page scripts, frames, redirects and WebRTC cannot reach this PC or the home network.
@@ -22,6 +23,7 @@ import atexit
 import contextlib
 import json
 import os
+import secrets
 import shutil
 import tempfile
 import threading
@@ -38,7 +40,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
 PROGRAM = "agent-browser"
-NAMESPACE = "jarvis"
 # One batch of commands, launching the browser included, at most; less near the request's end.
 BATCH_LIMIT_S = 40.0
 ACTION_TIMEOUT_MS = 15_000  # agent-browser's own limit for one command
@@ -89,8 +90,12 @@ CHROME_ARGS = (
     "--disable-domain-reliability",
     "--disk-cache-size=33554432",  # the profile is in the runtime folder, which is memory
 )
-# What the browser's environment keeps of Jarvis's: where programs and Chrome are, nothing else.
-_KEPT_ENVIRONMENT = ("PATH", "HOME", "XDG_RUNTIME_DIR", "LANG", "TZ")
+# What the browser's environment keeps of Jarvis's: where programs are, nothing else. Its home is
+# the session's own (`_environment`).
+_KEPT_ENVIRONMENT = ("PATH", "XDG_RUNTIME_DIR", "LANG", "TZ")
+# The session folders in use in this process, so one Browser's sweep never takes another's.
+_IN_USE: set[Path] = set()
+_IN_USE_LOCK = threading.Lock()
 _CHROME_ERROR = "chrome-error:"
 
 
@@ -235,10 +240,12 @@ class Browser:
         proxy: Callable[[], EgressProxy] = EgressProxy,
         timer: Callable[[float, Callable[[], None]], threading.Timer] | None = None,
         origin: str = "",
+        on_close: Callable[[], None] | None = None,
     ) -> None:
         """Drive `program` (agent-browser's full path), keeping its throwaway files under `root`.
 
         With `origin` (`http://127.0.0.1:<port>`, a preview's), only addresses there are opened.
+        `on_close` runs once `close` has closed the browser (a preview's server stops then).
         """
         super().__init__()
         self._origin = origin
@@ -248,7 +255,9 @@ class Browser:
         self._run = run
         self._make_proxy = proxy
         self._make_timer = timer or _daemon_timer
-        self._session = f"jarvis-{os.getpid()}"
+        self._on_close = on_close
+        self._session = ""  # each launch's own, set with the folder
+        self._chrome = ""
         self._lock = threading.RLock()
         self._dir: Path | None = None
         self._proxy: EgressProxy | None = None
@@ -288,24 +297,28 @@ class Browser:
         try:
             proxy.start()
         except OSError as exc:
-            shutil.rmtree(folder, ignore_errors=True)
+            _release(folder, remove=True)
             msg = f"the browser's proxy couldn't start: {exc.strerror or type(exc).__name__}"
             raise BrowserError(msg) from exc
         self._dir, self._proxy = folder, proxy
-        atexit.register(self.close)
+        self._session = f"jarvis-{secrets.token_hex(4)}"
+        # The real home's: agent-browser no longer finds its own Chrome under the session's home.
+        found = chrome_path(Path.home())
+        self._chrome = str(found) if found is not None else ""
+        atexit.register(self._at_exit)
         return folder
 
     def _flags(self, folder: Path, proxy: EgressProxy) -> list[str]:
         """Return agent-browser's options: the same on every call, so it is never relaunched."""
         idle = int(self._idle_s) + 60  # agent-browser's own backstop, after Jarvis's
+        chrome = ["--executable-path", self._chrome] if self._chrome else []
         return [
             self._program,
             "--config",
             str(folder / "config.json"),
-            "--namespace",
-            NAMESPACE,
             "--session",
             self._session,
+            *chrome,
             "--json",
             "--headed",
             "false",
@@ -329,11 +342,23 @@ class Browser:
         ]
 
     @staticmethod
-    def _environment() -> dict[str, str]:
-        """Return the browser's environment: no display, no sound server, no outside settings."""
+    def _environment(folder: Path) -> dict[str, str]:
+        """Return the browser's environment: no display, no sound server, no outside settings.
+
+        Its home and XDG folders are the session's (`folder / "work"`), so nothing Chrome or
+        agent-browser keeps or downloads by default lands in the owner's.
+        """
         env = {name: os.environ[name] for name in _KEPT_ENVIRONMENT if name in os.environ}
+        home = folder / "work"
         env.update(
             {
+                "HOME": str(home),
+                "XDG_CONFIG_HOME": str(home / ".config"),
+                "XDG_CACHE_HOME": str(home / ".cache"),
+                "XDG_DATA_HOME": str(home / ".local" / "share"),
+                "XDG_STATE_HOME": str(home / ".local" / "state"),
+                "XDG_DOWNLOAD_DIR": str(folder / "downloads"),
+                "AGENT_BROWSER_SOCKET_DIR": str(folder / "s"),
                 "PIPEWIRE_REMOTE": "/nonexistent",
                 "PULSE_SERVER": "unix:/nonexistent",
                 # agent-browser would ask a blog for Chrome's security news, past the proxy.
@@ -369,7 +394,7 @@ class Browser:
             out = self._run(
                 argv,
                 stdin=json.dumps(commands),
-                env=self._environment(),
+                env=self._environment(folder),
                 cwd=folder / "work",
                 timeout=limit,
             )
@@ -407,11 +432,40 @@ class Browser:
                 self._shut()
 
     def close(self) -> None:
-        """Close the browser, stop its proxy and delete its folder (its profile and downloads)."""
+        """Close the browser, stop its proxy and delete its folder (its profile and downloads).
+
+        Then `on_close` runs, if given.
+        """
         with self._lock:
             self._shut()
+        if self._on_close is not None:
+            self._on_close()
+
+    def _at_exit(self) -> None:
+        """Close as Jarvis exits, waiting at most `CLOSE_LIMIT_S` for a command still running.
+
+        Past that, only the proxy is stopped, so the browser has no way out until agent-browser's
+        own idle timeout ends it; its folder is swept at a later start.
+        """
+        if self._lock.acquire(timeout=CLOSE_LIMIT_S):
+            try:
+                self._shut()
+            finally:
+                self._lock.release()
+        else:
+            proxy = self._proxy
+            if proxy is not None:
+                proxy.stop()
+        if self._on_close is not None:
+            self._on_close()
 
     def _shut(self) -> None:
+        """Close the session: the browser, then its proxy, then its folder once the browser ended.
+
+        A browser whose close did not end it (the close failed or timed out) keeps its folder,
+        with its socket folder and agent-browser's record of it, until a later sweep finds it
+        gone: the next launch is a session of its own either way.
+        """
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None
@@ -419,18 +473,18 @@ class Browser:
         self._dir, self._proxy, self._view = None, None, None
         if folder is None:
             return
-        atexit.unregister(self.close)
+        atexit.unregister(self._at_exit)
         if proxy is not None:
-            with contextlib.suppress(BrowserTimeoutError, OSError):
+            with contextlib.suppress(BrowserError, OSError):
                 self._run(
                     [*self._flags(folder, proxy), "close"],
                     stdin="",
-                    env=self._environment(),
+                    env=self._environment(folder),
                     cwd=folder / "work",
                     timeout=CLOSE_LIMIT_S,
                 )
             proxy.stop()
-        shutil.rmtree(folder, ignore_errors=True)
+        _release(folder, remove=not _daemon_running(folder))
 
     # --- what the page shows -----------------------------------------------------------------
 
@@ -737,38 +791,101 @@ def _rows(out: str) -> list[dict[str, Any]]:
 
 
 def _new_folder(root: Path) -> Path:
-    """Make a session's folder: agent-browser's config and action policy, and two folders.
+    """Make a session's folder: agent-browser's config and action policy, and its folders.
 
-    One is the work folder; the other the download folder, which no one can write in.
+    The work folder is the browser's home and working folder; the download folder, and the
+    home's Downloads, no one can write in. A folder that could not be made whole is removed.
 
-    An `OSError` says it could not be made.
+    Raises:
+        OSError: it could not be made.
     """
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     _sweep(root)
     folder = Path(tempfile.mkdtemp(prefix=f"session-{os.getpid()}-", dir=root))
-    (folder / "config.json").write_text("{}\n", encoding="utf-8")
-    policy = {"default": "deny", "allow": list(ALLOWED_ACTIONS)}
-    (folder / "policy.json").write_text(json.dumps(policy), encoding="utf-8")
-    (folder / "work").mkdir(mode=0o700)
-    # agent-browser has Chrome save every download here (`Browser.setDownloadBehavior` "allow",
-    # with this path), so a page can start one itself; Chrome cannot write here, and the
-    # download fails instead of being saved.
-    (folder / "downloads").mkdir(mode=0o500)
+    with _IN_USE_LOCK:
+        _IN_USE.add(folder)
+    try:
+        _fill_folder(folder)
+    except OSError:
+        _release(folder, remove=True)
+        raise
     return folder
 
 
+def _fill_folder(folder: Path) -> None:
+    (folder / "config.json").write_text("{}\n", encoding="utf-8")
+    policy = {"default": "deny", "allow": list(ALLOWED_ACTIONS)}
+    (folder / "policy.json").write_text(json.dumps(policy), encoding="utf-8")
+    (folder / "s").mkdir(mode=0o700)
+    downloads = folder / "downloads"
+    config = folder / "work" / ".config"
+    config.mkdir(mode=0o700, parents=True)
+    # Chrome's own default Downloads, should it ever pass over the download folder.
+    (config / "user-dirs.dirs").write_text(f'XDG_DOWNLOAD_DIR="{downloads}"\n', encoding="utf-8")
+    (folder / "work" / "Downloads").mkdir(mode=0o500)
+    # agent-browser has Chrome save every download here (`Browser.setDownloadBehavior` "allow",
+    # with this path), so a page can start one itself; Chrome cannot write here, and the
+    # download fails instead of being saved.
+    downloads.mkdir(mode=0o500)
+
+
+def _release(folder: Path, *, remove: bool) -> None:
+    """Note a session folder as no longer in use here, and delete it if `remove`."""
+    with _IN_USE_LOCK:
+        _IN_USE.discard(folder)
+    if remove:
+        _remove(folder)
+
+
+def _remove(folder: Path) -> None:
+    """Delete a session folder, its read-only folders included."""
+    for name in ("downloads", "work/Downloads"):
+        with contextlib.suppress(OSError):
+            (folder / name).chmod(0o700)
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def _daemon_running(folder: Path) -> bool:
+    """Return whether the agent-browser of a session folder still runs (its record says so)."""
+    for record in (folder / "s").rglob("*.pid"):
+        try:
+            pid = int(record.read_text(encoding="ascii").strip())
+            command = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError, ValueError:
+            continue
+        if PROGRAM.encode() in command:
+            return True
+    return False
+
+
 def _sweep(root: Path) -> None:
-    """Delete the session folders a Jarvis that is gone left behind (it stopped without closing)."""
+    """Delete the session folders no browser uses any more.
+
+    That is a folder of a Jarvis that is gone (it stopped without closing), or of this one but no
+    longer in use, once its agent-browser has ended too.
+    """
     for folder in root.glob("session-*-*"):
         pid = folder.name.split("-")[1]
-        if not pid.isdigit() or int(pid) == os.getpid():
+        if not pid.isdigit():
             continue
-        try:
-            os.kill(int(pid), 0)
-        except ProcessLookupError:
-            shutil.rmtree(folder, ignore_errors=True)
-        except OSError:
-            continue  # alive, someone else's
+        if int(pid) == os.getpid():
+            with _IN_USE_LOCK:
+                if folder in _IN_USE:
+                    continue
+        elif _alive(int(pid)):
+            continue
+        if not _daemon_running(folder):
+            _remove(folder)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # someone else's
+    return True
 
 
 # Where agent-browser (0.44) looks for a Chrome on Linux, under the home folder, after its own.
@@ -788,11 +905,23 @@ _CHROME_ON_PATH = (
 )
 
 
+def chrome_path(home: Path) -> Path | None:
+    """Return the Chrome agent-browser installed (or one it falls back to) under `home`, or None.
+
+    One on PATH agent-browser finds itself; this one it would find only under the real home.
+    """
+    for pattern in _CHROME_IN_HOME:
+        for path in sorted(home.glob(pattern), reverse=True):
+            if path.is_file():
+                return path
+    return None
+
+
 def chrome_found(home: Path) -> bool:
     """Return whether agent-browser has a Chrome to drive: its own, or one it falls back to."""
     if any(shutil.which(name) for name in _CHROME_ON_PATH):
         return True
-    return any(path.is_file() for pattern in _CHROME_IN_HOME for path in home.glob(pattern))
+    return chrome_path(home) is not None
 
 
 def _daemon_timer(seconds: float, action: Callable[[], None]) -> threading.Timer:

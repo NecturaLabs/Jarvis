@@ -66,8 +66,9 @@ Questions that need the outside world ([ADR 0007](adr/0007-outside-services-for-
 - **The headless browser** (when agent-browser is installed; [ADR 0016](adr/0016-headless-browser.md)): it
   opens the same pages `web_read` may, and the links they show. Each site sees what any visit by Chrome shows
   it (your public IP address, the browser and what the page itself loads), and gets words only when you said
-  yes to typing them there. It carries none of your browsers' cookies or logins, its own profile is deleted
-  when it closes, and it reaches nothing on this PC or your network.
+  yes to typing them there. It carries none of your browsers' cookies or logins, uses a home folder of its
+  own (never your Downloads), its own profile is deleted once it has ended, and it reaches nothing on this PC
+  or your network.
 - **Reddit**: thread searches go through SearXNG the same way, with `site:reddit.com` added; the
   `arctic-shift.photon-reddit.com` archive gets the ids of the threads Jarvis reads.
 

@@ -132,13 +132,14 @@ def test_a_preview_browser_opens_only_its_project(tmp_path: Path, served: Folder
         served, "/usr/bin/agent-browser", tmp_path / "b", idle_close_s=60, run=fake
     )
 
-    view = browser.open(f"{served.origin}/")
+    origin = served.origin
+    view = browser.open(f"{origin}/")
     for elsewhere in ("https://example.com/", "http://127.0.0.1:8080/", "file:///etc/passwd"):
         with pytest.raises(BrowserError):
             browser.open(elsewhere)
     browser.close()
 
-    assert view.url == f"{served.origin}/"
+    assert view.url == f"{origin}/"
 
 
 def test_the_web_browser_still_refuses_the_preview_origin(
@@ -148,3 +149,20 @@ def test_the_web_browser_still_refuses_the_preview_origin(
 
     with pytest.raises(BrowserError):
         browser.open(f"{served.origin}/")
+
+
+def test_closing_a_preview_browser_stops_its_server(tmp_path: Path, home: Path) -> None:
+    server = FolderServer(home / "Documents" / "site", _boundary(home))
+    server.start()
+    fake = FakeAgentBrowser(Page(url=f"{server.origin}/"))
+    browser = preview_browser(
+        server, "/usr/bin/agent-browser", tmp_path / "b", idle_close_s=60, run=fake
+    )
+    browser.open(f"{server.origin}/")
+    port = server.port
+
+    browser.close()
+
+    assert server.port == 0
+    with pytest.raises(ConnectionRefusedError):
+        socket.create_connection(("127.0.0.1", port), timeout=1).close()

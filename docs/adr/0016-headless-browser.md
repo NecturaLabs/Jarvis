@@ -51,8 +51,15 @@ quick commands.
   test with the real browser (`tests/test_web_browser_local.py`, `local`) checks this: a page whose
   scripts try every one of these reaches nothing.
 - **Nothing of the owner's.** Each session gets a throwaway profile and download folder in the runtime
-  folder (`$XDG_RUNTIME_DIR/jarvis/browser/session-<pid>-…`), deleted when the browser closes. Folders a
-  stopped Jarvis left behind are deleted at the next start. agent-browser reads no config of its own
+  folder (`$XDG_RUNTIME_DIR/jarvis/browser/session-<pid>-…`), deleted once the browser has ended. Its home
+  and XDG folders are the session's too, with their Downloads read-only and named as the download folder,
+  so nothing Chrome or agent-browser keeps or falls back to lands in the owner's home; Jarvis names the
+  Chrome agent-browser installed (`--executable-path`), which agent-browser would otherwise look for under
+  that home. Each launch has its own agent-browser session name and socket folder, so a web and a preview
+  session in one Jarvis, or a launch after a close that did not end the last browser, never share one. A
+  browser whose close did not end it keeps its folder until a later start finds it gone (agent-browser's
+  record of it, in the socket folder, says so); the folders of a stopped Jarvis are swept the same way. A
+  folder that could not be made whole is removed. agent-browser reads no config of its own
   (`--config` points at an empty file), so no extensions, plugins or saved logins. It runs headless,
   muted, with no display or sound-server variables and no version check, which would fetch past the
   proxy. Its action policy denies everything but the commands Jarvis sends: no scripts (`eval`), uploads,
@@ -62,7 +69,8 @@ quick commands.
 - **Idle means closed.** The browser closes after `[browser] idle_close_s` (60 s) without use, and when
   the conversation is forgotten. agent-browser's own idle timeout, a minute later, ends it if Jarvis dies.
   Closing stops the proxy, which ends every connection still open, so a browser whose own close failed has
-  no way out while it waits for that timeout.
+  no way out while it waits for that timeout. At exit Jarvis waits at most 15 s for a command still running
+  before it stops the proxy alone.
   Between requests it uses no CPU and holds no memory.
 - **Operations.**
   - `browser_open` opens only an address `web_read` would open: one a search in the conversation returned,
@@ -108,7 +116,7 @@ page scripts read other files, and never through this web session. A preview is 
 proxy allows exactly one loopback port and refuses everything else, the public internet included. Behind
 that port is a read-only file server Jarvis starts over one project folder, which coding mode hands over as
 a resolved path inside the file write roots (`app.files_boundary`). It serves regular files under that
-folder only, follows no symbolic link out, and stops with the session. Its text, errors and screenshots are
+folder only, follows no symbolic link out, and stops when the session is closed. Its text, errors and screenshots are
 web text too. Built: `web/preview.py` (`FolderServer`, `preview_browser`), `EgressProxy(local_port=…)` and
 `Browser(origin=…)`; the operation that asks for a preview comes with coding mode.
 

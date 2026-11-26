@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, override
 
@@ -251,16 +253,166 @@ def test_its_environment_has_no_display_no_sound_and_no_outside_settings(
         "PATH",
         "HOME",
         "XDG_RUNTIME_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_DOWNLOAD_DIR",
         "LANG",
         "TZ",
         "PIPEWIRE_REMOTE",
         "PULSE_SERVER",
         "AGENT_BROWSER_NO_VERSION_CHECK",
         "AGENT_BROWSER_DEFAULT_TIMEOUT",
+        "AGENT_BROWSER_SOCKET_DIR",
     }
     assert env["PIPEWIRE_REMOTE"] == "/nonexistent"
     assert env["PULSE_SERVER"] == "unix:/nonexistent"
     assert env["AGENT_BROWSER_NO_VERSION_CHECK"] == "1"
+
+
+def test_chrome_gets_a_home_of_its_own_where_no_download_can_be_saved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Were the read-only download folder ever passed over, Chrome falls back to the home's
+    # Downloads: never the owner's.
+    owners = tmp_path / "owner"
+    monkeypatch.setenv("HOME", str(owners))
+    fake = FakeAgentBrowser()
+    made, _, _ = _browser(tmp_path, fake)
+
+    made.open("https://site.example/")
+
+    argv, _commands, env = fake.calls[0]
+    folder = Path(_option(argv, "--profile")).parent
+    for name in ("HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
+        assert Path(env[name]).is_relative_to(folder), name
+    assert not any(str(owners) in value for value in env.values())
+    downloads = Path(_option(argv, "--download-path"))
+    assert env["XDG_DOWNLOAD_DIR"] == str(downloads)
+    dirs = (Path(env["XDG_CONFIG_HOME"]) / "user-dirs.dirs").read_text(encoding="utf-8")
+    assert f'XDG_DOWNLOAD_DIR="{downloads}"' in dirs
+    fallback = Path(env["HOME"]) / "Downloads"
+    assert fallback.is_dir()
+    assert fallback.stat().st_mode & 0o222 == 0
+
+
+def test_the_chrome_found_in_the_owners_home_is_named_to_agent_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # agent-browser looks for its own Chrome under HOME, which is now the session's.
+    owners = tmp_path / "owner"
+    chrome = owners / ".agent-browser" / "browsers" / "chrome-150.0" / "chrome"
+    chrome.parent.mkdir(parents=True)
+    chrome.write_bytes(b"")
+    monkeypatch.setenv("HOME", str(owners))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    fake = FakeAgentBrowser()
+    made, _, _ = _browser(tmp_path, fake)
+
+    made.open("https://site.example/")
+
+    assert _option(fake.calls[0][0], "--executable-path") == str(chrome)
+    assert browser_module.chrome_found(owners)
+
+
+def test_each_launch_has_its_own_session_and_private_sockets(tmp_path: Path) -> None:
+    # A web browser and a preview browser in one process, or one launched again after a close
+    # that did not end the last, never share an agent-browser session.
+    first, second = FakeAgentBrowser(), FakeAgentBrowser()
+    one, _, _ = _browser(tmp_path, first)
+    two, _, _ = _browser(tmp_path, second)
+
+    one.open("https://site.example/")
+    two.open("https://site.example/")
+    one.close()
+    one.open("https://site.example/")
+
+    opened = [argv for argv, _c, _e in [*first.calls, *second.calls] if argv[-1] != "close"]
+    assert len({_option(argv, "--session") for argv in opened}) == 3  # one, one again, two
+    for argv, _commands, env in [*first.calls, *second.calls]:
+        folder = Path(_option(argv, "--profile")).parent
+        assert env["AGENT_BROWSER_SOCKET_DIR"] == str(folder / "s")
+        # A socket's path may be at most 103 bytes: the folder's name and this stay short.
+        assert len(_option(argv, "--session")) <= 16
+
+
+def test_a_browser_whose_close_did_not_end_it_keeps_its_folder_until_it_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    running: set[Path] = set()
+
+    def daemon_running(folder: Path) -> bool:
+        return folder in running
+
+    monkeypatch.setattr(browser_module, "_daemon_running", daemon_running)
+    fake = FakeAgentBrowser()
+    made, _, proxy = _browser(tmp_path, fake)
+    made.open("https://site.example/")
+    folder = Path(_option(fake.calls[0][0], "--profile")).parent
+    running.add(folder)
+
+    made.close()
+
+    assert proxy.stopped  # no way out while it waits for its own idle timeout
+    assert folder.exists()
+    assert not made.running
+
+    made.open("https://site.example/")  # still running: the sweep leaves it
+    assert folder.exists()
+    running.clear()
+    made.close()
+    made.open("https://site.example/")
+    assert not folder.exists()
+
+
+def test_a_folder_that_could_not_be_made_whole_is_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = Path.write_text
+
+    def fail_policy(path: Path, data: str, encoding: str | None = None) -> int:
+        if path.name == "policy.json":
+            raise OSError(28, "No space left on device")
+        return real(path, data, encoding=encoding)
+
+    monkeypatch.setattr(Path, "write_text", fail_policy)
+    fake = FakeAgentBrowser()
+    made, _, _ = _browser(tmp_path, fake)
+
+    with pytest.raises(BrowserError, match="folder"):
+        made.open("https://site.example/")
+
+    assert list((tmp_path / "browser").iterdir()) == []
+    assert fake.calls == []
+
+
+def test_closing_at_exit_waits_only_so_long_behind_a_running_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(browser_module, "CLOSE_LIMIT_S", 0.2)
+    release = threading.Event()
+    fake = FakeAgentBrowser()
+    made, _, proxy = _browser(tmp_path, fake)
+    made.open("https://site.example/")
+
+    def stuck(_command: list[str]) -> None:
+        release.wait(10)
+
+    fake.on["get"] = stuck
+    worker = threading.Thread(target=lambda: made.open("https://site.example/two"))
+    worker.start()
+    while len(fake.calls) < 2:
+        time.sleep(0.01)
+
+    started = time.monotonic()
+    made._at_exit()  # pyright: ignore[reportPrivateUsage] - what atexit runs
+    waited = time.monotonic() - started
+    release.set()
+    worker.join(10)
+
+    assert waited < 2
+    assert proxy.stopped
 
 
 def test_every_call_of_a_session_passes_the_same_options(tmp_path: Path) -> None:

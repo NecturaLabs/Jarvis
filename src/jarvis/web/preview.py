@@ -150,7 +150,7 @@ def preview_browser(
 ) -> Browser:
     """Return a browser session that opens only `server`'s origin, reaching nothing else.
 
-    `server` must be started; stop it when the session is closed.
+    `server` must be started; closing the session stops it.
     """
     return Browser(
         program,
@@ -159,4 +159,5 @@ def preview_browser(
         run=run,
         proxy=lambda: EgressProxy(local_port=server.port),
         origin=server.origin,
+        on_close=server.stop,
     )
