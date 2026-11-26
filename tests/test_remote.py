@@ -579,7 +579,7 @@ def test_remote_coding_changes_client_limits_without_touching_strata(
     assert not calls
 
 
-def test_remote_connect_failure_is_retried_once_without_polling_or_loading() -> None:
+def test_remote_connect_failure_is_tried_once_without_polling_or_loading() -> None:
     cfg = _remote()
     seen: list[httpx.Request] = []
 
@@ -595,10 +595,10 @@ def test_remote_connect_failure_is_retried_once_without_polling_or_loading() -> 
     assert not model.unload()
     with pytest.raises(ModelError, match="remote model server"):
         model.chat([], [])
+    # One probe, whose failure is remembered for a few seconds; the chat then does not wait out
+    # the same dead server twice (a chat with no recent probe retries once: test_remote_hardening).
     assert [(r.method, r.url.path) for r in seen] == [
         ("GET", "/v1/models"),
-        ("GET", "/v1/models"),
-        ("POST", "/v1/chat/completions"),
         ("POST", "/v1/chat/completions"),
     ]
 

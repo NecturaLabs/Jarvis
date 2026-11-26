@@ -23,6 +23,15 @@ Jarvis controls.
    verification path. WireGuard and Tailscale can encrypt the link for a backend bound to a private
    IP. HTTP beyond loopback requires explicit opt-in and a doctor warning. A private IP alone does
    not make plaintext safe. The key lives in private state and is bound to the configured URL.
+   A backend that listens beyond loopback speaks plain HTTP, so setup and the backend's doctor warn
+   that its key and the conversations cross the network unencrypted.
+   An address rule holds for host names as for IP literals: a name must resolve, and every address it
+   resolves to must pass the check literals pass (loopback, `10/8`, `172.16/12`, `192.168/16`,
+   `100.64/10` for Tailscale, `fc00::/7`). Setup, the doctor and each connection make it. It cannot
+   stop a resolver that answers differently between the check and the connection, which is why the
+   certificate chain, checked against the host name, stays the guard for HTTPS. A `tls_ca` file is
+   the only trust for its endpoint; a self-signed server certificate must be usable as a CA.
+   An SSH forward does not outlive a reboot or logout, so the doctor says so and gives the command.
 3. **Coding mode.** Apply the client overlay from [ADR 0017](0017-coding-mode.md) and keep serving the
    same remote model and context. Both the typed tool and the command say what changed. The local
    client contract documents chat completions, model listing and load/unload for the current model.
@@ -35,6 +44,8 @@ Jarvis controls.
 ## Verification
 
 Tests use a fake systemd and HTTP mock transport. They cover byte-for-byte compatibility of the
-default local setup, connection retries, key handling and the client/backend service boundaries.
+default local setup, connection retries (a remote probe is one short attempt whose answer is reused
+for a few seconds), key handling, name resolution, TLS trust against a local server and the
+client/backend service boundaries.
 Live Strata authentication, optional capability fields and tunnel interoperability await a run
 on the owner's machines. See [configuration.md](../configuration.md#model-on-another-machine).

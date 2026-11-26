@@ -1,8 +1,9 @@
 """`config.toml`: versioned, validated settings with documented defaults."""
 
 import re
+import socket
 import tomllib
-from collections.abc import MutableMapping
+from collections.abc import Callable, MutableMapping
 from ipaddress import ip_address, ip_network
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal, Self, cast
@@ -213,6 +214,29 @@ def _private_address(host: str) -> bool:
     )
 
 
+def resolve_addresses(host: str) -> list[str]:
+    """Return every address a host name resolves to (none when it does not resolve)."""
+    try:
+        found = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return []
+    return sorted({str(info[4][0]) for info in found})
+
+
+def private_endpoint(host: str, resolve: Callable[[str], list[str]] | None = None) -> bool:
+    """Return whether every address of `host` is on this machine or a private network.
+
+    An IP literal is judged as written; a name by everything it resolves to (`resolve`, else the
+    system's resolver), and a name that does not resolve fails.
+    """
+    try:
+        ip_address(host)
+    except ValueError:
+        addresses = (resolve or resolve_addresses)(host)
+        return bool(addresses) and all(_private_address(address) for address in addresses)
+    return _private_address(host)
+
+
 def _loopback(host: str) -> bool:
     try:
         return ip_address(host).is_loopback
@@ -331,6 +355,14 @@ class StrataConfig(_Section):
             msg = "strata.listen must be a loopback or private IP address in backend mode"
             raise ValueError(msg)
         return self
+
+    def host(self) -> str:
+        """Return the host of `url`, a name or an address."""
+        return urlsplit(self.url).hostname or ""
+
+    def serves_beyond_loopback(self) -> bool:
+        """Whether a backend listens where other machines reach it, in cleartext HTTP."""
+        return self.mode == "backend" and not _loopback(self.listen)
 
     def plain_lan(self) -> bool:
         """Whether client requests and credentials travel in cleartext beyond loopback."""

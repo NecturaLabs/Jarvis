@@ -152,10 +152,15 @@ def facts(config: Config, channel: str, limits: Limits) -> str:
     replies = "spoken" if channel == "voice" else "written"
     engine = f", engine {audio.transcribe_engine}" if audio.transcribe_engine else ""
     asking = "off (bypass_consent)" if bounds.bypass_consent else "on"
+    where = (
+        "one agent on this PC, no hosted model"
+        if config.strata.mode == "remote"
+        else "running only on this PC; one agent, no hosted model"
+    )
     lines = [
         (
             f"Name: {config.persona.name}. Program: Jarvis {__version__}, free software under"
-            " GPL-3.0-or-later, one agent on this PC, no hosted model."
+            f" GPL-3.0-or-later, {where}."
         ),
         f"This conversation: the {channel}; replies are {replies}.",
         *_model_lines(config),

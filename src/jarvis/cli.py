@@ -20,7 +20,7 @@ import threading
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from jarvis import __version__, cliout, config, control, models, modes, paths, services, update
@@ -44,14 +44,20 @@ from jarvis.chat.archive import ChatArchive
 from jarvis.chat.history import InputHistory
 from jarvis.confirmkey import ConfirmKey
 from jarvis.files import write_atomic
-from jarvis.model import ModelStatus, tls_context
+from jarvis.model import NOT_PRIVATE, ModelStatus, tls_context
 from jarvis.operations import OperationError
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.pc.hearing import Listening, PcHearing
 from jarvis.pc.screenshot import folders as screenshot_folders
 from jarvis.policy import OpClass, is_yes
 from jarvis.schedule import JobStore
-from jarvis.secretfile import ensure_api_key, read_api_key, read_private, remote_key
+from jarvis.secretfile import (
+    MAX_KEY_INPUT,
+    ensure_api_key,
+    read_api_key,
+    read_private,
+    remote_key_input,
+)
 from jarvis.services import JARVIS_UNIT, STRATA_UNIT, parse_systemd_time, reads_pictures
 from jarvis.spotify.auth import SCOPES, SpotifyAuthError, TokenStore, login, redirect_uri
 from jarvis.sysinfo import Sampler
@@ -82,6 +88,7 @@ AZURE_CHECK_S = 30.0
 SYSTEMCTL_S = 120.0  # a start or stop; Strata takes up to 45 s to stop (TimeoutStopSec)
 SYSTEMCTL_QUERY_S = 10.0  # is-active, show
 KEY_INPUT_LIMIT = 4096
+_TTY = Path("/dev/tty")
 WAKE_NAME = re.compile(r"\bjarvis\b", re.IGNORECASE)  # what an Azure model also wakes on
 
 
@@ -714,27 +721,45 @@ def _setup_spotify(updated: config.Config, *, failed: int) -> None:
         print("next: jarvis spotify-login")
 
 
-def _read_remote_key() -> str:
-    if sys.stdin.isatty():
-        tty = Path("/dev/tty")
-        with tty.open(encoding="utf-8") as terminal, tty.open("w", encoding="utf-8") as prompt:
+def _typed_key() -> str:
+    """Read one line from the terminal with echo off, and put echo back whatever happens.
+
+    Raises:
+        ConfigError: the terminal does not take its echo switched off.
+    """
+    with _TTY.open(encoding="utf-8") as terminal, _TTY.open("w", encoding="utf-8") as prompt:
+        original: list[Any] | None = None
+        try:
             original = termios.tcgetattr(terminal)
-            hidden = original.copy()
+            hidden = list(original)
             hidden[3] &= ~termios.ECHO
             termios.tcsetattr(terminal, termios.TCSAFLUSH, hidden)
-            try:
-                print("Strata API key: ", file=prompt, end="", flush=True)
-                entered = terminal.readline(KEY_INPUT_LIMIT + 2)
-            finally:
-                termios.tcsetattr(terminal, termios.TCSAFLUSH, original)
-                print(file=prompt, flush=True)
-    else:
-        entered = sys.stdin.readline(KEY_INPUT_LIMIT + 2)
-    key = remote_key(entered) if len(entered) <= KEY_INPUT_LIMIT + 1 else None
+            print("Strata API key: ", file=prompt, end="", flush=True)
+            return terminal.readline(KEY_INPUT_LIMIT + 2)
+        except termios.error as exc:
+            msg = "could not read the key at the terminal; supply it on stdin instead"
+            raise config.ConfigError(msg) from exc
+        finally:
+            if original is not None:
+                with contextlib.suppress(termios.error):
+                    termios.tcsetattr(terminal, termios.TCSAFLUSH, original)
+            print(file=prompt, flush=True)
+
+
+def _read_remote_key() -> str:
+    entered = _typed_key() if sys.stdin.isatty() else sys.stdin.read(MAX_KEY_INPUT + 1)
+    key = remote_key_input(entered)
     if key is None:
         msg = "supply the Strata API key on stdin or enter it at the terminal prompt"
         raise config.ConfigError(msg)
     return key
+
+
+_PLAIN_BACKEND = (
+    "warning: the backend listens beyond this machine over plain HTTP, so its key and the "
+    "conversations cross the network unencrypted. Keep strata.listen on 127.0.0.1 and use an SSH "
+    "tunnel, or put an HTTPS proxy in front of it."
+)
 
 
 def _client_command(cfg: config.Config, target: str | None) -> str:
@@ -771,6 +796,9 @@ def _setup_split(args: argparse.Namespace, cfg: config.Config) -> int:
 def _setup_remote(args: argparse.Namespace, cfg: config.Config) -> int:
     if cfg.strata.tls_ca != Path():
         tls_context(cfg.strata.tls_ca)
+    if not config.private_endpoint(cfg.strata.host()):
+        msg = f"strata.url's {NOT_PRIVATE}"
+        raise config.ConfigError(msg)
     # An explicit endpoint always needs a key. A routine setup reuses private state.
     key = _read_remote_key() if args.remote is not None else services.read_key(cfg)
     if not key:
@@ -804,6 +832,8 @@ def _setup_backend(args: argparse.Namespace, cfg: config.Config) -> int:
         unit = services.write_strata_unit(cfg, key_file)
         config.save(cfg)
     print(f"config: {paths.config_file()}\nstrata profile: {profile}\nbackend unit: {unit}")
+    if cfg.strata.serves_beyond_loopback():
+        print(_PLAIN_BACKEND)
     target_note = (
         " (replace <ssh-target> with the backend's SSH destination)" if not args.ssh_target else ""
     )
@@ -1815,12 +1845,25 @@ def _split_model_check(cfg: config.Config) -> tuple[bool, str, str]:
         return (
             probe.reachable and probe.state != "failed",
             probe.report(cfg.model.model),
-            "check the backend, tunnel or TLS settings and the key from jarvis setup --remote",
+            _remote_fix(cfg),
         )
     return (
         probe.reachable and probe.state != "failed",
         probe.report(services.model_name(cfg), "Strata backend"),
         "check the key, then run jarvis start on the backend",
+    )
+
+
+def _remote_fix(cfg: config.Config) -> str:
+    """Say what to try when the remote model server does not answer."""
+    fix = "check the backend, tunnel or TLS settings and the key from jarvis setup --remote"
+    parts = urlsplit(cfg.strata.url)
+    if parts.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return fix
+    return (
+        f"{fix}. An SSH tunnel ends at a reboot or logout; start it again with `ssh -fNT -o "
+        f"ExitOnForwardFailure=yes -L 127.0.0.1:{parts.port or 80}:<backend listen address>:"
+        "<backend port> -- <ssh-target>` (jarvis setup --backend on the backend prints it)"
     )
 
 
@@ -1848,6 +1891,19 @@ class DoctorReport:
     def summary(self) -> str:
         """The closing line: how many checks ran and which failed."""
         return cliout.summary(self.checks, extra=len(self.verified))
+
+
+def _remote_notes(cfg: config.Config, *, no_service: bool) -> list[str]:
+    """Notes for a client whose model runs on another machine."""
+    notes: list[str] = []
+    if cfg.strata.plain_lan():
+        notes.append("warning: unencrypted HTTP sends the model's key and requests in cleartext")
+    if not no_service and _unit_state(STRATA_UNIT) in {"active", "activating"}:
+        notes.append(
+            f"note {STRATA_UNIT} still runs on this PC and holds RAM and VRAM this remote client "
+            f"does not use; free them with: systemctl --user disable --now {STRATA_UNIT}"
+        )
+    return notes
 
 
 def doctor_report(args: argparse.Namespace) -> DoctorReport:
@@ -1885,8 +1941,8 @@ def doctor_report(args: argparse.Namespace) -> DoctorReport:
     checks.extend(unreadable)
     if cfg.strata.mode == "local":
         notes.extend(_memlock_notes(cfg))
-    elif cfg.strata.plain_lan():
-        notes.append("warning: unencrypted HTTP sends the model's key and requests in cleartext")
+    else:
+        notes.extend(_remote_notes(cfg, no_service=args.no_service))
     notes.extend(update.doctor_notes(cfg, launch_for_update))
     verified = [line.removeprefix("ok").strip() for line in release_lines if line.startswith("ok ")]
     notes.extend(line for line in release_lines if not line.startswith("ok "))
@@ -1901,7 +1957,8 @@ def _backend_report(
         if wait:
             update.wait_for(lambda: strata_status(cfg))
         checks.append(_split_model_check(cfg))
-    return DoctorReport(checks, _memlock_notes(cfg), [])
+    notes = [_PLAIN_BACKEND] if cfg.strata.serves_beyond_loopback() else []
+    return DoctorReport(checks, [*notes, *_memlock_notes(cfg)], [])
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -2272,7 +2329,8 @@ def cmd_status(args: argparse.Namespace) -> int:
 def _split_status(cfg: config.Config, *, as_json: bool) -> int:
     remote = cfg.strata.mode == "remote"
     reply = control.send("status") if remote else None
-    running = reply is not None if remote else _unit_state(STRATA_UNIT) in {"active", "activating"}
+    unit = JARVIS_UNIT if remote else STRATA_UNIT
+    running = _unit_state(unit) in {"active", "activating"}
     if reply and reply.get("ok") and "model_reachable" in reply:
         shown = {key: value for key, value in reply.items() if key != "ok"}
     else:

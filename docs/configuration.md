@@ -230,27 +230,43 @@ and the normal audio and Spotify prerequisites on the client.
    it in place of `jarvis` in the printed command. You can append `--spotify-client-id` if the client
    still needs its ID.
 
-The SSH forward must stay up. If it ends after logout or reboot, rerun the printed SSH forwarding
-command (the part before `&&`). Choose a different client port in both places in the printed command
-if `18080` is taken. Backend setup enables a user service under `default.target`, so a graphical
+The SSH forward is a background `ssh -fNT` process: it ends at a reboot or logout and is not started
+again for you. When it is down, `jarvis doctor` says so and gives the command to start it again; run
+the printed SSH forwarding command (the part before `&&`), or the same `ssh -fNT -o
+ExitOnForwardFailure=yes -L 127.0.0.1:18080:<backend listen address>:<backend port> -- <ssh-target>`
+by hand. To keep it up across reboots, run it from a systemd user service of your own. Choose a
+different client port in both places in the printed command if `18080` is taken. Backend setup enables a user service under `default.target`, so a graphical
 session is unnecessary. A systemd user manager for that account must be running.
 
 For direct access, use `--listen IP` on the backend and an HTTPS proxy on that machine or network.
+The backend itself speaks plain HTTP: with `--listen` set to anything but loopback, its key and the
+conversations cross the network unencrypted. `jarvis setup --backend` and the backend's
+`jarvis doctor` warn about it; keep the default `127.0.0.1` with an SSH tunnel or put the HTTPS proxy
+in front.
 Run `jarvis setup --remote https://your-model-host --tls-ca /path/to/ca.pem --enable` on the client
-if the HTTPS endpoint uses your own CA or certificate. Omit `--tls-ca` for an endpoint that chains to
-the standard CA bundle. A WireGuard or Tailscale IP can use
+if the HTTPS endpoint uses your own CA or certificate. The file is the only trust Jarvis uses for that
+endpoint, and it must name the host. A self-signed server certificate works only if it can act as a
+CA (`basicConstraints=CA:TRUE`, with `keyCertSign`); otherwise make a small CA and sign the server
+certificate with it, and pass the CA's certificate. Omit `--tls-ca` for an endpoint that chains to the
+standard CA bundle. A WireGuard or Tailscale IP can use
 `jarvis setup --remote http://PRIVATE_IP:8080 --allow-plain-http --enable` if the network tunnel
 provides the encryption. Use the opt-in only on a link you trust. Public IP literals and non-loopback
-HTTP host names are refused.
+HTTP host names are refused. An HTTPS host name is looked up and refused unless every address it
+resolves to is loopback or private (`10/8`, `172.16/12`, `192.168/16`, `100.64/10` for Tailscale,
+`fc00::/7`); `jarvis setup --remote`, `jarvis doctor` and every connection make the check.
 
 For manual client setup, enter the backend key at the hidden terminal prompt or pipe it on stdin.
-Setup accepts the raw token or the `STRATA_API_KEY=…` line. The backend key is in
+Setup accepts the raw token, a `STRATA_API_KEY=…` line, or the backend's whole key file (the line
+can be anywhere in it, which is what the printed `cat` command sends). The backend key is in
 `$XDG_STATE_HOME/jarvis/strata-backend.env` and the client stores its copy in
 `$XDG_STATE_HOME/jarvis/strata-remote.json`, both mode 0600. The default state home is
 `~/.local/state`. A new endpoint needs a fresh `--remote URL` invocation to associate its key.
 Running `jarvis setup --enable` again keeps the existing endpoint and key.
 
-`jarvis doctor` and `jarvis status` show reachability, the model and HTTP probe time. The client reads
+`jarvis doctor` and `jarvis status` show reachability, the model and HTTP probe time. A probe is one
+attempt of at most 3 seconds, and its answer, good or bad, is reused for 5 seconds, so a backend that
+is down delays a request once, not at every step. When `jarvis-strata.service` still runs on a
+client in remote mode, `doctor` says so and gives the command that frees its RAM and VRAM. The client reads
 the model ID and any context or picture capability advertised by `GET /v1/models` when the voice
 service or chat starts. Restart the voice service or reopen the chat after replacing the backend
 model. If the fields are absent, set `[model].model` (default `jarvis`), `[strata].context` (default
