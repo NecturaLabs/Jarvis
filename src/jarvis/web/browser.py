@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urljoin, urlsplit
 
 from jarvis.operations import current_request
-from jarvis.web.page import PageError, check_url
+from jarvis.web.page import PageError, check_url, without_hidden
 from jarvis.web.proxy import EgressProxy
 
 if TYPE_CHECKING:
@@ -49,7 +49,7 @@ RESERVE_S = CLOSE_LIMIT_S + 10.0
 MIN_BATCH_S = 3.0  # less time than this left in the request, and the browser is not used
 SETTLE_MS = 1200  # after a page loads or a click: scripts that fill the page in afterwards
 MAX_OUTPUT = 60_000  # characters of a page's text kept (agent-browser's --max-output cuts no JSON)
-MAX_STDOUT = 2_000_000  # characters of one answer read at all
+MAX_STDOUT = 8_000_000  # characters of one answer read at all (a page's text and its HTML)
 MAX_NAME = 80  # characters of an element's name kept
 MAX_SCREENSHOT_BYTES = 8_000_000
 SCREEN_STEP_PX = 640  # how far one screenshot part is below the last (the window is 1280x720)
@@ -62,6 +62,7 @@ ALLOWED_ACTIONS = (
     "url",
     "title",
     "gettext",
+    "innerhtml",
     "getattribute",
     "snapshot",
     "screenshot",
@@ -423,12 +424,14 @@ class Browser:
         raise BrowserError(msg)
 
     def _read(self, rows: list[dict[str, Any]]) -> View:
-        """Make the view from the last four rows: url, title, text and snapshot.
+        """Make the view from the rows of `_LOOK`: url, title, text, HTML and snapshot.
+
+        The text leaves out what the page hides, by the rules `web_read` uses (`without_hidden`).
 
         Raises:
             BrowserError: the page is an error page (the site could not be reached).
         """
-        url, title, text, snapshot = rows[-4:]
+        url, title, text, html, snapshot = rows[-len(self._LOOK) :]
         address = _field(url, "url")
         if address.startswith(_CHROME_ERROR) or not address:
             msg = "that site can't be reached from here"
@@ -441,12 +444,18 @@ class Browser:
             raise BrowserError(msg)
         result = snapshot.get("result")
         elements = _elements(cast("dict[str, Any]", result)) if isinstance(result, dict) else ()
-        page_text = _field(text, "text")[:MAX_OUTPUT]
+        page_text = without_hidden(_field(text, "text"), _field(html, "html"))[:MAX_OUTPUT]
         view = View(address, _one_line(_field(title, "title"), 160), page_text, elements)
         self._view = view
         return view
 
-    _LOOK = (["get", "url"], ["get", "title"], ["get", "text", "body"], ["snapshot", "-i"])
+    _LOOK = (
+        ["get", "url"],
+        ["get", "title"],
+        ["get", "text", "body"],
+        ["get", "html", "body"],
+        ["snapshot", "-i"],
+    )
 
     def _act(self, commands: list[list[str]], what: str, *, acting: bool = False) -> View:
         """Run commands, let the page settle, and return what it shows then.

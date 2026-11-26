@@ -76,6 +76,9 @@ quick commands.
     `idle_close_s`), nothing is done and no new browser is started for it. Typing is `outbound`, at most
     200 characters, never into a password, hidden or file field.
   - Everything the browser returns is web text (`Origin.WEB`), cut to the channel's room for one result.
+    A page's text is the browser's own (`innerText`, which leaves out what CSS hides), less what
+    `web_read` also leaves out: text under `aria-hidden` or the `hidden` attribute, or made transparent or
+    of no size by an inline style, found in the page's rendered HTML (`web/page.py`, `without_hidden`).
   - Each call to agent-browser gets at most 40 s and ends 25 s before the request's own time limit
     (`agent.max_seconds`), so a click or typing with its checks, or a browser that does not answer and is
     closed, never runs past the request.

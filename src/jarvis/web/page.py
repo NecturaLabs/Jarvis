@@ -20,6 +20,7 @@ import httpx
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
+    from types import ModuleType
 
 MAX_REDIRECTS = 5
 # A whole read, every redirect and chunk. A hop begun just before it may still spend its own DNS,
@@ -31,6 +32,7 @@ MAX_BYTES = 2_000_000
 # (about 0.7 s at 20,000 elements, 3 s at 60,000), and it runs outside the read deadline, so a
 # page with more is read from its start only.
 MAX_ELEMENTS = 20_000
+MAX_HIDDEN = 500  # hidden elements whose words are taken out of a browser's text of a page
 # The first import of trafilatura changes the warning filters for a moment; two reads at once must
 # not, or the filter one sets can be left in place for good.
 _IMPORTING = threading.Lock()
@@ -202,6 +204,8 @@ class _Element(Protocol):
 
     def xpath(self, path: str) -> list[_Element]: ...
     def iter(self) -> Iterator[_Element]: ...
+    def itertext(self) -> Iterator[str]: ...
+    def iterancestors(self) -> Iterator[_Element]: ...
     def getparent(self) -> _Element | None: ...
     def drop_tree(self) -> None: ...
     def remove(self, element: _Element) -> None: ...
@@ -220,14 +224,77 @@ def _without_hidden_and_excess(tree: _Element) -> None:
             parent.remove(element)
 
 
-def _extract(html: str, url: str) -> tuple[str, str, str]:
-    """Return the page's title, main text and picture (trafilatura, imported on first use)."""
+def _trafilatura() -> ModuleType:
+    """Import trafilatura on first use."""
     with _IMPORTING, warnings.catch_warnings():
         # urllib3, which trafilatura imports for its own downloads (unused here), warns that
         # optional SOCKS proxy support is not installed.
         warnings.filterwarnings("ignore", message="SOCKS support in urllib3")
         import trafilatura
 
+    return trafilatura
+
+
+def without_hidden(text: str, html: str) -> str:
+    """Return a browser's text of a page (`innerText`) without what the page hides from view.
+
+    `innerText` already leaves out what CSS hides (`display: none`, `visibility: hidden`). What
+    `web_read` also drops (`aria-hidden`, the `hidden` attribute, inline styles that make text
+    transparent or of no size) is found in the page's rendered `html` by the same rules, and each
+    such element's words are taken out of `text` where they first stand, whatever whitespace
+    `innerText` put between them. Words a hidden element shares with a later visible one are
+    taken from the first place they stand. Past `MAX_HIDDEN` hidden elements, the rest stay.
+    """
+    tree = _trafilatura().load_html(f"<html><body>{html}</body></html>")
+    if tree is None:
+        return text
+    found = cast("_Element", tree).xpath(_HIDDEN)
+    marked = set(found)
+    hidden = [
+        key
+        for element in found
+        if not any(parent in marked for parent in element.iterancestors())
+        and (key := "".join("".join(element.itertext()).split()))
+    ]
+    # Found without the whitespace, which `innerText` puts where the page's layout does; a found
+    # place is blanked out, so the next element's words are not found in it again.
+    squeezed = "".join(text.split())
+    gone: list[tuple[int, int]] = []
+    for key in hidden[:MAX_HIDDEN]:
+        at = squeezed.find(key)
+        if at >= 0:  # else CSS hid it already, and `innerText` left it out
+            gone.append((at, at + len(key)))
+            squeezed = squeezed[:at] + "\0" * len(key) + squeezed[at + len(key) :]
+    return _cut_out(text, sorted(gone)) if gone else text
+
+
+def _cut_out(text: str, gone: list[tuple[int, int]]) -> str:
+    """Return `text` without the spans `gone`, counted in characters that are not whitespace."""
+    out: list[str] = []
+    counted = 0  # characters other than whitespace before the chunk
+    span = 0
+    for chunk in re.split(r"(\s+)", text):
+        if not chunk or chunk[0].isspace():
+            out.append(chunk)
+            continue
+        start, end = counted, counted + len(chunk)
+        counted = end
+        at = start
+        while span < len(gone) and gone[span][0] < end:
+            first, last = gone[span]
+            if first > at:
+                out.append(chunk[at - start : first - start])
+            at = max(at, min(last, end))
+            if last > end:
+                break  # the span goes on into the next chunk
+            span += 1
+        out.append(chunk[at - start :])
+    return "".join(out)
+
+
+def _extract(html: str, url: str) -> tuple[str, str, str]:
+    """Return the page's title, main text and picture (trafilatura, imported on first use)."""
+    trafilatura = _trafilatura()
     tree = trafilatura.load_html(html)
     if tree is not None:
         _without_hidden_and_excess(cast("_Element", tree))
