@@ -261,8 +261,9 @@ uv run pytest -q -m "not local"   # unit tests
 ```
 
 Tests marked `local` need real hardware and services and never run in CI (`uv run pytest -m local`).
-`tools/check.sh` runs everything CI runs, in one command; `tools/install-hooks.sh` adds opt-in git hooks (lint,
-tests, the commit subject and a private-details check).
+`tools/check.sh` runs everything CI runs in one command. `tools/install-hooks.sh` adds opt-in git hooks
+for lint, affected non-local tests, the commit subject and private details. Rerun the installer to
+refresh an existing copy of the hooks.
 
 ## Project layout
 

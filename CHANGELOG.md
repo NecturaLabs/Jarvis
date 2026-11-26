@@ -378,6 +378,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   The defaults leave it at least 5,000 tokens. A set number still caps it.
 - Jarvis puts the choice it recommends first, and marks it with its reason, whenever it offers choices.
 
+- The opt-in pre-commit hook runs only the non-local tests affected by staged files. CI runs the
+  full non-local suite. Rerun `tools/install-hooks.sh` to update an installed hook.
 - The chat's default `memory_tokens` is now 5700 (was 6200), so the default 24,576-token window
   still holds it beside the new window and screenshot tools.
 - `jarvis doctor` ends with the names of the checks that failed, not only their count, writes every note
