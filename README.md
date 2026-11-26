@@ -47,6 +47,12 @@ Jarvis is pre-1.0 software; see [Status](#status).
   your confirm key, with time and memory limits and no sudo ([`[shell]`](docs/configuration.md)).
   It can read, set, turn up or down and mute the PC's own volume, and play, pause or skip a video or
   another media player (`playerctl` needed), leaving Spotify to its own tools unless you mean everything.
+  It can list your open windows, show one, move it to another workspace, make it fullscreen or float,
+  and close it the way its close button does (asking first). It never moves, resizes or opens anything
+  beside a fullscreen window, since a fullscreen game can crash when that happens. A screenshot of the
+  screen, a workspace or one window is saved where Omarchy keeps screenshots and copied to the
+  clipboard. A workspace or window that is not on screen is captured without switching to it
+  (`grim` needed).
 - **Omarchy questions:** Jarvis answers questions about Omarchy (settings, themes, key bindings, crashes,
   building an app) from the guides Omarchy ships in `/usr/share/omarchy/default/agents/skills/`. It reads
   them as reference text and never runs a command they contain.

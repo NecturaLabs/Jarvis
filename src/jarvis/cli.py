@@ -44,6 +44,7 @@ from jarvis.files import write_atomic
 from jarvis.operations import OperationError
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.pc.hearing import Listening, PcHearing
+from jarvis.pc.screenshot import folders as screenshot_folders
 from jarvis.policy import OpClass, is_yes
 from jarvis.schedule import JobStore
 from jarvis.secretfile import ensure_api_key, read_api_key, read_private
@@ -921,10 +922,7 @@ def _save_chat_settings(chat: config.ChatConfig, followed: AgentModes | None = N
 
 def _screenshot_folders(home: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
     """Return where Omarchy saves screenshots (its setting first), then the Pictures folder."""
-    chosen = [env.get(name, "") for name in ("OMASNAP_SCREENSHOT_DIR", "OMARCHY_SCREENSHOT_DIR")]
-    folders = [Path(value).expanduser() for value in chosen if value]
-    folders += [home / "Pictures" / "Screenshots", home / "Pictures"]
-    return tuple(dict.fromkeys(folders))
+    return screenshot_folders(home, env)
 
 
 def _chat_prompt(chat: config.ChatConfig) -> str:
@@ -1445,6 +1443,12 @@ def _tool_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[
             "note tool playerctl missing: other media players can't be paused or skipped "
             "(`pacman -S playerctl`)"
         )
+    for tool, package, said in (
+        ("grim", "grim", "screenshots can't be taken"),
+        ("wl-copy", "wl-clipboard", "screenshots can't be copied to the clipboard"),
+    ):
+        if not shutil.which(tool):
+            notes.append(f"note tool {tool} missing: {said} (`pacman -S {package}`)")
     if cfg.chat.browser or cfg.agent.browser:  # the headless browser is part of Jarvis
         program = shutil.which(browser.PROGRAM) is not None
         checks.append(

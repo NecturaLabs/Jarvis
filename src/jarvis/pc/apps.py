@@ -9,7 +9,8 @@ The program is started by Hyprland itself (`hl.exec_cmd` with a `[workspace N si
 through its socket), so it opens there without taking focus. Jarvis then reads the windows back
 until a new window of the program's (known by its class) shows, moves it if it landed elsewhere,
 looks again a moment later (some programs replace a first window) and says where it is only once
-it saw it there. A window that was open before is never moved.
+it saw it there. A window that was open before is never moved, and nothing opens on a workspace
+that has a fullscreen window: a game there can crash when a window joins it.
 """
 
 import re
@@ -44,6 +45,7 @@ class Placed:
     workspace: str
     klass: str
     title: str
+    fullscreen: bool = False
 
 
 class Compositor(Protocol):
@@ -69,13 +71,38 @@ class HyprlandCompositor:
             address, klass, title = client.get("address"), client.get("class"), client.get("title")
             name = obj(client.get("workspace")).get("name")
             if all(isinstance(v, str) for v in (address, klass, title, name)):
-                placed.append(Placed(str(address), str(name), str(klass), str(title)))
+                full = client.get("fullscreen")
+                placed.append(
+                    Placed(
+                        str(address),
+                        str(name),
+                        str(klass),
+                        str(title),
+                        fullscreen=isinstance(full, int) and full > 0,
+                    )
+                )
         return placed
 
     @staticmethod
     def run(lua: str) -> bool:
         """Run `lua` through `hyprctl eval`'s socket request."""
         return hyprland.run_lua(lua)
+
+
+def _spare_fullscreen(windows: list[Placed], workspace: str, outcome: str) -> None:
+    """Refuse to put a window on a workspace with a fullscreen one (a game there can crash).
+
+    Raises:
+        OperationError: `workspace` has a fullscreen window.
+    """
+    game = next((w for w in windows if w.workspace == workspace and w.fullscreen), None)
+    if game is not None:
+        msg = (
+            f"{_where(_place_named(workspace)).capitalize()} has the fullscreen {game.klass}, "
+            f"which can crash when a window opens beside it; {outcome}. Ask the owner for another "
+            "workspace"
+        )
+        raise OperationError(msg)
 
 
 def _where(place: str) -> str:
@@ -121,12 +148,14 @@ class AppOps:
             raise OperationError(msg)
         name, place = str(args["app"]), str(args["where"])
         mine = self._mine(name)
-        already = [w for w in self._compositor.windows() if mine(w)]
+        windows = self._compositor.windows()
+        already = [w for w in windows if mine(w)]
         if already:  # by class: a browser tab named after the program is not the program
             where = _where(_place_named(already[0].workspace))
             text = f"{name} is already open {where}; nothing was opened."
             return Result(text, Origin.TOOL_STATUS, spoken=f"{name} is already open {where}.")
         workspace = SPECIAL if place == BACKGROUND else place
+        _spare_fullscreen(windows, workspace, f"{name} was not opened")
         rule = f"[workspace {workspace} silent] {shlex.join(self._apps[name].command)}"
         if not self._compositor.run(f"hl.exec_cmd({hyprland.lua_string(rule)})"):
             msg = f"Hyprland did not take the command, so {name} was not opened"

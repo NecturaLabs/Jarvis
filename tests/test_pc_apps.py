@@ -249,3 +249,18 @@ def test_a_lua_string_cannot_be_broken_out_of(text: str) -> None:
     assert "\n" not in inner
     assert "'" not in inner
     assert inner.count("\\") == sum(1 for ch in text if ch in "\"'\\\n")
+
+
+@pytest.mark.parametrize("game_on", ["3", SPECIAL])
+def test_nothing_opens_on_a_workspace_with_a_fullscreen_window(game_on: str) -> None:
+    # A fullscreen game can crash when a window opens beside it (the owner's PC, 2026-11-26).
+    game = Placed("0xg", game_on, "steam_app_1", "A game", fullscreen=True)
+    fake = FakeHyprland(open=[game])
+
+    with (
+        request_scope(foreign=False),
+        pytest.raises(OperationError, match="fullscreen steam_app_1"),
+    ):
+        _ops(fake).open_app({"app": "spotify", "where": "3" if game_on == "3" else "background"})
+
+    assert fake.ran == []
