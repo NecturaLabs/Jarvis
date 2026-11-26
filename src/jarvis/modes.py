@@ -471,8 +471,9 @@ class Switcher:
         """Return whether switching to `to` changes what the model server runs.
 
         A coding mode with the same run config, context and limits as the normal one changes only
-        Jarvis's own settings. A config that cannot be served counts as a change (`switch` says
-        what is wrong with it).
+        Jarvis's own settings. Only the profile is compared: a mode that changes only the unit
+        (`keep_in_ram`, `memory_max`) still restarts the server when `switch` writes it. A config
+        that cannot be served counts as a change (`switch` says what is wrong with it).
         """
         if self._config.strata.mode != "local":
             return False

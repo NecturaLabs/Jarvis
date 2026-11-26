@@ -517,7 +517,7 @@ the served model on the backend.
 | `context` | `65536` | The model server's context in coding mode (`strata.context` in normal mode) |
 | `temperature` | unset | The sampling temperature in coding mode; unset: `model.temperature` |
 | `vram_reserve_mib`, `expert_vram_gib`, `memory_max` | unset | The same keys of `[strata]`, for coding mode only; unset (`0`, absent, `""`): `[strata]`'s |
-| `kv_resident`, `keep_in_ram`, `pictures`, `effort_position` | unset | The same keys of `[strata]`, for coding mode only; unset (absent): `[strata]`'s. A switch that changes one restarts the model server |
+| `kv_resident`, `keep_in_ram`, `pictures`, `effort_position` | unset | The same keys of `[strata]`, for coding mode only; unset (absent): `[strata]`'s. Here `0` and `""` count as set: `kv_resident = 0` keeps the whole context in VRAM in coding mode. A switch that changes one restarts the model server. Pinned RAM from a larger `kv_resident` counts against `memory_max`, so raise that too |
 | `reasoning_budget_tokens` | `4096` | Strata's cap on thinking in coding mode |
 | `tools_off` | `[]` | Tools not offered in coding mode |
 | `write_roots` | `[]` | Folders Jarvis may also write in coding mode, besides `files.write_roots` |
