@@ -585,13 +585,28 @@ class ProcessOps:
             raise OperationError(msg)
         return request
 
-    def _listed(self, request: Request, pid: int) -> tuple[str, int, str]:
+    def _listed(self, request: Request, pid: int, verb: str = "stop") -> tuple[str, int, str]:
+        """Return what `find_processes` listed for `pid` in `request`, read by the model.
+
+        A PID written beside its listing, in the same model message, is a guess: refused, as a
+        window number is.
+
+        Raises:
+            OperationError: the PID was not listed in this request, or not read yet.
+        """
         with self._lock:
             target = self._shown.targets.get(pid) if self._shown.request is request else None
+            unread = target is not None and request.message <= self._shown.message
         if target is None:
             msg = (
-                f"PID {pid} was not listed by find_processes in this request. Call "
-                "find_processes with the name the owner said first, and stop only a PID it lists."
+                f"PID {pid} was not listed by find_processes in this request. Call find_processes "
+                f"with the name the owner said first, and {verb} only a PID it lists."
+            )
+            raise OperationError(msg)
+        if unread:
+            msg = (
+                "The process list was not read yet: call find_processes alone, read it, then use "
+                "a PID from it."
             )
             raise OperationError(msg)
         return target
@@ -636,22 +651,7 @@ class ProcessOps:
                 "say which program to watch in a request of its own."
             )
             raise OperationError(msg)
-        with self._lock:
-            target = self._shown.targets.get(pid) if self._shown.request is request else None
-            unread = target is not None and request.message <= self._shown.message
-        if target is None:
-            msg = (
-                f"PID {pid} was not listed by find_processes in this request. Call "
-                "find_processes with the name the owner said first, and watch only a PID it lists."
-            )
-            raise OperationError(msg)
-        if unread:
-            msg = (
-                "The process list was not read yet: call find_processes alone, read it, then use "
-                "a PID from it."
-            )
-            raise OperationError(msg)
-        program, start, _ = target
+        program, start, _ = self._listed(request, pid, "watch")
         proc = self._read(pid)
         if proc is None or proc.start != start:
             msg = f"PID {pid} is no longer the {program} that was listed"

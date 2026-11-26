@@ -282,6 +282,17 @@ class ScreenWatch:
             Origin.PROCESS if kind == "window" else Origin.TOOL_STATUS,
         )
 
+    def _prepare(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Refuse a watch that would be refused anyway before the owner is asked about it.
+
+        The refusals are `_owner_only`'s and, for a process, `ProcessOps.watched`'s: not the
+        owner's own request, outside text, or a PID not listed and read.
+        """
+        _owner_only()
+        if str(args["of"]) == "process" and args.get("pid") is not None:
+            self._processes.watched(int(args["pid"]))
+        return args
+
     def _screens(self) -> int:
         """Return how many watches look at the screen (the lock held)."""
         return sum(w.kind != "process" for w in self._shared.watches.values())
@@ -410,6 +421,7 @@ class ScreenWatch:
                 },
                 self.start,
                 spoken_summary=_summary,
+                prepare=self._prepare,
             ),
             Operation(
                 "pc_watches",

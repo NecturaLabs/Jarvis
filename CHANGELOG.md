@@ -245,6 +245,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `stop_process` and a process watch take only a PID from a `find_processes` listing the model has
+  read, as a window number must be: one written beside its listing, in the same message, is refused.
+  A process watch that would be refused (outside text, a PID not listed) is refused before the
+  owner is asked about it.
+
 - Web reads and the browser no longer reach a public address on one of this PC's own networks: its own
   addresses, and a network it reaches without a router, such as the home network's global IPv6 prefix
   (checked at each connection, including for embedded IPv4 addresses). Missing route or local-address

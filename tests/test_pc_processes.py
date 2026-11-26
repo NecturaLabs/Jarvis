@@ -28,6 +28,7 @@ from jarvis.operations import (
     OperationError,
     Registry,
     Result,
+    current_request,
     request_scope,
     validate_args,
 )
@@ -184,9 +185,18 @@ def _op(ops: ProcessOps, name: str) -> Operation:
     return next(op for op in ops.operations() if op.name == name)
 
 
-def _find(ops: ProcessOps, name: str) -> str:
+def _list(ops: ProcessOps, name: str) -> str:
     op = _op(ops, "find_processes")
     return op.run(validate_args(op, {"name": name})).text
+
+
+def _find(ops: ProcessOps, name: str) -> str:
+    """List the processes, then go on as the model's next message would, having read the list."""
+    text = _list(ops, name)
+    request = current_request()
+    if request is not None:
+        request.next_message()
+    return text
 
 
 def _bind(ops: ProcessOps, pid: int, *, force: bool = False) -> dict[str, Any]:
@@ -1550,3 +1560,13 @@ def test_the_real_stopper_holds_and_waits_on_a_process_without_signalling_it() -
 def test_the_real_stopper_reports_a_pid_that_does_not_exist() -> None:
     with pytest.raises(ProcessLookupError):
         PidfdStopper().open(4_194_304)
+
+
+def test_a_pid_written_beside_its_listing_is_not_stopped(proc: FakeProc) -> None:
+    proc.add(4242, "orbit")
+    ops = _ops(proc)
+
+    with request_scope(foreign=False):
+        _list(ops, "orbit")  # the model has not read the list yet: the PID would be a guess
+        with pytest.raises(OperationError, match="not read yet"):
+            _bind(ops, 4242)
