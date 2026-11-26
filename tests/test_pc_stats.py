@@ -139,9 +139,33 @@ def test_a_window_gets_the_figures_as_a_list_under_the_verdict(tmp_path: Path) -
         "- **CPU**: 12% busy, 54 °C",
         "- **Memory**: 16.0 of 64.0 GB used (25%), 48.0 GB free",
         "- **Graphics card**: 3% busy, 14.0 of 20.0 GB VRAM used (70%)",
-        "- **Disk ~**: 500 of 2000 GB used (25%), 1500 GB free",
+        "- **Home disk**: 500 of 2000 GB used (25%), 1500 GB free",
     ]
     assert rest == "Up 2 days 3 hours."
+
+
+def test_the_disks_are_named_in_words_in_the_figures_and_the_verdict(tmp_path: Path) -> None:
+    proc, sys = _tree(tmp_path)
+    disks = [
+        Disk("~", 1000 * GIB, 960 * GIB),
+        Disk("/", 500 * GIB, 475 * GIB),
+        Disk("/mnt/Games", 100 * GIB, 10 * GIB),
+    ]
+    ops = StatsOps(
+        Sampler(proc, sys), proc=proc, wait=_Ticks(proc), disks=lambda: disks, usage=list
+    )
+    (op,) = ops.operations()
+
+    result = op.run(validate_args(op, {}))
+
+    assert "the home disk is nearly full (96%); the root disk is nearly full (95%)" in result.text
+    lines = result.text.splitlines()
+    assert "Home disk: 960 of 1000 GB used (96%), 40 GB free." in lines
+    assert "Root disk: 475 of 500 GB used (95%), 25 GB free." in lines
+    assert "Disk /mnt/Games: 10 of 100 GB used (10%), 90 GB free." in lines
+    assert not any(line.startswith(("Disk ~", "Disk /:")) for line in lines)
+    assert "- **Home disk**: 960 of 1000 GB used (96%), 40 GB free" in result.written
+    assert "- **Root disk**: 475 of 500 GB used (95%), 25 GB free" in result.written
 
 
 def test_a_report_that_names_programs_is_never_laid_out_for_a_window(tmp_path: Path) -> None:

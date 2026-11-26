@@ -356,6 +356,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   ("3 – 2 = 1") is "minus"; "x - y" keeps its minus; "about ~5" is "about 5"; "GB/s", "MB/s", "KB/s",
   "Gbit/s" and "Mbit/s" are said as words. "a.m." and "p.m." at the end of a line end the sentence
   ("Dinner at 7 p.m." then a new line), mid-line they still do not.
+- `pc_stats` names a disk the same way in its figures as in its verdict: "Home disk" and "Root disk" instead
+  of "Disk ~" and "Disk /", so a window shows the same words the voice says.
 - With `format.thousands_separator` set to a space or an apostrophe, the voice was told to write "25 000",
   which is read aloud as "twenty-five zero zero zero". The voice now writes such numbers without a mark,
   in its replies and in the calculator's answers; the chat keeps the mark you chose.

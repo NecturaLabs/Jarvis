@@ -1042,6 +1042,7 @@ in this list can be stopped by its PID: to stop one, Jarvis looks it up by name 
 
 `pc_stats` starts with what is near its limit, or that nothing is: a processor or graphics card at 90 °C or
 more, memory, video memory or a disk 90% full, or more work than the processor's threads can run at once.
+Its disks are the home folder's and the root's, one line each when they are different file systems, called "Home disk" and "Root disk" in the figures and "the home disk" and "the root disk" in the verdict.
 Sizes are in GB and MB, counted in steps of 1024 like file sizes. It names the three programs using the most memory and CPU as the list above does, so its answer is process
 data too: like a listing, it counts as outside text for the rest of that request, and a shell command
 (`pc_shell`) asked for in the same breath is refused; ask for it on its own. A plain question about the PC
