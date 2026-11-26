@@ -772,7 +772,7 @@ A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` wit
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
 its shipped class, which is `safe` for every operation but `write_file`, `browser_act` and `pc_window_close` (`confirm`) and `stop_process`
 (`strong`): `spotify_*`, `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`,
-`pc_stats`, `pc_volume`, `pc_media`, `pc_audio_listen`, `pc_windows`, `pc_window`, `pc_screenshot`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`,
+`pc_stats`, `pc_volume`, `pc_media`, `pc_audio_listen`, `pc_windows`, `pc_window`, `pc_screenshot`, `pc_watch`, `pc_watches`, `pc_watch_stop`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`,
 `sing`, `browser_open`, `browser_screenshot`; set one to `deny` to switch it off: it is then
 not offered to the model at all. `no_action`, `think_harder` and `stay_quiet` are how Jarvis answers, not tools, and
 cannot be switched off. `stop_process`

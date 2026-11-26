@@ -103,6 +103,7 @@ class FakeProc:
         flags: int = 0,
         cgroup: str = APP,
         state: str = "S",
+        threads: int = 1,
     ) -> None:
         folder = self.root / str(pid)
         folder.mkdir(exist_ok=True)
@@ -112,7 +113,8 @@ class FakeProc:
         (folder / "stat").write_text(stat, encoding="utf-8")
         real, effective, saved, fs = uids or (uid, uid, uid, uid)
         (folder / "status").write_text(
-            f"Name:\t{comm}\nState:\t{state}\nUid:\t{real}\t{effective}\t{saved}\t{fs}\n",
+            f"Name:\t{comm}\nState:\t{state}\nUid:\t{real}\t{effective}\t{saved}\t{fs}\n"
+            f"Threads:\t{threads}\n",
             encoding="utf-8",
         )
         (folder / "comm").write_text(comm[:15] + "\n", encoding="utf-8")

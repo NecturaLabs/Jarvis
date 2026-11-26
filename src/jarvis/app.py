@@ -33,6 +33,7 @@ from jarvis.pc.screenshot import ScreenshotOps, save_folder
 from jarvis.pc.shell import ShellOps
 from jarvis.pc.stats import StatsOps
 from jarvis.pc.volume import VolumeOps
+from jarvis.pc.watch import ScreenWatch
 from jarvis.pc.windows import WindowOps
 from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
@@ -338,6 +339,7 @@ class Jarvis:
     switcher: modes.Switcher | None = None
     modes: AgentModes | None = None  # the chat tells it when its settings change (`restyle`)
     pictures: bool = False
+    watch: ScreenWatch | None = None  # the voice service's screen watches (`pc_watch`)
 
 
 class AgentModes:
@@ -514,28 +516,34 @@ def _playerctl(args: Sequence[str]) -> str:
 
 
 def pc_operations(
-    config: Config, limits: Limits, home: Path | None = None, shown: PictureCache | None = None
+    config: Config,
+    limits: Limits,
+    home: Path | None = None,
+    shown: PictureCache | None = None,
+    watching: ScreenWatch | None = None,
 ) -> list[Operation]:
     """Return the PC operations, from stats and the volume to windows, screenshots and the shell.
 
     The files are those within `[files]`, `open_app` opens only what `[apps]` lists, and
     `pc_shell` is there only when `[shell]` turns it on. A screenshot is shown through `shown`
-    where the channel shows pictures (the chat).
+    where the channel shows pictures (the chat). The screen watch operations are there only with
+    `watching` (the voice service's), which also gives the window tools they share.
 
     Jarvis's own state (its tokens and keys) is never read or written, whatever the roots say.
     """
     boundary = files_boundary(config, home)
-    windows = WindowOps()
+    windows = WindowOps() if watching is None else watching.windows
     return [
         *StatsOps(Sampler()).operations(),
         *VolumeOps(_wpctl).operations(),
         *MediaOps(_playerctl).operations(),
         *FileOps(boundary, max_chars=limits.tool_text_chars).operations(),
-        *ProcessOps().operations(),
+        *(ProcessOps() if watching is None else watching.processes).operations(),
         *windows.operations(),
         *ScreenshotOps(
             windows, save_folder(home or Path.home(), os.environ), shown_pictures=shown
         ).operations(),
+        *([] if watching is None else watching.operations()),
         *AppOps(config.apps.programs).operations(),
         *ShellOps(config.shell, home or Path.home(), max_chars=limits.tool_text_chars).operations(),
     ]
@@ -624,6 +632,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     listening: Listening | None = None,
     browsers: dict[str, browser.Browser] | None = None,
     off: Collection[str] = (),
+    watching: ScreenWatch | None = None,
 ) -> Registry:
     """Return every operation a channel's agent is offered, sized to its limits.
 
@@ -636,6 +645,8 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     `listening` (the voice service's; without it, as in `jarvis ask`, it refuses every listen).
     Operations named in `off` are left out before anything is derived from the rest, so a routed
     agent's `use_tools` offers, and its toolbox lists, only groups that still have a tool.
+    The screen watch tools (`pc_watch` and two more) are offered only with `watching`, the voice
+    service's: a watch lives in that process.
     """
     room = limits.tool_text_chars - PAGE_HEADROOM
     pages = room if channel == "chat" else min(config.research.page_chars, room)
@@ -653,7 +664,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
         *spotify,
         *online.operations(),
         *(browsing.operations() if browsing is not None else []),
-        *pc_operations(config, limits, shown=shown),
+        *pc_operations(config, limits, shown=shown, watching=watching),
         *calc.operations(config.format),
         *AboutOps(config, channel, limits, refused=files_boundary(config).secret).operations(),
         *ScheduleOps(
@@ -704,8 +715,11 @@ def switches_itself(config: Config, channel: Channel) -> bool:
 # Operations offered only when their files or programs are installed (and the browser switched on),
 # known to `boundaries.classes` either way.
 INSTALLED_ONLY = frozenset({"read_skill", "os_skill", *browserops.NAMES})
-# ... and only while a setting turns them on (`audio.listen_to_pc`, `tools = "routed"`).
-SETTING_ONLY = frozenset({"pc_audio_listen", SWITCH_MODEL, USE_TOOLS})
+# ... and only while a setting turns them on (`audio.listen_to_pc`, `tools = "routed"`) or in
+# the voice service (the screen watches).
+SETTING_ONLY = frozenset(
+    {"pc_audio_listen", SWITCH_MODEL, USE_TOOLS, "pc_watch", "pc_watches", "pc_watch_stop"}
+)
 # Tools whose result is a sound, and the voice-channel callers that cannot play one (`jarvis ask`
 # prints its reply): they are not offered there, so nothing is made only to be thrown away.
 MAKES_SOUND = frozenset({"sing"})
@@ -821,6 +835,7 @@ def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; 
     voice_running: Callable[[], bool] = lambda: True,
     listening: Listening | None = None,
     browsers: dict[str, browser.Browser] | None = None,
+    watching: ScreenWatch | None = None,
 ) -> Registry:
     """Return the operations an agent offers in a mode, without what is switched off.
 
@@ -844,6 +859,7 @@ def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; 
         coding=coding,
         listening=listening,
         browsers=browsers,
+        watching=watching,
         off=off,  # a tool switched off is not offered at all, nor counted in the router's groups
     )
 
@@ -905,6 +921,21 @@ def _check_overrides(config: Config, operations: list[Operation]) -> None:
         raise SetupError(msg)
 
 
+def _tagged_audit(via: str | None, session: str) -> AuditLog:
+    """Return the audit log whose events say where requests come from and which window."""
+    tags = {"via": via} if via else {}
+    if session:
+        tags["session"] = session
+    return AuditLog(audit_file(), tags=tags or None)
+
+
+def _screen_watch(audit: AuditLog) -> ScreenWatch:
+    """Return the voice service's screen watches, over the window tools and the screen capture."""
+    windows = WindowOps()
+    shots = ScreenshotOps(windows, save_folder(Path.home(), os.environ))
+    return ScreenWatch(windows, shots, ProcessOps(), audit=audit)
+
+
 def build(
     config: Config,
     *,
@@ -934,12 +965,10 @@ def build(
     config, key, model = _agent_model(config)
     ops = _spotify_ops(config)
     available = ops.operations()
-    tags = {"via": via} if via else {}
-    if session:
-        tags["session"] = session
-    audit = AuditLog(audit_file(), tags=tags or None)
+    audit = _tagged_audit(via, session)
     _check_overrides(config, available)
     channel: Channel = "chat" if via == "chat" else "voice"
+    watch = _screen_watch(audit) if via is None else None  # only the voice service runs watches
     elsewhere = via in {"chat", "ask"}  # the voice service says reminders; is one running?
 
     def setup(
@@ -961,6 +990,7 @@ def build(
             voice_running=voice_service_running if elsewhere else lambda: True,
             listening=listening,
             browsers=browsers,
+            watching=watch,
         )
         prompt = system_prompt(cfg, channel, coding=coding, registry=registry)
         return Setup(prompt, registry, limits, reads_pictures(cfg), strata_model(cfg, key))
@@ -996,6 +1026,8 @@ def build(
         actions=action_rate(config),
         modes=agent_modes,
     )
+    if watch is not None:
+        watch.attach(agent)
     return Jarvis(
         agent,
         model,
@@ -1007,4 +1039,5 @@ def build(
         switcher,
         agent_modes,
         normal.pictures,
+        watch,
     )

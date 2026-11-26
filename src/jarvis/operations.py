@@ -12,6 +12,7 @@ from jarvis.toolgroups import CORE_NAME, GROUPS, ToolGroup, group_name
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Generator, Iterable, Mapping
 
+    from jarvis.pictures import Picture
     from jarvis.shortcuts import Shortcut
 
 MAX_STRING = 200
@@ -212,6 +213,9 @@ class Result:
     that cannot play sound turns the result into a failure the model is told about.
     `mode` asks the agent to go on in that mode, on that mode's model (`switch_model`).
     `groups` asks the agent to offer those tool groups for the rest of the request (`use_tools`).
+    `look` is a picture the model is to see next (a screenshot just taken), when it can see
+    pictures; the agent adds it to the conversation as outside data, and says in the result's
+    text whether it did.
     """
 
     text: str
@@ -226,6 +230,7 @@ class Result:
     sound: Sound | None = None
     mode: str = ""
     groups: tuple[str, ...] = ()
+    look: Picture | None = None
 
 
 @dataclass(frozen=True, slots=True)
