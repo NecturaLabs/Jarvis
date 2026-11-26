@@ -125,7 +125,8 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 
 `/config` in the chat opens the settings as Claude Code's own settings screen does. The sections (Chat, Mode,
 Voice, Listening, Safety, Tools) are tabs across the top: Tab and Shift+Tab switch them, and so do ← → on the tab
-row (↑ from the first setting). Typing anywhere searches the settings of every section; Esc clears the search.
+row (↑ from the first setting). Typing anywhere searches the settings of every section (a space makes it a search for several words); Esc clears
+the search. In a narrow window the tabs scroll, marked `‹ ›`, so the one you are on stays in view.
 Each setting is one line, its name at the left and only its value in an aligned column, the one the keyboard is on
 marked with `❯`. What the selected setting does, and when a change applies (at once, the next time the chat opens,
 or when the voice service restarts as the screen closes), are said once in the footer under the list. Enter or
@@ -152,8 +153,8 @@ The lines under the input are set in its box's columns: hints at the left, from 
 services' status at the right, ending at the box's right edge; below them the PC's load at the left and the
 context at the right, ending at the same edge. Every figure has a fixed width, so nothing moves as numbers change.
 In a narrow window whole items go, the least useful first (temperatures, half the context meter, the tenths of a
-gigabyte, the processor, the graphics card's load; the status's second part, then the longer hint), never half a
-word. The command menu has a frame of its own, in line with the box.
+gigabyte, the processor, the graphics card's load, the memory figures, then the context to a bare count; the
+status's second part, then the longer hint), never half a word. The command menu has a frame of its own, in line with the box.
 
 `/resume` lists the archived conversations, newest first (when, name, how many requests), and `/resume 2`
 continues the second: the model gets that conversation back as it was, so what came from outside text then
@@ -805,8 +806,8 @@ reddit_search = "deny"
 ```
 
 Without editing the file: `jarvis tools` lists every tool with its setting, and `jarvis tools NAME on|ask|key|off`
-sets one (`default` puts it back as shipped); in `jarvis chat`, `/config` has a Tools tab where Enter moves a tool
-on to its next setting, from as shipped to stricter and back, never below how it ships (that takes `jarvis tools
+sets one (`default` puts it back as shipped); in `jarvis chat`, `/config` has a Tools tab where Enter or → moves a tool
+on to its next setting and ← back, from as shipped to stricter and round, never below how it ships (that takes `jarvis tools
 NAME on`). Either way the change is audited (`tool_class_changed`, with the old setting and where it was made).
 The command restarts the voice service at once; the chat restarts it once, when its settings close. An open chat
 takes the change the next time it opens.

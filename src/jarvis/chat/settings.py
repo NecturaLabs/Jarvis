@@ -38,6 +38,8 @@ WARN = "yellow"
 DANGER = "bold red"
 DIM = "bright_black"
 SIGN = "\N{WARNING SIGN}"
+MORE_BEFORE = "\N{SINGLE LEFT-POINTING ANGLE QUOTATION MARK}"  # tabs out of view at the left
+MORE_AFTER = "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK}"  # ... at the right
 SEARCH = "⌕"  # the search line's magnifier
 NOW = "now"  # when a change takes effect: at once
 NEXT_CHAT = "next chat"  # ... when the chat opens again
@@ -162,8 +164,11 @@ class Pending:
     by: int
 
     def hint(self, row: Row) -> str:
-        """Return how to confirm it: the same step again, to the same value."""
-        keys = "enter or → again" if self.by > 0 else "← again"
+        """Return how to confirm it: the same step again, to the same value.
+
+        A value picked from the list has no step to repeat, so only Enter confirms it.
+        """
+        keys = "enter again" if self.by == 0 else "enter or → again" if self.by > 0 else "← again"
         what = "turn it on" if row.toggle else f"set {row.text_of(self.value)}"
         return f"{keys}: {what} · esc: keep it off"
 
@@ -177,7 +182,7 @@ def tool_rows(tools: Sequence[ToolSetting]) -> tuple[Row, ...]:
             Row(
                 f"{TOOL_ROW}{tool.name}",
                 tool.name,
-                f"{tool.summary.rstrip('.')}. Enter moves it to the next setting, never below "
+                f"{tool.summary.rstrip('.')}. Enter or → moves it on, ← back, never below "
                 "how it ships.",
                 (),
                 tool.label,
@@ -198,7 +203,8 @@ class SettingList(OptionList):
     """The rows of one section, or of a search, or the values of one setting being picked."""
 
     BINDINGS: ClassVar = [
-        Binding("enter,space", "activate", "Change", show=False),
+        Binding("enter", "activate", "Change", show=False),
+        Binding("space", "space", "Change, or a space in the search", show=False),
         Binding("right", "step(1)", "Next value", show=False),
         Binding("left", "step(-1)", "Previous value", show=False),
         Binding("tab", "section(1)", "Next section", show=False),
@@ -263,6 +269,10 @@ class SettingList(OptionList):
         row = self._on_row()
         if row is not None:
             self.post_message(self.Activated(row))
+
+    def action_space(self) -> None:
+        """Space: a space in the search when one is begun, else Enter. The panel decides."""
+        self.post_message(self.Go(typed=" "))
 
     def action_step(self, by: int) -> None:
         """← →: the value of the row moves; on the tab row, the section does."""
@@ -437,6 +447,10 @@ class SettingsPanel(Vertical):
         """Move to another section, or edit the search."""
         if event.vertical:
             self._vertical(event.vertical)
+        elif event.typed == " " and not self._search:
+            row_id = self._row_id_at(self.options.highlighted)
+            if row_id is not None:
+                self._activate(row_id)
         elif event.typed or event.erase:
             if self._picking is not None:
                 return
@@ -474,15 +488,23 @@ class SettingsPanel(Vertical):
     def on_setting_list_activated(self, event: SettingList.Activated) -> None:
         """Enter on a setting: a value picked, a setting turned over, or a picker opened."""
         event.stop()
+        self._activate(event.row_id)
+
+    def _row_id_at(self, index: int | None) -> str | None:
+        if index is None or index >= self.options.option_count:
+            return None
+        return self.options.get_option_at_index(index).id
+
+    def _activate(self, row_id: str) -> None:
         if self._tabs_focus:
             self._vertical(1)
             return
         if self._picking is not None:
-            index = int(event.row_id.removeprefix("pick:"))
+            index = int(row_id.removeprefix("pick:"))
             row, self._picking = self._picking, None
             self.post_message(self.Activated(row.id, row.choices[index], picked=True))
             return
-        row = next((r for r in self.rows if r.id == event.row_id), None)
+        row = next((r for r in self.rows if r.id == row_id), None)
         if row is None:
             return
         if row.tool or row.toggle or self._pending is not None:
@@ -604,10 +626,42 @@ class SettingsPanel(Vertical):
         if self._picking is None and event.option.id is not None:
             self.post_message(self.Moved(event.option.id))
 
+    def on_resize(self) -> None:
+        """A new width may need other tabs in view."""
+        self._redraw_header()
+
+    def _visible_tabs(self) -> tuple[int, int]:
+        """Return the first and last tab to draw: all of them, or a run round the active one.
+
+        The run grows from the active tab, a tab at a time on either side, while it fits with
+        a mark at each end that has more.
+        """
+        count = len(self._sections)
+        room = self.size.width
+        widths = [cell_len(section.title) + 3 for section in self._sections]
+        if not room or sum(widths) <= room:
+            return 0, count - 1
+        first = last = self._tab
+        used = widths[first] + 4  # the two marks
+        while True:
+            grown = False
+            for side in (1, -1):
+                at = last + 1 if side > 0 else first - 1
+                if 0 <= at < count and used + widths[at] <= room:
+                    used += widths[at]
+                    first, last = (first, at) if side > 0 else (at, last)
+                    grown = True
+            if not grown:
+                return first, last
+
     def _redraw_header(self) -> None:
         tabs = Text(no_wrap=True, overflow="ellipsis")
-        for number, section in enumerate(self._sections):
-            if number:
+        first, last = self._visible_tabs() if self._sections else (0, -1)
+        if first > 0:
+            tabs.append(f"{MORE_BEFORE} ", style=DIM)
+        for number in range(first, last + 1):
+            section = self._sections[number]
+            if number > first:
                 tabs.append(" ")
             if self._search:
                 style = DIM
@@ -616,6 +670,8 @@ class SettingsPanel(Vertical):
             else:
                 style = ACCENT if self._tabs_focus else ""
             tabs.append(f" {section.title} ", style=style)
+        if last < len(self._sections) - 1:
+            tabs.append(f" {MORE_AFTER}", style=DIM)
         self.query_one("#settings-tabs", Static).update(tabs)
         search = Text(no_wrap=True, overflow="ellipsis")
         if self._picking is not None:

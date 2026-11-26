@@ -1007,8 +1007,8 @@ SHARED_SETTINGS: tuple[_Shared, ...] = (
         "Act without asking first",
         (False, True),
         "Safety",
-        "Jarvis acts without asking for your yes, even after reading a web page or a file. "
-        "A tool that needs the confirm key still waits for it.",
+        "Jarvis acts without your yes, even after reading a web page or a file. "
+        "A tool needing the confirm key still waits; an off tool stays off.",
         "Jarvis will act without asking you first, even when a web page or a file could have "
         "steered it.",
     ),
@@ -2742,8 +2742,10 @@ def set_tool(
     return now
 
 
-def _next_tool_setting(name: str) -> ToolSetting:
-    """Move one tool on to its next setting (on, asks first, needs the key, off), for the chat.
+def _next_tool_setting(name: str, by: int = 1) -> ToolSetting:
+    """Move one tool on (`by` 1) or back (`by` -1) round its settings, for the chat.
+
+    The settings are on, asks first, needs the key, off, never below how the tool ships.
 
     Raises:
         ConfigError: as `set_tool`.
@@ -2752,7 +2754,8 @@ def _next_tool_setting(name: str) -> ToolSetting:
     if found is None:
         msg = f"no tool is called {name!r}"
         raise config.ConfigError(msg)
-    return set_tool(name, found.following(), source="chat", restart=False)
+    moved = found.following() if by > 0 else found.preceding()
+    return set_tool(name, moved, source="chat", restart=False)
 
 
 def cmd_tools(args: argparse.Namespace) -> int:

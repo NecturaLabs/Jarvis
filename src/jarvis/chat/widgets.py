@@ -505,11 +505,14 @@ class _Fit:
     cpu: bool = True
     gpu: bool = True
     label: str = "context"
+    vram: bool = True
+    ram: bool = True
 
 
 # From the widest window down, each step drops the least useful thing left: the temperatures,
 # half the context meter, the tenths of a gigabyte, the processor, the graphics card's load, the
-# meter itself. Whole items go, never part of one, so the line never wraps or ends mid-word.
+# meter itself, the memory figures, and last the word before the tokens. Whole items go, never
+# part of one, so the line never wraps or ends mid-word.
 FITS = (
     _Fit(),
     _Fit(temperatures=False),
@@ -518,6 +521,17 @@ FITS = (
     _Fit(temperatures=False, meter=BAR_CELLS // 2, tenths=False, cpu=False),
     _Fit(temperatures=False, meter=BAR_CELLS // 2, tenths=False, cpu=False, gpu=False),
     _Fit(temperatures=False, meter=0, tenths=False, cpu=False, gpu=False, label="ctx"),
+    _Fit(temperatures=False, meter=0, tenths=False, cpu=False, gpu=False, label="ctx", vram=False),
+    _Fit(
+        temperatures=False,
+        meter=0,
+        tenths=False,
+        cpu=False,
+        gpu=False,
+        label="",
+        vram=False,
+        ram=False,
+    ),
 )
 
 
@@ -562,12 +576,16 @@ def _toolbar(
 
 def _context(use: ContextUse, fit: _Fit) -> Text:
     text = Text()
-    text.append(f"{fit.label} ", style="bright_black")
+    if fit.label:
+        text.append(f"{fit.label} ", style="bright_black")
     if fit.meter:
         text.append_text(meter(use.used / use.window, fit.meter))
         text.append(" ")
     window = tokens_short(use.window)
-    text.append(f"{tokens_short(use.used):>{len(window)}}/{window}", style="bright_black")
+    used = tokens_short(use.used)
+    text.append(
+        f"{used:>{len(window)}}/{window}" if fit.label else f"{used}/{window}", style="bright_black"
+    )
     if use.memory_budget and use.memory >= WARN_AT * use.memory_budget:
         text.append(SEPARATOR, style="bright_black")
         text.append("compacts soon", style="yellow")
@@ -597,9 +615,9 @@ def _load(stats: Stats, fit: _Fit) -> Text:
                 _degrees(gpu.temperature_c, fit),
             )
         )
-    if gpu is not None and gpu.vram_used is not None and gpu.vram_total:
+    if fit.vram and gpu is not None and gpu.vram_used is not None and gpu.vram_total:
         parts.append(_memory("VRAM", gpu.vram_used, gpu.vram_total, fit))
-    if stats.ram_used is not None and stats.ram_total:
+    if fit.ram and stats.ram_used is not None and stats.ram_total:
         parts.append(_memory("RAM", stats.ram_used, stats.ram_total, fit))
     return _joined_parts(parts)
 

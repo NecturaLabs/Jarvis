@@ -218,6 +218,18 @@ def test_the_toolbar_fits_a_narrow_window_on_one_line() -> None:
         assert part in _plain(narrowest)
 
 
+def test_the_toolbar_never_cuts_a_word_however_narrow_the_window() -> None:
+    stats = Stats(7.5, 53.0, 33 * GIB, 60 * GIB, Gpu(41, 10 * GIB, 20 * GIB, 67.0))
+    use = ContextUse(9100, 24576, 5100, 2400, 12000, 1, summarized=False)
+
+    for width in (44, 36, 28, 18, 12):
+        line = toolbar("", stats, use, width)
+        assert line.cell_len <= width, width
+        assert _plain(line).rstrip().endswith("9.1k/24.6k"), width  # the context is what stays
+    assert "RAM" in _plain(toolbar("", stats, use, 36))
+    assert _plain(toolbar("", stats, use, 12)).strip() == "9.1k/24.6k"
+
+
 def test_the_footer_drops_the_least_useful_part_first_and_never_cuts_a_word() -> None:
     hints = (
         "? for shortcuts · every step and its result (ctrl+o)",

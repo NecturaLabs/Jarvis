@@ -1068,7 +1068,7 @@ def test_config_lists_the_tools_and_moves_one_on() -> None:
     }
     moved: list[str] = []
 
-    def move(name: str) -> ToolSetting:
+    def move(name: str, _by: int = 1) -> ToolSetting:
         moved.append(name)
         old = tools[name]
         tools[name] = ToolSetting(name, old.summary, old.following(), old.shipped, old.choices)
@@ -1717,6 +1717,280 @@ def test_a_risky_setting_with_several_values_asks_before_leaving_off() -> None:
         await _until(pilot, lambda: values["audio.recall"] == 10)
         await pilot.press("right")  # from one on value to another: no question
         await _until(pilot, lambda: values["audio.recall"] == 30)
+
+    _run(test, app)
+
+
+def _drawn(widget: Widget) -> str:
+    """What a widget draws, line by line, as the terminal shows it (what is clipped is missing)."""
+    from textual.geometry import Region  # ruff: ignore[import-outside-top-level] - only these tests
+
+    lines = widget.render_lines(Region(0, 0, widget.size.width, widget.size.height))
+    return "\n".join(strip.text for strip in lines)
+
+
+def _squeezed(text: str) -> str:
+    return "".join(text.split())
+
+
+def _full_services(
+    values: dict[str, object], moves: list[tuple[str, int]] | None = None
+) -> Services:
+    """Every tab: Jarvis's own settings at their defaults (acting without asking off), two tools."""
+    from jarvis.chat.app import SharedSetting  # ruff: ignore[import-outside-top-level] - only these tests
+    from jarvis.cli import SHARED_SETTINGS  # ruff: ignore[import-outside-top-level] - only these tests
+    from jarvis.config import Config  # ruff: ignore[import-outside-top-level] - only these tests
+    from jarvis.policy import OpClass  # ruff: ignore[import-outside-top-level] - only these tests
+    from jarvis.toolswitch import ToolSetting  # ruff: ignore[import-outside-top-level] - only these tests
+
+    cfg = Config()
+    tools = {
+        "web_search": ToolSetting(
+            "web_search", "Search the web", OpClass.SAFE, OpClass.SAFE, tuple(OpClass)
+        ),
+        "write_file": ToolSetting(
+            "write_file", "Write a file", OpClass.CONFIRM, OpClass.CONFIRM, tuple(OpClass)
+        ),
+    }
+
+    def shared() -> list[SharedSetting]:
+        out: list[SharedSetting] = []
+        for item in SHARED_SETTINGS:
+            key = f"{item.section}.{item.key}"
+            found: object = cfg
+            for part in item.section.split("."):
+                found = getattr(found, part)
+            default = False if key == "boundaries.bypass_consent" else getattr(found, item.key)
+            out.append(
+                SharedSetting(
+                    key,
+                    item.label,
+                    item.values,
+                    values.get(key, default),
+                    item.heading,
+                    item.about,
+                    item.risky,
+                    item.unit,
+                    item.zero,
+                )
+            )
+        return out
+
+    def move(name: str, by: int = 1) -> ToolSetting:
+        if moves is not None:
+            moves.append((name, by))
+        old = tools[name]
+        now = old.following() if by > 0 else old.preceding()
+        tools[name] = ToolSetting(name, old.summary, now, old.shipped, old.choices)
+        return tools[name]
+
+    return Services(
+        shared=shared,
+        set_shared=lambda key, value: values.update({key: value}),
+        apply=lambda: None,
+        save_settings=lambda _c: None,
+        tools=lambda: list(tools.values()),
+        next_tool_setting=move,
+    )
+
+
+def test_a_space_typed_into_the_search_is_part_of_the_search() -> None:
+    saved: list[ChatConfig] = []
+    app = _app(session=FakeSession(), services=Services(save_settings=saved.append))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        panel = app.query_one("#settings", SettingsPanel)
+        await pilot.press(*"headless", "space", *"browser")
+        await pilot.pause(0.05)
+        assert saved == []  # the space did not turn the highlighted setting over
+        assert panel.searched == "headless browser"
+        assert [row.name for row in panel.rows] == ["Headless browser"]
+        await pilot.press("escape", "down", "space")  # with nothing searched, space still changes
+        await _until(pilot, lambda: bool(saved))
+
+    _run(test, app)
+    assert saved[0].toolbar is False
+
+
+async def _in_size(
+    size: tuple[int, int],
+    services: Services,
+    test: Callable[[ChatApp, Pilot[None], tuple[int, int]], Awaitable[None]],
+) -> None:
+    app = _app(session=FakeSession(), services=services)
+    async with app.run_test(size=size) as pilot:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await pilot.pause(0.05)
+        await test(app, pilot, size)
+
+
+def test_a_narrow_window_still_shows_the_active_tab_and_the_whole_danger_prompt() -> None:
+    async def body() -> None:
+        for size in ((44, 24), (50, 24)):
+
+            async def check(app: ChatApp, pilot: Pilot[None], size: tuple[int, int]) -> None:
+                tabs = app.query_one("#settings-tabs", Static)
+                for title in ("Safety", "Tools"):
+                    await _open_tab(pilot, title)
+                    await pilot.pause(0.02)
+                    assert title in _drawn(tabs), (size, title)  # the active tab is in view
+                await _open_tab(pilot, "Safety")
+                await pilot.press("enter")
+                await _until(pilot, lambda: "Turn on?" in _settings_text(app))
+                await pilot.pause(0.05)
+                shown = _squeezed(_drawn(app.query_one("#settings-footer", Static)))
+                assert "esc:keepitoff" in shown, size  # the key hint is not cut
+                assert "enteror→again:turniton" in shown, size
+
+            await _in_size(size, _full_services({}), check)
+
+    asyncio.run(body())
+
+
+def test_the_footer_grows_to_hold_the_longest_setting_with_the_restart_note() -> None:
+    async def body() -> None:
+        for size in ((60, 24), (80, 24)):
+
+            async def check(app: ChatApp, pilot: Pilot[None], size: tuple[int, int]) -> None:
+                from jarvis.cli import SHARED_SETTINGS  # ruff: ignore[import-outside-top-level] - only this test
+
+                await _open_tab(pilot, "Voice")
+                await pilot.press("right")  # a change that waits for the restart
+                await _open_tab(pilot, "Mode")
+                longest = max((s.about for s in SHARED_SETTINGS if s.heading == "Mode"), key=len)
+                panel = app.query_one("#settings", SettingsPanel)
+                for _ in range(len(panel.rows)):
+                    if panel.row is not None and panel.row.about == longest:
+                        break
+                    await pilot.press("down")
+                await pilot.pause(0.05)
+                shown = _squeezed(_drawn(app.query_one("#settings-footer", Static)))
+                assert _squeezed(longest) in shown, size
+                assert "restartswhenyoucloseset" in shown, size
+                assert "Applies" in shown, size
+                await _open_tab(pilot, "Tools")
+                await pilot.pause(0.05)
+                assert panel.row is not None
+                shown = _squeezed(_drawn(app.query_one("#settings-footer", Static)))
+                assert _squeezed(panel.row.about) in shown, size
+                assert "restartswhenyoucloseset" in shown, size
+
+            await _in_size(size, _full_services({}), check)
+
+    asyncio.run(body())
+
+
+def test_config_fits_the_smallest_usual_window() -> None:
+    async def body() -> None:
+        async def check(app: ChatApp, pilot: Pilot[None], _size: tuple[int, int]) -> None:
+            panel = app.query_one("#settings", SettingsPanel)
+            assert panel.region.bottom <= app.size.height
+            tabs = _drawn(app.query_one("#settings-tabs", Static))
+            for title in ("Chat", "Mode", "Voice", "Listening", "Safety", "Tools"):
+                assert title in tabs
+            assert "How much of the work" in _drawn(app.query_one("#settings-footer", Static))
+            await pilot.press("end")  # the list scrolls, and the footer stays
+            await pilot.pause(0.05)
+            assert panel.row is not None
+            assert panel.row.name in _drawn(app.query_one("#settings-list", OptionList))
+            assert panel.row.about.split(";")[0][:20] in _drawn(
+                app.query_one("#settings-footer", Static)
+            )
+            assert app.query_one("#settings-footer").region.bottom <= panel.region.bottom
+
+        await _in_size((80, 24), _full_services({}), check)
+
+    asyncio.run(body())
+
+
+def test_a_value_picked_from_the_list_for_a_risky_setting_asks_and_enter_confirms() -> None:
+    values: dict[str, object] = {}
+    app = _app(session=FakeSession(), services=_full_services(values))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await _open_tab(pilot, "Listening")
+        await pilot.press("down", "enter")  # Recall PC audio: the list of values
+        await pilot.press("down", "enter")  # pick the second
+        await _until(pilot, lambda: "Turn on?" in _settings_text(app))
+        assert "audio.pc_audio_recall_s" not in values
+        footer = _drawn(app.query_one("#settings-footer", Static))
+        assert "enter again" in footer
+        assert "→" not in footer  # → would step to another value, not confirm this one
+        await pilot.press("enter")
+        await _until(pilot, lambda: values.get("audio.pc_audio_recall_s") == 10)
+        await pilot.press("enter", "down", "enter")  # from one on value to another: no question
+        await _until(pilot, lambda: values.get("audio.pc_audio_recall_s") == 30)
+        assert "Turn on?" not in _settings_text(app)
+
+    _run(test, app)
+
+
+def test_left_moves_a_tool_back_as_right_moves_it_on_and_never_below_how_it_ships() -> None:
+    moves: list[tuple[str, int]] = []
+    app = _app(session=FakeSession(), services=_full_services({}, moves))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await _open_tab(pilot, "Tools")
+        await pilot.press("right", "right")
+        await _until(pilot, lambda: len(moves) == 2)
+        assert "needs the confirm key" in _settings_text(app)
+        await pilot.press("left")
+        await _until(pilot, lambda: len(moves) == 3)
+        assert "asks first" in _settings_text(app)
+        await pilot.press(
+            "down", "left"
+        )  # write_file ships asking first: back goes round, not below
+        await _until(pilot, lambda: len(moves) == 4)
+        assert "off" in _settings_text(app).split("write_file")[1]
+
+    _run(test, app)
+    assert moves == [("web_search", 1), ("web_search", 1), ("web_search", -1), ("write_file", -1)]
+
+
+def test_switching_tab_leaves_a_risky_setting_off() -> None:
+    values: dict[str, object] = {}
+    app = _app(session=FakeSession(), services=_full_services(values))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        await _open_tab(pilot, "Safety")
+        await pilot.press("enter")
+        await _until(pilot, lambda: "Turn on?" in _settings_text(app))
+        await pilot.press("tab", "shift+tab")
+        await pilot.pause(0.05)
+        assert "Turn on?" not in _settings_text(app)
+        await pilot.press("escape", "enter")  # nothing was turned on behind the question
+        assert values.get("boundaries.bypass_consent") is not True
+
+    _run(test, app)
+
+
+def test_typing_backspace_and_tab_change_nothing_while_the_list_of_values_is_open() -> None:
+    saved: list[ChatConfig] = []
+    app = _app(session=FakeSession(), services=Services(save_settings=saved.append))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/config")
+        await _until(pilot, lambda: app.query_one("#settings").display)
+        panel = app.query_one("#settings", SettingsPanel)
+        await pilot.press("down", "down", "down", "enter")
+        listed = app.query_one("#settings-list", OptionList)
+        await _until(pilot, lambda: listed.option_count == 3)
+        await pilot.press("x", "backspace", "tab", "shift+tab")
+        await pilot.pause(0.05)
+        assert not panel.searched
+        assert panel.tab is not None
+        assert panel.tab.title == "Chat"
+        assert listed.option_count == 3  # still the list of values
+        assert saved == []
 
     _run(test, app)
 

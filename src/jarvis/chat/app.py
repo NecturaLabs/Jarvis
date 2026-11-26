@@ -217,7 +217,7 @@ class Services:
     set_shared: Callable[[str, object], None] | None = None
     apply: Callable[[], None] | None = None  # restarts the voice service after changes, once
     tools: Callable[[], list[ToolSetting]] | None = None  # every tool and its setting
-    next_tool_setting: Callable[[str], ToolSetting] | None = None  # moves one on, saves it
+    next_tool_setting: Callable[[str, int], ToolSetting] | None = None  # moves one, saves it
     history: InputHistory | None = None
     archive: ChatArchive | None = None  # every conversation, for /resume and reading back
     export_dir: Path = field(default_factory=Path.home)
@@ -444,7 +444,7 @@ class ChatApp(App[None]):
     #settings-list {
         height: 1fr; margin: 1 0 0 0; border: none; padding: 0; background: ansi_default;
     }
-    #settings-footer { height: 4; margin: 1 0 0 0; }
+    #settings-footer { height: auto; min-height: 4; max-height: 8; margin: 1 0 0 0; }
     #question-text { height: auto; margin: 0 0 1 0; }
     #choices { height: auto; border: none; padding: 0; background: ansi_default; }
     .panel-hint { height: auto; margin: 1 0 0 0; color: ansi_bright_black; }
@@ -1776,12 +1776,12 @@ class ChatApp(App[None]):
                 self.notify(f"Couldn't read the tools: {type(exc).__name__}", severity="warning")
             return None
 
-    def _change_tool(self, name: str) -> None:
+    def _change_tool(self, name: str, by: int = 1) -> None:
         move = self._services.next_tool_setting
         if move is None:
             return
         try:
-            move(name)
+            move(name, by)
         except Exception as exc:  # ruff: ignore[blind-except] - the setting stays as it was
             self.notify(f"Couldn't change {name}: {exc}", severity="warning")
             return
@@ -1831,7 +1831,7 @@ class ChatApp(App[None]):
         key, or Esc, leaves it off. Enter on a setting that asked takes the value it asked about.
         """
         if key.startswith(TOOL_ROW):
-            self._change_tool(key.removeprefix(TOOL_ROW))
+            self._change_tool(key.removeprefix(TOOL_ROW), by or 1)
             return
         row = self._row(key)
         if row is None:
@@ -1842,9 +1842,11 @@ class ChatApp(App[None]):
         else:
             following = chosen if picked else row.step(by)
         if row.turns_on(following) and (
-            asked is None or (asked.key, asked.value) != (key, following)
+            asked is None
+            or (asked.key, asked.value) != (key, following)
+            or (asked.by == 0 and by != 0)  # a picked value is confirmed by Enter alone
         ):
-            self._pending = Pending(key, following, by or 1)
+            self._pending = Pending(key, following, by)
             self._fill_settings(key)
             return
         self._pending = None
@@ -2092,7 +2094,7 @@ class ChatApp(App[None]):
     def _settings_activated(self, event: SettingsPanel.Activated) -> None:
         """Enter or space on a setting, or a value picked from its list."""
         if event.picked:
-            self._step_setting(event.row_id, 1, event.value, picked=True)
+            self._step_setting(event.row_id, 0, event.value, picked=True)
         else:
             row = self._row(event.row_id)
             self._step_setting(event.row_id, 1 if row is not None and row.toggle else 0)
