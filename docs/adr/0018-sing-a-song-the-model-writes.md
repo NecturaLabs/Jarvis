@@ -43,8 +43,11 @@ CPU singer instead of leaving the owner without a song.
 - **Where it plays.** The result carries a `Sound`; the voice's `Hooks.play` queues it in the speaker
   (`Speaker.queue_sound`), so it plays like a reply. A channel with no way to play it (the chat, `jarvis ask`,
   `speech-test`) is not offered the tool, and a call that still reaches one fails with a message the model is
-  told. The speaker checks a song for its own wake word in chunks of 2.5 seconds, so only a stretch that
-  sounds like it cannot be spoken over.
+  told. The speaker checks a song for its own wake word in chunks of 2.5 seconds, each against its own sound
+  and only the words sung in it (the score gives each word's seconds), so only a stretch that sounds like it
+  cannot be spoken over: a song that names the assistant once is guarded around that word alone, with an
+  Azure keyword model too, which wakes on the name without "Hey". A song plays as it was made, its rests
+  included; only a sentence's padding is trimmed.
 - **The two engines.** `[sing] engine` is `auto`, `speech` or `soulx`.
   - `speech` (`src/jarvis/sing/psola.py`): Kokoro says the words, Praat's overlap-add stretches each vowel to its
     note and sets its pitch. It uses the Kokoro files Jarvis already has and the new `praat-parselmouth`

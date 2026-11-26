@@ -4,7 +4,7 @@ import math
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from jarvis.policy import OpClass, Origin
 
@@ -153,16 +153,30 @@ def request_scope(  # ruff: ignore[too-many-arguments] - the request's fields, k
         _CURRENT.reset(token)
 
 
+class Lyric(NamedTuple):
+    """A word a sound says, and the seconds from the sound's start it is heard in."""
+
+    start: float
+    end: float
+    text: str
+
+
 @dataclass(frozen=True, slots=True)
 class Sound:
     """A sound an operation made for the owner to hear, a song: int16 mono samples at `rate`.
 
-    `words` are what it says, so the voice's check for its own wake word can read them.
+    `lyrics` are the words it says and when, so the voice's check for its own wake word reads
+    each stretch of it with the words heard there.
     """
 
     pcm: bytes
     rate: int
-    words: str = ""
+    lyrics: tuple[Lyric, ...] = ()
+
+    @property
+    def words(self) -> str:
+        """The words it says, in order."""
+        return " ".join(lyric.text for lyric in self.lyrics)
 
 
 @dataclass(frozen=True, slots=True)

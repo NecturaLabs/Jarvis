@@ -25,7 +25,7 @@ from jarvis.audit import AuditLog
 from jarvis.config import AudioConfig, Config, ModelConfig
 from jarvis.confirmkey import MIN_PRESS_S, NOTHING_WAITING, STRAY_HOLD_S, ConfirmKey
 from jarvis.model import Delta, StrataModel
-from jarvis.operations import Operation, Registry, Result, Sound
+from jarvis.operations import Lyric, Operation, Registry, Result, Sound
 from jarvis.pc.hearing import PcHearing
 from jarvis.policy import OpClass, Origin
 from jarvis.schedule import Due, Job
@@ -205,10 +205,13 @@ class Speaker:
         self.said.append(text)
         self.queued_in_order.append(text)
 
-    def queue_sound(self, pcm: bytes, rate: int, words: str = "") -> None:
+    def queue_sound(
+        self, pcm: bytes, rate: int, lyrics: Sequence[tuple[float, float, str]] = ()
+    ) -> None:
         if self.broken:
             self._failed = True
             return
+        words = " ".join(text for _start, _end, text in lyrics)
         self.sounds.append((len(pcm), rate, words))
         self.queued_in_order.append(f"sound: {words}")
 
@@ -2197,7 +2200,7 @@ def test_a_paused_loop_says_nothing_more() -> None:
     assert speaker.said == ["One."]
 
 
-SONG = Sound(b"\x01\x00" * 2400, 24000, "la la")
+SONG = Sound(b"\x01\x00" * 2400, 24000, (Lyric(0.0, 0.05, "la"), Lyric(0.05, 0.1, "la")))
 
 
 def test_a_song_plays_through_the_speaker_after_the_words_before_it() -> None:

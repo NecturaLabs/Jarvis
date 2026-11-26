@@ -119,3 +119,9 @@ def test_pitch_helpers_agree_with_concert_pitch() -> None:
     assert hertz(57) == pytest.approx(220.0)
     assert note_name(60) == "C4"
     assert note_name(70) == "A#4"
+
+
+def test_each_word_is_given_the_seconds_it_is_sung_in() -> None:
+    score = parse("hap- C4 1, py E4 1, ~ G4 1, _ 1, day C4 2", 120)
+
+    assert score.timed_words == ((0.0, 1.5, "happy"), (2.0, 3.0, "day"))

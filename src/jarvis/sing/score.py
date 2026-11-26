@@ -81,6 +81,21 @@ class Score:
         """The words sung, in order."""
         return " ".join(self.words)
 
+    @property
+    def timed_words(self) -> tuple[tuple[float, float, str], ...]:
+        """Each word with the seconds it is sung in: (start, end, word).
+
+        A word runs from its first note's start to its last note's end, its holds included.
+        """
+        spans: dict[int, list[float]] = {}
+        at = 0.0
+        for note in self.notes:
+            if note.kind is not Kind.REST:
+                span = spans.setdefault(note.word, [at, at])
+                span[1] = at + note.seconds
+            at += note.seconds
+        return tuple((start, end, self.words[w]) for w, (start, end) in sorted(spans.items()))
+
     def transposed(self, semitones: int) -> Score:
         """Return the same song moved by `semitones` (rests stay rests)."""
         notes = tuple(

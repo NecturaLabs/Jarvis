@@ -12,7 +12,7 @@ from jarvis.policy import Origin
 from jarvis.voice import PcListener, VoiceLoop
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Generator
+    from collections.abc import Collection, Generator, Sequence
 
     from numpy.typing import NDArray
 
@@ -84,9 +84,11 @@ class Speaker:
     def queue(self, text: str) -> None:
         self.said.append(text)
 
-    def queue_sound(self, pcm: bytes, rate: int, words: str = "") -> None:
+    def queue_sound(
+        self, pcm: bytes, rate: int, lyrics: Sequence[tuple[float, float, str]] = ()
+    ) -> None:
         del pcm, rate
-        self.said.append(words)
+        self.said.append(" ".join(text for _start, _end, text in lyrics))
 
     def wait(self) -> None:
         pass

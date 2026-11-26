@@ -10,9 +10,11 @@ song while it is still being made, and the voice listens for the wake word meanw
 import logging
 import threading
 from contextlib import nullcontext
+from itertools import starmap
 from typing import TYPE_CHECKING, Any, Protocol
 
 from jarvis.operations import (
+    Lyric,
     Operation,
     OperationError,
     OperationStoppedError,
@@ -154,7 +156,7 @@ class SingOps:
         return Result(
             f"Singing now ({len(score.notes)} notes, {seconds:.0f} seconds): it plays after what"
             " you have said. Do not repeat the lyrics; reply in a few words or not at all.",
-            sound=Sound(pcm.tobytes(), rate, score.lyrics),
+            sound=Sound(pcm.tobytes(), rate, tuple(starmap(Lyric, score.timed_words))),
         )
 
     def operations(self) -> list[Operation]:

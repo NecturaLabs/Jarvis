@@ -1963,6 +1963,18 @@ GUARD_TAIL_S = 1.0
 # chunk is checked together with the second before it, so a phrase across two is still heard whole.
 SONG_CHUNK_S = 2.5
 SONG_OVERLAP_S = 1.0
+LYRIC_SLACK_S = (
+    0.1  # a word is read with a chunk it is sung this close to (its timing is the score's)
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _Sound:
+    """A sound made elsewhere, queued to be played: int16 mono samples, and its timed words."""
+
+    pcm: bytes
+    rate: int
+    lyrics: tuple[tuple[float, float, str], ...]
 
 
 def trim_silence(pcm: bytes, rate: int, *, lead_s: float | None, tail_s: float) -> bytes:
@@ -2110,7 +2122,7 @@ class Speaker:
         self._linger_s = linger_s
         self._clock = clock
         self._lock = threading.Condition()
-        self._items: queue.Queue[tuple[int, str, tuple[bytes, int] | None]] = queue.Queue()
+        self._items: queue.Queue[tuple[int, str, _Sound | None]] = queue.Queue()
         self._pending = 0  # sentences queued, being synthesized or being handed to the player
         self._run = 0  # raised by `hush`: sentences queued before it are dropped
         self._error: AudioError | None = None
@@ -2158,15 +2170,19 @@ class Speaker:
             return
         self._put(text, None)
 
-    def queue_sound(self, pcm: bytes, rate: int, words: str = "") -> None:
+    def queue_sound(
+        self, pcm: bytes, rate: int, lyrics: Sequence[tuple[float, float, str]] = ()
+    ) -> None:
         """Have int16 mono `pcm` at `rate` played after what is already queued; return at once.
 
-        `words` are what it says, for the check that it would not trigger the wake word itself.
+        It plays as it is, its silences included (a song's rests are part of it). `lyrics` are
+        the words it says, each with the seconds it is heard in, for the check that it would
+        not trigger the wake word itself: each chunk is checked with the words heard in it.
         """
         if pcm:
-            self._put(words, (pcm, rate))
+            self._put("", _Sound(pcm, rate, tuple(lyrics)))
 
-    def _put(self, text: str, sound: tuple[bytes, int] | None) -> None:
+    def _put(self, text: str, sound: _Sound | None) -> None:
         if self._stopped.is_set():
             return
         with self._lock:
@@ -2235,19 +2251,25 @@ class Speaker:
     def _current(self, run: int) -> bool:
         return run == self._run and not self._stopped.is_set()
 
-    def _speak(self, run: int, text: str, sound: tuple[bytes, int] | None = None) -> None:
+    def _speak(self, run: int, text: str, sound: _Sound | None = None) -> None:
         if not self._current(run):
             return
-        pcm, rate = sound if sound is not None else self._synthesize(text)
+        pcm, rate = (sound.pcm, sound.rate) if sound is not None else self._synthesize(text)
         if not self._current(run):
             return
         if self._proc is not None and (rate != self._rate or self._player_run != run):
             self._close()  # another rate, or a player a hush has ended
-        first = self._proc is None
-        pcm = trim_silence(pcm, rate, lead_s=LEAD_KEEP_S if first else None, tail_s=TAIL_KEEP_S)
+        if sound is None:  # a sentence's padding is the voice's; a sound's silence is its own
+            first = self._proc is None
+            lead_s = LEAD_KEEP_S if first else None
+            pcm = trim_silence(pcm, rate, lead_s=lead_s, tail_s=TAIL_KEEP_S)
         if not pcm:
             return
-        spans = self._wake_spans(pcm, rate, text, run, chunked=sound is not None)
+        spans = (
+            self._song_spans(pcm, rate, sound.lyrics, run)
+            if sound is not None
+            else self._sentence_spans(pcm, rate, text)
+        )
         with self._lock:
             if run != self._run:  # hushed during the check: it will not be played
                 return
@@ -2262,23 +2284,38 @@ class Speaker:
         if proc is not None:
             self._write(proc, pcm, run)
 
-    def _wake_spans(
-        self, pcm: bytes, rate: int, text: str, run: int, *, chunked: bool
-    ) -> list[tuple[float, float]]:
-        """Return the seconds of `pcm` (start, end) that would trigger the wake word.
+    def _sentence_spans(self, pcm: bytes, rate: int, text: str) -> list[tuple[float, float]]:
+        """Return the seconds of a sentence (start, end) that would trigger the wake word.
 
-        A sentence is checked whole; a song (`chunked`) in chunks of `SONG_CHUNK_S`.
+        It is checked whole, so that is all of it or none.
+        """
+        return [(0.0, len(pcm) / (2 * rate))] if self._sounds_like_wake(pcm, rate, text) else []
+
+    def _song_spans(
+        self, pcm: bytes, rate: int, lyrics: Sequence[tuple[float, float, str]], run: int
+    ) -> list[tuple[float, float]]:
+        """Return the seconds of a song (start, end) that would trigger the wake word.
+
+        It is checked in chunks of `SONG_CHUNK_S`, each with the second before it, against the
+        sound of the chunk and only the words sung in it, so one word that sounds like the wake
+        word guards its own stretch and not the whole song.
         """
         total = len(pcm) // 2
-        step = max(1, int(SONG_CHUNK_S * rate) if chunked else total)  # a sound may be empty
+        step = int(SONG_CHUNK_S * rate)
         spans: list[tuple[float, float]] = []
         for first in range(0, total, step):
             if not self._current(run):
                 break
             end = min(total, first + step)
-            back = max(0, first - int(SONG_OVERLAP_S * rate)) if chunked else first
-            if self._sounds_like_wake(pcm[2 * back : 2 * end], rate, text):
-                spans.append((back / rate, end / rate))
+            back = max(0, first - int(SONG_OVERLAP_S * rate))
+            a, b = back / rate, end / rate
+            words = " ".join(
+                text
+                for start, stop, text in lyrics
+                if start < b + LYRIC_SLACK_S and stop > a - LYRIC_SLACK_S
+            )
+            if self._sounds_like_wake(pcm[2 * back : 2 * end], rate, words):
+                spans.append((a, b))
         return spans
 
     def _sounds_like_wake(self, pcm: bytes, rate: int, text: str) -> bool:

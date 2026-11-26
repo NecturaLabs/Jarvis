@@ -81,6 +81,8 @@ def test_a_song_is_rendered_and_handed_back_as_sound_with_its_words() -> None:
     assert result.sound.rate == 16000
     assert len(result.sound.pcm) == 32000
     assert result.sound.words == "Morning light"
+    beat = 60 / 90
+    assert result.sound.lyrics == ((0.0, 2 * beat, "Morning"), (2 * beat, 4 * beat, "light"))
     assert singer.scores[0].tempo == 90
     assert "Do not repeat the lyrics" in result.text
 

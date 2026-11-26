@@ -44,6 +44,7 @@ from jarvis.memory import tokens
 from jarvis.model import Delta, ModelError, ModelMissingError, Thinking
 from jarvis.operations import (
     REMEMBERED_LISTING,
+    Lyric,
     Operation,
     OperationError,
     OperationStoppedError,
@@ -3797,7 +3798,7 @@ def test_words_the_owner_adds_while_it_works_join_the_request_before_the_next_ca
     ]
 
 
-SONG = Sound(b"\x01\x00" * 2400, 24000, "la la la")
+SONG = Sound(b"\x01\x00" * 2400, 24000, (Lyric(0.0, 0.1, "la"),))
 
 
 def _singing() -> Operation:
