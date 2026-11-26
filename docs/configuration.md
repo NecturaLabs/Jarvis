@@ -446,8 +446,9 @@ and the `sing` tool checks it in code before a sound is made: at most 64 notes a
 to C6. The song plays like a reply, after what Jarvis said before it: say the wake word over it to stop it,
 `jarvis hush` ends it, and nothing is sung while Jarvis is paused. The song is checked for its own wake word in
 chunks of about 2.5 seconds, so a stretch that sounds like it is the only part that cannot be spoken over. It is sung by voice only; the chat does not
-offer it. The tool's class is `safe` and it counts as an action; `sing = "deny"` under `[boundaries.classes]`
-switches it off.
+offer it. The tool's class is `safe` and it counts as an action: after outside text (a web page) it needs a
+yes, unless `boundaries.bypass_consent` is on, and the question reads out the song's length and all its words.
+`sing = "deny"` under `[boundaries.classes]` switches it off.
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|

@@ -232,7 +232,28 @@ def test_singing_is_safe_and_counts_as_an_action() -> None:
 
     assert op.default_class is OpClass.SAFE
     assert op.side_effect
-    assert op.spoken_summary({"notes": LINE}) == "sing Morning light"
+
+
+def test_the_question_before_a_song_holds_all_of_its_words() -> None:
+    op = _op(Singer())
+    # The same harmless start; what follows differs.
+    first = "Sun- C4 1, ny E4 1, days G4 1, are C4 1, here D4 1, a- E4 1, gain F4 1, friend G4 2"
+    second = "Sun- C4 1, ny E4 1, days G4 1, are C4 1, here D4 1, a- E4 1, gain F4 1, foe G4 2"
+
+    asked = [op.spoken_summary({"notes": first}), op.spoken_summary({"notes": second})]
+
+    assert asked[0] == "sing a 5-second song with these words: Sunny days are here again friend"
+    assert asked[1].endswith("again foe")
+
+
+def test_a_score_that_cannot_be_sung_is_refused_before_anyone_is_asked() -> None:
+    op = _op(Singer())
+    assert op.prepare is not None
+
+    with pytest.raises(OperationError, match=r"Nothing was sung: .*out of range"):
+        op.prepare(validate_args(op, {"notes": "la C4 " + "9" * 400 + "/1"}))
+    args = validate_args(op, {"notes": LINE})
+    assert op.prepare(args) == args
 
 
 @pytest.mark.parametrize(

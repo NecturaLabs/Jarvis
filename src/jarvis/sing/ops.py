@@ -45,8 +45,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-MAX_SUMMARY_WORDS = 6
-
 
 class Singer(Protocol):
     """Turns a checked score into sound."""
@@ -77,14 +75,39 @@ def _budget(request: Request | None) -> Budget:
     )
 
 
-def _summary(args: dict[str, Any]) -> str:
-    """Return the confirmation's words: sing, and how the song starts."""
+def _score(args: dict[str, Any]) -> Score:
+    """Return the checked score of a call's arguments.
+
+    Raises:
+        OperationError: it cannot be sung as written; the message says what to change.
+    """
     try:
-        words = parse(str(args.get("notes", "")), int(args.get("tempo_bpm", DEFAULT_TEMPO))).words
-    except ScoreError, ValueError:
-        return "sing a song"
-    start = " ".join(words[:MAX_SUMMARY_WORDS])
-    return f"sing {start}{'…' if len(words) > MAX_SUMMARY_WORDS else ''}"
+        return parse(str(args["notes"]), int(args.get("tempo_bpm", DEFAULT_TEMPO)))
+    except ScoreError as exc:
+        msg = f"Nothing was sung: {exc}."
+        raise OperationError(msg) from exc
+
+
+def _checked(args: dict[str, Any]) -> dict[str, Any]:
+    """Check the score before the owner is asked about it (the operation's `prepare`).
+
+    A score that cannot be sung raises `_score`'s OperationError, so nobody is asked about it.
+    """
+    _score(args)
+    return args
+
+
+def _summary(args: dict[str, Any]) -> str:
+    """Return the confirmation's words: the song's length and every word it sings.
+
+    A yes is bound to this exact score, so the owner hears all of what they agree to; a score
+    has at most MAX_NOTES notes, so the question stays short enough to say.
+    """
+    try:
+        score = _score(args)
+    except OperationError:
+        return "sing a song"  # never asked: `prepare` refuses the score first
+    return f"sing a {score.seconds:.0f}-second song with these words: {score.lyrics}"
 
 
 DESCRIPTION = (
@@ -126,11 +149,7 @@ class SingOps:
                 singer can run, or the request ran out of time.
             OperationStoppedError: the song was stopped before it could be played.
         """
-        try:
-            score = parse(str(args["notes"]), int(args.get("tempo_bpm", DEFAULT_TEMPO)))
-        except ScoreError as exc:
-            msg = f"Nothing was sung: {exc}."
-            raise OperationError(msg) from exc
+        score = _score(args)
         request = current_request()
         budget = _budget(request)
         if budget.stopped():
@@ -187,5 +206,6 @@ class SingOps:
                 },
                 self._sing,
                 spoken_summary=_summary,
+                prepare=_checked,
             )
         ]

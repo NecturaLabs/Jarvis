@@ -40,6 +40,13 @@ CPU singer instead of leaving the owner without a song.
   it to `confirm` ([ADR 0002](0002-typed-operation-policy.md)), it takes a slot in `max_actions`, and a reply
   that claims it sang is not challenged as a claim with no action behind it. `side_effect=False` would have
   skipped all three, and a page could then make Jarvis sing with no yes.
+- **Asking first follows the owner's setting.** A song raised to `confirm` is asked about like any action, so
+  with `boundaries.bypass_consent` on (its default, the owner's choice) it runs without a question, as every
+  `confirm` action does; with it off, Jarvis asks. Singing has no exception of its own either way. The
+  question carries the song's length and all its words ("Should I sing a 12-second song with these words:
+  …?"), never only how it starts, since the yes is bound to that exact score's action hash: two songs that
+  begin alike are asked about differently. The score is checked before anyone is asked (the operation's
+  `prepare`), so a score that cannot be sung is refused with its reason and never asked about.
 - **Where it plays.** The result carries a `Sound`; the voice's `Hooks.play` queues it in the speaker
   (`Speaker.queue_sound`), so it plays like a reply. A channel with no way to play it (the chat, `jarvis ask`,
   `speech-test`) is not offered the tool, and a call that still reaches one fails with a message the model is
@@ -90,7 +97,8 @@ CPU singer instead of leaving the owner without a song.
   to either singer when this was written: pitch and length were measured, how they sound was not. SoulX-Singer's
   VRAM use and its effect on a game's frame time are not measured. Its weights are Apache-2.0, but the sources
   of its training songs are not named. Each song takes a slot in `max_actions`, and a song asked for after web
-  text waits for a yes.
+  text waits for a yes only while Jarvis asks first (`bypass_consent` off); the question then reads out every
+  word of the song, up to 64.
 
 ## Related
 

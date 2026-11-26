@@ -12,6 +12,7 @@ import math
 import re
 from dataclasses import dataclass
 from enum import Enum
+from fractions import Fraction
 
 MIN_TEMPO = 40
 MAX_TEMPO = 220
@@ -144,7 +145,12 @@ def beats(text: str) -> float:
     """
     if match := _FRACTION.fullmatch(text):
         top, bottom = int(match[1]), int(match[2])
-        value = top / bottom if bottom else math.nan
+        exact = Fraction(top, bottom) if bottom else None
+        # Compared exactly first: a fraction of long numbers may be too large for a float.
+        if exact is not None and not MIN_BEATS <= exact <= MAX_BEATS:
+            msg = f"a note of {text} beats is out of range: from {MIN_BEATS} to {MAX_BEATS:g} beats"
+            raise ScoreError(msg)
+        value = math.nan if exact is None else float(exact)
     else:
         try:
             value = float(text)

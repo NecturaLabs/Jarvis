@@ -125,3 +125,9 @@ def test_each_word_is_given_the_seconds_it_is_sung_in() -> None:
     score = parse("hap- C4 1, py E4 1, ~ G4 1, _ 1, day C4 2", 120)
 
     assert score.timed_words == ((0.0, 1.5, "happy"), (2.0, 3.0, "day"))
+
+
+@pytest.mark.parametrize("length", ["9" * 400 + "/1", "1/" + "9" * 400, "9" * 400])
+def test_a_length_too_large_or_small_for_a_number_is_refused_as_out_of_range(length: str) -> None:
+    with pytest.raises(ScoreError):
+        parse(f"la C4 {length}")

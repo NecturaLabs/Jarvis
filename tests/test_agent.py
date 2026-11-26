@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, Any, cast, override
 
+import numpy as np
 import pytest
 
 from jarvis import agent as agent_module
@@ -53,17 +54,22 @@ from jarvis.operations import (
     Sound,
     UncertainOutcomeError,
     current_request,
+    validate_args,
 )
 from jarvis.pc.files import Boundary, FileOps
 from jarvis.pictures import Picture
 from jarvis.policy import OpClass, Origin, action_hash
 from jarvis.ratelimit import ActionRate
 from jarvis.shortcuts import Shortcut
+from jarvis.sing.ops import SingOps
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
     from pathlib import Path
     from typing import Self
+
+    from jarvis.sing.budget import Budget
+    from jarvis.sing.score import Score
 
 
 def _call(name: str, args: dict[str, Any] | None = None, call_id: str = "c1") -> dict[str, Any]:
@@ -3861,6 +3867,80 @@ def test_silence_asked_for_without_a_song_still_hushes_what_was_said() -> None:
     agent.handle("Shut up.", Hooks(confirm=lambda _q: False, hush=lambda: hushes.append("hush")))
 
     assert hushes == ["hush"]
+
+
+class _Renders:
+    """A singer that renders a tenth of a second per song and keeps the scores it rendered."""
+
+    name = "test"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scores: list[Score] = []
+
+    def render(self, score: Score, _budget: Budget, /) -> tuple[np.ndarray, int]:
+        self.scores.append(score)
+        return np.ones(2400, dtype=np.int16), 24000
+
+
+SUNG = "Morn- E4 1, ing G4 1, light C5 2"  # an original line, written for these tests
+
+
+def _sing_after_web_text(
+    *, bypass: bool, yes: bool
+) -> tuple[list[str], list[Sound], _Renders, AuditLog, dict[str, Any]]:
+    """Read a web page, then sing: return the questions, what played, the singer and the log."""
+    singer = _Renders()
+    (sing,) = SingOps(lambda: singer).operations()
+    counter = Counter()
+    page = counter.op("page", origin=Origin.WEB, side_effect=False)
+    model = ScriptedModel(
+        [_call("page"), _call("sing", {"notes": SUNG}, call_id="c2"), _say("Done.")]
+    )
+    audit = AuditLog(None)
+    agent = Agent(
+        model,
+        Registry([page, sing, no_action_operation()]),
+        "system",
+        audit,
+        {},
+        clock=Clock(),
+        bypass_consent=bypass,
+    )
+    asked: list[str] = []
+    played: list[Sound] = []
+
+    agent.handle(
+        "find a song and sing it",
+        Hooks(confirm=lambda q: asked.append(q) or yes, play=played.append),
+    )
+
+    return asked, played, singer, audit, validate_args(sing, {"notes": SUNG})
+
+
+@pytest.mark.parametrize("yes", [False, True], ids=["no", "yes"])
+def test_a_song_after_web_text_is_asked_about_with_all_its_words_and_bound_to_them(
+    yes: bool,
+) -> None:
+    asked, played, singer, audit, args = _sing_after_web_text(bypass=False, yes=yes)
+
+    assert asked == ["Should I sing a 2-second song with these words: Morning light?"]
+    (confirmation,) = [e for e in audit.events if e["event"] == "confirmation"]
+    (call,) = [e for e in audit.events if e["event"] == "tool_call" and e["op"] == "sing"]
+    assert confirmation["approved"] is yes
+    assert confirmation["action"] == call["action"] == action_hash("sing", args)
+    assert call["verdict"] == "confirm"
+    assert len(played) == len(singer.scores) == (1 if yes else 0)  # a no makes and plays nothing
+
+
+def test_a_song_after_web_text_runs_unasked_when_the_owner_bypasses_consent() -> None:
+    asked, played, singer, audit, _args = _sing_after_web_text(bypass=True, yes=False)
+
+    assert not asked
+    assert len(played) == len(singer.scores) == 1
+    (call,) = [e for e in audit.events if e["event"] == "tool_call" and e["op"] == "sing"]
+    assert call["consent"] == "bypassed"
+    assert call["would_need"] == "confirm"
 
 
 def test_a_channel_that_cannot_play_sound_tells_the_model_nothing_was_sung() -> None:
