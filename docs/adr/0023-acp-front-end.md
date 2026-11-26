@@ -147,3 +147,15 @@ A coding-mode session holds the shared answering lock while handling a request a
 when it finishes in shared coding mode. The voice service can return Strata to normal after the idle interval.
 The session's prompt and tools stay in coding mode. The push finds the newest open thread that runs Jarvis
 (`jarvis acp`, or `jarvis acp --coding` as set up before the modes became models).
+
+## Kept sessions (2026-11-26)
+
+The first decision kept no conversation on disk. T3 Code reopens a thread with `session/load` after
+either side restarts, and failed with "Provider session failed to open" when Jarvis did not offer it.
+So `jarvis acp` now keeps each session's conversation in `~/.local/state/jarvis/acp-sessions/` (folder
+0700, files 0600, the newest 200), with the same provenance marks the chat archive keeps, and answers
+`session/load` by replaying the remembered turns. Loading raises no turn's trust: the marks are read
+back as the chat's resume reads them. A session id with nothing kept opens empty under that id, because
+T3 Code treats any error as a failed thread. The chat's privacy settings cover these files too:
+`chat.archive_keep = 0` keeps none and deletes those kept before, and `/forget all` in the chat deletes
+them. `/clear`, the command the protocol lets a client offer, forgets one session without the model.

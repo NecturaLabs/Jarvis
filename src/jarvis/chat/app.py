@@ -37,6 +37,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import OptionList, Static
 
+from jarvis.acp import forget_kept
 from jarvis.activity import VOICE_VIA, Shown, call_target, describe, full_text, working_label
 from jarvis.agent import MAX_TRUSTED_PASTE, PICTURES_OFF, Declined, Hooks, NoReason
 from jarvis.chat import commands
@@ -76,6 +77,7 @@ from jarvis.chat.widgets import (
 )
 from jarvis.config import ChatConfig
 from jarvis.handoff import HandoffError, State
+from jarvis.paths import acp_sessions_dir
 from jarvis.pictures import PictureError, newest, pasted_path, prepare, read_file
 
 if TYPE_CHECKING:
@@ -1698,6 +1700,7 @@ class ChatApp(App[None]):
         self._poll()  # the log's last events are forgotten too, not recorded into the next one
         try:
             gone = archive.forget()
+            gone += forget_kept(acp_sessions_dir())  # T3 Code's sessions are archived too
         except OSError as exc:
             self._note(
                 f"Couldn't delete the archive ({type(exc).__name__}); nothing was forgotten. "

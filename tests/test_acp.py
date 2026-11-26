@@ -1960,3 +1960,92 @@ def test_clear_forgets_the_conversation_without_the_model(tmp_path: Path) -> Non
     assert agent.forgotten == 1
     assert [text for text, _ in agent.calls] == ["hello"]  # the model never saw /clear
     assert not any(store.glob(f"{session}.*.memory.json"))
+
+
+def test_clear_while_a_question_waits_declines_it_and_then_clears(tmp_path: Path) -> None:
+    ran: list[str] = []
+    agent = ClearableAgent()
+    agent.script = closing_script(ran)
+    with Client(agent, store=tmp_path / "acp") as client:
+        session = client.start()
+        client.response(client.prompt(session, text("close notes")))  # the question is asked
+
+        answer = client.response(client.prompt(session, text("/clear")))
+
+        assert answer["result"]["stopReason"] == "end_turn"
+        assert "afresh" in client.said()
+    assert ran == []  # the action the question was about never ran
+    assert agent.forgotten == 1
+    assert [call[0] for call in agent.calls] == ["close notes"]
+
+
+def test_clear_after_a_stop_waits_for_the_stopped_request_then_clears(tmp_path: Path) -> None:
+    release = threading.Event()
+
+    def slow(_text: str, hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        release.wait(5)
+        return "" if hooks.cancelled() else "done"
+
+    agent = ClearableAgent()
+    agent.script = slow
+    with Client(agent, store=tmp_path / "acp") as client:
+        session = client.start()
+        first = client.prompt(session, text("work"))
+        client.notify("session/cancel", {"sessionId": session})
+        cleared = client.prompt(session, text("/clear"))
+        release.set()
+
+        assert client.response(first)["result"]["stopReason"] == "cancelled"
+        assert client.response(cleared)["result"]["stopReason"] == "end_turn"
+    assert agent.forgotten == 1
+
+
+def test_clear_with_a_picture_is_a_request_not_the_command(tmp_path: Path) -> None:
+    agent = ClearableAgent()
+    with Client(agent, store=tmp_path / "acp") as client:
+        session = client.start()
+        picture = {"type": "image", "mimeType": "image/png", "data": "AAAA"}
+        client.response(client.prompt(session, text("/clear"), picture))
+    assert agent.forgotten == 0
+
+
+def test_a_kept_file_that_cannot_be_read_opens_the_session_empty(tmp_path: Path) -> None:
+    store = tmp_path / "acp"
+    store.mkdir(mode=0o700)
+    session = "jarvis-0123456789ab"
+    meta = store / f"{session}.json"
+    meta.write_text("[" * 100_000, encoding="utf-8")
+    meta.chmod(0o600)
+    with Client(KeptAgent(), store=store) as client:
+        client.ask("initialize", {"protocolVersion": 1})
+        answer = client.ask("session/load", {"sessionId": session, "cwd": "/", "mcpServers": []})
+    assert "result" in answer
+
+
+def test_a_session_that_cannot_be_kept_still_gives_its_reply(tmp_path: Path) -> None:
+    class Unkept(KeptAgent):
+        @override
+        def save(self, path: Path) -> None:
+            raise TypeError("not saveable")
+
+    with Client(Unkept(), store=tmp_path / "acp") as client:
+        session = client.start()
+        answer = client.response(client.prompt(session, text("hello")))
+        assert answer["result"]["stopReason"] == "end_turn"
+        assert "reply to hello" in client.said()
+
+
+def test_forget_kept_deletes_only_the_sessions_files(tmp_path: Path) -> None:
+    store = tmp_path / "acp"
+    store.mkdir()
+    for name in (
+        "jarvis-0123456789ab.json",
+        "jarvis-0123456789ab.chat.memory.json",
+        "jarvis-ba9876543210.json",
+        "notes.txt",
+    ):
+        (store / name).write_text("{}", encoding="utf-8")
+
+    assert acp.forget_kept(store) == 2
+    assert [p.name for p in store.iterdir()] == ["notes.txt"]
+    assert acp.forget_kept(tmp_path / "none") == 0

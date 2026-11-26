@@ -63,6 +63,7 @@ from jarvis.files import write_atomic
 from jarvis.jsonutil import obj, objs
 from jarvis.pictures import MAX_FILE_BYTES, Picture, PictureError, prepare
 from jarvis.policy import is_yes
+from jarvis.secretfile import read_private
 from jarvis.t3push import Delivery
 
 if TYPE_CHECKING:
@@ -628,13 +629,17 @@ class AcpServer:
         except OSError as exc:
             log.warning("the session could not be kept: %s", exc)
             return
+        except Exception:  # a reply already given is never failed by keeping it
+            log.exception("the session could not be kept")
+            return
         _prune(store)
 
     @staticmethod
     def _kept_meta(store: Path, session_id: str) -> dict[str, Any]:
         try:
-            return obj(json.loads((store / f"{session_id}.json").read_text(encoding="utf-8")))
-        except OSError, ValueError:
+            text = read_private(store / f"{session_id}.json")
+            return obj(json.loads(text)) if text is not None else {}
+        except OSError, ValueError, RecursionError, TypeError:
             return {}
 
     def _load_session(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -855,7 +860,11 @@ class AcpServer:
     def _answered_here(
         self, request_id: str | int, session: _Session, blocks: list[dict[str, Any]]
     ) -> bool:
-        """Answer a prompt the model never sees: Jarvis's own pushed message, or `/clear`."""
+        """Answer a prompt the model never sees: Jarvis's own pushed message, or `/clear`.
+
+        Raises:
+            _Rpc: `/clear` while a request runs that is neither stopped nor waiting on a question.
+        """
         if (note := self._announced(blocks)) is not None:
             # Jarvis's own message, pushed into the thread: shown, never given to the model, and
             # never taken for the owner's answer to a question that waits. One that starts as
@@ -867,10 +876,32 @@ class AcpServer:
                     self._show, request_id, session, note, session.stops, name="acp-announcement"
                 )
             return True
-        if _words(blocks).strip().casefold() == CLEAR:
+        if not _is_clear(blocks):
+            return False
+        with session.lock:
+            run = session.run
+            if run is not None:
+                question = run.question
+                if question is not None and not question.answered.is_set() and not run.attached:
+                    # A question waits: it is declined and its request stopped, then cleared.
+                    question.answer = Declined(NoReason.CLOSED)
+                    question.answered.set()
+                    run.cancel.set()
+                elif not run.cancel.is_set():
+                    raise _Rpc(BUSY, "a request is still being answered")
+        if run is None:
             self._clear(request_id, session)
-            return True
-        return False
+        else:
+            self._spawn(self._clear_later, request_id, session, run, name="acp-clear-wait")
+        return True
+
+    def _clear_later(self, request_id: str | int, session: _Session, run: _Run) -> None:
+        """Clear once the request that was stopped has ended (or after `CANCEL_WAIT_S`)."""
+        run.finished.wait(CANCEL_WAIT_S)
+        try:
+            self._clear(request_id, session)
+        except _Rpc as exc:
+            self._error(request_id, exc.code, exc.message)
 
     def _prompt_later(
         self, request_id: str | int, params: dict[str, Any], old: _Run, stops: int
@@ -1088,6 +1119,18 @@ class AcpServer:
                 question.answered.set()
 
 
+def forget_kept(store: Path) -> int:
+    """Delete every session kept in `store`; return how many there were (an `OSError` passes)."""
+    if not store.is_dir():
+        return 0
+    gone = 0
+    for path in store.glob("jarvis-*"):
+        if SESSION_ID.fullmatch(path.name.split(".", 1)[0]):
+            gone += path.name.count(".") == 1  # the meta file, one per session
+            path.unlink(missing_ok=True)
+    return gone
+
+
 def _prune(store: Path) -> None:
     """Keep only the newest `MAX_KEPT` sessions' files in `store`."""
     try:
@@ -1100,6 +1143,15 @@ def _prune(store: Path) -> None:
                 path.unlink(missing_ok=True)
     except OSError as exc:
         log.warning("old sessions could not be removed: %s", exc)
+
+
+def _is_clear(blocks: list[dict[str, Any]]) -> bool:
+    """Whether the prompt is the `/clear` command alone: one text block, nothing else."""
+    return (
+        len(blocks) == 1
+        and blocks[0].get("type") == "text"
+        and str(blocks[0].get("text", "")).strip().casefold() == CLEAR
+    )
 
 
 def _words(blocks: list[dict[str, Any]]) -> str:

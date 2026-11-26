@@ -1486,10 +1486,11 @@ class _CodingSession:
             return line
         if cfg != self._config:
             try:
-                self._agent = build(cfg, via="acp", session=self._session_id, mode="coding").agent
+                agent = build(cfg, via="acp", session=self._session_id, mode="coding").agent
             except SetupError as exc:
                 return str(exc)
-            self._config = cfg
+            agent.memory.adopt(self._agent.memory)  # a reopened session's talk is kept
+            self._agent, self._config = agent, cfg
             if self._effort:
                 self.set_effort(self._effort)
         if line and hooks.draft is not None:
@@ -1527,8 +1528,26 @@ def cmd_acp(args: argparse.Namespace) -> int:
         pusher=pusher,
         record=AuditLog(paths.audit_file(), tags={"via": "acp"}).record,
         models=_acp_models(cfg, coding_first=args.coding),
-        store=paths.state_dir() / "acp-sessions",
+        store=_acp_store(cfg.chat.archive_keep),
     )
+
+
+def _acp_store(keep: int) -> Path | None:
+    """Return the folder T3 Code's sessions are kept in; None when `chat.archive_keep` is 0.
+
+    With 0, the sessions an earlier setting kept are deleted, as the chat's archive is.
+    """
+    store = paths.acp_sessions_dir()
+    if keep:
+        return store
+    try:
+        gone = acp.forget_kept(store)
+    except OSError as exc:
+        log.warning("the kept T3 Code sessions could not be deleted: %s", exc)
+    else:
+        if gone:
+            log.info("deleted %d kept T3 Code sessions: chat.archive_keep is 0", gone)
+    return None
 
 
 def _export_folder(cfg: config.Config) -> Path:

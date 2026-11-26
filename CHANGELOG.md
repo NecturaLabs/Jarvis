@@ -314,6 +314,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   "Provider session failed to open"; the remembered turns are sent back and the conversation goes on.
 - `/clear` in a T3 Code thread starts the conversation afresh. T3 Code sends it to Jarvis as text, and the
   model answered that it could not clear; `jarvis acp` now offers the command and runs it itself.
+  It also works while a confirmation question waits (the question is declined). The kept sessions
+  follow the chat's privacy settings: `chat.archive_keep = 0` keeps none, and `/forget all` deletes them.
 - A reply no longer starts with "[looked up: …]": the notes memory puts before a remembered reply are
   stripped when the model copies them, as "[actions taken: …]" already was.
 - `pc_stats` lists a file system once (by its mount source) when the home folder and the root are two btrfs
