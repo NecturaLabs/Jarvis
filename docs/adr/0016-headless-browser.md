@@ -82,6 +82,13 @@ quick commands.
     A page's text is the browser's own (`innerText`, which leaves out what CSS hides), less what
     `web_read` also leaves out: text under `aria-hidden` or the `hidden` attribute, or made transparent or
     of no size by an inline style, found in the page's rendered HTML (`web/page.py`, `without_hidden`).
+    This is best effort, and the text stays web text either way: each hidden element's words are taken
+    out after the last one taken out, in page order, whatever whitespace `innerText` put between them; a
+    hidden text shorter than three characters stays (it could be part of a visible number), where the same
+    words also stand visible before it those are taken instead, and a page whose hidden texts cost more than
+    50 searched characters for each of its own is cut where the search stopped. Elements whose name is the
+    words of an element inside a hidden one are not offered (the accessibility tree keeps what is only
+    transparent or of no size); a name is at most 80 characters, and the list at most a third of a result.
   - Each call to agent-browser gets at most 40 s and ends 25 s before the request's own time limit
     (`agent.max_seconds`), so a click or typing with its checks, or a browser that does not answer and is
     closed, never runs past the request.

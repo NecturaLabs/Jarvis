@@ -32,7 +32,12 @@ MAX_BYTES = 2_000_000
 # (about 0.7 s at 20,000 elements, 3 s at 60,000), and it runs outside the read deadline, so a
 # page with more is read from its start only.
 MAX_ELEMENTS = 20_000
-MAX_HIDDEN = 500  # hidden elements whose words are taken out of a browser's text of a page
+# Hidden text shorter than this stays in a browser's text of a page: it could as well be part of a
+# visible word or number ("1" in "$19.99").
+MIN_HIDDEN_CHARS = 3
+# At most this many characters searched, for each of the page's own, to take hidden text out of
+# it; past that, the rest of the page is left out unchecked.
+SEARCH_WORK = 50
 # The first import of trafilatura changes the warning filters for a moment; two reads at once must
 # not, or the filter one sets can be left in place for good.
 _IMPORTING = threading.Lock()
@@ -235,37 +240,83 @@ def _trafilatura() -> ModuleType:
     return trafilatura
 
 
-def without_hidden(text: str, html: str) -> str:
-    """Return a browser's text of a page (`innerText`) without what the page hides from view.
+@dataclass(frozen=True, slots=True)
+class Hidden:
+    """What a page hides from view, found in its rendered HTML by the rules `web_read` uses.
 
-    `innerText` already leaves out what CSS hides (`display: none`, `visibility: hidden`). What
-    `web_read` also drops (`aria-hidden`, the `hidden` attribute, inline styles that make text
-    transparent or of no size) is found in the page's rendered `html` by the same rules, and each
-    such element's words are taken out of `text` where they first stand, whatever whitespace
-    `innerText` put between them. Words a hidden element shares with a later visible one are
-    taken from the first place they stand. Past `MAX_HIDDEN` hidden elements, the rest stay.
+    `keys` are the words of each hidden element, without whitespace, in page order (one element
+    for nested ones, none shorter than `MIN_HIDDEN_CHARS`). `names` are the one-line starts of
+    every element inside a hidden one, as an accessibility tree names them; None when the page
+    has more such elements than `MAX_ELEMENTS`, too many to tell.
+    """
+
+    keys: tuple[str, ...]
+    names: frozenset[str] | None
+
+
+def hidden_parts(html: str, name_chars: int) -> Hidden:
+    """Return what the page's rendered `html` hides from view.
+
+    That is what `web_read` drops: the `hidden` attribute, `aria-hidden`, and inline styles that
+    hide text or make it transparent or of no size. `name_chars` is how much of an element's
+    name is kept (`names` are cut to it).
     """
     tree = _trafilatura().load_html(f"<html><body>{html}</body></html>")
     if tree is None:
-        return text
+        return Hidden((), frozenset())
     found = cast("_Element", tree).xpath(_HIDDEN)
     marked = set(found)
-    hidden = [
+    outer = [e for e in found if not any(parent in marked for parent in e.iterancestors())]
+    keys = tuple(
         key
-        for element in found
-        if not any(parent in marked for parent in element.iterancestors())
-        and (key := "".join("".join(element.itertext()).split()))
-    ]
-    # Found without the whitespace, which `innerText` puts where the page's layout does; a found
-    # place is blanked out, so the next element's words are not found in it again.
+        for element in outer
+        if len(key := "".join("".join(element.itertext()).split())) >= MIN_HIDDEN_CHARS
+    )
+    names: set[str] = set()
+    for element in outer:
+        for inner in element.iter():
+            if len(names) >= MAX_ELEMENTS:
+                return Hidden(keys, None)
+            if name := _start(inner, name_chars):
+                names.add(name)
+    return Hidden(keys, frozenset(names))
+
+
+def _start(element: _Element, chars: int) -> str:
+    """Return the start of an element's words on one line, as far as `chars` (read no further)."""
+    pieces: list[str] = []
+    size = 0
+    for piece in element.itertext():
+        pieces.append(piece)
+        size += len(piece)
+        if size > 2 * chars:
+            break
+    return " ".join("".join(pieces).split())[:chars]
+
+
+def without_hidden(text: str, hidden: Hidden) -> str:
+    """Return a browser's text of a page (`innerText`) without what the page hides from view.
+
+    `innerText` already leaves out what CSS hides (`display: none`, `visibility: hidden`). What
+    `web_read` also drops (`hidden`) is taken out of `text`, best effort: each hidden element's
+    words in page order, each found after the one before it, whatever whitespace `innerText` put
+    between them. A hidden text the browser left out already costs a search of the rest of the
+    page; past `SEARCH_WORK` for each character, the rest is left out unchecked.
+    """
     squeezed = "".join(text.split())
+    budget = SEARCH_WORK * len(squeezed)
     gone: list[tuple[int, int]] = []
-    for key in hidden[:MAX_HIDDEN]:
-        at = squeezed.find(key)
+    cursor = work = 0
+    for key in hidden.keys:
+        at = squeezed.find(key, cursor)
+        work += (at + len(key) if at >= 0 else len(squeezed)) - cursor
+        if work > budget:
+            gone.append((cursor, len(squeezed)))
+            break
         if at >= 0:  # else CSS hid it already, and `innerText` left it out
             gone.append((at, at + len(key)))
-            squeezed = squeezed[:at] + "\0" * len(key) + squeezed[at + len(key) :]
-    return _cut_out(text, sorted(gone)) if gone else text
+            cursor = at + len(key)
+    return _cut_out(text, gone) if gone else text
 
 
 def _cut_out(text: str, gone: list[tuple[int, int]]) -> str:

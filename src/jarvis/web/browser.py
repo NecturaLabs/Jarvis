@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urljoin, urlsplit
 
 from jarvis.operations import current_request
-from jarvis.web.page import PageError, check_url, without_hidden
+from jarvis.web.page import Hidden, PageError, check_url, hidden_parts, without_hidden
 from jarvis.web.proxy import EgressProxy
 
 if TYPE_CHECKING:
@@ -192,6 +192,20 @@ def _elements(snapshot: Mapping[str, Any]) -> tuple[Element, ...]:
         if isinstance(role, str) and role:
             found.append(Element(ref, _one_line(role, 40), _one_line(str(name or ""), MAX_NAME)))
     return tuple(found)
+
+
+def _shown(snapshot: Mapping[str, Any], hidden: Hidden) -> tuple[Element, ...]:
+    """Return the elements a snapshot row lists, less those named by text the page hides.
+
+    The accessibility tree keeps what is only made transparent or of no size. When the page
+    hides too many elements to tell (`Hidden.names` is None), none is offered.
+    """
+    result = snapshot.get("result")
+    if hidden.names is None or not isinstance(result, dict):
+        return ()
+    names = hidden.names
+    found = _elements(cast("dict[str, Any]", result))
+    return tuple(element for element in found if element.name not in names)
 
 
 def _field(row: Mapping[str, Any], key: str) -> str:
@@ -426,7 +440,8 @@ class Browser:
     def _read(self, rows: list[dict[str, Any]]) -> View:
         """Make the view from the rows of `_LOOK`: url, title, text, HTML and snapshot.
 
-        The text leaves out what the page hides, by the rules `web_read` uses (`without_hidden`).
+        The text leaves out what the page hides, by the rules `web_read` uses (`without_hidden`),
+        and so do the elements: none named by text inside a hidden element is offered.
 
         Raises:
             BrowserError: the page is an error page (the site could not be reached).
@@ -442,10 +457,11 @@ class Browser:
         if proxy is not None and proxy.was_refused(parts.hostname or "", port):
             msg = "that address is not a public web address, so it isn't opened"
             raise BrowserError(msg)
-        result = snapshot.get("result")
-        elements = _elements(cast("dict[str, Any]", result)) if isinstance(result, dict) else ()
-        page_text = without_hidden(_field(text, "text"), _field(html, "html"))[:MAX_OUTPUT]
-        view = View(address, _one_line(_field(title, "title"), 160), page_text, elements)
+        hidden = hidden_parts(_field(html, "html"), MAX_NAME)
+        page_text = without_hidden(_field(text, "text"), hidden)[:MAX_OUTPUT]
+        view = View(
+            address, _one_line(_field(title, "title"), 160), page_text, _shown(snapshot, hidden)
+        )
         self._view = view
         return view
 
