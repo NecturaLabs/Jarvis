@@ -82,7 +82,8 @@ class Request:
     text behind it, and without the pastes that count as outside data; with the words the owner
     typed into it while it ran (`steered`). `time_left` says how many seconds the request has left
     before its time limit (`agent.max_seconds`), for an operation that waits as long as it is asked
-    (`pc_audio_listen`).
+    (`pc_audio_listen`). `cancelled` turns true when the request is cut short (the owner spoke over
+    Jarvis or hushed it), for an operation that runs long (`sing`).
     """
 
     foreign: bool
@@ -90,6 +91,7 @@ class Request:
     typed: str = ""
     steered: list[str] = field(default_factory=list[str])
     time_left: Callable[[], float] = field(default=lambda: math.inf)
+    cancelled: Callable[[], bool] = field(default=lambda: False)
 
     @property
     def words(self) -> str:
@@ -115,10 +117,14 @@ def current_request() -> Request | None:
 
 @contextmanager
 def request_scope(
-    *, foreign: bool, words: str = "", time_left: Callable[[], float] = lambda: math.inf
+    *,
+    foreign: bool,
+    words: str = "",
+    time_left: Callable[[], float] = lambda: math.inf,
+    cancelled: Callable[[], bool] = lambda: False,
 ) -> Generator[Request]:
     """Mark everything run inside as part of one new request; `words` are the owner's own."""
-    request = Request(foreign, typed=words, time_left=time_left)
+    request = Request(foreign, typed=words, time_left=time_left, cancelled=cancelled)
     token = _CURRENT.set(request)
     try:
         yield request

@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from jarvis import paths
-from jarvis.audio import AudioError, run_singer
+from jarvis.audio import AudioError, SingerStoppedError, run_singer
 from jarvis.sing import arpabet
 from jarvis.sing.score import Kind, Score
 
@@ -185,7 +185,7 @@ def command(found: Files, folder: Path, device: int) -> list[str]:
     ]
 
 
-type Runner = Callable[[list[str], float], tuple[int, str]]
+type Runner = Callable[[list[str], float, Callable[[], bool]], tuple[int, str]]
 
 
 class SoulxSinger:
@@ -210,20 +210,31 @@ class SoulxSinger:
         self._timeout_s = timeout_s
         self._runner = run
 
-    def render(self, score: Score) -> tuple[NDArray[np.int16], int]:
-        """Return the song sung by SoulX-Singer, or by the speaking voice if that fails."""
+    def render(
+        self, score: Score, cancelled: Callable[[], bool], /
+    ) -> tuple[NDArray[np.int16], int]:
+        """Return the song sung by SoulX-Singer, or by the speaking voice if that fails.
+
+        When `cancelled` turns true the program is ended at once and the speaking voice's song
+        is returned without waiting; the caller does not play a cancelled request's sound.
+        """
         reference, sung = self._speech.sing(score)
         try:
-            return self._sing(reference, sung)
+            return self._sing(reference, sung, cancelled)
+        except SingerStoppedError:
+            return reference, RATE
         except (OSError, ValueError, AudioError) as exc:
             log.warning("SoulX-Singer failed (%s); singing with the speaking voice", exc)
             return reference, RATE
 
-    def _sing(self, reference: NDArray[np.int16], sung: Score) -> tuple[NDArray[np.int16], int]:
+    def _sing(
+        self, reference: NDArray[np.int16], sung: Score, cancelled: Callable[[], bool]
+    ) -> tuple[NDArray[np.int16], int]:
         """Run SoulX-Singer once on the song.
 
         An OSError (a file that could not be written) and the runner's AudioError (it could not
-        start, or ran past its time and was killed) come through as they are.
+        start, ran past its time and was killed, or was stopped as `cancelled` turned true) come
+        through as they are.
 
         Raises:
             ValueError: it exited with an error or wrote no usable sound.
@@ -236,7 +247,9 @@ class SoulxSinger:
             meta = json.dumps(metadata(sung))
             (folder / "reference.json").write_text(meta, encoding="utf-8")
             (folder / "target.json").write_text(meta, encoding="utf-8")
-            code, errors = self._runner(command(self._files, folder, self._device), self._timeout_s)
+            code, errors = self._runner(
+                command(self._files, folder, self._device), self._timeout_s, cancelled
+            )
             if code != 0:
                 msg = f"exit {code}: {errors.strip()[-MAX_ERROR_CHARS:]}"
                 raise ValueError(msg)

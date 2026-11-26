@@ -71,6 +71,10 @@ class AudioError(Exception):
     """The microphone, transcriber or speaker failed."""
 
 
+class SingerStoppedError(AudioError):
+    """A singing program was ended because the request it sang for was cancelled."""
+
+
 class ControlTimeoutError(AudioError):
     """A sound or media command was sent and did not answer in time: it may have taken effect."""
 
@@ -1852,25 +1856,61 @@ def make_synthesizer(
     return run
 
 
-def run_singer(cmd: list[str], timeout_s: float) -> tuple[int, str]:
+SINGER_STDERR_BYTES = 4096  # the end of a singing program's error output kept for the log
+SINGER_POLL_S = 0.05  # how often a running singing program is checked against its cancel signal
+
+
+def _keep_end(stream: IO[bytes], kept: list[bytes]) -> None:
+    """Read `stream` to its end, keeping in `kept[0]` only the last SINGER_STDERR_BYTES bytes."""
+    with contextlib.suppress(OSError, ValueError):  # the stream was closed under it
+        while chunk := stream.read(65536):
+            kept[0] = (kept[0] + chunk)[-SINGER_STDERR_BYTES:]
+
+
+def run_singer(cmd: list[str], timeout_s: float, cancelled: Callable[[], bool]) -> tuple[int, str]:
     """Run a singing program (`jarvis.sing.soulx`) to its end; return its exit code and stderr.
 
-    It reads nothing and makes no sound itself: it writes a file the speaker then plays.
+    It reads nothing and makes no sound itself: it writes a file the speaker then plays. It is
+    killed when `cancelled()` turns true or after `timeout_s`; only the last
+    `SINGER_STDERR_BYTES` of its stderr are kept.
 
     Raises:
+        SingerStoppedError: `cancelled()` turned true and the program was killed.
         AudioError: it could not start, or ran past `timeout_s` and was killed.
     """
     try:
-        done = subprocess.run(
-            cmd, capture_output=True, timeout=timeout_s, check=False, stdin=subprocess.DEVNULL
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
         )
-    except subprocess.TimeoutExpired as exc:
-        msg = f"{Path(cmd[0]).name} ran past {timeout_s:g} s and was stopped"
-        raise AudioError(msg) from exc
     except OSError as exc:
         msg = f"could not start {cmd[0]}: {exc}"
         raise AudioError(msg) from exc
-    return done.returncode, done.stderr.decode("utf-8", errors="replace")
+    assert proc.stderr is not None  # ruff: ignore[assert] - started with a pipe
+    kept = [b""]
+    reader = threading.Thread(target=_keep_end, args=(proc.stderr, kept), daemon=True)
+    reader.start()
+    ends = time.monotonic() + timeout_s
+    try:
+        while True:
+            if cancelled():
+                msg = f"{Path(cmd[0]).name} was stopped: the request was cancelled"
+                raise SingerStoppedError(msg)
+            left = ends - time.monotonic()
+            if left <= 0:
+                msg = f"{Path(cmd[0]).name} ran past {timeout_s:g} s and was stopped"
+                raise AudioError(msg)
+            try:
+                proc.wait(timeout=min(SINGER_POLL_S, left))
+            except subprocess.TimeoutExpired:
+                continue
+            break
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        reader.join(timeout=1.0)  # a program's own child holding the pipe open must not hold us
+        proc.stderr.close()
+    return proc.returncode, kept[0].decode("utf-8", errors="replace")
 
 
 def pw_play_command(rate: int) -> list[str]:

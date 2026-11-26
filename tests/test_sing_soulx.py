@@ -8,15 +8,19 @@ import json
 import struct
 import wave
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
 from test_sing_psola import Voice
 
-from jarvis.audio import AudioError
+from jarvis.audio import AudioError, SingerStoppedError
 from jarvis.sing import arpabet, soulx
 from jarvis.sing.psola import PsolaSinger
 from jarvis.sing.score import parse
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # An original line, written for these tests.
 LINE = "Ri- C4 1, ver E4 1, ~ G4 1, _ 0.5, flow D4 2"
@@ -63,8 +67,12 @@ def _files(tmp_path: Path) -> soulx.Files:
 class Runner:
     """Stands in for `audiocpp_cli`: keeps what it was given and writes a song, or fails."""
 
-    def __init__(self, *, exit_code: int = 0, timeout: bool = False, writes: bytes = b"") -> None:
+    def __init__(
+        self, *, exit_code: int = 0, timeout: bool = False, writes: bytes = b"", stop: bool = False
+    ) -> None:
         super().__init__()
+        self.stop = stop  # the request is cancelled while it runs
+        self.cancels: list[Callable[[], bool]] = []
         self.writes = writes  # what it writes instead of a song, when set
         self.exit_code = exit_code
         self.timeout = timeout
@@ -73,8 +81,14 @@ class Runner:
         self.target: list[dict[str, object]] = []
         self.reference_seconds = 0.0
 
-    def __call__(self, cmd: list[str], timeout_s: float) -> tuple[int, str]:
+    def __call__(
+        self, cmd: list[str], timeout_s: float, cancelled: Callable[[], bool]
+    ) -> tuple[int, str]:
         self.commands.append(cmd)
+        self.cancels.append(cancelled)
+        if self.stop:
+            msg = "stopped"
+            raise SingerStoppedError(msg)
         if self.timeout:
             msg = f"ran past {timeout_s} s"
             raise AudioError(msg)
@@ -109,7 +123,7 @@ def test_soulx_sings_in_the_voice_of_the_same_song_sung_by_the_speaking_voice(
     runner = Runner()
     score = parse(LINE, 120)
 
-    pcm, rate = _singer(tmp_path, runner).render(score)
+    pcm, rate = _singer(tmp_path, runner).render(score, lambda: False)
 
     assert rate == soulx.RATE
     assert pcm.tolist() == [7] * 4800  # what SoulX-Singer wrote
@@ -149,8 +163,35 @@ def test_a_failed_or_stuck_soulx_sings_with_the_speaking_voice_instead(
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     score = parse(LINE, 120)
 
-    pcm, rate = _singer(tmp_path, runner).render(score)
+    pcm, rate = _singer(tmp_path, runner).render(score, lambda: False)
 
     assert rate == soulx.RATE
     assert pcm.size == round(score.seconds * soulx.RATE)  # the speaking voice's song
     assert np.any(pcm)
+
+
+def test_a_cancelled_render_ends_at_once_with_the_reference_and_leaves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    runner = Runner(stop=True)
+    score = parse(LINE, 120)
+
+    pcm, _ = _singer(tmp_path, runner).render(score, lambda: True)
+
+    assert pcm.size == round(score.seconds * soulx.RATE)  # the speaking voice's song, unplayed
+    assert not list((tmp_path / "run" / "jarvis").iterdir())
+    assert not caplog.records  # a cancel is no failure to log
+
+
+def test_the_runner_is_given_the_cancel_signal_of_the_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    runner = Runner()
+    stopped = [False]
+
+    _singer(tmp_path, runner).render(parse(LINE, 120), lambda: stopped[0])
+    stopped[0] = True
+
+    assert runner.cancels[0]()

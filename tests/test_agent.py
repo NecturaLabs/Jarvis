@@ -684,6 +684,26 @@ def test_an_operation_is_told_how_much_of_the_requests_time_is_left() -> None:
     assert seen == [60.0]
 
 
+def test_an_operation_can_ask_whether_the_request_was_cancelled() -> None:
+    stopped = [False]
+    seen: list[bool] = []
+    counter = Counter()
+
+    def note() -> None:
+        request = current_request()
+        assert request is not None
+        seen.append(request.cancelled())
+        stopped[0] = True
+        seen.append(request.cancelled())
+
+    ops = [counter.op("wait", side_effect=False, then=note)]
+    agent, _ = _agent(ScriptedModel([_call("wait"), _say("Done.")]), ops)
+
+    agent.handle("wait for it", Hooks(confirm=lambda _q: False, cancelled=lambda: stopped[0]))
+
+    assert seen == [False, True]
+
+
 def test_a_search_after_only_web_text_runs_without_a_yes() -> None:
     counter = Counter()
     asked: list[str] = []

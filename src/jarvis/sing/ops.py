@@ -10,7 +10,13 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Any, Protocol
 
-from jarvis.operations import Operation, OperationError, Result, Sound
+from jarvis.operations import (
+    Operation,
+    OperationError,
+    Result,
+    Sound,
+    current_request,
+)
 from jarvis.sing.score import (
     DEFAULT_TEMPO,
     MAX_NOTES,
@@ -39,8 +45,13 @@ class Singer(Protocol):
 
     name: str
 
-    def render(self, score: Score) -> tuple[NDArray[np.int16], int]:
-        """Return the song as int16 mono samples and their sample rate."""
+    def render(
+        self, score: Score, cancelled: Callable[[], bool], /
+    ) -> tuple[NDArray[np.int16], int]:
+        """Return the song as int16 mono samples and their sample rate.
+
+        `cancelled` turns true when the request ends early; a singer that runs long stops then.
+        """
         ...
 
 
@@ -98,8 +109,9 @@ class SingOps:
             msg = f"Nothing was sung: {exc}."
             raise OperationError(msg) from exc
         singer = self._get()
+        request = current_request()
         try:
-            pcm, rate = singer.render(score)
+            pcm, rate = singer.render(score, request.cancelled if request else lambda: False)
         except OperationError:
             raise
         except Exception as exc:

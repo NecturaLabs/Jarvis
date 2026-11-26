@@ -8,7 +8,13 @@ from test_sing_psola import Voice
 
 from jarvis import app
 from jarvis.config import Config
-from jarvis.operations import ArgumentError, Operation, OperationError, validate_args
+from jarvis.operations import (
+    ArgumentError,
+    Operation,
+    OperationError,
+    request_scope,
+    validate_args,
+)
 from jarvis.policy import OpClass
 from jarvis.sing import engines, soulx
 from jarvis.sing.engines import kokoro_voice, singer_for
@@ -16,6 +22,7 @@ from jarvis.sing.ops import SingOps
 from jarvis.sing.psola import PsolaSinger
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from jarvis.sing.score import Score
@@ -33,8 +40,10 @@ class Singer:
         super().__init__()
         self.fails = fails
         self.scores: list[Score] = []
+        self.cancels: list[Callable[[], bool]] = []
 
-    def render(self, score: Score) -> tuple[np.ndarray, int]:
+    def render(self, score: Score, cancelled: Callable[[], bool], /) -> tuple[np.ndarray, int]:
+        self.cancels.append(cancelled)
         if self.fails:
             msg = "no GPU"
             raise RuntimeError(msg)
@@ -65,6 +74,29 @@ def test_a_song_is_rendered_and_handed_back_as_sound_with_its_words() -> None:
     assert result.sound.words == "Morning light"
     assert singer.scores[0].tempo == 90
     assert "Do not repeat the lyrics" in result.text
+
+
+def test_the_singer_is_given_the_requests_cancel_signal() -> None:
+    singer = Singer()
+    op = _op(singer)
+    stopped = [False]
+
+    with request_scope(foreign=False, cancelled=lambda: stopped[0]):
+        op.run(validate_args(op, {"notes": LINE}))
+    (cancelled,) = singer.cancels
+    before = cancelled()
+    stopped[0] = True
+
+    assert (before, cancelled()) == (False, True)
+
+
+def test_a_song_outside_a_request_cannot_be_cancelled() -> None:
+    singer = Singer()
+    op = _op(singer)
+
+    op.run(validate_args(op, {"notes": LINE}))
+
+    assert not singer.cancels[0]()
 
 
 def test_the_tempo_defaults_and_the_singer_is_made_once_on_the_first_song() -> None:

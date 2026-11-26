@@ -20,7 +20,7 @@ import numpy as np
 from jarvis.sing.score import HIGHEST, LOWEST, Kind, Note, Score, hertz
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from numpy.typing import NDArray
 
@@ -448,8 +448,10 @@ class PsolaSinger:
         super().__init__()
         self._speech = speech
 
-    def render(self, score: Score) -> tuple[NDArray[np.int16], int]:
-        """Return the song as int16 samples at RATE, and RATE."""
+    def render(
+        self, score: Score, _cancelled: Callable[[], bool] = lambda: False, /
+    ) -> tuple[NDArray[np.int16], int]:
+        """Return the song as int16 samples at RATE, and RATE; it is made too fast to stop."""
         pcm, _ = self.sing(score)
         return pcm, RATE
 

@@ -1244,7 +1244,10 @@ class Agent:
         own = "" if handed_over else _own_words(text, self._outside_pastes(text, pasted))
         ends = self._clock() + self._limits.max_seconds
         with request_scope(
-            foreign=foreign, words=own, time_left=lambda: ends - self._clock()
+            foreign=foreign,
+            words=own,
+            time_left=lambda: ends - self._clock(),
+            cancelled=hooks.cancelled,
         ) as request:
             for seen in sorted(steered_by):
                 request.saw(seen)
