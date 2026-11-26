@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -14,7 +15,10 @@ from jarvis.operations import (
     validate_args,
 )
 from jarvis.pc import hyprland
-from jarvis.pc.apps import OPEN_WAIT_S, SPECIAL, AppOps, Placed
+from jarvis.pc.apps import OPEN_WAIT_S, SPECIAL, AppOps, HyprlandCompositor, Placed
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 SPOTIFY = AppConfig(command=["uwsm-app", "--", "spotify"], window=r"\bspotify\b")
 
@@ -82,6 +86,18 @@ def _opened(ops: AppOps, where: str, *, foreign: bool = False) -> Result:
 
 def _open(ops: AppOps, where: str, *, foreign: bool = False) -> str:
     return _opened(ops, where, foreign=foreign).text
+
+
+Listed = list[dict[str, object]] | None
+
+
+def _answers(
+    value: list[dict[str, object]] | None,
+) -> Callable[..., list[dict[str, object]] | None]:
+    def listing(*_args: object) -> list[dict[str, object]] | None:
+        return value
+
+    return listing
 
 
 def test_it_opens_on_the_workspace_the_owner_named_without_focus() -> None:
@@ -324,3 +340,51 @@ def test_a_fullscreen_window_matching_the_program_is_never_taken_for_it_or_moved
 
     assert not result.ok  # not seen: the fullscreen window is not the new one
     assert not any("window.move" in lua for lua in fake.ran)
+
+
+def test_a_fullscreen_client_with_odd_fields_is_still_seen(monkeypatch: pytest.MonkeyPatch) -> None:
+    odd: dict[str, object] = {
+        "address": None,
+        "workspace": {"name": "6"},
+        "fullscreen": 2,
+    }  # no class or title
+    monkeypatch.setattr(hyprland, "listing", _answers([odd]))
+
+    (found,) = HyprlandCompositor.windows()
+
+    assert found.fullscreen
+    assert found.workspace == "6"
+
+
+def test_a_stray_is_never_moved_onto_a_workspace_that_turned_fullscreen() -> None:
+    fake = FakeHyprland(opens_on="5", shown={"1"})
+    ops = _ops(fake)
+    mine = ops._mine("spotify")  # pyright: ignore[reportPrivateUsage] - the matcher under test
+    fake.open = [
+        Placed("0xs", "5", "Spotify", "Spotify"),
+        Placed("0xg", "4", "a_game", "A game", fullscreen=True),  # came fullscreen meanwhile
+    ]
+
+    strays = ops._gather(mine, "4")  # pyright: ignore[reportPrivateUsage] - the mover under test
+
+    assert strays == [Placed("0xs", "5", "Spotify", "Spotify")]
+    assert fake.ran == []
+
+
+def test_an_unreadable_read_back_is_not_claimed_as_opened() -> None:
+    fake = FakeHyprland(opens_on="4")
+    ops = _ops(fake)
+    reads = iter([True, True, True, True, False])
+    original = fake.windows
+
+    def flaky() -> list[Placed]:
+        if not next(reads, False):
+            raise OperationError("Hyprland did not give its window list")
+        return original()
+
+    fake.windows = flaky  # type: ignore[method-assign]
+    result = _opened(ops, "4")
+
+    assert not result.ok
+    assert result.acted
+    assert "did not say where" in result.text

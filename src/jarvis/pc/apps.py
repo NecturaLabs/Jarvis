@@ -82,17 +82,17 @@ class HyprlandCompositor:
         for client in clients:
             address, klass, title = client.get("address"), client.get("class"), client.get("title")
             name = obj(client.get("workspace")).get("name")
-            if all(isinstance(v, str) for v in (address, klass, title, name)):
-                full = [client.get(key) for key in ("fullscreen", "fullscreenClient")]
-                placed.append(
-                    Placed(
-                        str(address),
-                        str(name),
-                        str(klass),
-                        str(title),
-                        fullscreen=any(isinstance(f, int) and f > 0 for f in full),
-                    )
+            full = [client.get(key) for key in ("fullscreen", "fullscreenClient")]
+            # An odd field takes a harmless default: a fullscreen window is never missed.
+            placed.append(
+                Placed(
+                    address if isinstance(address, str) else "",
+                    name if isinstance(name, str) else "",
+                    klass if isinstance(klass, str) else "",
+                    title if isinstance(title, str) else "",
+                    fullscreen=any(isinstance(f, int) and f > 0 for f in full),
                 )
+            )
         return placed
 
     @staticmethod
@@ -203,6 +203,9 @@ class AppOps:
         self._gather(new, workspace)
         self._sleep(SETTLE_S)
         strays = self._gather(new, workspace)
+        if strays is None:
+            text = f"Started {name}, but Hyprland did not say where its window is now."
+            return Result(text, Origin.TOOL_STATUS, ok=False, acted=True)
         if strays:
             seen = ", ".join(sorted({_where(_place_named(w.workspace)) for w in strays}))
             text = f"Opened {name}, but a window of it stayed {seen}, not {_where(place)}."
@@ -228,22 +231,28 @@ class AppOps:
         except OperationError:
             return []
 
-    def _gather(self, mine: Callable[[Placed], bool], workspace: str) -> list[Placed]:
+    def _gather(self, mine: Callable[[Placed], bool], workspace: str) -> list[Placed] | None:
         """Move the program's windows that are elsewhere to `workspace`; return those still out.
 
-        A fullscreen window, and any window on a workspace that has one, is never moved.
+        A fullscreen window, and any window on a workspace that has one, is never moved, and
+        nothing is moved onto a workspace that has one now. None: Hyprland did not answer.
         """
         target = hyprland.lua_string(workspace) if workspace == SPECIAL else workspace
         windows = self._read()
         held = {w.workspace for w in windows if w.fullscreen}
         for window in [w for w in windows if mine(w)]:
-            if window.workspace != workspace and window.workspace not in held:
+            moving = window.workspace != workspace and not window.fullscreen
+            if moving and window.workspace not in held and workspace not in held:
                 address = hyprland.lua_string(f"address:{window.address}")
                 self._compositor.run(
                     "hl.dispatch(hl.dsp.window.move({ workspace = "
                     f"{target}, follow = false, window = {address} }}))"
                 )
-        return [w for w in self._read() if mine(w) and w.workspace != workspace]
+        try:
+            after = self._compositor.windows()
+        except OperationError:
+            return None
+        return [w for w in after if mine(w) and w.workspace != workspace]
 
     def operations(self) -> list[Operation]:
         """Return `open_app` over the listed programs; none when the list is empty."""

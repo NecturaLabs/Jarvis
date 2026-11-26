@@ -93,7 +93,7 @@ class Desktop(Protocol):
         ...
 
     def monitors(self) -> list[Monitor]:
-        """Return the monitors."""
+        """Return the monitors; raise `OperationError` when they cannot be read."""
         ...
 
     def run(self, lua: str) -> bool:
@@ -114,10 +114,11 @@ def _above_zero(value: object) -> bool:
 
 
 def _win(client: dict[str, object]) -> Win | None:
-    """Return one listed window; None for one unmapped or without an address it can be named by.
+    """Return one listed window, or None for one that cannot be acted on.
 
-    A field Hyprland leaves out takes a harmless default rather than dropping the window, so a
-    fullscreen window is never missed by the guard for an odd field.
+    That is one unmapped (not shown at all) or without an address or workspace. Any other
+    field Hyprland leaves out takes a harmless default rather than dropping the
+    window, so a fullscreen window is not missed by the guard for an odd field.
     """
     address = client.get("address")
     workspace = obj(client.get("workspace")).get("name")
@@ -196,8 +197,18 @@ class HyprlandDesktop:
 
     @staticmethod
     def monitors() -> list[Monitor]:
-        """Return Hyprland's monitors; [] when it cannot answer."""
-        return [m for m in map(_monitor, hyprland.monitors()) if m is not None]
+        """Return Hyprland's monitors.
+
+        Raises:
+            OperationError: Hyprland did not answer, or described a monitor it can't be read
+                from, so what is on screen is unknown.
+        """
+        found = hyprland.listing(b"j/monitors")
+        monitors = [m for m in map(_monitor, found or []) if m is not None]
+        if not found or len(monitors) != len(found):
+            msg = "Hyprland did not say what its monitors show, so nothing was done"
+            raise OperationError(msg)
+        return monitors
 
     @staticmethod
     def run(lua: str) -> bool:

@@ -3,7 +3,7 @@
 import json
 import re
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -14,6 +14,9 @@ from jarvis.operations import OperationError, Registry, Result, current_request,
 from jarvis.pc import windows as windows_module
 from jarvis.pc.windows import Monitor, Win, WindowOps
 from jarvis.policy import OpClass, Origin
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def make_window(address: str, klass: str, workspace: str, **kw: Any) -> Win:  # ruff: ignore[any-type] - the fields a test sets
@@ -100,6 +103,18 @@ def seen(ops: WindowOps, args: dict[str, object] | None = None) -> Result:
 def _act(ops: WindowOps, **args: object) -> Result:
     bound = ops.bind(args)
     return ops.act(bound)
+
+
+Listed = list[dict[str, object]] | None
+
+
+def _answers(
+    value: list[dict[str, object]] | None,
+) -> Callable[..., list[dict[str, object]] | None]:
+    def listing(*_args: object) -> list[dict[str, object]] | None:
+        return value
+
+    return listing
 
 
 def test_the_listing_numbers_each_window_with_where_it_is(desktop: FakeDesktop) -> None:
@@ -511,3 +526,14 @@ def test_the_agent_acts_on_a_number_from_a_listing_it_read(desktop: FakeDesktop)
     _handle(desktop, replies)
 
     assert next(w for w in desktop.open if w.address == "0xa2").floating
+
+
+def test_monitors_hyprland_does_not_describe_are_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jarvis.pc import hyprland  # ruff: ignore[import-outside-top-level] - patched here only
+
+    monkeypatch.setattr(hyprland, "listing", _answers(None))
+    with pytest.raises(OperationError, match="monitors"):
+        windows_module.HyprlandDesktop.monitors()
+    monkeypatch.setattr(hyprland, "listing", _answers([{"id": "odd"}]))
+    with pytest.raises(OperationError, match="monitors"):
+        windows_module.HyprlandDesktop.monitors()
