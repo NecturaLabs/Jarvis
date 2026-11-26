@@ -4,16 +4,20 @@ Which page Jarvis opens is decided by text from outside (a search result), so a 
 reach this PC, the home network or a cloud metadata address. Before a connection is opened the
 host name is resolved here, every address it resolves to must be a public one, and the
 connection goes to the address that was checked: a name cannot pass the check with a public
-address and then connect to a private one. Only ports 80 and 443 are reached. Each redirect is a
+address and then connect to a private one. A public address on one of this PC's own networks (its
+own, or the home network's global IPv6 prefix, reached without a router) counts as private too.
+Only ports 80 and 443 are reached. Each redirect is a
 new request (the client never follows them itself), checked the same way. TLS still verifies the
 certificate against the host name in the URL.
 """
 
 import ipaddress
 import socket
+import sys
 import threading
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, override
 
 import httpcore
@@ -29,12 +33,23 @@ MAX_ANSWER_BYTES = 1_000_000
 ANSWER_LIMIT_S = 15.0
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 _IPV4_COMPATIBLE = ipaddress.ip_network("::/96")
+# Deprecated (RFC 3879), and Python calls it global, but a network may still route it as its own.
+_SITE_LOCAL = ipaddress.ip_network("fec0::/10")
+# Linux's routing tables and addresses (`route`, `ipv6_route`, `if_inet6`): which networks this PC
+# reaches without a router.
+NET_FILES = Path("/proc/net")
+_RTF_GATEWAY = 0x2
+_RTF_REJECT = 0x200
+# The widest route without a router taken as a network of this PC's own; a wider one (`0.0.0.0/1`,
+# `2000::/3`) is a VPN's share of the internet.
+_WIDEST_LINK = {4: 8, 6: 16}
 _LOW_32_BITS = 0xFFFFFFFF
 # Generic on purpose: no request names the owner, this machine or the project.
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) voice-assistant"
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 
 type Resolver = Callable[..., list[tuple[Any, ...]]]
+type _Network = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 # httpcore's errors as the httpx errors of the same meaning, most specific first.
 _ERRORS: tuple[tuple[type[Exception], type[httpx.TransportError]], ...] = (
@@ -70,11 +85,79 @@ def is_public(address: str) -> bool:
     except ValueError:
         return False
     if isinstance(ip, ipaddress.IPv6Address):
-        if ip in _IPV4_COMPATIBLE:
+        if ip in _IPV4_COMPATIBLE or ip in _SITE_LOCAL:
             return False
         if ip in _NAT64:
             return is_public(str(ipaddress.IPv4Address(int(ip) & _LOW_32_BITS)))
     return ip.is_global and not ip.is_multicast
+
+
+def _lines(name: str) -> list[list[str]]:
+    """Return the fields of each line of one of `NET_FILES`, none when it cannot be read."""
+    try:
+        text = (NET_FILES / name).read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return []
+    return [line.split() for line in text.splitlines()]
+
+
+def _ipv4(field: str) -> ipaddress.IPv4Address:
+    """Return an address `/proc/net/route` writes: the hex of the bytes in the machine's order."""
+    return ipaddress.IPv4Address(int(field, 16).to_bytes(4, sys.byteorder))
+
+
+def _links_v4() -> list[_Network]:
+    found: list[_Network] = []
+    for fields in _lines("route")[1:]:
+        try:
+            if int(fields[3], 16) & (_RTF_GATEWAY | _RTF_REJECT) or int(fields[2], 16):
+                continue
+            net = ipaddress.IPv4Network(f"{_ipv4(fields[1])}/{_ipv4(fields[7])}", strict=False)
+        except IndexError, ValueError:
+            continue
+        if net.prefixlen >= _WIDEST_LINK[4]:
+            found.append(net)
+    return found
+
+
+def _links_v6() -> list[_Network]:
+    found: list[_Network] = []
+    for fields in _lines("ipv6_route"):
+        try:
+            if int(fields[8], 16) & (_RTF_GATEWAY | _RTF_REJECT) or int(fields[4], 16):
+                continue
+            net = ipaddress.IPv6Network((int(fields[0], 16), int(fields[1], 16)))
+        except IndexError, ValueError:
+            continue
+        if net.prefixlen >= _WIDEST_LINK[6]:
+            found.append(net)
+    return found
+
+
+def _own_v6() -> list[_Network]:
+    found: list[_Network] = []
+    for fields in _lines("if_inet6"):
+        try:
+            found.append(ipaddress.IPv6Network((int(fields[0], 16), 128)))
+        except IndexError, ValueError:
+            continue
+    return found
+
+
+def own_networks() -> list[_Network]:
+    """Return the networks this PC reaches without a router, and each address of its own.
+
+    Read from the routing tables at each call (none where they cannot be read): a route with no
+    router (gateway 0) is a network the PC is on, unless it is wider than `_WIDEST_LINK`.
+    """
+    return [*_links_v4(), *_links_v6(), *_own_v6()]
+
+
+def _on_own_network(address: str, networks: list[_Network]) -> bool:
+    ip = ipaddress.ip_address(address.split("%", 1)[0])
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return any(ip in net for net in networks)
 
 
 def _lookup_within(lookup: Resolver, host: str, port: int) -> list[tuple[Any, ...]]:
@@ -108,7 +191,8 @@ def public_addresses(host: str, port: int, resolve: Resolver | None = None) -> l
 
     Raises:
         BlockedDestinationError: the port is not 80 or 443, the name does not resolve, or any
-            address it resolves to is not public (one private answer is enough to refuse).
+            address it resolves to is not public (one private answer is enough to refuse), or
+            is on one of this PC's own networks (`own_networks`).
     """
     if port not in ALLOWED_PORTS:
         msg = f"port {port} is not allowed (only 80 and 443)"
@@ -122,6 +206,10 @@ def public_addresses(host: str, port: int, resolve: Resolver | None = None) -> l
     addresses = list(dict.fromkeys(str(info[4][0]) for info in infos))
     if not addresses or not all(is_public(a) for a in addresses):
         msg = f"{host!r} is not a public internet address"
+        raise BlockedDestinationError(msg)
+    networks = own_networks()
+    if any(_on_own_network(a, networks) for a in addresses):
+        msg = f"{host!r} is on this PC's own network, not out on the internet"
         raise BlockedDestinationError(msg)
     return addresses
 

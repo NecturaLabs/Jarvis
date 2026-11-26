@@ -37,8 +37,11 @@ best"), and with the owner's config split: the chat is its own setup, and the vo
 quick commands.
 
 - **One way out.** `web/proxy.py` (`EgressProxy`) listens on 127.0.0.1 on a free port for each browser
-  session. For every connection it resolves the host, refuses it unless every address is public and the
-  port is 80 or 443, and connects to the address it checked. HTTPS and secure WebSockets are tunnelled
+  session. For every connection it resolves the host, refuses it unless every address is public, none is
+  on one of this PC's own networks (its own addresses, and any network it reaches without a router, such
+  as the home network's global IPv6 prefix; read from the routing tables at each connection) and the port
+  is 80 or 443, and connects to the address it checked. Site-local IPv6 (`fec0::/10`), which Python counts
+  as global, is refused too. HTTPS and secure WebSockets are tunnelled
   unread. Plain HTTP goes on with `Connection: close`. Anything else is refused. One session moves at most
   200 MB, and its connections are capped at 48 at once. Chrome gets `--proxy-server` with
   `--proxy-bypass-list=<-loopback>`, so loopback goes through the proxy too, and a host-resolver rule that

@@ -151,6 +151,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Web reads and the browser no longer reach a public address on one of this PC's own networks: its own
+  addresses, and a network it reaches without a router, such as the home network's global IPv6 prefix
+  (read from the routing tables at each connection). Site-local IPv6 (`fec0::/10`), which Python counts as
+  global, is refused too.
 - A request the model answered while the conversation held outside text now keeps that mark itself: what the
   model wrote then may repeat that text, so actions still need a yes once the turn it came from is forgotten.
 - A voice-service restart that fails after `/config` is now shown in the chat, saying the old settings still
