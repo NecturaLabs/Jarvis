@@ -1,4 +1,4 @@
-"""Hyprland's own socket: what `find_processes` and `open_app` ask the compositor.
+"""Hyprland's own socket: what the window and program tools ask the compositor.
 
 Jarvis talks to `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock` directly, the
 socket `hyprctl` uses, so reading windows or placing one starts no program of Jarvis's own. Every
@@ -9,6 +9,7 @@ import json
 import os
 import socket
 from pathlib import Path
+from typing import cast
 
 from jarvis.jsonutil import objs
 
@@ -48,16 +49,31 @@ def ask(path: Path, request: bytes, timeout_s: float = HYPR_TIMEOUT_S) -> bytes:
     return b"".join(chunks)
 
 
-def clients(timeout_s: float = HYPR_TIMEOUT_S) -> list[dict[str, object]]:
-    """Return Hyprland's windows as it describes them (`j/clients`); [] when it cannot answer."""
+def listing(request: bytes, timeout_s: float = HYPR_TIMEOUT_S) -> list[dict[str, object]] | None:
+    """Return the objects Hyprland lists for one `j/…` request; None when it cannot answer.
+
+    None, not [], so a caller that must act safely can tell "nothing there" from "unknown".
+    """
     path = socket_path()
     if path is None:
-        return []
+        return None
     try:
-        found: object = json.loads(ask(path, b"j/clients", timeout_s))
+        found: object = json.loads(ask(path, request, timeout_s))
     except OSError, ValueError:
-        return []
-    return objs(found)
+        return None
+    if not isinstance(found, list):
+        return None
+    return objs(cast("list[object]", found))
+
+
+def clients(timeout_s: float = HYPR_TIMEOUT_S) -> list[dict[str, object]]:
+    """Return Hyprland's windows as it describes them (`j/clients`); [] when it cannot answer."""
+    return listing(b"j/clients", timeout_s) or []
+
+
+def monitors(timeout_s: float = HYPR_TIMEOUT_S) -> list[dict[str, object]]:
+    """Return Hyprland's monitors as it describes them (`j/monitors`); [] when it cannot answer."""
+    return listing(b"j/monitors", timeout_s) or []
 
 
 def lua_string(text: str) -> str:

@@ -21,6 +21,16 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   user timer is available with `jarvis update --auto on` ([ADR 0019](docs/adr/0019-install-and-update.md)).
 - The headless browser is required: the installer stops without agent-browser and has it download its
   Chrome, and `jarvis doctor` fails a missing agent-browser or Chrome while the browser is switched on.
+- Jarvis handles your windows on Hyprland: `pc_windows` lists them, `pc_window` shows one, moves it to
+  a workspace, or turns fullscreen or floating on or off, and `pc_window_close` closes one after
+  asking. Each action is checked afterwards, because Hyprland can answer "ok" without having done it,
+  and acts only on a window list the model has already read. A fullscreen window is never moved,
+  resized, toggled or closed, and nothing is moved or opened beside it (`open_app` included, which
+  also waits while a fullscreen window is on screen), since a fullscreen game can crash when that
+  happens.
+- `pc_screenshot` takes a picture of the screen, a workspace or one window. A window or workspace
+  that is not on screen is captured off-screen without switching to it. The picture is saved where
+  Omarchy keeps screenshots, copied to the clipboard and shown in the chat.
 - Every `jarvis` command answers a script or an AI agent in one line of JSON with `--agent` (or
   `--agent-format`, or `JARVIS_AGENT_FORMAT=1`): `command`, `ok` and `exit`, then its own keys (`doctor`,
   `status`, `tools`, `speed`, `consent`) or its output lines, even for a wrong argument or a crash. Interactive
@@ -319,6 +329,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- The chat's default `memory_tokens` is now 5700 (was 6200), so the default 24,576-token window
+  still holds it beside the new window and screenshot tools.
 - `jarvis doctor` ends with the names of the checks that failed, not only their count, writes every note
   the same way (`note …`), and colours its status words on a terminal (never in a pipe or with `NO_COLOR`).
 - Speech keeps a short memory for quick commands: `agent.memory_idle_s` is now `300.0` (was `1800.0`), so the

@@ -2201,6 +2201,21 @@ def test_doctor_notes_a_missing_media_player_tool_without_failing(
     assert "pacman -S playerctl" in line
 
 
+@pytest.mark.parametrize(("tool", "package"), [("grim", "grim"), ("wl-copy", "wl-clipboard")])
+def test_doctor_notes_a_missing_screenshot_tool_without_failing(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tool: str,
+    package: str,
+) -> None:
+    _doctor_config(home / "models")
+    lines = _doctor_with_tools(monkeypatch, capsys, {tool})
+    (line,) = [line for line in lines if f"tool {tool}" in line]
+    assert line.startswith("note ")
+    assert f"pacman -S {package}" in line
+
+
 def test_doctor_fails_a_missing_browser(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

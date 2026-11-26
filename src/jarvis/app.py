@@ -1,5 +1,6 @@
 """Builds Jarvis from its config: model, operations, prompt, audit log and agent."""
 
+import os
 import shutil
 from dataclasses import dataclass, replace
 from importlib.resources import files
@@ -28,9 +29,11 @@ from jarvis.pc.files import Boundary, FileOps
 from jarvis.pc.hearing import HearingOps, Listening
 from jarvis.pc.media import MediaOps
 from jarvis.pc.processes import ProcessOps
+from jarvis.pc.screenshot import ScreenshotOps, save_folder
 from jarvis.pc.shell import ShellOps
 from jarvis.pc.stats import StatsOps
 from jarvis.pc.volume import VolumeOps
+from jarvis.pc.windows import WindowOps
 from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
@@ -492,21 +495,29 @@ def _playerctl(args: Sequence[str]) -> str:
         raise OperationError(str(exc)) from exc
 
 
-def pc_operations(config: Config, limits: Limits, home: Path | None = None) -> list[Operation]:
-    """Return the PC operations: stats, the volume, files, processes, `open_app` and `pc_shell`.
+def pc_operations(
+    config: Config, limits: Limits, home: Path | None = None, shown: PictureCache | None = None
+) -> list[Operation]:
+    """Return the PC operations, from stats and the volume to windows, screenshots and the shell.
 
     The files are those within `[files]`, `open_app` opens only what `[apps]` lists, and
-    `pc_shell` is there only when `[shell]` turns it on.
+    `pc_shell` is there only when `[shell]` turns it on. A screenshot is shown through `shown`
+    where the channel shows pictures (the chat).
 
     Jarvis's own state (its tokens and keys) is never read or written, whatever the roots say.
     """
     boundary = files_boundary(config, home)
+    windows = WindowOps()
     return [
         *StatsOps(Sampler()).operations(),
         *VolumeOps(_wpctl).operations(),
         *MediaOps(_playerctl).operations(),
         *FileOps(boundary, max_chars=limits.tool_text_chars).operations(),
         *ProcessOps().operations(),
+        *windows.operations(),
+        *ScreenshotOps(
+            windows, save_folder(home or Path.home(), os.environ), shown_pictures=shown
+        ).operations(),
         *AppOps(config.apps.programs).operations(),
         *ShellOps(config.shell, home or Path.home(), max_chars=limits.tool_text_chars).operations(),
     ]
@@ -622,7 +633,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
             *spotify,
             *online.operations(),
             *(browsing.operations() if browsing is not None else []),
-            *pc_operations(config, limits),
+            *pc_operations(config, limits, shown=shown),
             *calc.operations(config.format),
             *AboutOps(config, channel, limits, refused=files_boundary(config).secret).operations(),
             *ScheduleOps(

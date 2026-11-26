@@ -111,7 +111,7 @@ remembered is marked the same way, so that holds after the turn that read it is 
 
 The same keys as `[agent]`, with room for longer written work: `max_steps` `30`, `max_tool_calls` `40`,
 `max_seconds` `600.0`, `reply_tokens` `2048`, `tool_text_chars` `8000` (a read page fills it),
-`memory_tokens` `6200` (what the default 24,576-token window holds beside the raised thinking's room and the browser tools; less when a thinking cap is larger; with a larger `strata.context` a larger value has room for more of the earlier requests' work), `memory_detail` `full`, `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, `browser` `true` (the headless browser tools, `browser_screenshot` too, when agent-browser is installed), plus:
+`memory_tokens` `5700` (what the default 24,576-token window holds beside the raised thinking's room, the browser tools and the window and screenshot tools; less when a thinking cap is larger; with a larger `strata.context` a larger value has room for more of the earlier requests' work), `memory_detail` `full`, `memory_idle_s` `0.0` (never forget), `thinking` `none`, `thinking_tokens` `512`, `thinking_max` `high` and `thinking_raised_tokens` `1024`, `browser` `true` (the headless browser tools, `browser_screenshot` too, when agent-browser is installed), plus:
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
@@ -752,9 +752,9 @@ A table from operation name to a class: `safe` (runs), `confirm` (needs your spo
 (needs the confirm key, below; never a spoken yes, and not skipped by `bypass_consent`) or `deny`.
 A name that is no operation of Jarvis's stops `jarvis run`, `ask` and `chat` with an error, so a typo
 cannot leave an operation you meant to switch off at its shipped class. An operation not listed keeps
-its shipped class, which is `safe` for every operation but `write_file` and `browser_act` (`confirm`) and `stop_process`
+its shipped class, which is `safe` for every operation but `write_file`, `browser_act` and `pc_window_close` (`confirm`) and `stop_process`
 (`strong`): `spotify_*`, `time_now`, `weather`, `web_search`, `web_read`, `reddit_search`, `reddit_read`,
-`pc_stats`, `pc_volume`, `pc_media`, `pc_audio_listen`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`,
+`pc_stats`, `pc_volume`, `pc_media`, `pc_audio_listen`, `pc_windows`, `pc_window`, `pc_screenshot`, `calculate`, `list_dir`, `read_file`, `find_processes`, `open_app`,
 `sing`, `browser_open`, `browser_screenshot`; set one to `deny` to switch it off: it is then
 not offered to the model at all. `no_action`, `think_harder` and `stay_quiet` are how Jarvis answers, not tools, and
 cannot be switched off. `stop_process`

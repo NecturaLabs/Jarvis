@@ -1959,6 +1959,8 @@ class Agent:
         text can be in what they send).
         """
         taint = (turn.untrusted, turn.private)
+        if turn.request is not None:
+            turn.request.next_message()  # these calls were written before any of their results
         results: list[Result] = []
         if any(_name(call) == SWITCH_MODEL for call in calls) and self._offers_switch():
             ran = self._run_switch(calls, hooks, turn, taint=taint, cut=cut)

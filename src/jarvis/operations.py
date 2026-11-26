@@ -94,7 +94,9 @@ class Request:
     nothing more of it can be heard (`jarvis hush` too), for one that makes a sound (`sing`). An
     operation making a sound runs inside `making_sound()`, so the voice listens for the wake word
     meanwhile, as it does while it speaks. `scheduled` marks a request run when a job fell due: the
-    owner did not ask for it just now.
+    owner did not ask for it just now. `message` counts the model's messages whose calls have run,
+    so an operation can tell a result the model has read (an earlier message) from one written
+    beside the call in the same message (`pc_window` acts only on a listing the model has seen).
     """
 
     foreign: bool
@@ -106,6 +108,16 @@ class Request:
     hushed: Callable[[], bool] = field(default=lambda: False)
     making_sound: Callable[[], AbstractContextManager[None]] = field(default=nullcontext)
     scheduled: bool = False
+    _messages: list[int] = field(default_factory=lambda: [0])  # held in a list: the rest is frozen
+
+    @property
+    def message(self) -> int:
+        """How many of the model's messages have had their calls run, the running one included."""
+        return self._messages[0]
+
+    def next_message(self) -> None:
+        """Note that the calls of the model's next message are about to run."""
+        self._messages[0] += 1
 
     @property
     def words(self) -> str:

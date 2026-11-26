@@ -49,6 +49,9 @@ SUBPROCESS_FILES = {
     "Azure keyword helper, only inside `unshare --net` (ADR 0010)",
     "chat/clipboard.py": "`wl-paste` with a fixed argument list, for Ctrl+V in the chat (the "
     "owner's request, 2026-11-21)",
+    "pc/screenshot.py": "`grim` (the screen, a monitor by name or a window by its Hyprland id, "
+    "PNG to stdout) and `wl-copy --type image/png` for `pc_screenshot`, fixed argument lists "
+    "(the owner's request, 2026-11-26)",
     "pc/shell.py": "`pc_shell`, the opt-in `strong` shell ADR 0002 allows (#19): "
     "`systemd-run --user --scope` with fixed limits and `setpriv --no-new-privs`, and "
     "`systemctl --user stop` of that scope",
