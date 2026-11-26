@@ -32,6 +32,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   the same model asks for the groups it needs with `use_tools`. A tool of a group it has not asked for is
   not run. It stays off by default until a live run shows it as accurate and not slower
   ([ADR 0022](docs/adr/0022-tool-router.md)).
+- `tools/router_bench.py`, a benchmark of `tools = "all"` against `"routed"` on a running model server, for the voice
+  and chat channels: the same requests through Jarvis's real agent with stub tools, scored on the tools and
+  arguments called, model calls, time to the first reply and to the end, and prompt tokens (#56). It never starts
+  or stops a server; the live run and its results table are still to come ([models](docs/models.md#router-benchmark)).
 - `jarvis acp` serves Jarvis to coding apps that speak the Agent Client Protocol, T3 Code's "Local ACP
   command" among them. Each session is a chat conversation of its own with the same agent and the model
   Strata already serves, answered in text. Pictures work as in the chat. A question about an action is asked
