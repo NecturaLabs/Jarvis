@@ -143,7 +143,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 ### Fixed
 
 - A request the model answered while the conversation held outside text now keeps that mark itself: what the
-  model wrote then may repeat that text, so actions still need a yes once the turn it came from is forgotten.
+  model wrote then may repeat that text, so actions still need a yes once the turn it came from is forgotten. A
+  request stopped while the model was writing keeps the mark too once any of its words were said or shown.
 - A voice-service restart that fails after `/config` is now shown in the chat, saying the old settings still
   hold; it went to a hidden error stream before. A setting is audited only once it is saved, and acting without
   asking turned on from the chat is recorded as `consent_changed`, as `jarvis consent` records it.
@@ -154,7 +155,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   what it looked up and a note that it was stopped, so the next request does not search all over again or lose
   the task, and the audit log's `reply` says `stopped`. A stop now takes effect while the model is still
   thinking, not only once it starts to answer. In the chat, a request that ends without words says so instead
-  of showing nothing.
+  of showing nothing. A reply the model wrote whole is not marked stopped when you speak over its last words.
 - A long file is no longer lost to the reply cap. A call the cap cuts off is not run: the model is told how much
   one answer holds and writes the text in parts, adding each to the file, and the cut text no longer fills the
   context. A second cut call ends the request with a reply that says so, instead of retrying until the steps

@@ -3948,6 +3948,24 @@ def test_a_request_answered_while_outside_text_was_remembered_keeps_that_mark() 
     assert agent.memory.messages()[-1]["content"].endswith("</data>")
 
 
+def test_a_request_stopped_mid_stream_while_outside_text_was_remembered_keeps_that_mark() -> None:
+    quote = _call("no_action", {"reply": "They are a band. They come from Leeds."})
+    model = ScriptedModel([_call("search"), _say("Found it."), quote])
+    ops = [Counter().op("search", origin=Origin.WEB, side_effect=False)]
+    agent, _ = _agent(model, ops, limits=FULL)
+    agent.handle("find inkwell", NO_CONFIRM)
+    heard: list[str] = []
+    hooks = Hooks(confirm=lambda _q: False, speak=heard.append, cancelled=lambda: bool(heard))
+
+    assert agent.handle("so what is it", hooks) == "They are a band."
+
+    del agent.memory.turns[0]  # the turn that read the page is forgotten
+    (stopped,) = agent.memory.turns
+    assert stopped.reply.startswith("They are a band.")
+    assert stopped.outside == "memory"
+    assert agent.memory.holds_outside_text_but(Origin.PROCESS.value)
+
+
 def test_in_full_detail_remembered_file_text_puts_a_search_behind_a_yes() -> None:
     counter = Counter()
     asked: list[str] = []
