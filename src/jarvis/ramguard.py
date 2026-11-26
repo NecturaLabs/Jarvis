@@ -7,9 +7,10 @@ size with `MemAvailable` (the kernel's own figure for what a program can take wi
 reclaimable page cache included) and refuses when the load would leave less than
 `strata.min_free_ram_mib` free. `strata.allow_low_ram` loads anyway.
 
-`python -m jarvis.ramguard` is the check the model server's unit runs before it starts
-(`ExecStartPre=`): it reads the config and the profile when it runs, so the key and the mode in
-force are never stale.
+`python -m jarvis.ramguard` is the check the model server's unit runs before it starts, as an
+`ExecCondition=`: an exit of 1 to 254 skips the start without failing the unit, so systemd retries
+nothing. It reads the config and the profile when it runs, so the key and the mode in force are
+never stale.
 """
 
 import argparse

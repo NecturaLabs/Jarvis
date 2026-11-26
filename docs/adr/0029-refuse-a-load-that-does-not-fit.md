@@ -18,7 +18,7 @@ or a request loading it again after an unload. Which of them are guarded, and ho
 ## Considered options
 
 1. Check only in the commands (`start`, `restart`).
-2. Check only in the systemd unit (`ExecStartPre=`).
+2. Check only in the systemd unit (`ExecCondition=`).
 3. Check in both, and in the client that asks the server to load.
 4. Cap the unit's memory harder (`MemoryMax`) and let the kernel kill the server instead.
 
@@ -53,9 +53,11 @@ Chosen option 3.
   wrong. A load under way in another process has taken part of its memory already, which the same credit
   adds back.
 - **Where it is guarded.** `jarvis start` and `jarvis restart` (and the backend's) print the reason, change
-  nothing and exit 1. The unit has `ExecStartPre=python -m jarvis.ramguard --config … --profile …`, which reads
+  nothing and exit 1. The unit has `ExecCondition=python -I -m jarvis.ramguard --config … --profile …`, which reads
   the config and the profile at run time (the profile is what the mode in force serves) and exits 75, so every
-  other way of starting the unit is covered too. A switch of modes leaves the running server alone and says
+  other way of starting the unit is covered too: the start is skipped, not failed. Because `systemctl start`
+  then says 0 with the server stopped, `jarvis start` and `jarvis restart` look again afterwards and, when
+  the unit is not running and the load still would not fit, print the reason and exit 1. A switch of modes leaves the running server alone and says
   why. The client (`StrataModel.load`, `warm`, and a request that must load the model) refuses before
   asking the server, which covers the load at `jarvis run`, the wake word after an unload, and a request that
   would let the server load lazily, and one that finds the server down beside too little memory (its unit's
@@ -66,10 +68,16 @@ Chosen option 3.
   commands, the unit, the switch, the client and the update is audited as `ram_refused` with where, the
   need, what was available, the margin and the model file.
 - **The unit's check.** It runs as `python -I -m jarvis.ramguard` (isolated: no current-directory or
-  environment path; checked against the venv's editable install, which it still finds), and the unit has
-  `RestartPreventExitStatus=75` so that a refused start is not retried into the start limit. systemd
-  documents that setting for the main process; whether it also stops the restart after a failed
-  `ExecStartPre=` was not exercised, and if it does not, the start limit bounds the retries.
+  environment path; checked against the venv's editable install, which it still finds), and it is an
+  `ExecCondition=`, not an `ExecStartPre=`. Probed with transient user units: an `ExecStartPre=` that exits
+  75 under `Restart=on-failure` is retried five times into `start-limit-hit` and leaves the unit `failed`
+  (`RestartPreventExitStatus=75` does not stop that, as it applies to the main process), while an
+  `ExecCondition=` that exits 75 skips the start: `systemctl start` exits 0, there are no restarts, the unit
+  stays `inactive` and the journal says "Skipped due to 'exec-condition'" with the check's reason. So a
+  refused start is not retried, and the reason is in the journal. An `ExecCondition=` that exits 1 to 254
+  skips the start, so a crash of the check itself (a Python traceback exits 1, a venv that moved exits 203)
+  also skips it quietly and leaves the server stopped, with the error in the journal; an exit of 255 or a
+  signal fails the unit.
 - **A refused switch writes nothing.** The switch makes the check before it writes the server's files, so a
   refusal leaves their times alone and nothing later sees them as newer than the server.
 - **Option 4 rejected:** `MemoryMax` ends a server that already took the memory, after the other program
@@ -79,9 +87,10 @@ Chosen option 3.
 
 - With a game that holds more than about 19 GiB beside the 36.5 GiB model on a 64 GB PC, the model does not
   load until the game is closed or `allow_low_ram` is set. That is the intended trade.
-- A refused unit start is retried by `Restart=on-failure` within the start limit, then stays `failed`.
-  `jarvis start` clears it. This was not run against systemd with a refusing check (nothing here may start
-  the owner's services).
+- A refused unit start is skipped: there are no retries and the unit is not `failed`, so it counts nothing
+  against the start limit. Nothing starts it again when memory frees: the owner runs `jarvis start`.
+  Something that asks systemd to start the unit without the CLI (the voice service's `Wants=`, `jarvis
+  update`) gets success and a stopped server; the voice client then says why and to run `jarvis start`.
 - `MemAvailable` is an estimate, and the file size is not the engine's whole footprint; the margin absorbs
   the difference, and a model whose engine uses much more than its file needs a larger one.
 - An update that rolls back puts the old unit text back, which has no memory check (the check belongs to the

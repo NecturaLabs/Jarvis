@@ -304,7 +304,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - The model server no longer loads a model into memory that is not there. With a game running and 13 to 20 GB
   of RAM available, starting Strata read about 39 GB of experts into RAM, the kernel failed page allocations
   and the game's process died. `jarvis start`, `jarvis restart`, a switch of modes, a model load and the
-  server's own unit (`ExecStartPre=`) now compare the model file's size with `MemAvailable` and refuse, with
+  server's own unit (`ExecCondition=`, which skips the start instead of failing and retrying it) now compare the model file's size with `MemAvailable` and refuse, with
   the figures and nothing started, when the load would leave less than `strata.min_free_ram_mib` (4096).
   `strata.allow_low_ram` loads anyway; `jarvis doctor` reports the check; `jarvis update` skips only the
   server's restart when it would not fit; each refusal is audited as `ram_refused`. `jarvis setup` or `jarvis restart` writes the

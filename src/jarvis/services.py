@@ -31,7 +31,7 @@ JARVIS_UNIT = "jarvis.service"
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _NEEDS_QUOTES = re.compile(r"""[\s"'\\;]""")
 _SETUP_ERROR = 2  # `jarvis run` exits with this when setup is missing; restarting cannot fix it
-RAM_SHORT_EXIT = 75  # the unit's memory check exits with this when the model would not fit
+RAM_SHORT_EXIT = 75  # the unit's memory check exits with this (1 to 254 skips the start)
 
 
 def _checked(value: str, what: str) -> str:
@@ -635,10 +635,9 @@ Type=exec
 Environment=PIPEWIRE_REMOTE=/nonexistent
 Environment=PULSE_SERVER=unix:/nonexistent
 EnvironmentFile={_path(key_file, "key file")}
-ExecStartPre={check}
+ExecCondition={check}
 ExecStart={start}
 Restart=on-failure
-RestartPreventExitStatus={RAM_SHORT_EXIT}
 RestartSec=5
 RestartSteps=5
 RestartMaxDelaySec=120

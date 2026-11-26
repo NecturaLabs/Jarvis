@@ -392,7 +392,7 @@ Both units are written by `jarvis setup`; their text is `jarvis_unit` and `strat
 | `StartLimitIntervalSec=15min`, `StartLimitBurst=5` (in `[Unit]`) | yes | yes |
 | `MemoryHigh` / `MemoryMax` | none / `4G` | `memory_max` / 10% above it |
 | `LimitMEMLOCK=infinity`, `MemorySwapMax=0` | no | unless `strata.keep_in_ram` is off |
-| `ExecStartPre=` the memory check (`python -m jarvis.ramguard`) | no | yes |
+| `ExecCondition=` the memory check (`python -I -m jarvis.ramguard`) | no | yes |
 
 - The voice service keeps your session's umask, so a file the file tools write at your request gets the
   mode it asks for (0644, a folder 0755).
@@ -476,7 +476,7 @@ less than `strata.min_free_ram_mib` is refused, with the figures, and nothing is
 | Where the model loads | What happens when it does not fit |
 |---|---|
 | `jarvis start`, and `jarvis restart` when the server is stopped or its settings changed | Says why on stderr, changes nothing, exits 1. The same on a backend. |
-| The model server's unit, however it is started (`systemctl --user start`, the voice service pulling it in, a crash restart) | `ExecStartPre=` runs `python -I -m jarvis.ramguard`, which reads the config and the profile when it starts and exits 75 with the reason in the journal. The start fails, and `RestartPreventExitStatus=75` asks systemd not to retry it. If systemd retries anyway, the start limit (five in 15 minutes) ends it, and the unit stays `failed`; `jarvis start` clears that. |
+| The model server's unit, however it is started (`systemctl --user start`, the voice service pulling it in, a crash restart) | `ExecCondition=` runs `python -I -m jarvis.ramguard`, which reads the config and the profile when it starts and exits 75 with the reason in the journal. The start is skipped (`Skipped due to 'exec-condition'`): the unit stays `inactive`, is not `failed` and is not retried, and `systemctl start` still exits 0. `jarvis start` and `jarvis restart` look again afterwards and refuse with the reason. Run `jarvis start` when there is room. A crash of the check itself (exit 1 to 254) skips the start too; an exit of 255 or a signal fails it. |
 | A switch of modes that restarts the server (`jarvis model`, the chat's `/model`, the model's own switch) | The server is left as it is, Jarvis stays in its mode and says why. |
 | `jarvis update` restarting the server for new settings | The server is not restarted and keeps what it loaded; the rest of the update goes ahead and the reason is printed. `jarvis restart` reloads when there is room. A rollback restores the old unit, which has no check, and restarts it: that only reads back a model the server held before. |
 | `jarvis run` loading the model at start, the wake word loading it after `jarvis unload`, a resume | Logged, and nothing asks the server to load. The next wake word asks again. A server that already holds the model, or a load already under way, is never refused: its memory is no longer in `MemAvailable`. |

@@ -218,13 +218,13 @@ def test_no_server_cgroup_gives_back_nothing() -> None:
     assert ramguard.held_by_unit(STRATA_UNIT) == 0
 
 
-def test_the_unit_checks_memory_before_the_server_starts(tmp_path: Path) -> None:
+def test_the_unit_skips_the_start_when_the_model_would_not_fit(tmp_path: Path) -> None:
     cfg = local(tmp_path)
 
     text = services.strata_unit(cfg, paths.strata_key_file())
 
     lines = text.splitlines()
-    pre = next(line for line in lines if line.startswith("ExecStartPre="))
+    pre = next(line for line in lines if line.startswith("ExecCondition="))
     assert "-m jarvis.ramguard" in pre
     assert f"--config {paths.config_file()}" in pre
     assert f"--profile {services.strata_profile_file()}" in pre
@@ -920,11 +920,80 @@ def test_a_switch_that_changes_no_file_asks_nothing(tmp_path: Path) -> None:
     assert _switcher(cfg, _Units(), ram).switch("normal", "owner").mode == "normal"
 
 
-def test_the_unit_check_runs_isolated_and_a_refused_start_is_not_retried(tmp_path: Path) -> None:
+def test_the_unit_check_runs_isolated_and_a_refused_start_is_skipped_not_failed(
+    tmp_path: Path,
+) -> None:
+    # An ExecCondition= that exits 1 to 254 skips the start without failing the unit, so systemd
+    # does not retry it into the start limit (probed with transient units: no restarts).
     text = services.strata_unit(local(tmp_path), paths.strata_key_file())
 
-    assert "ExecStartPre=" + sys.executable + " -I -m jarvis.ramguard" in text
-    assert f"RestartPreventExitStatus={ramguard.EXIT_SHORT}" in text.splitlines()
+    assert "ExecCondition=" + sys.executable + " -I -m jarvis.ramguard" in text
+    assert "ExecStartPre" not in text
+    assert "RestartPreventExitStatus=75" not in text
+    assert 1 <= ramguard.EXIT_SHORT <= 254
+
+
+def _inactive(_unit: str) -> str:
+    return "inactive"
+
+
+def _skipped_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, on: str
+) -> list[tuple[str, ...]]:
+    """Fit at the up-front check, then too little by the time systemd runs the unit's check.
+
+    `systemctl` answers 0 and leaves the unit inactive, as it does for a start the unit skipped.
+    """
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(*args: str) -> int:
+        calls.append(args)
+        if args[0] == on:
+            meminfo(tmp_path, monkeypatch, available=17 * GIB)
+        return 0
+
+    monkeypatch.setattr(cli, "_systemctl", systemctl)
+    monkeypatch.setattr(cli, "_unit_state", _inactive)
+    return calls
+
+
+def test_start_does_not_report_success_when_the_unit_skipped_its_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    local(tmp_path)
+    calls = _skipped_start(tmp_path, monkeypatch, on="start")
+
+    assert cli.main(["start"]) == 1
+
+    assert "not enough free memory" in capsys.readouterr().err
+    assert ("start", STRATA_UNIT, "jarvis.service") in calls
+
+
+def test_restart_does_not_report_success_when_the_unit_skipped_its_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    local(tmp_path)
+    calls = _skipped_start(tmp_path, monkeypatch, on="start")
+    monkeypatch.setattr(cli, "_started_at", _started(None))
+
+    assert cli.main(["restart"]) == 1
+
+    assert "not enough free memory" in capsys.readouterr().err
+    assert ("restart", "jarvis.service") not in calls
+
+
+def test_a_backends_start_does_not_report_success_when_the_unit_skipped_its_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = local(tmp_path)
+    config.save(
+        cfg.model_copy(update={"strata": cfg.strata.model_copy(update={"mode": "backend"})})
+    )
+    _skipped_start(tmp_path, monkeypatch, on="start")
+
+    assert cli.main(["start"]) == 1
+
+    assert "not enough free memory" in capsys.readouterr().err
 
 
 def test_an_update_does_not_restart_the_server_into_too_little_memory(
