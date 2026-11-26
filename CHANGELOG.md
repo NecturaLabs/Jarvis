@@ -8,6 +8,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Serve the model from another machine you own with `jarvis setup --backend` and
+  `jarvis setup --remote`. The client keeps speech, tools and policy on the PC it controls.
+  The default remains all-local. Remote `doctor` and `status` show the model and connection
+  latency. See [ADR 0020](docs/adr/0020-model-on-another-machine.md).
 - Coding mode, for programming work ([ADR 0017](docs/adr/0017-coding-mode.md)): more model calls, longer
   replies, more thinking and a larger context, a part on programming in the prompt, and a model of its own
   when `strata.coding_run_config` names one (`jarvis setup --coding-run-config`). `jarvis model` shows the mode

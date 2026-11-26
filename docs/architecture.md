@@ -6,8 +6,9 @@ does not repeat them.
 
 Jarvis is one Python process, `jarvis run`, started as a systemd user unit. One thread owns the
 microphone and runs the whole request path: wake word, speech capture, transcription, the agent, the
-spoken reply. There is one agent and no subagents. The model is a separate service, Strata, on
-loopback. Every tool call goes through a typed operation and a policy decision before it runs, and
+spoken reply. There is one agent and no subagents. Strata runs as a separate service on loopback
+by default. It can also serve the model from another machine you own. Every tool call goes
+through a typed operation and a policy decision before it runs, and
 every step is written to an audit log. The tools are Spotify's, and the time, the weather, web search and
 Reddit (`web/`).
 
@@ -29,6 +30,13 @@ Reddit (`web/`).
  │ audio.py  Speaker ─▶ pw-play             │
  └──────────────────────────────────────────┘
 ```
+
+In remote mode the HTTP arrow leads to the owner's Strata backend, normally through an SSH
+tunnel. The client still owns wake, speech-to-text, the agent loop, policy, tools, audit and
+speech. It sends a bearer key and the model's conversation input, which can include tool results
+and pictures. Backend-only setup installs the Strata unit under the user's `default.target`.
+The remote voice unit has no dependency on Strata. See
+[ADR 0020](adr/0020-model-on-another-machine.md) and [privacy.md](privacy.md).
 
 ## Modules
 
@@ -281,10 +289,11 @@ Child processes Jarvis starts: `pw-record` (microphone and PC audio), `pw-dump` 
 to open (`open_app`, `pc/apps.py`) is started by Hyprland, not by Jarvis: Jarvis sends the command
 through Hyprland's socket.
 
-Strata is a different service, `jarvis-strata.service`. It listens on `127.0.0.1` with an API key
-that Jarvis reads from the state folder, and it serves only Jarvis. `jarvis.service` starts after it
-and loads the model at start. Health checks (`StrataModel.status`) never generate. The service
-units and profile come from `services.py`.
+Strata is a different service, `jarvis-strata.service`. By default it listens on `127.0.0.1` with an API key
+that Jarvis reads from the state folder, and it serves only Jarvis. In local mode `jarvis.service`
+starts after it and loads the model. The remote client uses `GET /v1/models` for health and
+capabilities and leaves model lifecycle control on the backend. Health checks never generate.
+The service units and profile come from `services.py`.
 
 ## Where state lives
 

@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, cast
 from jarvis import paths
 from jarvis.config import ConfigError
 from jarvis.files import write_atomic, write_atomic_bytes
+from jarvis.jsonutil import obj
+from jarvis.secretfile import read_api_key, read_private, remote_key, write_private_json
 
 if TYPE_CHECKING:
     from jarvis.config import Config
@@ -156,6 +158,34 @@ def strata_profile_file() -> Path:
     return paths.config_dir() / "strata-profile.json"
 
 
+def key_file(config: Config) -> Path:
+    """Return the credential file for the active Strata mode."""
+    match config.strata.mode:
+        case "remote":
+            return paths.remote_strata_key_file()
+        case "backend":
+            return paths.backend_strata_key_file()
+        case _:
+            return paths.strata_key_file()
+
+
+def read_key(config: Config) -> str | None:
+    """Read the mode's bearer key from private state."""
+    path = key_file(config)
+    if config.strata.mode == "remote":
+        credentials = obj(json.loads(read_private(path) or "{}"))
+        key = credentials.get("key")
+        if credentials.get("url") == config.model_base_url() and isinstance(key, str):
+            return remote_key(key)
+        return None
+    return read_api_key(path)
+
+
+def write_remote_key(config: Config, key: str) -> None:
+    """Bind the key to its endpoint so a changed config cannot send it to another server."""
+    write_private_json(key_file(config), {"url": config.model_base_url(), "key": key})
+
+
 def expert_profile_file(config: Config) -> Path:
     """Return where the engine keeps what it learned about the experts Jarvis's requests use.
 
@@ -258,9 +288,12 @@ def read_run_config(config: Config) -> RunConfig:
     A model drive that is not mounted yet still gives its model's path (`missing_files` checks).
 
     Raises:
-        StrataSetupError: it is unset or unreadable, is not a Strata run config, or picks its own
-            address (`--host`, `--port`: Jarvis serves on 127.0.0.1 at `strata.port`).
+        StrataSetupError: the config is unset or unreadable, belongs on the backend, is not a
+            Strata run config, or picks its own listen address or port.
     """
+    if config.strata.mode == "remote":
+        msg = "the Strata run config is on the backend"
+        raise StrataSetupError(msg)
     path = config.strata.run_config
     if path == Path():
         msg = (
@@ -315,6 +348,8 @@ def _require_files(run: RunConfig) -> None:
 
 def reads_pictures(config: Config) -> bool:
     """Whether Jarvis serves its model with a picture reader (`strata.pictures` and one set up)."""
+    if config.strata.mode == "remote":
+        return config.strata.remote_pictures
     if not config.strata.pictures:
         return False
     try:
@@ -325,6 +360,8 @@ def reads_pictures(config: Config) -> bool:
 
 def model_name(config: Config) -> str:
     """Return the served model's name, or what is wrong with its run config."""
+    if config.strata.mode == "remote":
+        return config.model.model
     try:
         return read_run_config(config).name or "unnamed model"
     except StrataSetupError as exc:
@@ -390,7 +427,7 @@ def _tuned_args(config: Config, run: RunConfig) -> list[str]:
         StrataSetupError: the engine's expert cache would fill the card and no reserve is set.
     """
     s = config.strata
-    if fills_the_card(run) and not s.vram_reserve_mib:
+    if s.mode == "local" and fills_the_card(run) and not s.vram_reserve_mib:
         msg = (
             "this model's engine fills the card with its expert cache (--expert-cache), which "
             "leaves no VRAM for a game: set strata.vram_reserve_mib (12000 holds "
@@ -458,7 +495,7 @@ def strata_profile(config: Config) -> dict[str, object]:
         "cwd": str(s.home / "terminal" / "current"),
         "log": str(paths.state_dir() / "strata.log"),
         "port": s.port,
-        "host": "127.0.0.1",
+        "host": s.listen,
         "open_browser": False,
         "parallel": 1,
         "lazy_load": True,
@@ -518,9 +555,15 @@ def _strata_bin(config: Config) -> str:
 def strata_unit(config: Config, key_file: Path) -> str:
     """Return the `jarvis-strata.service` unit text.
 
-    A value that cannot be written safely into a unit (a control character in it) is a ConfigError.
+    A value that cannot be written safely into a unit is a ConfigError.
+
+    Raises:
+        StrataSetupError: a remote client has no local Strata unit.
     """
     s = config.strata
+    if s.mode == "remote":
+        msg = "the remote client has no Strata unit"
+        raise StrataSetupError(msg)
     model = read_run_config(config).model if s.run_config != Path() else Path()
     condition = f"ConditionPathExists={_path(model, 'model file')}\n" if model != Path() else ""
     start = " ".join(
@@ -535,11 +578,15 @@ def strata_unit(config: Config, key_file: Path) -> str:
     memory = _path(s.memory_max, "memory_max")
     limit = memory_limit(memory)
     in_ram = _KEEP_IN_RAM if s.keep_in_ram else ""
+    session = (
+        ""
+        if s.mode == "backend"
+        else ("PartOf=graphical-session.target\nAfter=graphical-session.target\n")
+    )
+    target = "default.target" if s.mode == "backend" else "graphical-session.target"
     return f"""[Unit]
 Description=Strata model server for Jarvis
-PartOf=graphical-session.target
-After=graphical-session.target
-{_START_LIMIT}{condition}
+{session}{_START_LIMIT}{condition}
 [Service]
 Type=exec
 {_environment("STRATA_DATA_DIR", str(s.home))}
@@ -558,19 +605,18 @@ MemoryMax={limit}
 TimeoutStopSec=45
 {_HARDENING}{_HARDENING_STRATA}
 [Install]
-WantedBy=graphical-session.target
+WantedBy={target}
 """
 
 
-def jarvis_unit() -> str:
+def jarvis_unit(*, remote: bool = False) -> str:
     """Return the `jarvis.service` unit text (the voice loop)."""
     exe = exec_program(str(Path(sys.executable).parent / "jarvis"), "jarvis executable")
+    dependency = "\n" if remote else f" {STRATA_UNIT}\nWants={STRATA_UNIT}\n"
     return f"""[Unit]
 Description=Jarvis voice agent
 PartOf=graphical-session.target
-After=graphical-session.target pipewire.service wireplumber.service {STRATA_UNIT}
-Wants={STRATA_UNIT}
-{_START_LIMIT}
+After=graphical-session.target pipewire.service wireplumber.service{dependency}{_START_LIMIT}
 [Service]
 Type=exec
 ExecStart={exe} run
@@ -597,6 +643,13 @@ def write_strata_unit(config: Config, key_file: Path) -> Path:
     """Write `jarvis-strata.service` alone and return its path; a ConfigError writes nothing."""
     path = unit_dir() / STRATA_UNIT
     _write_if_changed(path, strata_unit(config, key_file))
+    return path
+
+
+def write_voice_unit() -> Path:
+    """Install the remote client's voice unit without a local server dependency."""
+    path = unit_dir() / JARVIS_UNIT
+    _write_if_changed(path, jarvis_unit(remote=True))
     return path
 
 

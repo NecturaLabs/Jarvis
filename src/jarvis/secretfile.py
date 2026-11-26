@@ -3,6 +3,7 @@
 import errno
 import json
 import os
+import re
 import secrets
 import stat
 from typing import TYPE_CHECKING
@@ -56,6 +57,14 @@ def write_private_json(path: Path, value: dict[str, object]) -> None:
 
 
 KEY_VARIABLE = "STRATA_API_KEY"
+_BEARER_TOKEN = re.compile(r"[-a-zA-Z0-9._~+/]+=*")
+_MAX_BEARER_LENGTH = 4096
+
+
+def remote_key(text: str | None) -> str | None:
+    """Read one bearer token, supplied raw or as the backend's environment line."""
+    value = (text or "").strip().removeprefix(f"{KEY_VARIABLE}=")
+    return value if len(value) <= _MAX_BEARER_LENGTH and _BEARER_TOKEN.fullmatch(value) else None
 
 
 def read_api_key(path: Path) -> str | None:

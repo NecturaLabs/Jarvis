@@ -1,14 +1,14 @@
 # What Jarvis keeps and sends
 
-Jarvis runs on your PC. This page lists what it writes to disk, what leaves the machine and how to remove
-it. It is a plain statement of what the code does, not legal terms; the code wins if they differ.
+Jarvis runs on your PC and can use Strata on another machine you own. This page lists what Jarvis
+writes to disk, what leaves the PC and how to remove it.
 
 ## What stays on your PC
 
 | What | Where | What it holds |
 |---|---|---|
 | Config | `~/.config/jarvis/config.toml` | Your settings, including your Spotify app's client ID (there is no client secret). |
-| Strata API key | `~/.local/state/jarvis/strata.env`, mode 0600 | A random key that only Jarvis and its Strata service use. |
+| Strata API key | `~/.local/state/jarvis/`, mode 0600 | `strata.env` for local mode. With a remote model, `strata-backend.env` holds the backend key and `strata-remote.json` holds the client's copy bound to its URL. |
 | Spotify tokens | `~/.local/state/jarvis/spotify-token.json`, mode 0600 | The access and refresh tokens from `jarvis spotify-login`. |
 | Audit log | `~/.local/state/jarvis/audit.jsonl`, mode 0600 in a 0700 folder | Every request as transcribed or typed (a paste in the chat included), the model's tool calls, each policy decision and each result (with the start of each page or file Jarvis read, its own configuration files included, and of the programs and window titles `find_processes` listed). What `write_file` puts in a file is not in it: only its length and SHA-256. With PC audio on, it also holds what other people said in it to wake Jarvis; what `pc_audio_listen` heard for you is in its tool result only as a length and SHA-256, but the reply Jarvis gives about it is recorded as written, like every reply. At 5 MiB it moves to `audit.jsonl.1` and a new one starts; the five older logs are kept (`.1` the newest, `.5` the oldest) and the one before them is deleted, so at most about 30 MiB. |
 | Reminders and scheduled requests | `~/.local/state/jarvis/schedule.json`, mode 0600, with `schedule.json.lock` beside it | The words of each reminder and scheduled request as the model wrote them from your request (at most 50, 200 characters each), with when it is due and how it repeats. A one-off job is removed once it is said or done, a repeating one when you cancel it. The audit log also holds the words, in the `schedule_add` call that set the job, and records each job coming due or missed by its number only. |
@@ -30,7 +30,7 @@ the request that heard them, even with `agent.memory_detail = "full"`; Jarvis's 
 like every reply. Jarvis keeps no recordings unless you set
 `JARVIS_DEBUG_AUDIO_DIR`, which saves each request there (mode 0600) for debugging.
 
-The model runs in the `jarvis-strata` service on `127.0.0.1`; your requests never leave the PC to reach it.
+By default the model runs in the `jarvis-strata` service on `127.0.0.1` and model requests stay on this PC.
 With the Azure wake word on, the audio Jarvis listens to goes to a helper process on the PC that runs
 Microsoft's Speech SDK in a namespace with no network, so neither the audio nor the SDK's telemetry can go
 out over the network. It still runs as you, so it can read your files and local sockets; it only cannot
@@ -39,7 +39,17 @@ Jarvis sends no telemetry and checks for no updates.
 
 ## What leaves your PC
 
-Nothing is sent until you ask for something that needs it. Spotify, once you have run
+With [a remote Strata model](configuration.md#model-on-another-machine), the model request goes to
+your backend. It can include the system prompt, transcribed or typed requests, remembered conversation,
+tool descriptions, tool results such as file excerpts or command output, and pictures you attach.
+Model replies and tool calls travel back to the client. The Strata bearer key goes with model requests
+and with health and capability checks, including at client startup. Microphone recordings, wake-word
+processing, Spotify credentials and local audit files stay on the client. The backend and any HTTPS
+proxy you set up can read the request; check how those services log and retain data. A forwarded
+loopback connection travels through SSH. Direct HTTP requires explicit opt-in and relies on your
+network for confidentiality.
+
+Spotify, once you have run
 `jarvis spotify-login` with your own Spotify developer app ([ADR 0005](adr/0005-local-only.md)):
 
 - `accounts.spotify.com`: the login (PKCE) and the token refresh.
@@ -68,11 +78,11 @@ Questions that need the outside world ([ADR 0007](adr/0007-outside-services-for-
 - **Reddit**: thread searches go through SearXNG the same way, with `site:reddit.com` added; the
   `arctic-shift.photon-reddit.com` archive gets the ids of the threads Jarvis reads.
 
-Files Jarvis reads stay on the PC: their text goes only to the local model. While a file's text, or a shell
+Files Jarvis reads stay on the PC. Their text can go to the configured model. While a file's text, or a shell
 command's output, is in the conversation, a search or a place lookup that could carry it out needs your yes
 first.
 
-Pictures you attach in the chat go only to the local model, shrunk; they are not written to disk, and the
+Pictures you attach in the chat go to the configured model, shrunk; they are not written to disk, and the
 conversation keeps only their names. The clipboard is read only when you press Ctrl+V in the chat.
 
 No request names you, the PC or Jarvis. Set an operation to `deny` in `[boundaries.classes]` to keep it

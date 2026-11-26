@@ -125,6 +125,20 @@ The units start with your desktop session and stop with it. Jarvis keeps listeni
 microphone is unplugged and plugged back, and listens afresh after a suspend. What each change does is in
 [docs/playbook/session-transitions.md](docs/playbook/session-transitions.md).
 
+### Model on another machine
+
+Jarvis runs everything on one PC by default. To move model inference to a machine you own, install
+Strata and prepare its model there. With `jarvis` on both machines and SSH access to the backend,
+run this on the backend, substituting your run-config path and SSH destination:
+
+```sh
+jarvis setup --backend --run-config /path/to/strata-model.json --ssh-target model-box --enable
+```
+
+Run the printed command on the client. It opens an encrypted tunnel, copies the key over SSH and
+starts the voice service. The client still needs its audio files and Spotify setup. See
+[configuration](docs/configuration.md#model-on-another-machine) for direct HTTPS and troubleshooting.
+
 ## Everyday commands
 
 These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what is running and follows the log.

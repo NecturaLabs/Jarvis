@@ -150,7 +150,9 @@ def effective(config: Config, mode: Mode) -> Config:
         update={
             "agent": config.agent.model_copy(update=_overlay(config.agent, coding.voice)),
             "chat": config.chat.model_copy(update=_overlay(config.chat, coding.chat)),
-            "strata": config.strata.model_copy(update=strata),
+            "strata": config.strata.model_copy(update=strata)
+            if config.strata.mode == "local"
+            else config.strata,
             "model": config.model.model_copy(update=model),
             "files": config.files.model_copy(update={"write_roots": roots}),
         }
@@ -171,7 +173,10 @@ def _overlay(section: AgentConfig, over: CodingChatConfig) -> dict[str, object]:
 
 def own_model(config: Config) -> bool:
     """Whether coding mode serves a model of its own (`strata.coding_run_config`)."""
-    return config.strata.coding_run_config not in {Path(), config.strata.run_config}
+    return config.strata.mode == "local" and config.strata.coding_run_config not in {
+        Path(),
+        config.strata.run_config,
+    }
 
 
 def model_name(config: Config, mode: Mode) -> str:
@@ -390,6 +395,8 @@ def announcement(config: Config, to: Mode, *, restart: bool) -> str:
     When the model server restarts it says how long the model took to load the last time, once
     that is known.
     """
+    if config.strata.mode == "remote":
+        return f"Switching to {to} mode on this client. The remote model stays the same."
     name = "coding" if to == "coding" else "usual"
     if not restart:
         return f"Switching to {'coding' if to == 'coding' else 'normal'} mode."
@@ -440,6 +447,8 @@ class Switcher:
         Jarvis's own settings. A config that cannot be served counts as a change (`switch` says
         what is wrong with it).
         """
+        if self._config.strata.mode != "local":
+            return False
         try:
             profile = services.strata_profile(effective(self._config, to))
         except ConfigError:
@@ -468,6 +477,10 @@ class Switcher:
         the restarted server does not come back, the files and the server go back to the mode
         before.
         """
+        if self._config.strata.mode == "backend":
+            return Switched(
+                read_state().mode, error="Change the served model in the backend setup."
+            )
         with _locked():
             try:
                 state = read_state()
@@ -489,13 +502,17 @@ class Switcher:
         A switch that was killed leaves its `pending` note, or files that are not the mode's;
         asking for the mode again then puts the files and the server right.
         """
-        return state.pending is not None or (
-            _texts()[0] is not None and self.needs_restart(state.mode)
+        return self._config.strata.mode == "local" and (
+            state.pending is not None
+            or (_texts()[0] is not None and self.needs_restart(state.mode))
         )
 
     def _switch(self, to: Mode, by: By, say: Callable[[str], None], state: State) -> Switched:
         """Make the switch from `state` to `to`, with the lock held and no request in flight."""
         began = self._clock()
+        if self._config.strata.mode == "remote":
+            say(announcement(self._config, to, restart=False))
+            return self._remember(to, by, state, began, restarted=False)
         before = _texts()
         try:
             services.strata_profile(effective(self._config, to))  # refused before anything changes
@@ -519,8 +536,13 @@ class Switcher:
                 return Switched(state.mode, restarted=True, error=self._failed(to, state))
         elif not restart:
             say(announcement(self._config, to, restart=False))
+        return self._remember(to, by, state, began, restarted=running)
+
+    def _remember(
+        self, to: Mode, by: By, state: State, began: float, *, restarted: bool
+    ) -> Switched:
         seconds = round(self._clock() - began, 1)
-        loads = {**state.load_s, to: seconds} if running else state.load_s
+        loads = {**state.load_s, to: seconds} if restarted else state.load_s
         _write_state(State(to, by, self._now(), loads))
         self._audit.record(
             "mode_switched",
@@ -528,10 +550,10 @@ class Switcher:
             was=state.mode,
             by=by,
             model=model_name(self._config, to),
-            restarted=running,
+            restarted=restarted,
             seconds=seconds,
         )
-        return Switched(to, changed=True, restarted=running, seconds=seconds)
+        return Switched(to, changed=True, restarted=restarted, seconds=seconds)
 
     def idle(self) -> bool:
         """Whether coding mode went unused too long, so `back_if_idle` would leave it."""
