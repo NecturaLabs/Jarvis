@@ -55,7 +55,11 @@ quick commands.
   frames, images, WebSockets and redirects therefore reach neither Strata (127.0.0.1:8080), SearXNG
   (127.0.0.1:8888), the home network, a cloud metadata address nor agent-browser's own debugging port. A
   test with the real browser (`tests/test_web_browser_local.py`, `local`) checks this: a page whose
-  scripts try every one of these reaches nothing.
+  scripts, frames, images, WebSocket and a redirect try loopback on IPv4 and IPv6, a loopback name, the
+  cloud metadata address and a home-network address reaches nothing; each try is seen refused at the proxy
+  (so it did run), and a fetch to the page's own public stand-in arrives (so its scripts ran at all). A
+  preview's tries are seen refused at its proxy too, not merely stopped by the page's own CORS rules.
+  Chrome's own background requests (updates, safe browsing) are off (`--disable-background-networking`).
 - **Nothing of the owner's.** Each session gets a throwaway profile and download folder in the runtime
   folder (`$XDG_RUNTIME_DIR/jarvis/browser/session-<pid>-…`), deleted once the browser has ended. Its home
   and XDG folders are the session's too, with their Downloads read-only and named as the download folder,

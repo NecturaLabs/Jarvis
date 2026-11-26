@@ -238,6 +238,7 @@ def test_it_starts_headless_through_the_proxy_with_its_own_profile_and_policy(
     assert "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1" in chrome
     assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in chrome
     assert "--mute-audio" in chrome
+    assert "--disable-background-networking" in chrome
     assert proxy.started
 
 

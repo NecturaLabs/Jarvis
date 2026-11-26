@@ -100,6 +100,8 @@ CHROME_ARGS = (
     "--no-pings",
     "--disable-client-side-phishing-detection",
     "--disable-domain-reliability",
+    # No update, safe-browsing or other checks of Chrome's own: they would only be refused.
+    "--disable-background-networking",
     "--disk-cache-size=33554432",  # the profile is in the runtime folder, which is memory
 )
 # What the browser's environment keeps of Jarvis's: where programs are, nothing else. Its home is

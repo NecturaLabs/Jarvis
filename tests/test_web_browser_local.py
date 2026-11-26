@@ -3,8 +3,10 @@ agent-browser. It starts Chrome headless and muted, out of sight, and closes it.
 
 The page is served by the test on loopback and reached through the egress proxy under a made-up
 public name, as a public site would be. Its scripts, frames, images and a redirect then try to
-reach the same loopback server, other loopback ports and the home network directly: the server
-must see none of it.
+reach the same server on IPv4 and IPv6 loopback, by name, a cloud metadata address and the home
+network directly. Each try must reach the proxy and be refused there (so it did run), and the
+servers must see none of it; one fetch to the made-up public name must arrive (so the page's
+scripts ran at all).
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import contextlib
 import http.server
 import shutil
 import socket
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -23,7 +26,7 @@ import pytest
 from jarvis.config import FilesConfig
 from jarvis.pc.files import Boundary
 from jarvis.web.browser import Browser, BrowserError
-from jarvis.web.preview import FolderServer, preview_browser
+from jarvis.web.preview import FolderServer
 from jarvis.web.proxy import EgressProxy
 
 if TYPE_CHECKING:
@@ -46,18 +49,29 @@ DOWNLOAD_PAGE = (
 )
 
 
-def _page(port: int) -> bytes:
+METADATA = "169.254.169.254"
+HOME_NETWORK = "192.168.77.1"
+
+
+def _page(port: int, port6: int) -> bytes:
     here = f"127.0.0.1:{port}"
     return f"""<html><body><h1>Probe</h1><p id=r>waiting</p>
 <iframe src="http://{here}/leak-iframe"></iframe>
-<img src="http://{here}/leak-img"><img src="http://[::1]:{port}/leak-img6">
+<img src="http://{here}/leak-img"><img src="http://[::1]:{port6}/leak-img6">
 <script>
 const out = [];
 function note(x) {{ out.push(x); document.getElementById('r').textContent = out.join(' | '); }}
+fetch('/ok-fetch').then(() => note('own site reached')).catch(() => note('own site blocked'));
 fetch('http://{here}/leak-fetch').then(() => note('fetch reached'))
   .catch(() => note('fetch blocked'));
+fetch('http://[::1]:{port6}/leak-fetch6').then(() => note('v6 reached'))
+  .catch(() => note('v6 blocked'));
 fetch('http://localhost:{port}/leak-name').then(() => note('name reached'))
   .catch(() => note('name blocked'));
+fetch('http://{METADATA}/latest/meta-data/').then(() => note('metadata reached'))
+  .catch(() => note('metadata blocked'));
+fetch('http://{HOME_NETWORK}/').then(() => note('home reached'))
+  .catch(() => note('home blocked'));
 try {{
   const ws = new WebSocket('ws://{here}/leak-ws');
   ws.onopen = () => note('ws reached'); ws.onerror = () => note('ws blocked');
@@ -71,14 +85,19 @@ try {{
 </script></body></html>""".encode()
 
 
+class _Server6(http.server.ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+
+
 class Server:
-    """A loopback web server that records every path that reaches it."""
+    """A loopback web server, on IPv4 and IPv6, that records every path that reaches it."""
 
     def __init__(self) -> None:
         super().__init__()
         hits: list[str] = []
         self.hits = hits
         page = _page
+        ports: list[int] = []
 
         class Handler(http.server.BaseHTTPRequestHandler):
             @override
@@ -89,7 +108,7 @@ class Server:
                 hits.append(self.path)
                 port = int(cast("tuple[str, int]", self.server.server_address)[1])
                 if self.path == "/":
-                    body = page(port)
+                    body = page(port, ports[1])
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html")
                 elif self.path == "/download-page":
@@ -113,13 +132,27 @@ class Server:
                 self.wfile.write(body)
 
         self.http = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.http.daemon_threads = True
+        self.http6 = _Server6(("::1", 0), Handler)
         self.port = int(self.http.server_address[1])
-        threading.Thread(target=self.http.serve_forever, args=(0.1,), daemon=True).start()
+        self.port6 = int(self.http6.server_address[1])
+        ports.extend((self.port, self.port6))
+        for made in (self.http, self.http6):
+            made.daemon_threads = True
+            threading.Thread(target=made.serve_forever, args=(0.1,), daemon=True).start()
 
     def close(self) -> None:
-        self.http.shutdown()
-        self.http.server_close()
+        for made in (self.http, self.http6):
+            made.shutdown()
+            made.server_close()
+
+
+@pytest.fixture
+def root() -> Iterator[Path]:
+    """A short folder for the sessions: a socket's path may be at most 103 bytes, and pytest's
+    own folders are longer than Jarvis's runtime folder."""
+    made = Path(tempfile.mkdtemp(prefix="jb-"))
+    yield made / "browser"
+    shutil.rmtree(made, ignore_errors=True)
 
 
 @pytest.fixture
@@ -129,7 +162,7 @@ def server() -> Iterator[Server]:
     made.close()
 
 
-def _proxy(server: Server) -> EgressProxy:
+def _proxy(server: Server, made: list[EgressProxy] | None = None) -> EgressProxy:
     def resolve(host: str, port: int, **_kw: object) -> list[tuple[Any, ...]]:
         if host == NAME:
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (PUBLIC, port))]
@@ -140,19 +173,24 @@ def _proxy(server: Server) -> EgressProxy:
             return socket.create_connection(("127.0.0.1", server.port), timeout=timeout)
         return socket.create_connection((address, port), timeout=timeout)
 
-    return EgressProxy(resolve=resolve, connect=connect)
+    proxy = EgressProxy(resolve=resolve, connect=connect)
+    if made is not None:
+        made.append(proxy)
+    return proxy
 
 
 def test_page_scripts_frames_and_redirects_reach_nothing_on_this_pc(
-    tmp_path: Path, server: Server
+    root: Path, server: Server
 ) -> None:
     program = shutil.which("agent-browser")
     assert program is not None
-    browser = Browser(program, tmp_path / "browser", idle_close_s=30, proxy=lambda: _proxy(server))
+    proxies: list[EgressProxy] = []
+    browser = Browser(program, root, idle_close_s=30, proxy=lambda: _proxy(server, proxies))
     try:
+        browser.open(f"http://{NAME}/")
+        time.sleep(4)  # the page's scripts try their connections
         view = browser.open(f"http://{NAME}/")
-        time.sleep(3)  # the page's scripts try their connections
-        view = browser.open(f"http://{NAME}/") if "waiting" in view.text else view
+        text = view.text
         with pytest.raises(BrowserError):
             browser.open(f"http://{NAME}/redirect")
         with pytest.raises(BrowserError):
@@ -160,13 +198,27 @@ def test_page_scripts_frames_and_redirects_reach_nothing_on_this_pc(
     finally:
         browser.close()
 
+    (proxy,) = proxies
+    assert "/ok-fetch" in server.hits  # the page's scripts ran, through the proxy
+    assert "own site reached" in text
+    for host, port in [
+        ("127.0.0.1", server.port),
+        ("::1", server.port6),
+        ("localhost", server.port),
+        (METADATA, 80),
+        (HOME_NETWORK, 80),
+    ]:
+        assert proxy.was_refused(host, port), f"{host}:{port} was never tried, or not refused"
     assert [hit for hit in server.hits if hit.startswith("/leak")] == []
-    assert "reached" not in view.text
-    assert "candidate" not in view.text
-    assert list((tmp_path / "browser").iterdir()) == []
+    for leak in ("fetch", "v6", "name", "metadata", "home", "ws"):
+        assert f"{leak} reached" not in text
+    assert "candidate" not in text
+    assert list(root.iterdir()) == []
 
 
-def test_a_preview_reaches_its_own_project_and_nothing_else(tmp_path: Path, server: Server) -> None:
+def test_a_preview_reaches_its_own_project_and_nothing_else(
+    tmp_path: Path, root: Path, server: Server
+) -> None:
     program = shutil.which("agent-browser")
     assert program is not None
     site = tmp_path / "me" / "Documents" / "site"
@@ -185,26 +237,42 @@ fetch('https://example.com/').then(() => r.textContent += ' internet')
         site, Boundary.of(FilesConfig(write_roots=["~/Documents"]), tmp_path / "me")
     )
     origin = folder.start()
-    browser = preview_browser(folder, program, tmp_path / "browser", idle_close_s=30)
+    proxies: list[EgressProxy] = []
+
+    def preview_proxy() -> EgressProxy:
+        made = EgressProxy(local_port=folder.port, local_header=(folder.header, folder.token))
+        proxies.append(made)
+        return made
+
+    browser = Browser(
+        program,
+        root,
+        idle_close_s=30,
+        proxy=preview_proxy,
+        origin=origin,
+        on_close=folder.stop,
+    )
     try:
         browser.open(f"{origin}/")
-        time.sleep(3)  # the page's scripts try their connections
+        time.sleep(4)  # the page's scripts try their connections
         view = browser.open(f"{origin}/")
     finally:
         browser.close()
-        folder.stop()
 
+    (proxy,) = proxies
     assert "Built" in view.text
+    # Refused at the proxy, not merely stopped by the page's own CORS rules.
+    assert proxy.was_refused("127.0.0.1", server.port)
+    assert proxy.was_refused("example.com", 443)
     assert [hit for hit in server.hits if hit.startswith("/leak")] == []
     assert "reached" not in view.text
     assert "internet" not in view.text
-    assert list((tmp_path / "browser").iterdir()) == []
+    assert list(root.iterdir()) == []
 
 
-def test_a_download_a_page_starts_saves_nothing(tmp_path: Path, server: Server) -> None:
+def test_a_download_a_page_starts_saves_nothing(root: Path, server: Server) -> None:
     program = shutil.which("agent-browser")
     assert program is not None
-    root = tmp_path / "browser"
     browser = Browser(program, root, idle_close_s=30, proxy=lambda: _proxy(server))
     try:
         browser.open(f"http://{NAME}/download-page")
