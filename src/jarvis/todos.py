@@ -84,7 +84,7 @@ def short_form(items: tuple[Todo, ...]) -> str:
     return f"{done} of {len(items)} done: {body}"
 
 
-ABOUT = "The chat's todo list, for multi-step work: send the whole list each call, one in_progress."
+ABOUT = "Chat todo list for multi-step work: send the whole list each call; empty clears it."
 
 
 def _status(value: object) -> Status:

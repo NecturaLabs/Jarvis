@@ -373,7 +373,7 @@ def visible_note(question: Question) -> str:
 
 ABOUT = (
     "Ask the owner to choose (2-4 options, short header). Never for permission: an "
-    "answer is never a yes. recommended: your pick, 0-based. wait: true pauses."
+    "answer is never a yes. recommended: your pick, 0-based. wait: pause till answered."
 )
 
 
@@ -393,7 +393,8 @@ def operation(questions: Questions) -> Operation:
             raise OperationError(msg)
         options = tuple(
             Choice(
-                one_line(str(row["label"]))[:MAX_LABEL], one_line(str(row.get("description", "")))
+                one_line(str(row.get("label", "")))[:MAX_LABEL],
+                one_line(str(row.get("description", ""))),
             )
             for row in objs(args["options"])
         )

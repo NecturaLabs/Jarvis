@@ -11,6 +11,7 @@ from jarvis.agent import Agent, Declined, Hooks, Limits
 from jarvis.app import channel_limits, channel_registry, offered_registry
 from jarvis.askowner import (
     MAX_HEADER,
+    NAME,
     Choice,
     Outcome,
     Question,
@@ -147,6 +148,31 @@ def test_a_question_that_makes_no_sense_is_refused_and_nothing_is_shown(
         op.run(validate_args(op, _args(**more)))
 
     assert view.opened == []
+
+
+@pytest.mark.parametrize(
+    "options",
+    [[{"description": "x"}, {"label": "B"}], [{}, {"label": "B"}], [{"label": "A"}, {}]],
+    ids=["no label", "empty option", "empty second"],
+)
+def test_an_option_with_no_label_is_refused_as_needing_words(options: list[Any]) -> None:
+    questions, view, _ = _setup()
+    op = operation(questions)
+
+    with (
+        request_scope(foreign=False),
+        pytest.raises(OperationError, match="need words"),
+    ):
+        op.run(validate_args(op, _args(options=options)))
+
+    assert view.opened == []
+
+
+def test_the_names_are_the_ones_the_scan_reads() -> None:
+    from jarvis import todos  # ruff: ignore[import-outside-top-level] - only here
+
+    assert operation(Questions()).name == NAME
+    assert todos.operation(todos.TodoList()).name == todos.NAME
 
 
 def test_a_long_header_is_cut_and_an_option_may_go_without_a_description() -> None:

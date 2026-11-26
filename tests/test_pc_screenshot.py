@@ -261,6 +261,36 @@ def test_screenshots_go_where_omarchy_saves_them(tmp_path: Path) -> None:
     assert save_folder(tmp_path, {"OMASNAP_SCREENSHOT_DIR": "~/s"}) == Path("~/s").expanduser()
 
 
+@pytest.mark.parametrize("noted", ["timed_out", "closed"])
+def test_a_request_that_went_on_alone_after_a_question_takes_no_screenshot(
+    desktop: FakeDesktop, tmp_path: Path, noted: str
+) -> None:
+    grim = Grim(desktop)
+    shots, _, copied = _ops(desktop, tmp_path, grim)
+
+    with (
+        request_scope(foreign=False, noted=noted),
+        pytest.raises(OperationError, match="owner's own request"),
+    ):
+        shots.screenshot({"of": "screen"})
+
+    assert grim.calls == []
+    assert copied == []
+
+
+def test_a_request_begun_from_the_owners_answer_takes_the_screenshot(
+    desktop: FakeDesktop, tmp_path: Path
+) -> None:
+    grim = Grim(desktop)
+    shots, _, copied = _ops(desktop, tmp_path, grim)
+
+    with request_scope(foreign=False, noted="answer"):
+        shots.screenshot({"of": "screen"})
+
+    assert grim.calls == [[]]
+    assert len(copied) == 1
+
+
 def test_a_request_heard_in_pc_audio_takes_no_screenshot(
     desktop: FakeDesktop, tmp_path: Path
 ) -> None:

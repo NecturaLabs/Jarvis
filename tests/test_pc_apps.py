@@ -187,6 +187,30 @@ def test_a_request_heard_in_pc_audio_opens_nothing() -> None:
     assert fake.ran == []
 
 
+@pytest.mark.parametrize("noted", ["timed_out", "closed"])
+def test_a_request_that_went_on_alone_after_a_question_opens_nothing(noted: str) -> None:
+    fake = FakeHyprland()
+    (op,) = _ops(fake).operations()
+
+    with (
+        request_scope(foreign=False, noted=noted),
+        pytest.raises(OperationError, match="owner's own request"),
+    ):
+        op.run(validate_args(op, {"app": "spotify", "where": "3"}))
+
+    assert fake.ran == []
+
+
+def test_a_request_begun_from_the_owners_answer_opens_the_program() -> None:
+    fake = FakeHyprland(opens_on="3")
+    (op,) = _ops(fake).operations()
+
+    with request_scope(foreign=False, noted="answer"):
+        result = op.run(validate_args(op, {"app": "spotify", "where": "3"}))
+
+    assert result.text == "Opened spotify on workspace 3."
+
+
 def test_nothing_opens_outside_a_request() -> None:
     fake = FakeHyprland()
     (op,) = _ops(fake).operations()
