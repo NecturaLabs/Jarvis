@@ -48,7 +48,7 @@ from jarvis.pictures import Picture
 from jarvis.policy import OpClass, Origin, action_hash
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 OWNER = 1000
 SELF = 900  # Jarvis's own PID in the fake tree
@@ -57,6 +57,7 @@ TICKS = 100
 NOW = BOOT + 10_000.0
 APP = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-graphical.slice/x.scope"
 SESSION = "0::/user.slice/user-1000.slice/session-1.scope"
+PAGE = 4096
 REAL_PIDFD_SEND = signal.pidfd_send_signal
 REAL_KILL = os.kill
 
@@ -107,6 +108,7 @@ class FakeProc:
         threads: int = 1,
         utime: int = 0,
         stime: int = 0,
+        rss_kib: int = 0,
     ) -> None:
         folder = self.root / str(pid)
         folder.mkdir(exist_ok=True)
@@ -128,6 +130,8 @@ class FakeProc:
         link.unlink(missing_ok=True)
         link.symlink_to(exe or (words[0] if words and words[0].startswith("/") else f"/x/{comm}"))
         (folder / "cgroup").write_text(cgroup + "\n", encoding="utf-8")
+        pages = rss_kib * 1024 // PAGE
+        (folder / "statm").write_text(f"{pages * 2} {pages} 0 0 0 0 0\n", encoding="utf-8")
 
     def remove(self, pid: int) -> None:
         folder = self.root / str(pid)
@@ -172,6 +176,7 @@ def _ops(
     proc: FakeProc,
     stopper: FakeStopper | None = None,
     windows: list[Window] | None = None,
+    sleep: Callable[[float], None] = lambda _s: None,
 ) -> ProcessOps:
     return ProcessOps(
         proc=proc.root,
@@ -181,6 +186,8 @@ def _ops(
         stopper=stopper or FakeStopper(),
         clock=lambda: NOW,
         ticks_per_s=TICKS,
+        sleep=sleep,
+        page_size=PAGE,
     )
 
 
@@ -256,7 +263,7 @@ def test_stop_process_refuses_bad_arguments_before_anything_runs(
         validate_args(_op(_ops(proc), "stop_process"), args)
 
 
-@pytest.mark.parametrize("args", [{}, {"name": ""}, {"name": "x" * 81}, {"name": "a", "pid": 3}])
+@pytest.mark.parametrize("args", [{"name": ""}, {"name": "x" * 81}, {"name": "a", "pid": 3}])
 def test_find_processes_refuses_bad_arguments(proc: FakeProc, args: dict[str, Any]) -> None:
     with pytest.raises(ArgumentError):
         validate_args(_op(_ops(proc), "find_processes"), args)
@@ -1591,3 +1598,104 @@ def test_a_pid_written_beside_its_listing_is_not_stopped(proc: FakeProc) -> None
         _list(ops, "orbit")  # the model has not read the list yet: the PID would be a guess
         with pytest.raises(OperationError, match="not read yet"):
             _bind(ops, 4242)
+
+
+# --- listing every program (no name) -----------------------------------------------------
+
+
+def _all(ops: ProcessOps, **args: object) -> str:
+    op = _op(ops, "find_processes")
+    return op.run(validate_args(op, args)).text
+
+
+def _desktop(proc: FakeProc) -> None:
+    proc.add(3000, "firefox", start=400_000, rss_kib=900 * 1024, utime=10)
+    proc.add(
+        3001,
+        "Isolated Web Co",
+        ppid=3000,
+        start=410_000,
+        rss_kib=600 * 1024,
+        exe="/usr/lib/firefox/firefox",
+    )
+    proc.add(3100, "orbit", start=600_000, rss_kib=200 * 1024)
+    proc.add(3200, "notes", start=700_000, rss_kib=50 * 1024)
+    proc.add(3300, "strata", ppid=1356, start=300_000, rss_kib=4000 * 1024)
+    proc.add(3400, "postgres", uid=970, start=200_000, rss_kib=8000 * 1024)
+
+
+def test_without_a_name_every_program_is_listed_by_memory(proc: FakeProc) -> None:
+    _desktop(proc)
+
+    text = _all(_ops(proc))
+
+    rows = [line for line in text.splitlines() if line.startswith("- ")]
+    assert [row.split(":")[0] for row in rows[:4]] == [
+        "- strata",
+        "- firefox",
+        "- orbit",
+        "- notes",
+    ]
+    assert "2 processes" in rows[1]
+    assert "1.5 GiB" in rows[1]
+    assert "never stopped" in rows[0]
+    assert "postgres" not in text  # another user's
+    assert "kthreadd" not in text
+
+
+def test_the_listing_sorts_by_cpu_over_a_short_sample(proc: FakeProc) -> None:
+    _desktop(proc)
+
+    def busy(_seconds: float) -> None:
+        proc.add(
+            3200, "notes", start=700_000, rss_kib=50 * 1024, utime=40
+        )  # 40 ticks in the sample
+
+    text = _all(_ops(proc, sleep=busy), sort="cpu")
+
+    first = next(line for line in text.splitlines() if line.startswith("- "))
+    assert first.startswith("- notes:")
+    assert "% CPU" in first
+
+
+def test_the_listing_sorts_by_newest(proc: FakeProc) -> None:
+    _desktop(proc)
+
+    text = _all(_ops(proc), sort="newest")
+
+    first = next(line for line in text.splitlines() if line.startswith("- "))
+    assert first.startswith("- notes:")
+
+
+def test_the_listing_shows_count_rows_and_says_how_many_more(proc: FakeProc) -> None:
+    _desktop(proc)
+
+    text = _all(_ops(proc), count=2)
+
+    assert len([line for line in text.splitlines() if line.startswith("- ")]) == 2
+    assert "more" in text
+
+
+def test_a_program_from_the_listing_cannot_be_stopped_by_its_pid(
+    proc: FakeProc, owner_request: None
+) -> None:
+    del owner_request
+    _desktop(proc)
+    ops = _ops(proc)
+    _all(ops)
+    request = current_request()
+    assert request is not None
+    request.next_message()
+
+    with pytest.raises(OperationError, match="find_processes"):
+        _bind(ops, 3100)
+
+
+def test_the_listing_arguments_are_checked() -> None:
+    op = _op(ProcessOps(), "find_processes")
+
+    validate_args(op, {})
+    with pytest.raises(ArgumentError):
+        validate_args(op, {"sort": "size"})
+    with pytest.raises(ArgumentError):
+        validate_args(op, {"count": 0})

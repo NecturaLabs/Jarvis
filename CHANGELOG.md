@@ -8,6 +8,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `find_processes` without a name lists every running program of the owner's, each with its processes'
+  memory and CPU use added up, sorted by memory, CPU or newest (`sort`, `count`). Jarvis can answer what is
+  running or what uses the most; the listing binds no PID, so stopping one still goes through a by-name find
+  and the confirm key.
+
 - Skill plugins: skills from marketplaces in the Claude Code format, enabled with `jarvis plugins install
   PLUGIN@MARKETPLACE` and kept at the newest commit of their repository (no pinned version), by
   `jarvis plugins update` and `jarvis update --apply`. Only a plugin's skills are used; its hooks, commands,

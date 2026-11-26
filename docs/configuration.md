@@ -957,6 +957,16 @@ window = "\\bspotify\\b"                 # matched, case-blind, with a window's 
 | `programs.<name>.command` | | 1 to 32 strings | The program and its arguments. |
 | `programs.<name>.window` | | a regular expression | How the program's window is known: by its class, never its title, so a browser tab named after it is not taken for it. Only windows that were not open before it was started are moved. |
 
+## Seeing what is running
+
+Ask in any words what is running, or what uses the most memory or CPU, and Jarvis lists your running
+programs (`find_processes` without a name, `safe`): each program once, with its processes added up, how much
+memory they use and their CPU use over half a second, its window's title and when it last started. The list is
+sorted by memory, CPU or newest (`sort`), shows 12 by default (`count`, up to 40) and says how many more run.
+Another user's processes and the kernel's are left out; the programs Jarvis never stops (below) are listed
+and marked. A child running the same program as its parent (a browser's tabs) counts as that program. Nothing
+in this list can be stopped by its PID: to stop one, Jarvis looks it up by name first, as below.
+
 ## Stopping a program
 
 Ask in any words to close, end or kill a program. Jarvis first
