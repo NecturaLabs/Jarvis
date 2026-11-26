@@ -7,6 +7,7 @@ Every test fakes `/proc/meminfo` and the model file's size: nothing here reads t
 
 import json
 import os
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, replace
@@ -992,6 +993,44 @@ def test_a_switch_that_changes_no_file_asks_nothing(tmp_path: Path) -> None:
     assert not done.restarted
 
 
+def _coding_that_changes(tmp_path: Path, **coding: object) -> Config:
+    """A config whose coding mode differs from the normal one in `coding` alone."""
+    cfg = local(tmp_path)
+    same = {
+        "context": cfg.strata.context,
+        "reasoning_budget_tokens": cfg.strata.reasoning_budget_tokens,
+    }
+    return cfg.model_copy(update={"coding": config.CodingConfig.model_validate({**same, **coding})})
+
+
+def test_a_mode_that_changes_only_the_unit_still_asks(tmp_path: Path) -> None:
+    # Only the memory limit differs: the profile is the same text, the unit is not.
+    cfg = _coding_that_changes(tmp_path, memory_max="44G")
+    _install(cfg)
+    served = modes.effective(cfg, "coding")
+    assert json.dumps(services.strata_profile(served), indent=1) + "\n" == (
+        services.strata_profile_file().read_text(encoding="utf-8")
+    )
+
+    done = _switcher(cfg, _Units(), lambda _served: "no room").switch("coding", "owner")
+
+    assert "no room" in done.error
+
+
+def test_a_mode_that_changes_only_the_profile_still_asks(tmp_path: Path) -> None:
+    # Only the context differs: the unit is the same text, the profile is not.
+    cfg = _coding_that_changes(tmp_path, context=StrataConfig().context + 1024)
+    _install(cfg)
+    served = modes.effective(cfg, "coding")
+    assert services.strata_unit(served, paths.strata_key_file()) == (
+        (services.unit_dir() / STRATA_UNIT).read_text(encoding="utf-8")
+    )
+
+    done = _switcher(cfg, _Units(), lambda _served: "no room").switch("coding", "owner")
+
+    assert "no room" in done.error
+
+
 def test_a_switch_after_a_killed_one_restarts_and_asks_even_with_the_same_files(
     tmp_path: Path,
 ) -> None:
@@ -1033,6 +1072,53 @@ def _systemctl_ok(*_args: str) -> int:
 
 def _inactive(_unit: str) -> str:
     return "inactive"
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "skips"),
+    [(75, True), (0, False), (1, False), (2, False), (203, False), (255, False)],
+)
+def test_the_wrapper_lets_only_the_checks_own_refusal_skip_the_start(
+    tmp_path: Path, exit_code: int, *, skips: bool
+) -> None:
+    check = tmp_path / "check.sh"
+    check.write_text(f"#!/bin/sh\nexit {exit_code}\n", encoding="utf-8")
+    check.chmod(0o755)
+
+    done = subprocess.run(
+        ["/bin/sh", "-c", services._FAIL_OPEN, "sh", str(check), "-I", "-m", "jarvis.ramguard"],  # pyright: ignore[reportPrivateUsage] - the wrapper the unit runs
+        check=False,
+        timeout=10,
+    )
+
+    assert done.returncode == (ramguard.EXIT_SHORT if skips else 0)
+
+
+def test_the_wrapper_lets_the_server_start_when_the_check_is_not_there(tmp_path: Path) -> None:
+    done = subprocess.run(
+        ["/bin/sh", "-c", services._FAIL_OPEN, "sh", str(tmp_path / "gone")],  # pyright: ignore[reportPrivateUsage] - the wrapper the unit runs
+        check=False,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert done.returncode == 0
+
+
+def test_the_wrapper_passes_a_path_with_spaces_whole(tmp_path: Path) -> None:
+    folder = tmp_path / "a folder"
+    folder.mkdir()
+    check = folder / "check.sh"
+    check.write_text("#!/bin/sh\nexit 75\n", encoding="utf-8")
+    check.chmod(0o755)
+
+    done = subprocess.run(
+        ["/bin/sh", "-c", services._FAIL_OPEN, "sh", str(check)],  # pyright: ignore[reportPrivateUsage] - the wrapper the unit runs
+        check=False,
+        timeout=10,
+    )
+
+    assert done.returncode == ramguard.EXIT_SHORT
 
 
 def _skipped_start(

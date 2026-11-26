@@ -49,8 +49,8 @@ Chosen option 3.
   off again.
 - **What counts as already loaded.** The client guard and `doctor` add what the server's cgroup holds (always,
   also for a running server that lists the model as unloaded: Strata lists a load that another process began as
-  unloaded too, so the load's growing memory cannot be told apart from an idle server's few hundred MiB, and
-  crediting it never costs more than the margin), as the
+  unloaded too, so the load's growing memory cannot be told apart from an idle server's, whose anonymous
+  memory was not measured: a few hundred MiB is an estimate, and the margin is meant to absorb it), as the
   restart paths do, and the client asks nothing while a load of its own waits for its answer or the server
   lists the model as loaded: the model's memory is then already out of `MemAvailable`, and refusing would be
   wrong. A load under way in another process has taken part of its memory already, which the same credit
@@ -69,7 +69,9 @@ Chosen option 3.
   restart and prints the reason; the rest of the update goes ahead, and `jarvis restart` reloads when there is
   room. `jarvis doctor` shows the check; the update's health check only notes it. A refusal in the
   commands, the unit, the switch, the client and the update is audited as `ram_refused` with where, the
-  need, what was available, the margin and the model file.
+  need, what was available (with the credit it includes: the memory a stopping server gives back, `credit`),
+  the margin and the model file. A start the unit skipped after the command's own check passed is audited
+  twice, once by each.
 - **The unit's check.** It runs as `python -I -m jarvis.ramguard` (isolated: no current-directory or
   environment path; checked against the venv's editable install, which it still finds), and it is an
   `ExecCondition=`, not an `ExecStartPre=`. Probed with transient user units: an `ExecStartPre=` that exits

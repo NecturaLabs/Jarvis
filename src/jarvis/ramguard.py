@@ -154,7 +154,7 @@ def reason(model: Path | None, strata: config.StrataConfig, *, credit: int = 0) 
 
 
 def refusal(where: str, verdict: Verdict) -> str:
-    """Audit a refused load (`ram_refused`: where, need, available, margin, the model file).
+    """Audit a refused load (`ram_refused`: where, need, available, credit, margin, the model file).
 
     Returns the reason, or "" when `verdict` refuses nothing and nothing is recorded.
     """

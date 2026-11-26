@@ -482,8 +482,7 @@ less than `strata.min_free_ram_mib` is refused, with the figures, and nothing is
 | `jarvis run` loading the model at start, the wake word loading it after `jarvis unload`, a resume | Logged, and nothing asks the server to load. The next wake word asks again. A server that already holds the model, or a load already under way, is never refused: its memory is no longer in `MemAvailable`. |
 | A request that finds the model unloaded, or the server down because its unit refused to start | Jarvis answers that it cannot load its model for lack of memory, and to run `jarvis start` if the server is stopped, instead of letting the server load it. |
 
-Every refusal is written to the audit log as `ram_refused` (where it came from, the need, what was available,
-the margin and the model file).
+Every refusal is written to the audit log as `ram_refused` (where it came from, the need, what was available, the credit that figure includes (the memory a stopping server gives back), the margin and the model file).
 
 `jarvis doctor` shows the check as a line (`memory for the model`) with the figures; it fails while a load
 would be refused, and in the check `jarvis update` runs afterwards it is only a note, so an update is not
