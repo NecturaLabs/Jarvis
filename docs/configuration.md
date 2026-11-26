@@ -501,9 +501,8 @@ being swapped; the lock is what Strata's own start-up text asks a systemd servic
 
 ### Refusing a load that does not fit
 
-Strata reads the model's experts into RAM when it loads. Started with a game running and 13 to 20 GB of RAM
-available, the model server's load (about 39 GB, `loading the experts into RAM (about 39 GB)` in Strata's log)
-made the kernel fail page allocations, and the game's process died. Jarvis now checks first. The need is the
+Strata reads the model's experts into RAM when it loads. Jarvis checks first, because a load that did not
+fit made the kernel fail page allocations and ended a running game. The need is the
 size of the model file the profile serves (`--native`; a second file the run config names, such as
 `--ple-gguf`, is not counted); what is available is `MemAvailable`, plus, for a restart, the anonymous memory the
 running server holds (read from its cgroup), which the restart frees before the load. A load that would leave
@@ -518,7 +517,8 @@ less than `strata.min_free_ram_mib` is refused, with the figures, and nothing is
 | `jarvis run` loading the model at start, the wake word loading it after `jarvis unload`, a resume | Logged, and nothing asks the server to load. The next wake word asks again. A server that already holds the model, or a load already under way, is never refused: its memory is no longer in `MemAvailable`. |
 | A request that finds the model unloaded, or the server down because its unit refused to start | Jarvis answers that it cannot load its model for lack of memory, and to run `jarvis start` if the server is stopped, instead of letting the server load it. |
 
-Every refusal is written to the audit log as `ram_refused` (where it came from, the need, what was available, the credit that figure includes (the memory a stopping server gives back), the margin and the model file).
+Every refusal is audited as `ram_refused`: where it came from, the need, the memory available (with the credit
+a stopping server gives back), the margin and the model file.
 
 `jarvis doctor` shows the check as a line (`memory for the model`) with the figures; it fails while a load
 would be refused, and in the check `jarvis update` runs afterwards it is only a note, so an update is not
@@ -1106,7 +1106,9 @@ coding mode works as the chat does in coding mode: the coding prompt, `[coding.c
 run config, the first request uses the same switch as `/model coding` and reports the result. With a
 shared run config, it keeps the shared mode and uses the normal context limit. While it answers, the
 voice service holds off automatic model restarts. An answer in the shared coding mode refreshes the
-timer set by `coding.back_after_s`. Each session's conversation is kept in `~/.local/state/jarvis/acp-sessions/` after every reply (the
+timer set by `coding.back_after_s`.
+
+Each session's conversation is kept in `~/.local/state/jarvis/acp-sessions/` after every reply (the
 newest 200), so when T3 Code starts a new `jarvis acp` for a thread it already had, after either one
 restarts, the thread opens again with its conversation (`session/load`) and goes on. `/clear` in the
 thread forgets the conversation and starts it afresh, as in the chat window; Jarvis offers it in T3 Code's
