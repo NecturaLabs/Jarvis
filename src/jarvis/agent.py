@@ -1705,10 +1705,12 @@ class Agent:
         )
 
     def _shortcut(self, hit: shortcuts.Matched, hooks: Hooks, turn: _Turn) -> str | None:
-        """Run a plain command without the model; return its spoken result, or None to go on.
+        """Run a plain command without the model; return its ready answer, or None to go on.
 
         The call is put in the conversation like one the model wrote, so when its result needs
         wording (a failure, or an operation with no ready sentence) the model continues from it.
+        A window that shows the reply (`hooks.draft` without `speak`) gets the answer as the
+        operation laid it out to be read (`Result.written`), when it has one.
         """
         operation = self._registry.get(hit.operation)
         self._audit.record("shortcut", op=hit.operation, args=_audited(operation, hit.arguments))
@@ -1723,7 +1725,8 @@ class Agent:
             (result,) = self._run_calls([call], hooks, turn)
         finally:
             turn.plain = False
-        return result.spoken or None
+        shown = hooks.draft is not None and hooks.speak is None
+        return (result.written if shown and result.spoken else "") or result.spoken or None
 
     def _converse(self, hooks: Hooks, turn: _Turn) -> str:
         """Let the model work through the request within the step and time limits."""

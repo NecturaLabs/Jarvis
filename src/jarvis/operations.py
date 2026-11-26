@@ -220,7 +220,8 @@ class Result:
     """What an operation returns to the model, with the origin of its text.
 
     `spoken` is a finished sentence for the owner. An operation sets it when its result needs no
-    wording by the model, which lets a shortcut request be answered without the model. `picture`
+    wording by the model, which lets a shortcut request be answered without the model; `written`
+    is that answer laid out in Markdown, for a window that shows the reply instead. `picture`
     is a picture file the chat shows (with its `caption`), from Jarvis's own picture folder.
     `acted` marks a result that is not `ok` although the operation did act: a command ran but
     exited non-zero, a program was asked to stop but is still running, a program started but its
@@ -243,6 +244,7 @@ class Result:
     origin: Origin = Origin.TOOL_STATUS
     ok: bool = True
     spoken: str = ""
+    written: str = ""
     picture: str = ""
     caption: str = ""
     acted: bool = False

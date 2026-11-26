@@ -125,6 +125,36 @@ def test_a_pc_with_room_everywhere_says_so_first_when_spoken(tmp_path: Path) -> 
     assert result.spoken.startswith("Nothing is near its limit. The CPU is at 12 percent")
 
 
+def test_a_window_gets_the_figures_as_a_list_under_the_verdict(tmp_path: Path) -> None:
+    (op,) = _stats(tmp_path)[0].operations()
+
+    written = op.run(validate_args(op, {"programs": False})).written
+
+    verdict, figures, rest = written.split("\n\n")
+    specs, *rows = figures.splitlines()
+    assert verdict == "Nothing is near its limit."
+    assert specs.startswith("- **PC**: Test CPU 9000")  # then this PC's own thread count
+    assert specs.endswith("64.0 GB RAM, graphics card with 20.0 GB VRAM")
+    assert rows == [
+        "- **CPU**: 12% busy, 54 °C",
+        "- **Memory**: 16.0 of 64.0 GB used (25%), 48.0 GB free",
+        "- **Graphics card**: 3% busy, 14.0 of 20.0 GB VRAM used (70%)",
+        "- **Disk ~**: 500 of 2000 GB used (25%), 1500 GB free",
+    ]
+    assert rest == "Up 2 days 3 hours."
+
+
+def test_a_report_that_names_programs_is_never_laid_out_for_a_window(tmp_path: Path) -> None:
+    proc, sys = _tree(tmp_path)
+    usage = [Usage("some-program", 1, 2 * GIB, 5.0)]
+    ops = StatsOps(
+        Sampler(proc, sys), proc=proc, wait=_Ticks(proc), disks=list, usage=lambda: usage
+    )
+    (op,) = ops.operations()
+
+    assert not op.run(validate_args(op, {})).written
+
+
 def test_what_is_near_its_limit_is_named(tmp_path: Path) -> None:
     proc, sys = _tree(tmp_path)
     (proc / "meminfo").write_text(

@@ -200,16 +200,19 @@ class StatsOps:
         with contextlib.suppress(ValueError):
             lines.append(f"Up {_uptime(float(up[0]))}." if up else "")
         strained = _strained(sample, disks, swamped=swamped)
+        verdict = ""
         if strained:
             noted = "; ".join(f"{what} ({how})" if how else what for what, how in strained)
-            lines.insert(0, f"Worth a look: {noted}.")
+            verdict = f"Worth a look: {noted}."
         elif any(lines[1:]):  # with nothing measured, nothing is known to be well
-            lines.insert(0, ALL_WELL)
-        text = "\n".join(line for line in lines if line)
+            verdict = ALL_WELL
+        figures = [line for line in lines if line]
+        text = "\n".join([verdict, *figures] if verdict else figures)
         spoken = _spoken(sample, [what for what, _how in strained])
         if top:
             return Result(text, Origin.PROCESS, spoken=spoken)
-        return Result(text, spoken=spoken)
+        # Laid out only without program names: those are other programs' words.
+        return Result(text, spoken=spoken, written=_written(verdict, figures) if spoken else "")
 
     def _swamped(self) -> bool:
         """Whether more work has waited over the last minute than the CPU's threads can run."""
@@ -356,6 +359,19 @@ def _strained(sample: Stats, disks: list[Disk], *, swamped: bool) -> list[tuple[
         if d.total and d.used >= NEARLY_FULL * d.total
     )
     return found
+
+
+def _written(verdict: str, figures: list[str]) -> str:
+    """Return the report for a window: the verdict, each figure as a labelled bullet, the rest."""
+    rows: list[str] = []
+    rest: list[str] = []
+    for line in figures:
+        label, found, value = line.partition(": ")
+        if found:
+            rows.append(f"- **{label}**: {value.removesuffix('.')}")
+        else:
+            rest.append(line)
+    return "\n\n".join(part for part in (verdict, "\n".join(rows), " ".join(rest)) if part)
 
 
 def _spoken(sample: Stats, strained: list[str]) -> str:

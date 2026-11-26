@@ -2251,6 +2251,42 @@ def test_a_plain_command_runs_without_the_model() -> None:
     assert model.seen[0][2]["content"].startswith("[actions taken: pause -> ok]")
 
 
+def _load_op() -> Operation:
+    def run(_args: dict[str, Any]) -> Result:
+        return Result(
+            "load 12%",
+            spoken="The CPU is at twelve percent.",
+            written="All well.\n\n- **CPU**: 12%",
+        )
+
+    return Operation(
+        "load",
+        "The load.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        run,
+        side_effect=False,
+        spoken_summary=lambda _args: "check the load",
+        shortcuts=(Shortcut("load"),),
+    )
+
+
+def test_a_plain_command_shown_in_a_window_gets_the_answer_laid_out_to_read() -> None:
+    agent, _ = _agent(ScriptedModel([]), [_load_op()])
+    window = Hooks(confirm=lambda _q: False, draft=lambda _text: None)
+
+    assert agent.handle("load", window) == "All well.\n\n- **CPU**: 12%"
+
+
+def test_a_plain_command_that_is_spoken_or_printed_plain_keeps_the_sentence() -> None:
+    heard: list[str] = []
+    agent, _ = _agent(ScriptedModel([]), [_load_op()])
+    voice = Hooks(confirm=lambda _q: False, speak=heard.append, draft=lambda _text: None)
+
+    assert agent.handle("load", voice) == "The CPU is at twelve percent."
+    assert heard == ["The CPU is at twelve percent."]
+    assert agent.handle("load", NO_CONFIRM) == "The CPU is at twelve percent."
+
+
 def test_a_plain_command_whose_result_needs_wording_goes_to_the_model() -> None:
     counter = Counter()
     model = ScriptedModel([_say("Nothing was playing, so I left it.")])

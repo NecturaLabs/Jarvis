@@ -460,7 +460,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   is, so the reply's verdict is measured instead of guessed; the same goes first in the sentence a plain
   question hears. The raw load averages are gone (too much work is said in words), sizes are in GB and
   MB like file sizes (the same numbers as the GiB before), and memory says what is free. `find_processes`
-  gives sizes the same way.
+  gives sizes the same way. A plain question about the PC typed in the chat or T3 Code, which Jarvis
+  answers without the model, now shows that verdict and a labelled line for each part instead of the
+  sentence written for the voice (`Result.written`).
 - The weather now leaves out what says nothing: a feels-like temperature within 2 degrees of the real one,
   and precipitation when there is none.
 - `/config` in the chat is set as Claude Code's settings screen is: the sections are tabs across the top
