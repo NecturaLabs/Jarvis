@@ -24,12 +24,15 @@ if TYPE_CHECKING:
     from jarvis.pc.processes import Usage
     from jarvis.sysinfo import Sampler, Specs, Stats
 
-GIB = 1024**3
+GIB = 1024**3  # shown as "GB", the unit people say, as file sizes are (`jarvis.pc.files`)
 CPU_WINDOW_S = 0.25  # between the two samples a CPU share needs
 TOP = 3  # programs named as using the most memory and CPU
 BUSY_PERCENT = 1.0  # a program below this much CPU is not named as busy
 MIB = 1024**2
 MOUNT_POINT = 4  # the mount point's field in a /proc/self/mountinfo line
+HOT_C = 90  # a processor or graphics card at this temperature is named as hot
+NEARLY_FULL = 0.9  # memory, video memory or a disk used this far is named as nearly full
+ALL_WELL = "Nothing is near its limit."
 DAY_S = 86400
 HOUR_S = 3600
 MINUTE_S = 60
@@ -113,7 +116,7 @@ def home_disks(mountinfo: Path = Path("/proc/self/mountinfo")) -> list[Disk]:
 
 
 def _size(value: int) -> str:
-    return f"{_gib(value)} GiB" if value >= GIB else f"{value // MIB} MiB"
+    return f"{_gib(value)} GB" if value >= GIB else f"{value // MIB} MB"
 
 
 def _gib(value: int) -> str:
@@ -166,7 +169,10 @@ class StatsOps:
             return []
 
     def stats(self, args: dict[str, Any]) -> Result:
-        """Report the PC's specs and its load now, and with `programs` the busiest programs.
+        """Report what is near its limit, the PC's specs and load, and the busiest programs.
+
+        The first line names what is hot, nearly full or swamped, or says that nothing is, so
+        the model words a verdict that was measured. `programs=false` leaves the programs out.
 
         Program names are other programs' words, so a result that names them carries the
         `process` origin, as `find_processes` does.
@@ -176,39 +182,60 @@ class StatsOps:
             self._wait(CPU_WINDOW_S)
             sample = self._sampler.sample()
         specs = self._sampler.specs()
-        lines = [*self._cpu_lines(specs, sample), *self._memory_lines(sample), self._swap_line()]
+        swamped = self._swamped()
+        lines = [
+            *self._cpu_lines(specs, sample, swamped=swamped),
+            *self._memory_lines(sample),
+            self._swap_line(),
+        ]
         top = self._top_lines() if args.get("programs", True) else []
         lines.extend(top)
+        disks = self._disks()
         lines.extend(
-            f"Disk {d.name}: {round(d.used / GIB)} of {round(d.total / GIB)} GiB used "
-            f"({_share(d.used, d.total)}), {round((d.total - d.used) / GIB)} GiB free."
-            for d in self._disks()
+            f"Disk {d.name}: {round(d.used / GIB)} of {round(d.total / GIB)} GB used "
+            f"({_share(d.used, d.total)}), {round((d.total - d.used) / GIB)} GB free."
+            for d in disks
         )
         up = self._read("uptime")[:1]
         with contextlib.suppress(ValueError):
             lines.append(f"Up {_uptime(float(up[0]))}." if up else "")
+        strained = _strained(sample, disks, swamped=swamped)
+        if strained:
+            noted = "; ".join(f"{what} ({how})" if how else what for what, how in strained)
+            lines.insert(0, f"Worth a look: {noted}.")
+        elif any(lines[1:]):  # with nothing measured, nothing is known to be well
+            lines.insert(0, ALL_WELL)
         text = "\n".join(line for line in lines if line)
+        spoken = _spoken(sample, [what for what, _how in strained])
         if top:
-            return Result(text, Origin.PROCESS, spoken=_spoken(sample))
-        return Result(text, spoken=_spoken(sample))
+            return Result(text, Origin.PROCESS, spoken=spoken)
+        return Result(text, spoken=spoken)
 
-    def _cpu_lines(self, specs: Specs, sample: Stats) -> list[str]:
+    def _swamped(self) -> bool:
+        """Whether more work has waited over the last minute than the CPU's threads can run."""
+        load = self._read("loadavg")[:1]
+        threads = os.cpu_count()
+        with contextlib.suppress(ValueError):
+            return bool(load and threads) and float(load[0]) > (threads or 0)
+        return False
+
+    @staticmethod
+    def _cpu_lines(specs: Specs, sample: Stats, *, swamped: bool) -> list[str]:
         about = [specs.cpu_model or "Processor"]
         if specs.cpu_threads:
             about.append(f"({specs.cpu_threads} threads)")
         head = "PC: " + " ".join(about)
         if specs.ram_total:
-            head += f", {_gib(specs.ram_total)} GiB RAM"
+            head += f", {_gib(specs.ram_total)} GB RAM"
         if specs.gpu_vram_total:
-            head += f", graphics card with {_gib(specs.gpu_vram_total)} GiB VRAM"
+            head += f", graphics card with {_gib(specs.gpu_vram_total)} GB VRAM"
         cpu: list[str] = []
         if sample.cpu_percent is not None:
             cpu.append(f"{round(sample.cpu_percent)}% busy")
         if sample.cpu_temperature_c is not None:
             cpu.append(f"{round(sample.cpu_temperature_c)} °C")
-        load = self._read("loadavg")[:3]
-        if len(load) == 3:  # ruff: ignore[magic-value-comparison] - the 1, 5 and 15 minute loads
-            cpu.append(f"load {' / '.join(load)} (1, 5, 15 min) on {os.cpu_count() or '?'} threads")
+        if swamped:
+            cpu.append(f"more work waiting than its {os.cpu_count()} threads can run at once")
         return [head + ".", f"CPU: {', '.join(cpu)}." if cpu else ""]
 
     def _swap_line(self) -> str:
@@ -225,7 +252,7 @@ class StatsOps:
         if not total or free is None:
             return ""
         used = total - free
-        return f"Swap: {_gib(used)} of {_gib(total)} GiB used ({_share(used, total)})."
+        return f"Swap: {_gib(used)} of {_gib(total)} GB used ({_share(used, total)})."
 
     def _top_lines(self) -> list[str]:
         """Name the programs using the most memory and CPU, when a process reader is given."""
@@ -239,7 +266,7 @@ class StatsOps:
         by_memory = sorted(usage, key=lambda u: -u.rss)[:TOP]
         if by_memory:
             lines.append(
-                "Most memory (resident): "
+                "Using the most memory: "
                 + ", ".join(f"{u.name} {_size(u.rss)}" for u in by_memory)
                 + "."
             )
@@ -248,7 +275,7 @@ class StatsOps:
         ]
         if busy:
             lines.append(
-                "Most CPU: "
+                "Using the most CPU: "
                 + ", ".join(f"{u.name} {round(u.cpu_percent)}%" for u in busy[:TOP])
                 + "."
             )
@@ -260,8 +287,8 @@ class StatsOps:
         if sample.ram_used is not None and sample.ram_total:
             free = sample.ram_total - sample.ram_used
             lines.append(
-                f"Memory: {_gib(sample.ram_used)} of {_gib(sample.ram_total)} GiB used "
-                f"({_share(sample.ram_used, sample.ram_total)}), {_gib(free)} GiB available."
+                f"Memory: {_gib(sample.ram_used)} of {_gib(sample.ram_total)} GB used "
+                f"({_share(sample.ram_used, sample.ram_total)}), {_gib(free)} GB free."
             )
         gpu = sample.gpu
         if gpu is None:
@@ -271,7 +298,7 @@ class StatsOps:
             parts.append(f"{gpu.busy_percent}% busy")
         if gpu.vram_used is not None and gpu.vram_total:
             parts.append(
-                f"{_gib(gpu.vram_used)} of {_gib(gpu.vram_total)} GiB VRAM used "
+                f"{_gib(gpu.vram_used)} of {_gib(gpu.vram_total)} GB VRAM used "
                 f"({_share(gpu.vram_used, gpu.vram_total)})"
             )
         if gpu.temperature_c is not None:
@@ -286,8 +313,8 @@ class StatsOps:
             Operation(
                 "pc_stats",
                 "This PC's specs and how busy it is now: CPU, memory and swap, graphics card "
-                "and VRAM, temperatures, disks, uptime, and the programs using the most memory "
-                "and CPU.",
+                "and VRAM, temperatures, disks, uptime, the programs using the most memory "
+                "and CPU, and what is near its limit.",
                 {
                     "type": "object",
                     "properties": {
@@ -307,8 +334,32 @@ class StatsOps:
         ]
 
 
-def _spoken(sample: Stats) -> str:
-    """Return the load as one spoken sentence, or "" when nothing is known."""
+def _strained(sample: Stats, disks: list[Disk], *, swamped: bool) -> list[tuple[str, str]]:
+    """Return what is near its limit, each as words and the figure that says so ("" for none)."""
+    found: list[tuple[str, str]] = []
+    if sample.cpu_temperature_c is not None and sample.cpu_temperature_c >= HOT_C:
+        found.append(("the CPU is hot", f"{round(sample.cpu_temperature_c)} °C"))
+    if swamped:
+        found.append(("the CPU has more work than it can run at once", ""))
+    ram_used, ram_total = sample.ram_used, sample.ram_total
+    if ram_used is not None and ram_total and ram_used >= NEARLY_FULL * ram_total:
+        found.append(("memory is nearly full", _share(ram_used, ram_total)))
+    gpu = sample.gpu
+    if gpu is not None and gpu.temperature_c is not None and gpu.temperature_c >= HOT_C:
+        found.append(("the graphics card is hot", f"{round(gpu.temperature_c)} °C"))
+    vram_used, vram_total = (gpu.vram_used, gpu.vram_total) if gpu is not None else (None, 0)
+    if vram_used is not None and vram_total and vram_used >= NEARLY_FULL * vram_total:
+        found.append(("video memory is nearly full", _share(vram_used, vram_total)))
+    found.extend(
+        (f"disk {d.name} is nearly full", _share(d.used, d.total))
+        for d in disks
+        if d.total and d.used >= NEARLY_FULL * d.total
+    )
+    return found
+
+
+def _spoken(sample: Stats, strained: list[str]) -> str:
+    """Return the load as spoken sentences, what is near its limit first, or "" when unknown."""
     parts: list[str] = []
     if sample.cpu_percent is not None:
         cpu = f"the CPU is at {round(sample.cpu_percent)} percent"
@@ -330,5 +381,9 @@ def _spoken(sample: Stats) -> str:
         parts.append(card)
     if not parts:
         return ""
+    return f"{_sentence(strained) if strained else ALL_WELL} {_sentence(parts)}"
+
+
+def _sentence(parts: list[str]) -> str:
     sentence = ", ".join(parts[:-1]) + (" and " if len(parts) > 1 else "") + parts[-1]
     return sentence[0].upper() + sentence[1:] + "."

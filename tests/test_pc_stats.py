@@ -76,12 +76,79 @@ def test_pc_stats_reports_the_load_with_a_real_cpu_share(tmp_path: Path) -> None
 
     assert ticks.waits  # the CPU share needs two samples
     assert result.origin is Origin.TOOL_STATUS
-    for figure in ("Test CPU 9000", "12%", "54 °C", "16.0 of 64.0 GiB", "14.0 of 20.0 GiB", "3%"):
+    for figure in ("Test CPU 9000", "12%", "54 °C", "16.0 of 64.0 GB", "14.0 of 20.0 GB", "3%"):
         assert figure in result.text
-    assert "1.25" in result.text
-    assert "500 of 2000 GiB" in result.text
+    assert "500 of 2000 GB" in result.text
     assert "2 days 3 hours" in result.text
-    assert result.spoken.startswith("The CPU is at 12 percent")
+    assert "The CPU is at 12 percent" in result.spoken
+
+
+def test_sizes_are_in_the_units_people_say(tmp_path: Path) -> None:
+    (op,) = _stats(tmp_path)[0].operations()
+
+    text = op.run(validate_args(op, {})).text
+
+    assert "GiB" not in text
+    assert "MiB" not in text
+
+
+def test_a_load_the_cpu_keeps_up_with_is_not_reported(tmp_path: Path) -> None:
+    (op,) = _stats(tmp_path)[0].operations()
+
+    text = op.run(validate_args(op, {})).text
+
+    assert "1.25" not in text
+    assert "load" not in text.lower()
+
+
+def test_more_work_than_the_cpu_can_run_is_said_in_words(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ops, _ = _stats(tmp_path)
+    (tmp_path / "proc" / "loadavg").write_text("40.50 12.00 6.00 9/900 1234\n", encoding="utf-8")
+    monkeypatch.setattr(stats.os, "cpu_count", lambda: 16)
+    (op,) = ops.operations()
+
+    result = op.run(validate_args(op, {}))
+
+    assert "40.50" not in result.text
+    assert "more work waiting than its 16 threads can run at once" in result.text
+    assert "Worth a look: the CPU has more work than it can run at once." in result.text
+
+
+def test_a_pc_with_room_everywhere_says_so_first_when_spoken(tmp_path: Path) -> None:
+    (op,) = _stats(tmp_path)[0].operations()
+
+    result = op.run(validate_args(op, {}))
+
+    assert result.text.startswith("Nothing is near its limit.\nPC: Test CPU 9000")
+    assert result.spoken.startswith("Nothing is near its limit. The CPU is at 12 percent")
+
+
+def test_what_is_near_its_limit_is_named(tmp_path: Path) -> None:
+    proc, sys = _tree(tmp_path)
+    (proc / "meminfo").write_text(
+        f"MemTotal: {64 * 1024 * 1024} kB\nMemAvailable: {3 * 1024 * 1024} kB\n", encoding="utf-8"
+    )
+    (sys / "class/hwmon/hwmon7/temp1_input").write_text("93000\n", encoding="utf-8")
+    (sys / "class/drm/card1/device/mem_info_vram_used").write_text(
+        f"{19 * GIB}\n", encoding="utf-8"
+    )
+    disks = [Disk("~", 1000 * GIB, 960 * GIB)]
+    ops = StatsOps(Sampler(proc, sys), proc=proc, wait=_Ticks(proc), disks=lambda: disks)
+    (op,) = ops.operations()
+
+    result = op.run(validate_args(op, {}))
+
+    assert result.text.startswith(
+        "Worth a look: the CPU is hot (93 °C); memory is nearly full (95%); "
+        "video memory is nearly full (95%); disk ~ is nearly full (96%).\n"
+    )
+    assert "Nothing is near its limit" not in result.text
+    assert result.spoken.startswith(
+        "The CPU is hot, memory is nearly full, video memory is nearly full and disk ~ is "
+        "nearly full. The CPU is at"
+    )
 
 
 def test_missing_figures_are_left_out(tmp_path: Path) -> None:
@@ -97,6 +164,8 @@ def test_missing_figures_are_left_out(tmp_path: Path) -> None:
 
     assert "None" not in result.text
     assert result.text
+    assert "limit" not in result.text  # nothing was measured, so nothing is called well
+    assert not result.spoken
 
 
 @pytest.mark.parametrize(
@@ -132,10 +201,10 @@ def test_pc_stats_says_what_is_free_the_swap_and_who_uses_the_most(tmp_path: Pat
 
     text = op.run(validate_args(op, {})).text
 
-    assert "12.0 GiB available" in text
-    assert "Swap: 2.0 of 8.0 GiB used" in text
-    assert "Most memory (resident): model-server 36.0 GiB, browser 2.0 GiB, editor 512 MiB." in text
-    assert "Most CPU: browser 74%, editor 9%." in text  # an idle program is left out
+    assert "12.0 GB free" in text
+    assert "Swap: 2.0 of 8.0 GB used" in text
+    assert "Using the most memory: model-server 36.0 GB, browser 2.0 GB, editor 512 MB." in text
+    assert "Using the most CPU: browser 74%, editor 9%." in text  # an idle program is left out
 
 
 def test_pc_stats_without_a_process_reader_still_answers(tmp_path: Path) -> None:
@@ -144,7 +213,7 @@ def test_pc_stats_without_a_process_reader_still_answers(tmp_path: Path) -> None
 
     text = op.run(validate_args(op, {})).text
 
-    assert "Most memory" not in text
+    assert "the most memory" not in text
     assert "Swap" not in text  # no swap counters in this /proc
 
 

@@ -310,7 +310,18 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 ### Fixed
 
 - A reply no longer starts with "[looked up: …]": the notes memory puts before a remembered reply are
-  stripped when the model copies them, as "[actions taken: …]" already was.
+  stripped when the model copies them, as "[actions taken: …]" already was. So is the `<data origin="…">`
+  wrapper memory puts round a reply that drew on outside text, with the notes inside it: a reply that
+  copied it showed the tag in the chat and the note in T3 Code, and a voice would have read both out.
+  Such a start is no longer spoken or drafted while the reply is being written.
+- Spoken replies: a dash is a pause instead of a run-on (between numbers it is "to"), a unit sign after a
+  number is said as its word ("22 °C" as "22 degrees Celsius", "12 km/h" as "12 kilometres per hour",
+  "48 GB" as "48 gigabytes") instead of spelled out, a web address is said as its site, and a table's
+  rules, code fences, "→" and "~5" are no longer read as signs. "a.m." and "p.m." no longer end a
+  sentence, so "11 a.m. on Sunday" is spoken in one breath.
+- With `format.thousands_separator` set to a space or an apostrophe, the voice was told to write "25 000",
+  which is read aloud as "twenty-five zero zero zero". The voice now writes such numbers without a mark,
+  in its replies and in the calculator's answers; the chat keeps the mark you chose.
 - `pc_stats` lists a file system once (by its mount source) when the home folder and the root are two btrfs
   subvolumes of it.
 - Coding mode no longer lowers the chat's memory: `[coding.chat] memory_tokens` is unset by default, so it
@@ -438,6 +449,20 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- How written replies are laid out (the chat window and T3 Code): the first line is the answer or the
+  verdict, never a heading or an opener such as "Here is"; several readings of one thing (a status,
+  specs) are one bullet each, a bold label and its figures, with any remark in a sentence after the list;
+  a table is for comparing several things on the same columns; no closing summary. `concise` allows one
+  short list or table. Spoken replies round their figures, say units as words and keep to the two or three
+  figures that matter. Replies name no tool.
+- `pc_stats` starts with what is near its limit (a processor or graphics card at 90 °C or more, memory,
+  video memory or a disk 90% full, more work than the processor can run at once), or says that nothing
+  is, so the reply's verdict is measured instead of guessed; the same goes first in the sentence a plain
+  question hears. The raw load averages are gone (too much work is said in words), sizes are in GB and
+  MB like file sizes (the same numbers as the GiB before), and memory says what is free. `find_processes`
+  gives sizes the same way.
+- The weather now leaves out what says nothing: a feels-like temperature within 2 degrees of the real one,
+  and precipitation when there is none.
 - `/config` in the chat is set as Claude Code's settings screen is: the sections are tabs across the top
   (Tab and Shift+Tab, or ← → on the tab row), typing anywhere searches every section, and each setting is
   one line with its value in an aligned column and `❯` on the one the keyboard is on. What it does and when a

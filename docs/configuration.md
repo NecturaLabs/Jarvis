@@ -200,7 +200,7 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 | `verbosity` | `replies` | `replies`, `steps`, `everything` | How much of Jarvis's work the chat shows: requests and replies only, plus each step and its result, or plus every model call and detail. Ctrl+O and `/verbosity` change it and save it here. |
 | `toolbar` | `true` | `true`, `false` | The line under the input with the PC's CPU, GPU, VRAM and RAM use, temperatures, and how full the model's context is. In a narrow window it leaves out the temperatures first, so it stays on one line. |
 | `while_working` | `steer` | `steer`, `queue` | What Enter does while a request runs. `steer`: the words join that request as yours, before the model's next call; words it ended before taking run next. `queue`: they wait and run as the next request. Words sent with a picture or with anything pasted into them, however short, are always queued. Esc still stops the request; queued words then run. `/config` changes it. |
-| `response_format` | `concise` | `concise`, `normal`, `verbose` | How the model writes chat replies: briefly, in a few sentences and without headings; as much as the request needs; or explained in full, with headings for a long answer. `/format` and `/config` change it, from the next request on. The voice keeps its own short spoken style. |
+| `response_format` | `concise` | `concise`, `normal`, `verbose` | How the model writes chat replies: briefly, in a sentence or two with at most one short list or table and no headings; as much as the request needs; or explained in full, with headings for a long answer. In each, the first line is the answer, and several readings of one thing (a status, specs) are one bullet each with a bold label. `/format` and `/config` change it, from the next request on. The voice keeps its own short spoken style. |
 | `archive_keep` | `50` | 0 to 1000 | Chat conversations kept in `~/.local/state/jarvis/chat-archive/` (0600) for `/resume` and reading back: each with its full log of requests, steps, results and replies. Older ones are deleted; `0` keeps none, deletes those kept before when the chat opens, and turns `/resume` off. `/forget all` deletes them all and forgets the conversation in the window too. A conversation is written once it has a request; opening and closing the chat writes no copy of the one it remembers. |
 | `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, with what was pasted into each, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
 
@@ -729,7 +729,7 @@ is moved by whole octaves to suit that voice. Restart Jarvis (`jarvis restart`) 
 
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
-| `thousands_separator` | `","` | `","`, `" "`, `"'"`, `""` | What Jarvis puts between groups of three digits of a number's whole part, in every reply (the system prompt says so) and in the calculator's answers: 48 times 31 is 1,488. `""` writes none. A calculator answer of more than 20 digits is given in powers of ten without groups. |
+| `thousands_separator` | `","` | `","`, `" "`, `"'"`, `""` | What Jarvis puts between groups of three digits of a number's whole part, in every reply (the system prompt says so) and in the calculator's answers: 48 times 31 is 1,488. `""` writes none. The voice writes none for `" "` and `"'"` too, since a voice reads "25 000" as separate numbers. A calculator answer of more than 20 digits is given in powers of ten without groups. |
 
 ## `[clock]`
 
@@ -971,7 +971,9 @@ and marked ("some of its processes" when only part of a program is). A child run
 parent (a browser's tabs) counts as that program. Nothing
 in this list can be stopped by its PID: to stop one, Jarvis looks it up by name first, as below.
 
-`pc_stats` names the three programs using the most memory and CPU the same way, so its answer is process
+`pc_stats` starts with what is near its limit, or that nothing is: a processor or graphics card at 90 °C or
+more, memory, video memory or a disk 90% full, or more work than the processor's threads can run at once.
+Sizes are in GB and MB, counted in steps of 1024 like file sizes. It names the three programs using the most memory and CPU the same way as the list above, so its answer is process
 data too: like a listing, it counts as outside text for the rest of that request, and a shell command
 (`pc_shell`) asked for in the same breath is refused; ask for it on its own. A plain question about the PC
 that Jarvis answers without the model leaves the programs out.

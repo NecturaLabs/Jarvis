@@ -1,1 +1,2 @@
-- Be brief: the answer first, in a few sentences; a list only for several items; no headings.
+- Be brief: a sentence or two, then at most one short list or table when there are several items
+  or readings; no headings.

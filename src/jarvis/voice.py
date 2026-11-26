@@ -58,6 +58,43 @@ _MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 _MD_EMPHASIS = re.compile(r"(\*{1,3}|`+|(?<!\w)_{1,3})(\S(?:.*?\S)?)\1(?!\w)")
 _MD_LINE_MARK = re.compile(r"^\s{0,3}(?:#{1,6}|[-*+]|\d+[.)]|>)\s+", re.MULTILINE)
 _NOT_SPOKEN = re.compile(r"[\U0001F000-\U0001FAFF☀-➿️‍]")
+_WEB_ADDRESS = re.compile(
+    r"https?://(?:www\.)?([^\s/?#)\]>]+)[^\s)\]>]*?(?=[.,;:!?]*(?:[\s)\]>]|$))"
+)
+_FENCE = re.compile(r"^[ \t]*(?:```|~~~).*$", re.MULTILINE)
+_TABLE_RULE = re.compile(
+    r"^[ \t]*\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?[ \t]*$", re.MULTILINE
+)
+_TABLE_ROW = re.compile(r"^[ \t]*\|(.+?)\|?[ \t]*$", re.MULTILINE)
+_RANGE = re.compile(r"(?<=\d)\s?[\u2012\u2013]\s?(?=\d)")
+# A long dash anywhere, or a hyphen set off by spaces between words (between numbers it is a minus).
+_DASH = re.compile(r"\s*,?\s*[\u2012-\u2015]\s*|(?<=[^\d\s]),?\s+-{1,2}\s+(?=\D)")
+_ARROW = re.compile(r"\s*(?:\u2192|->)\s*")
+_ABOUT = re.compile(r"(?<![\w/])~(?=\d)")
+# The unit signs Jarvis's own tools write after a number, as the words a voice should say: the
+# speech engine spells the signs out letter by letter ("k m slash h").
+_UNIT_WORDS = {
+    "°C": "degrees Celsius",
+    "°F": "degrees Fahrenheit",
+    "°": "degrees",
+    "km/h": "kilometres per hour",
+    "m/s": "metres per second",
+    "mph": "miles per hour",
+    "mm": "millimetres",
+    "km": "kilometres",
+    "KB": "kilobytes",
+    "MB": "megabytes",
+    "GB": "gigabytes",
+    "TB": "terabytes",
+}
+_UNIT = re.compile(
+    r"(?<![\w.])(\d+(?:[.,]\d+)*)\s?("
+    + "|".join(re.escape(sign) for sign in sorted(_UNIT_WORDS, key=len, reverse=True))
+    + r")(?![\w/°])"
+)
+_SINGULAR = re.compile(
+    r"^(degree|kilometre|metre|mile|millimetre|kilobyte|megabyte|gigabyte|terabyte)s"
+)
 _QUESTION_MARKS = re.compile(r"[\[\]()`*_]")
 
 
@@ -72,13 +109,34 @@ def time_asleep() -> float:
     return time.clock_gettime(time.CLOCK_BOOTTIME) - time.monotonic()
 
 
+def _unit_words(found: re.Match[str]) -> str:
+    number, words = found.group(1), _UNIT_WORDS[found.group(2)]
+    return f"{number} {_SINGULAR.sub(r'\1', words) if number == '1' else words}"
+
+
+def _table_row(found: re.Match[str]) -> str:
+    return ", ".join(cell.strip() for cell in found.group(1).split("|") if cell.strip())
+
+
 def speakable(text: str) -> str:
-    """Return a reply as plain words: no markdown marks or emoji, lines joined as sentences."""
+    """Return a reply as the words a voice can say, lines joined as sentences.
+
+    Markdown marks, emoji, code fences and a table's rules are left out; a table row is read
+    cell by cell and a web address as its site. A dash becomes a pause (between numbers, "to"),
+    and a unit sign after a number its word, since the speech engine runs on over the first and
+    spells out the second.
+    """
     text = _MD_LINK.sub(r"\1", text[:MAX_SPOKEN_CHARS])
+    text = _WEB_ADDRESS.sub(r"\1", text)
+    text = _TABLE_RULE.sub("", _FENCE.sub("", text))
+    text = _TABLE_ROW.sub(_table_row, text)
     text = _MD_LINE_MARK.sub("", text)
     for _ in range(3):
         text = _MD_EMPHASIS.sub(r"\2", text)
     text = _NOT_SPOKEN.sub("", text)
+    text = _UNIT.sub(_unit_words, text)
+    text = _ARROW.sub(" to ", _RANGE.sub(" to ", text))
+    text = _ABOUT.sub("about ", _DASH.sub(", ", text))
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     joined = " ".join(line if line[-1] in ".!?:;," else f"{line}." for line in lines[:-1])
     return f"{joined} {lines[-1]}".strip() if lines else ""

@@ -2444,6 +2444,50 @@ def test_memory_notes_the_model_copied_are_stripped_from_a_reply() -> None:
 
 
 @pytest.mark.parametrize(
+    "copied",
+    [
+        '<data origin="web">[looked up: kettle descaling] All fine.</data>',
+        '[actions taken: none] <data origin="web">[looked up: kettle] All fine.</data>',
+        '<data origin="pc">All fine.</data>',
+        '<data origin="web">[looked up: kettle] All fine.',
+    ],
+)
+def test_a_data_wrapper_the_model_copied_from_memory_is_stripped_from_a_reply(copied: str) -> None:
+    model = ScriptedModel([_say(copied)])
+    agent, _ = _agent(model, [])
+
+    assert agent.handle("how is it", NO_CONFIRM) == "All fine."
+
+
+def test_a_copied_data_wrapper_is_stripped_from_a_no_action_reply() -> None:
+    reply = '<data origin="web">[looked up: kettle] All fine.</data>'
+    model = ScriptedModel([_call("no_action", {"reply": reply})])
+    agent, _ = _agent(model, [])
+
+    assert agent.handle("how is it", NO_CONFIRM) == "All fine."
+
+
+def test_a_copied_data_wrapper_is_never_spoken_or_drafted() -> None:
+    heard: list[str] = []
+    drafts: list[str] = []
+    model = ScriptedModel([_say('<data origin="web">[looked up: kettle] All fine. Truly.</data>')])
+    agent, _ = _agent(model, [])
+    hooks = Hooks(confirm=lambda _q: False, speak=heard.append, draft=drafts.append)
+
+    assert agent.handle("how is it", hooks) == "All fine. Truly."
+    assert "".join(heard + drafts).count("data") == 0
+    assert " ".join(heard) == "All fine. Truly."
+
+
+def test_a_data_tag_inside_a_reply_stays() -> None:
+    reply = 'The page wraps it in <data origin="x"> tags.</data>'
+    model = ScriptedModel([_say(reply)])
+    agent, _ = _agent(model, [])
+
+    assert agent.handle("what does it do", NO_CONFIRM) == reply
+
+
+@pytest.mark.parametrize(
     "reply",
     [
         "[Pause] is the button you want.",

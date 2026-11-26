@@ -150,8 +150,8 @@ def test_a_group_with_no_tool_in_this_registry_is_not_in_the_toolbox() -> None:
 # the router (`{toolbox}` empty). Changing the prompt's own text changes these on purpose: replace
 # them with the new digests; they exist so that routing never changes what "all" mode sends.
 _PROMPT_SHA256 = {
-    "voice": "467eeb45bdea2548e4269b1ecc6133e445ab79eaf15f4ef11aa82829407e36b3",
-    "chat": "195ade8393e9b80da870eebae6915fe08dc9e36889b4c568b7347ad6da4f80c3",
+    "voice": "ba2c2656d579a563d4ea3e69a8570c64564457365432927c789cc8f66a34226e",
+    "chat": "1560480bde3cf73868d4c455bb04ce6199e8252d60db6588eaad00dd914b39d1",
 }
 
 

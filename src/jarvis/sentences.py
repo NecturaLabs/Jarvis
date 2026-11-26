@@ -2,8 +2,8 @@
 
 A sentence ends at `.`, `!` or `?` followed by white space, or at a line break. Every end found
 here is also a sentence end for `jarvis.agent.claims_action`, so a reply cut at these points is
-checked the same in pieces as whole. An abbreviation ("Dr.", "e.g."), an initial ("J.") or a list
-number ("1.") does not end a sentence.
+checked the same in pieces as whole. An abbreviation ("Dr.", "e.g.", "a.m."), an initial ("J.") or
+a list number ("1.") does not end a sentence.
 """
 
 import re
@@ -32,6 +32,8 @@ _ABBREVIATIONS = frozenset(
         "inc.",
         "ltd.",
         "co.",
+        "a.m.",
+        "p.m.",
     }
 )
 

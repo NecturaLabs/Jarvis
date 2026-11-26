@@ -16,6 +16,7 @@ from jarvis.app import (
     SetupError,
     action_rate,
     build,
+    channel_format,
     channel_limits,
     channel_registry,
     chat_pictures,
@@ -509,6 +510,17 @@ def test_the_prompt_tells_the_model_how_to_write_numbers(separator: str, said: s
     config = Config.model_validate({"format": {"thousands_separator": separator}})
 
     assert said in system_prompt(config, "chat")
+
+
+@pytest.mark.parametrize(("separator", "said"), [(",", "1,488"), (" ", "1488"), ("'", "1488")])
+def test_a_voice_is_never_told_to_write_a_separator_it_would_misread(
+    separator: str, said: str
+) -> None:
+    config = Config.model_validate({"format": {"thousands_separator": separator}})
+
+    assert f"{said}, " in system_prompt(config, "voice")
+    assert channel_format(config, "voice").thousands_separator == ("," if separator == "," else "")
+    assert channel_format(config, "chat").thousands_separator == separator
 
 
 def test_both_channels_offer_omarchy_skills_when_they_are_installed(

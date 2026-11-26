@@ -627,11 +627,11 @@ class ProcessOps:
         return [Usage(item.name, len(item.pids), item.rss, item.ticks * scale) for item in programs]
 
     def _program_line(self, item: _Program, windows: dict[int, Window], scale: float) -> str:
-        size = f"{item.rss / GIB:.1f} GiB" if item.rss >= GIB else f"{item.rss // MIB} MiB"
+        size = f"{item.rss / GIB:.1f} GB" if item.rss >= GIB else f"{item.rss // MIB} MB"
         count = len(item.pids)
         parts = [
             f"- {item.name}: {count} process{'es' if count != 1 else ''}",
-            f"{size} resident",
+            f"{size} of memory",
             f"{item.ticks * scale:.0f}% CPU",
         ]
         window = next((windows[pid] for pid in sorted(item.pids) if pid in windows), None)

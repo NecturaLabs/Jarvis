@@ -159,15 +159,15 @@ def _weather_result(forecast: Forecast, when: str, where: str) -> Result:
     sign = _UNIT_SIGNS.get(forecast.temperature_unit, "degrees")
     if when == "now":
         now = forecast.now
-        feels = (
-            f", feeling like {_round(now.feels_like)}"
-            if abs(now.feels_like - now.temperature) >= WORTH_SAYING
-            else ""
-        )
+        differs = abs(now.feels_like - now.temperature) >= WORTH_SAYING
+        feels = f", feeling like {_round(now.feels_like)}" if differs else ""
+        # Only what says something: the model tends to pass on every figure it is given.
         text = (
-            f"Weather in {where} now: {_round(now.temperature)} {sign}, {now.condition}, "
-            f"feels like {_round(now.feels_like)}, wind {_round(now.wind)} "
-            f"{_WIND_WORDS.get(forecast.wind_unit, '')}, precipitation {now.precipitation} mm."
+            f"Weather in {where} now: {_round(now.temperature)} {sign}, {now.condition}"
+            + (f", feels like {_round(now.feels_like)}" if differs else "")
+            + f", wind {_round(now.wind)} {_WIND_WORDS.get(forecast.wind_unit, '')}".rstrip()
+            + (f", precipitation {now.precipitation} mm" if now.precipitation else "")
+            + "."
         )
         spoken = f"It's {_round(now.temperature)} degrees and {now.condition}{feels}."
         return Result(text, spoken=spoken)

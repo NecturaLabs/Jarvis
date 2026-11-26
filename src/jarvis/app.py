@@ -61,7 +61,7 @@ from jarvis.web.searxng import Searxng
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Sequence
 
-    from jarvis.config import ChatConfig, Config
+    from jarvis.config import ChatConfig, Config, FormatConfig
     from jarvis.model import ModelStatus
 
 
@@ -255,7 +255,7 @@ def system_prompt(
         "model": _served_model(config),
         "tone": config.persona.tone,
         "words": str(words),
-        "numbers": _number_rule(config.format.thousands_separator),
+        "numbers": _number_rule(channel_format(config, channel).thousands_separator),
         "format": prompts.joinpath(f"chat-{config.chat.response_format}.md")
         .read_text(encoding="utf-8")
         .rstrip("\n"),
@@ -595,6 +595,21 @@ def _workspace_rule(config: Config) -> str:
     return f" Bare file names save in your workspace, {config.files.workspace} (always writable)."
 
 
+MISREAD_SEPARATORS = frozenset({" ", "'"})  # a voice reads "25 000" as "twenty-five zero zero zero"
+
+
+def channel_format(config: Config, channel: Channel) -> FormatConfig:
+    """Return how a channel writes numbers: as `[format]` sets it, kept speakable for the voice.
+
+    A space or an apostrophe between digit groups is read aloud as separate numbers, so the
+    voice writes none then; a comma is read right.
+    """
+    chosen = config.format
+    if channel == "voice" and chosen.thousands_separator in MISREAD_SEPARATORS:
+        return chosen.model_copy(update={"thousands_separator": ""})
+    return chosen
+
+
 def _number_rule(separator: str) -> str:
     """Say how to write a number of four or more digits, as `[format]` sets it."""
     if not separator:
@@ -711,7 +726,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
         *online.operations(),
         *(browsing.operations() if browsing is not None else []),
         *pc_operations(config, limits, shown=shown, watching=watching),
-        *calc.operations(config.format),
+        *calc.operations(channel_format(config, channel)),
         *AboutOps(config, channel, limits, refused=files_boundary(config).secret).operations(),
         *ScheduleOps(
             JobStore(paths.schedule_file()),

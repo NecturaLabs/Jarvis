@@ -29,9 +29,17 @@ from jarvis.operations import (
 from jarvis.pictures import PictureCache
 from jarvis.policy import Origin
 from jarvis.shortcuts import match
+from jarvis.web import ops as web_ops
 from jarvis.web.arctic import ArcticShift
-from jarvis.web.openmeteo import GEOCODE, OpenMeteo
-from jarvis.web.ops import NO_HOME, PAGE_KEPT_S, Clients, WebOps, spoken_date, spoken_time
+from jarvis.web.openmeteo import GEOCODE, Forecast, Now, OpenMeteo
+from jarvis.web.ops import (
+    NO_HOME,
+    PAGE_KEPT_S,
+    Clients,
+    WebOps,
+    spoken_date,
+    spoken_time,
+)
 from jarvis.web.page import PageReader
 from jarvis.web.searxng import Searxng
 
@@ -433,6 +441,18 @@ def test_an_unknown_place_is_said_so() -> None:
 
 
 # --- weather --------------------------------------------------------------------------------------
+
+
+def test_the_weather_now_leaves_out_what_says_nothing() -> None:
+    calm = Forecast(Now(21.6, 22.4, "overcast", 2.2, 0.0), (), "celsius", "kmh")
+    wet = Forecast(Now(8.2, 4.1, "light rain", 30.4, 1.2), (), "celsius", "kmh")
+
+    assert web_ops._weather_result(calm, "now", "Berlin").text == (  # pyright: ignore[reportPrivateUsage]
+        "Weather in Berlin now: 22 °C, overcast, wind 2 km/h."
+    )
+    assert web_ops._weather_result(wet, "now", "Berlin").text == (  # pyright: ignore[reportPrivateUsage]
+        "Weather in Berlin now: 8 °C, light rain, feels like 4, wind 30 km/h, precipitation 1.2 mm."
+    )
 
 
 def test_home_weather_from_coordinates_asks_only_the_forecast() -> None:

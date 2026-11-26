@@ -1639,7 +1639,7 @@ def test_without_a_name_every_program_is_listed_by_memory(proc: FakeProc) -> Non
         "- notes",
     ]
     assert "2 processes" in rows[1]
-    assert "1.5 GiB" in rows[1]
+    assert "1.5 GB of memory" in rows[1]
     assert "never stopped" in rows[0]
     assert "postgres" not in text  # another user's
     assert "kthreadd" not in text

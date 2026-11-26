@@ -309,6 +309,8 @@ def test_a_partial_reply_is_read_only_as_far_as_it_is_whole(
         ("J. R. R. Tolkien wrote it. Next", "J. R. R. Tolkien wrote it."),
         ("Steps:\n1. Boil. Next", "Steps:"),
         ("It costs 3.5 euros. Next", "It costs 3.5 euros."),
+        ("At 11 a.m. on Sunday it rains. Next", "At 11 a.m. on Sunday it rains."),
+        ("Open until 9 p.m. daily. Next", "Open until 9 p.m. daily."),
         ("Not finished.", None),
         ("Not finished", None),
     ],

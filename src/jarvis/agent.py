@@ -226,13 +226,16 @@ _SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+|\n+")
 _DASH = re.compile(r"\s*(?:[\u2012\u2013\u2014\u2015\u2212]|--)\s*|\s-\s")
 _CLAUSE_BREAK = re.compile(r"[,\u3001\uff0c(\[]")  # a comma, or an aside opening
 _EDGES = "\"'\u201c\u201d\u2018)]"
-# The notes memory puts before a remembered reply (`memory.Turn.messages`), which a model may copy.
-_ACTIONS_NOTE = re.compile(
+# What memory puts round a remembered reply (`memory.Turn.messages`), which a model may copy: its
+# notes, and the data wrapper of a reply that drew on outside text.
+_COPIED_HEAD = re.compile(
     # Brackets inside a note (search text) are taken one level deep; an unbalanced one ends it at
     # the first "]".
-    r"^(?:\[(?:actions taken|looked up):(?:(?:[^\[\]]|\[[^\[\]]*\])*|[^\]]*)\]\s*)+",
+    r"^(?:\[(?:actions taken|looked up):(?:(?:[^\[\]]|\[[^\[\]]*\])*|[^\]]*)\]\s*"
+    r'|<data origin="[a-z_]*">\s*)+',
     re.IGNORECASE,
 )
+_COPIED_TAIL = re.compile(r"\s*</data>\s*$")
 _REPLY_KEY = '{"reply":"'
 _REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
 _WRAPPED = re.compile(r'(?P<head><data origin="[a-z_]+">)(?P<body>.*)</data>', re.DOTALL)
@@ -290,6 +293,19 @@ def _clauses(text: str) -> list[tuple[str, bool]]:
                 )
             out.append((words, claim))
     return out or [(text, False)]
+
+
+def own_words(reply: str) -> str:
+    """Return a reply without what the model copied from how memory shows an earlier reply.
+
+    That is the notes before it and, round a reply that drew on outside text, the data wrapper.
+    Only a reply that starts with them is changed: a tag further in is the reply's own words.
+    """
+    head = _COPIED_HEAD.match(reply)
+    if head is None:
+        return reply
+    rest = reply[head.end() :]
+    return _COPIED_TAIL.sub("", rest) if "<" in head.group() else rest
 
 
 def _model_failure(error: Exception) -> str:
@@ -475,7 +491,7 @@ class _ReplyStream:
         if self._held:
             return
         words = self._words()
-        if words is None or words.startswith("["):  # not a reply, or an actions note
+        if words is None or words.startswith(("[", "<")):  # not a reply, or memory's marks copied
             self._held = words is not None or self._source == "reply"
             return
         while (end := sentence_end(words, len(self.spoken))) is not None:
@@ -1825,7 +1841,7 @@ class Agent:
             if calls and not self._whole(calls[-1]):
                 return self._cut_call(turn, hooks, message, calls)
         if not calls:
-            text = _ACTIONS_NOTE.sub("", _text(message).strip())
+            text = own_words(_text(message).strip()).strip()
             if cut and text:
                 text = f"{text} {CUT_SHORT}"
             return self._final(turn, text) if text else self._wordless(turn)
@@ -1963,7 +1979,7 @@ class Agent:
         try:
             json.loads(arguments)
         except ValueError:
-            words = (partial_reply(arguments) or "").strip()
+            words = own_words((partial_reply(arguments) or "").strip()).strip()
             return words or None
         return None  # whole: the reply call runs as usual
 
@@ -2064,7 +2080,7 @@ class Agent:
         if len(calls) != 1 or str(obj(calls[0].get("function")).get("name")) != NO_ACTION:
             return None
         (result,) = results
-        answer = _ACTIONS_NOTE.sub("", result.spoken.strip()).strip() if result.ok else ""
+        answer = own_words(result.spoken.strip()).strip() if result.ok else ""
         return answer or None
 
     @staticmethod
