@@ -83,9 +83,10 @@ quick commands.
     (`agent.max_seconds`), so a click or typing with its checks, or a browser that does not answer and is
     closed, never runs past the request.
 - **Where.** `chat.browser` is on and `agent.browser` (voice and `jarvis ask`) is off by default. The tools
-  are offered only when agent-browser is on PATH; `jarvis doctor` notes when it is missing. Their
-  definitions take about 470 tokens of the chat's context. The chat's default `memory_tokens` went from 7000
-  to 6500 so that the default context still holds the whole remembered conversation.
+  are offered only when agent-browser is on PATH; `jarvis doctor` notes when it is missing, or has no
+  Chrome to drive (`agent-browser install`). Their definitions take about 470 tokens of the chat's context.
+  The chat's default `memory_tokens` went from 7000 to 6500 so that the default context still holds the
+  whole remembered conversation.
 
 ### Previews of the owner's own builds (agreed with coding mode)
 

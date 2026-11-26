@@ -1109,11 +1109,17 @@ def _tool_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[
             "note tool playerctl missing: other media players can't be paused or skipped "
             "(`pacman -S playerctl`)"
         )
-    if (cfg.chat.browser or cfg.agent.browser) and not shutil.which(browser.PROGRAM):
-        notes.append(
-            f"note tool {browser.PROGRAM} missing: the headless browser tools are not offered "
-            "(see docs/configuration.md, `[browser]`)"
-        )
+    if cfg.chat.browser or cfg.agent.browser:
+        if not shutil.which(browser.PROGRAM):
+            notes.append(
+                f"note tool {browser.PROGRAM} missing: the headless browser tools are not offered "
+                "(see docs/configuration.md, `[browser]`)"
+            )
+        elif not browser.chrome_found(Path.home()):
+            notes.append(
+                f"note tool {browser.PROGRAM} has no Chrome to drive: its tools fail until "
+                f"`{browser.PROGRAM} install` downloads one"
+            )
     return checks, notes
 
 

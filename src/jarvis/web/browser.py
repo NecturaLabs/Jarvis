@@ -730,6 +730,30 @@ def _sweep(root: Path) -> None:
             continue  # alive, someone else's
 
 
+# Where agent-browser (0.44) looks for a Chrome on Linux, under the home folder, after its own.
+_CHROME_IN_HOME = (
+    ".agent-browser/browsers/chrome-*/chrome",  # `agent-browser install`
+    ".agent-browser/browsers/chrome-*/chrome-linux64/chrome",
+    ".cache/puppeteer/chrome/*/chrome-linux64/chrome",
+    ".cache/ms-playwright/chromium-*/chrome-linux*/chrome",
+)
+_CHROME_ON_PATH = (
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium-browser",
+    "chromium",
+    "brave-browser",
+    "brave-browser-stable",
+)
+
+
+def chrome_found(home: Path) -> bool:
+    """Return whether agent-browser has a Chrome to drive: its own, or one it falls back to."""
+    if any(shutil.which(name) for name in _CHROME_ON_PATH):
+        return True
+    return any(path.is_file() for pattern in _CHROME_IN_HOME for path in home.glob(pattern))
+
+
 def _daemon_timer(seconds: float, action: Callable[[], None]) -> threading.Timer:
     timer = threading.Timer(seconds, action)
     timer.daemon = True

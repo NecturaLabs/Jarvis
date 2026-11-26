@@ -2127,6 +2127,54 @@ def test_doctor_notes_a_missing_browser_without_failing(
     assert line.startswith("note tool agent-browser missing")
 
 
+def _doctor_with_agent_browser(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> list[str]:
+    """Run doctor with agent-browser on PATH and no system Chrome, Chromium or Brave."""
+    real = shutil.which
+
+    def which(name: str) -> str | None:
+        if name == "agent-browser":
+            return "/usr/bin/agent-browser"
+        if "chrom" in name or "brave" in name:
+            return None
+        return real(name)
+
+    monkeypatch.setattr(cli.shutil, "which", which)
+    cli.main(["doctor"])
+    return [line for line in _doctor_lines(capsys) if "agent-browser" in line]
+
+
+def test_doctor_notes_agent_browser_without_a_chrome_to_drive(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _doctor_config(home / "models")
+
+    (line,) = _doctor_with_agent_browser(monkeypatch, capsys)
+
+    assert line.startswith("note ")
+    assert "agent-browser install" in line
+
+
+@pytest.mark.parametrize(
+    "chrome",
+    [
+        ".agent-browser/browsers/chrome-158.0.1/chrome-linux64/chrome",
+        ".agent-browser/browsers/chrome-158.0.1/chrome",
+        ".cache/puppeteer/chrome/linux-158.0.1/chrome-linux64/chrome",
+        ".cache/ms-playwright/chromium-1200/chrome-linux/chrome",
+    ],
+)
+def test_doctor_says_nothing_of_agent_browser_with_its_chrome(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], chrome: str
+) -> None:
+    _doctor_config(home / "models")
+    (home / chrome).parent.mkdir(parents=True)
+    (home / chrome).write_bytes(b"")
+
+    assert _doctor_with_agent_browser(monkeypatch, capsys) == []
+
+
 @pytest.mark.parametrize(
     ("audio", "checked"),
     [
