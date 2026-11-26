@@ -14,6 +14,7 @@ Jarvis process answers a request (`Answering`).
 import contextlib
 import fcntl
 import json
+import math
 import os
 import time
 from dataclasses import dataclass, field
@@ -75,15 +76,22 @@ def read_state() -> State:
     return State(
         "coding" if data.get("mode") == "coding" else "normal",
         by,
-        float(used) if isinstance(used, int | float) and not isinstance(used, bool) else 0.0,
+        _finite(used) or 0.0,
         {
-            str(name): float(seconds)
-            for name, seconds in cast("dict[object, object]", loads).items()
-            if isinstance(seconds, int | float) and not isinstance(seconds, bool)
+            str(name): seconds
+            for name, value in cast("dict[object, object]", loads).items()
+            if (seconds := _finite(value)) is not None
         }
         if isinstance(loads, dict)
         else {},
     )
+
+
+def _finite(value: object) -> float | None:
+    """Return `value` when it is a finite number, else None (JSON also reads `Infinity`, `NaN`)."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value) if math.isfinite(value) else None
 
 
 def _write_state(state: State) -> None:
@@ -385,21 +393,29 @@ class Switcher:
     def switch(self, to: Mode, by: By, say: Callable[[str], None] = lambda _line: None) -> Switched:
         """Put Jarvis in mode `to`; `say` gets the line for the owner before a restart.
 
-        Nothing changes when Jarvis is in that mode already, when a request is in flight in any
+        Nothing changes when Jarvis is in that mode already (and the model server's files are that
+        mode's), when a request is in flight in any
         Jarvis process (`busy`, `Answering`), or when the mode's run config cannot be served. When
         the restarted server does not come back, the files and the server go back to the mode
         before.
         """
-        if self._busy():
-            return Switched(current(), error=BUSY)
         with _locked():
             state = read_state()
-            if state.mode == to:
+            if state.mode == to and not self._out_of_step(to):
                 return Switched(to)
+            # Requests are held off first, then asked about: none begins between the two.
             with _nobody_answering() as free:
-                if not free:
+                if not free or self._busy():
                     return Switched(state.mode, error=BUSY)
                 return self._switch(to, by, say, state)
+
+    def _out_of_step(self, mode: Mode) -> bool:
+        """Whether the model server's profile on disk is not the one of `mode`, the mode in force.
+
+        A switch that was killed between writing the files and noting the mode leaves them so;
+        asking for the mode again then puts the files and the server right.
+        """
+        return _texts()[0] is not None and self.needs_restart(mode)
 
     def _switch(self, to: Mode, by: By, say: Callable[[str], None], state: State) -> Switched:
         """Make the switch from `state` to `to`, with the lock held and no request in flight."""
@@ -431,11 +447,14 @@ class Switcher:
         )
         return Switched(to, changed=True, restarted=running, seconds=seconds)
 
-    def back_if_idle(self) -> Switched | None:
-        """Go back to the normal mode when coding mode went unused too long; else do nothing."""
+    def back_if_idle(self, say: Callable[[str], None] = lambda _line: None) -> Switched | None:
+        """Go back to the normal mode when coding mode went unused too long; else do nothing.
+
+        `say` gets the line for the owner, as in `switch`.
+        """
         if not idle_too_long(self._config, self._now()):
             return None
-        return self.switch("normal", "idle")
+        return self.switch("normal", "idle", say)
 
     def _write(self, to: Mode, before: tuple[str | None, str | None]) -> bool:
         """Write the model server's profile and unit for `to`; return whether either changed.

@@ -37,20 +37,31 @@ Option 3, with the owner's switch and a typed tool.
   the model server's profile and unit, and restarts the server only when either changed. The old engine has
   ended before the new one starts, so two models are never in memory together. It then waits for the server
   and loads the model. A server that does not come back gets the profile before again. Every switch is
-  audited (`mode_switched`: from, to, by whom, the model, the seconds). A switch is refused while the voice
-  service is in a request.
+  audited (`mode_switched`: from, to, by whom, the model, the seconds). A switch is refused while any
+  Jarvis process answers a request: requests are held off first (the shared lock below), then the voice
+  service is asked whether it is hearing or saying one. Asking for the mode Jarvis is already in changes
+  nothing, unless a switch that was killed left the model server's files on the other mode: they are then
+  put right. A switch into coding mode loads its model even while Jarvis is paused, as the work follows at
+  once; `jarvis unload` frees it.
 - **The owner is told** before a restart in one line, with the seconds the model took to load the last time
   once that is known: spoken for a spoken request, shown in the chat.
 - **The model switches itself** with `switch_model`, a typed tool like `think_harder`
   ([ADR 0014](0014-model-raises-its-own-thinking.md)): its description says what programming work is, the
   model decides, and no phrase is matched ([ADR 0013](0013-free-speech-no-new-shortcuts.md)). The agent
   then makes the switch and answers the request again in the new mode, with that mode's prompt, limits and
-  time. It counts as an action, so a request steered by outside text needs the owner's yes for it; a request
-  heard in PC audio never switches; a request switches once, and not after one of its actions ran (answering
-  again would run it twice). In coding mode the same tool goes back when the owner says the work is over.
+  time; words typed into it meanwhile go with it. It counts as an action, so a request steered by
+  outside text needs the owner's yes for it (with `bypass_consent` on it runs unasked, like every action).
+  A request heard in PC audio never switches and is not asked about it. A request switches once, only by a
+  call that stands alone in the model's reply (beside other calls none of them runs), not after one of its
+  actions was tried, whether it succeeded or not (answering again could run it twice), not once it was
+  stopped, and not to a mode whose model cannot see a picture it came with. A switch that is refused or
+  cannot be made is the tool's result, and the request goes on in the mode it is in. In coding mode the
+  same tool goes back when the owner says the work is over.
 - **Going back**: `jarvis model normal`, `/model normal`, the model's own call, or after
   `coding.back_after_s` (30 minutes) without a request in coding mode. The voice service looks once a minute
-  while idle; a chat looks when a request starts.
+  while idle; a chat, `jarvis ask` and the voice look when a request starts, and tell the owner in a line
+  before the model loads. A request in flight anywhere holds the return off. A running chat keeps the
+  `[coding]` values it started with; `/model` reads the config anew.
 - **The chat and the voice differ.** In the chat the model may switch by itself (`coding.chat.auto`, on):
   programming is asked for there, the work is long, and a line in the window covers the load. For spoken,
   `jarvis ask` and scheduled requests it may not (`coding.voice.auto`, off): a load in the middle of a spoken

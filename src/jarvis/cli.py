@@ -507,6 +507,12 @@ def cmd_setup(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"jarvis: setup value refused: {exc}", file=sys.stderr)
         return 2
+    if args.coding_run_config is not None and updated.strata.run_config != Path():
+        try:  # a coding run config that cannot be served is refused before anything is saved
+            services.strata_profile(modes.effective(updated, "coding"))
+        except config.ConfigError as exc:
+            print(f"jarvis: {exc}", file=sys.stderr)
+            return 2
     config.save(updated)
     ensure_api_key(strata_key_file())
     if updated.strata.run_config == Path():
@@ -518,7 +524,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
         return 0
     try:
         served = modes.effective(updated, modes.current())  # a setup in coding mode keeps it
-        services.strata_profile(modes.effective(updated, "coding"))  # refused now, not at a switch
+        services.strata_profile(
+            modes.effective(updated, "coding")
+        )  # a change of the usual one can break it too
         profile = services.write_strata_profile(served)
         units = services.write_units(served, strata_key_file())
     except config.ConfigError as exc:
@@ -838,8 +846,9 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         system_prompt=_chat_prompt,
         tools=lambda: _tool_settings(config.load()),
         next_tool_setting=_next_tool_setting,
-        model_report=lambda: model_report(cfg),
-        switch_model=lambda to, say: switch_model(cfg, to, say, "chat"),
+        # The config as it is now: `jarvis setup` or /config may have changed coding mode since.
+        model_report=lambda: model_report(config.load()),
+        switch_model=lambda to, say: switch_model(config.load(), to, say, "chat"),
         shared=_shared_settings,
         set_shared=_set_shared,
         apply=_apply_from_chat,

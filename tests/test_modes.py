@@ -411,6 +411,79 @@ def test_a_stopped_server_gets_its_new_profile_and_no_restart(tmp_path: Path) ->
     assert _served_model() == "coder.gguf"
 
 
+def test_coding_mode_is_not_left_while_a_request_is_answered_in_it(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, back_after_s=600.0)
+    _installed(cfg)
+    clock, units = _Clock(), _Units()
+    switcher = _switcher(cfg, units, _Server(), _Audit(), clock=clock)
+    switcher.switch("coding", "owner")
+    clock.sleep(700.0)
+
+    with modes.Answering():  # a long request in a chat window, begun before the time ran out
+        cut = switcher.back_if_idle()
+
+    assert cut is not None
+    assert cut.error == modes.BUSY
+    assert (modes.current(), units.restarts) == ("coding", 1)
+
+
+def test_the_idle_return_tells_the_owner_before_the_model_loads(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, back_after_s=600.0)
+    _installed(cfg)
+    clock, said = _Clock(), list[str]()
+    switcher = _switcher(cfg, _Units(), _Server(), _Audit(), clock=clock)
+    switcher.switch("coding", "owner")
+    clock.sleep(700.0)
+
+    switcher.back_if_idle(said.append)
+
+    assert len(said) == 1
+    assert said[0].startswith("Switching to the usual model")
+
+
+def test_requests_are_held_off_before_the_voice_service_is_asked(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    _installed(cfg)
+    held: list[bool] = []
+
+    def busy() -> bool:
+        with modes._nobody_answering() as free:  # pyright: ignore[reportPrivateUsage]
+            held.append(not free)  # the switch holds it: no request can begin after this look
+        return False
+
+    _switcher(cfg, _Units(), _Server(), _Audit(), busy=busy).switch("coding", "owner")
+
+    assert held == [True]
+
+
+def test_asking_for_the_mode_in_force_repairs_files_a_killed_switch_left(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    _installed(cfg)
+    units = _Units()
+    switcher = _switcher(cfg, units, _Server(), _Audit())
+    # A switch to coding was killed after it wrote the files and before it noted the mode.
+    services.write_strata_profile(modes.effective(cfg, "coding"))
+    assert (modes.current(), _served_model()) == ("normal", "coder.gguf")
+
+    done = switcher.switch("normal", "owner")
+
+    assert (done.error, _served_model(), units.restarts) == ("", "q4.gguf", 1)
+    assert switcher.switch("normal", "owner") == modes.Switched("normal")  # nothing left to do
+
+
+def test_a_state_file_with_numbers_that_are_not_finite_reads_as_none(tmp_path: Path) -> None:
+    del tmp_path
+    modes.state_file().parent.mkdir(parents=True, exist_ok=True)
+    modes.state_file().write_text(
+        '{"mode": "coding", "used": Infinity, "load_s": {"normal": NaN, "coding": 1e999}}',
+        encoding="utf-8",
+    )
+
+    state = modes.read_state()
+
+    assert (state.mode, state.used, state.load_s) == ("coding", 0.0, {})
+
+
 def test_coding_mode_left_unused_goes_back_to_normal(tmp_path: Path) -> None:
     cfg = _config(tmp_path, back_after_s=600.0)
     _installed(cfg)

@@ -656,6 +656,10 @@ class Modes(Protocol):
         """Note that a request was just answered in the current mode."""
         ...
 
+    def rest(self, say: Callable[[str], None]) -> None:
+        """Go back to the normal mode when coding mode went unused too long, telling the owner."""
+        ...
+
     def answering(self) -> AbstractContextManager[object]:
         """Return the mark held while a request is answered, so no switch cuts its model call."""
         ...
@@ -679,9 +683,35 @@ class _OneMode:
     def used(self) -> None:
         pass
 
+    def rest(self, say: Callable[[str], None]) -> None:
+        pass
+
     @staticmethod
     def answering() -> AbstractContextManager[object]:
         return contextlib.nullcontext()
+
+
+def _tell(hooks: Hooks, line: str) -> None:
+    """Tell the owner a line while a request runs: said by voice, shown in a window."""
+    if hooks.speak is not None:
+        hooks.speak(line)
+    elif hooks.draft is not None:
+        hooks.draft(line)
+
+
+def _typed_before(turn: _Turn, typed: Sequence[str]) -> None:
+    """Put the words typed into a request before a mode switch into the request begun anew.
+
+    They were audited and counted as the owner's own the first time.
+    """
+    for words in typed:
+        turn.messages.append({"role": "user", "content": f"{STEERED} {words}"})
+        turn.steered.append(words)
+
+
+def _name(call: Mapping[str, Any]) -> str:
+    """Return the name of the operation a call asks for."""
+    return str(obj(call.get("function")).get("name", ""))
 
 
 @dataclass(frozen=True, slots=True)
@@ -892,8 +922,7 @@ class _Turn:
     steered: list[str] = field(default_factory=list[str])  # the owner's words typed in meanwhile
     stream: _ReplyStream | None = None  # the last model call's, when the reply is spoken
     thinking: Thinking | None = None  # how the next model call thinks; the model may raise it
-    switch: str = ""  # the mode the model asked to answer this request in (`switch_model`)
-    refused: str = ""  # why that switch could not be made, for the owner
+    switch: str = ""  # the mode this request was moved to (`switch_model`): it is answered again
 
 
 @dataclass(frozen=True, slots=True)
@@ -1015,6 +1044,8 @@ class Agent:
         self._modes: Modes = modes or _OneMode()
         self._mode: str = "normal"
         self._switched = False  # this request already moved to another mode
+        self._ends = 0.0  # when the request in flight runs out of time
+        self._shared_pictures = False  # the request in flight came with pictures
         self._follow_mode()
 
     def _follow_mode(self) -> None:
@@ -1326,11 +1357,11 @@ class Agent:
         handed_over = foreign or bool(steered_by) or scheduled
         own = "" if handed_over else _own_words(text, self._outside_pastes(text, pasted))
         self._switched = False
-        ends = self._clock() + self._limits.max_seconds
+        self._ends = self._clock() + self._limits.max_seconds
         with (
             self._modes.answering(),
             request_scope(
-                foreign=foreign, words=own, time_left=lambda: ends - self._clock()
+                foreign=foreign, words=own, time_left=lambda: self._ends - self._clock()
             ) as request,
         ):
             for seen in sorted(steered_by):
@@ -1344,13 +1375,13 @@ class Agent:
         hooks: Hooks,
         source: tuple[Origin, Request, frozenset[str]],
         shared: tuple[Sequence[Picture], Sequence[str]],
+        typed: Sequence[str] = (),
     ) -> str:
+        """Answer the request; `typed` are words typed into it before a mode switch began it."""
         origin, request = source[0], source[1]
         pictures, pasted = shared
-        self._follow_mode()
-        started = self._clock()
+        started = self._begin(hooks, pictures=bool(pictures))
         foreign = origin not in TRUSTED_ORIGINS
-        self._written = [0, 0.0]
         outside = self._outside_pastes(text, pasted)
         shown: dict[str, object] = {"pictures": [p.name for p in pictures]} if pictures else {}
         if outside:
@@ -1402,6 +1433,7 @@ class Agent:
             turn.outside = turn.outside or Origin.PASTE.value
             request.saw(Origin.PASTE.value)
         _steered(turn, source[2])
+        _typed_before(turn, typed)
         reply = self._shortcut(hit, hooks, turn) if hit is not None else None
         if reply is None:
             if hit is not None and remembered and self._memory.over_budget():
@@ -1418,15 +1450,29 @@ class Agent:
             )
             turn.private = turn.private or (bool(remembered) and self._memory.holds_private_text)
             reply = self._converse(hooks, turn)
-        if turn.switch and self._switch(turn.switch, hooks, turn):
+        if turn.switch:
             # The request starts again in the new mode: its prompt, tools, limits and time.
-            return self._answer(text, hooks, source, shared)
-        reply = turn.refused or reply
+            return self._answer(text, hooks, source, shared, turn.steered)
         self._deliver(reply, hooks, turn)
         self._close(_with_pictures(words if outside else text, pictures), reply, hooks, turn)
         self._fit_memory(turn, hooks)
         self._modes.used()
         return reply
+
+    def _begin(self, hooks: Hooks, *, pictures: bool) -> float:
+        """Start answering in the mode Jarvis is in; return the time the answer began.
+
+        Coding mode left unused too long is left first, and the owner told. The request's time
+        runs from here, by the mode's own limit: a request moved to another mode begins anew.
+        """
+        if not self._switched:
+            self._modes.rest(lambda line: _tell(hooks, line))
+        self._follow_mode()
+        started = self._clock()
+        self._ends = started + self._limits.max_seconds
+        self._shared_pictures = pictures
+        self._written = [0, 0.0]
+        return started
 
     def _close(self, asked: str, reply: str, hooks: Hooks, turn: _Turn) -> None:
         """Remember a request and audit its reply.
@@ -1447,23 +1493,6 @@ class Agent:
         seconds = round(self._clock() - turn.started, 2)
         flag = {"stopped": True} if stopped else {}
         self._audit.record("reply", text=reply, seconds=seconds, **flag)
-
-    def _switch(self, to: str, hooks: Hooks, turn: _Turn) -> bool:
-        """Switch Jarvis to the mode the model asked for; return whether it is in it now.
-
-        The owner is told first when the switch takes a while: said by voice, shown in a window.
-        A switch that could not be made leaves what to tell the owner in `turn.refused`.
-        """
-
-        def tell(line: str) -> None:
-            if hooks.speak is not None:
-                hooks.speak(line)
-            elif hooks.draft is not None:
-                hooks.draft(line)
-
-        turn.refused = self._modes.switch(to, tell)
-        self._switched = not turn.refused
-        return self._switched
 
     def _note_remembered(self, request: Request) -> None:
         """Note in `request` the outside text the conversation it is given holds.
@@ -1842,6 +1871,13 @@ class Agent:
         """
         taint = (turn.untrusted, turn.private)
         results: list[Result] = []
+        if any(_name(call) == SWITCH_MODEL for call in calls) and self._offers_switch():
+            ran = self._run_switch(calls, hooks, turn, taint=taint)
+            alone = len(calls) == 1  # beside other calls, none of them was tried
+            return [
+                self._record(call, result, turn, tried=alone)
+                for call, result in zip(calls, ran, strict=True)
+            ]
         for group in self._side_by_side(calls):
             ran = self._run_group(group, hooks, turn, taint=taint)
             results += (
@@ -1850,15 +1886,20 @@ class Agent:
         turn.stuck = any(result is _REPEATED for result in results)
         return results
 
-    def _record(self, call: dict[str, Any], result: Result, turn: _Turn) -> Result:
-        """Note what one call did in the request, add its result to the conversation, return it."""
+    def _record(
+        self, call: dict[str, Any], result: Result, turn: _Turn, *, tried: bool = True
+    ) -> Result:
+        """Note what one call did in the request, add its result to the conversation, return it.
+
+        Without `tried` the call was not even decided, so it is not an action that was tried.
+        """
         name = str(obj(call.get("function")).get("name", ""))
         op = self._registry.get(name)
-        if op is not None and name in _WAYS_TO_GO_ON:
+        going_on = op is not None and name in _WAYS_TO_GO_ON
+        if going_on:
             # How hard to think, and in which mode, is not an action: the request still needs
             # its own tools.
-            going_on = self._think_harder if name == THINK_HARDER else self._switch_asked
-            result = going_on(turn, result)
+            result = self._think_harder(turn, result) if name == THINK_HARDER else result
         else:
             turn.actions.append(f"{name if op is not None else _UNKNOWN} -> {_outcome(result)}")
         if op is not None and not op.side_effect and result.ok and name not in _NOT_LOOK_UPS:
@@ -1866,7 +1907,7 @@ class Agent:
             if asked:
                 turn.looked.append(f"{name} {asked}")
                 del turn.looked[:-MAX_LOOK_UPS_KEPT]  # the newest are what a follow-up asks about
-        if op is None or op.side_effect:
+        if tried and not going_on and (op is None or op.side_effect):
             turn.tried = True
             if op is not None and (result.ok or result.acted):
                 turn.succeeded = True
@@ -1968,26 +2009,74 @@ class Agent:
             "out again, then call the tools it needs or answer."
         )
 
-    def _switch_asked(self, turn: _Turn, result: Result) -> Result:
-        """Note the mode the model asked for; the request is then answered again in it.
+    def _run_switch(
+        self, calls: list[dict[str, Any]], hooks: Hooks, turn: _Turn, *, taint: tuple[bool, bool]
+    ) -> list[Result]:
+        """Decide a reply that holds a `switch_model` call, and make the switch it may make.
 
-        `result` is what the `switch_model` call returned. Only the owner's own request switches,
-        once, and before any of its actions ran: answering again would run them twice.
+        The request is answered again in the new mode, so nothing else of it may have run or run
+        with it: a switch is made only when its call stands alone in the reply, and then no call
+        of that reply runs. Only the owner's own request switches, once, before any of its
+        actions was tried, and never to a mode that cannot see the pictures it came with. A
+        switch that is refused or cannot be made is the call's result, and the request goes on
+        in the mode it is in.
         """
-        if not result.mode:
-            return result
-        if self._switched or result.mode == self._mode:
-            return Result(f"You are in {self._mode} mode now; go on with the request.")
-        if turn.foreign:
-            return Result("Refused: only the owner's own request switches the model.", ok=False)
-        if turn.succeeded:
-            return Result(
-                "An action of this request already ran, so it finishes in this mode. Finish it, "
-                "and say the owner can ask for the switch in their next request.",
+        if len(calls) > 1:
+            alone = Result(
+                "Not run: switch_model must be the only call of a reply, as the request is "
+                "answered again in the other mode. Call it alone, or go on without it.",
                 ok=False,
             )
+            return [alone] * len(calls)
+        call = calls[0]
+        refusal = self._no_switch(call, turn)
+        if refusal is not None:
+            return [refusal]
+        result = self._guarded(call, hooks, turn, taint=taint)
+        if not (result.ok and result.mode):
+            return [result]
+        if hooks.cancelled():
+            return [Result("Stopped: Jarvis is shutting down.", ok=False)]
+        refused = self._modes.switch(result.mode, lambda line: _tell(hooks, line))
+        if refused:
+            return [
+                Result(
+                    f"The switch was not made: {refused} Go on with the request in "
+                    f"{self._mode} mode, and tell the owner the switch was not made and why.",
+                    ok=False,
+                )
+            ]
+        self._switched = True
         turn.switch = result.mode
-        return result
+        return [result]
+
+    def _offers_switch(self) -> bool:
+        return self._registry.get(SWITCH_MODEL) is not None
+
+    def _no_switch(self, call: dict[str, Any], turn: _Turn) -> Result | None:
+        """Return why a `switch_model` call is not even decided, or None when it may be."""
+        try:
+            to = str(obj(self._arguments(obj(call.get("function")))).get("mode", ""))
+        except ValueError, RecursionError:
+            to = ""  # the arguments are refused where every call's are
+        if turn.foreign:
+            return Result("Refused: only the owner's own request switches the model.", ok=False)
+        if self._switched or to == self._mode:
+            return Result(f"You are in {self._mode} mode now; go on with the request.")
+        if turn.tried:
+            return Result(
+                "An action of this request was already tried, so it finishes in this mode. "
+                "Finish it, and say the owner can ask for the switch in their next request.",
+                ok=False,
+            )
+        blind = self._shared_pictures and to in {"normal", "coding"}
+        if blind and not self._modes.setup(to).pictures:
+            return Result(
+                f"Refused: the model of {to} mode cannot see the picture this request came "
+                "with. Go on in this mode.",
+                ok=False,
+            )
+        return None
 
     def _guarded(
         self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, taint: tuple[bool, bool]

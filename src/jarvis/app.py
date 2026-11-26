@@ -341,11 +341,15 @@ class AgentModes:
         self._chat = chat
         self._made.clear()
 
-    def current(self) -> str:
-        """Return the mode now, going back to normal first when coding mode idled too long."""
-        with self._answering.set_aside():
-            self._switcher.back_if_idle()
+    @staticmethod
+    def current() -> str:
+        """Return the mode Jarvis is in now."""
         return modes.current()
+
+    def rest(self, say: Callable[[str], None]) -> None:
+        """Go back to normal when coding mode idled too long; `say` gets the line for the owner."""
+        with self._answering.set_aside():
+            self._switcher.back_if_idle(say)
 
     def setup(self, mode: str) -> Setup:
         """Return what the agent works with in `mode` (the normal mode's for an unknown one)."""
@@ -613,7 +617,7 @@ def switches_itself(config: Config, channel: Channel) -> bool:
 # Operations offered only when their files are installed, known to `boundaries.classes` either way.
 INSTALLED_ONLY = frozenset({"read_skill", "os_skill"})
 # ... and only while a setting turns them on (`audio.listen_to_pc`).
-SETTING_ONLY = frozenset({"pc_audio_listen"})
+SETTING_ONLY = frozenset({"pc_audio_listen", SWITCH_MODEL})
 # How Jarvis answers, not tools: never switched off.
 ALWAYS_OFFERED = frozenset({"no_action", "think_harder", "stay_quiet"})
 

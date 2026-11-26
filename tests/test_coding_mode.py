@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from strata_fixture import engine_run_config, install_engine, touch
 
-from jarvis import cli, config, modes, paths, services
+from jarvis import cli, config, modes, operations, paths, services
 from jarvis.agent import Agent, Hooks, Limits, Setup
 from jarvis.app import (
     AgentModes,
@@ -18,11 +18,13 @@ from jarvis.app import (
     no_action_operation,
     switch_operation,
     system_prompt,
+    unknown_overrides,
 )
 from jarvis.audit import AuditLog
 from jarvis.cli import main
 from jarvis.config import Config
 from jarvis.operations import Operation, Registry, Result
+from jarvis.pictures import Picture
 from jarvis.policy import Origin
 from jarvis.secretfile import write_private
 
@@ -45,6 +47,26 @@ def _call(name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
+def _calls(*names: tuple[str, dict[str, Any]]) -> dict[str, Any]:
+    """One model reply holding several calls."""
+    return {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": f"c{n}",
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)},
+            }
+            for n, (name, args) in enumerate(names)
+        ],
+    }
+
+
+def _tool_results(messages: list[dict[str, Any]]) -> list[str]:
+    return [str(m["content"]) for m in messages if m.get("role") == "tool"]
+
+
 def _reply(text: str) -> dict[str, Any]:
     return _call("no_action", {"reply": text})
 
@@ -55,6 +77,7 @@ class _Model:
     systems: list[str] = field(default_factory=list[str])
     max_tokens: list[int | None] = field(default_factory=list[int | None])
     tools: list[list[str]] = field(default_factory=list[list[str]])
+    seen: list[list[dict[str, Any]]] = field(default_factory=list[list[dict[str, Any]]])
 
     def chat(
         self,
@@ -70,6 +93,7 @@ class _Model:
     ) -> dict[str, Any]:
         del require_tool, timeout_s, on_delta, load_s, thinking
         self.systems.append(str(messages[0]["content"]))
+        self.seen.append([dict(message) for message in messages])
         self.max_tokens.append(max_tokens)
         self.tools.append([tool["function"]["name"] for tool in tools])
         return self.replies.pop(0)
@@ -118,6 +142,7 @@ class _Modes:
     switched: list[str] = field(default_factory=list[str])
     said: list[str] = field(default_factory=list[str])
     uses: int = 0
+    idle: bool = False  # coding mode went unused too long
     answered: list[str] = field(default_factory=list[str])
     during: list[list[str]] = field(default_factory=list[list[str]])
 
@@ -139,6 +164,11 @@ class _Modes:
     def used(self) -> None:
         self.uses += 1
 
+    def rest(self, say: Callable[[str], None]) -> None:
+        if self.idle:
+            say("Going back to the usual model.")
+            self.mode, self.idle = "normal", False
+
     @contextlib.contextmanager
     def answering(self) -> Generator[None]:
         self.answered.append("begins")
@@ -155,6 +185,7 @@ def _agent(
     mode: str = "normal",
     refuse: str = "",
     bypass_consent: bool = True,
+    pictures: bool = False,
 ) -> tuple[Agent, _Modes]:
     normal = Setup(
         "normal prompt",
@@ -164,7 +195,7 @@ def _agent(
     coding = Setup(
         "coding prompt",
         Registry([_switch("normal"), *(extra or []), no_action_operation()]),
-        Limits(reply_tokens=8192),
+        Limits(reply_tokens=8192, max_seconds=1800.0),
     )
     kept = _Modes({"normal": normal, "coding": coding}, mode, refuse)
     agent = Agent(
@@ -176,6 +207,7 @@ def _agent(
         limits=normal.limits,
         modes=kept,
         bypass_consent=bypass_consent,
+        pictures=pictures,
     )
     return agent, kept
 
@@ -207,14 +239,138 @@ def test_the_owner_hears_the_switch_when_the_request_was_spoken() -> None:
     assert spoken == ["Switching to coding.", "Which pages?"]
 
 
-def test_a_switch_that_cannot_be_made_is_said_and_the_mode_stays() -> None:
-    model = _Model([_call("switch_model", {"mode": "coding"})])
-    agent, kept = _agent(model, refuse="The coding model's file is missing.")
+def test_a_switch_that_cannot_be_made_lets_the_request_go_on_in_its_mode() -> None:
+    ran: list[str] = []
+    model = _Model(
+        [
+            _call("switch_model", {"mode": "coding"}),
+            _call("write_note"),
+            _reply("Written here; the coding model's file is missing."),
+        ]
+    )
+    agent, kept = _agent(model, [_write(ran)], refuse="The coding model's file is missing.")
 
     reply = agent.handle("build me a site", HOOKS)
 
-    assert reply == "The coding model's file is missing."
+    assert reply == "Written here; the coding model's file is missing."
+    assert "The coding model's file is missing." in _tool_results(model.seen[1])[0]
+    assert ran == ["write"]
+    assert (kept.mode, model.systems) == ("normal", ["normal prompt"] * 3)
+
+
+def test_a_switch_written_beside_other_calls_runs_none_of_them() -> None:
+    ran: list[str] = []
+    model = _Model(
+        [
+            _calls(("switch_model", {"mode": "coding"}), ("write_note", {})),
+            _call("switch_model", {"mode": "coding"}),
+            _call("write_note"),
+            _reply("Written."),
+        ]
+    )
+    agent, kept = _agent(model, [_write(ran)])
+
+    agent.handle("build me a site", HOOKS)
+
+    assert all(text.startswith("Not run:") for text in _tool_results(model.seen[1]))
+    assert kept.switched == ["coding"]
+    assert ran == ["write"]  # once, in coding mode: never in the reply that also switched
+    assert model.systems == ["normal prompt", "normal prompt", "coding prompt", "coding prompt"]
+
+
+def test_no_switch_after_an_action_of_the_request_failed() -> None:
+    failing = Operation(
+        "send_note",
+        "Send a note.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        lambda _args: Result("It may have been sent.", ok=False),
+        spoken_summary=lambda _args: "send a note",
+    )
+    model = _Model(
+        [_call("send_note"), _call("switch_model", {"mode": "coding"}), _reply("Not sure.")]
+    )
+    agent, kept = _agent(model, [failing])
+
+    agent.handle("send this, then code", HOOKS)
+
+    assert kept.switched == []  # answering again could send it a second time
+
+
+def test_a_stopped_request_does_not_switch_the_model() -> None:
+    stopped: list[bool] = []
+    model = _Model([_call("switch_model", {"mode": "coding"}), _reply("Stopped.")])
+    agent, kept = _agent(model, bypass_consent=False)
+
+    def confirm(_question: str) -> bool:
+        stopped.append(True)  # the owner presses stop while the tool call is decided
+        return True
+
+    hooks = Hooks(confirm=confirm, cancelled=lambda: bool(model.seen))
+    agent.handle("build me a site", hooks)
+
+    assert kept.switched == []
     assert kept.mode == "normal"
+
+
+def test_no_switch_to_a_model_that_cannot_see_the_request_s_picture() -> None:
+    model = _Model([_call("switch_model", {"mode": "coding"}), _reply("It shows a cat.")])
+    agent, kept = _agent(model, pictures=True)
+
+    reply = agent.handle("build this", HOOKS, pictures=[Picture("a.png", "image/png", b"x", 1, 1)])
+
+    assert reply == "It shows a cat."
+    assert kept.switched == []
+    assert "cannot see the picture" in _tool_results(model.seen[1])[0]
+
+
+def test_words_typed_before_a_switch_are_in_the_request_answered_again() -> None:
+    typed = iter([["make it blue"]])
+    model = _Model([_call("switch_model", {"mode": "coding"}), _reply("Blue it is.")])
+    agent, _ = _agent(model)
+
+    agent.handle(
+        "build me a site", Hooks(confirm=lambda _q: True, steer=lambda: next(typed, list[str]()))
+    )
+
+    again = [str(m["content"]) for m in model.seen[1] if m["role"] == "user"]
+    assert again[0] == "build me a site"
+    assert again[1].endswith("make it blue")
+    assert model.systems[1] == "coding prompt"
+
+
+def test_a_request_answered_again_has_the_time_of_its_new_mode() -> None:
+    left: list[float] = []
+
+    def look(_args: dict[str, Any]) -> Result:
+        request = operations.current_request()
+        assert request is not None
+        left.append(request.time_left())
+        return Result("Looked.")
+
+    probe = Operation(
+        "look",
+        "Look.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        look,
+        side_effect=False,
+    )
+    model = _Model([_call("switch_model", {"mode": "coding"}), _call("look"), _reply("Done.")])
+    agent, _ = _agent(model, [probe])
+
+    agent.handle("build me a site", HOOKS)
+
+    assert left[0] > Limits(reply_tokens=400).max_seconds  # the coding mode's, not the normal one's
+
+
+def test_coding_mode_left_unused_is_left_before_the_request_and_the_owner_is_told() -> None:
+    spoken: list[str] = []
+    model = _Model([_reply("Four.")])
+    agent, kept = _agent(model, mode="coding")
+    kept.idle = True
+
+    agent.handle("what is two and two", Hooks(confirm=lambda _q: True, speak=spoken.append))
+
+    assert spoken[0] == "Going back to the usual model."
     assert model.systems == ["normal prompt"]
 
 
@@ -283,10 +439,14 @@ def test_a_request_heard_in_pc_audio_never_switches_the_model() -> None:
     model = _Model([_call("switch_model", {"mode": "coding"}), _reply("I can't do that.")])
     agent, kept = _agent(model)
 
-    agent.handle("build a site", HOOKS, origin=Origin.PC_AUDIO)
+    asked: list[str] = []
+    agent.handle(
+        "build a site", Hooks(confirm=lambda q: asked.append(q) or True), origin=Origin.PC_AUDIO
+    )
 
     assert kept.switched == []
     assert kept.mode == "normal"
+    assert asked == []  # refused before any question: a yes would open the grant window
 
 
 def test_an_agent_follows_a_mode_switched_elsewhere_at_its_next_request() -> None:
@@ -632,3 +792,23 @@ def test_a_missing_model_file_is_the_one_of_the_mode_jarvis_is_in(
     assert model.served_file() == tmp_path / "models" / "coder.gguf"
     _process(installed, _Unit()).switch("normal", lambda _line: None)
     assert not model.file_missing()  # the usual model's file is there
+
+
+def test_the_switch_tool_can_be_denied_while_no_channel_offers_it() -> None:
+    cfg = Config.model_validate(
+        {
+            "coding": {"chat": {"auto": False}},
+            "boundaries": {"classes": {"switch_model": "deny"}},
+        }
+    )
+
+    assert unknown_overrides(cfg, []) == []
+
+
+def test_setup_keeps_the_config_when_the_coding_run_config_cannot_be_served(
+    installed: Config, tmp_path: Path
+) -> None:
+    code = main(["setup", "--coding-run-config", str(tmp_path / "missing.json")])
+
+    assert code == 2
+    assert config.load().strata.coding_run_config == installed.strata.coding_run_config
