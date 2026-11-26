@@ -24,6 +24,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   the same model asks for the groups it needs with `use_tools`. A tool of a group it has not asked for is
   not run. It stays off by default until a live run shows it as accurate and not slower
   ([ADR 0022](docs/adr/0022-tool-router.md)).
+- `tools/router_bench.py`, a benchmark of `tools = "all"` against `"routed"` on a running model server, for the voice
+  and chat channels: the same requests through Jarvis's real agent with stub tools, scored on the tools and
+  arguments called, model calls, time to the first reply and to the end, and prompt tokens (#56). It never starts
+  or stops a server; the live run and its results table are still to come ([models](docs/models.md#router-benchmark)).
 - `jarvis acp` serves Jarvis to coding apps that speak the Agent Client Protocol, T3 Code's "Local ACP
   command" among them. Each session is a chat conversation of its own with the same agent and the model
   Strata already serves, answered in text. Pictures work as in the chat. A question about an action is asked
@@ -306,6 +310,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   server's restart when it would not fit; each refusal is audited as `ram_refused`. `jarvis setup` or `jarvis restart` writes the
   unit's check ([docs/configuration.md](docs/configuration.md#refusing-a-load-that-does-not-fit),
   [ADR 0029](docs/adr/0029-refuse-a-load-that-does-not-fit.md)).
+- Coding mode no longer lowers the chat's memory: `[coding.chat] memory_tokens` is unset by default, so it
+  keeps `chat.memory_tokens` unless set. `[coding]` can now set `kv_resident`, `keep_in_ram`, `pictures` and
+  `effort_position` for coding mode, like `[strata]` (#57).
 - With a shared Strata run config, the ACP coding provider keeps the current model mode and
   uses the normal context budget. Coding requests hold off automatic model restarts while they answer.
 - ACP cancel and close stop deferred prompts and suppress late chunks. Confirmation answers are

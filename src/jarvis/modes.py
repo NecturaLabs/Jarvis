@@ -40,6 +40,8 @@ READY_S = 60.0  # how long a restarted model server may take to answer
 READY_POLL_S = 0.5
 BUSY = "Jarvis is answering a request. Try again when it has finished."
 _LIMITS = tuple(name for name in CodingChatConfig.model_fields if name != "auto")
+# `[strata]` keys coding mode may set for itself; unset (None) keeps `[strata]`'s.
+_STRATA_KEYS = ("kv_resident", "keep_in_ram", "pictures", "effort_position")
 
 
 def state_file() -> Path:
@@ -126,7 +128,8 @@ def effective(config: Config, mode: Mode) -> Config:
 
     In coding mode `[coding.chat]` is laid over `[chat]` and `[coding.voice]` over `[agent]` (a
     limit unset there stays the channel's own), the model server takes its context and, where
-    set, its run config, VRAM limits and memory, the model its temperature, and the files their
+    set, its run config, VRAM limits, memory, context cells in VRAM, swap, picture reader and
+    effort position, the model its temperature, and the files their
     extra write roots.
     """
     if mode != "coding":
@@ -144,6 +147,9 @@ def effective(config: Config, mode: Mode) -> Config:
         strata["expert_vram_gib"] = coding.expert_vram_gib
     if coding.memory_max:
         strata["memory_max"] = coding.memory_max
+    for name in _STRATA_KEYS:
+        if (value := getattr(coding, name)) is not None:
+            strata[name] = value
     model = {} if coding.temperature is None else {"temperature": coding.temperature}
     roots = list(dict.fromkeys([*config.files.write_roots, *coding.write_roots]))
     return config.model_copy(
@@ -469,8 +475,9 @@ class Switcher:
         """Return whether switching to `to` changes what the model server runs.
 
         A coding mode with the same run config, context and limits as the normal one changes only
-        Jarvis's own settings. A config that cannot be served counts as a change (`switch` says
-        what is wrong with it).
+        Jarvis's own settings. Only the profile is compared: a mode that changes only the unit
+        (`keep_in_ram`, `memory_max`) still restarts the server when `switch` writes it. A config
+        that cannot be served counts as a change (`switch` says what is wrong with it).
         """
         if self._config.strata.mode != "local":
             return False

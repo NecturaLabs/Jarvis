@@ -125,6 +125,7 @@ context = 65536
 # temperature: default [model]'s; expert_vram_gib: default [strata]'s.
 vram_reserve_mib = 0  # 0: [strata]'s
 memory_max = ""  # "": [strata]'s
+# kv_resident, keep_in_ram, pictures, effort_position: default [strata]'s (0 and "" count as set).
 reasoning_budget_tokens = 4096
 tools_off = []  # tools not offered in coding mode
 write_roots = []  # folders Jarvis may also write in coding mode, besides files.write_roots
@@ -139,7 +140,7 @@ max_tool_calls = 120
 max_seconds = 1800.0
 reply_tokens = 8192
 tool_text_chars = 20000
-memory_tokens = 20000
+# memory_tokens: default [chat]'s.
 thinking = "medium"
 thinking_tokens = 1024
 thinking_raised_tokens = 4096
