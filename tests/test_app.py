@@ -1,8 +1,10 @@
 import json
 import os
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import pytest
+from test_pc_windows import FakeDesktop
 
 from jarvis import __version__, control, osskills, paths
 from jarvis import app as app_module
@@ -49,14 +51,14 @@ from jarvis.operations import (
     UncertainOutcomeError,
     request_scope,
 )
+from jarvis.pc.screenshot import ScreenshotOps
+from jarvis.pc.watch import ScreenWatch
+from jarvis.pc.windows import WindowOps
 from jarvis.policy import Origin
 from jarvis.secretfile import ensure_api_key
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _op(name: str) -> Operation:
@@ -815,6 +817,31 @@ def test_pc_audio_listen_is_offered_by_voice_only_while_pc_audio_is_on() -> None
 def test_a_setting_for_pc_audio_listen_is_known_while_pc_audio_is_off() -> None:
     # Set while PC audio was on, it must not stop Jarvis from starting once it is off.
     config = Config.model_validate({"boundaries": {"classes": {"pc_audio_listen": "deny"}}})
+
+    assert unknown_overrides(config, []) == []
+
+
+def test_the_screen_watch_tools_are_offered_only_with_the_voice_services_watch() -> None:
+    # A watch lives in the voice service's process: `jarvis ask` and the chat build none.
+    ensure_api_key(strata_key_file())
+    config = Config()
+    names = ("pc_watch", "pc_watches", "pc_watch_stop")
+    limits = channel_limits(config, "voice")
+    windows = WindowOps(FakeDesktop())
+    watch = ScreenWatch(windows, ScreenshotOps(windows, Path("/nonexistent")))
+
+    without = channel_registry(config, [], limits, "voice")
+    within = channel_registry(config, [], limits, "voice", watching=watch)
+
+    assert all(without.get(name) is None for name in names)
+    assert all(within.get(name) is not None for name in names)
+    assert build(config).watch is not None
+    assert build(config, via="ask").watch is None
+    assert build(config, via="chat").watch is None
+
+
+def test_a_setting_for_a_watch_tool_is_known_where_the_chat_does_not_offer_it() -> None:
+    config = Config.model_validate({"boundaries": {"classes": {"pc_watch": "deny"}}})
 
     assert unknown_overrides(config, []) == []
 

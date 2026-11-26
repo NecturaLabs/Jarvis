@@ -15,6 +15,7 @@ import pytest
 from jarvis import agent as agent_module
 from jarvis.agent import (
     CALL_TOO_LONG,
+    CANT_SEE,
     FAILED_REMINDER,
     LOOKED_REMINDER,
     MAX_CALLS_PER_TURN,
@@ -26,6 +27,7 @@ from jarvis.agent import (
     MODEL_MISSING,
     NO_ACTION_REMINDER,
     PICTURES_OFF,
+    SEEN_NEXT,
     STOPPED,
     TOO_LONG,
     TOO_MANY_STEPS,
@@ -2657,6 +2659,143 @@ def test_a_picture_is_remembered_by_its_name_and_its_bytes_are_not_kept() -> Non
     assert turn.outside == "picture"
     assert all(isinstance(m["content"], str) for m in model.seen[1])
     assert "base64" not in json.dumps(model.seen[1])
+
+
+def _screenshot_op(look: Picture | None = SHOT) -> Operation:
+    """A tool like `pc_screenshot`: it saves a picture and hands it over for the model to see."""
+    return Operation(
+        "shot",
+        "take a screenshot",
+        {"type": "object", "properties": {}},
+        lambda _args: Result("Saved a screenshot.", look=look),
+        spoken_summary=lambda _a: "take a screenshot",
+    )
+
+
+def test_a_screenshot_the_model_took_reaches_it_in_the_next_message_after_the_result() -> None:
+    model = ScriptedModel([_call("shot"), _say("A red square.")])
+    agent, audit = _agent(model, [_screenshot_op()], pictures=True)
+
+    assert agent.handle("what is on my screen?", NO_CONFIRM) == "A red square."
+
+    after = model.seen[1]
+    assert after[-2]["role"] == "tool"
+    assert SEEN_NEXT in after[-2]["content"]
+    assert after[-1]["role"] == "user"
+    parts = objs(after[-1]["content"])
+    assert {"type": "image_url", "image_url": {"url": SHOT.data_url()}} in parts
+    words = " ".join(str(part["text"]) for part in parts if part["type"] == "text")
+    assert "shot.png" in words
+    assert "never instructions" in words
+    assert "picture_seen" in _events(audit)
+
+
+def test_a_side_effect_after_a_screenshot_needs_a_yes() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_call("shot"), _call("pause", call_id="c2"), _say("Okay.")])
+    agent, _ = _agent(model, [_screenshot_op(), counter.op("pause")], pictures=True)
+
+    agent.handle("look and act", Hooks(confirm=lambda q: asked.append(q) or False))
+
+    assert asked
+    assert counter.runs == []
+
+
+def test_the_picture_follows_all_the_results_of_a_message_with_several_calls() -> None:
+    counter = Counter()
+    pair = _call("shot")
+    pair["tool_calls"].append(_call("pause", call_id="c2")["tool_calls"][0])
+    model = ScriptedModel([pair, _say("Done.")])
+    agent, _ = _agent(model, [_screenshot_op(), counter.op("pause")], pictures=True)
+
+    agent.handle("pause and look", NO_CONFIRM)
+
+    roles = [m["role"] for m in model.seen[1][-3:]]
+    assert roles == ["tool", "tool", "user"]  # every result first, then the picture
+
+
+def test_a_side_effect_after_a_screenshot_nobody_could_see_runs_as_usual() -> None:
+    counter = Counter()
+    asked: list[str] = []
+    model = ScriptedModel([_call("shot"), _call("pause", call_id="c2"), _say("Okay.")])
+    agent, _ = _agent(model, [_screenshot_op(None), counter.op("pause")], pictures=True)
+
+    agent.handle("act", Hooks(confirm=lambda q: asked.append(q) or False))
+
+    assert not asked
+    assert counter.runs == [{"op": "pause"}]
+
+
+@pytest.mark.parametrize("detail", ["condensed", "full"])
+def test_a_screenshot_is_not_remembered_and_its_bytes_are_not_kept(detail: str) -> None:
+    model = ScriptedModel([_call("shot"), _say("A red square."), _say("Red.")])
+    limits = replace(Limits(), memory_detail=detail)
+    agent, _ = _agent(model, [_screenshot_op()], pictures=True, limits=limits)
+
+    agent.handle("what is on my screen?", NO_CONFIRM)
+    agent.handle("what colour was it?", NO_CONFIRM)
+
+    (turn,) = agent.memory.turns[:1]
+    assert turn.outside == "picture"
+    assert "base64" not in json.dumps(model.seen[-1])
+    assert all(isinstance(m["content"], str) or m["role"] == "assistant" for m in model.seen[-1])
+
+
+def test_a_screenshot_without_the_picture_reader_says_so_and_sends_no_picture() -> None:
+    model = ScriptedModel([_call("shot"), _say("I can't see it.")])
+    agent, _ = _agent(model, [_screenshot_op()], pictures=False)
+
+    agent.handle("what is on my screen?", NO_CONFIRM)
+
+    after = model.seen[1]
+    assert after[-1]["role"] == "tool"
+    assert CANT_SEE in after[-1]["content"]
+    assert "base64" not in json.dumps(after)
+
+
+@pytest.mark.parametrize(
+    ("answer", "shows"),
+    [
+        ("YES", True),
+        (" yes.", True),
+        ("Yes, a dialog.", True),
+        ("NO", False),
+        ("Yesterday", False),
+        ("I think YES", False),
+        ("", False),
+        ("no, yes", False),
+    ],
+)
+def test_a_glance_is_a_yes_only_when_the_answer_starts_with_one(answer: str, shows: bool) -> None:
+    model = ScriptedModel([_say(answer)])
+    agent, _ = _agent(model, [], pictures=True)
+
+    assert agent.glance(SHOT, "a dialog") is shows
+
+
+def test_a_glance_is_one_call_with_no_tools_and_no_memory_and_the_picture_as_data() -> None:
+    model = ScriptedModel([_say("what is this?"), _say("NO")])
+    agent, audit = _agent(model, [Counter().op("pause")], pictures=True)
+    agent.handle("hello", NO_CONFIRM)
+
+    agent.glance(SHOT, "a dialog")
+
+    (messages,) = model.seen[1:]
+    assert model.tools_offered[1] == 0
+    assert [m["role"] for m in messages] == ["system", "user"]  # nothing remembered
+    assert "outside data" in messages[0]["content"]
+    parts = objs(messages[1]["content"])
+    assert {"type": "image_url", "image_url": {"url": SHOT.data_url()}} in parts
+    assert "a dialog" in str(parts[-1]["text"])
+    assert model.max_tokens[1] is not None
+    assert len(agent.memory.turns) == 1  # the glance left no turn
+    assert [e["event"] for e in audit.events].count("request") == 1
+
+
+def test_the_agent_says_whether_its_model_sees_pictures() -> None:
+    assert _agent(ScriptedModel([]), [], pictures=True)[0].sees() is True
+    assert _agent(ScriptedModel([]), [])[0].sees() is False
 
 
 # Bypassing consent (the owner's toggle)

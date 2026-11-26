@@ -24,3 +24,4 @@ edited once accepted; a later decision supersedes it with a new record that link
 | [0017](0017-coding-mode.md) | A coding mode with its own model on the one model server, switched by the owner or by the model with a typed tool | accepted |
 | [0018](0018-sing-a-song-the-model-writes.md) | Sing a song the model writes as notes, with a speaking-voice singer and an optional GPU one | proposed |
 | [0019](0019-install-and-update.md) | Install and update Jarvis from a release branch | proposed |
+| [0021](0021-screen-watch.md) | Watch a window or the screen and say when something shows up, with one no-tool check by the same model | proposed |

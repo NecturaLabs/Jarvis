@@ -1187,6 +1187,7 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
         keys=keys,
         due=jobs.take_due,
         schedule_ready=jobs.may_be_due,
+        watching=jarvis.watch,
     )
     handler = control.Controls(
         loop, mic, jarvis.model, jarvis.audit, keys=keys, prime=jarvis.agent.prime

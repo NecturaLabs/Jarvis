@@ -302,6 +302,7 @@ def _loop(
     after_sleep: Callable[[], None] = lambda: None,
     due: Callable[[], Sequence[Due]] = tuple,
     hearing: Hearing | PcHearing | None = None,
+    watching: voice.Watching | None = None,
 ) -> VoiceLoop:
     listener = None if pc is None else PcListener(pc, pc_wake or Wake(), Vad(), hearing)
     return VoiceLoop(
@@ -326,6 +327,7 @@ def _loop(
         asleep_s=asleep_s,
         after_sleep=after_sleep,
         due=due,
+        watching=watching,
     )
 
 
@@ -3875,3 +3877,134 @@ def test_playback_and_capture_are_busy_for_updates() -> None:
     assert not any(idle_checks)
     with modes.voice_idle() as idle:
         assert idle
+
+
+# Screen watches
+
+
+@dataclass
+class Screens:
+    """The screen watches as the loop sees them: due once, then their lines are given."""
+
+    lines: list[str] = field(default_factory=list[str])
+    due: bool = True
+    checks: int = 0
+    broken: bool = False
+    asked: int = 0
+
+    def ready(self) -> bool:
+        self.asked += 1
+        return self.due
+
+    def check_due(self) -> list[str]:
+        self.checks += 1
+        self.due = False
+        if self.broken:
+            msg = "the model server is down"
+            raise RuntimeError(msg)
+        lines, self.lines = self.lines, []
+        return lines
+
+
+def test_a_watch_line_is_said_after_a_chime_when_the_loop_is_idle() -> None:
+    speaker = Speaker()
+    screens = Screens(["Heads up: the build finished."])
+    mic = Mic(SILENCE, Idle(lambda: bool(speaker.said)), SILENCE)
+
+    _run(_loop(Agent(), mic, speaker, watching=screens))
+
+    assert screens.checks == 1  # one check, however many frames passed
+    assert speaker.said == ["Heads up: the build finished."]
+    assert speaker.chimes == 1
+
+
+def test_no_check_is_made_while_jarvis_speaks_is_paused_or_the_owner_dictates() -> None:
+    screens = Screens(["Heads up: x."])
+    speaker = Speaker()
+    speaker.busy = True
+    dictating = threading.Event()
+    dictating.set()
+    paused = threading.Event()
+    paused.set()
+    mic = Mic(*[SILENCE] * 10)
+
+    _run(
+        _loop(
+            Agent(),
+            mic,
+            speaker,
+            watching=screens,
+            dictating=dictating.is_set,
+            paused=paused.is_set,
+        )
+    )
+
+    assert (screens.checks, screens.asked, speaker.said) == (0, 0, [])
+
+
+@pytest.mark.parametrize("quiet", ["busy", "paused", "dictating", "meeting", "locked"])
+def test_a_check_waits_for_each_of_them_alone(quiet: str) -> None:
+    screens = Screens(["Heads up: x."])
+    speaker = Speaker()
+    flags = {"busy": False, "paused": False, "dictating": False, "meeting": False, "locked": False}
+    flags[quiet] = True
+    speaker.busy = flags["busy"]
+    mic = Mic(
+        *[SILENCE] * 6,
+        lambda: flags.update({quiet: False}),
+        lambda: setattr(speaker, "busy", False),
+        Idle(lambda: bool(speaker.said)),
+    )
+
+    _run(
+        _loop(
+            Agent(),
+            mic,
+            speaker,
+            watching=screens,
+            paused=lambda: flags["paused"],
+            dictating=lambda: flags["dictating"],
+            meeting=lambda: flags["meeting"],
+            locked=lambda: flags["locked"],
+        )
+    )
+
+    assert screens.checks == 1
+    assert speaker.said == ["Heads up: x."]
+
+
+def test_a_check_that_fails_is_logged_and_the_loop_goes_on(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    screens = Screens(broken=True)
+    speaker = Speaker()
+    mic = Mic(*[SILENCE] * 5)
+
+    with caplog.at_level(logging.ERROR):
+        _run(_loop(Agent(), mic, speaker, watching=screens))
+
+    assert screens.checks == 1
+    for thread in threading.enumerate():  # the check logs on its own thread
+        if thread.name == "jarvis-screen-watch":
+            thread.join(5)
+    assert "check failed" in caplog.text
+    assert speaker.said == []
+
+
+def test_lines_made_while_the_owner_dictates_wait_until_it_is_over() -> None:
+    screens = Screens(["Heads up: x."])
+    speaker = Speaker()
+    dictating = threading.Event()
+    mic = Mic(
+        SILENCE,
+        Idle(lambda: screens.checks == 1),
+        dictating.set,
+        *[SILENCE] * 5,
+        lambda: _no_word_yet(speaker),
+        dictating.clear,
+        Idle(lambda: bool(speaker.said)),
+    )
+
+    _run(_loop(Agent(), mic, speaker, watching=screens, dictating=dictating.is_set))
+
+    assert speaker.said == ["Heads up: x."]

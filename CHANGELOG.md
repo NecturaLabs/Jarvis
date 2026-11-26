@@ -27,6 +27,15 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - `pc_screenshot` takes a picture of the screen, a workspace or one window. A window or workspace
   that is not on screen is captured off-screen without switching to it. The picture is saved where
   Omarchy keeps screenshots, copied to the clipboard and shown in the chat.
+- Jarvis sees its own screenshots: where its model can see pictures, `pc_screenshot` also hands it the
+  picture, as outside data (a side effect after it needs a yes, like after a shared picture). The
+  conversation keeps the picture's name, not the picture.
+- Screen watches: ask Jarvis to tell you when something shows up in a window, a workspace or the screen
+  and `pc_watch` checks now and then (`every_s`, default 20, 10 to 300; `for_min`, default 120, up to
+  720; `repeat`), said by voice in a fixed line built from what you asked for, never words read off the
+  screen. `pc_watches` lists and `pc_watch_stop` stops. Two at most, only in `jarvis run`, only
+  between requests, and each check is one model call that uses the GPU
+  ([ADR 0021](docs/adr/0021-screen-watch.md), proposed).
 - Every `jarvis` command answers a script or an AI agent in one line of JSON with `--agent` (or
   `--agent-format`, or `JARVIS_AGENT_FORMAT=1`): `command`, `ok` and `exit`, then its own keys (`doctor`,
   `status`, `tools`, `speed`, `consent`) or its output lines, even for a wrong argument or a crash. Interactive

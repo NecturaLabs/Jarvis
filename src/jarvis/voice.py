@@ -16,7 +16,7 @@ import queue
 import re
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -202,6 +202,28 @@ class _Audit(Protocol):
     def record(self, event: str, **fields: object) -> None: ...
 
 
+class Watching(Protocol):
+    """Screen watches (`pc/watch.py`): whether one is due, and the checks that make lines to say."""
+
+    def ready(self) -> bool:
+        """Whether a check is due now (cheap: asked between audio frames)."""
+        ...
+
+    def check_due(self) -> list[str]:
+        """Make the checks that are due; return the lines to say."""
+        ...
+
+
+@dataclass(slots=True)
+class _Screens:
+    """The screen watches' checks as the loop runs them: what they said, and the one in progress."""
+
+    watching: Watching
+    lines: list[str] = field(default_factory=list[str])
+    thread: threading.Thread | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
 class _Speaker(Protocol):
     @property
     def busy(self) -> bool: ...
@@ -359,6 +381,7 @@ class VoiceLoop:
         keys: ConfirmKey | None = None,
         due: Callable[[], Sequence[Due]] = tuple,
         schedule_ready: Callable[[], bool] = lambda: True,
+        watching: Watching | None = None,
     ) -> None:
         """Wire the loop to its parts.
 
@@ -383,7 +406,9 @@ class VoiceLoop:
         `strong` action waits for (`jarvis confirm`); without it such an action is refused.
         `due` takes the reminders and scheduled requests whose time came (`JobStore.take_due`);
         it is asked between every two frames, so it must be cheap. What it gives waits while the
-        owner dictates or a meeting runs.
+        owner dictates or a meeting runs. `watching` makes the screen watches' checks, one at a
+        time on a thread of their own, only while the loop is idle (nothing said or heard, not
+        dictating or paused); the lines they make are said between requests.
         """
         super().__init__()
         self._agent = agent
@@ -410,6 +435,7 @@ class VoiceLoop:
         self._keys = keys
         self._due = due
         self._schedule_ready = schedule_ready
+        self._screens = None if watching is None else _Screens(watching)
         self._due_failed = False  # the last look at the due jobs failed (logged once)
         self._held: list[tuple[Due, float]] = []  # due jobs waiting for dictation to end, and when
         self._asleep_s = asleep_s
@@ -1107,6 +1133,66 @@ class VoiceLoop:
         self._wake.reset()
         return True
 
+    def _screen_quiet(self) -> bool:
+        """Whether nothing else is going on.
+
+        Jarvis is not speaking or paused, the owner is not dictating, no meeting runs and the
+        screen is not locked.
+        """
+        return not (
+            self._speaker.busy
+            or self._paused()
+            or self._locked()
+            or self._dictating() is not False
+            or self._meeting()
+        )
+
+    @staticmethod
+    def _screen_check(screens: _Screens) -> None:
+        """Make the checks that are due (on the check's own thread) and keep what they say."""
+        try:
+            lines = screens.watching.check_due()
+        except Exception:
+            log.exception("a screen watch's check failed")
+            return
+        with screens.lock:
+            screens.lines.extend(lines)
+
+    def _served_watch(self) -> bool:
+        """Say what the screen watches found, and start the next check when one is due.
+
+        Checks start only while the loop is idle; a line is said between requests, as a reminder
+        is. Returns whether something was said.
+        """
+        screens = self._screens
+        if screens is None or not self._screen_quiet():
+            return False
+        with screens.lock:
+            lines, screens.lines = screens.lines, []
+        if lines:
+            with modes.voice_request() as admitted:
+                if not admitted:
+                    with screens.lock:
+                        screens.lines[:0] = lines
+                    return False
+                for line in lines:
+                    self._requests += 1
+                    self._serve(functools.partial(self._say_watch, line))
+            self._mic.drain()
+            self._wake.reset()
+            return True
+        if (screens.thread is None or not screens.thread.is_alive()) and screens.watching.ready():
+            screens.thread = threading.Thread(
+                target=self._screen_check, args=(screens,), name="jarvis-screen-watch", daemon=True
+            )
+            screens.thread.start()
+        return False
+
+    def _say_watch(self, line: str) -> None:
+        self.state = State.SPEAK
+        self._chime()
+        self._say(line)
+
     def _run_due(self, due: Due) -> None:
         """Say a due reminder, or carry out a due request as if it had just been asked.
 
@@ -1404,7 +1490,7 @@ class VoiceLoop:
                 self._serve_if_admitted(functools.partial(self._answer_pc, pc_request))
                 self._mic.drain()
                 continue
-            if self._served_due():
+            if self._served_due() or self._served_watch():
                 continue
             if self._wake.heard(frame):
                 if self._ignored_while_locked("the wake word") or self._ignored_while_dictating(
