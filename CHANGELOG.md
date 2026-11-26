@@ -8,6 +8,14 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Skill plugins: skills from marketplaces in the Claude Code format, enabled with `jarvis plugins install
+  PLUGIN@MARKETPLACE` and kept at the newest commit of their repository (no pinned version), by
+  `jarvis plugins update` and `jarvis update --apply`. Only a plugin's skills are used; its hooks, commands,
+  agents, MCP servers and scripts never run. A skill named under `[plugins.always_on]` is in every request of
+  that channel under a fixed third-party header; the others are listed and read with `read_skill`. Nothing is
+  downloaded while no plugin is enabled. Jarvis keeps its own copies under `<data_dir>/plugins/`, closed to the
+  file operations. Each update is audited with the old and new commit, and `jarvis doctor` shows each
+  marketplace's commit and date. See [ADR 0027](docs/adr/0027-skill-plugins.md).
 - Your own skills: Markdown files in `~/.config/jarvis/skills/` are listed in the prompt and read with
   `read_skill` like the shipped ones. A file is read only when it and its folder are yours alone, it is no
   link, and it fits the size limits. `jarvis doctor` names any file it left out. Jarvis's file operations

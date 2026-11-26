@@ -17,7 +17,9 @@ import os
 import stat
 import threading
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from jarvis.jsonutil import obj
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -45,6 +47,25 @@ def _is_current(path: Path, status: os.stat_result) -> bool:
     except FileNotFoundError:
         return False
     return (current.st_dev, current.st_ino) == (status.st_dev, status.st_ino)
+
+
+def last_event(path: Path, event: str, **match: object) -> dict[str, Any] | None:
+    """Return the newest event named `event` (with these field values) in the log at `path`.
+
+    The older generations of a full log are read too. Nothing is raised: a missing or damaged
+    log is no event.
+    """
+    for log in (path, *(path.with_name(f"{path.name}.{n}") for n in range(1, GENERATIONS + 1))):
+        try:
+            lines = log.read_bytes().splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            with contextlib.suppress(ValueError):
+                row = obj(json.loads(line))
+                if row.get("event") == event and all(row.get(k) == v for k, v in match.items()):
+                    return row
+    return None
 
 
 class AuditLog:

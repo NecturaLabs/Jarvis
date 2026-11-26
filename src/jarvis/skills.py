@@ -11,6 +11,9 @@ on the PC can be read this way.
 An owner's file counts only when the folder and the file are the owner's, writable by nobody
 else, opened without following a link, and within the size limits; a name a shipped skill has is
 kept for the shipped one. `jarvis doctor` says which files were left out and why.
+
+Skills from plugin marketplaces (`plugins.py`) join them, named `plugin:skill`, so a name never
+clashes with the two kinds above.
 """
 
 import errno
@@ -37,12 +40,13 @@ MAX_SKIPPED_NOTES = 20  # the most files `jarvis doctor` names as left out
 
 @dataclass(frozen=True, slots=True)
 class Skill:
-    """One skill: shipped with Jarvis, or the owner's (`owner`)."""
+    """One skill: shipped with Jarvis, the owner's (`owner`) or a plugin's (`plugin`)."""
 
     name: str
     description: str
     body: str
     owner: bool = False
+    plugin: bool = False
 
 
 def _parsed(name: str, text: str, *, owner: bool = False) -> Skill | None:
@@ -191,14 +195,17 @@ def _owner_at(folder: str) -> tuple[Skill, ...]:
     return owner_skills(Path(folder))[0]
 
 
-def available(folder: Path | None = None) -> tuple[Skill, ...]:
-    """Return every skill the model may read: the shipped ones, then the owner's.
+def available(folder: Path | None = None, *, extra: tuple[Skill, ...] = ()) -> tuple[Skill, ...]:
+    """Return every skill the model may read: the shipped ones, the owner's, then `extra`.
 
     The owner's are read once per process and folder, so the prompt and `read_skill` always
     list the same skills; a new or changed file counts from the next start of the voice service
-    or chat window.
+    or chat window. `extra` is the plugins' (`plugins.loaded`), read once per process the same
+    way; a name already taken is left out.
     """
-    return (*shipped(), *_owner_at(str(owner_folder() if folder is None else folder)))
+    found = (*shipped(), *_owner_at(str(owner_folder() if folder is None else folder)))
+    taken = {skill.name for skill in found}
+    return (*found, *(skill for skill in extra if skill.name not in taken))
 
 
 def doctor_notes(folder: Path | None = None) -> list[str]:

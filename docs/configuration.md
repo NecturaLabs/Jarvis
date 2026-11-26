@@ -57,7 +57,8 @@ changed default in a later version reaches you.
 | `auto` | `false` | Allows the automatic update timer to apply updates. Use `jarvis update --auto on` to create and enable it, or `jarvis update --auto off` to disable and remove it. |
 
 Run `jarvis update` to fetch and preview the release commits and file changes.
-`jarvis update --apply` fast-forwards a clean checkout, syncs the checkout's `.venv` from the lockfile,
+`jarvis update --apply` first updates the enabled plugins ([`[plugins]`](#plugins-skills-from-plugin-marketplaces)),
+then fast-forwards a clean checkout, syncs the checkout's `.venv` from the lockfile,
 and regenerates its Strata profile and user units when needed. It restarts a running voice service
 only when idle, leaves stopped services stopped and keeps a running Strata if its settings are unchanged.
 If validation or service startup fails, it restores the previous commit, environment and generated
@@ -70,6 +71,53 @@ shows availability as of the last fetch, automatic update settings and the last 
 `jarvis doctor --no-service` checks the installation before the services are enabled.
 Use `--essential` to report any Spotify login problems as notes.
 See [ADR 0019](adr/0019-install-and-update.md) for the release trust and rollback boundaries.
+
+## `[plugins]`: skills from plugin marketplaces
+
+A marketplace is a Git repository in the Claude Code format: `.claude-plugin/marketplace.json` lists its
+plugins, and a plugin's `skills/<name>/SKILL.md` files are its skills. Jarvis uses **only** the skills. A
+plugin's hooks, commands, agents, MCP servers, scripts and settings are never read or run, and
+`jarvis plugins` says which a plugin holds. Jarvis keeps its own copies under `<data_dir>/plugins/` and never
+reads another program's plugins. Plugin text is third-party guidance: it can change how the model works and
+grants nothing, since every boundary is in code ([ADR 0027](adr/0027-skill-plugins.md)).
+
+| Key in `[plugins]` | Default | What it does |
+|---|---|---|
+| `marketplaces` | `["NecturaLabs/jarvis-plugins"]` | Where plugins come from: `owner/repo` on GitHub, or an `https://` address of a Git repository on a public host (no address, port or login). Only edited here. |
+| `enabled` | `[]` | Plugins in use, `plugin@marketplace`. `jarvis plugins install` and `uninstall` edit it. **While it is empty nothing is downloaded or fetched**, not by `jarvis setup`, `jarvis update` or its timer. |
+| `auto_update` | `true` | Whether `jarvis update --apply` (and the daily timer) also moves what is enabled to the newest commit. `jarvis plugins update` always does. |
+| `always_on.chat`, `always_on.voice` | `[]` | Skills, named `plugin:skill`, whose whole text is in every request of that channel (at most 5; 8,000 bytes each and 12,000 together, else the skill is only listed and read when needed). Every other plugin skill is listed with a short description and read with `read_skill`. |
+| `always_on_args` | `{}` | One line said under an always-on skill's heading, such as `"plugin:skill" = "full"` for a skill with levels (at most 40 characters). |
+
+For example, with [ponytail](https://github.com/DietrichGebert/ponytail) (MIT, by Dietrich Gebert), whose
+skill makes replies smaller and its changes the least that solve the task:
+
+```toml
+[plugins]
+marketplaces = ["NecturaLabs/jarvis-plugins", "DietrichGebert/ponytail"]
+enabled = ["ponytail@ponytail"]
+
+[plugins.always_on]
+chat = ["ponytail:ponytail"]
+
+[plugins.always_on_args]
+"ponytail:ponytail" = "full"
+```
+
+then `jarvis plugins install ponytail@ponytail` (or `update`) downloads it. An always-on skill takes room
+from the context window, so the remembered conversation (`chat.memory_tokens`) gives way automatically;
+plugin text is read once per process, so a change counts from the next chat window or `jarvis restart`.
+
+Jarvis follows each repository's newest commit; it does not pin a version, so upstream changes reach the model
+without review. Each update is audited with the old and new commit, and `jarvis doctor` shows each marketplace's
+commit and date and warns when an update failed or a skill file could not be read. Repositories are fetched
+with Git over https only, with hooks off, no links written and no submodules, and read nothing of your own Git
+configuration. A skill is read only when its files are yours, nobody else can write to them, no link is
+followed, and it is at most 16,000 bytes.
+
+`jarvis plugins` lists the marketplaces and what each plugin holds; `install PLUGIN@MARKETPLACE` downloads
+the marketplace if needed and enables a plugin; `uninstall` disables it; `update` brings what is enabled up to
+date.
 
 ## `[model]`: how Jarvis talks to Strata
 

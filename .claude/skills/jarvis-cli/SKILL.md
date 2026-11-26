@@ -38,6 +38,7 @@ stdout and stderr lines, colour removed. A crash puts its traceback in `errors`.
 | `tools` | `tools` (each `name`, `setting`, `state`, `shipped`, `changed`, `description` in full); after `tools NAME SETTING`, `tool` |
 | `speed` | `speech_speed` |
 | `consent` | `consent` (`bypassed` or `asks`), `said` |
+| `plugins` | `marketplaces` (each `source`, `downloaded`, `name`, `commit`, `date`, `refused`, and `plugins` with `name`, `description`, `enabled`, `skills`, `ignored`) |
 
 `chat`, `logs`, `run`, `ask`, `speech-test` and `spotify-login` wait on a person or follow a live
 stream: with `--agent` they do nothing and answer `exit` 2. Read the journal with

@@ -16,6 +16,8 @@ maintainer's PC").
 - Touch the owner's config, services, microphone, Spotify account or screen:
   - `jarvis setup` rewrites the config, the Strata profile, the Strata API key and the user units, and reloads
     systemd, even without `--enable`;
+  - `plugins install`, `uninstall` and `update` rewrite the config or download from GitHub into the data folder
+    (`plugins` with no argument only reads it);
   - `consent`, `wake` and `pc-audio` with any argument rewrite the config and restart a running voice service;
   - `start`, `stop`, `restart` and `unload` act on the services and the loaded model; `pause`, `resume`, `hush` and
     `confirm` act on the running Jarvis (`confirm` allows the action it is waiting on);

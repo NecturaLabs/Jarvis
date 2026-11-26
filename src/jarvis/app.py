@@ -7,7 +7,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from jarvis import __version__, calc, modes, osskills, paths, services, skills
+from jarvis import __version__, calc, modes, osskills, paths, plugins, services, skills
 from jarvis.about import AboutOps
 from jarvis.agent import SWITCH_MODEL, Agent, Limits, Setup
 from jarvis.audit import AuditLog
@@ -225,9 +225,14 @@ def system_prompt(config: Config, channel: Channel = "voice", *, coding: bool = 
     core = prompts.joinpath("core.md").read_text(encoding="utf-8")
     style = prompts.joinpath(f"{channel}.md").read_text(encoding="utf-8")
     words = int(round(config.chat.reply_tokens * WORDS_PER_TOKEN, -1))
+    extra = plugins.loaded(config.plugins, config.data_dir)
+    listed = tuple(
+        skill
+        for skill in skills.available(extra=extra.skills)
+        if skill.name not in extra.always_on(channel)  # their text is in the prompt already
+    )
     fill = {
-        "skills": skills.prompt_section(skills.available())
-        + osskills.prompt_section(osskills.catalog()),
+        "skills": skills.prompt_section(listed) + osskills.prompt_section(osskills.catalog()),
         "name": config.persona.name,
         "version": __version__,
         "model": _served_model(config),
@@ -244,6 +249,7 @@ def system_prompt(config: Config, channel: Channel = "voice", *, coding: bool = 
         text += prompts.joinpath("coding.md").read_text(encoding="utf-8")
     for key, value in fill.items():
         text = text.replace("{" + key + "}", value)
+    text += extra.text(channel)
     if config.persona.addendum.strip():
         text += f"\nThe owner's own instructions:\n{config.persona.addendum.strip()}\n"
     if coding and config.coding.prompt.strip():
@@ -462,11 +468,14 @@ def browser_ops(  # ruff: ignore[too-many-arguments] - what the browser is made 
 def files_boundary(config: Config, home: Path | None = None) -> Boundary:
     """Return where the file operations may read and write.
 
-    Jarvis's own state and config folders are never in it: its settings and the owner's skills
-    there steer Jarvis, so no request may rewrite them through a file operation.
+    Jarvis's own state and config folders are never in it, nor its plugins' folder: its settings,
+    the owner's skills and the plugins' skills there steer Jarvis, so no request may rewrite them
+    through a file operation.
     """
     return Boundary.of(
-        config.files, home or Path.home(), protected=(paths.state_dir(), paths.config_dir())
+        config.files,
+        home or Path.home(),
+        protected=(paths.state_dir(), paths.config_dir(), plugins.plugins_root(config.data_dir)),
     )
 
 
@@ -627,7 +636,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     web = config.model_copy(
         update={"research": config.research.model_copy(update={"page_chars": pages})}
     )
-    shipped = skills.available()
+    shipped = skills.available(extra=plugins.loaded(config.plugins, config.data_dir).skills)
     guides = osskills.catalog()
     shown = chat_pictures() if channel == "chat" else None
     online = web_ops(web, shown)

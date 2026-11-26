@@ -2,7 +2,6 @@
 
 import contextlib
 import fcntl
-import json
 import os
 import re
 import shutil
@@ -14,13 +13,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from jarvis import config, modes, paths, services
-from jarvis.audit import GENERATIONS, AuditLog
+from jarvis.audit import AuditLog, last_event
 from jarvis.files import write_atomic, write_atomic_bytes
-from jarvis.jsonutil import obj
 
 if TYPE_CHECKING:
     from argparse import Namespace
     from collections.abc import Callable, Generator, Mapping
+
+    type BeforeApply = Callable[[config.Config, AuditLog], None]
 
 TIMER = "jarvis-update.timer"
 JOB = "jarvis-update.service"
@@ -533,23 +533,24 @@ SuccessExitStatus={BUSY}
     config.save(saved.model_copy(update={"update": saved.update.model_copy(update={"auto": on})}))
 
 
-def command(args: Namespace, launch: Launch) -> int:
+def command(args: Namespace, launch: Launch, before_apply: BeforeApply | None = None) -> int:
     """Check for updates, apply one, or manage the automatic update timer.
 
     Every program it needs (git, uv, systemctl, the updated Jarvis) is started by `launch`.
+    `before_apply` runs first when an update is applied (the plugins', which `jarvis.cli` gives).
     """
     token = _LAUNCH.set(launch)
     try:
-        return _logged(args)
+        return _logged(args, before_apply)
     finally:
         _LAUNCH.reset(token)
 
 
-def _logged(args: Namespace) -> int:
+def _logged(args: Namespace, before_apply: BeforeApply | None) -> int:
     audit = AuditLog(paths.audit_file())
     try:
         with _locked():
-            return _command(args, audit)
+            return _command(args, audit, before_apply)
     except BusyError as exc:
         if not args.quiet:
             print(f"jarvis: {exc}", file=sys.stderr)
@@ -561,7 +562,7 @@ def _logged(args: Namespace) -> int:
         return 1
 
 
-def _command(args: Namespace, audit: AuditLog) -> int:
+def _command(args: Namespace, audit: AuditLog, before_apply: BeforeApply | None) -> int:
     cfg = config.load()
     if args.auto is not None:
         _timer(cfg, on=args.auto == "on")
@@ -572,6 +573,8 @@ def _command(args: Namespace, audit: AuditLog) -> int:
     if os.environ.get(TIMER_ENV) == "1" and not cfg.update.auto:
         audit.record("update", result="auto disabled")
         return 0
+    if args.apply and before_apply is not None:
+        before_apply(cfg, audit)  # before Jarvis's own update, whose restart then reads its result
     checkout = Checkout.installed(cfg.update.branch)
     before = checkout.clean_head()
     target = checkout.fetch()
@@ -603,18 +606,12 @@ def _available(cfg: config.Config) -> str:
 
 
 def _last_result() -> str:
-    log = paths.audit_file()
-    for path in (log, *(log.with_name(f"{log.name}.{n}") for n in range(1, GENERATIONS + 1))):
-        try:
-            lines = path.read_bytes().splitlines()
-        except OSError:
-            continue
-        for line in reversed(lines):
-            with contextlib.suppress(ValueError):
-                row = obj(json.loads(line))
-                if row.get("event") == "update":
-                    return f"{row.get('result', 'unknown')} ({row.get('ts', 'unknown time')})"
-    return "none recorded"
+    row = last_event(paths.audit_file(), "update")
+    return (
+        f"{row.get('result', 'unknown')} ({row.get('ts', 'unknown time')})"
+        if row
+        else "none recorded"
+    )
 
 
 def doctor_notes(cfg: config.Config, launch: Launch) -> list[str]:

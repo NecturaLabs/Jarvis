@@ -75,6 +75,7 @@ ALLOWED_HOSTS = {
     "api.open-meteo.com": "Open-Meteo's free forecast API, for weather (docs/adr/0007)",
     "geocoding-api.open-meteo.com": "Open-Meteo's place lookup, for weather and time abroad",
     "arctic-shift.photon-reddit.com": "the Reddit archive, since Reddit refuses automated clients",
+    "github.com": "where a plugin marketplace given as owner/repo is cloned (docs/adr/0027)",
 }
 
 # Words an operation or tool name may not contain: one agent does all the work.
