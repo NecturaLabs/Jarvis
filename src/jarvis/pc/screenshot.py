@@ -272,7 +272,7 @@ class ScreenshotOps:
             OperationError: the picture could not be taken, read or saved.
         """
         request = current_request()
-        if request is None or request.foreign:
+        if request is None or not request.owner_asked:
             msg = "a screenshot is taken only on the owner's own request, never from PC audio"
             raise OperationError(msg)
         try:

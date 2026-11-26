@@ -165,7 +165,7 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 | `thinking_max` | `high` | `none`, `low`, `medium`, `high`, and not below `thinking` | The most the model may raise its own effort to, for the rest of one request, when it judges the request needs careful thought (several steps, a name it may have misheard, a correction, a try that failed). It does so with the `think_harder` tool, which is offered only when this is above `thinking`: set it to the same as `thinking` to keep one effort. The effort never drops within a request, and each request starts at `thinking` again. Raising to `low` or `high` can cost the model one more read of its whole prompt on Qwen3.8 ([models.md](models.md#thinking)). The tool's class is `safe`; `think_harder = "deny"` under `[boundaries.classes]` also switches it off. |
 | `thinking_raised_tokens` | `768` | 32 to 8192 | The most the model thinks before each answer once it raised its effort: about 12 s at most for speech. A raised call never gets less than `thinking_tokens` when a request starts above `none`. The context keeps room for the larger of the two. |
 | `browser` | `false` | `true`, `false` | Offer the headless browser tools (`browser_open`, `browser_act`; see [`[browser]`](#browser-the-headless-browser)) to spoken requests and `jarvis ask`, when agent-browser is installed. Off by default: speech is for quick commands, and clicking or typing on a page always waits for your spoken yes. |
-| `tools` | `all` | `all`, `routed` | Which tools each model call offers. `all`: every tool, every call. `routed`: a request starts with only the core tools (`no_action`, `stay_quiet`, `chat_hand_off` while a chat window is open, `think_harder`, `switch_model`, `use_tools`), the system prompt holds a toolbox of the tool groups, and the model calls `use_tools` with the groups the request needs; their tools are offered from its next call to the end of that request, and a tool of a group it has not asked for is not run. It sends about 6,600 fewer tokens a call, and the model server re-reads the prompt after the system text when the tools change, so it is an experiment ([ADR 0022](adr/0022-tool-router.md)). `use_tools` is a `safe` tool like any other and cannot be switched off while `routed`. Also valid in `[chat]`. |
+| `tools` | `all` | `all`, `routed` | Which tools each model call offers. `all`: every tool, every call. `routed`: a request starts with only the core tools (`no_action`, `stay_quiet`, `chat_hand_off` while a chat window is open, `todo_write` and `ask_owner` in the chat window, `think_harder`, `switch_model`, `use_tools`), the system prompt holds a toolbox of the tool groups, and the model calls `use_tools` with the groups the request needs; their tools are offered from its next call to the end of that request, and a tool of a group it has not asked for is not run. It sends about 6,600 fewer tokens a call, and the model server re-reads the prompt after the system text when the tools change, so it is an experiment ([ADR 0022](adr/0022-tool-router.md)). `use_tools` is a `safe` tool like any other and cannot be switched off while `routed`. Also valid in `[chat]`. |
 
 A spoken reply that drew on outside text (a web page, a song name) is remembered as data, as in the chat: a
 follow-up such as "what was the second one?" has it, and while it is remembered an action the model chooses
@@ -201,8 +201,44 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 | `toolbar` | `true` | `true`, `false` | The line under the input with the PC's CPU, GPU, VRAM and RAM use, temperatures, and how full the model's context is. In a narrow window it leaves out the temperatures first, so it stays on one line. |
 | `while_working` | `steer` | `steer`, `queue` | What Enter does while a request runs. `steer`: the words join that request as yours, before the model's next call; words it ended before taking run next. `queue`: they wait and run as the next request. Words sent with a picture or with anything pasted into them, however short, are always queued. Esc still stops the request; queued words then run. `/config` changes it. |
 | `response_format` | `concise` | `concise`, `normal`, `verbose` | How the model writes chat replies: briefly, in a sentence or two with at most one short list or table and no headings; as much as the request needs; or explained in full, with headings for a long answer. In each, the first line is the answer, and several readings of one thing (a status, specs) are one bullet each with a bold label. `/format` and `/config` change it, from the next request on. The voice keeps its own short spoken style. |
-| `archive_keep` | `50` | 0 to 1000 | Chat conversations kept in `~/.local/state/jarvis/chat-archive/` (0600) for `/resume` and reading back: each with its full log of requests, steps, results and replies. Older ones are deleted; `0` keeps none, deletes those kept before when the chat opens, and turns `/resume` off. `/forget all` deletes them all and forgets the conversation in the window too. A conversation is written once it has a request; opening and closing the chat writes no copy of the one it remembers. |
+| `ask_timeout_s` | `300` | 0 to 86400 | Seconds a question Jarvis puts to you (`ask_owner`, a picker above the input) waits for an answer before it closes, shows a note, and Jarvis goes on with what it judges best, the option it marked as recommended unless something else is better. `0` waits for ever. The countdown shows on the picker and stops while the chat asks you yes or no about an action. `/config` changes it at once, for the next question. See [the todo list and questions](#the-todo-list-and-questions-in-the-chat). |
+| `archive_keep` | `50` | 0 to 1000 | Chat conversations kept in `~/.local/state/jarvis/chat-archive/` (0600) for `/resume` and reading back: each with its full log of requests, steps, results and replies. Older ones are deleted; `0` keeps none, deletes those kept before when the chat opens, and turns `/resume` off; it also keeps no T3 Code sessions (`jarvis acp`). `/forget all` deletes them all, T3 Code's kept sessions too, and forgets the conversation in the window. A conversation is written once it has a request; opening and closing the chat writes no copy of the one it remembers. |
 | `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, with what was pasted into each, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
+
+### The todo list and questions in the chat
+
+Two tools exist only in the chat window (`jarvis chat`): not by voice, not in `jarvis ask`, and not in `jarvis acp`,
+which has no window to draw them in. Both are class `safe`, change nothing outside the chat, are audited like any call
+and can be switched off with `todo_write = "deny"` or `ask_owner = "deny"` under `[boundaries.classes]`.
+
+- **`todo_write`** keeps the conversation's todo list: up to 20 tasks, each `pending`, `in_progress` or `completed`,
+  at most one in progress. The model sends the whole list each time and keeps it current as it works on a request
+  of several steps. The list shows as a compact panel above the input: `☐` waiting, `▶` in progress (lit), `☑`
+  done (dim and struck through). With every task done, or in a window 24 rows tall or less, it folds to one line
+  (how many are done and what is being done now); it is hidden while empty and while `/config` is open. **Ctrl+T**
+  folds an open list or opens a folded one, and the choice holds until `/clear`. The list goes with the
+  conversation: `/compact` leaves it, `/clear` and `/resume` empty it.
+- **`ask_owner`** puts a question with 2 to 4 options to you as a picker above the input, titled with a header of at
+  most 12 characters. The option Jarvis would pick comes first, marked `(Recommended)`; the model must always say
+  which. The chat adds `Other (type an answer)`. Keys: ↑ ↓ and Enter, a number picks that row, Esc closes the
+  question (Jarvis then goes on with its own pick; Esc again stops the request, and Ctrl+C stops a request
+  that waits on a question at once). In a multiple-choice question,
+  a number, Enter or space marks an option and Enter on `Done` sends. Under `Other`, type your answer and press
+  Enter, or Esc to go back. Everything in a question is the model's text, shown as plain text. A key pressed as the
+  picker appears (less than 0.4 s) is not a pick.
+  - Without `wait` (the default) the question shows and Jarvis carries on with what does not depend on it. Your
+    answer joins the request that is running before its next model call, or starts a request if none runs.
+  - With `wait`, the request pauses on the question. The wait counts against neither the request's time limit nor its
+    steps.
+  - With no answer in `ask_timeout_s` the question closes with a note in the transcript, and Jarvis is told, as
+    its own status text and not as your words, to go on with what it judges best and say what it chose.
+  - **An answer is never a yes.** What you pick, or a timeout, reaches the model as a note; it never answers the
+    yes or no that an action asks, which is asked on its own, about that exact action, as always, and the
+    countdown stops while it waits. Your pick is not counted among your own words either (a web address in an
+    option you picked is not one you wrote), but what you type under Other is. A request that a timeout or
+    Esc starts is not yours either: what acts only on your own request (a shell command, opening a program,
+    changing a window, a screenshot, stopping a process) refuses it. A question written after Jarvis read outside
+    text says so on the picker. See [ADR 0026](adr/0026-ask-the-owner-never-consent.md).
 
 `/config` in the chat opens the settings as Claude Code's own settings screen does. The sections (Chat, Mode,
 Voice, Listening, Safety, Tools) are tabs across the top: Tab and Shift+Tab switch them, and so do ← → on the tab
@@ -217,7 +253,7 @@ leaves it as it was), and ← → still step through the values. Times are said 
 a 0 that means something is said as such ("never", "none"). Changes are saved as you make them; when one needs the
 voice service to restart, the footer says "The voice service restarts when you close settings" until you do.
 
-Under Chat it changes `verbosity`, `toolbar`, `while_working`, `response_format` and `thinking` at once, and
+Under Chat it changes `verbosity`, `toolbar`, `while_working`, `response_format`, `thinking` and `ask_timeout_s` at once, and
 `reply_tokens`, `max_steps`, `memory_detail`, `resume` and `browser` from the next time the chat opens, writing
 them here. Under Chat it also sets `browser.idle_close_s` (30 s, 1, 2 or 5 min), under Mode `coding.back_after_s`
 and the two `auto` switches, under Voice `audio.speech_speed` and `agent.browser`, under Listening
@@ -302,6 +338,8 @@ and listens on `127.0.0.1`. Remote and backend setup are described below.
 | `effort_position` | `""` | `""`, `start`, `end` | Where Strata writes a request's thinking effort, as its `effort_position` in the profile; empty keeps the run config's own (Strata's default is `start`). With `end`, a `low` or `medium` effort goes into a short turn before the answer, so a request whose model raised its effort (`think_harder`) reuses the pinned prompt instead of reading it all again; `high` stays at the start. How well the model follows an effort written there is not measured yet ([models.md](models.md#thinking)), so it is not the default. |
 | `memory_max` | `40G` | digits and optional `K`, `M`, `G` or `T` | `MemoryHigh` of the Strata unit. `MemoryMax` is derived from it, 10% above (44G for 40G; a size that does not divide evenly is rounded up and written in bytes), so there is no second key. Past `MemoryHigh` the kernel throttles the unit and reclaims its memory; past `MemoryMax` it kills the unit. The size depends on the model: Qwen3.8-Flash-Next IQ2_XS needs `44G` ([models.md](models.md)). |
 | `keep_in_ram` | `true` | `true` or `false` | Keep the model server's memory in RAM: its unit gets `MemorySwapMax=0`, so the kernel never swaps it out, and `LimitMEMLOCK=infinity`, so the engine can lock its model as it asks to. Off, a PC short of memory swaps part of the model out between requests and back in on the next one; while it does, the graphics driver pauses the GPU ([Keeping the model in RAM](#keeping-the-model-in-ram)). Turn it off only with swap on a disk and a game that needs that memory more than Jarvis needs a quick answer. |
+| `min_free_ram_mib` | `4096` | 0 to 1048576 | Memory in MiB that must stay available after the model loads into RAM. Before the model server starts, restarts or loads its model, Jarvis compares the model file's size (`--native` in the run config) with `MemAvailable` in `/proc/meminfo` (free memory plus the page cache the kernel can reclaim; the memory a running model server holds counts as free, since a restart gives it back) and refuses when the load would leave less than this. 4 GiB is room for the context, the picture reader and the desktop, and keeps the load clear of the kernel's emergency reserve, where page allocations fail and a running program is killed ([Refusing a load that does not fit](#refusing-a-load-that-does-not-fit)). |
+| `allow_low_ram` | `false` | `true` or `false` | Load anyway when the memory available is less than the model needs plus `min_free_ram_mib`. For a PC with swap on a disk or a reason the owner knows better; with it on, a load beside a game can take the memory the game runs in. Set it, run `jarvis start`, and turn it off again. |
 | `speed_projection` | `true` | `true` or `false` | Keep a control vector the run config loads, such as Strata's experimental speed projection, which makes the model decline far fewer requests ([The speed projection](#the-speed-projection)). Off, Jarvis's profile leaves the control-vector options out, so the model declines as it was trained to. Jarvis never adds a vector itself. |
 | `vram_reserve_mib` | `0` (unset) | 0, or 100 to 65536 | VRAM in MiB the engine leaves free for other programs, passed as `--vram-reserve-mib`. `0` passes nothing, so Strata's own default (700) applies. For an engine whose expert cache fills the card (`--expert-cache auto`) it is the VRAM limit and must be set: `jarvis setup` refuses such a run config without it, and `jarvis doctor` fails "VRAM left for games". On a 20 GB card, 12000 holds Qwen3.8-Flash-Next at about 8 GiB ([models.md](models.md)). A card with at most about 8 GB of VRAM cannot start with a reserve (Strata's tuner never tries one there). |
 | `kv_resident` | `0` (all in VRAM) | 0, or 20480 to 262144 | Context cells kept in VRAM, passed as `--kv-resident`. Set, the whole context also lives in pinned RAM and only this many cells stay on the card, so `context` can grow past them without more VRAM; the VRAM saved goes to expert slots. Pinned RAM counts against `memory_max`. A `context` of this many cells or fewer is not streamed. Reading past the cells on the card is slower; measure before raising `context` far. |
@@ -390,6 +428,7 @@ Both units are written by `jarvis setup`; their text is `jarvis_unit` and `strat
 | `StartLimitIntervalSec=15min`, `StartLimitBurst=5` (in `[Unit]`) | yes | yes |
 | `MemoryHigh` / `MemoryMax` | none / `4G` | `memory_max` / 10% above it |
 | `LimitMEMLOCK=infinity`, `MemorySwapMax=0` | no | unless `strata.keep_in_ram` is off |
+| `ExecCondition=` the memory check (`python -I -m jarvis.ramguard`) | no | yes |
 
 - The voice service keeps your session's umask, so a file the file tools write at your request gets the
   mode it asks for (0644, a folder 0755).
@@ -459,6 +498,36 @@ LimitMEMLOCK=8M:infinity
 
 then `systemctl daemon-reload`, and log out and in. The swap setting alone already keeps the model from
 being swapped; the lock is what Strata's own start-up text asks a systemd service for.
+
+### Refusing a load that does not fit
+
+Strata reads the model's experts into RAM when it loads. Started with a game running and 13 to 20 GB of RAM
+available, the model server's load (about 39 GB, `loading the experts into RAM (about 39 GB)` in Strata's log)
+made the kernel fail page allocations, and the game's process died. Jarvis now checks first. The need is the
+size of the model file the profile serves (`--native`; a second file the run config names, such as
+`--ple-gguf`, is not counted); what is available is `MemAvailable`, plus, for a restart, the anonymous memory the
+running server holds (read from its cgroup), which the restart frees before the load. A load that would leave
+less than `strata.min_free_ram_mib` is refused, with the figures, and nothing is started:
+
+| Where the model loads | What happens when it does not fit |
+|---|---|
+| `jarvis start`, and `jarvis restart` when the server is stopped or its settings changed | Says why on stderr, changes nothing, exits 1. The same on a backend. After a start that systemd reports as made, a server that is not running is a failure too ("the model server did not start", with the memory reason when there is one). |
+| The model server's unit, however it is started (`systemctl --user start`, the voice service pulling it in, a crash restart) | `ExecCondition=` runs `python -I -m jarvis.ramguard`, which reads the config and the profile when it starts and exits 75 with the reason in the journal. The start is skipped (`Skipped due to 'exec-condition'`): the unit stays `inactive`, is not `failed` and is not retried, and `systemctl start` still exits 0. `jarvis start` and `jarvis restart` look again afterwards and refuse with the reason. Run `jarvis start` when there is room. The check fails open: the unit runs it through `/bin/sh` so that only its own exit 75 skips the start, and a check that crashes, cannot read the config or is not there lets the server start. |
+| A switch of modes that restarts the server (`jarvis model`, the chat's `/model`, the model's own switch) | The server is left as it is, Jarvis stays in its mode and says why. |
+| `jarvis update` restarting the server for new settings | The server is not restarted and keeps what it loaded; the rest of the update goes ahead and the reason is printed. `jarvis restart` reloads when there is room. A rollback restores the old unit, which has no check, and restarts it: that only reads back a model the server held before. |
+| `jarvis run` loading the model at start, the wake word loading it after `jarvis unload`, a resume | Logged, and nothing asks the server to load. The next wake word asks again. A server that already holds the model, or a load already under way, is never refused: its memory is no longer in `MemAvailable`. |
+| A request that finds the model unloaded, or the server down because its unit refused to start | Jarvis answers that it cannot load its model for lack of memory, and to run `jarvis start` if the server is stopped, instead of letting the server load it. |
+
+Every refusal is written to the audit log as `ram_refused` (where it came from, the need, what was available, the credit that figure includes (the memory a stopping server gives back), the margin and the model file).
+
+`jarvis doctor` shows the check as a line (`memory for the model`) with the figures; it fails while a load
+would be refused, and in the check `jarvis update` runs afterwards it is only a note, so an update is not
+undone because a game is running. When the memory is short, close the game or whatever else is large and
+start again, or set `strata.allow_low_ram = true` to load anyway. A file size or `/proc/meminfo` that cannot
+be read never blocks a load.
+
+The check is a size comparison, not a measurement of the load: a model whose engine uses much more than its
+file (a long context, `strata.kv_resident`, the picture reader) needs a larger `min_free_ram_mib`.
 
 ### The speed projection
 
@@ -1039,7 +1108,12 @@ coding mode works as the chat does in coding mode: the coding prompt, `[coding.c
 run config, the first request uses the same switch as `/model coding` and reports the result. With a
 shared run config, it keeps the shared mode and uses the normal context limit. While it answers, the
 voice service holds off automatic model restarts. An answer in the shared coding mode refreshes the
-timer set by `coding.back_after_s`.
+timer set by `coding.back_after_s`. Each session's conversation is kept in `~/.local/state/jarvis/acp-sessions/` after every reply (the
+newest 200), so when T3 Code starts a new `jarvis acp` for a thread it already had, after either one
+restarts, the thread opens again with its conversation (`session/load`) and goes on. `/clear` in the
+thread forgets the conversation and starts it afresh, as in the chat window; Jarvis offers it in T3 Code's
+command list and runs it itself, without the model, also while a question waits (it is declined) or a
+stopped request ends. With `chat.archive_keep = 0` no session is kept.
 
 `jarvis acp` can show an announcement (a reminder) as soon as it is
 made, once you turn `push_to_t3` on, by sending it into the newest open T3 Code thread of the project a session was opened in whose

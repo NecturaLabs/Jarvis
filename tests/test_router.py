@@ -150,8 +150,8 @@ def test_a_group_with_no_tool_in_this_registry_is_not_in_the_toolbox() -> None:
 # the router (`{toolbox}` empty). Changing the prompt's own text changes these on purpose: replace
 # them with the new digests; they exist so that routing never changes what "all" mode sends.
 _PROMPT_SHA256 = {
-    "voice": "ba2c2656d579a563d4ea3e69a8570c64564457365432927c789cc8f66a34226e",
-    "chat": "1560480bde3cf73868d4c455bb04ce6199e8252d60db6588eaad00dd914b39d1",
+    "voice": "25cd7af190be010b1c6d6146f53f2cb818667d2a5dfc23d8120228ba911d5528",
+    "chat": "02a71a2c5fdbb4c83698a6ae0764a18c9dc61077a48d8f94bd012f335097e5fe",
 }
 
 
@@ -502,6 +502,8 @@ def test_the_toolbox_group_names_are_the_use_tools_choices(
     assert enum == [group.name for group in registry.groups()]
     assert group_name("use_tools") == "core"
     assert registry.core_names() == [
+        "todo_write",
+        "ask_owner",
         "think_harder",
         "switch_model",
         "use_tools",

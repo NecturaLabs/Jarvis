@@ -204,6 +204,9 @@ class ChatConfig(AgentConfig):
     while_working: Literal["steer", "queue"] = "steer"
     # How replies are written: brief, as the request needs, or explained in full (the prompt).
     response_format: Literal["concise", "normal", "verbose"] = "concise"
+    # How long a question the model put to the owner (`ask_owner`) waits for an answer before it
+    # closes and the model goes on with what it judges best; 0 waits forever.
+    ask_timeout_s: float = Field(default=300.0, ge=0, le=86400)
     history_size: int = Field(default=1000, ge=0, le=100000)  # typed lines ↑ brings back
     # Chat conversations kept in the archive for /resume and reading back; 0 keeps none.
     archive_keep: int = Field(default=50, ge=0, le=1000)
@@ -330,6 +333,10 @@ class StrataConfig(_Section):
     # kernel may swap the model out while the PC is short of memory and back in on the next
     # request, pausing the GPU each time, for little room: quantized weights barely compress.
     keep_in_ram: bool = True
+    # Memory in MiB that must stay available after the model loads into RAM; a start or load that
+    # would leave less is refused (`jarvis.ramguard`). `allow_low_ram` loads anyway.
+    min_free_ram_mib: int = Field(default=4096, ge=0, le=1048576)
+    allow_low_ram: bool = False
     # Keep a control vector the run config loads (Strata's experimental speed projection, which
     # lowers how often the model declines). Off: Jarvis's profile leaves those options out.
     speed_projection: bool = True

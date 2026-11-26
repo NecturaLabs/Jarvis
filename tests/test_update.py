@@ -5,8 +5,9 @@ import subprocess
 from typing import TYPE_CHECKING
 
 import pytest
+from strata_fixture import engine_run_config
 
-from jarvis import cli, config, modes, paths, update
+from jarvis import cli, config, modes, paths, ramguard, update
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -293,3 +294,48 @@ def test_doctor_uses_the_cached_branch_and_reports_the_last_attempt(
     assert automatic.endswith("off")
     assert "available" in result
     assert not called
+
+
+def test_apply_does_not_restart_a_stale_strata_into_too_little_memory(
+    checkout: tuple[Path, Path, str],
+    called: list[tuple[str, ...]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    remote, local, _previous = checkout
+    target = _commit(remote, "release")
+    run = engine_run_config(tmp_path)
+    model = tmp_path / "models" / "q4.gguf"
+    with model.open("wb") as file:
+        file.truncate(39 * 1024**3)
+    config.save(config.Config(strata=config.StrataConfig(run_config=run, vram_reserve_mib=12000)))
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemAvailable:   17825792 kB\n", encoding="utf-8")  # 17 GiB
+    monkeypatch.setattr(ramguard, "MEMINFO", meminfo)
+    monkeypatch.setattr(ramguard, "CGROUP_ROOT", tmp_path / "cgroup")
+    profile = paths.config_dir() / "strata-profile.json"
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text("existing profile", encoding="utf-8")
+
+    def active(_folder: Path, _unit: str) -> str:
+        return "active"
+
+    original = update._run  # pyright: ignore[reportPrivateUsage] - extends the service stub
+
+    def stale(
+        args: tuple[str, ...], *, cwd: Path, timeout: float, show: bool = False
+    ) -> update.Finished:
+        done = original(args, cwd=cwd, timeout=timeout, show=show)
+        if "ActiveEnterTimestamp" in args:
+            return subprocess.CompletedProcess(args, 0, "Thu 1970-01-01 00:00:01.000000 UTC\n", "")
+        return done
+
+    monkeypatch.setattr(update, "_run", stale)
+    monkeypatch.setattr(update, "_unit_state", active)
+
+    assert cli.main(["update", "--apply"]) == 0
+
+    assert _git(local, "rev-parse", "HEAD") == target
+    assert ("systemctl", "--user", "restart", "jarvis-strata.service") not in called
+    assert "was not restarted" in capsys.readouterr().err

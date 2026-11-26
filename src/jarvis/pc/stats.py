@@ -317,7 +317,7 @@ class StatsOps:
                 "pc_stats",
                 "This PC's specs and how busy it is now: CPU, memory and swap, graphics card "
                 "and VRAM, temperatures, disks, uptime, the programs using the most memory "
-                "and CPU, and what is near its limit.",
+                "and CPU.",
                 {
                     "type": "object",
                     "properties": {

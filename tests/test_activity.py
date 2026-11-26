@@ -9,6 +9,7 @@ import pytest
 from jarvis.activity import NO_REASON_WORDS, AuditTail, describe, working_label
 from jarvis.agent import NoReason
 from jarvis.audit import AuditLog
+from jarvis.memory import NOTED
 
 if TYPE_CHECKING:
     import os
@@ -456,3 +457,17 @@ def test_a_calls_gist_is_its_target_when_it_has_one() -> None:
 
     assert shown is not None
     assert shown.note == '"/srv/x/game.js"'
+
+
+def test_a_request_begun_by_a_note_is_a_note_in_the_log_and_not_something_the_owner_said() -> None:
+    entry = {
+        "event": "request",
+        "via": "chat",
+        "source": "note",
+        "note": "timed_out",
+        "text": f"{NOTED} No answer to your question after 5 minutes.",
+    }
+    shown = describe({"ts": "2026-11-21T10:00:00+00:00", **entry})
+
+    assert shown is not None
+    assert (shown.kind, shown.text) == ("note", "No answer to your question after 5 minutes.")

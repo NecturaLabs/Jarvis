@@ -908,6 +908,28 @@ def test_stop_refuses_outside_any_request(proc: FakeProc) -> None:
         _bind(ops, 4242)
 
 
+@pytest.mark.parametrize("noted", ["timed_out", "closed"])
+def test_stop_refuses_a_request_that_went_on_alone_after_a_question(
+    proc: FakeProc, noted: str
+) -> None:
+    proc.add(4242, "orbit")
+    ops = _ops(proc)
+
+    with request_scope(foreign=False, noted=noted):
+        _find(ops, "orbit")
+        with pytest.raises(OperationError, match="owner's own request"):
+            _bind(ops, 4242)
+
+
+def test_stop_accepts_a_request_begun_from_the_owners_answer(proc: FakeProc) -> None:
+    proc.add(4242, "orbit")
+    ops = _ops(proc)
+
+    with request_scope(foreign=False, noted="answer"):
+        _find(ops, "orbit")
+        assert _bind(ops, 4242)["pid"] == 4242
+
+
 def test_stop_refuses_a_request_heard_in_pc_audio(proc: FakeProc) -> None:
     proc.add(4242, "orbit")
     ops = _ops(proc)

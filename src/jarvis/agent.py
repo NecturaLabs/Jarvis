@@ -24,6 +24,7 @@ from jarvis.confirmkey import boot_clock
 from jarvis.jsonutil import obj, objs
 from jarvis.memory import (
     CHARS_PER_TOKEN,
+    NOTED,
     PRIVATE_ORIGINS,
     SHED_TO,
     STEERED,
@@ -33,7 +34,7 @@ from jarvis.memory import (
     message_tokens,
     tokens,
 )
-from jarvis.model import ModelMissingError, RemoteModelError, Thinking
+from jarvis.model import ModelMemoryError, ModelMissingError, RemoteModelError, Thinking
 from jarvis.operations import (
     REMEMBERED,
     REMEMBERED_LISTING,
@@ -61,7 +62,7 @@ if TYPE_CHECKING:
     from jarvis.audit import AuditLog
     from jarvis.config import AgentConfig
     from jarvis.model import ChatModel, Delta
-    from jarvis.operations import Operation, Registry, Request, Sound
+    from jarvis.operations import Notice, Operation, Registry, Request, Sound
 
 log = logging.getLogger(__name__)
 
@@ -94,13 +95,19 @@ _UNKNOWN = "unknown operation"
 MAX_LOOK_UPS_KEPT = 6
 MAX_ASKED = 160  # characters of one argument
 MAX_LOOKED = 900  # characters of them all
-_NOT_LOOK_UPS = frozenset({NO_ACTION, THINK_HARDER, SWITCH_MODEL, USE_TOOLS, "stay_quiet"})
+_NOT_LOOK_UPS = frozenset(
+    {NO_ACTION, THINK_HARDER, SWITCH_MODEL, USE_TOOLS, "stay_quiet", "todo_write", "ask_owner"}
+)
 _WAYS_TO_GO_ON = frozenset({THINK_HARDER, SWITCH_MODEL, USE_TOOLS})
 _THINKING: tuple[Literal["low", "medium", "high"], ...] = ("low", "medium", "high")
 
 MODEL_DOWN = "My model isn't answering right now."
 REMOTE_MODEL_DOWN = "The remote model server isn't answering. Check the backend and connection."
 MODEL_MISSING = "My model's file is missing, so I can't answer. Is its drive mounted?"
+MODEL_NO_ROOM = (
+    "I can't load my model: there isn't enough free memory. Close something heavy, a game "
+    "maybe, then ask again, or run jarvis start if the model server is stopped."
+)
 PICTURES_OFF = (
     "I can't see pictures here: the picture reader is off. Set the model up with its picture "
     "reader in Strata and strata.pictures in the config, then run jarvis setup and jarvis restart."
@@ -311,6 +318,8 @@ def own_words(reply: str) -> str:
 def _model_failure(error: Exception) -> str:
     if isinstance(error, RemoteModelError):
         return REMOTE_MODEL_DOWN
+    if isinstance(error, ModelMemoryError):
+        return MODEL_NO_ROOM
     return MODEL_MISSING if isinstance(error, ModelMissingError) else MODEL_DOWN
 
 
@@ -791,6 +800,9 @@ def _carried(turn: _Turn, before: _Turn | None) -> None:
     for words in before.steered:
         turn.messages.append({"role": "user", "content": f"{STEERED} {words}"})
         turn.steered.append(words)
+    for note in before.noted:
+        turn.messages.append({"role": "user", "content": f"{NOTED} {note}"})
+        turn.noted.append(note)
 
 
 def _name(call: Mapping[str, Any]) -> str:
@@ -869,7 +881,10 @@ class Hooks:
     the reply `handle` returns replaces it. With `preview` (a window), a question about an action
     that writes text also shows the start of that text, on the lines after the question.
     `steer` returns what the owner typed while the request runs (a window), taken once: it joins
-    the request as the owner's own words before the next model call. `condensed` gets one line
+    the request as the owner's own words before the next model call. `notices` returns, taken
+    the same way, words that are not the owner's typed ones: what they picked among options the
+    model wrote, or that a question of the model's went unanswered (`ask_owner`). They join the
+    request as Jarvis's own notes, never as the owner's words. `condensed` gets one line
     saying the remembered conversation was condensed to make room, after the reply (a window
     shows it; a voice need not say it). With `play`, a sound an operation made (a song) is
     played through it, queued after the words passed to `speak`; without it, such an
@@ -891,6 +906,7 @@ class Hooks:
     quiet: Callable[[], None] = lambda: None
     preview: bool = False
     steer: Callable[[], list[str]] = list
+    notices: Callable[[], list[Notice]] = list
     play: Callable[[Sound], None] | None = None
     hushed: Callable[[], bool] = lambda: False
     making_sound: Callable[[], AbstractContextManager[None]] = nullcontext
@@ -1028,6 +1044,7 @@ class _Turn:
     actions: list[str] = field(default_factory=list[str])
     looked: list[str] = field(default_factory=list[str])  # each look-up and what it asked for
     steered: list[str] = field(default_factory=list[str])  # the owner's words typed in meanwhile
+    noted: list[str] = field(default_factory=list[str])  # Jarvis's own notes that joined it
     stream: _ReplyStream | None = None  # the last model call's, when the reply is spoken
     thinking: Thinking | None = None  # how the next model call thinks; the model may raise it
     loaded: tuple[str, ...] = ()  # tool groups the model asked for (`use_tools`), in that order
@@ -1158,6 +1175,7 @@ class Agent:
         self._mode: str = "normal"
         self._switched = False  # this request already moved to another mode
         self._spoken = False  # the request in flight was handed over from speech
+        self._noted = ""  # ... or began with Jarvis's own note of an answer
         self._ends = 0.0  # when the request in flight runs out of time
         self._shared_pictures = False  # the request in flight came with pictures
         self._follow_mode()
@@ -1451,11 +1469,18 @@ class Agent:
         steered_by: Collection[str] = (),
         scheduled: bool = False,
         spoken: bool = False,
+        noted: str = "",
+        typed: str = "",
     ) -> str:
         """Answer one spoken request and return the reply.
 
         With `spoken`, the words are the owner's spoken ones, handed over by the voice service
-        (`chat_hand_off`): the request is audited with that source.
+        (`chat_hand_off`): the request is audited with that source. `noted` names the note that
+        starts the request when none ran, an answer to a question of the model's or that none
+        came ("answer", "timed_out", "closed"): the words are shown to the model as Jarvis's
+        own note and are none of the owner's own words (`Request.words`), but for `typed`, what
+        the owner typed under Other. One begun by "timed_out" or "closed" is not the owner's own
+        request (`Request.owner_asked`).
 
         With `hooks.speak` the reply is also spoken through it, the first sentences while the
         model still writes the rest. A request cut short (`hooks.cancelled`) returns only what
@@ -1487,8 +1512,15 @@ class Agent:
         """
         foreign = origin not in TRUSTED_ORIGINS
         self._spoken = spoken
-        handed_over = foreign or bool(steered_by) or scheduled
-        own = "" if handed_over else _own_words(text, self._outside_pastes(text, pasted))
+        self._noted = noted
+        text = f"{NOTED} {text}" if noted else text
+        handed_over = foreign or bool(steered_by) or scheduled or noted
+        if noted and not (foreign or steered_by or scheduled):
+            own = typed  # what the owner typed under Other is theirs; the note around it is not
+        elif handed_over:
+            own = ""
+        else:
+            own = _own_words(text, self._outside_pastes(text, pasted))
         self._switched = False
         self._ends = self._clock() + self._limits.max_seconds
         turns: list[
@@ -1508,6 +1540,7 @@ class Agent:
                 time_left=time_left,
                 cancelled=hooks.cancelled,
                 scheduled=scheduled,
+                noted=noted,
                 hushed=hooks.hushed,
                 making_sound=hooks.making_sound,
             ) as request,
@@ -1541,6 +1574,7 @@ class Agent:
             origin=origin.value,
             **shown,
             **({"source": "spoken"} if self._spoken else {}),
+            **({"source": "note", "note": self._noted} if self._noted else {}),
         )
         if pictures and not self._pictures:
             self._audit.record("reply", text=PICTURES_OFF, seconds=0.0)
@@ -1642,7 +1676,8 @@ class Agent:
         # Typed words the kept work holds stay there, so the request reads as the model read it.
         held = {str(m["content"]) for m in work if m.get("role") == "user"}
         steered = [line for words in turn.steered if (line := f"{STEERED} {words}") not in held]
-        asked = "\n".join([asked, *steered])
+        noted = [line for note in turn.noted if (line := f"{NOTED} {note}") not in held]
+        asked = "\n".join([asked, *steered, *noted])
         if (reply or stopped) and not turn.foreign:
             said = f"{reply} {STOPPED}".strip() if stopped else reply
             self._remember(asked, said, turn, work)
@@ -1769,6 +1804,20 @@ class Agent:
             if turn.request is not None and not turn.foreign:
                 turn.request.added(words)  # typed by the owner: an address in them is theirs
             turn.stuck = False  # new words: the model may act on them, not only answer
+        for notice in hooks.notices():
+            if not notice.text.strip():
+                continue
+            self._audit.record(
+                "notice",
+                kind=notice.kind,
+                origin=notice.origin.value,
+                text=notice.text[:MAX_AUDIT_TEXT],
+            )
+            turn.messages.append({"role": "user", "content": f"{NOTED} {notice.text}"})
+            turn.noted.append(notice.text)  # the note is not the owner's words, but `words` are
+            if notice.words and turn.request is not None and not turn.foreign:
+                turn.request.added(notice.words)
+            turn.stuck = False
 
     @property
     def _routed(self) -> bool:
@@ -2484,7 +2533,10 @@ class Agent:
         item = self._admitted(call, hooks, turn, taint=taint)
         if isinstance(item, Result):
             return item
-        return self._finished(item, self._run_counted(item.op, item.args, item.digest))
+        outcome = self._run_counted(item.op, item.args, item.digest)
+        if turn.request is not None:
+            turn.limit_s += turn.request.take_waited()  # time spent waiting for the owner is theirs
+        return self._finished(item, outcome)
 
     def _admitted(
         self, call: dict[str, Any], hooks: Hooks, turn: _Turn, *, taint: tuple[bool, bool]
