@@ -152,7 +152,8 @@ def switch_operation(config: Config, *, coding: bool) -> Operation:
         about = (
             "Call this alone when the owner says the programming work is over or asks for the "
             f"{back_to} back, however they put it. Jarvis leaves coding mode and you answer "
-            "again there. Never while programming work is still asked for."
+            "again there. Never while programming work is still asked for, or for a question "
+            "about the modes."
         )
     else:
         about = (
