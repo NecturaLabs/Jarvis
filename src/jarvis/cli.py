@@ -2146,16 +2146,20 @@ def _model_bytes(cfg: config.Config) -> float:
 def _memlock_notes(cfg: config.Config) -> list[str]:
     """Note that the model cannot be locked in RAM when the user manager's limit keeps it out."""
     limit = _user_memlock_limit()
-    if not cfg.strata.keep_in_ram or limit in {"", "infinity"}:
+    if limit in {"", "infinity"}:
         return []
-    if limit.isdigit() and int(limit) >= _model_bytes(cfg):
-        return []  # the whole model fits under the limit
-    note = (
-        f"note the model can't be locked in RAM: your user services may lock {limit} bytes at "
-        "most (it still stays out of swap); see "
-        "docs/configuration.md#keeping-the-model-in-ram to raise it"
-    )
-    return [note]
+    for each, where in ((cfg, ""), (modes.effective(cfg, "coding"), " in coding mode")):
+        if not each.strata.keep_in_ram:
+            continue
+        if limit.isdigit() and int(limit) >= _model_bytes(each):
+            continue  # the whole model fits under the limit
+        note = (
+            f"note the model can't be locked in RAM{where}: your user services may lock {limit} "
+            "bytes at most (it still stays out of swap); see "
+            "docs/configuration.md#keeping-the-model-in-ram to raise it"
+        )
+        return [note]
+    return []
 
 
 def essential_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[str]]:

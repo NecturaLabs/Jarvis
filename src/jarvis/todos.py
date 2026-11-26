@@ -84,11 +84,15 @@ def short_form(items: tuple[Todo, ...]) -> str:
     return f"{done} of {len(items)} done: {body}"
 
 
-ABOUT = (
-    "Keep the chat's todo list, shown above the input. Use it for multi-step work, not a "
-    "one-step request. Send the whole list each call; mark one task in_progress before you "
-    "start it and completed right after you finish it. An empty list clears it."
-)
+ABOUT = "The chat's todo list, for multi-step work: send the whole list each call, one in_progress."
+
+
+def _status(value: object) -> Status:
+    try:
+        return Status(str(value))
+    except ValueError:
+        msg = "every task needs a status: pending, in_progress or completed"
+        raise OperationError(msg) from None
 
 
 def operation(todos: TodoList) -> Operation:
@@ -100,7 +104,7 @@ def operation(todos: TodoList) -> Operation:
 
     def run(args: dict[str, object]) -> Result:
         items = tuple(
-            Todo(one_line(str(row["content"])), Status(str(row["status"])))
+            Todo(one_line(str(row.get("content", ""))), _status(row.get("status")))
             for row in objs(args["todos"])
         )
         if any(not item.content for item in items):
@@ -127,12 +131,10 @@ def operation(todos: TodoList) -> Operation:
                             "content": {"type": "string"},
                             "status": {"type": "string", "enum": [s.value for s in Status]},
                         },
-                        "required": ["content", "status"],
                     },
                 }
             },
             "required": ["todos"],
-            "additionalProperties": False,
         },
         run,
         default_class=OpClass.SAFE,

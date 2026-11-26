@@ -8,6 +8,10 @@ that exact process; just before the signal, the process is held by a pidfd and c
 PID that ended and was reused in between is never signalled. A request heard in PC audio may stop
 nothing.
 
+Without a name, `find_processes` lists every running program of the owner's instead, with its
+processes' resident memory and CPU added up (`usage` gives the same to `pc_stats`). That listing
+shows no PID and binds none: a program in it is stopped only after a by-name find.
+
 Processes are read from /proc, and window titles from Hyprland's own socket, so finding starts no
 program. Program names and window titles are other programs' words: the listing carries the
 `process` origin and reaches the model as data.
@@ -43,6 +47,10 @@ if TYPE_CHECKING:
     from jarvis.operations import Request
 
 MAX_SHOWN = 8
+LIST_COUNT, MAX_LISTED = 12, 40  # programs a listing without a name shows: by default, at most
+CPU_SAMPLE_S = 0.5  # how long a listing without a name measures CPU use
+SORTS = ("memory", "cpu", "newest")
+GIB, MIB = 1 << 30, 1 << 20
 MAX_PROTECTED_SHOWN = 5
 MAX_NAME = 80
 MAX_TITLE = 80
@@ -56,8 +64,8 @@ STAT_PPID, STAT_FLAGS, STAT_START = 1, 6, 19  # fields 4, 9 and 22, counted afte
 STAT_UTIME, STAT_STIME = 11, 12  # fields 14 and 15
 MINUTE_S, HOUR_S, DAY_S = 60, 3600, 86400
 
-# Programs never listed or stopped, by the casefolded name of their command, executable or
-# argv[0], with why.
+# Programs never stopped (never matched by name, marked in a listing of all), by the casefolded
+# name of their command, executable or argv[0], with why.
 PROTECTED_PROGRAMS = {
     "systemd": "the service manager: stopping it ends the session",
     "(sd-pam)": "part of the user's service manager",
@@ -99,19 +107,19 @@ PROTECTED_PROGRAMS = {
     "fcitx5": "the input method: typing in other scripts and languages",
 }
 
-# Programs never listed or stopped, by the start of their casefolded name, with why.
+# Programs never stopped (as above), by the start of their casefolded name, with why.
 PROTECTED_PREFIXES = {
     "gvfs": "GNOME's virtual file systems: mounts, the trash and network shares",
     "omarchy-": "one of Omarchy's own desktop helpers: its watchers and launchers",
 }
 
-# Systemd units whose processes are never listed or stopped, by the last part of their cgroup.
+# Systemd units whose processes are never stopped (as above), by the last part of their cgroup.
 PROTECTED_UNITS = {
     JARVIS_UNIT: "Jarvis's voice service",
     STRATA_UNIT: "the model server Jarvis thinks with",
 }
 
-# Processes never listed or stopped for what they are, whatever their name.
+# Processes never stopped (as above) for what they are, whatever their name.
 PROTECTED_RULES = {
     "init": "PID 1, the system's service manager",
     "kernel": "a kernel thread, part of Linux itself",
@@ -156,6 +164,33 @@ class _Found:
     window: Window | None
     by_name: bool
     children: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class Usage:
+    """One program's use of the PC: its processes, resident memory (bytes) and CPU.
+
+    `cpu_percent` is its share of the whole processor, every thread counted, as `pc_stats` gives
+    the processor's own load.
+    """
+
+    name: str
+    processes: int
+    rss: int
+    cpu_percent: float
+
+
+@dataclass(slots=True)
+class _Program:
+    """The owner's processes of one program, added up, for a listing without a name."""
+
+    name: str
+    pids: list[int] = field(default_factory=list[int])
+    rss: int = 0  # bytes
+    ticks: int = 0  # CPU ticks over the sample
+    start: int = 0  # the newest process's
+    never: str | None = None  # why some or all of its processes are never stopped
+    stoppable: int = 0  # how many of its processes may be stopped
 
 
 @dataclass(slots=True)
@@ -275,6 +310,10 @@ class ProcessOps:
         stopper: Stopper | None = None,
         clock: Callable[[], float] = time.time,
         ticks_per_s: int | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        timer: Callable[[], float] = time.monotonic,
+        page_size: int | None = None,
+        cpus: int | None = None,
     ) -> None:
         """Read processes under `proc` as the owner `uid`; Jarvis's own PID is `self_pid`."""
         super().__init__()
@@ -285,6 +324,10 @@ class ProcessOps:
         self._stopper: Stopper = stopper or PidfdStopper()
         self._clock = clock
         self._ticks = ticks_per_s or os.sysconf("SC_CLK_TCK")
+        self._sleep = sleep
+        self._timer = timer
+        self._page = page_size or os.sysconf("SC_PAGE_SIZE")
+        self._cpus = cpus or os.cpu_count() or 1
         self._lock = threading.Lock()
         self._shown = _Shown()
 
@@ -522,8 +565,118 @@ class ProcessOps:
             parts.append("matched only by a window title: stopping it closes all its windows")
         return "- " + ", ".join(parts)
 
+    def _rss(self, pid: int) -> int:
+        """Return the resident memory of a process in bytes (0 when it cannot be read)."""
+        fields = self._text(pid, "statm").split()
+        try:
+            return int(fields[1]) * self._page
+        except IndexError, ValueError:
+            return 0
+
+    def _programs(self) -> tuple[list[_Program], float]:
+        """Return the owner's running programs, each with its processes added up, and the sample.
+
+        CPU use is the processes' CPU ticks before and after a wait of `CPU_SAMPLE_S`, over the
+        time that really passed between the two readings (never less than the wait).
+        """
+        before = self._table()
+        began = self._timer()
+        self._sleep(CPU_SAMPLE_S)
+        table = self._table()
+        sample_s = max(CPU_SAMPLE_S, self._timer() - began)
+        guarded = self._guarded(table)
+        programs: dict[str, _Program] = {}
+        for proc in table.values():
+            if proc.state in {"Z", "X"} or proc.kernel or not self._owned(proc):
+                continue
+            never = self._protection(proc, table, guarded)
+            name = self._program(self._top_of_same_program(proc, table))
+            item = programs.setdefault(name, _Program(name))
+            if never is None:
+                item.stoppable += 1
+            elif item.never is None:
+                item.never = never
+            item.pids.append(proc.pid)
+            item.rss += self._rss(proc.pid)
+            item.start = max(item.start, proc.start)
+            old = before.get(proc.pid)
+            if old is not None and old.start == proc.start:
+                item.ticks += max(0, proc.cpu_ticks - old.cpu_ticks)
+        return list(programs.values()), sample_s
+
+    def _top_of_same_program(self, proc: _Proc, table: dict[int, _Proc]) -> _Proc:
+        """Return the topmost ancestor running the same executable: a browser's for its tabs."""
+        exe = self._exe(proc.pid)
+        top = proc
+        seen = {proc.pid}
+        while exe and (parent := table.get(top.ppid)) is not None and parent.pid not in seen:
+            if not self._owned(parent) or self._exe(parent.pid) != exe:
+                break
+            seen.add(parent.pid)
+            top = parent
+        return top
+
+    def _cpu_scale(self, sample_s: float) -> float:
+        """Return what one CPU tick in the sample is as a share of the whole processor (percent)."""
+        return 100 / self._ticks / sample_s / self._cpus
+
+    def usage(self) -> list[Usage]:
+        """Return every running program of the owner's with its memory and CPU use now."""
+        programs, sample_s = self._programs()
+        scale = self._cpu_scale(sample_s)
+        return [Usage(item.name, len(item.pids), item.rss, item.ticks * scale) for item in programs]
+
+    def _program_line(self, item: _Program, windows: dict[int, Window], scale: float) -> str:
+        size = f"{item.rss / GIB:.1f} GiB" if item.rss >= GIB else f"{item.rss // MIB} MiB"
+        count = len(item.pids)
+        parts = [
+            f"- {item.name}: {count} process{'es' if count != 1 else ''}",
+            f"{size} resident",
+            f"{item.ticks * scale:.0f}% CPU",
+        ]
+        window = next((windows[pid] for pid in sorted(item.pids) if pid in windows), None)
+        if window is not None and window.title.strip():
+            parts.append(f'window "{_printable(window.title, MAX_TITLE)}"')
+        with contextlib.suppress(OSError, ValueError):
+            parts.append(self._age(item.start).replace("started", "newest started"))
+        if item.never is not None and item.stoppable:
+            parts.append(f"some of its processes are never stopped ({item.never})")
+        elif item.never is not None:
+            parts.append(f"never stopped ({item.never})")
+        return ", ".join(parts)
+
+    def _list_all(self, sort: str, count: int) -> Result:
+        """List every running program of the owner's, sorted by `sort`; it binds no PID."""
+        programs, sample_s = self._programs()
+        scale = self._cpu_scale(sample_s)
+        keys: dict[str, Callable[[_Program], tuple[int, str]]] = {
+            "memory": lambda p: (-p.rss, p.name),
+            "cpu": lambda p: (-p.ticks, p.name),
+            "newest": lambda p: (-p.start, p.name),
+        }
+        programs.sort(key=keys[sort])
+        shown = programs[:count]
+        windows = self._windows_by_pid()
+        processes = sum(len(item.pids) for item in programs)
+        head = (
+            f"The owner's running programs ({len(programs)}, {processes} processes), by {sort}; "
+            f"CPU over {CPU_SAMPLE_S:g} s:"
+        )
+        lines = [head]
+        lines.extend(self._program_line(item, windows, scale) for item in shown)
+        if len(programs) > len(shown):
+            lines.append(f"{len(programs) - len(shown)} more are not listed.")
+        lines.append(
+            "No PID here can be stopped: to stop one, call find_processes with its name first."
+        )
+        return Result("\n".join(lines), Origin.PROCESS)
+
     def find(self, args: dict[str, Any]) -> Result:
-        """List the owner's stoppable processes that match the spoken name."""
+        """List the owner's stoppable processes that match the spoken name, or every program."""
+        if "name" not in args:
+            return self._list_all(
+                str(args.get("sort", "memory")), int(args.get("count", LIST_COUNT))
+            )
         name = str(args["name"])
         spoken = spoken_words(name)
         if len("".join(spoken)) < 2:  # ruff: ignore[magic-value-comparison] - one letter is no name
@@ -794,7 +947,9 @@ class ProcessOps:
                 "find_processes",
                 "Find the owner's running programs by the name the owner said, before stopping "
                 "any. Lists each match's PID for stop_process. Several: read them to the owner "
-                "and ask which; never guess. None: say so; never try a wider name.",
+                "and ask which; never guess. None: say so; never try a wider name. Without a "
+                "name: every running program with its memory and CPU, for what is running or "
+                "using the most.",
                 {
                     "type": "object",
                     "properties": {
@@ -802,10 +957,16 @@ class ProcessOps:
                             "type": "string",
                             "minLength": 1,
                             "maxLength": MAX_NAME,
-                            "description": "As the owner said it.",
-                        }
+                            "description": "As the owner said it; leave out to list every program.",
+                        },
+                        "sort": {"type": "string", "enum": list(SORTS), "default": "memory"},
+                        "count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": MAX_LISTED,
+                            "default": LIST_COUNT,
+                        },
                     },
-                    "required": ["name"],
                     "additionalProperties": False,
                 },
                 self.find,

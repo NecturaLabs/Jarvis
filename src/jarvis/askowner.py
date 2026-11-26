@@ -372,10 +372,8 @@ def visible_note(question: Question) -> str:
 
 
 ABOUT = (
-    "Ask the owner to pick among 2 to 4 options, for a decision you cannot judge "
-    "yourself. Never as permission for an action: an answer is never a yes. `recommended` is "
-    "the 0-based option you would pick. wait true pauses the request for the answer; otherwise "
-    "carry on and it reaches you later."
+    "Ask the owner to choose (2-4 options, short header). Never for permission: an "
+    "answer is never a yes. recommended: your pick, 0-based. wait: true pauses."
 )
 
 
@@ -394,7 +392,9 @@ def operation(questions: Questions) -> Operation:
             msg = "only a request the owner typed just now can ask them a question"
             raise OperationError(msg)
         options = tuple(
-            Choice(one_line(str(row["label"]))[:MAX_LABEL], one_line(str(row["description"])))
+            Choice(
+                one_line(str(row["label"]))[:MAX_LABEL], one_line(str(row.get("description", "")))
+            )
             for row in objs(args["options"])
         )
         recommended = int(str(args["recommended"]))
@@ -402,6 +402,9 @@ def operation(questions: Questions) -> Operation:
         text = one_line(str(args["question"]))
         if not header or not text or any(not option.label for option in options):
             msg = "the question, its header and every option's label need words"
+            raise OperationError(msg)
+        if not MIN_OPTIONS <= len(options) <= MAX_OPTIONS:
+            msg = f"give {MIN_OPTIONS} to {MAX_OPTIONS} options"
             raise OperationError(msg)
         if len({option.label.casefold() for option in options}) < len(options):
             msg = "the options must differ"
@@ -446,26 +449,22 @@ def operation(questions: Questions) -> Operation:
             "type": "object",
             "properties": {
                 "question": {"type": "string"},
-                "header": {"type": "string", "maxLength": MAX_HEADER},
+                "header": {"type": "string"},
                 "options": {
                     "type": "array",
-                    "minItems": MIN_OPTIONS,
-                    "maxItems": MAX_OPTIONS,
                     "items": {
                         "type": "object",
                         "properties": {
                             "label": {"type": "string"},
                             "description": {"type": "string"},
                         },
-                        "required": ["label", "description"],
                     },
                 },
                 "multi_select": {"type": "boolean"},
-                "recommended": {"type": "integer", "minimum": 0},
+                "recommended": {"type": "integer"},
                 "wait": {"type": "boolean"},
             },
             "required": ["question", "header", "options", "recommended"],
-            "additionalProperties": False,
         },
         run,
         default_class=OpClass.SAFE,

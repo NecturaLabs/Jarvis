@@ -2754,6 +2754,28 @@ def test_doctor_says_nothing_of_a_lock_limit_the_model_fits_in(
     assert bool(notes) is noted
 
 
+def test_doctor_notes_a_lock_limit_that_only_coding_mode_meets(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = home / "models" / "q4.gguf"
+    model.parent.mkdir(parents=True, exist_ok=True)
+    model.write_bytes(b"x" * 2000)
+    run = engine_run_config(home, model)
+    config.save(
+        config.Config(
+            data_dir=home / "models",
+            strata=config.StrataConfig(run_config=run, keep_in_ram=False),
+            coding=config.CodingConfig(keep_in_ram=True),
+        )
+    )
+    monkeypatch.setattr(cli, "_user_memlock_limit", lambda: "1000")
+
+    notes = cli._memlock_notes(config.load())  # pyright: ignore[reportPrivateUsage] - the note itself
+
+    assert len(notes) == 1
+    assert "in coding mode" in notes[0]
+
+
 def test_tools_lists_every_tool_with_its_setting(capsys: pytest.CaptureFixture[str]) -> None:
     config.save(config.Config(spotify=config.SpotifyConfig(client_id="id")))
 

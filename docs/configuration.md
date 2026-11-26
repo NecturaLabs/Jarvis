@@ -553,6 +553,7 @@ the served model on the backend.
 | `context` | `65536` | The model server's context in coding mode (`strata.context` in normal mode) |
 | `temperature` | unset | The sampling temperature in coding mode; unset: `model.temperature` |
 | `vram_reserve_mib`, `expert_vram_gib`, `memory_max` | unset | The same keys of `[strata]`, for coding mode only; unset (`0`, absent, `""`): `[strata]`'s |
+| `kv_resident`, `keep_in_ram`, `pictures`, `effort_position` | unset | The same keys of `[strata]`, for coding mode only; unset (absent): `[strata]`'s. Here `0` and `""` count as set: `kv_resident = 0` keeps the whole context in VRAM in coding mode. A switch that changes one restarts the model server. Pinned RAM from a larger `kv_resident` counts against `memory_max`, so raise that too |
 | `reasoning_budget_tokens` | `4096` | Strata's cap on thinking in coding mode |
 | `tools_off` | `[]` | Tools not offered in coding mode |
 | `write_roots` | `[]` | Folders Jarvis may also write in coding mode, besides `files.write_roots` |
@@ -569,7 +570,7 @@ holds only what coding changes; a key you take out keeps the channel's own value
 | `max_seconds` | `1800.0` | `300.0` |
 | `reply_tokens` | `8192` | `4096` |
 | `tool_text_chars` | `20000` | unset |
-| `memory_tokens` | `20000` | unset |
+| `memory_tokens` | unset | unset |
 | `thinking` | `medium` | `low` |
 | `thinking_tokens` | `1024` | `512` |
 | `thinking_max` | unset | unset |
@@ -993,6 +994,24 @@ window = "\\bspotify\\b"                 # matched, case-blind, with a window's 
 | `programs.<name>.command` | | 1 to 32 strings | The program and its arguments. |
 | `programs.<name>.window` | | a regular expression | How the program's window is known: by its class, never its title, so a browser tab named after it is not taken for it. Only windows that were not open before it was started are moved. |
 
+## Seeing what is running
+
+Ask in any words what is running, or what uses the most memory or CPU, and Jarvis lists your running
+programs (`find_processes` without a name, `safe`): each program once, with its processes added up, their
+resident memory (shared pages counted in each process) and their share of the whole processor over the half
+second or so it measures, its window's title and when it last started. Every listed program's window title
+reaches the model, as data with the `process` origin, like the names. The list is
+sorted by memory, CPU or newest (`sort`), shows 12 by default (`count`, up to 40) and says how many more run.
+Another user's processes and the kernel's are left out; the programs Jarvis never stops (below) are listed
+and marked ("some of its processes" when only part of a program is). A child running the same program as its
+parent (a browser's tabs) counts as that program. Nothing
+in this list can be stopped by its PID: to stop one, Jarvis looks it up by name first, as below.
+
+`pc_stats` names the three programs using the most memory and CPU the same way, so its answer is process
+data too: like a listing, it counts as outside text for the rest of that request, and a shell command
+(`pc_shell`) asked for in the same breath is refused; ask for it on its own. A plain question about the PC
+that Jarvis answers without the model leaves the programs out.
+
 ## Stopping a program
 
 Ask in any words to close, end or kill a program. Jarvis first
@@ -1013,7 +1032,8 @@ In code, whatever the model says:
   shell command's output, or such text remembered from earlier): ask again in a request of its own.
 - A program matched only by one window's title (a browser tab's, say) is marked so, and the question
   names that title and says all its windows close.
-- Only your own processes are listed. Never listed or stopped: PID 1, kernel threads, other users'
+- Only your own processes are listed. Never matched by name or stopped (and marked when every program is
+  listed): PID 1, kernel threads, other users'
   processes and set-user-ID programs, processes another user started (or whose parent cannot be seen) and
   those in the login session's own scope (`session-N.scope`), Jarvis and the terminal or shell it runs in,
   the processes that started the desktop session, login shells, the `jarvis` and `jarvis-strata`

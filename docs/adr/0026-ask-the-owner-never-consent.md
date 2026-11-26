@@ -72,7 +72,7 @@ Chosen option 2.
 - **Good:** nothing here depends on matching the owner's or the model's phrasing ([ADR 0013](0013-free-speech-no-new-shortcuts.md)).
 - **Bad:** the picker is modal: while a question is open the input is hidden, so a message is typed only after
   an answer or Esc (the owner types under `Other`).
-- **Bad:** the two tools add about 570 tokens to every chat request.
+- **Bad:** the two tools add about 380 tokens to every chat request, kept short so the chat memory stays above its floor.
 - **Not measured:** how well the model uses the tools unprompted, and how often it asks when it should decide.
 
 ## Related

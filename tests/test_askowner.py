@@ -10,6 +10,7 @@ from scripted_model import Clock, ScriptedModel, call, say
 from jarvis.agent import Agent, Declined, Hooks, Limits
 from jarvis.app import channel_limits, channel_registry, offered_registry
 from jarvis.askowner import (
+    MAX_HEADER,
     Choice,
     Outcome,
     Question,
@@ -106,12 +107,7 @@ def test_the_recommended_option_is_listed_first() -> None:
         _args() | {"recommended": None},
         {k: v for k, v in _args().items() if k != "recommended"},  # it is required
         {k: v for k, v in _args().items() if k != "header"},
-        _args(options=OPTIONS[:1]),  # fewer than two options
-        _args(options=[*OPTIONS, *OPTIONS[:2]]),  # more than four
-        _args(header="a header over twelve"),
-        _args(options=[{"label": "A"}, {"label": "B", "description": ""}]),  # no description
         _args(options=[{"label": "A", "description": "", "extra": 1}, OPTIONS[0]]),
-        _args(recommended=-1),
         _args(wait="yes"),
         _args(extra=1),
     ],
@@ -132,6 +128,9 @@ def test_the_arguments_default_to_a_single_choice_that_does_not_wait() -> None:
     ("more", "why"),
     [
         ({"recommended": 3}, "recommended must be 0 to 2"),
+        ({"recommended": -1}, "recommended must be 0 to 2"),
+        ({"options": OPTIONS[:1]}, "2 to 4 options"),
+        ({"options": [*OPTIONS, *OPTIONS[:2]]}, "2 to 4 options"),
         ({"options": [OPTIONS[0], {"label": "alpha", "description": "x"}]}, "must differ"),
         ({"header": "   "}, "need words"),
         ({"question": "   "}, "need words"),
@@ -148,6 +147,17 @@ def test_a_question_that_makes_no_sense_is_refused_and_nothing_is_shown(
         op.run(validate_args(op, _args(**more)))
 
     assert view.opened == []
+
+
+def test_a_long_header_is_cut_and_an_option_may_go_without_a_description() -> None:
+    questions, _, _ = _setup()
+
+    question = _ask(
+        questions, header="a header over twelve", options=[{"label": "A"}, {"label": "B"}]
+    )
+
+    assert len(question.header) <= MAX_HEADER
+    assert [option.description for option in question.options] == ["", ""]
 
 
 def test_the_model_s_words_are_one_plain_line_each() -> None:
@@ -188,7 +198,7 @@ def test_it_is_a_safe_audited_operation_without_a_shortcut() -> None:
 
     assert op.default_class is OpClass.SAFE
     assert op.shortcuts == ()
-    assert "never as permission" in op.description.lower()
+    assert "never for permission" in op.description.lower()
 
 
 def test_nobody_is_there_to_answer_a_request_heard_in_pc_audio_or_run_by_a_schedule() -> None:

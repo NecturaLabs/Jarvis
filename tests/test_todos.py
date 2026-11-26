@@ -88,8 +88,6 @@ def test_only_one_task_may_be_in_progress_and_the_list_stays_as_it_was() -> None
     [
         {},  # no list
         {"todos": "do it"},  # not a list
-        {"todos": [{"content": "A"}]},  # no status
-        {"todos": [{"status": "pending"}]},  # no words
         {"todos": [{"content": "A", "status": "done"}]},  # a status it does not have
         {"todos": [{"content": "A", "status": "pending", "id": 1}]},  # a key it does not have
         {"todos": [{"content": "A", "status": "pending"}], "extra": 1},  # an argument it lacks
@@ -98,6 +96,21 @@ def test_only_one_task_may_be_in_progress_and_the_list_stays_as_it_was() -> None
 def test_a_malformed_call_is_refused_before_it_runs(arguments: dict[str, Any]) -> None:
     with pytest.raises(ArgumentError):
         validate_args(operation(TodoList()), arguments)
+
+
+@pytest.mark.parametrize(
+    "rows", [[{"content": "A"}], [{"status": "pending"}]], ids=["no status", "no words"]
+)
+def test_a_task_missing_its_words_or_status_is_refused_and_the_list_kept(
+    rows: list[dict[str, str]],
+) -> None:
+    todos = TodoList()
+    _call(todos, _rows(("Keep me", "pending")))
+
+    with pytest.raises(OperationError):
+        _call(todos, rows)
+
+    assert [item.content for item in todos.items] == ["Keep me"]
 
 
 def test_a_task_needs_words_and_one_line_of_them() -> None:
