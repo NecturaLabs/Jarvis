@@ -15,6 +15,7 @@ import os
 import queue
 import re
 import select
+import signal
 import stat
 import struct
 import subprocess
@@ -1858,21 +1859,45 @@ def make_synthesizer(
 
 SINGER_STDERR_BYTES = 4096  # the end of a singing program's error output kept for the log
 SINGER_POLL_S = 0.05  # how often a running singing program is checked against its cancel signal
+SINGER_END_S = 1.0  # how long the end of a singing program and of its stderr is waited for
 
 
-def _keep_end(stream: IO[bytes], kept: list[bytes]) -> None:
-    """Read `stream` to its end, keeping in `kept[0]` only the last SINGER_STDERR_BYTES bytes."""
-    with contextlib.suppress(OSError, ValueError):  # the stream was closed under it
-        while chunk := stream.read(65536):
-            kept[0] = (kept[0] + chunk)[-SINGER_STDERR_BYTES:]
+def _keep_end(fd: int, kept: bytearray) -> bool:
+    """Read what `fd` holds now, keeping only its last SINGER_STDERR_BYTES; False at its end."""
+    try:
+        chunk = os.read(fd, 65536)
+    except BlockingIOError:
+        return True
+    kept += chunk
+    del kept[:-SINGER_STDERR_BYTES]
+    return bool(chunk)
+
+
+def _end_group(proc: subprocess.Popen[bytes], fd: int, kept: bytearray, *, open_: bool) -> None:
+    """Kill a singing program's process group, reap it and read the rest of its stderr.
+
+    Each wait is bounded: a child that left the group and holds the pipe open, or a program
+    stuck in the kernel, is given SINGER_END_S and then left, never waited for.
+    """
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)  # the program and everything it started
+    try:
+        proc.wait(timeout=SINGER_END_S)
+    except subprocess.TimeoutExpired:
+        log.warning("a singing program (pid %d) did not end after it was killed", proc.pid)
+    ends = time.monotonic() + SINGER_END_S
+    while open_ and (left := ends - time.monotonic()) > 0:
+        if select.select([fd], [], [], left)[0]:
+            open_ = _keep_end(fd, kept)
 
 
 def run_singer(cmd: list[str], timeout_s: float, cancelled: Callable[[], bool]) -> tuple[int, str]:
     """Run a singing program (`jarvis.sing.soulx`) to its end; return its exit code and stderr.
 
-    It reads nothing and makes no sound itself: it writes a file the speaker then plays. It is
-    killed when `cancelled()` turns true or after `timeout_s`; only the last
-    `SINGER_STDERR_BYTES` of its stderr are kept.
+    It reads nothing and makes no sound itself: it writes a file the speaker then plays. It runs
+    in a process group of its own, which is killed when `cancelled()` turns true, after
+    `timeout_s`, and once it has exited, so nothing it started outlives it. Only the last
+    `SINGER_STDERR_BYTES` of its stderr are kept, read without blocking.
 
     Raises:
         SingerStoppedError: `cancelled()` turned true and the program was killed.
@@ -1880,17 +1905,24 @@ def run_singer(cmd: list[str], timeout_s: float, cancelled: Callable[[], bool]) 
     """
     try:
         proc = subprocess.Popen(
-            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
     except OSError as exc:
         msg = f"could not start {cmd[0]}: {exc}"
         raise AudioError(msg) from exc
     assert proc.stderr is not None  # ruff: ignore[assert] - started with a pipe
-    kept = [b""]
-    reader = threading.Thread(target=_keep_end, args=(proc.stderr, kept), daemon=True)
-    reader.start()
+    fd = proc.stderr.fileno()
+    kept = bytearray()
+    open_ = True
+    pidfd = -1
     ends = time.monotonic() + timeout_s
     try:
+        os.set_blocking(fd, False)
+        pidfd = os.pidfd_open(proc.pid)  # readable once it exits; it stays unreaped till then
         while True:
             if cancelled():
                 msg = f"{Path(cmd[0]).name} was stopped: the request was cancelled"
@@ -1899,18 +1931,18 @@ def run_singer(cmd: list[str], timeout_s: float, cancelled: Callable[[], bool]) 
             if left <= 0:
                 msg = f"{Path(cmd[0]).name} ran past {timeout_s:g} s and was stopped"
                 raise AudioError(msg)
-            try:
-                proc.wait(timeout=min(SINGER_POLL_S, left))
-            except subprocess.TimeoutExpired:
-                continue
-            break
+            watched = [pidfd, fd] if open_ else [pidfd]
+            ready = select.select(watched, [], [], min(SINGER_POLL_S, left))[0]
+            if fd in ready:
+                open_ = _keep_end(fd, kept)
+            if pidfd in ready:
+                break
     finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
-        reader.join(timeout=1.0)  # a program's own child holding the pipe open must not hold us
+        _end_group(proc, fd, kept, open_=open_)
+        if pidfd >= 0:
+            os.close(pidfd)
         proc.stderr.close()
-    return proc.returncode, kept[0].decode("utf-8", errors="replace")
+    return proc.returncode, kept.decode("utf-8", errors="replace")
 
 
 def pw_play_command(rate: int) -> list[str]:
