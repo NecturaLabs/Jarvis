@@ -328,6 +328,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   model answered that it could not clear; `jarvis acp` now offers the command and runs it itself.
   It works while a confirmation question waits too; the question is declined. The kept sessions
   follow the chat's privacy settings: `chat.archive_keep = 0` keeps none, and `/forget all` deletes them.
+- `/forget all` in the chat with `chat.archive_keep = 0` no longer stops at "The archive is off": it deletes the
+  T3 Code sessions kept before (they stayed until the next `jarvis acp` started), forgets the conversation in the
+  window and says what it deleted.
 - The model server no longer starts a load that does not fit in memory. With a game running and 13 to
   20 GB of RAM available, starting Strata read about 39 GB of experts into RAM, the kernel failed page
   allocations and the game's process died. `jarvis start`, `jarvis restart`, a switch of modes, a model

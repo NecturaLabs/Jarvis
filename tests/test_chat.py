@@ -3023,6 +3023,62 @@ def test_forget_all_deletes_the_kept_t3_code_sessions_too(tmp_path: Path) -> Non
     assert not list(kept.iterdir())
 
 
+def test_forget_all_with_the_archive_off_still_deletes_the_kept_t3_code_sessions() -> None:
+    kept = acp_sessions_dir()
+    kept.mkdir(parents=True)
+    (kept / "jarvis-0123456789ab.json").write_text("{}", encoding="utf-8")
+    (kept / "jarvis-0123456789ab.chat.memory.json").write_text("{}", encoding="utf-8")
+    session = FakeSession()
+    session.memory.add(Turn("forget me", "Gone.", "", "", 1.0))
+    app = _app(session=session)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/forget all")
+        await _until(pilot, lambda: _has(app, "Deleted 1 kept T3 Code session"))
+        assert _has(app, "The archive is off")
+
+    _run(test, app)
+    assert not list(kept.iterdir())
+    assert session.memory.turns == []
+
+
+def test_forget_all_with_the_archive_off_and_nothing_kept_says_so() -> None:
+    session = FakeSession()
+    app = _app(session=session)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/forget all")
+        await _until(pilot, lambda: _has(app, "No T3 Code sessions were kept"))
+
+    _run(test, app)
+
+
+def test_forget_all_with_the_archive_off_that_cannot_delete_forgets_nothing() -> None:
+    kept = acp_sessions_dir()
+    (kept / "jarvis-0123456789ab.json").mkdir(parents=True)  # a folder: it cannot be unlinked
+    session = FakeSession()
+    session.memory.add(Turn("keep me", "Kept.", "", "", 1.0))
+    app = _app(session=session)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/forget all")
+        await _until(pilot, lambda: _has(app, "nothing was forgotten"))
+
+    _run(test, app)
+    assert len(session.memory.turns) == 1
+
+
+def test_forget_without_all_says_what_it_does_even_with_the_archive_off() -> None:
+    app = _app(session=FakeSession())
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _type(pilot, "/forget")
+        await _until(pilot, lambda: _has(app, "/forget all deletes"))
+        assert _has(app, "archive is off")
+
+    _run(test, app)
+
+
 def test_forget_all_that_cannot_delete_the_t3_code_sessions_forgets_nothing(tmp_path: Path) -> None:
     kept = acp_sessions_dir()
     (kept / "jarvis-0123456789ab.json").mkdir(parents=True)  # a folder: it cannot be unlinked

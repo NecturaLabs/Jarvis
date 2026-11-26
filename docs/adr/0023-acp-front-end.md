@@ -158,4 +158,6 @@ So `jarvis acp` now keeps each session's conversation in `~/.local/state/jarvis/
 back as the chat's resume reads them. A session id with nothing kept opens empty under that id, because
 T3 Code treats any error as a failed thread. The chat's privacy settings cover these files too:
 `chat.archive_keep = 0` keeps none and deletes those kept before, and `/forget all` in the chat deletes
-them. `/clear`, the command the protocol lets a client offer, forgets one session without the model.
+them, also with `chat.archive_keep = 0`, where sessions kept before would otherwise stay until the
+next `jarvis acp` starts. `/clear`, the command the protocol lets a client offer, forgets one session
+without the model.
