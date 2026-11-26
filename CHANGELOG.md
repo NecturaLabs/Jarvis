@@ -8,6 +8,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Your own skills: Markdown files in `~/.config/jarvis/skills/` are listed in the prompt and read with
+  `read_skill` like the shipped ones. A file is read only when it and its folder are yours alone, it is no
+  link, and it fits the size limits. `jarvis doctor` names any file it left out. Jarvis never uses your
+  coding agents' setup ([ADR 0024](docs/adr/0024-owner-skills.md)).
 - Install Jarvis with `install.sh` from a terminal or checkout. It checks prerequisites, uses the
   locked environment, fetches the default wake word, VAD and Kokoro files with SHA-256 verification
   (`tools/get_models.py`, which you can also run yourself),

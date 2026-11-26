@@ -1,29 +1,58 @@
-"""Jarvis's own skills: shipped instructions for a kind of task, read when the model needs them.
+"""Jarvis's skills: instructions for a kind of task, read when the model needs them.
 
-Each skill is a Markdown file in `prompts/skills/` that opens with a `description:` line. The
+Each skill is a Markdown file that opens with a `description:` line. Jarvis ships its own in
+`prompts/skills/`; the owner may add theirs as `<name>.md` files in Jarvis's config folder
+(`~/.config/jarvis/skills/`), the same trust as the config file itself: their own words, which
+guide the model but never widen what an operation may do, since every boundary is in code. The
 system prompt lists the names and descriptions; the model reads a whole skill with `read_skill`
-before such a task, so the prompt stays short. Only the files shipped with Jarvis are skills:
-nothing else on the PC can be read this way.
+before such a task, so the prompt stays short. Only those two folders hold skills: nothing else
+on the PC can be read this way.
+
+An owner's file counts only when the folder and the file are the owner's, writable by nobody
+else, opened without following a link, and within the size limits; a name a shipped skill has is
+kept for the shipped one. `jarvis doctor` says which files were left out and why.
 """
 
+import errno
+import os
 import re
+import stat
 from dataclasses import dataclass
 from functools import cache
 from importlib.resources import files
+from typing import TYPE_CHECKING
 
+from jarvis import paths
 from jarvis.operations import Operation, OperationError, Result
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _FRONT = re.compile(r"\A---\n(?P<head>.*?)\n---\n(?P<body>.*)\Z", re.DOTALL)
 _DESCRIPTION = re.compile(r"^description:\s*(?P<text>.+)$", re.MULTILINE)
+_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
+MAX_OWNER_SKILLS = 20
+MAX_DESCRIPTION_CHARS = 200  # one owner skill's line in the prompt
+MAX_DESCRIPTIONS_CHARS = 1600  # all owner skills' lines together, so the prompt keeps its size
+MAX_BODY_BYTES = 16_000  # one owner skill, read whole as one tool result
 
 
 @dataclass(frozen=True, slots=True)
 class Skill:
-    """One shipped skill."""
+    """One skill: shipped with Jarvis, or the owner's (`owner`)."""
 
     name: str
     description: str
     body: str
+    owner: bool = False
+
+
+def _parsed(name: str, text: str, *, owner: bool = False) -> Skill | None:
+    parts = _FRONT.match(text)
+    described = _DESCRIPTION.search(parts["head"]) if parts else None
+    if parts is None or described is None:
+        return None
+    return Skill(name, described["text"].strip(), parts["body"], owner)
 
 
 @cache
@@ -34,22 +63,142 @@ def shipped() -> tuple[Skill, ...]:
     for entry in sorted(folder.iterdir(), key=lambda item: item.name):
         if not entry.name.endswith(".md"):
             continue
-        text = entry.read_text(encoding="utf-8")
-        parts = _FRONT.match(text)
-        described = _DESCRIPTION.search(parts["head"]) if parts else None
-        if parts is None or described is None:
-            continue
-        found.append(
-            Skill(entry.name.removesuffix(".md"), described["text"].strip(), parts["body"])
-        )
+        skill = _parsed(entry.name.removesuffix(".md"), entry.read_text(encoding="utf-8"))
+        if skill is not None:
+            found.append(skill)
     return tuple(found)
+
+
+def owner_folder() -> Path:
+    """Return the folder the owner's own skills live in."""
+    return paths.config_dir() / "skills"
+
+
+def _private(info: os.stat_result) -> bool:
+    """Return whether a folder or file is the owner's and writable by nobody else."""
+    return info.st_uid == os.getuid() and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+
+
+def _read_owned(folder: int, name: str) -> str:
+    """Return one owner skill file's text, read without following a link.
+
+    Raises:
+        ValueError: it is not a regular file of the owner's, is writable by others, is too big,
+            or is not UTF-8 text.
+    """
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder)
+    except OSError as error:
+        msg = "a link, which is not followed" if error.errno == errno.ELOOP else "unreadable"
+        raise ValueError(msg) from error
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            msg = "not a regular file"
+            raise ValueError(msg)
+        if not _private(info):
+            msg = "not yours alone (another user owns it or can write to it)"
+            raise ValueError(msg)
+        if info.st_size > MAX_BODY_BYTES:
+            msg = f"bigger than {MAX_BODY_BYTES} bytes"
+            raise ValueError(msg)
+        data = os.read(fd, MAX_BODY_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(data) > MAX_BODY_BYTES:
+        msg = f"bigger than {MAX_BODY_BYTES} bytes"
+        raise ValueError(msg)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        msg = "not UTF-8 text"
+        raise ValueError(msg) from error
+
+
+def owner_skills(folder: Path | None = None) -> tuple[tuple[Skill, ...], list[str]]:
+    """Return the owner's skills in `folder` (theirs by default) and why any file was left out.
+
+    A missing folder is no skills and no complaint.
+    """
+    where = owner_folder() if folder is None else folder
+    try:
+        fd = os.open(where, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return (), []
+    except OSError:
+        return (), [f"{where} could not be opened as a folder (a link is not followed)"]
+    try:
+        if not _private(os.fstat(fd)):
+            return (), [f"{where} is not yours alone; its skills are not read"]
+        names = sorted(os.listdir(fd))  # ruff: ignore[os-listdir] - the folder opened without a link
+        taken = {skill.name for skill in shipped()}
+        found: list[Skill] = []
+        skipped: list[str] = []
+        room = MAX_DESCRIPTIONS_CHARS
+        for entry in names:
+            if not entry.endswith(".md"):
+                continue
+            name = entry.removesuffix(".md")
+            why = _why_not(name, taken, len(found))
+            skill: Skill | None = None
+            if not why:
+                try:
+                    skill = _parsed(name, _read_owned(fd, entry), owner=True)
+                except ValueError as error:
+                    why = str(error)
+                else:
+                    why = _why_not_skill(skill, room)
+            if why or skill is None:
+                skipped.append(f"{entry}: {why}")
+                continue
+            found.append(skill)
+            room -= len(skill.description)
+        return tuple(found), skipped
+    finally:
+        os.close(fd)
+
+
+def _why_not(name: str, taken: set[str], count: int) -> str:
+    if not _NAME.fullmatch(name):
+        return "the name must be lowercase letters, digits and hyphens (at most 40)"
+    if name in taken:
+        return "a shipped skill has that name"
+    if count >= MAX_OWNER_SKILLS:
+        return f"only {MAX_OWNER_SKILLS} skills of yours are read"
+    return ""
+
+
+def _why_not_skill(skill: Skill | None, room: int) -> str:
+    if skill is None:
+        return "it does not open with a --- block holding a description: line"
+    if len(skill.description) > MAX_DESCRIPTION_CHARS:
+        return f"its description is longer than {MAX_DESCRIPTION_CHARS} characters"
+    if len(skill.description) > room:
+        return f"all descriptions together may be {MAX_DESCRIPTIONS_CHARS} characters"
+    return ""
+
+
+def available(folder: Path | None = None) -> tuple[Skill, ...]:
+    """Return every skill the model may read: the shipped ones, then the owner's."""
+    return (*shipped(), *owner_skills(folder)[0])
+
+
+def doctor_notes(folder: Path | None = None) -> list[str]:
+    """Return `jarvis doctor`'s notes on the owner's skills: how many, and any left out."""
+    mine, skipped = owner_skills(folder)
+    where = owner_folder() if folder is None else folder
+    notes = [f"note your skills: {len(mine)} read from {where}"] if mine else []
+    return [*notes, *(f"note skill left out: {line}" for line in skipped)]
 
 
 def prompt_section(skills: tuple[Skill, ...]) -> str:
     """Return the system prompt's list of skills, or "" when there are none."""
     if not skills:
         return ""
-    lines = "\n".join(f"- {skill.name}: {skill.description}" for skill in skills)
+    lines = "\n".join(
+        f"- {skill.name}{' (yours)' if skill.owner else ''}: {skill.description}"
+        for skill in skills
+    )
     return (
         "- Skills: before a task one of these covers, call read_skill with its name and follow "
         f"it (once per conversation is enough):\n{lines}\n"
@@ -57,7 +206,7 @@ def prompt_section(skills: tuple[Skill, ...]) -> str:
 
 
 def skill_operation(skills: tuple[Skill, ...]) -> Operation:
-    """Return `read_skill`, which gives the model one shipped skill's instructions."""
+    """Return `read_skill`, which gives the model one listed skill's instructions."""
     by_name = {skill.name: skill for skill in skills}
 
     def run(args: dict[str, object]) -> Result:

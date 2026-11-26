@@ -220,7 +220,7 @@ def system_prompt(config: Config, channel: Channel = "voice", *, coding: bool = 
     style = prompts.joinpath(f"{channel}.md").read_text(encoding="utf-8")
     words = int(round(config.chat.reply_tokens * WORDS_PER_TOKEN, -1))
     fill = {
-        "skills": skills.prompt_section(skills.shipped())
+        "skills": skills.prompt_section(skills.available())
         + osskills.prompt_section(osskills.catalog()),
         "name": config.persona.name,
         "version": __version__,
@@ -614,7 +614,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     web = config.model_copy(
         update={"research": config.research.model_copy(update={"page_chars": pages})}
     )
-    shipped = skills.shipped()
+    shipped = skills.available()
     guides = osskills.catalog()
     shown = chat_pictures() if channel == "chat" else None
     online = web_ops(web, shown)

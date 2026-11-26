@@ -46,7 +46,8 @@ behind the same speech setting, as the Piper-licence risk below asked.
 - Reasoning by the local model on Strata. Strata serves only Jarvis.
 - First-time configuration sets boundaries, tone/persona and the core instructions (what Jarvis is).
 - Researches online and operates this PC.
-- No global instructions, skills or plugins except the Omarchy OS skills; no subagents: one main agent.
+- No global instructions, skills or plugins: only Jarvis's own skills, the owner's skills in Jarvis's config
+  folder ([ADR 0024](adr/0024-owner-skills.md)) and the Omarchy OS skills; no subagents: one main agent.
 - First core feature: Spotify control (needs Spotify Premium). v1 is Spotify management by voice only; PC operations
   and research come after it works.
 - Light on the PC so gaming stays decent at any time: no GPU or CPU use while idle and no heavy CPU use between

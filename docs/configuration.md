@@ -10,6 +10,7 @@ Every setting lives in one TOML file, validated when Jarvis reads it. This page 
 | Config file | `~/.config/jarvis/config.toml` (`$XDG_CONFIG_HOME/jarvis/`) | `jarvis setup`, `jarvis pc-audio`, or by hand |
 | Strata profile (generated) | `~/.config/jarvis/strata-profile.json` | `jarvis setup` |
 | Jarvis's own Voxtype settings (generated) | `~/.config/jarvis/voxtype.toml`, and `voxtype-speech-test.toml` for `jarvis speech-test` | `jarvis run`, at each start; `jarvis speech-test` |
+| Your own skills | `~/.config/jarvis/skills/<name>.md`, the folder and files yours alone ([ADR 0024](adr/0024-owner-skills.md)) | you, by hand; read at the next `jarvis restart` or chat window |
 | User units | `~/.config/systemd/user/jarvis.service` and `jarvis-strata.service` | `jarvis setup`, `jarvis update` |
 | Strata API key, Spotify tokens, audit log, action count, reminders and scheduled requests, Strata log | `~/.local/state/jarvis/` (`$XDG_STATE_HOME/jarvis/`): `strata.env`, `spotify-token.json`, `audit.jsonl` (and five older `audit.jsonl.1` to `.5`), `actions.json`, `schedule.json` (and its `schedule.json.lock`), `strata.log` | Jarvis; the key, token, log, count and jobs files are mode 0600 |
 | Wake, VAD and voice model files | `data_dir`; the installer sets it to `$XDG_STATE_HOME/jarvis/models` on a fresh install | `uv run tools/get_models.py` or [manual model setup](models.md) |
