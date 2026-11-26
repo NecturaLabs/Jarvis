@@ -8,6 +8,12 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- A tool router, `tools = "routed"` in `[agent]` and `[chat]` (default `all`, nothing changes). Every tool
+  belongs to a group (music, sound, screen, apps, system, files, everyday, web, browser, schedule, guides,
+  jarvis); a routed request starts with only the core tools and a toolbox of the groups in the prompt, and
+  the same model asks for the groups it needs with `use_tools`. A tool of a group it has not asked for is
+  not run. It stays off by default until a live run shows it as accurate and not slower
+  ([ADR 0022](docs/adr/0022-tool-router.md)).
 - Your own skills: Markdown files in `~/.config/jarvis/skills/` are listed in the prompt and read with
   `read_skill` like the shipped ones. A file is read only when it and its folder are yours alone, it is no
   link, and it fits the size limits. `jarvis doctor` names any file it left out. Jarvis's file operations
@@ -360,6 +366,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   for. A home set in `[weather]` is always the place it names.
 
 ### Changed
+
+- The chat's remembered conversation takes what the context window leaves (`chat.memory_tokens` unset
+  by default, was 5,700): a longer prompt or more tools take from it instead of failing the defaults.
+  The defaults leave it at least 5,000 tokens. A set number still caps it.
+- Jarvis puts the choice it recommends first, and marks it with its reason, whenever it offers choices.
 
 - The chat's default `memory_tokens` is now 5700 (was 6200), so the default 24,576-token window
   still holds it beside the new window and screenshot tools.

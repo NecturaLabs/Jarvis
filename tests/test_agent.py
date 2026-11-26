@@ -4594,7 +4594,8 @@ def test_speech_keeps_a_short_memory_and_the_chat_keeps_its_own() -> None:
         "condensed",
     )
     assert (chat.memory_idle_s, chat.memory_detail) == (0.0, "full")
-    assert chat.memory_tokens > speech.memory_tokens
+    assert chat.memory_tokens is None  # the chat takes what the window leaves
+    assert speech.memory_tokens is not None
 
 
 def test_a_request_answered_while_outside_text_was_remembered_keeps_that_mark() -> None:

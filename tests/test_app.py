@@ -32,6 +32,7 @@ from jarvis.app import (
 )
 from jarvis.audit import AuditLog
 from jarvis.config import (
+    CHAT_MEMORY_FLOOR,
     AudioConfig,
     BoundariesConfig,
     ChatConfig,
@@ -162,10 +163,18 @@ def test_the_default_context_holds_the_whole_remembered_conversation(
     limits = channel_limits(config, channel)
     registry = channel_registry(config, spotify.operations(), limits, channel)
     agent = Agent(
-        _Model([]), registry, system_prompt(config, channel), AuditLog(None), {}, limits=limits
+        _Model([]),
+        registry,
+        system_prompt(config, channel, registry=registry),
+        AuditLog(None),
+        {},
+        limits=limits,
     )
 
-    assert agent.memory.budget == limits.memory_tokens
+    # Voice keeps its set size; the chat's is unset and takes what fits, at least the floor.
+    wanted = CHAT_MEMORY_FLOOR if limits.memory_tokens is None else limits.memory_tokens
+    assert agent.memory.budget >= wanted
+    assert limits.memory_tokens is None or agent.memory.budget == limits.memory_tokens
     assert config.research.page_chars + PAGE_HEADROOM <= limits.tool_text_chars
 
 
@@ -189,11 +198,17 @@ def test_the_chat_memory_gives_way_when_thinking_needs_more_room(
         limits = channel_limits(config, "chat")
         registry = channel_registry(config, spotify.operations(), limits, "chat")
         agent = Agent(
-            _Model([]), registry, system_prompt(config, "chat"), AuditLog(None), {}, limits=limits
+            _Model([]),
+            registry,
+            system_prompt(config, "chat", registry=registry),
+            AuditLog(None),
+            {},
+            limits=limits,
         )
         budgets.append(agent.memory.budget)
 
-    assert budgets[0] == Config().chat.memory_tokens
+    assert Config().chat.memory_tokens is None  # what fits
+    assert budgets[0] >= CHAT_MEMORY_FLOOR
     assert 0 < budgets[1] < budgets[0]
 
 
@@ -941,7 +956,10 @@ def test_the_default_context_holds_the_remembered_conversation_with_the_browser(
     )
 
     assert (registry.get("browser_open") is not None) == (channel == "chat")
-    assert agent.memory.budget == limits.memory_tokens
+    # Voice keeps its set size; the chat's is unset and takes what fits, at least the floor.
+    wanted = CHAT_MEMORY_FLOOR if limits.memory_tokens is None else limits.memory_tokens
+    assert agent.memory.budget >= wanted
+    assert limits.memory_tokens is None or agent.memory.budget == limits.memory_tokens
 
 
 def test_forgetting_the_conversation_closes_the_chat_browser(
