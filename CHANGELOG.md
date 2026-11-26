@@ -354,7 +354,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   and when written with hyphens before a unit or a percent ("5-10 km", "10-20%"; dates, phone numbers and
   versions are read as written); an en dash between plain lowercase words is a pause, and one in a sum
   ("3 – 2 = 1") is "minus"; "x - y" keeps its minus; "about ~5" is "about 5"; "GB/s", "MB/s", "KB/s",
-  "Gbit/s" and "Mbit/s" are said as words.
+  "Gbit/s" and "Mbit/s" are said as words. "a.m." and "p.m." at the end of a line end the sentence
+  ("Dinner at 7 p.m." then a new line), mid-line they still do not.
 - With `format.thousands_separator` set to a space or an apostrophe, the voice was told to write "25 000",
   which is read aloud as "twenty-five zero zero zero". The voice now writes such numbers without a mark,
   in its replies and in the calculator's answers; the chat keeps the mark you chose.

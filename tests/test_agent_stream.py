@@ -311,6 +311,9 @@ def test_a_partial_reply_is_read_only_as_far_as_it_is_whole(
         ("It costs 3.5 euros. Next", "It costs 3.5 euros."),
         ("At 11 a.m. on Sunday it rains. Next", "At 11 a.m. on Sunday it rains."),
         ("Open until 9 p.m. daily. Next", "Open until 9 p.m. daily."),
+        ("Dinner at 7 p.m.\nThen bed.", "Dinner at 7 p.m."),
+        ("Dinner at 7 p.m. \r\nThen bed.", "Dinner at 7 p.m."),
+        ("Up at 6 a.m.\n", "Up at 6 a.m."),
         ("Not finished.", None),
         ("Not finished", None),
     ],
@@ -318,6 +321,11 @@ def test_a_partial_reply_is_read_only_as_far_as_it_is_whole(
 def test_a_sentence_ends_only_where_it_really_ends(text: str, first: str | None) -> None:
     end = sentence_end(text)
     assert (None if end is None else text[:end]) == first
+
+
+def test_a_time_at_the_end_of_a_line_ends_its_sentence() -> None:
+    assert split_sentences("Dinner at 7 p.m.\nThen bed.") == ["Dinner at 7 p.m.", "Then bed."]
+    assert split_sentences("Dinner at 7 p.m. then bed.") == ["Dinner at 7 p.m. then bed."]
 
 
 def test_split_sentences_keeps_the_unfinished_tail() -> None:
@@ -338,6 +346,7 @@ def test_split_sentences_keeps_the_unfinished_tail() -> None:
         "Muted, or just quieter? Done (anything else?)",
         "Playing which song, the first one? Okay - paused it.",
         "Sure - muted, anything else? Playing what you asked for, okay?",
+        "Dinner is at 7 p.m.\nPaused it for you.",
     ],
 )
 def test_the_claim_check_gives_the_same_answer_in_pieces_as_whole(reply: str) -> None:
