@@ -1441,7 +1441,8 @@ def test_model_shows_the_mode_and_each_modes_model() -> None:
 
 
 def test_the_model_menu_shows_each_models_name_and_use_whole_in_80_columns() -> None:
-    named = {"normal": "Qwen3.8 Flash Next", "coding": "Qwen3.8 Flash Next Coder"}
+    longest = "Qwen3.8 Flash Next Coder 7"  # as long as a title gets (26)
+    named = {"normal": "Qwen3.8 Flash Next", "coding": longest}
     services = Services(
         model_report=list,
         switch_model=lambda _to, _say: "",

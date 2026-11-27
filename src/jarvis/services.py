@@ -33,7 +33,7 @@ _NEEDS_QUOTES = re.compile(r"""[\s"'\\;]""")
 # A quantisation tag ending a model's name, as GGUF files and Strata write it (`-iq2_xs`, `-q8_0`,
 # `-ud-q4_k_xl`, `-sq-15`, `-nvfp4-qad`), with any `-v31` revision after it.
 _QUANT_TAG = re.compile(r"-(?:ud-)?(?:i?q\d\w*|sq-\d+|nvfp4(?:-[a-z]+)*)(?:-v\d+)?$", re.IGNORECASE)
-_TITLE_CHARS = 40  # a longer model name is cut in a model list
+_TITLE_CHARS = 26  # longer, a model list cuts the name or what follows it (80 columns)
 # The memory check runs as an `ExecCondition=`, where any exit of 1 to 254 skips the start. This
 # wrapper lets only the check's own refusal (`RAM_SHORT_EXIT`) through: a check that is missing,
 # will not run or crashes (a moved venv exits 203) must not keep the model server from starting.

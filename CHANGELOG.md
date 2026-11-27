@@ -319,7 +319,7 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 ### Fixed
 
 - T3 Code's model menu titles each of Jarvis's modes with its model's short name (the run config's name
-  without the quantisation tag, at most 40 characters, led by the mode when both come out the same), because
+  without the quantisation tag, at most 26 characters, led by the mode when both come out the same), because
   the full name with the mode was cut off. A mode whose run config cannot be used is titled "Coding model not
   ready" (or "Normal model not ready") instead of the error, which `jarvis model` still gives in full. T3 Code
   does not show the description, which says what the mode is for; the chat's `/model` menu does.

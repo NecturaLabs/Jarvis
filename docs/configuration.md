@@ -1104,7 +1104,7 @@ jobs in it and refuses to add one, rather than writing over the newer jobs. Why 
 the normal and coding modes as two models, each titled with its model's short name and described by what the
 mode is for (T3 Code shows only the title). The short name is the run config's `model_name` (in a remote
 client, `model.model`) without its quantisation tag, each word capitalised (`some-model-iq2_xs` is
-`Some Model`; at most 40 characters, control characters dropped); `Normal ·` or `Coding ·` leads it when both
+`Some Model`; at most 26 characters, control characters dropped); `Normal ·` or `Coding ·` leads it when both
 modes' names come out the same. A mode whose run config cannot be used is titled `Coding model not ready` (or
 `Normal model not ready`); `jarvis model` says why. It also offers a
 thinking effort that starts at the mode's `thinking` (`[chat]`, and `[coding.chat]` over it). A session in

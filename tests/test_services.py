@@ -741,7 +741,7 @@ def test_an_overlong_title_is_cut_with_an_ellipsis(tmp_path: Path) -> None:
     title = services.model_title(_named(tmp_path, "-".join(["flash"] * 30)))
 
     assert title is not None
-    assert len(title) <= 40
+    assert len(title) == 26
     assert title.endswith("\N{HORIZONTAL ELLIPSIS}")
 
 
