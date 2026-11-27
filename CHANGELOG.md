@@ -330,6 +330,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `write_file` limits each part to about half the reply budget, up to 20,000 characters.
+  The coding prompt and the error for an oversized part give the same limit. Long reads
+  and writes use successive tool calls.
 - Coding mode: one model call may take 600 s (`coding.request_timeout_s`; it was `model.request_timeout_s`,
   120 s), so writing a file or thinking harder with the coding model no longer ends in "My model isn't
   answering right now". It thinks with 2048 tokens (`[coding.chat] thinking_tokens`, was 1024, which the

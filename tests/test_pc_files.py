@@ -31,10 +31,16 @@ def home(tmp_path: Path) -> Path:
 
 
 def _ops(
-    home: Path, *, max_chars: int = 2000, protected: tuple[Path, ...] = (), **files: list[str]
+    home: Path,
+    *,
+    max_chars: int = 2000,
+    part_chars: int = files_module.MAX_CONTENT,
+    protected: tuple[Path, ...] = (),
+    **files: list[str],
 ) -> FileOps:
     config = FilesConfig.model_validate(files)
-    return FileOps(Boundary.of(config, home, protected=protected), max_chars=max_chars)
+    boundary = Boundary.of(config, home, protected=protected)
+    return FileOps(boundary, max_chars=max_chars, part_chars=part_chars)
 
 
 def _op(ops: FileOps, name: str) -> Operation:
@@ -523,6 +529,29 @@ def test_a_written_file_is_named_by_its_full_path_and_link_for_the_model(home: P
     assert str(created) in result.text
     assert created.as_uri() in result.text
     assert str(home) not in result.spoken  # said aloud, the short form is enough
+
+
+def test_a_write_holds_at_most_one_part(home: Path) -> None:
+    """A model told no size wrote a whole game in one call, and the reply cap cut it off."""
+    op = _op(_ops(home, part_chars=1000), "write_file")
+
+    content = op.parameters["properties"]["content"]
+    assert content["maxLength"] == 1000
+    assert op.parameters["properties"]["find"]["maxLength"] == 1000
+    with pytest.raises(ArgumentError, match="at most 1000 characters"):
+        validate_args(op, {"path": "~/Documents/game.html", "content": "x" * 1001})
+
+
+def test_a_long_file_is_written_whole_in_parts(home: Path) -> None:
+    ops = _ops(home, part_chars=1000)
+    parts = ["a" * 999 + "\n", "b" * 999 + "\n", "c" * 10 + "\n"]  # each ends a line
+
+    _write(ops, "~/Documents/game.html", parts[0])
+    for part in parts[1:]:
+        _write(ops, "~/Documents/game.html", part, mode="append")
+
+    written = (home / "Documents" / "game.html").read_text(encoding="utf-8")
+    assert written == "".join(parts)
 
 
 def test_create_never_overwrites(home: Path) -> None:

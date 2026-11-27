@@ -1367,6 +1367,21 @@ def test_a_call_the_length_cap_cut_off_is_not_run_and_the_model_is_told_to_write
     assert "call_cut" in _events(audit)
 
 
+def test_a_cut_file_write_names_the_part_limit_from_its_schema() -> None:
+    write = _writer(Counter())
+    props = {
+        **write.parameters["properties"],
+        "content": {"type": "string", "maxLength": 20000},
+    }
+    write = replace(write, parameters={**write.parameters, "properties": props})
+    model = ScriptedModel([_cut_write(), _say("I can write that in parts.")])
+    agent, _ = _agent(model, [write], limits=Limits(reply_tokens=65536))
+
+    agent.handle("build a game", NO_CONFIRM)
+
+    assert "20000 characters" in model.seen[1][-1]["content"]
+
+
 def test_a_cut_call_of_a_tool_without_parts_is_told_only_to_send_less() -> None:
     model = ScriptedModel([_cut_write(), _say("Too long, sorry.")])
     agent, _ = _agent(model, [Counter().op("write")])

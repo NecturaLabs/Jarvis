@@ -404,8 +404,8 @@ def _check_string(name: str, spec: dict[str, Any], value: object, *, verbatim: b
         raise ArgumentError(f"{name} must not be empty")
     if len(text) < least:
         raise ArgumentError(f"{name} must be at least {least} characters")
-    if len(text) > spec.get("maxLength", MAX_STRING):
-        raise ArgumentError(f"{name} is too long")
+    if len(text) > (most := spec.get("maxLength", MAX_STRING)):
+        raise ArgumentError(f"{name} is too long: at most {most} characters")
     if "enum" in spec and text not in spec["enum"]:
         raise ArgumentError(f"{name} must be one of {spec['enum']}")
     return text

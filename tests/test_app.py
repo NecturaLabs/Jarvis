@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, override
 
@@ -8,7 +9,7 @@ from test_pc_windows import FakeDesktop
 
 from jarvis import __version__, control, modes, osskills, paths
 from jarvis import app as app_module
-from jarvis.agent import NO_ACTION, SWITCH_MODEL, THINK_HARDER, Agent, Hooks
+from jarvis.agent import NO_ACTION, SWITCH_MODEL, THINK_HARDER, Agent, Hooks, Limits
 from jarvis.app import (
     MAX_HINT_CHARS,
     PAGE_HEADROOM,
@@ -328,6 +329,15 @@ def test_jarvis_own_state_is_never_readable_through_the_file_operations(tmp_path
 
     with pytest.raises(OperationError, match="private"):
         ops["read_file"].run({"path": str(state / "spotify-token.json")})
+
+
+def test_a_write_holds_half_of_what_one_answer_can_write(tmp_path: Path) -> None:
+    """The part a write takes leaves room in one answer for the call around it."""
+    config = Config()
+    ops = {op.name: op for op in pc_operations(config, Limits(reply_tokens=2048), tmp_path)}
+
+    content = ops["write_file"].parameters["properties"]["content"]
+    assert content["maxLength"] == 3050  # 2048 tokens of about 3 characters, halved
 
 
 def test_only_the_voice_offers_staying_quiet(tmp_path: Path) -> None:
@@ -801,6 +811,27 @@ def test_a_fixed_coding_agent_is_the_coding_chat_and_leaves_the_mode_file_alone(
     assert SWITCH_MODEL not in coding._registry.names()  # pyright: ignore[reportPrivateUsage] - it stays put
     assert modes.current() == "normal"
     assert not modes.state_file().exists()  # building and asking never wrote the owner's mode
+
+
+@pytest.mark.parametrize(("reply_tokens", "part"), [(8192, 12250), (65536, 20000)])
+def test_the_coding_prompt_says_how_much_one_write_carries_as_the_write_enforces_it(
+    reply_tokens: int, part: int
+) -> None:
+    """Told only to write "a long file" in parts, the model judged a whole game short enough."""
+    base = Config()
+    coding = base.coding.model_copy(
+        update={"chat": base.coding.chat.model_copy(update={"reply_tokens": reply_tokens})}
+    )
+    config = modes.effective(base.model_copy(update={"coding": coding}), "coding")
+    limits = channel_limits(config, "chat")
+    write = {op.name: op for op in pc_operations(config, limits)}["write_file"]
+    most = write.parameters["properties"]["content"]["maxLength"]
+
+    code = system_prompt(config, "chat", coding=True)
+
+    assert most == part  # half of about 3 characters a token, never over what one write holds
+    assert re.search(rf"at most\s+{most} characters", code)
+    assert "{part_chars}" not in code
 
 
 def test_a_fixed_coding_agent_drops_what_coding_mode_switches_off() -> None:

@@ -23,7 +23,7 @@ from jarvis import (
     skills,
 )
 from jarvis.about import AboutOps
-from jarvis.agent import SWITCH_MODEL, Agent, Limits, Setup
+from jarvis.agent import SWITCH_MODEL, Agent, Limits, Setup, part_chars
 from jarvis.askowner import Questions
 from jarvis.audit import AuditLog
 from jarvis.model import StrataModel
@@ -40,7 +40,7 @@ from jarvis.operations import (
 from jarvis.paths import audit_file, spotify_token_file
 from jarvis.paths import strata_key_file as strata_key_file  # ruff: ignore[useless-import-alias] - re-export
 from jarvis.pc.apps import AppOps
-from jarvis.pc.files import Boundary, FileOps
+from jarvis.pc.files import MAX_CONTENT, Boundary, FileOps
 from jarvis.pc.hearing import HearingOps, Listening
 from jarvis.pc.media import MediaOps
 from jarvis.pc.processes import ProcessOps
@@ -280,6 +280,7 @@ def system_prompt(
         .rstrip("\n"),
         "pc_audio": _pc_audio_rule(config, channel),
         "workspace": _workspace_rule(config),
+        "part_chars": str(write_part_chars(channel_limits(config, channel))),
     }
     text = core + "\n" + style
     if coding:
@@ -630,7 +631,10 @@ def pc_operations(
         *VolumeOps(_wpctl).operations(),
         *MediaOps(_playerctl).operations(),
         *FileOps(
-            boundary, max_chars=limits.tool_text_chars, made=Ledger(paths.workspace_ledger_file())
+            boundary,
+            max_chars=limits.tool_text_chars,
+            part_chars=write_part_chars(limits),
+            made=Ledger(paths.workspace_ledger_file()),
         ).operations(),
         *processes.operations(),
         *windows.operations(),
@@ -732,6 +736,11 @@ def voice_service_running() -> bool:
 
 class SetupError(Exception):
     """Something setup provides is missing."""
+
+
+def write_part_chars(limits: Limits) -> int:
+    """Return the character limit shared by the prompt and the `write_file` schema."""
+    return min(part_chars(limits.reply_tokens), MAX_CONTENT)
 
 
 def channel_limits(config: Config, channel: Channel) -> Limits:

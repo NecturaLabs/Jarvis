@@ -644,6 +644,16 @@ def _without_pictures(message: dict[str, Any]) -> dict[str, Any]:
     return {**message, "content": f"{words} (the picture itself was not kept)".strip()}
 
 
+def answer_chars(reply_tokens: int) -> int:
+    """Return about how many characters one answer of `reply_tokens` holds, in hundreds."""
+    return int(reply_tokens * CHARS_PER_TOKEN) // 100 * 100
+
+
+def part_chars(reply_tokens: int) -> int:
+    """Return how much text one call may carry: half an answer, leaving room for the call."""
+    return answer_chars(reply_tokens) // 2
+
+
 @dataclass(frozen=True, slots=True)
 class Limits:
     """How much one request may do and how much of the conversation is remembered.
@@ -2122,14 +2132,18 @@ class Agent:
 
     def _cut_note(self, name: str) -> str:
         """Return what the model is told about a call of `name` cut off at the length cap."""
-        chars = int(self._limits.reply_tokens * CHARS_PER_TOKEN) // 100 * 100
+        chars = answer_chars(self._limits.reply_tokens)
+        op = self._registry.get(name)
+        properties = obj(op.parameters.get("properties")) if op is not None else {}
+        part = part_chars(self._limits.reply_tokens)
+        content_limit = obj(properties.get("content")).get("maxLength")
+        if type(content_limit) is int:
+            part = min(part, content_limit)
         note = (
             f"Error: this call was cut off at the length limit of one answer (about {chars} "
             "characters), so it was not run. Send long text in parts, each in its own call and "
-            f"at most about {chars // 2} characters"
+            f"at most about {part} characters"
         )
-        op = self._registry.get(name)
-        properties = obj(op.parameters.get("properties")) if op is not None else {}
         for key, schema in properties.items():
             if "append" in (obj(schema).get("enum") or []):
                 return f"{note}: the first part as usual, then each next one with {key} append."

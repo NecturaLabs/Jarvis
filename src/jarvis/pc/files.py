@@ -541,15 +541,25 @@ class FileOps:
     """`list_dir`, `read_file` and `write_file` within a `Boundary`.
 
     `max_chars` is the room for one result, so a long file is read in parts the model can ask for.
+    `part_chars` is the most text one write carries, so a long file is written in parts too: one
+    answer of the model holds the call, and a whole file in one would be cut off at its cap.
     `made` remembers the files Jarvis made in its workspace; without it only a new file there
     is written unasked, never a later write to it.
     """
 
-    def __init__(self, boundary: Boundary, *, max_chars: int, made: Ledger | None = None) -> None:
-        """Work within `boundary`, giving at most `max_chars` characters a result."""
+    def __init__(
+        self,
+        boundary: Boundary,
+        *,
+        max_chars: int,
+        part_chars: int = MAX_CONTENT,
+        made: Ledger | None = None,
+    ) -> None:
+        """Work within `boundary`: at most `max_chars` characters a result, `part_chars` a write."""
         super().__init__()
         self._boundary = boundary
         self._max_chars = max_chars
+        self._part_chars = max(1, min(part_chars, MAX_CONTENT))
         self._made = made
 
     # --- reading ------------------------------------------------------------------------------
@@ -971,6 +981,7 @@ class FileOps:
 
     def operations(self) -> list[Operation]:
         """Return `list_dir`, `read_file` and `write_file`."""
+        part = self._part_chars
         path = {
             "type": "string",
             "minLength": 1,
@@ -1028,12 +1039,12 @@ class FileOps:
                     "type": "object",
                     "properties": {
                         "path": path,
-                        "content": {"type": "string", "maxLength": MAX_CONTENT},
+                        "content": {"type": "string", "maxLength": part},
                         "mode": {
                             "type": "string",
                             "enum": ["create", "replace", "append", "edit"],
                         },
-                        "find": {"type": "string", "maxLength": MAX_CONTENT},
+                        "find": {"type": "string", "maxLength": part},
                     },
                     "required": ["path", "content"],
                     "additionalProperties": False,
