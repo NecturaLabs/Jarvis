@@ -39,7 +39,7 @@ from jarvis.audio import (
 from jarvis.levels import levels
 from jarvis.policy import Origin, is_yes
 from jarvis.schedule import reminder_words, scheduled_request
-from jarvis.sentences import split_sentences
+from jarvis.sentences import MAX_SPOKEN_CHARS, split_sentences
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Generator, Iterator, Sequence
@@ -53,7 +53,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-MAX_SPOKEN_CHARS = 2000
 _MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 _MD_EMPHASIS = re.compile(r"(\*{1,3}|`+|(?<!\w)_{1,3})(\S(?:.*?\S)?)\1(?!\w)")
 _MD_LINE_MARK = re.compile(r"^\s{0,3}(?:#{1,6}|[-*+]|\d+[.)]|>)\s+", re.MULTILINE)

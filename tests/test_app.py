@@ -54,12 +54,14 @@ from jarvis.operations import (
     Result,
     UncertainOutcomeError,
     request_scope,
+    validate_args,
 )
 from jarvis.pc.screenshot import ScreenshotOps
 from jarvis.pc.watch import ScreenWatch
 from jarvis.pc.windows import WindowOps
 from jarvis.policy import Origin
 from jarvis.secretfile import ensure_api_key
+from jarvis.sentences import MAX_SPOKEN_CHARS
 from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
@@ -237,6 +239,40 @@ def test_the_chat_prompt_asks_for_markdown_and_the_voice_prompt_for_speech() -> 
     assert "spoken" in voice
     assert "read_skill" in chat
     assert "web-research" in voice
+
+
+def test_a_spoken_reply_can_repeat_a_word_exactly_without_model_generated_copies() -> None:
+    config = Config()
+    limits = channel_limits(config, "voice")
+    registry = channel_registry(config, [], limits, "voice")
+    expected = " ".join(["hello"] * 100)
+    model = _Model([_tool(NO_ACTION, {"reply": "hello", "repeat": 100}), _reply("Too short.")])
+    agent = Agent(
+        model, registry, system_prompt(config, "voice"), AuditLog(None), {}, limits=limits
+    )
+    spoken: list[str] = []
+
+    reply = agent.handle(
+        "Say hello a hundred times",
+        Hooks(confirm=lambda _question: False, speak=spoken.append),
+        Origin.PC_AUDIO,
+    )
+
+    assert reply == expected
+    assert " ".join(spoken) == expected
+    assert len(model.seen) == 1
+
+
+def test_expanded_spoken_repetitions_obey_the_reply_character_limit() -> None:
+    config = Config()
+    limits = channel_limits(config, "voice")
+    op = channel_registry(config, [], limits, "voice").get(NO_ACTION)
+    assert op is not None
+    max_chars = min(op.parameters["properties"]["reply"]["maxLength"], MAX_SPOKEN_CHARS)
+    args = validate_args(op, {"reply": "one", "repeat": (max_chars + 1) // 4 + 1})
+
+    with pytest.raises(OperationError, match="spoken reply limit"):
+        op.run(args)
 
 
 def test_a_read_page_reaches_the_model_at_its_configured_length() -> None:

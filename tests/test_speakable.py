@@ -1,6 +1,7 @@
 import pytest
 
-from jarvis.voice import MAX_SPOKEN_CHARS, speakable, spoken_question
+from jarvis.sentences import MAX_SPOKEN_CHARS
+from jarvis.voice import speakable, spoken_question
 
 
 @pytest.mark.parametrize(

@@ -8,6 +8,8 @@ a list number ("1.") does not end a sentence.
 
 import re
 
+MAX_SPOKEN_CHARS = 2000
+
 _END = re.compile(r"(?<=[.!?])\s+|\n+")
 _WORD_BEFORE = re.compile(r"(\S+)$")
 _ABBREVIATIONS = frozenset(

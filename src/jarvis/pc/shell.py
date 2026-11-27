@@ -192,7 +192,7 @@ _SYMBOLS = {
     "{": "open brace",
     "}": "close brace",
 }
-MAX_SPELLED = 1500  # within what a spoken question keeps (`voice.MAX_SPOKEN_CHARS`)
+MAX_SPELLED = 1500  # within what a spoken question keeps (`sentences.MAX_SPOKEN_CHARS`)
 
 
 def spelled(command: str) -> str:

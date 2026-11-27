@@ -454,6 +454,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   already matched to PC audio.
 - With barge-in enabled, a wake phrase from a named PC app can start a request while Jarvis
   is speaking. Jarvis stops the reply once it captures the new request.
+- A request to say a phrase a specific number of times uses the speaking voice. Jarvis
+  expands the count within the spoken reply limit, so the model writes the phrase once.
 - With PC audio on, Jarvis no longer tells you it cannot hear it: the voice prompt says whose audio it hears and
   that a request from there is that person's, not yours. With it off, the prompt says Jarvis cannot hear it.
 - A follow-up on something Jarvis looked up no longer sends it searching all over again. Each remembered

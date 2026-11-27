@@ -56,6 +56,7 @@ from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
 from jarvis.router import toolbox_section, use_tools_operation
 from jarvis.schedule import JobStore, ScheduleOps
+from jarvis.sentences import MAX_SPOKEN_CHARS
 from jarvis.services import StrataSetupError, read_run_config, reads_pictures
 from jarvis.sing.engines import singer_for
 from jarvis.sing.ops import SingOps
@@ -197,32 +198,54 @@ def switch_operation(config: Config, *, coding: bool) -> Operation:
     )
 
 
-def no_action_operation(max_reply_chars: int = MAX_REPLY_CHARS) -> Operation:
+def no_action_operation(
+    max_reply_chars: int = MAX_REPLY_CHARS, *, allow_repeat: bool = False
+) -> Operation:
     """Return the explicit "nothing to do" choice the model makes for questions and chat.
 
-    Its `reply` is the model's own answer, so a greeting or a question takes one model call.
+    Its `reply` is the model's own answer. Voice replies can repeat a phrase by count.
     """
+    properties: dict[str, Any] = {
+        "reply": {
+            "type": "string",
+            "maxLength": max_reply_chars,
+            "description": "Your reply to the owner, as they will hear or read it.",
+        }
+    }
+    repetition_limit = min(max_reply_chars, MAX_SPOKEN_CHARS)
+    if allow_repeat:
+        properties["repeat"] = {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": repetition_limit,
+            "description": "How many times to say reply when explicitly asked to repeat aloud.",
+        }
+
+    def answer(args: dict[str, Any]) -> Result:
+        reply = str(args.get("reply", ""))
+        count = int(args.get("repeat", 1)) if allow_repeat else 1
+        if count > 1:
+            reply = reply.strip()
+            if (len(reply) + 1) * count - 1 > repetition_limit:
+                msg = f"The spoken reply limit is {repetition_limit} characters including repeats."
+                raise OperationError(msg)
+            reply = " ".join([reply] * count)
+        return Result("No action taken. Answer the owner briefly.", spoken=reply)
+
+    repeat = "repeat playback" if allow_repeat else "repeat"
     return Operation(
         "no_action",
         "Call this when the request needs no tool (a greeting, chat, or a request you can't do), "
         "with your spoken answer in `reply`, or to answer from what earlier tools returned. Never "
         "use it when the owner asks you to play, pause, resume, skip, change volume, shuffle, "
-        "repeat, queue or like something, or for the time, the weather or facts you would have "
+        f"{repeat}, queue or like something, or for the time, the weather or facts you would have "
         "to look up.",
         {
             "type": "object",
-            "properties": {
-                "reply": {
-                    "type": "string",
-                    "maxLength": max_reply_chars,
-                    "description": "Your reply to the owner, as they will hear or read it.",
-                }
-            },
+            "properties": properties,
             "additionalProperties": False,
         },
-        lambda args: Result(
-            "No action taken. Answer the owner briefly.", spoken=str(args.get("reply", ""))
-        ),
+        answer,
         side_effect=False,
         spoken_summary=lambda _args: "do nothing",
     )
@@ -841,7 +864,9 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
         *(SingOps(singer_for(config)).operations() if channel == "voice" else []),
         *([think] if (think := think_operation(limits)) is not None else []),
         *([switch_operation(config, coding=coding)] if switches_itself(config, channel) else []),
-        no_action_operation(limits.reply_tokens * CHARS_PER_REPLY_TOKEN),
+        no_action_operation(
+            limits.reply_tokens * CHARS_PER_REPLY_TOKEN, allow_repeat=channel == "voice"
+        ),
     ]
     ops = [op for op in ops if op.name not in off]
     if limits.tools == "routed":
