@@ -33,6 +33,7 @@ _NEEDS_QUOTES = re.compile(r"""[\s"'\\;]""")
 # A quantisation tag ending a model's name, as GGUF files and Strata write it (`-iq2_xs`, `-q8_0`,
 # `-ud-q4_k_xl`, `-sq-15`, `-nvfp4-qad`), with any `-v31` revision after it.
 _QUANT_TAG = re.compile(r"-(?:ud-)?(?:i?q\d\w*|sq-\d+|nvfp4(?:-[a-z]+)*)(?:-v\d+)?$", re.IGNORECASE)
+_TITLE_CHARS = 40  # a longer model name is cut in a model list
 # The memory check runs as an `ExecCondition=`, where any exit of 1 to 254 skips the start. This
 # wrapper lets only the check's own refusal (`RAM_SHORT_EXIT`) through: a check that is missing,
 # will not run or crashes (a moved venv exits 203) must not keep the model server from starting.
@@ -244,6 +245,11 @@ def _reader(config: Config) -> Path:
     return found[-1]
 
 
+def _one_line(text: str) -> str:
+    """Return `text` on one line: no unprintable characters, single spaces."""
+    return " ".join("".join(c if c.isprintable() else " " for c in text).split())
+
+
 @dataclass(frozen=True, slots=True)
 class RunConfig:
     """Strata's own run config for a model (`strata-<model>.json`, written by `strata launch`).
@@ -284,8 +290,9 @@ class RunConfig:
 
     @property
     def name(self) -> str:
-        """The model's name in Strata."""
-        return str(self.data.get("model_name", ""))
+        """The model's name in Strata, as one clean line ("" when it names none)."""
+        raw = self.data.get("model_name")
+        return _one_line(raw) if isinstance(raw, str) else ""
 
     @property
     def picture_reader(self) -> Path | None:
@@ -323,7 +330,7 @@ def read_run_config(config: Config) -> RunConfig:
         raise StrataSetupError(msg)
     try:
         loaded: object = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:  # the last: nested too deeply
         msg = f"cannot read the Strata run config {path}: {exc}"
         raise StrataSetupError(msg) from exc
     data = cast("dict[str, object]", loaded) if isinstance(loaded, dict) else {}
@@ -388,21 +395,25 @@ def model_name(config: Config) -> str:
         return f"no model ({exc})"
 
 
-def model_title(config: Config) -> str:
+def model_title(config: Config) -> str | None:
     """Return the served model's name as a model list shows it, short enough not to be cut off.
 
-    The quantisation tag goes and each word is capitalised (`some-model-iq2_xs` is `Some Model`).
-    With a run config that cannot be read, or that names no model, it is `model_name`.
+    The quantisation tag goes and each word is capitalised (`some-model-iq2_xs` is `Some Model`);
+    past `_TITLE_CHARS` the name ends in an ellipsis. A model with no name is "Unnamed model".
+    None when the run config cannot be used (`model_name` says why).
     """
     if config.strata.mode == "remote":
-        name = config.model.model
+        name = _one_line(config.model.model)
     else:
         try:
             name = read_run_config(config).name
         except StrataSetupError:
-            return model_name(config)
-    words = _QUANT_TAG.sub("", name).split("-")
-    return " ".join(w[:1].upper() + w[1:] for w in words if w) or model_name(config)
+            return None
+    words = re.split(r"[-\s]+", _QUANT_TAG.sub("", name))
+    title = " ".join(w[:1].upper() + w[1:] for w in words if w) or "Unnamed model"
+    if len(title) <= _TITLE_CHARS:
+        return title
+    return title[: _TITLE_CHARS - 1].rstrip() + "\N{HORIZONTAL ELLIPSIS}"
 
 
 def learns_experts(config: Config, run: RunConfig) -> bool:
@@ -581,24 +592,46 @@ def _write_if_changed(path: Path, text: str) -> None:
     write_atomic(path, text)
 
 
-def seed_expert_profile(config: Config) -> None:
-    """Start the learned expert profile from a copy of the run config's own, if there is none.
+def due_expert_seed(config: Config) -> tuple[Path, Path] | None:
+    """Return the routing profile to copy and the learned file to start with it, if one is due.
 
-    Nothing is done when the engine does not learn Jarvis's experts (`learns_experts`). With the
-    copy in place the Strata profile never has to change once the engine has learned.
+    None when the engine does not learn Jarvis's experts (`learns_experts`) or has its learned
+    file already.
 
     Raises:
-        StrataSetupError: the run config cannot be used, or its routing profile is not an
+        StrataSetupError: the run config cannot be used, or the routing profile to copy is not an
             absolute file.
     """
     run = read_run_config(config)
     seed = run.expert_profile
+    if seed is None or not learns_experts(config, run):
+        return None
     learned = expert_profile_file(config)
-    if learns_experts(config, run) and seed is not None and not learned.is_file():
-        if not (seed.is_absolute() and seed.is_file()):
-            msg = f"the run config's --expert-profile {seed} is not a file Jarvis can start from"
-            raise StrataSetupError(msg)
+    if learned.is_file():
+        return None
+    if not (seed.is_absolute() and seed.is_file()):
+        msg = f"the run config's --expert-profile {seed} is not a file Jarvis can start from"
+        raise StrataSetupError(msg)
+    return seed, learned
+
+
+def seed_expert_profile(config: Config) -> None:
+    """Start the learned expert profile from a copy of the run config's own, if that is due.
+
+    With the copy in place the Strata profile never has to change once the engine has learned.
+
+    Raises:
+        StrataSetupError: as `due_expert_seed`, or the copy cannot be made.
+    """
+    due = due_expert_seed(config)
+    if due is None:
+        return
+    seed, learned = due
+    try:
         write_atomic_bytes(learned, seed.read_bytes())
+    except OSError as exc:
+        msg = f"cannot start the learned expert profile {learned} from {seed}: {exc}"
+        raise StrataSetupError(msg) from exc
 
 
 def write_strata_profile(config: Config) -> Path:

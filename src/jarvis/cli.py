@@ -713,8 +713,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
     if args.coding_run_config is not None and updated.strata.run_config != Path():
+        coding = modes.effective(updated, "coding")
         try:  # a coding run config that cannot be served is refused before anything is saved
-            services.strata_profile(modes.effective(updated, "coding"))
+            services.strata_profile(coding)
+            services.due_expert_seed(coding)
         except config.ConfigError as exc:
             print(f"jarvis: {exc}", file=sys.stderr)
             return 2
@@ -748,14 +750,23 @@ def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
 def _write_mode_profiles(cfg: config.Config) -> tuple[config.Config, Path]:
     """Write the Strata profile for the mode Jarvis is in; return that mode's config and the file.
 
-    The learned expert profile of every mode's model is started too, so the doctor finds the
-    other one ready before the first switch to it.
+    The other mode's learned expert profile is started too, so the doctor finds it ready before
+    the first switch. When it cannot be, this says why and goes on.
     """
-    served = modes.effective(cfg, modes.current())  # a setup in coding mode keeps it
+    current = modes.current()
+    served = modes.effective(cfg, current)  # a setup in coding mode keeps it
     profile = services.write_strata_profile(served)
     for mode in modes.MODES:
-        services.seed_expert_profile(modes.effective(cfg, mode))
+        if mode != current:
+            _seed_other_mode(cfg, mode)
     return served, profile
+
+
+def _seed_other_mode(cfg: config.Config, mode: modes.Mode) -> None:
+    try:
+        services.seed_expert_profile(modes.effective(cfg, mode))
+    except config.ConfigError as exc:
+        print(f"jarvis: {mode} mode's expert profile was not started: {exc}", file=sys.stderr)
 
 
 def _setup_workspace(cfg: config.Config) -> None:
@@ -1416,12 +1427,9 @@ def _model_choices() -> dict[str, tuple[str, str]]:
     """
     try:
         cfg = config.load()
-    except config.ConfigError:
-        return {}
-    return {
-        mode: (services.model_title(modes.effective(cfg, mode)), modes.PURPOSE[mode])
-        for mode in modes.MODES
-    }
+    except config.ConfigError, OSError, ValueError, RecursionError:
+        return {}  # typing a command must not end the chat, whatever the file holds
+    return {mode: (modes.list_name(cfg, mode), modes.PURPOSE[mode]) for mode in modes.MODES}
 
 
 def _at_effort(section: config.ChatConfig, level: str) -> config.ChatConfig:
@@ -2582,8 +2590,7 @@ def finish_update() -> int:
             services.write_strata_profile(cfg)
             services.write_strata_unit(cfg, services.key_file(cfg))
         case _:
-            served = modes.effective(cfg, modes.current())
-            services.write_strata_profile(served)
+            served, _profile = _write_mode_profiles(cfg)
             services.write_units(served, paths.strata_key_file())
     checks, _notes = essential_checks(cfg)
     return int(bool(print_checks([check for check in checks if not check[0]])))
@@ -2794,7 +2801,8 @@ def model_report(cfg: config.Config) -> list[str]:
     for mode in modes.MODES:
         served = modes.effective(cfg, mode)
         mark = "*" if mode == state.mode else " "
-        shown = f"{services.model_title(served)}, {served.strata.context:,} tokens of context"
+        name = services.model_title(served) or services.model_name(served)
+        shown = f"{name}, {served.strata.context:,} tokens of context"
         lines.extend((f"{mark} {mode}: {shown}", f"    {modes.PURPOSE[mode]}"))
     if not modes.own_model(cfg):
         lines.append(

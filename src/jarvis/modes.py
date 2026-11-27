@@ -36,8 +36,8 @@ type Mode = Literal["normal", "coding"]
 MODES: tuple[Mode, ...] = ("normal", "coding")
 # What each mode is for, as a model list shows it under the model's name.
 PURPOSE: dict[Mode, str] = {
-    "normal": "Everyday use: questions, the web, music and the PC",
-    "coding": "Programming work: code, tools and long tasks",
+    "normal": "Everyday questions, web, music, PC",
+    "coding": "Programming, tools and long tasks",
 }
 type By = Literal["owner", "model", "idle"]
 
@@ -197,15 +197,21 @@ def model_name(config: Config, mode: Mode) -> str:
     return services.model_name(effective(config, mode))
 
 
-def model_titles(config: Config) -> dict[Mode, str]:
-    """Return each mode's model as a model list names it (`services.model_title`).
+def list_name(config: Config, mode: Mode) -> str:
+    """Return what a model list calls `mode`'s model, in a few words even when it is not ready."""
+    return services.model_title(effective(config, mode)) or f"{mode.capitalize()} model not ready"
 
-    When both modes' models come out with one name, the mode follows it, so they can be told apart.
+
+def model_titles(config: Config) -> dict[Mode, str]:
+    """Return each mode's `list_name`, for a list that may show nothing else about the mode.
+
+    When both come out the same, the mode goes first, so a name that is cut off still tells
+    them apart.
     """
-    names: dict[Mode, str] = {mode: services.model_title(effective(config, mode)) for mode in MODES}
+    names: dict[Mode, str] = {mode: list_name(config, mode) for mode in MODES}
     if len(set(names.values())) == len(names):
         return names
-    return {mode: f"{name} \N{MIDDLE DOT} {mode.capitalize()}" for mode, name in names.items()}
+    return {mode: f"{mode.capitalize()} \N{MIDDLE DOT} {name}" for mode, name in names.items()}
 
 
 def mark_used(now: float | None = None) -> None:

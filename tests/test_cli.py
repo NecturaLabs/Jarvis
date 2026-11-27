@@ -6,6 +6,7 @@ import json
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import tomllib
@@ -401,9 +402,55 @@ def test_acp_adds_the_mode_when_both_modes_models_share_a_name(
     acp.run(monkeypatch)
 
     assert [m.name for m in acp.models] == [
-        "Flash \N{MIDDLE DOT} Normal",
-        "Flash \N{MIDDLE DOT} Coding",
+        "Normal \N{MIDDLE DOT} Flash",  # the mode first, so a cut name still tells them apart
+        "Coding \N{MIDDLE DOT} Flash",
     ]
+
+
+def test_acp_names_a_mode_whose_run_config_cannot_be_used_in_a_few_words(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _own_coding_model(tmp_path)
+    (tmp_path / "coder.json").unlink()
+    acp = _Acp()
+    acp.run(monkeypatch)
+
+    assert [m.name for m in acp.models] == ["Flash", "Coding model not ready"]
+    assert [m.description for m in acp.models] == list(modes.PURPOSE.values())
+
+
+def test_acp_tells_the_modes_apart_before_any_run_config_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    acp = _Acp()
+    acp.run(monkeypatch)
+
+    assert [m.name for m in acp.models] == ["Normal model not ready", "Coding model not ready"]
+
+
+def test_the_chat_model_menu_names_a_broken_run_config_in_a_few_words(tmp_path: Path) -> None:
+    _own_coding_model(tmp_path)
+    (tmp_path / "coder.json").write_bytes(b"[" * 100_000)
+
+    choices = cli._model_choices()  # pyright: ignore[reportPrivateUsage] - what the chat's menu is given
+
+    assert choices["coding"] == ("Coding model not ready", modes.PURPOSE["coding"])
+
+
+@pytest.mark.parametrize(
+    "written", [None, b"\xff", b"= not toml"], ids=["unreadable", "not-utf-8", "not-toml"]
+)
+def test_the_chat_model_menu_offers_the_modes_alone_while_the_config_cannot_be_read(
+    written: bytes | None,
+) -> None:
+    path = paths.config_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if written is None:
+        path.mkdir()  # reading it fails with an OSError
+    else:
+        path.write_bytes(written)
+
+    assert cli._model_choices() == {}  # pyright: ignore[reportPrivateUsage] - what the chat's menu is given
 
 
 def test_acp_coding_lists_coding_mode_first(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1026,6 +1073,68 @@ def test_setup_starts_each_modes_learned_expert_profile(
     for mode in modes.MODES:
         learned = services.expert_profile_file(modes.effective(cfg, mode))
         assert learned.read_bytes() == generic.read_bytes(), mode
+
+
+def _coder_with_expert_profile(home: Path, seed: str) -> tuple[Path, Path]:
+    """Return a run config and a coding one that starts its experts from `seed`."""
+    run = engine_run_config(home)
+    install_engine(home / "data")
+    data = json.loads(run.read_text(encoding="utf-8"))
+    args = [*data["args"], "--expert-profile", seed]
+    coder = home / "coder.json"
+    coder.write_text(
+        json.dumps(data | {"model_name": "flash-coder", "args": args}), encoding="utf-8"
+    )
+    return run, coder
+
+
+@pytest.mark.parametrize("seed", ["routing.bin", "HOME/models"], ids=["relative", "a-folder"])
+def test_setup_refuses_a_coding_model_whose_expert_profile_cannot_start_before_saving(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], seed: str
+) -> None:
+    _stub_subprocess(monkeypatch)
+    run, coder = _coder_with_expert_profile(home, seed.replace("HOME", str(home)))
+    config.save(config.Config(strata=config.StrataConfig(vram_reserve_mib=12000)))
+    before = paths.config_file().read_text(encoding="utf-8")
+
+    assert main(["setup", "--run-config", str(run), "--coding-run-config", str(coder)]) == 2
+
+    assert "--expert-profile" in capsys.readouterr().err
+    assert paths.config_file().read_text(encoding="utf-8") == before
+    assert not services.strata_profile_file().exists()
+
+
+def test_setup_goes_on_when_only_the_other_modes_expert_profile_cannot_start(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_subprocess(monkeypatch)
+    run, coder = _coder_with_expert_profile(home, "routing.bin")
+    strata = config.StrataConfig(run_config=run, coding_run_config=coder, vram_reserve_mib=12000)
+    config.save(config.Config(strata=strata))
+
+    assert main(["setup"]) == 0
+
+    assert "coding mode's expert profile was not started" in capsys.readouterr().err
+    assert (services.unit_dir() / services.STRATA_UNIT).is_file()
+
+
+def test_the_update_health_step_starts_each_modes_expert_profile(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_subprocess(monkeypatch)
+    seed = home / "routing.bin"
+    seed.write_bytes(b"routing")
+    run, coder = _coder_with_expert_profile(home, str(seed))
+    strata = config.StrataConfig(run_config=run, coding_run_config=coder, vram_reserve_mib=12000)
+    config.save(config.Config(strata=strata))
+
+    def coding_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[str]]:
+        return cli._coding_checks(cfg), []  # pyright: ignore[reportPrivateUsage] - the part under test
+
+    monkeypatch.setattr(cli, "essential_checks", coding_checks)
+    monkeypatch.setattr(sys, "argv", ["jarvis", "health"])
+
+    assert cli.finish_update() == 0
 
 
 def test_setup_with_enable_clears_a_failed_state_before_starting_the_units(

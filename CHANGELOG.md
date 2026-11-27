@@ -318,10 +318,17 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
-- T3 Code's model menu lists each of Jarvis's modes by its model's short name (the run config's name
-  without the quantisation tag), which fits the menu; the full name with the mode was cut off. What each mode
-  is for is the model's description, which T3 Code does not show.
-- `jarvis setup` starts the learned expert file of both modes' models, so `jarvis doctor` no longer fails
+- T3 Code's model menu titles each of Jarvis's modes with its model's short name (the run config's name
+  without the quantisation tag, at most 40 characters, led by the mode when both come out the same), because
+  the full name with the mode was cut off. A mode whose run config cannot be used is titled "Coding model not
+  ready" (or "Normal model not ready") instead of the error, which `jarvis model` still gives in full. T3 Code
+  does not show the description, which says what the mode is for; the chat's `/model` menu does.
+- `jarvis update` starts the learned expert profile of both modes' models before its health check, so an
+  install with a coding model of its own is no longer rolled back for it. `jarvis setup` refuses a coding
+  model whose expert profile cannot be started before it saves anything, and says so when only the other
+  mode's cannot.
+- Typing `/model ` in the chat no longer ends it when the config cannot be read.
+- `jarvis setup` starts the learned expert profile of both modes' models, so `jarvis doctor` no longer fails
   for the coding model until the first switch to it.
 - The model no longer switches modes, either way, to answer a question about them. A needless switch
   restarts the model server.

@@ -700,12 +700,63 @@ def test_a_models_title_is_its_name_without_the_quantisation_tag(
     assert services.model_title(_config(tmp_path, run_config=run)) == title
 
 
-def test_a_model_without_a_usable_run_config_is_titled_with_what_is_wrong(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "written",
+    [None, b"{", b"\xff", b"[" * 100_000],
+    ids=["missing", "not-json", "not-utf-8", "nested-too-deep"],
+)
+def test_a_model_without_a_usable_run_config_has_no_title(
+    tmp_path: Path, written: bytes | None
 ) -> None:
-    cfg = _config(tmp_path, run_config=tmp_path / "gone.json")
+    run = tmp_path / "other.json"
+    if written is not None:
+        run.write_bytes(written)
+    cfg = _config(tmp_path, run_config=run)
 
-    assert services.model_title(cfg) == services.model_name(cfg)
+    assert services.model_title(cfg) is None
+    assert services.model_name(cfg).startswith("no model (")
+
+
+def _named(tmp_path: Path, name: object) -> Config:
+    """Return a config on a run config that calls its model `name`."""
+    run = engine_run_config(tmp_path)
+    data = json.loads(run.read_text(encoding="utf-8")) | {"model_name": name}
+    run.write_text(json.dumps(data), encoding="utf-8")
+    return _config(tmp_path, run_config=run)
+
+
+def test_a_models_name_is_one_line_with_no_control_characters(tmp_path: Path) -> None:
+    cfg = _named(tmp_path, "flash\x1b]0;x\x07\r\nnext-iq2_xs")
+
+    assert services.model_name(cfg) == "flash ]0;x next-iq2_xs"
+    assert services.model_title(cfg) == "Flash ]0;x Next"
+
+
+@pytest.mark.parametrize("name", [None, "", "   ", 7, "-iq2_xs"])
+def test_a_run_config_that_names_no_model_is_titled_unnamed(tmp_path: Path, name: object) -> None:
+    assert services.model_title(_named(tmp_path, name)) == "Unnamed model"
+
+
+def test_an_overlong_title_is_cut_with_an_ellipsis(tmp_path: Path) -> None:
+    title = services.model_title(_named(tmp_path, "-".join(["flash"] * 30)))
+
+    assert title is not None
+    assert len(title) <= 40
+    assert title.endswith("\N{HORIZONTAL ELLIPSIS}")
+
+
+def test_a_learned_profile_that_cannot_be_written_is_a_setup_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _ = _with_routing_profile(tmp_path)
+
+    def full(_path: Path, _data: bytes) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(services, "write_atomic_bytes", full)
+
+    with pytest.raises(services.StrataSetupError, match="No space left"):
+        services.seed_expert_profile(cfg)
 
 
 def test_the_learned_expert_profile_is_kept_per_model(tmp_path: Path) -> None:

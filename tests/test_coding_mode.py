@@ -598,6 +598,20 @@ def test_jarvis_model_shows_the_mode_and_each_modes_model(
     assert lines[coding + 1] == f"    {modes.PURPOSE['coding']}"
 
 
+@pytest.mark.usefixtures("stopped_server")
+def test_jarvis_model_says_in_full_why_a_modes_model_cannot_be_named(
+    installed: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    broken = installed.strata.coding_run_config
+    broken.unlink()
+
+    assert main(["model"]) == 0
+
+    assert (
+        f"coding: no model (cannot read the Strata run config {broken}" in capsys.readouterr().out
+    )
+
+
 @pytest.mark.usefixtures("installed")
 def test_jarvis_model_switches_and_audits_it(
     stopped_server: list[tuple[str, ...]], capsys: pytest.CaptureFixture[str]

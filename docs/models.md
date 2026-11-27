@@ -83,13 +83,14 @@ any of these models.
   not measured.
 - **To set it up:** `strata install -- --family coder --model IQ1_M --vision cpu --yes --no-start` downloads
   and prepares it without loading it (`--gguf-dir <folder>` for files already downloaded); `strata launch
-  --family coder --model iq1_m` does the same and then serves it until stopped. Then run `jarvis setup
-  --coding-run-config <the strata-<model>.json it wrote>`, and `jarvis model coding` to switch. Run the install
-  outside any memory-limited scope: Strata sizes the model from the memory limit it sees, and under an 8 GB
-  limit it set this model up to read its experts from the disk.
+  --family coder --model iq1_m` does the same and then serves it until stopped. Run the install outside any
+  memory-limited scope: Strata sizes the model from the memory limit it sees, and under an 8 GB limit it set
+  this model up to read its experts from the disk. Then run `jarvis setup
+  --coding-run-config <the strata-<model>.json it wrote>`, and `jarvis model coding` to switch.
 - **Run config on the reference machine:** Strata's defaults for a 20 GB card and 60 GB of RAM: a 128K
   context (Jarvis serves `coding.context`) and `--kv-resident 32768`, which keeps 32K of context cells on the
-  card and the rest in pinned RAM (1.8 GB at 128K). `coding.kv_resident` replaces that number.
+  card with the whole context also in pinned RAM (1.8 GB at 128K). A non-zero `coding.kv_resident` (or
+  `strata.kv_resident`, when the coding key is unset) replaces that number; `0` leaves it.
 
 ### Context size
 

@@ -19,6 +19,7 @@ from textual import events
 from textual.containers import VerticalScroll
 from textual.widgets import Markdown, OptionList, Static
 
+from jarvis import modes
 from jarvis.agent import Agent, ContextUse, Declined, Hooks, NoReason
 from jarvis.announce import Announcement
 from jarvis.app import no_action_operation
@@ -1439,26 +1440,29 @@ def test_model_shows_the_mode_and_each_modes_model() -> None:
     _run(test, app)
 
 
-def test_the_model_menu_shows_a_long_model_name_whole_with_its_use() -> None:
+def test_the_model_menu_shows_each_models_name_and_use_whole_in_80_columns() -> None:
+    named = {"normal": "Qwen3.8 Flash Next", "coding": "Qwen3.8 Flash Next Coder"}
     services = Services(
         model_report=list,
         switch_model=lambda _to, _say: "",
-        model_choices=lambda: {
-            "normal": ("Qwen3.8 Flash Next", "Everyday use"),
-            "coding": ("Qwen3.8 Flash Next Coder", "Programming work"),
-        },
+        model_choices=lambda: {mode: (named[mode], modes.PURPOSE[mode]) for mode in modes.MODES},
     )
     app = _app(session=FakeSession(), services=services)
 
-    async def test(pilot: Pilot[None]) -> None:
-        await pilot.press(*"/model", "space")
-        menu = app.query_one("#menu", OptionList)
-        await _until(pilot, lambda: menu.display and menu.option_count == 2)
-        rows = [str(menu.get_option_at_index(i).prompt) for i in range(menu.option_count)]
-        assert "Qwen3.8 Flash Next " in rows[0]
-        assert "Qwen3.8 Flash Next Coder   coding \N{MIDDLE DOT} Programming work" in rows[1]
+    async def body() -> None:
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press(*"/model", "space")
+            menu = app.query_one("#menu", PointerList)
+            await _until(pilot, lambda: menu.display and menu.option_count == 2)
+            await pilot.pause(0.05)
+            rows = [
+                "".join(seg.text for seg in menu.render_line(y)) for y in range(menu.size.height)
+            ]
+            for mode in modes.MODES:
+                use = f"{mode} \N{MIDDLE DOT} {modes.PURPOSE[mode]}"
+                assert any(f"{named[mode]} " in row and use in row for row in rows), rows
 
-    _run(test, app)
+    asyncio.run(body())
 
 
 def test_model_switches_the_mode_and_says_what_is_loading() -> None:

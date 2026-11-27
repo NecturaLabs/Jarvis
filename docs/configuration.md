@@ -342,7 +342,7 @@ and listens on `127.0.0.1`. Remote and backend setup are described below.
 | `allow_low_ram` | `false` | `true` or `false` | Load anyway when the memory available is less than the model needs plus `min_free_ram_mib`. For a PC with swap on a disk or a reason the owner knows better; with it on, a load beside a game can take the memory the game runs in. Set it, run `jarvis start`, and turn it off again. |
 | `speed_projection` | `true` | `true` or `false` | Keep a control vector the run config loads, such as Strata's experimental speed projection, which makes the model decline far fewer requests ([The speed projection](#the-speed-projection)). Off, Jarvis's profile leaves the control-vector options out, so the model declines as it was trained to. Jarvis never adds a vector itself. |
 | `vram_reserve_mib` | `0` (unset) | 0, or 100 to 65536 | VRAM in MiB the engine leaves free for other programs, passed as `--vram-reserve-mib`. `0` passes nothing, so Strata's own default (700) applies. For an engine whose expert cache fills the card (`--expert-cache auto`) it is the VRAM limit and must be set: `jarvis setup` refuses such a run config without it, and `jarvis doctor` fails "VRAM left for games". On a 20 GB card, 12000 holds Qwen3.8-Flash-Next at about 8 GiB ([models.md](models.md)). A card with at most about 8 GB of VRAM cannot start with a reserve (Strata's tuner never tries one there). |
-| `kv_resident` | `0` (all in VRAM) | 0, or 20480 to 262144 | Context cells kept in VRAM, passed as `--kv-resident`. Set, the whole context also lives in pinned RAM and only this many cells stay on the card, so `context` can grow past them without more VRAM; the VRAM saved goes to expert slots. Pinned RAM counts against `memory_max`. A `context` of this many cells or fewer is not streamed. Reading past the cells on the card is slower; measure before raising `context` far. |
+| `kv_resident` | `0` (the run config's own; without one, all in VRAM) | 0, or 20480 to 262144 | Context cells kept in VRAM, passed as `--kv-resident`. Set, the whole context also lives in pinned RAM and only this many cells stay on the card, so `context` can grow past them without more VRAM; the VRAM saved goes to expert slots. Pinned RAM counts against `memory_max`. A `context` of this many cells or fewer is not streamed. Reading past the cells on the card is slower; measure before raising `context` far. |
 | `learn_experts` | `true` | `true` or `false` | For an engine whose run config starts from a routing profile (`--expert-profile`): the engine saves which experts Jarvis's requests use to `~/.local/state/jarvis/strata-expert-profile-<model>.bin` (one file per model, so one model's profile never starts another) (when it stops, and every 10 minutes between requests) and starts from that file next time, so those experts are on the card from the first request. Nothing is deleted from the model. `jarvis setup` starts the file once from a copy of the run config's own profile and never overwrites what the engine learned; `jarvis doctor` fails when it is missing or empty. A routing profile the run config names by a relative path is refused. |
 | `pictures` | `true` | `true` or `false` | Read pictures with the reader the run config names: Strata's reader beside the main engine runs on the processor, in RAM and no VRAM, from the first picture until `vision_idle_s` without one; Inkling's engine reads them itself. `false` drops the reader. A run config without a reader reads no pictures either way. |
 | `vision_idle_s` | `120` | 10 to 86400 | Seconds without a picture before the picture reader stops. |
@@ -558,7 +558,7 @@ programming work: more model calls, longer replies, more thinking, a larger cont
 added to the prompt, and, when you set one, a model of its own.
 
 - **Switching.** `jarvis model` shows the mode, whether the model is loaded, and each mode's model by its
-  short name with what the mode is for; the chat's `/model` menu lists the same. `jarvis model
+  short name with what the mode is for; the chat's `/model` menu lists each mode's model and purpose too. `jarvis model
   coding` and `jarvis model normal` switch, and so does `/model` in the chat. Where `auto` is on, the model
   switches by itself when a request is programming work, and back when you say that work is over
   (`switch_model`; switch it off like any tool with `jarvis tools switch_model off`). After
@@ -587,7 +587,7 @@ the served model on the backend.
 | `context` | `65536` | The model server's context in coding mode (`strata.context` in normal mode) |
 | `temperature` | unset | The sampling temperature in coding mode; unset: `model.temperature` |
 | `vram_reserve_mib`, `expert_vram_gib`, `memory_max` | unset | The same keys of `[strata]`, for coding mode only; unset (`0`, absent, `""`): `[strata]`'s |
-| `kv_resident`, `keep_in_ram`, `pictures`, `effort_position` | unset | The same keys of `[strata]`, for coding mode only; unset (absent): `[strata]`'s. Here `0` and `""` count as set: `kv_resident = 0` keeps the whole context in VRAM in coding mode. A switch that changes one restarts the model server. Pinned RAM from a larger `kv_resident` counts against `memory_max`, so raise that too |
+| `kv_resident`, `keep_in_ram`, `pictures`, `effort_position` | unset | The same keys of `[strata]`, for coding mode only; unset (absent): `[strata]`'s. Here `0` and `""` count as set: `kv_resident = 0` leaves the run config's own, whatever `[strata]` sets. A switch that changes one restarts the model server. Pinned RAM from a larger `kv_resident` counts against `memory_max`, so raise that too |
 | `reasoning_budget_tokens` | `4096` | Strata's cap on thinking in coding mode |
 | `tools_off` | `[]` | Tools not offered in coding mode |
 | `write_roots` | `[]` | Folders Jarvis may also write in coding mode, besides `files.write_roots` |
@@ -1100,12 +1100,13 @@ jobs in it and refuses to add one, rather than writing over the newer jobs. Why 
 
 ## `[acp]`: Jarvis in T3 Code
 
-`jarvis acp` ([ADR 0023](adr/0023-acp-front-end.md)) is what T3 Code starts for a Jarvis provider. The short
-name is the run config's `model_name` without its quantisation tag, each word capitalised
-(`some-model-iq2_xs` is `Some Model`); the mode follows it when both modes' names come out the same. T3 Code
-shows the title and not the description. It lists
+`jarvis acp` ([ADR 0023](adr/0023-acp-front-end.md)) is what T3 Code starts for a Jarvis provider. It lists
 the normal and coding modes as two models, each titled with its model's short name and described by what the
-mode is for, and a
+mode is for (T3 Code shows only the title). The short name is the run config's `model_name` (in a remote
+client, `model.model`) without its quantisation tag, each word capitalised (`some-model-iq2_xs` is
+`Some Model`; at most 40 characters, control characters dropped); `Normal ·` or `Coding ·` leads it when both
+modes' names come out the same. A mode whose run config cannot be used is titled `Coding model not ready` (or
+`Normal model not ready`); `jarvis model` says why. It also offers a
 thinking effort that starts at the mode's `thinking` (`[chat]`, and `[coding.chat]` over it). A session in
 coding mode works as the chat does in coding mode: the coding prompt, `[coding.chat]` over `[chat]`,
 `coding.tools_off` and `coding.write_roots`. `jarvis acp --coding` makes coding mode the first choice. On the first request, the provider reloads the configuration and compares the resolved
