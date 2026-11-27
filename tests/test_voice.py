@@ -576,7 +576,7 @@ def test_a_short_request_heard_before_a_late_wake_word_was_reported_is_kept() ->
 
 def test_a_click_after_the_wake_word_in_pc_audio_is_not_a_request() -> None:
     agent = Agent()
-    pc = PcAudio(SILENCE, WAKE, SPEECH, *[SILENCE] * 5)
+    pc = PcAudio(SILENCE, WAKE, SPEECH, *[SILENCE] * 16)
     mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
 
     _run(_loop(agent, mic, Speaker(), pc=pc))
@@ -625,7 +625,7 @@ def test_a_pc_wake_without_a_request_logs_why_it_was_dropped(
 ) -> None:
     caplog.set_level(logging.INFO, logger="jarvis.voice")
     agent = Agent()
-    pc = PcAudio(SILENCE, WAKE, *after_wake, *[SILENCE] * 3)
+    pc = PcAudio(SILENCE, WAKE, *after_wake, *[SILENCE] * 16)
     mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
 
     _run(_loop(agent, mic, Speaker(), pc=pc))
