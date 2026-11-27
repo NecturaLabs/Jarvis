@@ -39,7 +39,8 @@ default (`audio.listen_to_pc`). When it is on:
 - **Self-triggering and double hearing.** PC-audio frames are skipped while Jarvis is speaking or asking. A wake
   word heard by both the microphone and PC audio within 2 s is treated as PC audio, and a PC-audio request
   within `audio.pc_audio_cooldown_s` (5 s) of the last one is ignored. A PC request starts only while the loop
-  is idle.
+  is idle. If the PC capture has already accepted the wake, the matching microphone wake leaves it running.
+  If the microphone started first, a match persists for that request even when a later PC wake is heard.
 
 - **Capture while the loop moves on.** A PC request is captured through a tap (`VoiceLoop._pc_tap`) that
   passes the frames on but still notes wake words in them. The capture ends as soon as the loop takes another

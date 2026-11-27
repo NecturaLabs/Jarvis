@@ -449,6 +449,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   (no speech, too little speech, the loop busy, paused or still holding another one).
 - PC audio keeps listening through the no-speech window when the wake phrase is still
   audible at detection, so a pause before the request no longer cuts off capture early.
+- If the same wake phrase reaches PC audio and the microphone, Jarvis keeps the direct
+  capture when it started first. A later wake no longer changes the source of a mic request
+  already matched to PC audio.
 - With PC audio on, Jarvis no longer tells you it cannot hear it: the voice prompt says whose audio it hears and
   that a request from there is that person's, not yours. With it off, the prompt says Jarvis cannot hear it.
 - A follow-up on something Jarvis looked up no longer sends it searching all over again. Each remembered

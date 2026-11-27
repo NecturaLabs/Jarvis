@@ -344,6 +344,16 @@ class _PcRequest:
     wake_at: float
 
 
+@dataclass(slots=True)
+class _MicWake:
+    at: float
+    echoed: bool = False
+
+
+def _same_wake(first: float | None, second: float) -> bool:
+    return first is not None and abs(first - second) <= WAKE_DEDUPE_S
+
+
 def capture_utterance(
     frames: Iterator[NDArray[np.int16]],
     vad: _Vad,
@@ -527,6 +537,8 @@ class VoiceLoop:
         self._should_stop: Callable[[], bool] = lambda: False
         self._pc_heard: queue.Queue[_PcRequest] = queue.Queue(maxsize=1)
         self._pc_wake_at: float | None = None  # when PC audio last held the wake word
+        self._pc_capture_at: float | None = None  # wake already being captured directly
+        self._mic_wake: _MicWake | None = None
         self._pc_done_at: float | None = None  # when the last PC-audio request ended
         self._pc_speech = 0  # PC speech frames heard while waiting for an answer
         self._requests = 0  # requests the loop has taken
@@ -1011,6 +1023,16 @@ class VoiceLoop:
     def handle_wake(self, wake_at: float | None = None) -> None:
         """Capture one request after the wake word (heard at `wake_at`) and answer it."""
         wake_at = self._clock() if wake_at is None else wake_at
+        wake = _MicWake(wake_at)
+        self._mic_wake = wake
+        if _same_wake(self._pc_wake_at, wake_at):
+            wake.echoed = True
+        try:
+            self._capture_mic(wake_at)
+        finally:
+            self._mic_wake = None
+
+    def _capture_mic(self, wake_at: float) -> None:
         self._requests += 1
         threading.Thread(target=self._prewarm, daemon=True).start()
         # The chime plays while the request is already being heard: words said right after the
@@ -1058,8 +1080,16 @@ class VoiceLoop:
         )
 
     def _heard_on_pc(self, wake_at: float) -> bool:
-        pc_wake_at = self._pc_wake_at
-        return pc_wake_at is not None and abs(pc_wake_at - wake_at) <= WAKE_DEDUPE_S
+        mic = self._mic_wake
+        return (mic is not None and mic.at == wake_at and mic.echoed) or _same_wake(
+            self._pc_wake_at, wake_at
+        )
+
+    def _note_pc_wake(self, wake_at: float) -> None:
+        self._pc_wake_at = wake_at
+        mic = self._mic_wake
+        if mic is not None and _same_wake(mic.at, wake_at):
+            mic.echoed = True
 
     def _answer(
         self,
@@ -1422,7 +1452,7 @@ class VoiceLoop:
             if not pc.wake.heard(frame):
                 continue
             wake_at = self._clock()
-            self._pc_wake_at = wake_at
+            self._note_pc_wake(wake_at)
             log.info("wake word in PC audio")
             if state is not State.IDLE:
                 log.info("ignored a wake word in PC audio: the loop was busy (%s)", state.value)
@@ -1431,7 +1461,11 @@ class VoiceLoop:
             if self._too_soon(wake_at):
                 pc.wake.reset()
                 continue
-            self._capture_pc(pc, frames, wake_at)
+            self._pc_capture_at = wake_at
+            try:
+                self._capture_pc(pc, frames, wake_at)
+            finally:
+                self._pc_capture_at = None
         return False
 
     def _pc_busy(self, pc: PcListener, frame: NDArray[np.int16], state: State) -> bool:
@@ -1444,7 +1478,7 @@ class VoiceLoop:
         """
         if state is State.SPEAK:
             if pc.wake.heard(frame):
-                self._pc_wake_at = self._clock()
+                self._note_pc_wake(self._clock())
                 log.info("wake word in PC audio while Jarvis speaks")
             return True
         if state in {State.CONFIRM, State.FOLLOW_UP}:
@@ -1499,7 +1533,7 @@ class VoiceLoop:
         """
         for frame in frames:
             if pc.wake.heard(frame):
-                self._pc_wake_at = self._clock()
+                self._note_pc_wake(self._clock())
             if self._requests != requests or self.state is State.CONFIRM or self._paused():
                 return
             yield frame
@@ -1620,16 +1654,23 @@ class VoiceLoop:
             if self._served_due() or self._served_watch():
                 continue
             if self._wake.heard(frame):
-                self._note_activity()  # a screen check under way gives way
-                if self._ignored_while_locked("the wake word") or self._ignored_while_dictating(
-                    "the wake word"
-                ):
-                    self._wake.reset()
-                    continue
-                wake_at = self._clock()
-                log.info("wake word")
-                self._serve_if_admitted(functools.partial(self.handle_wake, wake_at))
-                self._mic.drain()
+                self._microphone_woke()
+
+    def _microphone_woke(self) -> None:
+        self._note_activity()  # a screen check under way gives way
+        if self._ignored_while_locked("the wake word") or self._ignored_while_dictating(
+            "the wake word"
+        ):
+            self._wake.reset()
+            return
+        wake_at = self._clock()
+        if _same_wake(self._pc_capture_at, wake_at) or not self._pc_heard.empty():
+            log.info("ignored a microphone wake while the PC-audio request was captured")
+            self._wake.reset()
+            return
+        log.info("wake word")
+        self._serve_if_admitted(functools.partial(self.handle_wake, wake_at))
+        self._mic.drain()
 
     def _serve_if_admitted(self, request: Callable[[], None]) -> None:
         with modes.voice_request() as admitted:

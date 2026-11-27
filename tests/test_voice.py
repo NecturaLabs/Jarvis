@@ -973,36 +973,71 @@ def test_a_wake_heard_in_pc_audio_while_capturing_makes_the_request_pc_audio() -
     assert agent.calls == [("pause the music", Origin.PC_AUDIO)]
 
 
-def test_a_pc_capture_of_a_wake_the_loop_already_took_is_dropped() -> None:
+def test_a_new_pc_wake_does_not_erase_the_mic_requests_pc_origin() -> None:
+    clock = Clock()
     pc_woke = threading.Event()
-    pc_queued = threading.Event()
+    transcribing = threading.Event()
+    pc_woke_again = threading.Event()
     holder: list[VoiceLoop] = []
     pc = PcAudio(
+        until(lambda: holder[0].state is State.CAPTURE),
         WAKE,
         pc_woke.set,
-        until(lambda: bool(holder) and holder[0].state is State.CAPTURE),
-        SPEECH,
-        SPEECH,
-        *[SILENCE] * 5,
-        SILENCE,
-        pc_queued.set,
-    )
-    agent = Agent()
-    mic = Mic(
-        until(pc_woke.is_set),
+        until(transcribing.is_set),
         WAKE,
-        SPEECH,
-        SPEECH,  # two frames: one is too little for a request
-        until(pc_queued.is_set),
-        *[SILENCE] * 5,
-        *[SILENCE] * 5,
+        pc_woke_again.set,
     )
-    loop = _loop(agent, mic, Speaker(), pc=pc)
+    mic = Mic(WAKE, until(pc_woke.is_set), SPEECH, SPEECH, *[SILENCE] * 6)
+    agent = Agent()
+
+    def transcribe(_samples: NDArray[np.int16]) -> str:
+        clock.now += 3.0
+        transcribing.set()
+        until(pc_woke_again.is_set)()
+        return "pause the music"
+
+    loop = _loop(agent, mic, Speaker(), pc=pc, clock=clock, transcribe=transcribe)
     holder.append(loop)
 
     _run(loop)
 
     assert agent.calls == [("pause the music", Origin.PC_AUDIO)]
+
+
+def test_the_direct_pc_capture_is_kept_when_the_wake_echoes_into_the_microphone() -> None:
+    pc_capturing = threading.Event()
+    mic_spoke = threading.Event()
+    echo = SPEECH.copy()
+    echo[-1] = 3
+    pc = PcAudio(
+        WAKE,
+        SPEECH,
+        pc_capturing.set,
+        until(mic_spoke.is_set),
+        SPEECH,
+        *[SILENCE] * 16,
+    )
+    agent = Agent()
+    mic = Mic(
+        until(pc_capturing.is_set),
+        WAKE,
+        echo,
+        echo,
+        mic_spoke.set,
+        *[SILENCE] * 10,
+        Idle(agent.called.is_set),
+    )
+    loop = _loop(
+        agent,
+        mic,
+        Speaker(),
+        pc=pc,
+        transcribe=lambda samples: "echo" if echo[-1] in samples else "direct",
+    )
+
+    _run(loop)
+
+    assert agent.calls == [("direct", Origin.PC_AUDIO)]
 
 
 @pytest.mark.parametrize(("cooldown_s", "handled"), [(5.0, 1), (0.0, 2)])
