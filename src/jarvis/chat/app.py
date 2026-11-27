@@ -238,6 +238,8 @@ class Services:
     model_report: Callable[[], list[str]] | None = None  # /model: the mode and the models
     # /model <mode>: switches, passing on the line that says a model must load; returns how it went
     switch_model: Callable[[str, Callable[[str], None]], str] | None = None
+    # each mode's model name and purpose, as the /model menu lists them
+    model_choices: Callable[[], dict[str, tuple[str, str]]] | None = None
     stats: Callable[[], Stats] | None = None  # the PC's load
     save_settings: Callable[[ChatConfig], None] | None = None
     system_prompt: Callable[[ChatConfig], str] | None = None  # the model's instructions for them
@@ -1129,7 +1131,7 @@ class ChatApp(App[None]):
 
     def _menu(self, value: str) -> None:
         menu = self.query_one("#menu", PointerList)
-        found = commands.suggest(value)
+        found = commands.suggest(value, self._services.model_choices)
         shown = bool(found) and [s.value.strip() for s in found] != [value.strip().lower()]
         if shown:
             menu.show(
@@ -1146,7 +1148,7 @@ class ChatApp(App[None]):
         menu = self.query_one("#menu", OptionList)
         if not menu.display or menu.highlighted is None:
             return None
-        found = commands.suggest(self._input().text)
+        found = commands.suggest(self._input().text, self._services.model_choices)
         return found[menu.highlighted].value if menu.highlighted < len(found) else None
 
     def action_complete(self) -> None:

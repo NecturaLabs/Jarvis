@@ -42,6 +42,25 @@ def _plain(renderable: object) -> str:
 # Commands
 
 
+def test_the_model_command_lists_each_model_by_name_with_its_use() -> None:
+    def models() -> dict[str, tuple[str, str]]:
+        return {"normal": ("Flash", "Everyday use"), "coding": ("Flash Coder", "Programming")}
+
+    found = commands.suggest("/model ", models)
+
+    assert [(s.value, s.label, s.about) for s in found] == [
+        ("/model normal", "Flash", "normal \N{MIDDLE DOT} Everyday use"),
+        ("/model coding", "Flash Coder", "coding \N{MIDDLE DOT} Programming"),
+    ]
+    assert [s.value for s in commands.suggest("/model co", models)] == ["/model coding"]
+
+
+def test_the_model_command_offers_the_modes_alone_when_the_models_are_unknown() -> None:
+    found = commands.suggest("/model ", dict)
+
+    assert [(s.label, s.about) for s in found] == [("normal", ""), ("coding", "")]
+
+
 def test_a_prefix_comes_before_letters_in_order() -> None:
     found = [s.value.strip() for s in commands.suggest("/c")]
 

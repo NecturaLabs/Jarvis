@@ -49,8 +49,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   Strata already serves, answered in text. Pictures work as in the chat. A question about an action is asked
   in the reply and your next message is the answer; a permission button in the app never stands for your yes
   ([ADR 0023](docs/adr/0023-acp-front-end.md)). `jarvis doctor` says how to add it when T3 Code is set up.
-- `jarvis acp` lists Jarvis's normal and coding modes as the app's models, titled `Normal` and `Coding`
-  and described by the model that serves each and what it is for, with a thinking effort that starts at the mode's own (`none` and
+- `jarvis acp` lists Jarvis's normal and coding modes as the app's models, titled with the name of the model
+  that serves each and described by what the mode is for, with a thinking effort that starts at the mode's own (`none` and
   `medium` by default), so T3 Code shows Jarvis once. A thread in coding mode works with the coding prompt,
   `[coding.chat]` limits, tools and write roots; `--coding` makes coding mode the first choice. Where
   coding mode has a model of its own, a thread's first request in it loads that model as `/model coding`
@@ -143,7 +143,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - Coding mode, for programming work ([ADR 0017](docs/adr/0017-coding-mode.md)): more model calls, longer
   replies, more thinking and a larger context, a part on programming in the prompt, and a model of its own
   when `strata.coding_run_config` names one (`jarvis setup --coding-run-config`). `jarvis model` shows the mode
-  and each mode's model, `jarvis model coding` or `normal` switches, and so does `/model` in the chat. In the
+  and each mode's model by its short name with what the mode is for (the chat's `/model` menu lists the same),
+  `jarvis model coding` or `normal` switches, and so does `/model` in the chat. In the
   chat the model moves a request that is programming work to coding mode by itself (`switch_model`,
   `coding.chat.auto`), and back when you say the work is over; Jarvis also goes back after 30 minutes unused
   (`coding.back_after_s`). With two models the model server restarts for a switch, so one model is in
@@ -317,10 +318,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- T3 Code's model menu lists each of Jarvis's modes by its model's short name (the run config's name
+  without the quantisation tag), which fits the menu; the full name with the mode was cut off. What each mode
+  is for is the model's description, which T3 Code does not show.
 - `jarvis setup` starts the learned expert file of both modes' models, so `jarvis doctor` no longer fails
   for the coding model until the first switch to it.
-- T3 Code's model menu lists Jarvis's modes as `Normal` and `Coding`, short enough to read; the model's
-  name moved into each mode's description, where it no longer cuts the title off.
 - The model no longer switches modes, either way, to answer a question about them. A needless switch
   restarts the model server.
 - A T3 Code thread goes on after Jarvis or T3 Code restarts. `jarvis acp` keeps each session's

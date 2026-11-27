@@ -1393,29 +1393,35 @@ class _CodingFirst:
             return self._ready, line
 
 
-# What each mode is for, as a coding app lists it after the model's name.
-ACP_PURPOSE: dict[modes.Mode, str] = {
-    "normal": "Everyday requests: questions, the web, music and the PC",
-    "coding": "Programming work: the coding prompt, tools and room for long tasks",
-}
-
-
 def _acp_models(cfg: config.Config, *, coding_first: bool) -> list[acp.ModelChoice]:
-    """Return Jarvis's modes as a coding app lists them: mode, model and purpose, starting effort.
+    """Return Jarvis's modes as a coding app lists them: model, what it is for, starting effort.
 
-    The title is the mode alone (`Coding`), short enough for an app's model menu; the model's name
-    leads the description, since both modes may run the same model.
+    The title is the model's short name (`modes.model_titles`), which an app's model menu shows
+    whole; the description is the mode's purpose.
     """
+    titles = modes.model_titles(cfg)
     choices = [
         acp.ModelChoice(
-            mode,
-            mode.capitalize(),
-            f"{modes.model_name(cfg, mode)}: {ACP_PURPOSE[mode]}",
-            modes.effective(cfg, mode).chat.thinking,
+            mode, titles[mode], modes.PURPOSE[mode], modes.effective(cfg, mode).chat.thinking
         )
         for mode in modes.MODES
     ]
     return sorted(choices, key=lambda choice: choice.id != "coding") if coding_first else choices
+
+
+def _model_choices() -> dict[str, tuple[str, str]]:
+    """Return each mode's model name and purpose for the chat's `/model` menu.
+
+    Empty, so the menu offers the modes alone, while the config cannot be read.
+    """
+    try:
+        cfg = config.load()
+    except config.ConfigError:
+        return {}
+    return {
+        mode: (services.model_title(modes.effective(cfg, mode)), modes.PURPOSE[mode])
+        for mode in modes.MODES
+    }
 
 
 def _at_effort(section: config.ChatConfig, level: str) -> config.ChatConfig:
@@ -1602,6 +1608,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         # The config as it is now: `jarvis setup` or /config may have changed coding mode since.
         model_report=lambda: model_report(config.load()),
         switch_model=lambda to, say: switch_model(config.load(), to, say, "chat"),
+        model_choices=_model_choices,
         shared=_shared_settings,
         set_shared=_set_shared,
         apply=_apply_from_chat,
@@ -2787,10 +2794,8 @@ def model_report(cfg: config.Config) -> list[str]:
     for mode in modes.MODES:
         served = modes.effective(cfg, mode)
         mark = "*" if mode == state.mode else " "
-        lines.append(
-            f"{mark} {mode}: {services.model_name(served)}, {served.strata.context:,} tokens of "
-            "context"
-        )
+        shown = f"{services.model_title(served)}, {served.strata.context:,} tokens of context"
+        lines.extend((f"{mark} {mode}: {shown}", f"    {modes.PURPOSE[mode]}"))
     if not modes.own_model(cfg):
         lines.append(
             "coding mode has no model of its own (strata.coding_run_config is unset): it "

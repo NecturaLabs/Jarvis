@@ -557,7 +557,8 @@ Jarvis is in one of two modes, `normal` or `coding` ([ADR 0017](adr/0017-coding-
 programming work: more model calls, longer replies, more thinking, a larger context, a part on programming
 added to the prompt, and, when you set one, a model of its own.
 
-- **Switching.** `jarvis model` shows the mode, each mode's model and whether it is loaded; `jarvis model
+- **Switching.** `jarvis model` shows the mode, whether the model is loaded, and each mode's model by its
+  short name with what the mode is for; the chat's `/model` menu lists the same. `jarvis model
   coding` and `jarvis model normal` switch, and so does `/model` in the chat. Where `auto` is on, the model
   switches by itself when a request is programming work, and back when you say that work is over
   (`switch_model`; switch it off like any tool with `jarvis tools switch_model off`). After
@@ -1099,8 +1100,12 @@ jobs in it and refuses to add one, rather than writing over the newer jobs. Why 
 
 ## `[acp]`: Jarvis in T3 Code
 
-`jarvis acp` ([ADR 0023](adr/0023-acp-front-end.md)) is what T3 Code starts for a Jarvis provider. It lists
-the normal and coding modes as two models, titled `Normal` and `Coding`, each described by its run config's model name and what it is for, and a
+`jarvis acp` ([ADR 0023](adr/0023-acp-front-end.md)) is what T3 Code starts for a Jarvis provider. The short
+name is the run config's `model_name` without its quantisation tag, each word capitalised
+(`some-model-iq2_xs` is `Some Model`); the mode follows it when both modes' names come out the same. T3 Code
+shows the title and not the description. It lists
+the normal and coding modes as two models, each titled with its model's short name and described by what the
+mode is for, and a
 thinking effort that starts at the mode's `thinking` (`[chat]`, and `[coding.chat]` over it). A session in
 coding mode works as the chat does in coding mode: the coding prompt, `[coding.chat]` over `[chat]`,
 `coding.tools_off` and `coding.write_roots`. `jarvis acp --coding` makes coding mode the first choice. On the first request, the provider reloads the configuration and compares the resolved

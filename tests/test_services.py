@@ -676,6 +676,38 @@ def test_an_engine_whose_cache_fills_the_card_needs_a_vram_reserve(tmp_path: Pat
         services.strata_profile(_config(tmp_path, vram_reserve_mib=0))
 
 
+@pytest.mark.parametrize(
+    ("name", "title"),
+    [
+        ("qwen3.8-flash-next-iq2_xs", "Qwen3.8 Flash Next"),
+        ("qwen3.8-flash-next-coder-iq1_m", "Qwen3.8 Flash Next Coder"),
+        ("qwen36-ud-q4_k_xl", "Qwen36"),
+        ("flash-ud-iq4_xs-v31", "Flash"),
+        ("inkling-2-mini-sq-15", "Inkling 2 Mini"),
+        ("swift-1.5-q2_0", "Swift 1.5"),
+        ("flash-nvfp4-qad", "Flash"),
+        ("flash-next", "Flash Next"),
+        ("q4", "Q4"),
+    ],
+)
+def test_a_models_title_is_its_name_without_the_quantisation_tag(
+    tmp_path: Path, name: str, title: str
+) -> None:
+    run = engine_run_config(tmp_path)
+    data = json.loads(run.read_text(encoding="utf-8")) | {"model_name": name}
+    run.write_text(json.dumps(data), encoding="utf-8")
+
+    assert services.model_title(_config(tmp_path, run_config=run)) == title
+
+
+def test_a_model_without_a_usable_run_config_is_titled_with_what_is_wrong(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path, run_config=tmp_path / "gone.json")
+
+    assert services.model_title(cfg) == services.model_name(cfg)
+
+
 def test_the_learned_expert_profile_is_kept_per_model(tmp_path: Path) -> None:
     cfg, _ = _with_routing_profile(tmp_path)
     run = tmp_path / "install" / "strata-q4.json"

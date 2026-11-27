@@ -345,11 +345,12 @@ class _Acp:
         assert main(["acp", *args]) == 0
 
 
-def _own_coding_model(tmp_path: Path) -> None:
+def _own_coding_model(tmp_path: Path, name: str = "flash-coder-iq1_m") -> None:
     install_engine(tmp_path / "components")
     run = engine_run_config(tmp_path)
     coder = tmp_path / "coder.json"
-    coder.write_text(run.read_text(encoding="utf-8"), encoding="utf-8")
+    data = json.loads(run.read_text(encoding="utf-8")) | {"model_name": name}
+    coder.write_text(json.dumps(data), encoding="utf-8")
     strata = config.StrataConfig.model_validate(
         {
             "home": tmp_path / "strata-home",
@@ -374,23 +375,35 @@ def test_acp_builds_the_normal_agent_that_follows_the_owners_mode(
     assert acp.switched == []
 
 
-def test_acp_lists_both_modes_by_a_short_name_with_the_model_in_the_description(
-    monkeypatch: pytest.MonkeyPatch,
+def test_acp_lists_each_mode_by_its_models_short_name_with_its_use_below(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def model_name(_cfg: config.Config, mode: str) -> str:
-        return f"{mode}-model"
-
-    monkeypatch.setattr(modes, "model_name", model_name)
+    _own_coding_model(tmp_path)
     acp = _Acp()
     acp.run(monkeypatch)
 
     assert [(m.id, m.name, m.effort) for m in acp.models] == [
-        ("normal", "Normal", "none"),
-        ("coding", "Coding", "medium"),
+        ("normal", "Flash", "none"),
+        ("coding", "Flash Coder", "medium"),
     ]
-    assert acp.models[0].description.startswith("normal-model: ")
-    assert acp.models[1].description.startswith("coding-model: ")
-    assert acp.models[0].description != acp.models[1].description
+    assert [m.description for m in acp.models] == [
+        modes.PURPOSE["normal"],
+        modes.PURPOSE["coding"],
+    ]
+    assert modes.PURPOSE["normal"] != modes.PURPOSE["coding"]
+
+
+def test_acp_adds_the_mode_when_both_modes_models_share_a_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _own_coding_model(tmp_path, name="flash-iq2_xs")
+    acp = _Acp()
+    acp.run(monkeypatch)
+
+    assert [m.name for m in acp.models] == [
+        "Flash \N{MIDDLE DOT} Normal",
+        "Flash \N{MIDDLE DOT} Coding",
+    ]
 
 
 def test_acp_coding_lists_coding_mode_first(monkeypatch: pytest.MonkeyPatch) -> None:

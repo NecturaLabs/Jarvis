@@ -9,8 +9,8 @@ Owned here: the transport, `initialize`, `session/new`, `session/load`, `session
 `session/cancel`, `session/close` and `session/set_config_option`. Anything else is "method not
 found".
 
-With `models` (Jarvis's modes, `ModelChoice`) a session offers them as one model list, each by its
-mode's name, described by the model that serves it and what it is for, and a thinking effort
+With `models` (Jarvis's modes, `ModelChoice`) a session offers them as one model list, each by the
+name of the model that serves it, described by what the mode is for, and a thinking effort
 (`thought_level`) that starts at the chosen mode's own. Each mode is its own agent in the session,
 made when it is first chosen and kept, so going back to a mode keeps its conversation. Neither
 changes while a request is being answered. Jarvis loads no MCP servers, so `mcpServers` is ignored.
@@ -158,7 +158,7 @@ CLEARED = "Started afresh: I've forgotten this conversation."
 
 @dataclass(frozen=True, slots=True)
 class ModelChoice:
-    """One of Jarvis's modes as the app lists it: id, title, model and use, starting effort."""
+    """One of Jarvis's modes as the app lists it: id, model, what it is for, starting effort."""
 
     id: str
     name: str

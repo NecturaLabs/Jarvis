@@ -50,7 +50,8 @@ Coding mode ([configuration](configuration.md#coding-coding-mode)) serves the ru
 `strata.coding_run_config` names. The choice for the reference machine is **Qwen3.8-Flash-Next Coder**
 IQ1_M (ISTA-DASLab, Strata's `coder` family): Qwen3.8-Flash-Next with 256 of each layer's 512 experts
 kept, the ones code, tool use and pictures route to, stored at about 3.5 bits. Chosen on 2026-11-26 from
-what the sources below say; **not yet downloaded or measured on the reference machine**.
+what the sources below say; installed on the reference machine on 2026-11-27, **not yet loaded or measured
+there**.
 
 Strata runs only the architectures its engines implement (`qwen4exp`, `qwen35moe`, Inkling's two and
 Hy4-Flash), so a general coding GGUF is not a candidate
@@ -80,8 +81,15 @@ any of these models.
   on, and says lower thinking effort can cost more failed steps in long tool-using work. Jarvis sends its
   own `model.temperature` (0.2) unless `coding.temperature` is set; which is better for Jarvis's tools is
   not measured.
-- **To set it up:** `strata launch --family coder --model iq1_m` once (stop the server it starts), then
-  `jarvis setup --coding-run-config <the strata-<model>.json it wrote>` and `jarvis model coding`.
+- **To set it up:** `strata install -- --family coder --model IQ1_M --vision cpu --yes --no-start` downloads
+  and prepares it without loading it (`--gguf-dir <folder>` for files already downloaded); `strata launch
+  --family coder --model iq1_m` does the same and then serves it until stopped. Then run `jarvis setup
+  --coding-run-config <the strata-<model>.json it wrote>`, and `jarvis model coding` to switch. Run the install
+  outside any memory-limited scope: Strata sizes the model from the memory limit it sees, and under an 8 GB
+  limit it set this model up to read its experts from the disk.
+- **Run config on the reference machine:** Strata's defaults for a 20 GB card and 60 GB of RAM: a 128K
+  context (Jarvis serves `coding.context`) and `--kv-resident 32768`, which keeps 32K of context cells on the
+  card and the rest in pinned RAM (1.8 GB at 128K). `coding.kv_resident` replaces that number.
 
 ### Context size
 

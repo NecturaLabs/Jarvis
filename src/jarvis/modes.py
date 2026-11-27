@@ -34,6 +34,11 @@ if TYPE_CHECKING:
 
 type Mode = Literal["normal", "coding"]
 MODES: tuple[Mode, ...] = ("normal", "coding")
+# What each mode is for, as a model list shows it under the model's name.
+PURPOSE: dict[Mode, str] = {
+    "normal": "Everyday use: questions, the web, music and the PC",
+    "coding": "Programming work: code, tools and long tasks",
+}
 type By = Literal["owner", "model", "idle"]
 
 READY_S = 60.0  # how long a restarted model server may take to answer
@@ -190,6 +195,17 @@ def own_model(config: Config) -> bool:
 def model_name(config: Config, mode: Mode) -> str:
     """Return the name of the model `mode` serves, from its run config."""
     return services.model_name(effective(config, mode))
+
+
+def model_titles(config: Config) -> dict[Mode, str]:
+    """Return each mode's model as a model list names it (`services.model_title`).
+
+    When both modes' models come out with one name, the mode follows it, so they can be told apart.
+    """
+    names: dict[Mode, str] = {mode: services.model_title(effective(config, mode)) for mode in MODES}
+    if len(set(names.values())) == len(names):
+        return names
+    return {mode: f"{name} \N{MIDDLE DOT} {mode.capitalize()}" for mode, name in names.items()}
 
 
 def mark_used(now: float | None = None) -> None:

@@ -6,6 +6,10 @@ with what was typed comes first, then one that holds the letters in order ("/cmp
 """
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
 
 VERBOSITY = ("replies", "steps", "everything")
 EFFORT_LEVELS = ("none", "low", "medium", "high")  # as `chat.thinking` takes them
@@ -100,8 +104,14 @@ def find(name: str) -> Command | None:
     return next((command for command in COMMANDS if command.name == name), None)
 
 
-def suggest(value: str) -> list[Suggestion]:
-    """Return what the menu offers for the input `value` (nothing when it is not a command)."""
+def suggest(
+    value: str, models: Callable[[], Mapping[str, tuple[str, str]]] | None = None
+) -> list[Suggestion]:
+    """Return what the menu offers for the input `value` (nothing when it is not a command).
+
+    `models` gives each mode's model name and purpose; `/model` then offers each mode as its model,
+    the mode and the purpose after it. It is asked only while `/model`'s argument is typed.
+    """
     if not value.startswith("/") or "\n" in value:
         return []
     head, space, rest = value.partition(" ")
@@ -110,11 +120,20 @@ def suggest(value: str) -> list[Suggestion]:
         if command is None or not command.choices or " " in rest.strip():
             return []
         typed = rest.strip().lower()
-        return [
-            Suggestion(f"{command.name} {choice}", choice, "", tuple(range(len(typed))))
-            for choice in command.choices
-            if choice.startswith(typed)
-        ]
+        named: Mapping[str, tuple[str, str]] = {}
+        if command.name == "/model" and models is not None:
+            named = models()
+        offered: list[Suggestion] = []
+        for choice in command.choices:
+            if not choice.startswith(typed):
+                continue
+            line = f"{command.name} {choice}"
+            if choice in named:
+                name, purpose = named[choice]
+                offered.append(Suggestion(line, name, f"{choice} \N{MIDDLE DOT} {purpose}"))
+            else:
+                offered.append(Suggestion(line, choice, "", tuple(range(len(typed)))))
+        return offered
     typed = head.lower()
     first = [c for c in COMMANDS if c.name.startswith(typed)]
     later = [c for c in COMMANDS if c not in first and _in_order(typed[1:], c.name[1:])]

@@ -1439,6 +1439,28 @@ def test_model_shows_the_mode_and_each_modes_model() -> None:
     _run(test, app)
 
 
+def test_the_model_menu_shows_a_long_model_name_whole_with_its_use() -> None:
+    services = Services(
+        model_report=list,
+        switch_model=lambda _to, _say: "",
+        model_choices=lambda: {
+            "normal": ("Qwen3.8 Flash Next", "Everyday use"),
+            "coding": ("Qwen3.8 Flash Next Coder", "Programming work"),
+        },
+    )
+    app = _app(session=FakeSession(), services=services)
+
+    async def test(pilot: Pilot[None]) -> None:
+        await pilot.press(*"/model", "space")
+        menu = app.query_one("#menu", OptionList)
+        await _until(pilot, lambda: menu.display and menu.option_count == 2)
+        rows = [str(menu.get_option_at_index(i).prompt) for i in range(menu.option_count)]
+        assert "Qwen3.8 Flash Next " in rows[0]
+        assert "Qwen3.8 Flash Next Coder   coding \N{MIDDLE DOT} Programming work" in rows[1]
+
+    _run(test, app)
+
+
 def test_model_switches_the_mode_and_says_what_is_loading() -> None:
     asked: list[str] = []
 

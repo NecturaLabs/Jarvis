@@ -30,6 +30,9 @@ JARVIS_UNIT = "jarvis.service"
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _NEEDS_QUOTES = re.compile(r"""[\s"'\\;]""")
+# A quantisation tag ending a model's name, as GGUF files and Strata write it (`-iq2_xs`, `-q8_0`,
+# `-ud-q4_k_xl`, `-sq-15`, `-nvfp4-qad`), with any `-v31` revision after it.
+_QUANT_TAG = re.compile(r"-(?:ud-)?(?:i?q\d\w*|sq-\d+|nvfp4(?:-[a-z]+)*)(?:-v\d+)?$", re.IGNORECASE)
 # The memory check runs as an `ExecCondition=`, where any exit of 1 to 254 skips the start. This
 # wrapper lets only the check's own refusal (`RAM_SHORT_EXIT`) through: a check that is missing,
 # will not run or crashes (a moved venv exits 203) must not keep the model server from starting.
@@ -383,6 +386,23 @@ def model_name(config: Config) -> str:
         return read_run_config(config).name or "unnamed model"
     except StrataSetupError as exc:
         return f"no model ({exc})"
+
+
+def model_title(config: Config) -> str:
+    """Return the served model's name as a model list shows it, short enough not to be cut off.
+
+    The quantisation tag goes and each word is capitalised (`some-model-iq2_xs` is `Some Model`).
+    With a run config that cannot be read, or that names no model, it is `model_name`.
+    """
+    if config.strata.mode == "remote":
+        name = config.model.model
+    else:
+        try:
+            name = read_run_config(config).name
+        except StrataSetupError:
+            return model_name(config)
+    words = _QUANT_TAG.sub("", name).split("-")
+    return " ".join(w[:1].upper() + w[1:] for w in words if w) or model_name(config)
 
 
 def learns_experts(config: Config, run: RunConfig) -> bool:
