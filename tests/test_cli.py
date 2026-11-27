@@ -993,6 +993,28 @@ def test_setup_writes_the_config_profile_and_units_under_the_home(
     assert "next: jarvis spotify-login" in capsys.readouterr().out
 
 
+def test_setup_starts_each_modes_learned_expert_profile(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_subprocess(monkeypatch)
+    run = engine_run_config(home)
+    install_engine(home / "data")
+    generic = home / "models" / "q4.gguf"
+    data = json.loads(run.read_text(encoding="utf-8"))
+    data["args"] += ["--expert-profile", str(generic)]
+    run.write_text(json.dumps(data), encoding="utf-8")
+    coder = home / "coder.json"
+    coder.write_text(json.dumps(data | {"model_name": "flash-coder"}), encoding="utf-8")
+    config.save(config.Config(strata=config.StrataConfig(vram_reserve_mib=12000)))
+
+    assert main(["setup", "--run-config", str(run), "--coding-run-config", str(coder)]) == 0
+
+    cfg = config.load()
+    for mode in modes.MODES:
+        learned = services.expert_profile_file(modes.effective(cfg, mode))
+        assert learned.read_bytes() == generic.read_bytes(), mode
+
+
 def test_setup_with_enable_clears_a_failed_state_before_starting_the_units(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

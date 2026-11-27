@@ -561,17 +561,16 @@ def _write_if_changed(path: Path, text: str) -> None:
     write_atomic(path, text)
 
 
-def write_strata_profile(config: Config) -> Path:
-    """Write the Strata run config (no secrets: the key comes from the unit's environment).
+def seed_expert_profile(config: Config) -> None:
+    """Start the learned expert profile from a copy of the run config's own, if there is none.
 
-    When the engine learns Jarvis's experts and has learned nothing yet, it starts from a copy of
-    the run config's own routing profile, so the profile never has to change once it has.
+    Nothing is done when the engine does not learn Jarvis's experts (`learns_experts`). With the
+    copy in place the Strata profile never has to change once the engine has learned.
 
     Raises:
-        StrataSetupError: as `strata_profile`, or that routing profile is not an absolute file.
+        StrataSetupError: the run config cannot be used, or its routing profile is not an
+            absolute file.
     """
-    path = strata_profile_file()
-    profile = strata_profile(config)
     run = read_run_config(config)
     seed = run.expert_profile
     learned = expert_profile_file(config)
@@ -580,6 +579,16 @@ def write_strata_profile(config: Config) -> Path:
             msg = f"the run config's --expert-profile {seed} is not a file Jarvis can start from"
             raise StrataSetupError(msg)
         write_atomic_bytes(learned, seed.read_bytes())
+
+
+def write_strata_profile(config: Config) -> Path:
+    """Write the Strata run config (no secrets: the key comes from the unit's environment).
+
+    A run config it cannot use raises as `strata_profile` and `seed_expert_profile` do.
+    """
+    path = strata_profile_file()
+    profile = strata_profile(config)
+    seed_expert_profile(config)
     _write_if_changed(path, json.dumps(profile, indent=1) + "\n")
     return path
 

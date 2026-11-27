@@ -317,6 +317,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `jarvis setup` starts the learned expert file of both modes' models, so `jarvis doctor` no longer fails
+  for the coding model until the first switch to it.
 - T3 Code's model menu lists Jarvis's modes as `Normal` and `Coding`, short enough to read; the model's
   name moved into each mode's description, where it no longer cuts the title off.
 - The model no longer switches modes, either way, to answer a question about them. A needless switch

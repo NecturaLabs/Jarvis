@@ -733,8 +733,7 @@ def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
             modes.effective(updated, "coding")
         )  # a change of the usual one can break it too
         with modes.locked():  # not in the middle of a switch of modes, which writes them too
-            served = modes.effective(updated, modes.current())  # a setup in coding mode keeps it
-            profile = services.write_strata_profile(served)
+            served, profile = _write_mode_profiles(updated)
             units = services.write_units(served, strata_key_file())
     except config.ConfigError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
@@ -744,6 +743,19 @@ def _setup_local(args: argparse.Namespace, updated: config.Config) -> int:
     result = _setup_units(STRATA_UNIT, JARVIS_UNIT, enable=args.enable)
     _setup_spotify(updated, failed=result)
     return result
+
+
+def _write_mode_profiles(cfg: config.Config) -> tuple[config.Config, Path]:
+    """Write the Strata profile for the mode Jarvis is in; return that mode's config and the file.
+
+    The learned expert profile of every mode's model is started too, so the doctor finds the
+    other one ready before the first switch to it.
+    """
+    served = modes.effective(cfg, modes.current())  # a setup in coding mode keeps it
+    profile = services.write_strata_profile(served)
+    for mode in modes.MODES:
+        services.seed_expert_profile(modes.effective(cfg, mode))
+    return served, profile
 
 
 def _setup_workspace(cfg: config.Config) -> None:
