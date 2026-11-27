@@ -270,6 +270,18 @@ def test_audio_playing_elsewhere_is_any_running_output_stream_but_jarvis_own() -
     assert others_playing([_stream(6, "mpv", "mpv")], ours)  # no process id: not Jarvis's
 
 
+def test_named_pc_audio_never_records_jarvis_own_player(monkeypatch: pytest.MonkeyPatch) -> None:
+    def ours(pid: int) -> bool:
+        return pid == 7
+
+    jarvis = _stream(1, "pw-play", "pw-play", pid=7)
+    other = _stream(2, "pw-play", "pw-play", pid=50)
+    monkeypatch.setattr("jarvis.audio._ours", ours)
+    monkeypatch.setattr("jarvis.audio.pw_dump", lambda: [jarvis, other])
+
+    assert app_stream_serials(["pw-play"]) == ["2"]
+
+
 def test_app_audio_waits_for_the_app_then_records_it() -> None:
     finds: list[int] = []
     targets: list[str] = []

@@ -36,11 +36,13 @@ default (`audio.listen_to_pc`). When it is on:
   `VoiceLoop._ask`), so a voice on the call cannot answer for the owner.
 - **History exclusion.** A PC-audio request and its reply are not added to the owner's conversation history
   (`Agent.handle`), and their audio is never kept for debugging.
-- **Self-triggering and double hearing.** PC-audio frames are skipped while Jarvis is speaking or asking. A wake
-  word heard by both the microphone and PC audio within 2 s is treated as PC audio, and a PC-audio request
-  within `audio.pc_audio_cooldown_s` (5 s) of the last one is ignored. A PC request starts only while the loop
-  is idle. If the PC capture has already accepted the wake, the matching microphone wake leaves it running.
-  If the microphone started first, a match persists for that request even when a later PC wake is heard.
+- **Self-triggering and double hearing.** With `audio.barge_in` enabled, a wake word and request from
+  a named app can interrupt a reply. The named-app recorder excludes Jarvis's own playback. The
+  all-output monitor can start a request only while Jarvis is idle. Confirmation prompts are
+  protected in both cases. A wake word heard by both the microphone and PC audio within 2 s is
+  treated as PC audio. If the PC capture started first, the mic echo leaves it running. If the
+  microphone started first, a match persists for that request even when a later PC wake is heard.
+  A PC-audio request within `audio.pc_audio_cooldown_s` (5 s) of the last one is ignored.
 
 - **Capture while the loop moves on.** A PC request is captured through a tap (`VoiceLoop._pc_tap`) that
   passes the frames on but still notes wake words in them. The capture ends as soon as the loop takes another

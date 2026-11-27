@@ -442,6 +442,8 @@ def keep_for_debugging(samples: NDArray[np.int16]) -> None:
 class VoiceLoop:
     """Runs the listen-think-speak cycle until stopped."""
 
+    _asking_confirmation = False
+
     def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - collaborators, each a test seam
         self,
         agent: _Responder,
@@ -617,7 +619,10 @@ class VoiceLoop:
             if not self._speaker.interruptible:
                 continue
             if self._heard_over_speech(frame) if speaking else self._wake.heard(frame):
-                self._barged_at = self._clock()
+                wake_at = self._clock()
+                if _same_wake(self._pc_capture_at, wake_at):
+                    continue
+                self._barged_at = wake_at
                 log.info("wake word while speaking: stopping to listen")
                 self._speaker.hush()
                 return
@@ -654,7 +659,7 @@ class VoiceLoop:
                 # owner's request follows the wake word, so nothing is dropped then.
                 self._mic.drain()
                 self._wake.reset()
-                if self._pc is not None:
+                if self._pc is not None and self._pc_capture_at is None:
                     self._pc.audio.drain()
 
     def _silent(self) -> bool:
@@ -762,11 +767,14 @@ class VoiceLoop:
 
     def _said_in_full(self, words: str) -> bool:
         """Speak a question; True only if it played to its end, unhushed and unpaused."""
+        self._asking_confirmation = True
         try:
             self._speak(words)
         except AudioError:
             log.warning("the question could not be played; counting it as no", exc_info=True)
             return False
+        finally:
+            self._asking_confirmation = False
         return not self._silent()
 
     def _capture_answer(self, cfg: AudioConfig) -> Utterance | None:
@@ -930,7 +938,12 @@ class VoiceLoop:
         the rest of its time. The wake word inside the window starts a request the usual way.
         """
         window_s = self._cfg.follow_up_s
-        if window_s <= 0 or not self._answered:
+        if (
+            window_s <= 0
+            or not self._answered
+            or self._pc_capture_at is not None
+            or not self._pc_heard.empty()
+        ):
             return None
         if self._using_voxtype():
             log.info("no follow-up: the owner is dictating or in a meeting")
@@ -1440,10 +1453,11 @@ class VoiceLoop:
                 busy = True
                 continue
             state = self.state
-            if self._pc_busy(pc, frame, state):
+            barge = self._pc_can_interrupt(state)
+            if not barge and self._pc_busy(pc, frame, state):
                 busy = True
                 continue
-            if state not in _NOTING_WAKES or not self._pc_heard.empty():
+            if (state not in _NOTING_WAKES and not barge) or not self._pc_heard.empty():
                 busy = True
                 continue
             if busy:
@@ -1454,7 +1468,7 @@ class VoiceLoop:
             wake_at = self._clock()
             self._note_pc_wake(wake_at)
             log.info("wake word in PC audio")
-            if state is not State.IDLE:
+            if state is not State.IDLE and not barge:
                 log.info("ignored a wake word in PC audio: the loop was busy (%s)", state.value)
                 pc.wake.reset()
                 continue
@@ -1463,10 +1477,21 @@ class VoiceLoop:
                 continue
             self._pc_capture_at = wake_at
             try:
-                self._capture_pc(pc, frames, wake_at)
+                self._capture_pc(pc, frames, wake_at, barge=barge)
             finally:
                 self._pc_capture_at = None
         return False
+
+    def _pc_can_interrupt(self, state: State) -> bool:
+        """Allow a wake during ordinary speech only from named app streams."""
+        return (
+            state is State.SPEAK
+            and self._cfg.barge_in
+            and bool(self._cfg.pc_audio_apps)
+            and not self._asking_confirmation
+            and self._speaker.busy
+            and self._speaker.interruptible
+        )
 
     def _pc_busy(self, pc: PcListener, frame: NDArray[np.int16], state: State) -> bool:
         """Note what a PC frame means while Jarvis speaks or waits for a yes; True if it did.
@@ -1495,7 +1520,12 @@ class VoiceLoop:
         return False
 
     def _capture_pc(
-        self, pc: PcListener, frames: Iterator[NDArray[np.int16]], wake_at: float
+        self,
+        pc: PcListener,
+        frames: Iterator[NDArray[np.int16]],
+        wake_at: float,
+        *,
+        barge: bool = False,
     ) -> None:
         requests = self._requests
         threading.Thread(target=self._prewarm, daemon=True).start()
@@ -1517,6 +1547,11 @@ class VoiceLoop:
         if heard.samples is None or heard.speech_s < MIN_REQUEST_SPEECH_S:
             log.info("dropped a PC audio request: %s", _no_request(heard))
             return
+        if self._asking_confirmation or self.state is State.CONFIRM:
+            return
+        if barge and self.state is State.SPEAK:
+            log.info("PC-audio request spoke over Jarvis")
+            self.hush()
         try:
             self._pc_heard.put_nowait(_PcRequest(heard.samples, wake_at))
         except queue.Full:
@@ -1534,7 +1569,12 @@ class VoiceLoop:
         for frame in frames:
             if pc.wake.heard(frame):
                 self._note_pc_wake(self._clock())
-            if self._requests != requests or self.state is State.CONFIRM or self._paused():
+            if (
+                self._requests != requests
+                or self._asking_confirmation
+                or self.state is State.CONFIRM
+                or self._paused()
+            ):
                 return
             yield frame
 

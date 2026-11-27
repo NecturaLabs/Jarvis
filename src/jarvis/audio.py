@@ -131,6 +131,9 @@ def _app_streams(objects: object, apps: list[str]) -> tuple[list[str], list[str]
             for key in ("application.process.binary", "application.name", "node.name")
         ).casefold()
         if any(app in names for app in wanted):
+            pid = str(props.get("application.process.id", ""))
+            if pid.isdigit() and _ours(int(pid)):
+                continue
             group = playing if info.get("state", "running") == "running" else idle
             group.append(str(props["object.serial"]))
     return playing, idle

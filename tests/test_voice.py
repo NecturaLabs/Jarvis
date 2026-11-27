@@ -1441,6 +1441,27 @@ class Playing(Speaker):
         self._over.set()
 
 
+@pytest.mark.parametrize(
+    ("settings", "accepts"),
+    [({}, True), ({"pc_audio_apps": []}, False), ({"barge_in": False}, False)],
+)
+def test_only_selected_pc_apps_can_interrupt_a_spoken_reply(
+    settings: dict[str, object], accepts: bool
+) -> None:
+    speaker = Playing()
+    agent = Agent(lambda _text, _hooks, _origin: "Here's the answer.")
+    pc = PcAudio(
+        until(lambda: speaker.busy), WAKE, SPEECH, SPEECH, *[SILENCE] * 16, speaker.release.set
+    )
+    mic = Mic(*REQUEST, Idle(speaker.release.is_set), *[SILENCE] * 5)
+
+    _run(_loop(agent, mic, speaker, pc=pc, cfg=CFG.model_copy(update=settings)))
+
+    origins = [origin for _text, origin in agent.calls]
+    assert origins == ([Origin.OWNER_SPEECH, Origin.PC_AUDIO] if accepts else [Origin.OWNER_SPEECH])
+    assert speaker.hushed == int(accepts)
+
+
 def _replies(*texts: str) -> tuple[Reply, list[Hooks]]:
     """An agent reply per request, keeping each request's hooks."""
     seen: list[Hooks] = []
@@ -1598,7 +1619,7 @@ def test_a_wake_said_over_jarvis_that_pc_audio_also_held_is_pc_audio() -> None:
     pc_wake = NotingWake()
     pc = PcAudio(Idle(lambda: speaker.busy), WAKE)
     mic = Mic(*REQUEST, until(pc_wake.fired.is_set), WAKE, *REQUEST[1:])
-    cfg = CFG.model_copy(update={"listen_to_pc": True})
+    cfg = CFG.model_copy(update={"listen_to_pc": True, "pc_audio_apps": []})
 
     _run(_loop(agent, mic, speaker, pc=pc, cfg=cfg, pc_wake=pc_wake))
 
