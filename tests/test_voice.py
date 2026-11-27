@@ -584,6 +584,35 @@ def test_a_click_after_the_wake_word_in_pc_audio_is_not_a_request() -> None:
     assert agent.calls == []
 
 
+@pytest.mark.parametrize("pause_frames", [0, 8])
+def test_pc_audio_keeps_the_request_after_the_last_syllable_of_the_wake_phrase(
+    pause_frames: int,
+) -> None:
+    command_frame = np.full(FRAME, 3, dtype=np.int16)
+
+    class PcVad(Vad):
+        @staticmethod
+        @override
+        def speech_probability(frame: NDArray[np.int16]) -> float:
+            return 1.0 if frame[0] == command_frame[0] else Vad.speech_probability(frame)
+
+    def transcribe(samples: NDArray[np.int16]) -> str:
+        return "say meow" if command_frame[0] in samples else ""
+
+    agent = Agent()
+    pc = PcAudio(
+        WAKE, SPEECH, SPEECH, *[SILENCE] * pause_frames, *[command_frame] * 3, *[SILENCE] * 16
+    )
+    mic = Mic(Idle(pc.ended.is_set), *[SILENCE] * 3)
+    loop = VoiceLoop(
+        agent, mic, Wake(), Vad(), Speaker(), CFG, transcribe, pc=PcListener(pc, Wake(), PcVad())
+    )
+
+    _run(loop)
+
+    assert agent.calls == [("say meow", Origin.PC_AUDIO)]
+
+
 @pytest.mark.parametrize(
     ("after_wake", "why"),
     [
@@ -985,7 +1014,7 @@ def test_pc_requests_too_soon_after_the_last_one_are_dropped(
     pc_request = [WAKE, SPEECH, SPEECH, *[SILENCE] * 5]
     pc = PcAudio(
         *pc_request,
-        until(lambda: len(agent.calls) == 1 and holder[0].state is State.IDLE),
+        Idle(lambda: len(agent.calls) == 1 and holder[0].state is State.IDLE),
         clock.advance(1.0),
         *pc_request,
     )
@@ -1185,7 +1214,7 @@ def test_pc_audio_cannot_approve_its_own_request_after_a_wake_during_the_chime()
         SPEECH,
         SPEECH,
         *[SILENCE] * 5,
-        until(lambda: speaker.chimes >= 1),
+        Idle(lambda: speaker.chimes >= 1),
         WAKE,
         pc_woke2.set,
         SPEECH,
@@ -1255,7 +1284,7 @@ def test_a_pc_request_said_during_the_chime_of_another_is_not_taken() -> None:
         SPEECH,
         SPEECH,
         *[SILENCE] * 5,
-        until(lambda: speaker.chimes >= 1),
+        Idle(lambda: speaker.chimes >= 1),
         WAKE,
         SPEECH,
         SPEECH,

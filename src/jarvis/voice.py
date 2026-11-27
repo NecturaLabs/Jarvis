@@ -345,7 +345,12 @@ class _PcRequest:
 
 
 def capture_utterance(
-    frames: Iterator[NDArray[np.int16]], vad: _Vad, cfg: AudioConfig, *, lead_frames: int = 0
+    frames: Iterator[NDArray[np.int16]],
+    vad: _Vad,
+    cfg: AudioConfig,
+    *,
+    lead_frames: int = 0,
+    wake_window_s: float = 0.0,
 ) -> Utterance:
     """Collect speech until trailing silence, a no-speech timeout or the length cap.
 
@@ -355,7 +360,9 @@ def capture_utterance(
     wake word's own tail: they neither start the request nor count as its speech, and are kept
     only when the request starts within `TAIL_GAP_FRAMES` after them, so a pause after the wake
     word is waited out like the silence before any other request. Otherwise up to
-    `PRE_ROLL_FRAMES` from before speech are kept, none of them the tail's.
+    `PRE_ROLL_FRAMES` from before speech are kept, none of them the tail's. When speech
+    starts immediately, keep listening through `wake_window_s` before ending on silence,
+    since that first speech may still be the wake phrase.
     """
     vad.reset()
     kept: list[NDArray[np.int16]] = []
@@ -364,6 +371,7 @@ def capture_utterance(
     silent_s = 0.0
     waited_s = 0.0
     speech_s = 0.0
+    earliest_end_s = 0.0
     exit_threshold = cfg.vad_exit_threshold
     for number, frame in enumerate(frames):
         probability = vad.speech_probability(frame)
@@ -379,6 +387,7 @@ def capture_utterance(
             if speech:
                 started = True
                 tail_kept = number < lead_frames + TAIL_GAP_FRAMES
+                earliest_end_s = wake_window_s if tail_kept else 0.0
                 first = 0 if tail_kept else max(lead_frames, number + 1 - PRE_ROLL_FRAMES)
                 kept.extend(f for n, f in recent if n >= first)
             elif waited_s >= cfg.no_speech_timeout_s:
@@ -386,7 +395,7 @@ def capture_utterance(
             continue
         kept.append(frame)
         silent_s = 0.0 if probability >= exit_threshold else silent_s + FRAME_S
-        if silent_s >= cfg.end_silence_s:
+        if silent_s >= cfg.end_silence_s and (number + 1) * FRAME_S >= earliest_end_s:
             return Utterance(np.concatenate(kept), "end of speech", speech_s)
         if len(kept) * FRAME_S >= cfg.max_utterance_s:
             return Utterance(np.concatenate(kept), "length cap", speech_s)
@@ -1457,7 +1466,10 @@ class VoiceLoop:
         requests = self._requests
         threading.Thread(target=self._prewarm, daemon=True).start()
         tap, lead = _with_lead(pc.wake, self._pc_tap(pc, frames, requests))
-        heard = capture_utterance(tap, pc.vad, self._cfg, lead_frames=lead)
+        wake_window_s = 0.0 if lead else self._cfg.no_speech_timeout_s
+        heard = capture_utterance(
+            tap, pc.vad, self._cfg, lead_frames=lead, wake_window_s=wake_window_s
+        )
         if self._requests == requests and self.state is not State.CONFIRM:
             # Ended by itself. A capture the tap cut short keeps the wake model as it is, so a
             # wake word still being heard on the PC is not lost (it marks the mic's request).
