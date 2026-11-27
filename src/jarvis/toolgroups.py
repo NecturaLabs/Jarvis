@@ -114,8 +114,8 @@ GROUPS = (
     ToolGroup(
         "browser",
         "A headless browser for pages that need scripts or clicking: open a page, click or type "
-        "in it, show a screenshot of it.",
-        ("browser_open", "browser_act", "browser_screenshot"),
+        "in it, show a screenshot of it, or preview a page you built to check it works.",
+        ("browser_open", "browser_preview", "browser_act", "browser_screenshot"),
     ),
     ToolGroup(
         "schedule",

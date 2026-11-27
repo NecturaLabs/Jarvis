@@ -33,7 +33,8 @@ if TYPE_CHECKING:
     from jarvis.web.browser import Browser, View
 
 # Every operation's name, known to `boundaries.classes` even where the browser is not offered.
-NAMES = frozenset({"browser_open", "browser_act", "browser_screenshot"})
+NAMES = frozenset({"browser_open", "browser_preview", "browser_act", "browser_screenshot"})
+MAX_PATH = 1000
 MAX_URL = 2000
 MAX_TEXT = 200  # what may be typed: about a search, like `web_search`'s query
 ELEMENT_SHARE = 3  # at most a third of a result lists elements; the rest is the page's text
@@ -144,21 +145,34 @@ class BrowserOps:
         *,
         page_chars: int,
         shown: PictureCache | None = None,
+        preview: Callable[[str], tuple[Browser, str]] | None = None,
     ) -> None:
         """Drive `browser`; `admit` raises OperationError for an address that may not be opened.
 
         `page_chars` is the room for one result. With `shown`, where the chat keeps the pictures it
-        shows, `browser_screenshot` is offered too.
+        shows, `browser_screenshot` is offered too. With `preview`, `browser_preview` is: it starts
+        a preview of the owner's own build at a path (ADR 0016) and returns its browser session
+        and first address, raising OperationError for a path that may not be served.
         """
         super().__init__()
-        self._browser = browser
+        self._web = self._browser = browser
         self._admit = admit
         self._room = page_chars
         self._shown = shown
+        self._start_preview = preview
+        self._preview: Browser | None = None  # the open preview, while the model works in it
 
     def reset(self) -> None:
-        """Close the browser: a forgotten conversation leaves no page open."""
-        self._browser.close()
+        """Close the browser and any preview: a forgotten conversation leaves no page open."""
+        self._end_preview()
+        self._web.close()
+
+    def _end_preview(self) -> None:
+        """Close the open preview, if any, and drive the web session again."""
+        preview, self._preview = self._preview, None
+        self._browser = self._web
+        if preview is not None:
+            preview.close()
 
     # --- reading ----------------------------------------------------------------------------
 
@@ -204,15 +218,36 @@ class BrowserOps:
                 msg = "No page is open in the browser; give a url."
                 raise OperationError(msg)
             return self._page(view, part)
+        if url:
+            self._admit(url)
+            self._end_preview()  # a web address is the web session's, never the preview's
         try:
-            if link:
-                address = self._browser.link(_ref(link))
-            else:
-                self._admit(url)
-                address = url
+            address = self._browser.link(_ref(link)) if link else url
             return self._page(self._browser.open(address), part)
         except BrowserError as exc:
             raise OperationError(f"Couldn't open that page: {exc}.") from exc
+
+    def preview(self, args: dict[str, Any]) -> Result:
+        """Open the owner's own build (a folder, or a page in it) in a preview session.
+
+        The preview reaches only a read-only server over that folder, not the internet (ADR
+        0016). Until a web address is opened again, `browser_open` with a link, `browser_act` and
+        `browser_screenshot` work on the preview's page.
+
+        Raises:
+            OperationError: no preview can be made here, the path may not be served, or the
+                page could not be opened.
+        """
+        if self._start_preview is None:
+            msg = "Previews are not offered here."
+            raise OperationError(msg)
+        session, address = self._start_preview(str(args["path"]))
+        self._end_preview()
+        self._preview = self._browser = session
+        try:
+            return self._page(session.open(address), int(args.get("part", 1)))
+        except BrowserError as exc:
+            raise OperationError(f"Couldn't open the preview: {exc}.") from exc
 
     def screenshot(self, args: dict[str, Any]) -> Result:
         """Show the owner one screen of the open page in the chat.
@@ -341,6 +376,31 @@ class BrowserOps:
                 self.open,
                 side_effect=False,
                 spoken_summary=lambda _a: "open that page",
+            ),
+            *(
+                [
+                    Operation(
+                        "browser_preview",
+                        "Open what you built (an HTML page, or its folder for index.html) in a "
+                        "browser that reaches only that folder, to check it works; then use "
+                        "browser_act and its link refs on it. Never open your own files with "
+                        "file:// in browser_open.",
+                        {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "minLength": 1, "maxLength": MAX_PATH},
+                                "part": _PART,
+                            },
+                            "required": ["path"],
+                            "additionalProperties": False,
+                        },
+                        self.preview,
+                        side_effect=False,
+                        spoken_summary=lambda a: f"preview {a.get('path', 'that page')}",
+                    )
+                ]
+                if self._start_preview is not None
+                else []
             ),
             Operation(
                 "browser_act",

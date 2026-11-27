@@ -47,8 +47,9 @@ Chosen option 3, as a setting: `tools = "all" | "routed"` in `[agent]` and `[cha
   from the next call to the end of the request, always as the core tools, then the loaded groups in the
   registry's order, whatever order they were asked for in, so calls with the same groups share their whole
   start. The call that may only answer (after a repeated call, or on the last step) is offered the tools an
-  ordinary call would have then, the core and the groups loaded so far, so the server keeps the prompt it pinned. A new request starts with the core
-  again; the remembered conversation is unchanged.
+  ordinary call would have then, the core and the groups loaded so far, so the server keeps the prompt it pinned. A request that
+  continues the remembered conversation starts with the groups the last one had loaded (amended 2026-11-28, below); a new or
+  forgotten conversation, and a request heard from PC audio, start with the core.
 - **Enforcement.** A call to a tool of a group that was not offered when the call was written is not run, even
   in the same reply as the `use_tools` that asks for it. The model is told which group to ask for, and the
   refusal is audited (`tool_not_offered`). A plain command matched in code (ADR 0004, the owner's own words, no model call) runs as in `all` mode and
@@ -83,6 +84,19 @@ inside a request counts only what that call is offered.
   appending in the order asked would share more of the previous call; the cost is a second order for the same
   set.
 - A conversation remembered with `memory_detail = "full"` can show a past call to a tool the new request has
-  not been offered; calling it is refused with the hint, which costs a call.
+  not been offered; calling it is refused with the hint, which costs a call. Since the amendment below this
+  happens only after a new or forgotten conversation.
 - Owner-written skills and Omarchy's guides stay in the `guides` group and the skills list; the router never
   reads anything outside Jarvis's own files and Omarchy's guides.
+
+## Amendment (2026-11-28): the groups stay for the conversation
+
+In coding mode a follow-up ("keep going", "try again") started with the core tools, though the request before
+it had just used the file tools. The model called `write_file` from memory, was refused, and spent a call
+(30 to 40 seconds with the coding model) loading the group again, three times in one evening's log; once the
+refused call ended the request with no reply. A request that continues the remembered conversation now
+starts with the groups the last remembered request had loaded (audited as `tools_kept`). A new or forgotten
+conversation (`/clear`, the idle time, a restart) starts with the core again, and so does a request heard
+from PC audio, which reads no history; what such a request loads is not kept. Groups decide only what is
+offered: every call is still classified as before, so a heard request still gets the same verdicts.
+

@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from jarvis.jsonutil import obj
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Generator, Mapping
     from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -91,6 +91,21 @@ class AuditLog:
         self._tags = dict(tags or {})
         self._lock = threading.Lock()
         self.events: list[dict[str, object]] = []
+        self._watchers: list[Callable[[dict[str, object]], None]] = []
+
+    @contextlib.contextmanager
+    def watching(self, watcher: Callable[[dict[str, object]], None] | None) -> Generator[None]:
+        """Pass `watcher` a copy of every event recorded until the block ends (None: nothing)."""
+        if watcher is None:
+            yield
+            return
+        with self._lock:
+            self._watchers.append(watcher)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._watchers.remove(watcher)
 
     def record(self, event: str, **fields: object) -> None:
         """Append one event; a write failure is logged, never raised."""
@@ -101,14 +116,20 @@ class AuditLog:
             **self._tags,
         }
         with self._lock:
+            watchers = list(self._watchers)
             if self._path is None:
                 self.events.append(entry)
-                return
-            line = _line(entry)
+            else:
+                line = _line(entry)
+                try:
+                    self._append(self._path, line)
+                except OSError:
+                    log.exception("the audit log could not be written; event: %s", line.strip())
+        for watcher in watchers:
             try:
-                self._append(self._path, line)
-            except OSError:
-                log.exception("the audit log could not be written; event: %s", line.strip())
+                watcher(dict(entry))
+            except Exception:  # a front end's fault never stops the log
+                log.exception("an audit watcher failed on %s", event)
 
     def _append(self, path: Path, line: str) -> None:
         """Write `line` under an exclusive lock on the log, rotating it first when it is full.

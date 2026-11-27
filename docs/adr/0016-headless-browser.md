@@ -165,7 +165,13 @@ page in the owner's own browser renamed to 127.0.0.1 (DNS rebinding) reads the p
 as the owner could still read the token from Jarvis's memory; only OS isolation would stop that. It stops
 when the session is closed. Its text, errors and screenshots are
 web text too. Built: `web/preview.py` (`FolderServer`, `preview_browser`), `EgressProxy(local_port=…)` and
-`Browser(origin=…)`; the operation that asks for a preview comes with coding mode.
+`Browser(origin=…)`, and the operation `browser_preview` (in the `browser` group, `safe` and a read like
+`browser_open`, 2026-11-28): it takes a folder Jarvis may write, or a page in one (served with its folder and
+opened first), and opens it in a preview session of its own. Until a web address is opened again,
+`browser_open` with a link, `browser_act` and `browser_screenshot` work on the preview's page; a web address
+closes the preview and goes back to the web session, and forgetting the conversation closes both. A model
+that tried `file://` in `browser_open` was refused with no way to see its own page; it is now told to use
+the preview.
 
 ### Consequences
 

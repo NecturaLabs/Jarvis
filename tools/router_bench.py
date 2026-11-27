@@ -693,6 +693,7 @@ STUBS: dict[str, Stub] = {
     "image_search": _say("3 pictures found: img1, img2, img3.", Origin.WEB),
     "show_image": _say("Showing the picture."),
     "browser_open": _say("Opened the page: 'Example Domain'.", Origin.WEB),
+    "browser_preview": _say("Opened the preview of index.html: 'Built'.", Origin.WEB),
     "browser_act": _say("Done."),
     "browser_screenshot": _say("Showing the page."),
     "read_skill": _say("(the skill's text)", Origin.PLUGIN_SKILL),

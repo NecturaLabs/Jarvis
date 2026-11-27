@@ -95,7 +95,7 @@ DEV_PROFILE = """\
   "--vram-reserve-mib",
   "12000"
  ],
- "cwd": "<home>/data/strata/terminal/current",
+ "cwd": "/strata/control/0.1.66",
  "tokenizer": "<home>/packs/q4/tokenizer",
  "model_name": "flash-q4",
  "log": "<home>/state/jarvis/strata.log",

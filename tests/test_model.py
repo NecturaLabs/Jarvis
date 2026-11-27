@@ -945,6 +945,21 @@ def test_without_thinking_the_model_is_asked_to_answer_at_once() -> None:
     assert "reasoning_budget_tokens" not in body
 
 
+def test_a_temperature_is_sent_only_when_one_is_set() -> None:
+    """Regression: coding mode sent 0.2 too, so Strata never used the model card's sampling."""
+    bodies: list[dict[str, object]] = []
+    for temperature in (0.2, None):
+        seen: list[httpx.Request] = []
+        local = ModelConfig(base_url=Config().model_base_url(), temperature=temperature)
+        StrataModel(
+            local, "key", transport=_answering({"role": "assistant", "content": "hi"}, seen)
+        ).chat(MESSAGES, TOOLS)
+        bodies.append(json.loads(seen[0].content))
+
+    assert bodies[0]["temperature"] == pytest.approx(0.2)
+    assert "temperature" not in bodies[1]
+
+
 def test_thinking_asks_for_its_effort_and_cap_and_keeps_the_replys_room() -> None:
     # The server's max_tokens counts the thinking too: the reply's own cap must stay whole.
     seen: list[httpx.Request] = []

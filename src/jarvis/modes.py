@@ -134,7 +134,7 @@ def effective(config: Config, mode: Mode) -> Config:
     In coding mode `[coding.chat]` is laid over `[chat]` and `[coding.voice]` over `[agent]` (a
     limit unset there stays the channel's own), the model server takes its context and, where
     set, its run config, VRAM limits, memory, context cells in VRAM, swap, picture reader and
-    effort position, the model its temperature, and the files their
+    effort position, the model its temperature and how long one call may take, and the files their
     extra write roots.
     """
     if mode != "coding":
@@ -155,7 +155,11 @@ def effective(config: Config, mode: Mode) -> Config:
     for name in _STRATA_KEYS:
         if (value := getattr(coding, name)) is not None:
             strata[name] = value
-    model = {} if coding.temperature is None else {"temperature": coding.temperature}
+    model: dict[str, object] = {}
+    if coding.temperature is not None:
+        model["temperature"] = None if coding.temperature == "model" else coding.temperature
+    if coding.request_timeout_s is not None:
+        model["request_timeout_s"] = coding.request_timeout_s
     roots = list(dict.fromkeys([*config.files.write_roots, *coding.write_roots]))
     return config.model_copy(
         update={

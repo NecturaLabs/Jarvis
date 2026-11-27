@@ -1007,3 +1007,113 @@ def test_a_file_is_writable_by_the_bit_that_applies_to_this_user(
     gid = os.getegid() if my_group else max(groups) + 1
 
     assert files_module._writable(_stat(mode, uid, gid)) is writable  # pyright: ignore[reportPrivateUsage] - the bits for users this test cannot be
+
+
+# --- edit: one passage changed in place --------------------------------------------------------
+
+
+def _edit(ops: FileOps, path: str, find: str, content: str) -> str:
+    op = _op(ops, "write_file")
+    args = validate_args(op, {"path": path, "find": find, "content": content, "mode": "edit"})
+    bound = op.prepare(args) if op.prepare else args
+    return op.run(bound).text
+
+
+def test_an_edit_changes_the_one_passage_and_keeps_the_rest_as_it_was(home: Path) -> None:
+    """Regression: a long file could only be rewritten whole, one long model call at a time."""
+    result = _edit(_ops(home), "~/Documents/todo.md", "- eggs\n", "- eggs\n- bread")
+
+    assert (home / "Documents" / "todo.md").read_text(encoding="utf-8") == (
+        "- milk\n- eggs\n- bread"  # put in as written: no line break added
+    )
+    assert result.startswith("Changed ~/Documents/todo.md: 7 characters became 14.")
+
+
+@pytest.mark.parametrize(
+    ("text", "find", "said"),
+    [
+        ("- milk\n- eggs\n", "- tea", "does not contain"),
+        ("- eggs\n- eggs\n", "- eggs", "2 times"),
+    ],
+)
+def test_an_edit_whose_passage_is_missing_or_not_unique_is_refused_before_any_question(
+    home: Path, text: str, find: str, said: str
+) -> None:
+    (home / "Documents" / "todo.md").write_text(text, encoding="utf-8")
+    op = _op(_ops(home), "write_file")
+    args = validate_args(
+        op, {"path": "~/Documents/todo.md", "find": find, "content": "x", "mode": "edit"}
+    )
+    assert op.prepare is not None
+
+    with pytest.raises(OperationError, match=said):
+        op.prepare(args)
+
+    assert (home / "Documents" / "todo.md").read_text(encoding="utf-8") == text
+
+
+def test_an_edit_needs_a_file_and_a_passage(home: Path) -> None:
+    with pytest.raises(OperationError, match=r"no ~/Documents/new\.md to change"):
+        _edit(_ops(home), "~/Documents/new.md", "x", "y")
+    op = _op(_ops(home), "write_file")
+    args = validate_args(op, {"path": "~/Documents/todo.md", "content": "y", "mode": "edit"})
+    assert op.prepare is not None
+    with pytest.raises(OperationError, match="needs find"):
+        op.prepare(args)
+    assert not (home / "Documents" / "new.md").exists()
+
+
+def test_an_edit_of_a_file_that_changed_since_the_question_is_refused(home: Path) -> None:
+    op = _op(_ops(home), "write_file")
+    args = validate_args(
+        op, {"path": "~/Documents/todo.md", "find": "- eggs", "content": "- tea", "mode": "edit"}
+    )
+    assert op.prepare is not None
+    bound = op.prepare(args)
+    (home / "Documents" / "todo.md").write_text("- milk\n- eggs\n- jam\n", "utf-8")
+
+    with pytest.raises(OperationError, match="changed"):
+        op.run(bound)
+
+    assert (home / "Documents" / "todo.md").read_text(encoding="utf-8") == "- milk\n- eggs\n- jam\n"
+
+
+def test_an_edit_keeps_to_the_write_roots_and_hidden_files(home: Path) -> None:
+    for path in ("~/.bashrc", "~/Projects/x.md"):
+        with pytest.raises(OperationError, match=r"hidden|outside"):
+            _edit(_ops(home), path, "ll", "rm")
+    assert (home / ".bashrc").read_text(encoding="utf-8") == "alias ll='ls -l'\n"
+
+
+def test_an_edit_of_text_that_is_not_utf8_is_refused(home: Path) -> None:
+    (home / "Documents" / "blob.md").write_bytes(b"\xff\xfe- eggs\n")
+
+    with pytest.raises(OperationError, match="not UTF-8"):
+        _edit(_ops(home), "~/Documents/blob.md", "- eggs", "- tea")
+
+
+def test_the_question_for_an_edit_names_the_file_and_both_sizes(home: Path) -> None:
+    op = _op(_ops(home), "write_file")
+    args = validate_args(
+        op, {"path": "~/Documents/todo.md", "find": "- eggs", "content": "- tea", "mode": "edit"}
+    )
+    assert op.prepare is not None
+
+    summary = op.spoken_summary(op.prepare(args))
+
+    assert summary == "change todo.md in Documents: 6 characters there become 5 characters"
+    assert "find" in op.hashed  # the audit log keeps only a hash of the passage
+
+
+def test_file_text_keeps_its_leading_spaces_and_line_breaks(home: Path) -> None:
+    """Regression: arguments were trimmed, so an edit lost the indentation of the code it put in
+    and a new file lost the spaces its first line began with."""
+    ops = _ops(home)
+    _write(ops, "~/Documents/code.py", "    x = 1\n\n")
+    assert (home / "Documents" / "code.py").read_text(encoding="utf-8") == "    x = 1\n\n"
+
+    _edit(ops, "~/Documents/code.py", "    x = 1\n", "    if x:\n        y = 2\n")
+
+    assert (home / "Documents" / "code.py").read_text(encoding="utf-8") == (
+        "    if x:\n        y = 2\n\n"
+    )

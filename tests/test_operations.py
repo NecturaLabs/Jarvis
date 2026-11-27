@@ -1,5 +1,6 @@
 """Argument validation and the operation registry: what a model's tool call must pass first."""
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -253,3 +254,16 @@ def test_a_request_begun_by_jarvis_going_on_alone_is_not_the_owners_own() -> Non
             assert request.owner_asked is expected, noted
     with request_scope(foreign=True) as request:
         assert not request.owner_asked
+
+
+def test_a_verbatim_argument_is_kept_as_written_and_the_others_are_trimmed() -> None:
+    op = replace(
+        _op({"text": {"type": "string", "minLength": 1}, "name": {"type": "string"}}, ["text"]),
+        verbatim=frozenset({"text"}),
+    )
+
+    args = validate_args(op, {"text": "  indented\n", "name": "  Ada  "})
+
+    assert args == {"text": "  indented\n", "name": "Ada"}
+    with pytest.raises(ArgumentError, match="must not be empty"):
+        validate_args(op, {"text": " \n "})

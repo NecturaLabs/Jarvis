@@ -11,14 +11,16 @@ from typing import TYPE_CHECKING
 import pytest
 from test_web_browser import FakeAgentBrowser, Page
 
-from jarvis.config import FilesConfig
+from jarvis.app import preview_starter
+from jarvis.config import Config, FilesConfig
+from jarvis.operations import OperationError
 from jarvis.pc.files import Boundary, FileRefusalError
 from jarvis.web.browser import Browser, BrowserError
 from jarvis.web.preview import FolderServer, preview_browser
 from jarvis.web.proxy import EgressProxy
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
 
@@ -349,3 +351,33 @@ def test_closing_a_preview_browser_stops_its_server(tmp_path: Path, home: Path) 
     assert server.port == 0
     with pytest.raises(ConnectionRefusedError):
         socket.create_connection(("127.0.0.1", port), timeout=1).close()
+
+
+# --- the preview an operation starts (`app.preview_starter`) -----------------------------------
+
+
+def _starter(home: Path) -> Callable[[str], tuple[Browser, str]]:
+    cfg = Config(files=FilesConfig(write_roots=["~/Documents"]))
+    return preview_starter(cfg, "/usr/bin/agent-browser", home)
+
+
+def test_a_page_is_previewed_with_its_folder_served_and_the_page_opened_first(home: Path) -> None:
+    session, address = _starter(home)(str(home / "Documents" / "site" / "index.html"))
+    try:
+        assert address.startswith("http://127.0.0.1:")
+        assert address.endswith("/index.html")
+        with socket.create_connection(("127.0.0.1", int(address.split(":")[2].split("/")[0]))):
+            pass  # the folder's server listens
+    finally:
+        session.close()
+    port = int(address.split(":")[2].split("/")[0])
+    with pytest.raises(OSError, match=r"."), socket.create_connection(("127.0.0.1", port), 1):
+        pass  # closing the session stopped the server
+
+
+@pytest.mark.parametrize("where", [".", "Projects/site", "Documents/none/index.html"])
+def test_a_preview_outside_the_write_roots_or_of_nothing_is_refused(home: Path, where: str) -> None:
+    (home / "Projects" / "site").mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(OperationError, match=r"outside|no folder|not"):
+        _starter(home)(str(home / where))

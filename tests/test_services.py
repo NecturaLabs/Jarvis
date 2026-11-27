@@ -231,6 +231,18 @@ def test_the_profile_keeps_the_models_own_settings_and_sets_jarvis_limits(tmp_pa
     assert "engine_ready_s" not in profile
     assert profile["parallel"] == 1
     assert profile["log"] != "/strata/install/strata-q4.log"
+    # Regression: Jarvis replaced it with `terminal/current`, an older Strata's folder.
+    assert profile["cwd"] == "/strata/control/0.1.66"  # the run config's own
+
+
+def test_a_run_config_without_a_folder_runs_in_stratas_terminal(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    run = json.loads(cfg.strata.run_config.read_text(encoding="utf-8"))
+    del run["cwd"]
+    cfg.strata.run_config.write_text(json.dumps(run), encoding="utf-8")
+
+    profile = services.strata_profile(cfg)
+
     assert profile["cwd"] == str(tmp_path / "strata-home" / "terminal" / "current")
 
 

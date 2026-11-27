@@ -125,7 +125,9 @@ vision_idle_s = 120
 [coding]
 back_after_s = 1800.0  # back to the normal mode after this long unused; 0 never
 context = 65536
-# temperature: default [model]'s; expert_vram_gib: default [strata]'s.
+temperature = "model"  # the model's own sampling (its card); a number sets one
+request_timeout_s = 600.0  # one model call; [model]'s is for the normal mode
+# expert_vram_gib: default [strata]'s.
 vram_reserve_mib = 0  # 0: [strata]'s
 memory_max = ""  # "": [strata]'s
 # kv_resident, keep_in_ram, pictures, effort_position: default [strata]'s (0 and "" count as set).
@@ -145,7 +147,7 @@ reply_tokens = 8192
 tool_text_chars = 20000
 # memory_tokens: default [chat]'s.
 thinking = "medium"
-thinking_tokens = 1024
+thinking_tokens = 2048
 thinking_raised_tokens = 4096
 auto = true
 

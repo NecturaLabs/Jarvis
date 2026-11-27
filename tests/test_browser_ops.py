@@ -25,7 +25,7 @@ from jarvis.operations import (
     validate_args,
 )
 from jarvis.pictures import PictureCache
-from jarvis.policy import OpClass, effective_class
+from jarvis.policy import OpClass, Origin, effective_class
 from jarvis.web import page as page_module
 from jarvis.web.browser import MAX_STDOUT, Browser, BrowserTimeoutError
 from jarvis.web.browserops import NAMES, BrowserOps, act_summary
@@ -565,8 +565,92 @@ def test_a_link_with_a_host_too_long_to_name_is_not_bound(tmp_path: Path, long_s
 
 
 def test_the_screenshot_is_offered_only_where_pictures_are_shown(tmp_path: Path) -> None:
-    assert {op.name for op in Setup(tmp_path).ops.operations()} == NAMES - {"browser_screenshot"}
-    assert {op.name for op in Setup(tmp_path, chat=True).ops.operations()} == NAMES
+    unpreviewed = NAMES - {"browser_preview"}
+    assert {op.name for op in Setup(tmp_path).ops.operations()} == unpreviewed - {
+        "browser_screenshot"
+    }
+    assert {op.name for op in Setup(tmp_path, chat=True).ops.operations()} == unpreviewed
+
+
+# --- previews of the owner's own builds ---------------------------------------------------------
+
+PREVIEW = "http://127.0.0.1:5555"
+
+
+class Previews:
+    """A preview starter over a fake browser that may open only the preview's origin."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        super().__init__()
+        page = Page(refs={"e1": {"role": "link", "name": "Level 2"}}, attrs={("e1", "href"): "/2"})
+        self.fake = FakeAgentBrowser(page)
+        self.asked: list[str] = []
+        self.session = Browser(
+            "/usr/bin/agent-browser",
+            tmp_path / "preview",
+            idle_close_s=60,
+            run=self.fake,
+            proxy=FakeProxy,  # pyright: ignore[reportArgumentType] - a stand-in
+            timer=Timers(),  # pyright: ignore[reportArgumentType] - a stand-in
+            origin=PREVIEW,
+        )
+
+    def __call__(self, path: str) -> tuple[Browser, str]:
+        self.asked.append(path)
+        if "outside" in path:
+            msg = "That is outside the folders I may write, so I don't serve it."
+            raise OperationError(msg)
+        return self.session, f"{PREVIEW}/index.html"
+
+
+def _previewing(tmp_path: Path) -> tuple[Setup, Previews]:
+    setup, previews = Setup(tmp_path), Previews(tmp_path)
+    setup.ops = BrowserOps(setup.browser, setup.web.admit, page_chars=2800, preview=previews)
+    return setup, previews
+
+
+def test_a_build_is_previewed_in_its_own_session_and_not_the_web_one(tmp_path: Path) -> None:
+    """Regression: the model could open its own page only as file://, which is refused."""
+    setup, previews = _previewing(tmp_path)
+
+    result = setup.op("browser_preview").run({"path": "~/Documents/site"})
+
+    assert previews.asked == ["~/Documents/site"]
+    assert ["open", f"{PREVIEW}/index.html"] in previews.fake.commands()
+    assert setup.fake.calls == []  # the web session never saw it
+    assert result.origin is Origin.WEB  # what a build shows is data, like any page
+
+
+def test_a_link_follows_on_in_the_preview_and_a_web_address_ends_it(tmp_path: Path) -> None:
+    setup, previews = _previewing(tmp_path)
+    setup.op("browser_preview").run({"path": "~/Documents/site"})
+
+    setup.op("browser_open").run({"link": "e1"})
+    assert ["open", f"{PREVIEW}/2"] in previews.fake.commands()
+    _searched(setup)
+    setup.op("browser_open").run({"url": URL})
+
+    assert previews.fake.calls[-1][0][-1] == "close"  # the preview is closed
+    assert ["open", URL] in setup.fake.commands()
+
+
+def test_a_path_the_preview_may_not_serve_is_refused_and_nothing_opens(tmp_path: Path) -> None:
+    setup, previews = _previewing(tmp_path)
+
+    with pytest.raises(OperationError, match="outside"):
+        setup.op("browser_preview").run({"path": "/outside/site"})
+
+    assert previews.fake.calls == []
+    assert setup.fake.calls == []
+
+
+def test_forgetting_the_conversation_closes_the_preview_too(tmp_path: Path) -> None:
+    setup, previews = _previewing(tmp_path)
+    setup.op("browser_preview").run({"path": "~/Documents/site"})
+
+    setup.ops.reset()
+
+    assert not previews.session.running
 
 
 def test_forgetting_the_conversation_closes_the_browser(tmp_path: Path) -> None:

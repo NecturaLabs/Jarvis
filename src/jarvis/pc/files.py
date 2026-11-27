@@ -747,13 +747,8 @@ class FileOps:
             msg = f"{shown} appeared just now, so I didn't write it without asking."
             raise FileRefusalError(msg)
         bound = {**args, "path": str(path), "mode": mode, "new_folders": new_folders}
-        if mode == "replace":
-            try:
-                old = path.stat(follow_symlinks=False)
-            except FileNotFoundError:
-                bound["old_size"] = bound["old_file"] = None
-            else:
-                bound["old_size"], bound["old_file"] = old.st_size, _identity(old)
+        if mode in {"replace", "edit"}:
+            _bind_old(bound, path, shown)
         return bound
 
     def unasked(self, args: dict[str, Any]) -> str:
@@ -884,6 +879,11 @@ class FileOps:
         folder = self._boundary.show(path.parent).removeprefix("~/") if path.is_absolute() else ""
         where = f"{path.name} in {'your home folder' if folder == '~' else folder}"
         count = len(str(args.get("content", "")))
+        if str(args.get("mode")) == "edit":
+            found = len(str(args.get("find", "")))
+            target = where if folder else str(path)
+            plural = "" if count == 1 else "s"
+            return f"change {target}: {found} characters there become {count} character{plural}"
         verb = {"replace": "replace", "append": "add to"}.get(str(args.get("mode")), "create")
         what = "the file " if verb == "create" else ""
         plural = "" if count == 1 else "s"
@@ -927,13 +927,8 @@ class FileOps:
         if again != path:
             raise FileRefusalError(changed)
         vet = self._ready_workspace(path, shown)
-        content = str(args["content"])
-        if not content.endswith("\n"):
-            content += "\n"
         claim = args.get(UNASKED_ARG)
-        # A write let through as "a new file" makes the file exclusively, whatever its mode: one
-        # that appeared since is the owner's, and was never asked about.
-        mode = "create" if claim == NEW_FILE else str(args.get("mode", "create"))
+        mode, content = _how_written(args, changed)
         try:
             folder = _open_folder(path.parent, create=int(args.get("new_folders") or 0), vet=vet)
         except FileRefusalError:
@@ -953,7 +948,8 @@ class FileOps:
         )
         try:
             ours = self._remembered(path, folder, claim)
-            _write(target, content.encode("utf-8"), mode)
+            content = _in_full(target, path, mode, content, args)
+            _write(target, content.encode("utf-8"), "replace" if mode == "edit" else mode)
             if ours:
                 self._remember(path, folder)
         except FileExistsError as exc:
@@ -966,8 +962,7 @@ class FileOps:
             raise FileRefusalError(msg) from exc
         finally:
             os.close(folder)
-        done = {"replace": "Replaced", "append": "Added to"}.get(mode, "Created")
-        sentence = f"{done} {shown} ({len(content)} characters)."
+        sentence = _written(mode, shown, content, args)
         # The full path and its link for the model, which otherwise guesses what "~" is.
         where = f" Its full path is {path}; as a link: {path.as_uri()}"
         return Result(sentence + where, spoken=sentence)
@@ -1027,8 +1022,8 @@ class FileOps:
             ),
             Operation(
                 "write_file",
-                "Create a text file on the owner's PC, or replace or add to one (mode). Jarvis "
-                "asks the owner first when they want to be asked.",
+                "Create, replace, add to or edit a file (mode; edit: find, found exactly once, "
+                "becomes content).",
                 {
                     "type": "object",
                     "properties": {
@@ -1036,9 +1031,9 @@ class FileOps:
                         "content": {"type": "string", "maxLength": MAX_CONTENT},
                         "mode": {
                             "type": "string",
-                            "enum": ["create", "replace", "append"],
-                            "default": "create",
+                            "enum": ["create", "replace", "append", "edit"],
                         },
+                        "find": {"type": "string", "maxLength": MAX_CONTENT},
                     },
                     "required": ["path", "content"],
                     "additionalProperties": False,
@@ -1048,7 +1043,8 @@ class FileOps:
                 spoken_summary=self.write_summary,
                 prepare=self.bind_write,
                 preview=self.write_preview,
-                hashed=frozenset({"content"}),
+                hashed=frozenset({"content", "find"}),
+                verbatim=frozenset({"content", "find"}),
                 unasked=self.unasked,
             ),
         ]
@@ -1140,6 +1136,123 @@ def _write(target: _Target, data: bytes, mode: str) -> None:
             os.close(fd)
             raise
     _fill(fd, data)
+
+
+def _how_written(args: dict[str, Any], changed: str) -> tuple[str, str]:
+    """Return how a confirmed write writes (its mode) and the text it puts in.
+
+    A write let through as "a new file" makes the file exclusively, whatever its mode: one that
+    appeared since is the owner's, and was never asked about. A whole file ends in a line break;
+    an edit's text is put in as it is.
+
+    Raises:
+        FileRefusalError: an edit was judged as making a new file (there was none to change).
+    """
+    claim = args.get(UNASKED_ARG)
+    asked = str(args.get("mode", "create"))
+    if asked == "edit" and claim == NEW_FILE:
+        raise FileRefusalError(changed)
+    content = str(args["content"])
+    if asked != "edit" and not content.endswith("\n"):
+        content += "\n"
+    return ("create" if claim == NEW_FILE else asked), content
+
+
+def _in_full(target: _Target, path: Path, mode: str, content: str, args: dict[str, Any]) -> str:
+    """Return the whole new text of the file: `content`, or for an edit the file with it in.
+
+    An edit reads the file through the folder as opened, and only the file the question named;
+    one that changed, or no longer holds the passage once, is refused (`FileRefusalError`).
+    """
+    if mode != "edit":
+        return content
+    return _edited(_read_text(path, target.shown, target.folder, target.old), args, target.shown)
+
+
+def _written(mode: str, shown: str, content: str, args: dict[str, Any]) -> str:
+    """Return the sentence that says what a write did."""
+    if mode == "edit":
+        found, put = len(str(args["find"])), len(str(args["content"]))
+        return f"Changed {shown}: {found} characters became {put}."
+    done = {"replace": "Replaced", "append": "Added to"}.get(mode, "Created")
+    return f"{done} {shown} ({len(content)} characters)."
+
+
+def _bind_old(bound: dict[str, Any], path: Path, shown: str) -> None:
+    """Bind the file a `replace` or `edit` changes: its size and identity, None when it is absent.
+
+    Raises:
+        FileRefusalError: an `edit` meets no file, or a passage missing or not unique (said now,
+            before any question).
+    """
+    try:
+        old = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        bound["old_size"] = bound["old_file"] = None
+    else:
+        bound["old_size"], bound["old_file"] = old.st_size, _identity(old)
+    if bound["mode"] != "edit":
+        return
+    if bound["old_size"] is None:
+        msg = f"There is no {shown} to change; create it instead."
+        raise FileRefusalError(msg)
+    _edited(_read_text(path, shown), bound, shown)
+
+
+def _read_text(
+    path: Path, shown: str, folder: int | None = None, named: tuple[int, ...] | None = None
+) -> str:
+    """Return the text of the file an `edit` changes, never through a link at its last name.
+
+    With `folder` it is read by name from that open folder, and must be the file `named` (its
+    `_state`), the one the question was about.
+
+    Raises:
+        FileRefusalError: it is not a regular file, not that file, too long or not UTF-8 text.
+    """
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    try:
+        fd = (
+            os.open(path.name, flags, dir_fd=folder) if folder is not None else os.open(path, flags)
+        )
+    except OSError as exc:
+        msg = f"I couldn't read {shown}: {exc.strerror or exc}."
+        raise FileRefusalError(msg) from exc
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or (folder is not None and _state(info) != named):
+            msg = f"{shown} changed after you were asked, so I didn't write it."
+            raise FileRefusalError(msg)
+        if info.st_size > MAX_READ_BYTES:
+            msg = f"{shown} is too long to edit in place; replace it instead."
+            raise FileRefusalError(msg)
+        data = handle.read(MAX_READ_BYTES + 1)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        msg = f"{shown} is not UTF-8 text, so I don't edit it."
+        raise FileRefusalError(msg) from exc
+
+
+def _edited(text: str, args: dict[str, Any], shown: str) -> str:
+    """Return `text` with the one passage `find` names changed to `content`.
+
+    Raises:
+        FileRefusalError: `find` is missing, or not found exactly once.
+    """
+    find, new = str(args.get("find", "")), str(args.get("content", ""))
+    if not find:
+        msg = "An edit needs find: the exact text to change."
+        raise FileRefusalError(msg)
+    count = text.count(find)
+    if count != 1:
+        msg = (
+            f"{shown} does not contain that text; read it again and copy the passage exactly."
+            if count == 0
+            else f"{shown} contains that text {count} times; give more of the lines around it."
+        )
+        raise FileRefusalError(msg)
+    return text.replace(find, new, 1)
 
 
 def _check_replaced(target: _Target) -> os.stat_result | None:

@@ -321,7 +321,8 @@ class Operation:
     `outbound_args`, only a call that gives one of those arguments sends any (`sends_words`).
     `preview` returns the start of the text a confirmed call would write, which a window shows
     under the question (speech says only how much). `hashed` names the arguments the audit log
-    keeps only as a SHA-256 and a length, never as text.
+    keeps only as a SHA-256 and a length, never as text. `verbatim` names the string arguments
+    kept exactly as written, not trimmed: file text, whose leading spaces and line breaks matter.
     `lowest_class` is as low as the owner's `boundaries.classes` may set it. With
     `audit_text=False` the audit log keeps a result's text only as a SHA-256 and a length (a
     shell command's output can hold anything the owner's user can read).
@@ -353,6 +354,7 @@ class Operation:
     shortcuts: tuple[Shortcut, ...] = ()
     preview: Callable[[dict[str, Any]], str] | None = None
     hashed: frozenset[str] = frozenset()
+    verbatim: frozenset[str] = frozenset()
     audit_text: bool = True
     concurrent: bool = False
     always_ask: bool = False
@@ -393,12 +395,12 @@ class Operation:
         }
 
 
-def _check_string(name: str, spec: dict[str, Any], value: object) -> str:
+def _check_string(name: str, spec: dict[str, Any], value: object, *, verbatim: bool = False) -> str:
     if not isinstance(value, str):
         raise ArgumentError(f"{name} must be a string")
-    text = value.strip()
+    text = value if verbatim else value.strip()
     least = spec.get("minLength", 0)
-    if not text and least > 0:
+    if not text.strip() and least > 0:
         raise ArgumentError(f"{name} must not be empty")
     if len(text) < least:
         raise ArgumentError(f"{name} must be at least {least} characters")
@@ -484,7 +486,10 @@ def validate_args(op: Operation, args: object) -> dict[str, Any]:
     for key, value in cast("dict[str, object]", args).items():
         if key not in props:
             raise ArgumentError(f"unknown argument {key!r}")
-        cleaned[key] = _check_value(key, props[key], value)
+        if key in op.verbatim and props[key].get("type") == "string":
+            cleaned[key] = _check_string(key, props[key], value, verbatim=True)
+        else:
+            cleaned[key] = _check_value(key, props[key], value)
     missing = [key for key in required if key not in cleaned]
     if missing:
         raise ArgumentError(f"missing argument(s): {', '.join(missing)}")

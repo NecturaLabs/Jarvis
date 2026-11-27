@@ -540,7 +540,8 @@ def strata_profile(config: Config) -> dict[str, object]:
         **{key: value for key, value in run.data.items() if key not in _LAUNCH_KEYS},
         "args": args,
         "args_written": args,
-        "cwd": str(s.home / "terminal" / "current"),
+        # The folder Strata's run config names (its control release), else its terminal's.
+        "cwd": str(run.data.get("cwd") or s.home / "terminal" / "current"),
         "log": str(paths.state_dir() / "strata.log"),
         "port": s.port,
         "host": s.listen,

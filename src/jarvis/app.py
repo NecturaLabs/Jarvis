@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import quote
 
 from jarvis import (
     __version__,
@@ -66,7 +67,7 @@ from jarvis.todos import NAME as TODO_NAME
 from jarvis.todos import TodoList
 from jarvis.todos import operation as todo_operation
 from jarvis.toolgroups import USE_TOOLS
-from jarvis.web import browser, browserops
+from jarvis.web import browser, browserops, preview
 from jarvis.web.arctic import ArcticShift
 from jarvis.web.guard import public_client
 from jarvis.web.openmeteo import OpenMeteo
@@ -489,13 +490,15 @@ def browser_ops(  # ruff: ignore[too-many-arguments] - what the browser is made 
     page_chars: int,
     shown: PictureCache | None = None,
     sessions: dict[str, browser.Browser] | None = None,
+    coding: bool = False,
 ) -> browserops.BrowserOps | None:
     """Return the headless browser's operations, or None when the channel does not offer them.
 
     A channel offers them when its `browser` key is on and agent-browser is installed. The
     browser opens only what `online` would read (`WebOps.admit`), and starts on first use.
     `sessions` keeps the browser made here by its program, and one already kept is driven
-    instead of a new one: the modes of one Jarvis share their browser.
+    instead of a new one: the modes of one Jarvis share their browser. With `coding` (coding
+    mode's registry) `browser_preview` is offered too, for checking what was built.
     """
     section = config.chat if channel == "chat" else config.agent
     program = shutil.which(browser.PROGRAM) if section.browser else None
@@ -506,7 +509,47 @@ def browser_ops(  # ruff: ignore[too-many-arguments] - what the browser is made 
         kept[program] = browser.Browser(
             program, paths.runtime_dir() / "browser", idle_close_s=config.browser.idle_close_s
         )
-    return browserops.BrowserOps(kept[program], online.admit, page_chars=page_chars, shown=shown)
+    return browserops.BrowserOps(
+        kept[program],
+        online.admit,
+        page_chars=page_chars,
+        shown=shown,
+        preview=preview_starter(config, program) if coding else None,
+    )
+
+
+def preview_starter(
+    config: Config, program: str, home: Path | None = None
+) -> Callable[[str], tuple[browser.Browser, str]]:
+    """Return what starts a preview of the owner's own build at a path (ADR 0016).
+
+    The path is a folder Jarvis may write (`files_boundary`, with `home` for tests), served
+    whole, or a file in one, served with its folder and opened first. The preview's session
+    reaches only that server; closing it stops the server.
+    """
+
+    def start(path: str) -> tuple[browser.Browser, str]:
+        boundary = files_boundary(config, home)
+        target = boundary.writable(path)
+        folder, page = (target, "") if target.is_dir() else (target.parent, target.name)
+        try:
+            server = preview.FolderServer(folder, boundary)
+            server.start()
+        except (NotADirectoryError, FileNotFoundError) as exc:
+            msg = f"There is no folder to preview at {boundary.show(folder)}."
+            raise OperationError(msg) from exc
+        except OSError as exc:
+            msg = f"The preview could not start: {exc.strerror or exc}."
+            raise OperationError(msg) from exc
+        session = preview.preview_browser(
+            server,
+            program,
+            paths.runtime_dir() / "preview",
+            idle_close_s=config.browser.idle_close_s,
+        )
+        return session, f"{server.origin}/{quote(page)}"
+
+    return start
 
 
 def files_boundary(config: Config, home: Path | None = None) -> Boundary:
@@ -742,7 +785,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     shown = chat_pictures() if channel == "chat" else None
     online = web_ops(web, shown)
     browsing = browser_ops(
-        config, online, channel, page_chars=pages, shown=shown, sessions=browsers
+        config, online, channel, page_chars=pages, shown=shown, sessions=browsers, coding=coding
     )
     ops = [
         *spotify,

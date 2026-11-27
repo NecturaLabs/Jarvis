@@ -911,6 +911,9 @@ class Hooks:
     hushed: Callable[[], bool] = lambda: False
     making_sound: Callable[[], AbstractContextManager[None]] = nullcontext
     condensed: Callable[[str], None] = lambda _note: None
+    # Each audit event of the request as it is recorded: a front end that shows no audit log of
+    # its own (a coding app) shows the calls made and their results with it.
+    recorded: Callable[[dict[str, object]], None] | None = None
 
 
 def _no_reason(answer: object) -> NoReason:
@@ -1156,12 +1159,15 @@ class Agent:
         self._overrides = overrides
         self._limits = limits or Limits()
         self._schemas = tokens(json.dumps(registry.tool_schemas(every=True)))
+        self._folder = ""  # the note naming the project folder the conversation is about
         self._fixed = tokens(system_prompt) + self._schemas
         self._memory = Conversation(self._memory_budget(), self._limits.memory_idle_s)
         self._memory_file = memory_file
         if memory_file is not None:
             self._memory.load(memory_file)
         self._last_used = 0
+        # The tool groups the last remembered request had loaded (routed): the conversation's own.
+        self._groups: tuple[str, ...] = ()
         self._clock = clock
         self._grant_s = grant_s
         self._grant_until = float("-inf")
@@ -1193,7 +1199,7 @@ class Agent:
         self._pictures = setup.pictures
         self._model = setup.model or self._model
         self._schemas = tokens(json.dumps(setup.registry.tool_schemas(every=True)))
-        self._fixed = tokens(setup.system_prompt) + self._schemas
+        self._fixed = tokens(self._instructions()) + self._schemas
         self._memory.budget = self._memory_budget()
         self._last_used = 0
 
@@ -1214,8 +1220,28 @@ class Agent:
     def set_system(self, prompt: str) -> None:
         """Give the model `prompt` as its instructions from the next request on."""
         self._system = prompt
-        self._fixed = tokens(prompt) + self._schemas
+        self._fixed = tokens(self._instructions()) + self._schemas
         self._memory.budget = self._memory_budget()
+
+    def set_folder(self, folder: str) -> None:
+        """Tell the model, from the next request on, which project folder the conversation is in.
+
+        A coding app opens each conversation in a project; its requests ("the tests", "this
+        repo") are about that folder. Whether Jarvis may read or write there is still the file
+        boundary's to decide.
+        """
+        self._folder = (
+            f"\n\nThis conversation was opened in the project folder {folder}: requests about "
+            "the project, its code or its files mean that folder unless they name another."
+            if folder
+            else ""
+        )
+        self._fixed = tokens(self._instructions()) + self._schemas
+        self._memory.budget = self._memory_budget()
+
+    def _instructions(self) -> str:
+        """Return the system prompt with the project folder's note, when there is one."""
+        return self._system + self._folder
 
     def set_thinking(self, section: AgentConfig) -> None:
         """Think as `section` says (its effort, caps and ceiling) from the next request on."""
@@ -1336,7 +1362,7 @@ class Agent:
             with self._modes.answering():  # no mode switch restarts the model under this call
                 self._model.chat(
                     [
-                        {"role": "system", "content": self._system},
+                        {"role": "system", "content": self._instructions()},
                         {"role": "user", "content": PRIME_WORDS},
                     ],
                     self._offered(()),
@@ -1544,6 +1570,7 @@ class Agent:
                 hushed=hooks.hushed,
                 making_sound=hooks.making_sound,
             ) as request,
+            self._audit.watching(hooks.recorded),
         ):
             for seen in sorted(steered_by):
                 request.saw(seen)
@@ -1600,7 +1627,7 @@ class Agent:
             self._note_remembered(request)
         turn = _Turn(
             [
-                {"role": "system", "content": self._system},
+                {"role": "system", "content": self._instructions()},
                 *remembered,
                 {"role": "user", "content": content},
             ],
@@ -1611,6 +1638,7 @@ class Agent:
             foreign=foreign,
             request=request,
             thinking=self._limits.thinking,
+            loaded=self._kept_groups() if remembered else (),
         )
         source[3].append(turn)  # the request's time left is now the turn's (`handle`)
         if pictures:
@@ -1681,9 +1709,25 @@ class Agent:
         if (reply or stopped) and not turn.foreign:
             said = f"{reply} {STOPPED}".strip() if stopped else reply
             self._remember(asked, said, turn, work)
+            self._groups = turn.loaded
         seconds = round(self._clock() - turn.started, 2)
         flag = {"stopped": True} if stopped else {}
         self._audit.record("reply", text=reply, seconds=seconds, **flag)
+
+    def _kept_groups(self) -> tuple[str, ...]:
+        """Return the tool groups a request continuing the conversation starts with (routed).
+
+        They are the groups the last remembered request had loaded, so a follow-up ("keep going")
+        is offered the tools the conversation was using without asking for them again. Groups only
+        decide what is offered: every call is still classified as it would be without them.
+        """
+        if not self._routed or not self._groups:
+            return ()
+        have = {group.name for group in self._registry.groups()}
+        kept = tuple(name for name in self._groups if name in have)
+        if kept:
+            self._audit.record("tools_kept", groups=list(kept))
+        return kept
 
     def _note_remembered(self, request: Request) -> None:
         """Note in `request` the outside text the conversation it is given holds.
@@ -1977,7 +2021,10 @@ class Agent:
         forced = self._reply_allowed()
         with self._modes.answering():  # no mode switch restarts the model under this call
             message = self._model.chat(
-                [{"role": "system", "content": self._system}, {"role": "user", "content": content}],
+                [
+                    {"role": "system", "content": self._instructions()},
+                    {"role": "user", "content": content},
+                ],
                 self._registry.tool_schemas() if forced else [],
                 require_tool=NO_ACTION if forced else False,
                 max_tokens=WATCH_ANSWER_TOKENS,

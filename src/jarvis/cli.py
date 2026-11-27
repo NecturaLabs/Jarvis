@@ -1457,6 +1457,10 @@ class _NormalSession:
         """Think at `level` from the next request on."""
         self._agent.set_thinking(_at_effort(self._section, level))
 
+    def set_folder(self, folder: str) -> None:
+        """Tell the model the session's project folder."""
+        self._agent.set_folder(folder)
+
     def save(self, path: Path) -> None:
         """Keep the conversation in `path`."""
         self._agent.memory.save(path)
@@ -1484,11 +1488,17 @@ class _CodingSession:
         self._agent = build(cfg, via="acp", session=session_id, mode="coding").agent
         self._first = first
         self._effort = ""  # the effort the session chose, kept across a new agent
+        self._folder = ""  # the session's project folder, kept across a new agent the same way
 
     def set_effort(self, level: str) -> None:
         """Think at `level` from the next request on."""
         self._effort = level
         self._agent.set_thinking(_at_effort(modes.effective(self._config, "coding").chat, level))
+
+    def set_folder(self, folder: str) -> None:
+        """Tell the model the session's project folder."""
+        self._folder = folder
+        self._agent.set_folder(folder)
 
     def save(self, path: Path) -> None:
         """Keep the conversation in `path`."""
@@ -1520,6 +1530,8 @@ class _CodingSession:
             self._agent, self._config = agent, cfg
             if self._effort:
                 self.set_effort(self._effort)
+            if self._folder:
+                self._agent.set_folder(self._folder)
         if line and hooks.draft is not None:
             hooks.draft(line)
         if hooks.cancelled():

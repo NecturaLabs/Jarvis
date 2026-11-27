@@ -154,7 +154,10 @@ def test_coding_mode_lays_its_limits_over_the_chat_and_keeps_the_rest(tmp_path: 
     assert coding.strata.run_config == cfg.strata.coding_run_config
     assert coding.strata.context == 65536
     assert coding.strata.vram_reserve_mib == 12000  # unset in [coding]: [strata]'s
-    assert coding.model.temperature == cfg.model.temperature
+    assert coding.chat.thinking_tokens == 2048
+    assert coding.model.temperature is None  # the model's own sampling, from its card
+    assert coding.model.request_timeout_s == pytest.approx(600.0)
+    assert cfg.model.request_timeout_s == pytest.approx(120.0)
 
 
 def test_a_spoken_request_in_coding_mode_stays_a_quick_command_with_room_to_write(

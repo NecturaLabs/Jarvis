@@ -228,3 +228,23 @@ def test_a_log_filled_by_others_while_one_writer_rotated_is_rotated_again(
     assert all(file.stat().st_size <= limit for file in files if file.exists())
     texts = [str(entry["text"]) for file in files if file.exists() for entry in _lines(file)]
     assert sorted(texts) == sorted(["first"] * firsts + ["other"] * others + ["lated"])
+
+
+def test_a_watcher_gets_the_events_recorded_while_it_watches_and_no_others() -> None:
+    log = AuditLog(None)
+    seen: list[str] = []
+
+    def watch(entry: dict[str, object]) -> None:
+        seen.append(str(entry["event"]))
+        if entry["event"] == "bad":
+            raise RuntimeError("a front end failed")
+
+    log.record("before")
+    with log.watching(watch):
+        log.record("during")
+        log.record("bad")  # a failing watcher costs no event
+        log.record("after_bad")
+    log.record("after")
+
+    assert seen == ["during", "bad", "after_bad"]
+    assert [e["event"] for e in log.events] == ["before", "during", "bad", "after_bad", "after"]

@@ -616,8 +616,9 @@ class StrataModel:
             "model": self.config.model,
             "messages": messages,
             "max_tokens": max_tokens or DEFAULT_MAX_TOKENS,
-            "temperature": self.config.temperature,
         }
+        if self.config.temperature is not None:
+            body["temperature"] = self.config.temperature
         if thinking is None:
             body["reasoning_effort"] = "none"
             body["chat_template_kwargs"] = {"enable_thinking": False}

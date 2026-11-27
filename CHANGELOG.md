@@ -8,6 +8,18 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `write_file` has an `edit` mode: `find` is one passage of the file, copied exactly and found once, and
+  `content` what it becomes, so a long file is changed without being written again. It is bound and checked
+  like a replace (refused if the file changed since the question), and a passage that is missing or found
+  more than once is refused before any question.
+- `browser_preview` (the `browser` group): opens a page Jarvis built, or its folder, in the preview session
+  ADR 0016 describes: a read-only server over one folder Jarvis may write and a browser that reaches only
+  it. `browser_open` with a link, `browser_act` and `browser_screenshot` then work on the preview; a web
+  address closes it. Jarvis could open its own pages only as `file://`, which is refused.
+- In T3 Code each tool call and how it ended shows as a thought line beside the reply, and the model is told
+  the project folder the thread was opened in.
+- A recommended "whole PC" setup for coding mode in `docs/configuration.md` (`vram_reserve_mib`,
+  `kv_resident`, `memory_max` under `[coding]`), for when nothing else needs the graphics card.
 - A todo list and a choice picker in the chat. Jarvis keeps a todo list for work of several steps (`todo_write`:
   up to 20 tasks, one in progress), shown above the input and folded to one line when all is done or the window is
   short; Ctrl+T folds and opens it; `/compact` keeps it and `/clear` empties it. It can put a choice to you
@@ -318,6 +330,17 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Coding mode: one model call may take 600 s (`coding.request_timeout_s`; it was `model.request_timeout_s`,
+  120 s), so writing a file or thinking harder with the coding model no longer ends in "My model isn't
+  answering right now". It thinks with 2048 tokens (`[coding.chat] thinking_tokens`, was 1024, which the
+  model used up in a third of its calls), and samples as the model's card says (`coding.temperature =
+  "model"`) instead of at 0.2.
+- With `tools = "routed"` a follow-up request keeps the tool groups the conversation loaded, so "keep going"
+  no longer calls a file tool that was not offered and spends a call loading it again (ADR 0022, amended).
+- File text keeps its leading spaces and line breaks: `write_file`'s `content` was trimmed like a name, so
+  a file lost the spaces its first line began with.
+- The model server runs in the folder Strata's run config names (its control release), not in Strata's
+  older terminal folder.
 - T3 Code's model menu titles each of Jarvis's modes with its model's short name (the run config's name
   without the quantisation tag, at most 26 characters, led by the mode when both come out the same), because
   the full name with the mode was cut off. A mode whose run config cannot be used is titled "Coding model not
@@ -490,6 +513,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- Coding mode's prompt says to change files with `write_file` mode `edit`, check a built page with
+  `browser_preview`, and never call a file written, changed, opened or tested unless a tool result in the
+  request said so.
 - How written replies are laid out (the chat window and T3 Code): the first line is the answer or the
   verdict, never a heading or an opener such as "Here is"; several readings of one thing (a status,
   specs) are one bullet each, a bold label and its figures, with any remark in a sentence after the list;

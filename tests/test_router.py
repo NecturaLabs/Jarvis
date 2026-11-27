@@ -63,7 +63,12 @@ def _full_config() -> Config:
 
 
 def _registry(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, channel: Channel, *, routed: bool = False
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    channel: Channel,
+    *,
+    routed: bool = False,
+    coding: bool = False,
 ) -> Registry:
     def which(_name: str) -> str:
         return "/usr/bin/agent-browser"
@@ -85,7 +90,12 @@ def _registry(
         config = config.model_copy(update={"chat": config.chat.model_copy(update={"tools": mode})})
     spotify = SpotifyOps(SpotifyApi(TokenStore("id", tmp_path / "token.json")), config.spotify)
     return channel_registry(
-        config, spotify.operations(), channel_limits(config, channel), channel, watching=watch
+        config,
+        spotify.operations(),
+        channel_limits(config, channel),
+        channel,
+        watching=watch,
+        coding=coding,
     )
 
 
@@ -115,7 +125,14 @@ def test_every_group_member_is_an_operation_somewhere(
     known = {
         name
         for channel in ("voice", "chat")
-        for name in _registry(monkeypatch, tmp_path, channel, routed=True).names()  # type: ignore[arg-type]
+        for coding in (False, True)  # browser_preview is coding mode's alone
+        for name in _registry(
+            monkeypatch,
+            tmp_path,
+            channel,  # type: ignore[arg-type]
+            routed=True,
+            coding=coding,
+        ).names()
     }
     named = {name for group in (CORE, *GROUPS) for name in group.tools}
 
@@ -320,25 +337,87 @@ def test_use_tools_adds_the_groups_in_the_registry_order_whatever_the_order_aske
     assert orders[0] == orders[1] == [*core, "spotify_play", "web_search"]
 
 
-def test_the_groups_stay_offered_to_the_end_of_the_request_and_not_the_next() -> None:
+def test_the_groups_stay_offered_for_the_rest_of_the_conversation() -> None:
+    """Regression: a follow-up ("keep going") started with the core tools again, so the model
+    called a file tool it had used a moment before, was refused, and spent a call reloading it."""
     ran: list[str] = []
     model = _Model(
         [
             _call(("use_tools", {"groups": ["music"]})),
             _call(("spotify_play", {})),
             _say("Playing."),
+            _call(("spotify_play", {})),
+            _say("Playing again."),
+        ]
+    )
+    agent, audit, _ = _routed_agent(model, ran)
+
+    agent.handle("play it", NO_CONFIRM)
+    agent.handle("again", NO_CONFIRM)
+
+    assert ran == ["spotify_play", "spotify_play"]
+    assert model.offered[1] == model.offered[2] == model.offered[3]
+    assert "spotify_play" in model.offered[3]  # the follow-up's first call has the group
+    assert [e["groups"] for e in audit.events if e["event"] == "tools_kept"] == [["music"]]
+
+
+def test_a_new_conversation_starts_with_the_core_tools_again() -> None:
+    model = _Model(
+        [
+            _call(("use_tools", {"groups": ["music"]})),
+            _say("Ready."),
             _say("Hello."),
         ]
     )
-    agent, _, _ = _routed_agent(model, ran)
+    agent, _, _ = _routed_agent(model, [])
 
-    agent.handle("play it", NO_CONFIRM)
+    agent.handle("get the music tools", NO_CONFIRM)
+    agent.forget()
     agent.handle("hi", NO_CONFIRM)
 
-    assert ran == ["spotify_play"]
-    assert model.offered[0] == model.offered[3]  # the next request starts with the core again
-    assert model.offered[1] == model.offered[2]  # one request: the same tools to its end
-    assert "spotify_play" in model.offered[2]
+    assert model.offered[2] == model.offered[0]
+
+
+def test_a_heard_request_neither_gets_nor_leaves_the_conversations_groups() -> None:
+    # Speech from the PC's speakers reads no history, so it starts with the core tools, and what
+    # it loads is not kept for the owner's next request.
+    model = _Model(
+        [
+            _call(("use_tools", {"groups": ["music"]})),
+            _say("Ready."),
+            _call(("use_tools", {"groups": ["apps"]})),
+            _say("Heard."),
+            _say("Hello."),
+        ]
+    )
+    agent, _, _ = _routed_agent(model, [])
+
+    agent.handle("get the music tools", NO_CONFIRM)
+    agent.handle("stop it", NO_CONFIRM, Origin.PC_AUDIO)
+    agent.handle("hi", NO_CONFIRM)
+
+    core = model.offered[0]
+    assert model.offered[2] == core
+    assert "spotify_play" in model.offered[4]
+    assert "stop_process" not in model.offered[4]
+
+
+def test_the_project_folder_a_conversation_was_opened_in_is_in_its_instructions() -> None:
+    """Regression: a coding app's session named its folder and the model never heard of it, so it
+    searched the home folder for the project instead."""
+    model = _Model([_say("Hello."), _say("Hello again.")])
+    agent, _, _ = _routed_agent(model, [])
+
+    agent.set_folder("/work/app")
+    agent.handle("hi", NO_CONFIRM)
+    agent.set_system("new system")
+    agent.handle("hi", NO_CONFIRM)
+
+    first, second = (str(m[0]["content"]) for m in model.messages)
+    assert first.startswith("system")
+    assert "project folder /work/app" in first
+    assert second.startswith("new system")
+    assert "project folder /work/app" in second  # kept when the instructions change
 
 
 def test_a_tool_of_a_group_not_asked_for_is_not_run_and_the_model_is_told_how_to_get_it() -> None:
@@ -721,3 +800,19 @@ def test_a_class_for_use_tools_is_not_an_unknown_name_in_all_mode() -> None:
     )
 
     assert unknown_overrides(config, []) == []
+
+
+def test_a_front_end_watching_a_request_gets_its_calls_and_results() -> None:
+    ran: list[str] = []
+    model = _Model([_call(("use_tools", {"groups": ["music"]})), _say("Ready."), _say("Again.")])
+    agent, _, _ = _routed_agent(model, ran)
+    seen: list[dict[str, object]] = []
+
+    agent.handle("get the music tools", Hooks(confirm=lambda _q: True, recorded=seen.append))
+    agent.handle("again", NO_CONFIRM)  # not watched: nothing more is passed on
+
+    events = [str(e["event"]) for e in seen]
+    assert events[0] == "request"
+    assert "tool_call" in events
+    assert "tool_result" in events
+    assert events.count("request") == 1

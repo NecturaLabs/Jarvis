@@ -141,7 +141,7 @@ date.
 | `base_url` | empty | empty, or an `http://` or `https://` URL on `127.0.0.1`, `localhost` or `::1` | Local mode only. Empty means `http://127.0.0.1:<strata.port>/v1`. |
 | `model` | `jarvis` | text | The model name sent in each request. In remote mode it is the fallback when Strata's list gives no usable model ID. |
 | `request_timeout_s` | `120.0` | above 0, up to 600 | Longest one model call may wait; a request's first call waits 180 s more when the model must load first. A request also stops after `agent.max_seconds` (`chat.max_seconds` in the chat) in total. |
-| `temperature` | `0.2` | 0 to 2 | Sampling temperature. |
+| `temperature` | `0.2` | 0 to 2 | Sampling temperature (coding mode sends the model's own unless `coding.temperature` sets one). |
 
 Jarvis asks for thinking as `[agent]` and `[chat]` set it (`thinking`, `thinking_tokens`); with `none` it switches thinking off. The model may raise its own effort for the rest of one request, up to `thinking_max` (the `think_harder` tool); the next request starts at `thinking` again. A summary of older turns is always written without thinking.
 
@@ -165,7 +165,7 @@ Older versions saved `max_tokens` here; a file that still holds it loads, and th
 | `thinking_max` | `high` | `none`, `low`, `medium`, `high`, and not below `thinking` | The most the model may raise its own effort to, for the rest of one request, when it judges the request needs careful thought (several steps, a name it may have misheard, a correction, a try that failed). It does so with the `think_harder` tool, which is offered only when this is above `thinking`: set it to the same as `thinking` to keep one effort. The effort never drops within a request, and each request starts at `thinking` again. Raising to `low` or `high` can cost the model one more read of its whole prompt on Qwen3.8 ([models.md](models.md#thinking)). The tool's class is `safe`; `think_harder = "deny"` under `[boundaries.classes]` also switches it off. |
 | `thinking_raised_tokens` | `768` | 32 to 8192 | The most the model thinks before each answer once it raised its effort: about 12 s at most for speech. A raised call never gets less than `thinking_tokens` when a request starts above `none`. The context keeps room for the larger of the two. |
 | `browser` | `false` | `true`, `false` | Offer the headless browser tools (`browser_open`, `browser_act`; see [`[browser]`](#browser-the-headless-browser)) to spoken requests and `jarvis ask`, when agent-browser is installed. Off by default: speech is for quick commands, and clicking or typing on a page always waits for your spoken yes. |
-| `tools` | `all` | `all`, `routed` | Which tools each model call offers. `all`: every tool, every call. `routed`: a request starts with only the core tools (`no_action`, `stay_quiet`, `chat_hand_off` while a chat window is open, `todo_write` and `ask_owner` in the chat window, `think_harder`, `switch_model`, `use_tools`), the system prompt holds a toolbox of the tool groups, and the model calls `use_tools` with the groups the request needs; their tools are offered from its next call to the end of that request, and a tool of a group it has not asked for is not run. It sends about 6,600 fewer tokens a call, and the model server re-reads the prompt after the system text when the tools change, so it is an experiment ([ADR 0022](adr/0022-tool-router.md)). `use_tools` is a `safe` tool like any other and cannot be switched off while `routed`. Also valid in `[chat]`. |
+| `tools` | `all` | `all`, `routed` | Which tools each model call offers. `all`: every tool, every call. `routed`: a request starts with only the core tools (`no_action`, `stay_quiet`, `chat_hand_off` while a chat window is open, `todo_write` and `ask_owner` in the chat window, `think_harder`, `switch_model`, `use_tools`), the system prompt holds a toolbox of the tool groups, and the model calls `use_tools` with the groups the request needs; their tools are offered from its next call on, for the rest of the conversation (a follow-up starts with them; a new or forgotten conversation, and a request heard from PC audio, start with the core again), and a tool of a group it has not asked for is not run. It sends about 6,600 fewer tokens a call, and the model server re-reads the prompt after the system text when the tools change, so it is an experiment ([ADR 0022](adr/0022-tool-router.md)). `use_tools` is a `safe` tool like any other and cannot be switched off while `routed`. Also valid in `[chat]`. |
 
 A spoken reply that drew on outside text (a web page, a song name) is remembered as data, as in the chat: a
 follow-up such as "what was the second one?" has it, and while it is remembered an action the model chooses
@@ -585,13 +585,32 @@ the served model on the backend.
 |---|---|---|
 | `back_after_s` | `1800.0` | Back to normal after this long without a request in coding mode; `0` never |
 | `context` | `65536` | The model server's context in coding mode (`strata.context` in normal mode) |
-| `temperature` | unset | The sampling temperature in coding mode; unset: `model.temperature` |
+| `temperature` | `"model"` | The sampling temperature in coding mode. `"model"` sends none, so Strata samples as the model's card says (Qwen3.8-Flash-Next: 1.0, top_p 0.95, top_k 20 while it thinks); a number sets one. Low temperatures make long agent runs loop |
+| `request_timeout_s` | `600.0` | How long one model call may take in coding mode (`model.request_timeout_s` in normal mode). One call can write a whole file or think at length, which takes minutes at the coding model's speed |
 | `vram_reserve_mib`, `expert_vram_gib`, `memory_max` | unset | The same keys of `[strata]`, for coding mode only; unset (`0`, absent, `""`): `[strata]`'s |
 | `kv_resident`, `keep_in_ram`, `pictures`, `effort_position` | unset | The same keys of `[strata]`, for coding mode only; unset (absent): `[strata]`'s. Here `0` and `""` count as set: `kv_resident = 0` leaves the run config's own, whatever `[strata]` sets. A switch that changes one restarts the model server. Pinned RAM from a larger `kv_resident` counts against `memory_max`, so raise that too |
 | `reasoning_budget_tokens` | `4096` | Strata's cap on thinking in coding mode |
 | `tools_off` | `[]` | Tools not offered in coding mode |
 | `write_roots` | `[]` | Folders Jarvis may also write in coding mode, besides `files.write_roots` |
 | `prompt` | `""` | Your own instructions for programming work, added to the prompt in coding mode |
+
+**Coding mode with the whole PC.** Coding mode is meant for when nothing else needs the PC: no game, no other
+heavy program. It then does best with most of the graphics card and memory. The model's experts that fit on the
+card are read many times faster than those computed from RAM, and room for the conversation cache saves reading
+a long prompt again. Keep `[strata]`'s game-friendly values for the normal mode and give coding mode its own:
+
+```toml
+[coding]
+vram_reserve_mib = 1536   # leave the desktop 1.5 GB of VRAM (Strata sizes its expert cache from the rest)
+kv_resident = 65536       # the whole coding context on the card (match `context`)
+memory_max = "48G"        # MemoryHigh of the model server; MemoryMax is 10% above it
+```
+
+Size `memory_max` to the PC: leave the desktop and Jarvis itself at least 6 GB above `MemoryMax` (past
+`MemoryMax` the kernel stops the model server). The RAM guard still refuses to load a model the free memory
+would not hold (`strata.min_free_ram_mib`, [ADR 0029](adr/0029-refuse-a-load-that-does-not-fit.md)). With these, a game started
+while coding mode is loaded finds little VRAM free: go back to the normal mode first (`jarvis model normal`, or
+let `back_after_s` do it).
 
 `[coding.chat]` is laid over `[chat]` and `[coding.voice]` over `[agent]` while Jarvis is in coding mode. Each
 holds only what coding changes; a key you take out keeps the channel's own value, and everything else
@@ -606,7 +625,7 @@ holds only what coding changes; a key you take out keeps the channel's own value
 | `tool_text_chars` | `20000` | unset |
 | `memory_tokens` | unset | unset |
 | `thinking` | `medium` | `low` |
-| `thinking_tokens` | `1024` | `512` |
+| `thinking_tokens` | `2048` | `512` |
 | `thinking_max` | unset | unset |
 | `thinking_raised_tokens` | `4096` | `2048` |
 | `auto` | `true` | `false` |
@@ -885,7 +904,7 @@ than `idle_close_s`) does nothing; ask again and Jarvis opens the page anew.
 | Key | Default | Allowed | What it does |
 |---|---|---|---|
 | `read_roots` | `["~"]` | `~`, paths under `~/`, absolute paths | Folders whose files Jarvis may list and read (`list_dir`, `read_file`). |
-| `write_roots` | `["~/Documents"]` | the same | Folders Jarvis may create files in, or replace or add to them (`write_file`, asked first unless `bypass_consent` is on). |
+| `write_roots` | `["~/Documents"]` | the same | Folders Jarvis may create files in, or replace, add to or edit them (`write_file`, asked first unless `bypass_consent` is on), and preview a page built there (`browser_preview`). |
 | `workspace` | `~/Documents/Jarvis` | `~`, a path under `~/`, an absolute path | Jarvis's own folder: always readable and writable whatever the roots say, and where a file written with a bare name or relative path goes. It is made mode 0700 if missing. It must be a real folder (not a link) of yours that nobody else can write to, under folders nobody else can write to or owns, root aside (unless sticky, like `/tmp`), else it is not used and `jarvis doctor` says why and which folder to `chmod go-w` (a group-writable `~` or `~/Documents` is refused even if the group is only you); it is judged again at every write. It may not be home, a hidden folder under home or inside one, hold or lie inside Jarvis's state or config folders, or use `..`. Inside it, hidden names are allowed but always asked about (secret names and `.git`, `.hg`, `.svn` are not allowed), and Jarvis does not ask before making a new file or changing one it made (with one name on disk), unless outside text is in the request or you set `write_file`'s class yourself. Replacing or adding to a file you put there asks as usual ([ADR 0025](adr/0025-workspace-folder.md)). Also the folder `/export` in the chat saves to and where `pc_shell` starts (home if it is missing or a link when the command is prepared; the question says where, and the run uses that folder). |
 | `deny` | `[]` | shell-style patterns | More names (`diary*`), paths under home (`.config/app`, `~/Documents/private`) or absolute paths (`/data/finance`) never read or written, with what is inside them. A trailing slash or a leading `./` makes no difference. An entry that could never match (`..` in it, `~` alone, another user's `~name`) is refused when the config loads. |
 | `hidden_allow` | the desktop's settings: `.config/hypr`, `omarchy`, `waybar`, `walker`, `mako`, `swayosd`, `kitty`, `alacritty`, `ghostty`, `foot`, `btop`, `fastfetch`, `jarvis` | paths under home, shell-style | The hidden files and folders directly under home Jarvis may read (`.config/app` and the like). Everything else hidden there (shell history, app logins, cookies, caches) stays shut; `[]` shuts them all. A hidden folder deeper down (`~/Projects/site/.git`) is not shut by this; secret names still are. |
@@ -1109,7 +1128,12 @@ modes' names come out the same. A mode whose run config cannot be used is titled
 `Normal model not ready`); `jarvis model` says why. It also offers a
 thinking effort that starts at the mode's `thinking` (`[chat]`, and `[coding.chat]` over it). A session in
 coding mode works as the chat does in coding mode: the coding prompt, `[coding.chat]` over `[chat]`,
-`coding.tools_off` and `coding.write_roots`. `jarvis acp --coding` makes coding mode the first choice. On the first request, the provider reloads the configuration and compares the resolved
+`coding.tools_off` and `coding.write_roots`. The project folder T3 Code opened the thread in is named in the
+model's instructions, so "the project" or "this repo" means that folder; whether Jarvis may read or write
+there is still `[files]`'s and `coding.write_roots`' to decide, so add the projects you code in to
+`coding.write_roots`. Each tool call Jarvis makes, and how it ended, shows as a thought line beside the reply
+(T3 Code's own tool display is not used), so what was really done can be read next to what the reply says.
+`jarvis acp --coding` makes coding mode the first choice. On the first request, the provider reloads the configuration and compares the resolved
 `strata.run_config` and `strata.coding_run_config` paths. On a local Strata setup with a separate coding
 run config, the first request uses the same switch as `/model coding` and reports the result. With a
 shared run config, it keeps the shared mode and uses the normal context limit. While it answers, the

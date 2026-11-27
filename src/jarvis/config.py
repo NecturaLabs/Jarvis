@@ -132,8 +132,10 @@ class ModelConfig(_Section):
 
     base_url: Endpoint = ""  # empty: the local Strata server (see `Config.model_base_url`)
     model: str = "jarvis"
-    request_timeout_s: float = Field(default=120.0, gt=0, le=600)
-    temperature: float = Field(default=0.2, ge=0, le=2)
+    request_timeout_s: float = Field(default=120.0, gt=0, le=600)  # one model call's longest wait
+    # None (coding mode's default, `coding.temperature = "model"`): the model's own sampling, as the
+    # model server takes it from the model card.
+    temperature: float | None = Field(default=0.2, ge=0, le=2)
 
 
 # The least room the chat's defaults leave the remembered conversation (`chat.memory_tokens` unset).
@@ -812,7 +814,7 @@ class CodingChatConfig(_Section):
     tool_text_chars: int | None = Field(default=20000, ge=500, le=200000)
     memory_tokens: int | None = Field(default=None, ge=0, le=200000)  # unset: the chat's own
     thinking: Effort | None = "medium"
-    thinking_tokens: int | None = Field(default=1024, ge=32, le=32768)
+    thinking_tokens: int | None = Field(default=2048, ge=32, le=32768)
     thinking_max: Effort | None = None
     thinking_raised_tokens: int | None = Field(default=4096, ge=32, le=32768)
     auto: bool = True
@@ -846,7 +848,9 @@ class CodingConfig(_Section):
     where `chat.auto` or `voice.auto` allows it. In it `[coding.chat]` is laid over `[chat]` and
     `[coding.voice]` over `[agent]`, the prompt gains its part
     on programming work, and the model server runs `strata.coding_run_config` when one is set,
-    with `context` tokens of context. A value left unset here (`temperature`, `expert_vram_gib`,
+    with `context` tokens of context. Its model calls may each take `request_timeout_s`, since
+    one call can write a whole file, and sample as the model's card says (`temperature =
+    "model"`) unless a number is set. A value left unset here (`expert_vram_gib`,
     `vram_reserve_mib` 0, an empty `memory_max`, `kv_resident`, `keep_in_ram`, `pictures`,
     `effort_position`) stays as `[model]` and `[strata]` have it.
     """
@@ -856,7 +860,9 @@ class CodingConfig(_Section):
     # Back to the normal mode once coding mode went unused this long; 0 never.
     back_after_s: float = Field(default=1800.0, ge=0, le=604800)
     context: int = Field(default=65536, ge=2048, le=262144)
-    temperature: float | None = Field(default=None, ge=0, le=2)
+    # "model": the model's own sampling (Strata reads it from the model card); a number sets one.
+    temperature: float | Literal["model"] | None = "model"
+    request_timeout_s: float | None = Field(default=600.0, gt=0, le=600)  # unset: `[model]`'s
     vram_reserve_mib: VramReserve = 0
     expert_vram_gib: float | None = Field(default=None, ge=0, le=64)
     memory_max: str = Field(default="", pattern=r"^(\d+[KMGT]?)?$")

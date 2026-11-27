@@ -56,6 +56,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, TextIO, runtime_checkable
 
+from jarvis.activity import call_target, describe
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.announce import Announcement
 from jarvis.config import EFFORTS
@@ -78,6 +79,12 @@ MAX_BASE64 = MAX_FILE_BYTES * 4 // 3 + 4  # characters of one picture
 MAX_IMAGES = 4
 MAX_TEXT = 100_000  # characters of one prompt
 MAX_SESSIONS = 32
+MAX_FOLDER = 4096  # characters of a session's project folder (PATH_MAX)
+MAX_STEP = 200  # characters of one call or result line shown as a thought
+# The audit events shown as the calls made and how they ended (`_step`).
+STEP_EVENTS = frozenset(
+    {"tool_call", "tool_result", "tool_failed", "tool_denied", "tool_rejected", "tool_uncertain"}
+)
 MAX_KEPT = 200  # sessions kept on disk for `session/load`, the newest
 SESSION_ID = re.compile(r"jarvis-[0-9a-f]{12}")  # what `session/new` makes, and nothing else
 MAX_PUSHES = 8  # announcements waiting to be pushed; a hung `t3` loses the oldest
@@ -139,6 +146,15 @@ class Kept(Protocol):
 
     def history(self) -> list[tuple[str, str]]:
         """Return the remembered turns, oldest first, as (request, reply)."""
+        ...
+
+
+@runtime_checkable
+class InFolder(Protocol):
+    """An agent that can be told which project folder its session was opened in."""
+
+    def set_folder(self, folder: str) -> None:
+        """Tell the model the session's project folder from the next request on."""
         ...
 
 
@@ -549,13 +565,12 @@ class AcpServer:
         session_id = f"jarvis-{secrets.token_hex(6)}"
         first = self._models[0] if self._models else None
         model = first.id if first is not None else ""
-        agent = self._agent_for(session_id, model)
+        folder = _folder(params)
+        agent = self._agent_for(session_id, model, folder)
         if first is not None:
             agent.set_effort(first.effort)
         if full:
             self._evict_idle()
-        cwd = params.get("cwd")
-        folder = cwd if isinstance(cwd, str) and cwd.startswith("/") and "\0" not in cwd else ""
         session = _Session(session_id, agent, cwd=folder, model=model)
         if first is not None:
             session.effort = first.effort
@@ -593,8 +608,10 @@ class AcpServer:
                 path.unlink(missing_ok=True)
         self._audit("acp_cleared", session=session.id)
 
-    def _agent_for(self, session_id: str, model: str) -> AgentSession:
+    def _agent_for(self, session_id: str, model: str, folder: str = "") -> AgentSession:
         """Make a session's agent for `model`, with its kept conversation when there is one.
+
+        `folder` is the project folder the client opened the session in ("" when it named none).
 
         Raises:
             _Rpc: it cannot be made; the message says why.
@@ -605,6 +622,8 @@ class AcpServer:
             raise _Rpc(INTERNAL_ERROR, str(exc)) from exc
         if self._store is not None and isinstance(agent, Kept):
             agent.load(self._kept_file(self._store, session_id, model))
+        if folder and isinstance(agent, InFolder):
+            agent.set_folder(folder)
         return agent
 
     # Sessions kept across runs
@@ -662,15 +681,14 @@ class AcpServer:
         choice = next((m for m in self._models if m.id == meta.get("model")), None)
         choice = choice or (self._models[0] if self._models else None)
         model = choice.id if choice is not None else ""
-        agent = self._agent_for(session_id, model)
+        folder = _folder(params)
+        agent = self._agent_for(session_id, model, folder)
         effort = meta.get("effort")
         effort = effort if effort in EFFORTS else (choice.effort if choice is not None else "")
         if effort:
             agent.set_effort(str(effort))
         if full:
             self._evict_idle()
-        cwd = params.get("cwd")
-        folder = cwd if isinstance(cwd, str) and cwd.startswith("/") and "\0" not in cwd else ""
         session = _Session(session_id, agent, cwd=folder, model=model, effort=str(effort or ""))
         if choice is not None:
             session.agents[model] = agent
@@ -744,7 +762,8 @@ class AcpServer:
                 self._idle(session)
                 agent = session.agents.get(choice.id)
             if agent is None:
-                agent = self._agent_for(session.id, choice.id)  # may take a while: unlocked
+                # May take a while: unlocked.
+                agent = self._agent_for(session.id, choice.id, session.cwd)
             with session.lock:
                 self._idle(session)
                 session.agents.setdefault(choice.id, agent)
@@ -1025,6 +1044,7 @@ class AcpServer:
             cancelled=lambda: run.cancel.is_set() or self._closing.is_set(),
             draft=lambda draft: self._draft(session, run, draft),
             condensed=lambda note: self._note(session, run, note),
+            recorded=lambda entry: self._step(session, run, entry),
         )
         try:
             reply = session.agent.handle(text, hooks, pictures=pictures)
@@ -1042,6 +1062,24 @@ class AcpServer:
     def _note(self, session: _Session, run: _Run, text: str) -> None:
         """Say a line about the work in hand, as the agent's thought rather than its reply."""
         self._say(session, text, "agent_thought_chunk", run=run)
+
+    def _step(self, session: _Session, run: _Run, entry: dict[str, object]) -> None:
+        """Show a call the agent made, or how it ended, as a thought: what was really done.
+
+        The client shows the reply, and a reply can say a file was written when none was; these
+        lines come from the audit log, so the owner sees each call and its result beside it.
+        """
+        shown = describe(entry)
+        if shown is None or entry.get("event") not in STEP_EVENTS:
+            return
+        if shown.kind == "step":
+            target = call_target(entry.get("args"))
+            line = f"{shown.text}: {target}" if target else shown.text
+        else:
+            line = f"→ {shown.text.splitlines()[0] if shown.text else ''}"
+        if len(line) > MAX_STEP:
+            line = line[: MAX_STEP - 1] + "…"
+        self._note(session, run, line + "\n")
 
     def _write(self, session: _Session, run: _Run, piece: str) -> bool:
         if not piece or not self._say(session, piece, run=run):
@@ -1143,6 +1181,18 @@ def _prune(store: Path) -> None:
                 path.unlink(missing_ok=True)
     except OSError as exc:
         log.warning("old sessions could not be removed: %s", exc)
+
+
+def _folder(params: dict[str, Any]) -> str:
+    """Return the absolute project folder a session was opened in (`cwd`), else "".
+
+    It reaches the model's instructions, so a path with a control character (a line break could
+    start an instruction of its own) or past `MAX_FOLDER` counts as none.
+    """
+    cwd = params.get("cwd")
+    if not isinstance(cwd, str) or not cwd.startswith("/") or len(cwd) > MAX_FOLDER:
+        return ""
+    return "" if any(not ch.isprintable() for ch in cwd) else cwd
 
 
 def _is_clear(blocks: list[dict[str, Any]]) -> bool:

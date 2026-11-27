@@ -104,6 +104,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
   pages that need a real browser (built by scripts, or used through a search box), reads them and shows you a
   picture of one. It runs headless with its own throwaway profile, reaches only public addresses, and asks
   before it clicks or types anything ([`[browser]`](docs/configuration.md#browser-the-headless-browser)).
+  A page Jarvis built opens in a preview of its own that reaches only that page's folder, so it can check
+  its work.
 - **Listening to PC audio (off by default):** Jarvis can also take requests heard in what the PC plays, such as
   a Discord call. That speech is treated as someone else's, so you are asked to confirm before it changes
   anything. See [the ADR](docs/adr/0003-pc-audio-is-not-the-owner.md). Ask it what is being said there and it
