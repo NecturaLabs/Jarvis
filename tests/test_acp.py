@@ -154,7 +154,13 @@ class Client:
         return message
 
     def response(self, request_id: int) -> dict[str, Any]:
-        """Return the answer to `request_id`; what came before it stays in `seen`."""
+        """Return the answer to `request_id`; what came before it stays in `seen`.
+
+        Answers may come in any order, so one read while waiting for another is found in `seen`.
+        """
+        for message in self.seen:
+            if message.get("id") == request_id and "method" not in message:
+                return message
         while True:
             message = self.next()
             if message.get("id") == request_id:
