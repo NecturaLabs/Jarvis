@@ -144,6 +144,32 @@ def test_archive_preserves_an_existing_destination(home: Path) -> None:
     assert destination.read_text(encoding="utf-8") == "existing file"
 
 
+def test_archive_points_to_available_wavs_from_the_correct_voice_session(home: Path) -> None:
+    state = paths.state_dir()
+    audit = AuditLog(paths.audit_file(), tags={"via": "voice"})
+    audit.record("request", text="Older voice session")
+    audit.record("reply", text="Older reply")
+    audit.record("memory_expired")
+    audit.record("request", text="A new voice request", input_recording="utterance-100.wav")
+    audit.record("reply", text="A new reply")
+    audit.record("recording_saved", speaker="jarvis", filename="output-200.wav")
+    audit.record("recording_saved", speaker="jarvis", filename="output-300.wav")
+    microphone = home / "microphone"
+    _archive_wav(microphone / "utterance-100.wav")
+    _archive_wav(state / "recordings" / "output-200.wav")
+    destination = home / "archive.zip"
+
+    assert main(["archive", str(destination), "--input-recordings", str(microphone)]) == 0
+
+    with ZipFile(destination) as saved:
+        first = saved.read("transcripts/voice-001.txt").decode()
+        second = saved.read("transcripts/voice-002.txt").decode()
+        assert "../audio/" not in first
+        assert "A new voice request\nOwner WAV: ../audio/user/utterance-100.wav" in second
+        assert "Jarvis WAV saved: ../audio/jarvis/output-200.wav" in second
+        assert "output-300.wav" not in second
+
+
 def test_archive_refuses_a_recording_symlink_without_publishing_a_partial_zip(home: Path) -> None:
     wav = home / "elsewhere.wav"
     _archive_wav(wav)

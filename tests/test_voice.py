@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast, override
 import httpx
 import numpy as np
 import pytest
+from scripted_model import ScriptedModel, say
 from test_sing_psola import Voice as SpeechVoice
 
 from jarvis import announce, modes, voice
@@ -37,6 +38,7 @@ from jarvis.voice import PcListener, State, VoiceLoop
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Generator, Iterable, Iterator, Sequence
     from pathlib import Path
+    from typing import BinaryIO
 
     from numpy.typing import NDArray
 
@@ -1158,6 +1160,22 @@ def test_owner_utterances_are_kept_privately_when_debugging(
     assert {stat.S_IMODE(path.stat().st_mode) for path in kept} == {0o600}
 
 
+def test_the_audit_names_the_microphone_wav_on_the_request_that_used_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "utterances"
+    monkeypatch.setenv("JARVIS_DEBUG_AUDIO_DIR", str(folder))
+    audit = AuditLog(None)
+    model = ScriptedModel([say("Heard you.")])
+    agent = RealAgent(model, Registry([no_action_operation()]), "system", audit, {})
+
+    _run(_loop(agent, Mic(*REQUEST), Speaker(), audit=audit, heard="Say something short"))
+
+    (wav,) = folder.iterdir()
+    (request,) = (event for event in audit.events if event["event"] == "request")
+    assert request["input_recording"] == wav.name
+
+
 def test_a_debug_folder_that_cannot_be_written_does_not_stop_the_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1169,6 +1187,26 @@ def test_a_debug_folder_that_cannot_be_written_does_not_stop_the_request(
     _run(_loop(agent, Mic(*REQUEST), Speaker()))
 
     assert len(agent.calls) == 1
+
+
+def test_a_failed_wav_write_leaves_no_recording_to_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "utterances"
+    monkeypatch.setenv("JARVIS_DEBUG_AUDIO_DIR", str(folder))
+
+    def interrupted(target: BinaryIO, _samples: NDArray[np.int16]) -> None:
+        target.write(b"part of the WAV")
+        msg = "write failed"
+        raise OSError(msg)
+
+    monkeypatch.setattr(voice, "write_wav", interrupted)
+    agent = Agent()
+
+    _run(_loop(agent, Mic(*REQUEST), Speaker()))
+
+    assert len(agent.calls) == 1
+    assert not list(folder.iterdir())
 
 
 def test_pc_audio_is_never_kept_when_debugging(

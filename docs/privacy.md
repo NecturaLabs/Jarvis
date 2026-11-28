@@ -38,8 +38,10 @@ like every reply. `JARVIS_DEBUG_AUDIO_DIR` saves the owner's microphone requests
 `jarvis archive PATH.zip` writes a private copy of retained request and reply text from the chat
 archive and audit logs. It reads the recordings folder for Jarvis WAVs and includes microphone WAVs
 from `--input-recordings DIR` or the `JARVIS_DEBUG_AUDIO_DIR` set in the calling shell. The ZIP groups
-WAVs by speaker; existing recordings carry no turn IDs. Export with Jarvis off if you want a snapshot
-between requests. The ZIP is a separate copy. Delete it separately when you no longer need it.
+WAVs by speaker. A microphone recording named in the audit log is listed by its request, and a Jarvis
+recording is listed in the session that saved it. Recordings without an audit entry are included by
+speaker. Export with Jarvis off for a snapshot between requests. The ZIP is a separate copy. Delete
+it separately when you no longer need it.
 
 By default the model runs in the `jarvis-strata` service on `127.0.0.1` and model requests stay on this PC.
 With the Azure wake word on, the audio Jarvis listens to goes to a helper process on the PC that runs

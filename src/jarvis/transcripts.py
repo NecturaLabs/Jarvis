@@ -7,7 +7,7 @@ import re
 import shutil
 import stat
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -110,32 +110,56 @@ def _audit_rows(state: Path) -> Iterator[dict[str, object]]:
     raise OSError(msg)
 
 
-def _audit_transcripts(state: Path) -> dict[str, list[str]]:
+@dataclass(slots=True)
+class _VoiceSessions:
+    members: set[str]
+    transcripts: dict[str, list[str]] = field(default_factory=dict[str, list[str]])
+    session: int = 1
+    scheduled: bool = False
+
+    def record(self, row: dict[str, object]) -> None:
+        name = f"voice-{self.session:03d}"
+        event = row.get("event")
+        if isinstance(event, str) and event in _BOUNDARY:
+            self.session += name in self.transcripts
+            if event == "service_started":
+                self.scheduled = False
+            return
+        if event == "schedule_due":
+            self.scheduled = row.get("action") == "do"
+        if event == "recording_saved":
+            self._recording(name, row)
+        if line := _text_entry(row, scheduled=self.scheduled):
+            lines = self.transcripts.setdefault(name, [])
+            lines.append(line)
+            if event == "request":
+                member = f"audio/user/{row.get('input_recording')}"
+                if member in self.members:
+                    lines.append(f"Owner WAV: ../{member}\n")
+                self.scheduled = False
+
+    def _recording(self, name: str, row: dict[str, object]) -> None:
+        member = f"audio/jarvis/{row.get('filename')}"
+        if row.get("speaker") == "jarvis" and member in self.members and name in self.transcripts:
+            self.transcripts[name].append(f"Jarvis WAV saved: ../{member}\n")
+
+
+def _audit_transcripts(state: Path, audio_members: set[str]) -> dict[str, list[str]]:
     saved_acp = _retained_acp(state)
+    voice = _VoiceSessions(audio_members)
     transcripts: dict[str, list[str]] = {}
-    session = 1
-    scheduled = False
     for row in _audit_rows(state):
-        via, event = row.get("via"), row.get("event")
-        voice = f"voice-{session:03d}"
-        if via == VOICE_VIA and isinstance(event, str) and event in _BOUNDARY:
-            session += voice in transcripts
-            scheduled = scheduled and event != "service_started"
+        via = row.get("via")
+        if via == VOICE_VIA:
+            voice.record(row)
             continue
-        if via == VOICE_VIA and event == "schedule_due":
-            scheduled = row.get("action") == "do"
-        if not (line := _text_entry(row, scheduled=via == VOICE_VIA and scheduled)):
-            continue
-        name = _audit_name(via, row.get("session"), saved_acp, voice)
-        if name:
+        name = _audit_name(via, row.get("session"), saved_acp)
+        if name and (line := _text_entry(row)):
             transcripts.setdefault(name, []).append(line)
-        scheduled = scheduled and (via != VOICE_VIA or event != "request")
-    return transcripts
+    return transcripts | voice.transcripts
 
 
-def _audit_name(via: object, tag: object, saved_acp: set[str], voice: str) -> str:
-    if via == VOICE_VIA:
-        return voice
+def _audit_name(via: object, tag: object, saved_acp: set[str]) -> str:
     if via == "acp" and isinstance(tag, str) and tag in saved_acp:
         return f"acp-{tag}"
     if via == "ask":
@@ -188,25 +212,26 @@ def export(state: Path, destination: Path, *, input_recordings: Path | None = No
     if input_recordings is not None and not input_recordings.is_dir():
         msg = f"no microphone recordings folder at {input_recordings}"
         raise FileNotFoundError(msg)
-    transcripts = dict(_chat_transcripts(state / "chat-archive"))
-    transcripts.update(_audit_transcripts(state))
     with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".jarvis-archive-") as temp:
         with ZipFile(temp, "w", compression=ZIP_DEFLATED) as archive:
-            for name, lines in transcripts.items():
-                archive.writestr(f"transcripts/{name}.txt", "".join(lines))
             user = (
                 _recordings(archive, input_recordings, "user", "utterance")
                 if input_recordings is not None
                 else 0
             )
             jarvis = _recordings(archive, state / "recordings", "jarvis", "output")
+            transcripts = dict(_chat_transcripts(state / "chat-archive"))
+            transcripts.update(_audit_transcripts(state, set(archive.namelist())))
+            for name, lines in transcripts.items():
+                archive.writestr(f"transcripts/{name}.txt", "".join(lines))
             archive.writestr(
                 "README.txt",
                 "Transcripts are grouped by saved chat, ACP session, or voice conversation.\n"
                 "Voice conversations split on service startup or a memory reset.\n"
                 "Older log entries with no channel tag are in legacy.txt.\n"
                 "Times are UTC when present. WAV names contain Unix timestamps in nanoseconds.\n"
-                "Existing WAVs are grouped by speaker. They have no link to individual turns.\n",
+                "WAVs are grouped by speaker. Transcripts link to WAVs named in the log.\n"
+                "A Jarvis WAV can include output from earlier sessions.\n",
             )
         temp.flush()
         # A second exporter may finish first. Publish the complete file or leave its file alone.

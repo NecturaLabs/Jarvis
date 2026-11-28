@@ -1861,7 +1861,12 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
     request, answer = _transcribers(cfg, lambda: jarvis.hint())  # ruff: ignore[unnecessary-lambda] - `jarvis` is built below
     mic = PausableMic(Microphone(cfg.audio.source, stall_s=MIC_STALL_S))
     listening = _pc_listening(cfg, answer, paused=lambda: mic.paused)
-    recording = OutputRecorder(paths.state_dir() / "recordings")
+    recording = OutputRecorder(
+        paths.state_dir() / "recordings",
+        on_saved=lambda path: jarvis.audit.record(
+            "recording_saved", speaker="jarvis", filename=path.name
+        ),
+    )
     try:
         jarvis = build(
             cfg, via=VOICE_VIA, units=StrataUnits(), listening=listening, recording=recording
