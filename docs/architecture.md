@@ -195,6 +195,7 @@ changes as one request moves through.
 | `TRANSCRIBE` | `SPEAK` | Your own speech could not be transcribed, or came back empty: Jarvis says it did not catch that. |
 | `TRANSCRIBE` | `IDLE` | The text is a phantom (a say-nothing hallucination), or PC audio failed or came back empty. |
 | `THINK` | `SPEAK` | A waiting line while the model loads (then back to `THINK`), or the final reply. |
+| `THINK` | `CAPTURE` | With `audio.barge_in`, a wake word cancels the current request and starts the next. |
 | `THINK` | `CONFIRM` | The agent asks for a spoken yes: the question is spoken (`SPEAK`), then the loop listens in `CONFIRM`. |
 | `CONFIRM` | `THINK` or `SPEAK` | The answer is in; the call runs or is dropped, and the reply is spoken. |
 | `SPEAK` | `IDLE` | The reply was spoken, or the request failed after an apology (`_serve`). |
@@ -203,15 +204,16 @@ changes as one request moves through.
 | `FOLLOW_UP` | `CAPTURE` | The wake word in the window: a request as usual. |
 | `FOLLOW_UP` | `IDLE` | No speech in the window, Jarvis is stopping or paused (nothing heard in the window is taken once paused), or Voxtype started dictating meanwhile. Speech shorter than 0.3 s is dropped untranscribed and the window listens on for the rest of its time. |
 
-Notes. There is no separate wake state: wake detection runs on the mic frames in `IDLE`. While
-Jarvis speaks, the `jarvis-barge-in` thread reads the mic and listens for the wake word
-(`audio.barge_in`) through `WakeWord.heard_over_speech`, which needs at most
-`audio.barge_in_threshold`; hearing it hushes the speaker, cancels the request and makes `_serve` take a new
-one (`SPEAK` to `CAPTURE`). A stretch of speech that ends without it logs the closest score heard from
+Notes. There is no separate wake state: wake detection runs on the mic frames in `IDLE`. With
+`audio.barge_in`, the `jarvis-barge-in` thread reads the mic while Jarvis works or speaks.
+It uses the ordinary wake score during work and `audio.barge_in_threshold` during playback.
+Hearing the wake word hushes the speaker, cancels the request and makes `_serve` take a new one.
+The loop joins the watcher before it reads a spoken answer or waits for the confirm key.
+A stretch of speech that ends without an interruption logs the closest score heard from
 `NEAR_MISS` (0.2) up. A request the agent answers with no words, or one where the owner asked for quiet
 (`stay_quiet`, which the agent passes on through `Hooks.quiet` even when words were heard first; it also hushes what was queued, unless a song was queued in the request, which then plays in full), opens no
-follow-up window. It reads frames only while speech plays or an operation makes a sound (`Hooks.making_sound`, at the usual wake score then, since nothing plays), so it never takes one the loop
-needs, and a sentence the speaker found wake-like (`Speaker.interruptible`) is not spoken over while it plays and for `GUARD_TAIL_S` (1 s) after. After
+follow-up window. A sentence the speaker found wake-like (`Speaker.interruptible`) is not spoken over
+while it plays and for `GUARD_TAIL_S` (1 s) after. After
 speech that was not interrupted, `_end_speaking` drains the capture so Jarvis cannot hear itself. A
 line spoken while the agent works (`_cue`: a waiting line, a confirmation question) moves the loop to
 `SPEAK` and back to `THINK`. Every capture has a timeout, and a failed request ends in `IDLE`.
@@ -294,7 +296,7 @@ Threads in the `jarvis run` process:
 | Microphone reader | `Microphone._read`: moves `pw-record` output into a bounded queue. Each PC-audio capture has its own. |
 | PC watcher | `VoiceLoop._watch_pc`: scans PC audio for the wake word and hands one request at a time to the main thread, and hands each frame it reads to `PcHearing` while a `pc_audio_listen` runs or a recall is set (`VoiceLoop._heard`). Each wake word it drops is logged with why. Only with `audio.listen_to_pc`. |
 | `jarvis-speech` | `Speaker._work`: synthesizes queued sentences in order and hands them to one `pw-play` while they keep coming. |
-| `jarvis-barge-in` | `VoiceLoop._watch_speech`: while Jarvis speaks, reads the mic for the wake word. Only with `audio.barge_in`. |
+| `jarvis-barge-in` | `VoiceLoop._watch_speech`: reads the mic for the wake word while Jarvis works or speaks, with `audio.barge_in` on. |
 | `jarvis-azure-wake` | `AzureWake._read`: reads the Azure helper's `ready` and `wake` lines. Only with `audio.wake_engine = "azure"`. |
 | `jarvis-stopper` | Waits for SIGTERM or SIGINT, then stops the speaker, mic and PC capture. |
 | `jarvis-control-work` | `Controls`' slow work, off the request path: the model load at start and on resume (then one read of the prompt, `Agent.prime`), the unload after a pause, the check after a suspend. |

@@ -2025,10 +2025,7 @@ class Agent:
                 thinking=turn.thinking,
             )
         except _Stopped:
-            spoken = stream.spoken if stream is not None else ""
-            turn.wrote = turn.wrote or bool(spoken)  # those words may repeat outside text too
-            turn.stopped = True
-            return spoken
+            message = None
         except Exception as exc:  # ruff: ignore[blind-except] - any model failure becomes a spoken apology
             self._audit.record("model_error", error=str(exc)[:MAX_AUDIT_TEXT])
             log.warning("the model did not answer: %s", exc)
@@ -2036,6 +2033,11 @@ class Agent:
         finally:
             turn.cues.settle()
             turn.cold = False  # the first call waited for the load; the model is in after it
+        if message is None or hooks.cancelled():
+            spoken = stream.spoken if stream is not None else ""
+            turn.wrote = turn.wrote or bool(spoken)  # those words may repeat outside text too
+            turn.stopped = True
+            return spoken
         turn.answered = turn.wrote = True
         self._note_usage(message)
         self._audit.record("model_call", step=step, seconds=round(self._clock() - began, 2))
