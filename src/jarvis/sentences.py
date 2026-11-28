@@ -86,3 +86,27 @@ def split_sentences(text: str) -> list[str]:
         start = end
     rest = text[start:].strip()
     return [*pieces, rest] if rest else pieces
+
+
+MAX_SAME_SENTENCE = (
+    2  # a sentence said this often is kept ("Knock knock. Knock knock."); more is a loop
+)
+MIN_LOOP_CHARS = 8  # shorter sentences ("Ha.", "No.") may come back on purpose
+
+
+def looped_at(text: str) -> int | None:
+    """Return where a sentence comes back once more than `MAX_SAME_SENTENCE` times, or None.
+
+    A small model can fall into writing one sentence again and again until its reply limit;
+    the reply is cut before the first sentence that repeats past the limit (#70).
+    """
+    counts: dict[str, int] = {}
+    start, whole = 0, f"{text} "
+    while (end := sentence_end(whole, start)) is not None:
+        key = " ".join(whole[start:end].split()).casefold()
+        if len(key) >= MIN_LOOP_CHARS:
+            counts[key] = counts.get(key, 0) + 1
+            if counts[key] > MAX_SAME_SENTENCE:
+                return len(whole[:start].rstrip())
+        start = end
+    return None

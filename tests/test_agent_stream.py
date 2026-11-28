@@ -221,8 +221,9 @@ def test_a_reply_written_whole_is_not_remembered_as_stopped_when_spoken_over() -
 
 def test_nothing_past_the_stream_cap_is_spoken_before_the_answer_is_whole() -> None:
     counter = Counter()
-    sentence = "This is a sentence of words. "
-    reply = (sentence * (MAX_STREAMED_CHARS // len(sentence) + 10)).strip()
+    # Distinct sentences: one sentence again and again is a loop, cut on its own (#70).
+    count = MAX_STREAMED_CHARS // len("This is sentence 100 of words. ") + 10
+    reply = " ".join(f"This is sentence {n} of words." for n in range(count))
     answer = _say(reply)
     model = ScriptedModel([_call("pause"), answer])
     ear = Ear(model)
@@ -591,3 +592,27 @@ def test_what_is_spoken_as_a_reply_arrives_and_the_end_make_the_reply_in_any_chu
         )
 
         assert " ".join([*heard, rest]).split() == final.split(), text
+
+
+def test_a_reply_that_loops_on_one_sentence_is_cut_aloud_and_in_writing() -> None:
+    # A small model can fall into repeating itself until the reply limit (#70).
+    looped = "The weather is mild. It might rain later. " + "It might rain later. " * 12
+    model = ScriptedModel([_call("no_action", {"reply": looped.strip()})])
+    ear = Ear(model)
+    agent, audit = _agent(model, [])
+
+    reply = agent.handle("what's the weather?", ear.hooks())
+
+    assert reply.startswith("The weather is mild. It might rain later. It might rain later.")
+    assert reply.count("It might rain later.") == 2
+    assert ear.heard.count("It might rain later.") <= 2
+    assert "reply_repeated" in _events(audit)
+
+
+def test_a_reply_that_repeats_a_sentence_twice_on_purpose_is_left_whole() -> None:
+    text = "Knock knock. Knock knock. Who's there?"
+    model = ScriptedModel([_call("no_action", {"reply": text})])
+    agent, audit = _agent(model, [])
+
+    assert agent.handle("tell me a joke", Ear(model).hooks()) == text
+    assert "reply_repeated" not in _events(audit)

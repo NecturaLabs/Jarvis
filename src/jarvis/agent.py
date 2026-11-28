@@ -52,7 +52,7 @@ from jarvis.persona import style_note
 from jarvis.pictures import PICTURE_TOKENS, Picture
 from jarvis.policy import TRUSTED_ORIGINS, Decision, Origin, Verdict, action_hash, decide
 from jarvis.ratelimit import ActionRate
-from jarvis.sentences import sentence_end
+from jarvis.sentences import looped_at, sentence_end
 from jarvis.toolgroups import CORE_NAME, USE_TOOLS, group_name
 
 if TYPE_CHECKING:
@@ -142,6 +142,7 @@ LAST_STEP_REMINDER = (
     "owner now from what you found, and say plainly what you could not find."
 )
 CUT_SHORT = "(That is as far as one reply goes; ask me to go on.)"
+LOOPED = "(I was repeating myself, so the rest is left out.)"  # never a claim of action
 CALL_TOO_LONG = "What I was writing was too long for one answer, so I stopped there."
 UNDONE = "Sorry, I didn't manage to do that."
 NO_ANSWER = "Sorry, I couldn't find an answer to that."
@@ -577,6 +578,16 @@ class _ReplyStream:
             return None if words is None else words.lstrip()
         return None
 
+    def _holds_back(self, said: str, piece: str) -> bool:
+        """Whether `piece`, ending `said`, waits for the whole answer instead of being spoken now.
+
+        It does past the stream's cap, when it claims an action that may not have been done, and
+        when it repeats a sentence past `MAX_SAME_SENTENCE` (`_final` cuts the reply there too).
+        """
+        if len(said) > self._max_chars or (not self._may_claim and claims_action(piece)):
+            return True
+        return looped_at(said) is not None
+
     def _speak_ready(self) -> None:
         if self._held:
             return
@@ -590,7 +601,7 @@ class _ReplyStream:
                 return  # it may yet turn out to be a note or a wrapper: wait for more
         while (end := sentence_end(words, len(self.spoken))) is not None:
             piece = words[len(self.spoken) : end]
-            if end > self._max_chars or (not self._may_claim and claims_action(piece)):
+            if self._holds_back(words[:end], piece):
                 self._held = True
                 return
             if not self.spoken:
@@ -2378,6 +2389,9 @@ class Agent:
         A reply that says something was done when no tool succeeded is challenged once; if the
         model says it again, the owner hears that it was not done instead.
         """
+        if (at := looped_at(reply)) is not None:
+            self._audit.record("reply_repeated", text=reply[:MAX_AUDIT_TEXT])
+            reply = f"{reply[:at].rstrip()} {LOOPED}"
         if turn.succeeded or not claims_action(reply):
             return reply
         if turn.nudged:
