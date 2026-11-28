@@ -171,8 +171,8 @@ def test_a_group_with_no_tool_in_this_registry_is_not_in_the_toolbox() -> None:
 # the router (`{toolbox}` empty). Changing the prompt's own text changes these on purpose: replace
 # them with the new digests; they exist so that routing never changes what "all" mode sends.
 _PROMPT_SHA256 = {
-    "voice": "2cd9e341fd82974ed58ff6d1324a1315cae540b3b0819d0bf4050923b8eb8496",
-    "chat": "9241f2679ccece0884e83be4de3f76c9cab9fbc78d4b54268e7c12c0159b518b",
+    "voice": "725e983ce3edee7d7625e39102aade5e363c8f86e5ad22f073dfee026a81993d",
+    "chat": "edd8d7fe2e0bf296c082ed06484cd67852659a2331f724b3a7e014fc6ad22033",
 }
 
 
@@ -188,6 +188,16 @@ def _bare_prompt(
     monkeypatch.setattr("jarvis.app.osskills.catalog", lambda: ())
     monkeypatch.setattr("jarvis.app.__version__", "0")
     return system_prompt(Config(), channel, registry=registry)
+
+
+@pytest.mark.parametrize("channel", ["voice", "chat"])
+def test_the_prompt_names_the_window_close_tool_in_both_channels(
+    monkeypatch: pytest.MonkeyPatch, channel: Channel
+) -> None:
+    prompt = _bare_prompt(monkeypatch, channel, None)
+
+    assert "pc_window_close" in prompt
+    assert "stop_process" in prompt
 
 
 @pytest.mark.parametrize("channel", ["voice", "chat"])
