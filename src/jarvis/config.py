@@ -133,8 +133,9 @@ class ModelConfig(_Section):
     base_url: Endpoint = ""  # empty: the local Strata server (see `Config.model_base_url`)
     model: str = "jarvis"
     request_timeout_s: float = Field(default=120.0, gt=0, le=600)  # one model call's longest wait
-    # None (coding mode's default, `coding.temperature = "model"`): the model's own sampling, as the
-    # model server takes it from the model card.
+    # None (coding mode's default, `coding.temperature = "model"`): none is sent. Strata samples as
+    # the model card says, except on a run config that drafts with MTP and has no `sampling` block:
+    # there it decodes greedily (`jarvis doctor` warns).
     temperature: float | None = Field(default=0.2, ge=0, le=2)
 
 
@@ -849,10 +850,11 @@ class CodingConfig(_Section):
     `[coding.voice]` over `[agent]`, the prompt gains its part
     on programming work, and the model server runs `strata.coding_run_config` when one is set,
     with `context` tokens of context. Its model calls may each take `request_timeout_s`, since
-    one call can write a whole file, and sample as the model's card says (`temperature =
-    "model"`) unless a number is set. A value left unset here (`expert_vram_gib`,
-    `vram_reserve_mib` 0, an empty `memory_max`, `kv_resident`, `keep_in_ram`, `pictures`,
-    `effort_position`) stays as `[model]` and `[strata]` have it.
+    one call can write a whole file, and send no temperature (`temperature = "model"`, Strata's
+    card sampling, but greedy on a run config that drafts with MTP) unless a number is set. A
+    value left unset here (`expert_vram_gib`, `vram_reserve_mib` 0, an empty `memory_max`,
+    `kv_resident`, `keep_in_ram`, `pictures`, `effort_position`) stays as `[model]` and
+    `[strata]` have it.
     """
 
     chat: CodingChatConfig = Field(default_factory=CodingChatConfig)

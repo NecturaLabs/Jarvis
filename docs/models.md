@@ -78,9 +78,12 @@ any of these models.
   [#5949](https://github.com/Niko1221/Strata/issues/5949) (experts in pageable RAM stalling an AMD card
   under memory pressure) and [#6392](https://github.com/Niko1221/Strata/issues/6392).
 - **Sampling and effort:** Qwen's card recommends temperature 1.0, top-p 0.95 and top-k 20 with thinking
-  on, and says lower thinking effort can cost more failed steps in long tool-using work. Jarvis sends its
-  own `model.temperature` (0.2) unless `coding.temperature` is set; which is better for Jarvis's tools is
-  not measured.
+  on, warns that greedy decoding repeats itself endlessly, and says lower thinking effort can cost more
+  failed steps in long tool-using work. Coding mode sends no temperature by default (`coding.temperature =
+  "model"`), and Strata 0.1.66 keeps such a request greedy on a run config that drafts with MTP, as both
+  of the reference machine's do ([configuration](configuration.md#coding-coding-mode); `jarvis doctor`
+  warns), which fits the coder's runs that went on for 8,000 tokens. The reference machine sets
+  `coding.temperature = 1.0`; whether 1.0 or a lower value suits this quantisation is not measured.
 - **To set it up:** `strata install -- --family coder --model IQ1_M --vision cpu --yes --no-start` downloads
   and prepares it without loading it (`--gguf-dir <folder>` for files already downloaded); `strata launch
   --family coder --model iq1_m` does the same and then serves it until stopped. Run the install outside any
