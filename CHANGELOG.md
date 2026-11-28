@@ -355,6 +355,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Spoken replies say a sum of money the way people do ("50 dollars", not "dollar fifty"), a path or a file
+  name as its name ("saved it to mix"), and leave out hashes and IDs, which were spelled out sign by sign.
 - A spoken greeting gets a few words of Jarvis's own again. The voice prompt's one sample greeting
   ("Hey. What are we listening to?") came back word for word every time.
 - An action that read other programs' words first (closing a window lists the windows, whose titles count as
