@@ -45,6 +45,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+MAX_TIMES = 50
+MAX_LOOP_SECONDS = 300.0  # all of a song's passes together: five minutes
+
 
 class Singer(Protocol):
     """Turns a checked score into sound."""
@@ -76,16 +79,28 @@ def _budget(request: Request | None) -> Budget:
 
 
 def _score(args: dict[str, Any]) -> Score:
-    """Return the checked score of a call's arguments.
+    """Return the checked score of a call's arguments, its passes within the loop's limit.
 
     Raises:
         OperationError: it cannot be sung as written; the message says what to change.
     """
     try:
-        return parse(str(args["notes"]), int(args.get("tempo_bpm", DEFAULT_TEMPO)))
+        score = parse(str(args["notes"]), int(args.get("tempo_bpm", DEFAULT_TEMPO)))
     except ScoreError as exc:
         msg = f"Nothing was sung: {exc}."
         raise OperationError(msg) from exc
+    times = _times(args)
+    if times > 1 and score.seconds * times > MAX_LOOP_SECONDS + 1e-9:
+        msg = (
+            f"Nothing was sung: {times} times {score.seconds:.0f} seconds is too long, all of it "
+            f"together at most {MAX_LOOP_SECONDS:.0f} seconds; ask for fewer times."
+        )
+        raise OperationError(msg)
+    return score
+
+
+def _times(args: dict[str, Any]) -> int:
+    return int(args.get("times", 1))
 
 
 def _checked(args: dict[str, Any]) -> dict[str, Any]:
@@ -107,14 +122,17 @@ def _summary(args: dict[str, Any]) -> str:
         score = _score(args)
     except OperationError:
         return "sing a song"  # never asked: `prepare` refuses the score first
-    return f"sing a {score.seconds:.0f}-second song with these words: {score.lyrics}"
+    times = _times(args)
+    often = f" {times} times" if times > 1 else ""
+    return f"sing a {score.seconds:.0f}-second song{often} with these words: {score.lyrics}"
 
 
 DESCRIPTION = (
     "Sing to the owner when they ask you to sing, however they put it. You write the song "
     "yourself as notes: a melody you know or make up, and its words, at most "
     f"{MAX_SECONDS:g} seconds and {MAX_NOTES} notes. It plays in your voice after what you have "
-    "said; afterwards say a few words at most, and never the lyrics again."
+    "said; afterwards say a few words at most, and never the lyrics again. To sing it over "
+    "and over, write it once and set times."
 )
 NOTES = (
     "The notes in order, separated by commas, each 'TEXT PITCH BEATS'. TEXT is one word, or one "
@@ -172,10 +190,12 @@ class SingOps:
         if budget.stopped():  # stopped as it was finished: it is not played
             raise OperationStoppedError(STOPPED)
         seconds = pcm.size / rate
+        times = _times(args)
+        often = f", {times} times" if times > 1 else ""
         return Result(
-            f"Singing now ({len(score.notes)} notes, {seconds:.0f} seconds): it plays after what"
-            " you have said. Do not repeat the lyrics; reply in a few words or not at all.",
-            sound=Sound(pcm.tobytes(), rate, tuple(starmap(Lyric, score.timed_words))),
+            f"Singing now ({len(score.notes)} notes, {seconds:.0f} seconds{often}): it plays after"
+            " what you have said. Do not repeat the lyrics; reply in a few words or not at all.",
+            sound=Sound(pcm.tobytes(), rate, tuple(starmap(Lyric, score.timed_words)), times),
         )
 
     def operations(self) -> list[Operation]:
@@ -199,6 +219,17 @@ class SingOps:
                             "maximum": MAX_TEMPO,
                             "default": DEFAULT_TEMPO,
                             "description": "Beats a minute.",
+                        },
+                        "times": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": MAX_TIMES,
+                            "default": 1,
+                            "description": (
+                                "How many times to sing the song back to back, when asked for it "
+                                "more than once or on a loop; all of it together at most "
+                                f"{MAX_LOOP_SECONDS:.0f} seconds."
+                            ),
                         },
                     },
                     "required": ["notes"],

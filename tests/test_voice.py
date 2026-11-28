@@ -185,6 +185,7 @@ class Speaker:
 
     said: list[str] = field(default_factory=list[str])
     sounds: list[tuple[int, int, str]] = field(default_factory=list[tuple[int, int, str]])
+    sound_times: list[int] = field(default_factory=list[int])
     queued_in_order: list[str] = field(default_factory=list[str])  # words, and "sound: <words>"
     chimes: int = 0
     broken: bool = False
@@ -206,13 +207,14 @@ class Speaker:
         self.queued_in_order.append(text)
 
     def queue_sound(
-        self, pcm: bytes, rate: int, lyrics: Sequence[tuple[float, float, str]] = ()
+        self, pcm: bytes, rate: int, lyrics: Sequence[tuple[float, float, str]] = (), times: int = 1
     ) -> None:
         if self.broken:
             self._failed = True
             return
         words = " ".join(text for _start, _end, text in lyrics)
         self.sounds.append((len(pcm), rate, words))
+        self.sound_times.append(times)
         self.queued_in_order.append(f"sound: {words}")
 
     def wait(self) -> None:
@@ -2305,6 +2307,21 @@ def test_a_song_plays_through_the_speaker_after_the_words_before_it() -> None:
 
     assert speaker.queued_in_order == ["Here goes.", "sound: la la"]
     assert speaker.sounds == [(len(SONG.pcm), SONG.rate, "la la")]
+
+
+def test_a_song_asked_for_several_times_is_queued_with_its_count() -> None:
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        assert hooks.play is not None
+        hooks.play(replace(SONG, times=4))
+        return ""
+
+    speaker = Speaker()
+    loop = _loop(Agent(reply), Mic(*REQUEST), speaker)
+
+    _run(loop)
+
+    assert speaker.sounds == [(len(SONG.pcm), SONG.rate, "la la")]
+    assert speaker.sound_times == [4]
 
 
 def test_a_song_is_not_played_after_a_hush_or_while_paused() -> None:

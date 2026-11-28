@@ -85,9 +85,9 @@ class Speaker:
         self.said.append(text)
 
     def queue_sound(
-        self, pcm: bytes, rate: int, lyrics: Sequence[tuple[float, float, str]] = ()
+        self, pcm: bytes, rate: int, lyrics: Sequence[tuple[float, float, str]] = (), times: int = 1
     ) -> None:
-        del pcm, rate
+        del pcm, rate, times
         self.said.append(" ".join(text for _start, _end, text in lyrics))
 
     def wait(self) -> None:

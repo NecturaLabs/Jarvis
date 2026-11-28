@@ -799,11 +799,15 @@ be spoken over.
 
 Ask Jarvis to sing, in any words: the model writes the song as notes (words or syllables, pitches and lengths)
 and the `sing` tool checks it in code before a sound is made: at most 64 notes and 30 seconds, pitches from C2
-to C6. The song plays like a reply, after what Jarvis said before it: say the wake word over it to stop it,
+to C6. Asked for a song more than once or on a loop, the model sets `times` (up to 50, all the passes together
+at most five minutes): the song is made once and played that many times back to back, so every pass sounds the
+same. The song plays like a reply, after what Jarvis said before it: say the wake word over it to stop it,
 `jarvis hush` ends it, and nothing is sung while Jarvis is paused. The song is checked for its own wake word in
-chunks of about 2.5 seconds, so a stretch that sounds like it is the only part that cannot be spoken over. It is sung by voice only; the chat does not
+chunks of about 2.5 seconds, so a stretch that sounds like it is the only part that cannot be spoken over;
+a repeated song is checked once, with the seam where one pass runs into the next, and guarded the same in every pass. It is sung by voice only; the chat does not
 offer it. The tool's class is `safe` and it counts as an action: after outside text (a web page) it needs a
-yes, unless `boundaries.bypass_consent` is on, and the question reads out the song's length and all its words.
+yes, unless `boundaries.bypass_consent` is on, and the question reads out the song's length, how many times it
+plays and all its words.
 `sing = "deny"` under `[boundaries.classes]` switches it off.
 
 | Key | Default | Allowed | What it does |

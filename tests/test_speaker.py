@@ -626,6 +626,71 @@ def test_a_wake_phrase_across_two_chunks_of_a_song_is_still_guarded(tmp_path: Pa
     assert guarded
 
 
+def test_a_sound_played_several_times_is_written_each_time_and_checked_once(
+    tmp_path: Path,
+) -> None:
+    checked: list[str] = []
+
+    def own_wake(_pcm: bytes, _rate: int, text: str) -> bool:
+        checked.append(text)
+        return False
+
+    player, files = _recorder(tmp_path)
+    speaker = Speaker(_voice, player=player, own_wake=own_wake)
+    song = _sound(2000, seconds=6.0)
+    lyrics = ((0.5, 1.0, "one"), (2.6, 3.0, "two"), (5.2, 5.6, "three"))
+
+    speaker.queue_sound(song, RATE, lyrics, times=3)
+    speaker.wait()
+
+    assert files[0].read_bytes() == song * 3
+    # One pass in chunks, then the seam where its end runs into its start.
+    assert checked == ["one", "two", "three", "three one"]
+
+
+def test_a_wake_like_stretch_of_a_repeated_song_is_guarded_in_every_pass(tmp_path: Path) -> None:
+    samples = np.full(RATE * 10, 1000, dtype=np.int16)
+    samples[RATE * 6 : int(RATE * 6.2)] = 5000
+    pid_file, heard = tmp_path / "pid", tmp_path / "heard.raw"
+    now = [0.0]
+
+    def own_wake(pcm: bytes, _rate: int, _text: str) -> bool:
+        return bool((np.frombuffer(pcm, dtype=np.int16) == 5000).any())
+
+    speaker = Speaker(
+        _voice, player=_taking(pid_file, heard), own_wake=own_wake, clock=lambda: now[0]
+    )
+    try:
+        speaker.queue_sound(samples.tobytes(), RATE, ((0.0, 1.0, "la"),), times=2)
+        _until(lambda: heard.exists() and heard.stat().st_size == 2 * samples.nbytes)
+        found: list[bool] = []
+        for moment in (3.0, 5.0, 9.5, 13.0, 15.0, 19.5):
+            now[0] = moment
+            found.append(speaker.interruptible)
+    finally:
+        speaker.hush()
+        _end(pid_file)
+
+    assert found == [True, False, True, True, False, True]
+
+
+def test_a_hush_ends_a_repeated_sound_before_its_other_passes(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pid"
+    speaker = Speaker(_voice, player=_stuck(pid_file))
+    try:
+        speaker.queue_sound(_sound(1000, seconds=2.0), RATE, ((0.0, 2.0, "long"),), times=50)
+        _until(pid_file.exists)
+        speaker.hush()
+        waited = threading.Thread(target=speaker.wait, daemon=True)
+        waited.start()
+        waited.join(WAIT_S)
+
+        assert not waited.is_alive()
+        assert not speaker.busy
+    finally:
+        _end(pid_file)
+
+
 def test_a_sound_with_nothing_in_it_is_checked_without_an_error(tmp_path: Path) -> None:
     speaker = Speaker(_voice, player=_taking(tmp_path / "pid", tmp_path / "heard.raw"))
     try:
