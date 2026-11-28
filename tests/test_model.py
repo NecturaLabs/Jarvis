@@ -997,3 +997,16 @@ def test_streamed_thinking_is_passed_on_without_its_words_and_is_not_part_of_the
 def _bearer(token: str) -> str:
     """Return a `Bearer` header value, built here so no credential is written out in full."""
     return f"Bearer {token}"
+
+
+def test_a_broken_character_in_the_conversation_is_sent_as_a_replacement_not_a_crash() -> None:
+    # A file name whose bytes are not UTF-8 reaches Python as a lone surrogate ("caf\udce9.txt"),
+    # which httpx cannot encode: the whole request failed, and every one after it.
+    seen: list[httpx.Request] = []
+    model = _model(_answering({"role": "assistant", "content": "ok"}, seen))
+    messages = [{"role": "user", "content": "Folder: caf\udce9.txt"}]
+
+    model.chat(messages, TOOLS)
+
+    sent = json.loads(seen[0].content)
+    assert sent["messages"][0]["content"] == "Folder: caf�.txt"

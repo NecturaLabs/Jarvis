@@ -267,3 +267,15 @@ def test_a_verbatim_argument_is_kept_as_written_and_the_others_are_trimmed() -> 
     assert args == {"text": "  indented\n", "name": "Ada"}
     with pytest.raises(ArgumentError, match="must not be empty"):
         validate_args(op, {"text": " \n "})
+
+
+def test_a_result_never_holds_a_broken_character() -> None:
+    # A lone surrogate (a non-UTF-8 file name) could not be sent, saved or logged as UTF-8.
+    result = Result("- caf\udce9.txt", spoken="Found caf\udce9.", written="**caf\udce9**")
+
+    assert (result.text, result.spoken, result.written) == (
+        "- caf�.txt",
+        "Found caf�.",
+        "**caf�**",
+    )
+    assert Result("plain").text == "plain"

@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+from jarvis.jsonutil import unbroken
 from jarvis.policy import OpClass, Origin
 from jarvis.toolgroups import CORE_NAME, GROUPS, ToolGroup, group_name
 
@@ -307,6 +308,13 @@ class Result:
     groups: tuple[str, ...] = ()
     look: Picture | None = None
     delivered: Callable[[str], None] | None = None
+
+    def __post_init__(self) -> None:
+        """Keep no lone surrogate (a non-UTF-8 file name): the text is sent, saved and logged."""
+        for name in ("text", "spoken", "written", "caption"):
+            value = getattr(self, name)
+            if (clean := unbroken(value)) != value:
+                object.__setattr__(self, name, clean)
 
 
 @dataclass(frozen=True, slots=True)

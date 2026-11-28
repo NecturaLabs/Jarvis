@@ -356,6 +356,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A file whose name is not valid UTF-8 no longer breaks the conversation: listing its folder made every
+  request after it fail, since the name could not be sent to the model. Such a character now shows as �.
 - A spoken greeting gets a few words of Jarvis's own again. The voice prompt's one sample greeting
   ("Hey. What are we listening to?") came back word for word every time.
 - An action that read other programs' words first (closing a window lists the windows, whose titles count as

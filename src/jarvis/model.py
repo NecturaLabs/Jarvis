@@ -17,7 +17,7 @@ import httpx
 
 from jarvis import ramguard
 from jarvis.config import STRATA_CONTEXT_MAX, STRATA_CONTEXT_MIN, private_endpoint
-from jarvis.jsonutil import obj, objs
+from jarvis.jsonutil import obj, objs, unbroken_json
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
@@ -642,6 +642,7 @@ class StrataModel:
         self, body: dict[str, Any], deadline: float, on_delta: Callable[[Delta], None] | None
     ) -> dict[str, Any]:
         passed_on: list[Delta] = []
+        body = cast("dict[str, Any]", unbroken_json(body))  # httpx sends UTF-8: no lone surrogate
         for attempt in (1, 2):
             try:
                 with self._client(max(1.0, deadline - self.clock())) as client:
