@@ -193,28 +193,34 @@
       "group": "system",
       "set": "typed",
       "turns": ["How hot is my graphics card running?"],
-      "expect": [{"tool": "pc_stats"}]
+      "expect": [{"tool": "read_skill", "args": {"name": "pc"}}, {"tool": "pc_stats"}]
     },
     {
       "id": "kernel_version",
       "group": "system",
       "set": "typed",
       "turns": ["Run uname -r in a shell and tell me what it prints."],
-      "expect": [{"tool": "pc_shell", "args": {"command": {"contains": "uname"}}}]
+      "expect": [{"tool": "pc_shell", "args": {"command": "uname -r"}}]
     },
     {
       "id": "list_folder",
       "group": "files",
       "set": "typed",
       "turns": ["What is in my Documents folder?"],
-      "expect": [{"tool": "list_dir", "args": {"path": {"contains": "documents"}}}]
+      "expect": [
+        {"tool": "read_skill", "args": {"name": "files"}},
+        {"tool": "list_dir", "args": {"path": {"contains": "documents"}}}
+      ]
     },
     {
       "id": "read_notes",
       "group": "files",
       "set": "typed",
       "turns": ["Read notes.txt in my Documents folder and give me the gist."],
-      "expect": [{"tool": "read_file", "args": {"path": {"contains": "notes.txt"}}}],
+      "expect": [
+        {"tool": "read_skill", "args": {"name": "files"}},
+        {"tool": "read_file", "args": {"path": {"contains": "notes.txt"}}}
+      ],
       "allow": ["list_dir"]
     },
     {
@@ -223,6 +229,7 @@
       "set": "typed",
       "turns": ["Create a file called shopping.txt in your workspace folder with milk and eggs in it."],
       "expect": [
+        {"tool": "read_skill", "args": {"name": "files"}},
         {"tool": "write_file", "args": {"path": {"contains": "shopping.txt"}, "content": {"contains": "milk"}}}
       ],
       "allow": ["list_dir"]
@@ -253,7 +260,7 @@
       "group": "web",
       "set": "typed",
       "turns": ["Who won the most recent Formula 1 race?"],
-      "expect": [{"tool": "web_search"}],
+      "expect": [{"tool": "read_skill", "args": {"name": "web-research"}}, {"tool": "web_search"}],
       "allow": ["web_read"]
     },
     {
@@ -268,8 +275,11 @@
       "group": "web",
       "set": "typed",
       "turns": ["What does Reddit think about the Steam Deck OLED?"],
-      "expect": [{"tool": "reddit_search"}],
-      "allow": ["reddit_read"]
+      "expect": [
+        {"tool": "read_skill", "args": {"name": "web-research"}},
+        {"tool": "reddit_search"},
+        {"tool": "reddit_read"}
+      ]
     },
     {
       "id": "find_picture",
@@ -384,14 +394,22 @@
       "group": "multi",
       "set": "typed",
       "turns": ["How hot is my graphics card, and what time is it in London?"],
-      "expect": [{"tool": "pc_stats"}, {"tool": "time_now", "args": {"place": {"contains": "london"}}}]
+      "expect": [
+        {"tool": "read_skill", "args": {"name": "pc"}},
+        {"tool": "pc_stats"},
+        {"tool": "time_now", "args": {"place": {"contains": "london"}}}
+      ]
     },
     {
       "id": "search_then_remind",
       "group": "multi",
       "set": "typed",
       "turns": ["Search the web for when the next solar eclipse is and remind me tomorrow at 9 am."],
-      "expect": [{"tool": "web_search"}, {"tool": "schedule_add"}],
+      "expect": [
+        {"tool": "read_skill", "args": {"name": "web-research"}},
+        {"tool": "web_search"},
+        {"tool": "schedule_add"}
+      ],
       "allow": ["web_read", "time_now"]
     },
     {
@@ -486,7 +504,7 @@
       "group": "system",
       "set": "spoken",
       "turns": ["how hot is my cpu"],
-      "expect": [{"tool": "pc_stats"}]
+      "expect": [{"tool": "read_skill", "args": {"name": "pc"}}, {"tool": "pc_stats"}]
     },
     {
       "id": "say_open",

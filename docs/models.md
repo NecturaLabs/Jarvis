@@ -177,9 +177,10 @@ raw tool-call markup (`<|content_invoke_tool_json|>`), which would be spoken. Qw
 `all` and not slower (#56). `tools/router_bench.py` makes that run: the requests in
 `tools/router_bench_cases.json` (a typed set that covers every tool group, requests that need two groups or none, and a
 short spoken-style set) go through Jarvis's real agent, prompt and tool schemas, in `all` and in `routed`, for the
-voice channel (`[agent]`) and the chat (`[chat]`). Every tool that would act on the PC, Spotify or the web is a
-recording stub; the reminders, `calculate` and `about_jarvis` run for real, in a throwaway state folder, and nothing
-is played. It talks to a model server that is already running and loaded, and starts, stops and loads nothing.
+voice channel (`[agent]`) and the chat (`[chat]`). Every tool that would act on the PC, Spotify or the web returns
+a fixture. Jarvis reads its shipped skills, calculates, answers about itself and manages reminders in a throwaway
+state folder. The shell fixture keeps Jarvis's request checks and substitutes the command result. The benchmark
+answers confirmation questions itself and plays no sound. It needs a running model server with its model loaded.
 
 Start Strata for the model you want to measure, then, from the repository root (silent, with nothing of yours
 read or written):

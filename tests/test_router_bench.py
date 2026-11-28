@@ -329,6 +329,12 @@ LATER = Want("schedule_add", {"at": "23:00"})
         (_case([(PAUSE,), (PAUSE,)]), [Call("spotify_pause", {})], False, "no_tool"),
         # alternatives: either call satisfies the entry
         (_case([(PLAY, PAUSE)]), [Call("spotify_pause", {})], False, "right"),
+        (
+            _case([(PAUSE, LATER), (PAUSE,)]),
+            [Call("spotify_pause", {}), Call("schedule_add", {"at": "23:00"})],
+            False,
+            "right",
+        ),
         # a request that needs no tool
         (_case(), [], False, "right"),
         (_case(), [Call("no_action", {"reply": "8"})], False, "right"),
@@ -431,6 +437,43 @@ def test_a_routed_request_pays_a_use_tools_call_and_is_offered_more_after_it(
     first, second = model.tools_offered[:2]
     assert first < 10 < second  # the core tools, then the core and the music tools
     assert [c.tool for c in result.calls] == ["use_tools", "spotify_play"]
+
+
+def test_the_file_skill_reaches_the_model_and_counts_toward_a_file_request(tmp_path: Path) -> None:
+    skill = _call("read_skill", {"name": "files"})
+    listing = _call("list_dir", {"path": "Documents"})
+    result, model = _run(
+        "list_folder",
+        [skill, listing, _say("Here are the files.")],
+        Variant("chat", "all"),
+        tmp_path,
+    )
+
+    assert result.outcome == "right"
+    assert any(
+        "Working with the owner's files" in message["content"]
+        for message in model.seen[1]
+        if message["role"] == "tool"
+    )
+    assert (
+        judge(
+            next(case for case in load_cases(CASES_FILE) if case.id == "list_folder"),
+            [Call("list_dir", {"path": "Documents"})],
+        )
+        == "no_tool"
+    )
+
+
+def test_the_shell_stub_preserves_refusal_after_file_text(tmp_path: Path) -> None:
+    replies = [
+        _call("list_dir", {"path": "Documents"}),
+        _call("pc_shell", {"command": "uname -r"}),
+        _say("I did not run it."),
+    ]
+    result, _ = _run("kernel_version", replies, Variant("chat", "all"), tmp_path)
+
+    assert [call.tool for call in result.calls] == ["list_dir"]
+    assert result.refused == ["pc_shell"]
 
 
 def test_a_routed_call_to_a_tool_that_was_not_asked_for_is_refused_and_counted(
