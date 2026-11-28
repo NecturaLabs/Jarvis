@@ -69,6 +69,7 @@ from jarvis.pc.hearing import Listening, PcHearing
 from jarvis.pc.screenshot import folders as screenshot_folders
 from jarvis.pc.workspace import workspace_path, workspace_problem
 from jarvis.policy import OpClass, is_yes
+from jarvis.recording import OutputRecorder
 from jarvis.schedule import JobStore
 from jarvis.secretfile import (
     MAX_KEY_INPUT,
@@ -1750,7 +1751,7 @@ def _never() -> bool:
     return False
 
 
-def _speaker(cfg: config.Config) -> Speaker:
+def _speaker(cfg: config.Config, recording: OutputRecorder | None = None) -> Speaker:
     """Return the speaker, which hears its own wake word only when barge-in is on."""
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
         OwnVoiceCheck,
@@ -1768,7 +1769,9 @@ def _speaker(cfg: config.Config) -> Speaker:
     synthesizer = make_synthesizer(
         data, cfg.audio.voice, cfg.audio.speech_speed, phoneme_map=cfg.audio.kokoro_phoneme_map
     )
-    return Speaker(synthesizer, own_wake=own_wake)
+    return Speaker(
+        synthesizer, own_wake=own_wake, record_output=None if recording is None else recording.feed
+    )
 
 
 def _serve_controls(handler: control.Controls, audit: AuditLog) -> control.ControlServer:
@@ -1838,15 +1841,17 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
     request, answer = _transcribers(cfg, lambda: jarvis.hint())  # ruff: ignore[unnecessary-lambda] - `jarvis` is built below
     mic = PausableMic(Microphone(cfg.audio.source, stall_s=MIC_STALL_S))
     listening = _pc_listening(cfg, answer, paused=lambda: mic.paused)
+    recording = OutputRecorder(paths.state_dir() / "recordings")
     try:
-        jarvis = build(cfg, via=VOICE_VIA, units=StrataUnits(), listening=listening)
+        jarvis = build(
+            cfg, via=VOICE_VIA, units=StrataUnits(), listening=listening, recording=recording
+        )
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
-    speaker = _speaker(cfg)
+    speaker = _speaker(cfg, recording)
     pc_audio = AppAudio(cfg.audio.pc_audio_apps) if cfg.audio.listen_to_pc else None
-    stop_requested = threading.Event()
-    refresh_stop = threading.Event()
+    stop_requested, refresh_stop = threading.Event(), threading.Event()
 
     def stop(_signum: int, _frame: object) -> None:
         # A signal handler interrupts whatever the main thread holds (the speaker's lock, say),
@@ -1938,7 +1943,12 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
     speech_model.start()
     jarvis.audit.record("service_started", bypass_consent=cfg.boundaries.bypass_consent)
     return _run_until_stopped(
-        loop, stop_requested, _serve_controls(handler, jarvis.audit), voxtype, wakes
+        loop,
+        stop_requested,
+        _serve_controls(handler, jarvis.audit),
+        voxtype,
+        wakes,
+        recording=recording,
     )
 
 
@@ -1955,12 +1965,14 @@ def _back_when_idle(switcher: modes.Switcher, loop: VoiceLoop, stop: threading.E
             switcher.back_if_idle()
 
 
-def _run_until_stopped(
+def _run_until_stopped(  # ruff: ignore[too-many-arguments] - the live voice service's resources
     loop: VoiceLoop,
     stop_requested: threading.Event,
     controls: control.ControlServer,
     voxtype: VoxtypeWatch,
     wakes: list[WakeWord | FallbackWake],
+    *,
+    recording: OutputRecorder | None = None,
 ) -> int:
     """Run `loop` with Voxtype's status followed, then end what the run started."""
     from jarvis.audio import FallbackWake  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
@@ -1975,6 +1987,8 @@ def _run_until_stopped(
         raise
     finally:
         controls.close()
+        if recording is not None:
+            recording.close()
         voxtype.stop()
         for wake in wakes:  # an Azure helper ends with its input; end it now, not at exit
             if isinstance(wake, FallbackWake):

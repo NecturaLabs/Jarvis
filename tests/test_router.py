@@ -27,6 +27,7 @@ from jarvis.pc.screenshot import ScreenshotOps
 from jarvis.pc.watch import ScreenWatch
 from jarvis.pc.windows import WindowOps
 from jarvis.policy import Origin
+from jarvis.recording import OutputRecorder
 from jarvis.router import toolbox_section, use_tools_operation
 from jarvis.shortcuts import Shortcut
 from jarvis.spotify.api import SpotifyApi
@@ -80,9 +81,11 @@ def _registry(
     config = _full_config()
     mode: ToolMode = "routed" if routed else "all"
     watch = None
+    recording = None
     if channel == "voice":
         windows = WindowOps(FakeDesktop())
         watch = ScreenWatch(windows, ScreenshotOps(windows, tmp_path))
+        recording = OutputRecorder(tmp_path / "recordings")
         config = config.model_copy(
             update={"agent": config.agent.model_copy(update={"tools": mode})}
         )
@@ -95,6 +98,7 @@ def _registry(
         channel_limits(config, channel),
         channel,
         watching=watch,
+        recording=recording,
         coding=coding,
     )
 

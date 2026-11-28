@@ -344,7 +344,8 @@ def test_the_speakers_own_voice_check_listens_with_the_same_wake_words(
     def synthesizer(*_args: object, **_kwargs: object) -> object:
         return object()
 
-    def speaker(_synthesizer: object, own_wake: object) -> object:
+    def speaker(_synthesizer: object, own_wake: object, record_output: object = None) -> object:
+        assert record_output is None
         return own_wake
 
     monkeypatch.setattr(cli, "livekit_wake", livekit_wake)

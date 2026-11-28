@@ -68,8 +68,8 @@ GROUPS = (
     ToolGroup(
         "sound",
         "The PC's sound: its volume, play and pause in other media players, hearing what the PC "
-        "plays, and singing a song.",
-        ("pc_volume", "pc_media", "pc_audio_listen", "sing"),
+        "plays, singing and recording Jarvis's own voice.",
+        ("pc_volume", "pc_media", "pc_audio_listen", "sing", "voice_record"),
     ),
     ToolGroup(
         "screen",

@@ -32,6 +32,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
 - **Singing:** ask Jarvis to sing, in any words, and the model writes the song as notes, up to 30 seconds,
   that Jarvis sings in its own voice: with Kokoro's voice moved to each note, or with SoulX-Singer, a local
   singing-voice model on the GPU, once you install it ([Singing](docs/models.md#singing)).
+- **Recording:** ask Jarvis by voice to record its own output, then ask it to stop. It saves the
+  speech and singing sent to playback to a private WAV under `~/.local/state/jarvis/recordings/`.
 - **Spotify:** play a track, album, artist, playlist or your liked songs; pause, resume, next, previous; jump
   within a song or restart it; move playback to another device; set or change the volume; shuffle; repeat; queue
   songs; like or unlike the current song, or add it to one of your playlists (after a yes); say what is playing,

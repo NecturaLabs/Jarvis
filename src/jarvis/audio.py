@@ -2001,15 +2001,15 @@ RESAMPLE_BLOCK = 8000  # output samples worked on at a time
 
 
 @functools.lru_cache(maxsize=4)
-def _resampling_filter(rate: int) -> tuple[int, int, int, NDArray[np.float32]]:
-    """Return (up, down, half, weights) to resample `rate` to RATE, a windowed-sinc low-pass.
+def _resampling_filter(rate: int, target: int) -> tuple[int, int, int, NDArray[np.float32]]:
+    """Return (up, down, half, weights) to resample to `target` with a windowed-sinc low-pass.
 
     Output sample n sits at input time n * down / up. `weights[r]` holds the `2 * half` taps for
     the outputs whose position is r / up past an input sample, each row summing to 1.
     """
-    divisor = math.gcd(RATE, rate)
-    up, down = RATE // divisor, rate // divisor
-    cutoff = 0.45 * min(1.0, RATE / rate)  # cycles per input sample: 90% of the lower Nyquist rate
+    divisor = math.gcd(target, rate)
+    up, down = target // divisor, rate // divisor
+    cutoff = 0.45 * min(1.0, target / rate)  # 90% of the lower Nyquist rate
     half = math.ceil(RESAMPLE_ZERO_CROSSINGS / (2 * cutoff))
     t = np.arange(1 - half, half + 1)[None, :] - (np.arange(up)[:, None] / up)
     window = np.i0(RESAMPLE_BETA * np.sqrt(np.clip(1 - (t / half) ** 2, 0, None)))
@@ -2024,10 +2024,15 @@ def to_16k(pcm: bytes, rate: int) -> NDArray[np.int16]:
     Whatever the voice puts above 8 kHz is filtered out (a plain interpolation would fold it into
     the band the wake model listens to), so the check hears what the microphone would.
     """
+    return resample_pcm(pcm, rate, RATE)
+
+
+def resample_pcm(pcm: bytes | bytearray, rate: int, target: int) -> NDArray[np.int16]:
+    """Return mono int16 samples at `target`, filtering out frequencies above its range."""
     samples = np.frombuffer(pcm, dtype=np.int16)
-    if rate == RATE or samples.size == 0:
+    if rate == target or samples.size == 0:
         return samples.copy()
-    up, down, half, weights = _resampling_filter(rate)
+    up, down, half, weights = _resampling_filter(rate, target)
     count = samples.size * up // down
     padded = np.pad(samples.astype(np.float32), (half, half + 1))
     taps = np.arange(2 * half)
@@ -2111,6 +2116,7 @@ class Speaker:
         own_wake: Callable[[bytes, int, str], bool] | None = None,
         linger_s: float = LINGER_S,
         clock: Callable[[], float] = time.monotonic,
+        record_output: Callable[[bytes | memoryview, int], None] | None = None,
     ) -> None:
         """Use `synthesize` for text to speech; `player` builds the playback command for a rate.
 
@@ -2124,6 +2130,7 @@ class Speaker:
         self._own_wake = own_wake
         self._linger_s = linger_s
         self._clock = clock
+        self._record_output = record_output
         self._lock = threading.Condition()
         self._items: queue.Queue[tuple[int, str, _Sound | None]] = queue.Queue()
         self._pending = 0  # sentences queued, being synthesized or being handed to the player
@@ -2371,12 +2378,11 @@ class Speaker:
                 msg = "the player stopped taking sound"
                 raise AudioError(msg)
             _, ready, _ = select.select([], [fd], [], self._grace_s)
+            if not ready:
+                msg = "the player stopped taking sound"
+                raise AudioError(msg)
             try:
-                if not ready:
-                    msg = "the player stopped taking sound"
-                    raise AudioError(msg)
-                view = view[os.write(fd, view[:WRITE_STEP]) :]
-                progress = time.monotonic()
+                written = os.write(fd, view[:WRITE_STEP])
             except BlockingIOError:
                 continue  # the pipe filled between select and write
             except OSError as exc:
@@ -2384,6 +2390,10 @@ class Speaker:
                     return
                 msg = f"the player stopped: {exc}"
                 raise AudioError(msg) from exc
+            if self._record_output is not None:
+                self._record_output(view[:written], self._rate)
+            view = view[written:]
+            progress = time.monotonic()
         with self._lock:
             self._written_s += len(pcm) / (2 * self._rate)
 
@@ -2441,6 +2451,8 @@ class Speaker:
                 proc.terminate()
         try:
             proc.communicate(pcm, timeout=len(pcm) / (2 * rate) + self._grace_s)
+            if proc.returncode == 0 and self._record_output is not None:
+                self._record_output(pcm, rate)
         except subprocess.TimeoutExpired as exc:
             proc.kill()
             proc.communicate()

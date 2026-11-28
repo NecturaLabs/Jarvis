@@ -634,6 +634,7 @@ STUBS: dict[str, Stub] = {
     "pc_media": _say("Done: the media player was told."),
     "pc_audio_listen": _say("Heard a song with a singer and a steady beat.", Origin.PC_AUDIO),
     "sing": _say("Sang it."),
+    "voice_record": _of(lambda a: "Recording." if a.get("action") == "start" else "Saved it."),
     "pc_windows": _say(
         "Windows (number, program, workspace): 1 Firefox on 1; 2 Terminal on 1;"
         " 3 Discord on 2; 4 Spotify on background.",

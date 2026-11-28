@@ -54,6 +54,8 @@ from jarvis.pc.workspace import Ledger, workspace_in_use, workspace_path, worksp
 from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
+from jarvis.recording import NAME as RECORD_NAME
+from jarvis.recording import OutputRecorder
 from jarvis.router import toolbox_section, use_tools_operation
 from jarvis.schedule import JobStore, ScheduleOps
 from jarvis.sentences import MAX_SPOKEN_CHARS
@@ -786,6 +788,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     *,
     coding: bool = False,
     listening: Listening | None = None,
+    recording: OutputRecorder | None = None,
     browsers: dict[str, browser.Browser] | None = None,
     off: Collection[str] = (),
     watching: ScreenWatch | None = None,
@@ -853,6 +856,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
         ),
         *([quiet_operation()] if channel == "voice" else []),
         *([handoff.operation()] if channel == "voice" else []),
+        *([recording.operation()] if channel == "voice" and recording is not None else []),
         *(
             [
                 todo_operation(todos or TodoList()),
@@ -901,6 +905,7 @@ SETTING_ONLY = frozenset(
         "pc_watch",
         "pc_watches",
         "pc_watch_stop",
+        RECORD_NAME,
         handoff.NAME,
     }
 )
@@ -1025,6 +1030,7 @@ def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; 
     can_switch: bool,
     voice_running: Callable[[], bool] = lambda: True,
     listening: Listening | None = None,
+    recording: OutputRecorder | None = None,
     browsers: dict[str, browser.Browser] | None = None,
     watching: ScreenWatch | None = None,
     todos: TodoList | None = None,
@@ -1055,6 +1061,7 @@ def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; 
         voice_running=voice_running,
         coding=coding,
         listening=listening,
+        recording=recording,
         browsers=browsers,
         watching=watching,
         todos=todos,
@@ -1142,6 +1149,7 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
     session: str = "",
     units: modes.Units | None = None,
     listening: Listening | None = None,
+    recording: OutputRecorder | None = None,
     mode: modes.Mode | None = None,
 ) -> Jarvis:
     """Assemble the agent from the config.
@@ -1200,6 +1208,7 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
             can_switch=units is not None,
             voice_running=voice_service_running if elsewhere else lambda: True,
             listening=listening,
+            recording=recording,
             browsers=browsers,
             watching=watch,
             todos=todos,

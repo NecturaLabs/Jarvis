@@ -26,7 +26,9 @@ which parts exist. Details of what is built are in [configuration.md](configurat
 | 8. Hardening | Partly built | `install.sh`, `tools/get_models.py` and `jarvis update` (with failed-update rollback and an opt-in timer) are built. Uninstall is manual. `jarvis doctor`, `status` (with `--json`), `pause`, `resume`, `hush`, `logs`, `unload`, `start`, `stop` and `restart` exist. |
 
 Also beyond the plan: Jarvis answers about itself (`about_jarvis`), reads its own configuration files
-(`read_jarvis_file`) and sings a song the model writes as notes (`sing`, [models.md](models.md#singing)). Built beyond the plan, each with an ADR: reminders and scheduled requests, said or carried out by the
+(`read_jarvis_file`) and sings a song the model writes as notes (`sing`, [models.md](models.md#singing)).
+The owner can record the audio Jarvis sends to its player as a private WAV with `voice_record`.
+Built beyond the plan, each with an ADR: reminders and scheduled requests, said or carried out by the
 voice service ([0011](adr/0011-reminders-and-scheduled-requests.md)); speech heard in PC audio is treated as someone else's
 ([0003](adr/0003-pc-audio-is-not-the-owner.md)); plain commands skip the model
 ([0004](adr/0004-model-free-path-for-plain-commands.md); no new ones, [0013](adr/0013-free-speech-no-new-shortcuts.md)); no hosted backend

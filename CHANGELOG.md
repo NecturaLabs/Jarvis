@@ -8,6 +8,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `voice_record` lets the owner start and stop a recording of Jarvis's own speech and songs.
+  The voice service saves up to five minutes of its playback audio as a private WAV.
 - `write_file` has an `edit` mode: `find` is one passage of the file, copied exactly and found once, and
   `content` what it becomes, so a long file is changed without being written again. It is bound and checked
   like a replace (refused if the file changed since the question), and a passage that is missing or found
