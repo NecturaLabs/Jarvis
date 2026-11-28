@@ -4,7 +4,8 @@ The owner says whom or how Jarvis should sound ("like a pirate", "like a hyped s
 words; the model writes that as a short style and calls `set_persona`. The style is kept in a
 private file, so it holds across requests, the idle memory reset and restarts, and is added to
 the system prompt as a note that shapes only the wording: tools, boundaries and confirmations
-stay as they are. An empty style is Jarvis's own `[persona]` again.
+stay as they are. An empty style is Jarvis's own `[persona]` again. With outside text in the
+conversation it waits for the owner's yes, as an action does, so a page cannot set one.
 """
 
 import json
@@ -64,7 +65,7 @@ class PersonaStore:
 
     def _run(self, args: dict[str, Any]) -> Result:
         request = current_request()
-        if request is None or not request.owner_asked or request.scheduled or request.outside:
+        if request is None or not request.owner_asked or request.scheduled:
             msg = "Only the owner's own request can change how Jarvis talks."
             raise OperationError(msg)
         style = str(args["style"]).strip()
@@ -104,7 +105,9 @@ class PersonaStore:
             },
             self._run,
             default_class=OpClass.SAFE,
-            side_effect=False,
+            # The style stays in the system prompt, so outside text in the conversation (a page
+            # read just now or remembered) asks for the owner's yes first, like any action.
+            side_effect=True,
             spoken_summary=lambda args: (
                 "change how I talk" if args.get("style") else "talk as usual"
             ),

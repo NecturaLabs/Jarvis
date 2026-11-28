@@ -10,6 +10,7 @@ from jarvis.agent import Agent, Hooks
 from jarvis.audit import AuditLog
 from jarvis.operations import ArgumentError, OperationError, Registry, request_scope, validate_args
 from jarvis.persona import MAX_STYLE, PersonaStore, style_note
+from jarvis.policy import Verdict, decide
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -33,16 +34,35 @@ def test_a_style_is_kept_privately_until_it_is_reset(tmp_path: Path) -> None:
     assert not store.style()
 
 
-@pytest.mark.parametrize("source", ["pc_audio", "scheduled", "outside"])
+@pytest.mark.parametrize("source", ["pc_audio", "scheduled"])
 def test_only_the_owner_present_can_change_the_style(tmp_path: Path, source: str) -> None:
     store = PersonaStore(tmp_path / "persona.json")
     op = store.operation()
-    with request_scope(foreign=source == "pc_audio", scheduled=source == "scheduled") as request:
-        if source == "outside":
-            request.saw("page")
-        with pytest.raises(OperationError, match="owner"):
-            op.run(validate_args(op, {"style": "rude"}))
+    with (
+        request_scope(foreign=source == "pc_audio", scheduled=source == "scheduled"),
+        pytest.raises(OperationError, match="owner"),
+    ):
+        op.run(validate_args(op, {"style": "rude"}))
     assert not store.style()
+
+
+@pytest.mark.parametrize("origin", ["memory", "page"])
+def test_after_outside_text_the_owner_can_still_change_the_style_once_they_say_yes(
+    tmp_path: Path, origin: str
+) -> None:
+    # A web search earlier in the conversation left outside text in memory, and every
+    # "talk like ..." after it was refused. Now the policy asks the owner first instead.
+    store = PersonaStore(tmp_path / "persona.json")
+    op = store.operation()
+
+    decision = decide(op, op.name, {}, untrusted_in_context=True)
+    with request_scope(foreign=False, words="talk like a pirate") as request:
+        request.saw(origin)
+        result = op.run(validate_args(op, {"style": "a pirate"}))
+
+    assert decision.verdict is Verdict.CONFIRM
+    assert result.ok
+    assert store.style() == "a pirate"
 
 
 def test_a_style_longer_than_the_limit_is_refused(tmp_path: Path) -> None:
