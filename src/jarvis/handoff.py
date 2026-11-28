@@ -1,10 +1,10 @@
 """Handing a spoken instruction to an open chat window, over a local owner-only socket.
 
-The voice service and the chat are two configurations that work apart: a spoken request is the
-voice agent's own and never shows in the chat. When the owner asks, in speech, for something to be
-done in or added to the chat's own work, the voice agent calls `chat_hand_off` and the words go to
-the window as the owner's own input: it joins the request that is running (steering) or starts a
-new one, and marks the words as spoken.
+The voice service and the chat are two configurations: a spoken request is the voice agent's own
+(with `[channels] shared` on it shows in the chat and joins its conversation, ADR 0030). When the
+owner asks, in speech, for something to be done in or added to the chat's own work, the voice agent
+calls `chat_hand_off` and the words go to the window as the owner's own input: it joins the
+request that is running (steering) or starts a new one, and marks the words as spoken.
 
 Each chat window serves a Unix socket of its own in `$XDG_RUNTIME_DIR/jarvis/chat/` (folders
 0700, socket 0600) and takes words only from the voice service process itself (`SO_PEERCRED`: its

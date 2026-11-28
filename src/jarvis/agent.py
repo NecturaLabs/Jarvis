@@ -97,6 +97,7 @@ _UNKNOWN = "unknown operation"
 MAX_LOOK_UPS_KEPT = 6
 MAX_ASKED = 160  # characters of one argument
 MAX_LOOKED = 900  # characters of them all
+HAND_OFF = "chat_hand_off"  # `handoff.NAME`: a turn that handed the words to the chat
 _NOT_LOOK_UPS = frozenset(
     {NO_ACTION, THINK_HARDER, SWITCH_MODEL, USE_TOOLS, "stay_quiet", "todo_write", "ask_owner"}
 )
@@ -1289,6 +1290,8 @@ class Agent:
         self._ends = 0.0  # when the request in flight runs out of time
         self._shared_pictures = False  # the request in flight came with pictures
         self._shared = shared  # the conversation shared with the other channel, if any
+        if shared is not None:  # a saved conversation already holds the turns it took
+            shared.resume(self._memory.shared_mark)
         self._follow_mode()
 
     def _follow_mode(self) -> None:
@@ -1396,6 +1399,11 @@ class Agent:
         self._memory.clear()
         self._registry.reset()
         self._last_used = 0
+        if self._shared is not None:  # one conversation: the other channel forgets it too
+            try:
+                self._shared.clear()
+            except OSError as exc:
+                log.warning("the shared turns could not be cleared: %s", exc)
         self._audit.record("memory_cleared")
         self._save_memory()
 
@@ -1415,6 +1423,8 @@ class Agent:
             return False
         self._memory = restored
         self._memory.last = self._clock()
+        if self._shared is not None:
+            self._shared.resume(restored.shared_mark)
         self._registry.reset()
         self._last_used = 0
         self._audit.record("memory_resumed", turns=len(restored.turns))
@@ -1503,13 +1513,15 @@ class Agent:
             self._registry.reset()
             self._audit.record("memory_expired")
 
-    def _take_shared(self, *, foreign: bool) -> None:
+    def _take_shared(self, *, foreign: bool, scheduled: bool) -> None:
         """Add what the owner asked of the other channel since the last request to this talk.
 
-        A request heard in PC audio reads no history, so it takes none either. A failure to read
-        the shared file costs the request nothing: it goes on with this channel's own talk.
+        A request heard in PC audio reads no history, so it takes none either; nor does a
+        scheduled one, which runs with the talk it was asked in, not what came after: the turns
+        wait for the owner's next request. A failure to read the shared file costs the request
+        nothing: it goes on with this channel's own talk.
         """
-        if self._shared is None or foreign:
+        if self._shared is None or foreign or scheduled:
             return
         try:
             taken = self._shared.take()
@@ -1518,6 +1530,7 @@ class Agent:
             return
         for shared in taken:
             self._memory.add(shared.turn(self._clock()))
+        self._memory.shared_mark = self._shared.mark
         if taken:
             self._audit.record("shared_turns_taken", turns=len(taken))
             self._save_memory()
@@ -1619,9 +1632,14 @@ class Agent:
             )
         )
         self._save_memory()
-        if self._shared is not None and not (turn.request and turn.request.scheduled):
+        handed = f"{HAND_OFF} -> ok" in turn.actions  # the chat shares the words it was handed
+        if (
+            self._shared is not None
+            and not handed
+            and not (turn.request and turn.request.scheduled)
+        ):
             try:
-                self._shared.publish(self._memory.turns[-1])
+                self._shared.publish(self._memory.turns[-1], said="voice" if self._spoken else None)
             except OSError as exc:
                 log.warning("the turn could not be shared with the other channel: %s", exc)
 
@@ -1764,7 +1782,7 @@ class Agent:
             else shortcuts.match(text, self._registry.shortcuts(), self._names)
         )
         self._expire(started)
-        self._take_shared(foreign=foreign)
+        self._take_shared(foreign=foreign, scheduled=request.scheduled)
         remembered = [] if foreign else self._remembered(plain=hit is not None)
         if remembered:
             self._note_remembered(request)

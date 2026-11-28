@@ -1247,7 +1247,8 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
     """Assemble the agent from the config.
 
     `via` marks every audit event of this agent with where its requests come from ("chat",
-    "ask", "acp", `VOICE_VIA` for the voice service, which the chat does not show). The chat and
+    "ask", "acp", `VOICE_VIA` for the voice service, which the chat shows only with `[channels]
+    shared` on). The chat and
     `jarvis acp` get the chat's limits and written replies; only the chat keeps its conversation
     across sessions (`chat.resume`; an ACP session has its own, and none is kept). `session`
     marks the agent's audit events too, so a window can tell its own from others'. With `units` (the

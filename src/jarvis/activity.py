@@ -350,6 +350,12 @@ def _simple(entry: dict[str, object]) -> _Line | None:
         ),
         "memory_expired": ("note", "Started a new conversation after a long pause", False, ""),
         "memory_cleared": ("detail", "the conversation was cleared", True, ""),
+        "shared_turns_taken": (
+            "detail",
+            f"read {entry.get('turns', '?')} turns of the other channel's talk",
+            True,
+            "",
+        ),
         "reply_limit": ("detail", "the reply reached its length limit", True, ""),
         "result_cleared": ("detail", "cleared an earlier result to make room", True, ""),
         "thinking_raised": (
