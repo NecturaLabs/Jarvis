@@ -11,6 +11,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - `set_persona`: ask Jarvis to talk like someone or some way, in any words, and it keeps that style in every
   reply, across the idle reset and restarts, until you ask it to stop. The style changes only the wording:
   tools, rules and confirmations stay the same. Only your own request can set it.
+- `jarvis voice` lists the 28 English Kokoro voices with their accent, Kokoro's own grade and a few words on
+  how each sounds, and `jarvis voice af_heart` switches to one and restarts the voice service.
 - `forget_conversation`: asking Jarvis to clear its context or forget the talk so far now does it.
 - `voice_record` lets the owner start and stop a recording of Jarvis's own speech and songs.
   The voice service saves up to five minutes of its playback audio as a private WAV.

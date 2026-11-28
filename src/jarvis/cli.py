@@ -41,6 +41,7 @@ from jarvis import (
     skills,
     t3push,
     update,
+    voices,
 )
 from jarvis.activity import VOICE_VIA, AuditTail
 from jarvis.agent import Declined, Hooks, NoReason
@@ -235,6 +236,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("consent", "show or set whether Jarvis asks before acting"),
             ("tools", "list the tools, or switch one on, off or to asking first"),
             ("speed", "show or set how fast Jarvis speaks (1.0 is normal)"),
+            ("voice", "list the voices Jarvis can speak with, or switch to one"),
             ("pc-audio", "let Jarvis take requests from PC audio (Discord by default)"),
             ("plugins", "list, install, uninstall and update skill plugins"),
         ),
@@ -530,19 +532,7 @@ def build_parser() -> argparse.ArgumentParser:
             "e.g. hey_jarvis,yo_jarvis"
         ),
     )
-    made["consent"].add_argument(
-        "mode",
-        nargs="?",
-        choices=["bypass", "ask"],
-        help="ask: ask for a yes before a risky action or one after outside text; bypass: act "
-        "without asking (a strong action still waits for the confirm key)",
-    )
-    made["speed"].add_argument(
-        "value",
-        nargs="?",
-        type=_speech_speed,
-        help=f"{SPEEDS}; 1 is the voice's own pace",
-    )
+    _settings_options(made)
     tool = made["tools"]
     tool.add_argument("name", nargs="?", help="the tool, as `jarvis tools` lists it")
     tool.add_argument(
@@ -577,6 +567,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="listen to all PC audio, not only named apps (anything playing can speak to Jarvis)",
     )
     return parser
+
+
+def _settings_options(made: Mapping[str, argparse.ArgumentParser]) -> None:
+    made["consent"].add_argument(
+        "mode",
+        nargs="?",
+        choices=["bypass", "ask"],
+        help="ask: ask for a yes before a risky action or one after outside text; bypass: act "
+        "without asking (a strong action still waits for the confirm key)",
+    )
+    made["speed"].add_argument(
+        "value",
+        nargs="?",
+        type=_speech_speed,
+        help=f"{SPEEDS}; 1 is the voice's own pace",
+    )
+    made["voice"].add_argument(
+        "name", nargs="?", help="the voice's name, as `jarvis voice` lists it"
+    )
 
 
 def _setup_options(made: Mapping[str, argparse.ArgumentParser]) -> None:
@@ -3384,6 +3393,32 @@ def cmd_speed(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_voice(args: argparse.Namespace) -> int:
+    """List the voices with what each sounds like, or switch to one and restart the voice."""
+    cfg = _load()
+    if args.name is not None:
+        chosen = voices.find(args.name)
+        if chosen is None:
+            print(
+                f"jarvis: no voice is called {args.name!r}; `jarvis voice` lists them",
+                file=sys.stderr,
+            )
+            return 2
+        audio = cfg.audio.model_copy(update={"voice": chosen.setting})
+        cfg = cfg.model_copy(update={"audio": audio})
+        config.save(cfg)
+        _restart_if_running()
+        print(f"voice: {chosen.id} ({chosen.accent} {chosen.gender}, {chosen.about})")
+        return 0
+    current = cfg.audio.voice
+    print(f"voice: {current.removeprefix(voices.KOKORO)}")
+    for v in voices.VOICES:
+        mark = "*" if v.setting == current else " "
+        print(f"{mark} {v.id:<12} {v.accent:<8} {v.gender:<6} {v.grade:<3} {v.about}")
+    print("Grades are Kokoro's own; `jarvis voice <name>` switches.")
+    return 0
+
+
 def _tool_settings(cfg: config.Config) -> list[ToolSetting]:
     return tool_settings(cfg, spotify_operations(cfg))
 
@@ -3741,6 +3776,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "tools": cmd_tools,
     "plugins": lambda args: pluginsync.command(args, launch_for_update),
     "speed": cmd_speed,
+    "voice": cmd_voice,
     "wake": cmd_wake,
     "model": cmd_model,
     "speech-test": cmd_speech_test,
@@ -3798,6 +3834,24 @@ def _agent_speed(_args: argparse.Namespace) -> dict[str, object]:
     return {"speech_speed": config.load().audio.speech_speed}
 
 
+def _agent_voice(_args: argparse.Namespace) -> dict[str, object]:
+    current = config.load().audio.voice
+    return {
+        "voice": current,
+        "voices": [
+            {
+                "id": v.id,
+                "accent": v.accent,
+                "gender": v.gender,
+                "grade": v.grade,
+                "about": v.about,
+                "current": v.setting == current,
+            }
+            for v in voices.VOICES
+        ],
+    }
+
+
 def _agent_consent(_args: argparse.Namespace) -> dict[str, object]:
     bypass = config.load().boundaries.bypass_consent
     return {"consent": "bypassed" if bypass else "asks", "said": CONSENT_SAID[bypass]}
@@ -3829,6 +3883,7 @@ def _agent_plugins(_args: argparse.Namespace) -> dict[str, object]:
 AGENT_FIELDS: dict[str, Callable[[argparse.Namespace], dict[str, object]]] = {
     "plugins": _agent_plugins,
     "speed": _agent_speed,
+    "voice": _agent_voice,
     "consent": _agent_consent,
     "tools": _agent_tools,
 }
