@@ -356,6 +356,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A reply that falls into repeating one sentence is cut before its third time, aloud and in writing, with a
+  short note (#70); twice on purpose ("Knock knock. Knock knock.") stays.
 - A file whose name is not valid UTF-8 no longer breaks the conversation: listing its folder made every
   request after it fail, since the name could not be sent to the model. Such a character now shows as �.
 - Spoken replies say a sum of money the way people do ("50 dollars", not "dollar fifty"), a path or a file

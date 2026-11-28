@@ -357,6 +357,7 @@ def _simple(entry: dict[str, object]) -> _Line | None:
             "",
         ),
         "reply_limit": ("detail", "the reply reached its length limit", True, ""),
+        "reply_repeated": ("warn", "the reply kept repeating one sentence; cut it there", True, ""),
         "result_cleared": ("detail", "cleared an earlier result to make room", True, ""),
         "thinking_raised": (
             "detail",
