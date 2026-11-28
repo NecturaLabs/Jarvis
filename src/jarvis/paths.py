@@ -91,6 +91,11 @@ def acp_sessions_dir() -> Path:
     return state_dir() / "acp-sessions"
 
 
+def shared_turns_file() -> Path:
+    """Return the file of the conversation the voice service and the chat share (ADR 0030)."""
+    return state_dir() / "shared-turns.jsonl"
+
+
 def persona_file() -> Path:
     """Return the file that keeps the style the owner asked Jarvis to talk in (`set_persona`)."""
     return state_dir() / "persona.json"

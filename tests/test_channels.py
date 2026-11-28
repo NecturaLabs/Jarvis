@@ -30,6 +30,7 @@ from jarvis.activity import VOICE_VIA
 from jarvis.agent import Agent, Hooks
 from jarvis.app import build, no_action_operation
 from jarvis.audit import AuditLog
+from jarvis.chat.widgets import Reply
 from jarvis.cli import main
 from jarvis.config import ChatConfig, Config, SpotifyConfig
 from jarvis.handoff import ChatListener, HandoffError, Sent, State
@@ -501,7 +502,8 @@ def test_a_chat_that_cannot_take_requests_refuses_the_words() -> None:
     _run(test, app)
 
 
-def test_a_voice_request_never_shows_in_the_open_chat_but_typed_and_ask_still_do() -> None:
+def test_with_sharing_off_a_voice_request_stays_out_of_the_chat_but_typed_and_ask_show() -> None:
+    # `[channels] shared = false` keeps ADR 0028's split; the window is built with show_voice off.
     tail = FakeTail()
     voice = {"via": "voice"}
     tail.entries = [
@@ -518,6 +520,27 @@ def test_a_voice_request_never_shows_in_the_open_chat_but_typed_and_ask_still_do
         assert not _has(app, "play some jazz")
         assert not _has(app, "Playing jazz.")
         assert not _has(app, "Spotify")
+
+    _run(test, app)
+
+
+def test_with_sharing_on_a_voice_request_and_its_spoken_reply_show_in_the_open_chat() -> None:
+    # ADR 0030 (owner, 2026-11-28): voice and chat are one conversation, so what was said aloud
+    # shows in the window, marked as spoken.
+    tail = FakeTail()
+    voice = {"via": "voice"}
+    tail.entries = [
+        {"event": "request", "text": "play some jazz", **voice},
+        {"event": "reply", "text": "Playing jazz.", "seconds": 0.4, **voice},
+    ]
+    app = _app(tail, FakeSession(), services=test_chat.Services(show_voice=True))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _until(pilot, lambda: _has(app, "Playing jazz."))
+        assert _has(app, "play some jazz")
+        assert _has(app, "by voice")
+        (reply,) = [w for w in app.query(Reply) if w.text == "Playing jazz."]
+        assert reply._note.endswith("spoken")  # pyright: ignore[reportPrivateUsage] - the line under it
 
     _run(test, app)
 

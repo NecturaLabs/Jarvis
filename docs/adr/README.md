@@ -32,5 +32,6 @@ edited once accepted; a later decision supersedes it with a new record that link
 | [0025](0025-workspace-folder.md) | Give Jarvis a workspace folder it can always write in, where a new file needs no yes | accepted |
 | [0026](0026-ask-the-owner-never-consent.md) | Let the model put a choice to the owner in the chat, with a timer; an answer is never consent | accepted |
 | [0027](0027-skill-plugins.md) | Use only the skills of plugins from Claude Code-format marketplaces, kept at their newest commit | accepted |
-| [0028](0028-voice-and-chat-as-two-channels.md) | Voice and chat as two cooperating channels: a spoken request is its own, and a typed tool hands the owner's words to the open chat | accepted |
+| [0028](0028-voice-and-chat-as-two-channels.md) | Voice and chat as two cooperating channels: a spoken request is its own, and a typed tool hands the owner's words to the open chat | accepted, amended by 0030 |
 | [0029](0029-refuse-a-load-that-does-not-fit.md) | Refuse to start or load the model when the memory available would be left below a margin | accepted |
+| [0030](0030-one-conversation-across-voice-and-chat.md) | One conversation across voice and chat, each answered the way it was asked (amends 0028) | accepted |

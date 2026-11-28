@@ -61,6 +61,7 @@ from jarvis.router import toolbox_section, use_tools_operation
 from jarvis.schedule import JobStore, ScheduleOps
 from jarvis.sentences import MAX_SPOKEN_CHARS
 from jarvis.services import StrataSetupError, read_run_config, reads_pictures
+from jarvis.shared import SharedTurns
 from jarvis.sing.engines import singer_for
 from jarvis.sing.ops import SingOps
 from jarvis.spotify.api import SpotifyApi
@@ -975,6 +976,25 @@ MAKES_SOUND = frozenset({"sing"})
 SOUNDLESS = frozenset({"ask", "speech-test", "acp"})
 # Chat-style callers: typed requests answered in writing, with the chat's limits.
 WRITTEN = frozenset({"chat", "acp"})
+
+
+def shared_turns(config: Config, via: str | None, session: str) -> SharedTurns | None:
+    """Return the voice service's or a chat window's side of the shared conversation, if on.
+
+    Only those two share (ADR 0030): `jarvis ask`, an ACP session and a speech test keep their
+    own conversation. A chat window without a session (a test) shares nothing.
+    """
+    from jarvis.activity import VOICE_VIA  # ruff: ignore[import-outside-top-level] - a plain tool import loads no activity module
+
+    if not config.channels.shared:
+        return None
+    if via == VOICE_VIA:
+        return SharedTurns(paths.shared_turns_file(), "voice")
+    if via == "chat" and session:
+        return SharedTurns(paths.shared_turns_file(), "chat")
+    return None
+
+
 # Tools that show the owner a picture in the chat window, which `jarvis acp` has no place for.
 SHOWS_PICTURES = frozenset({"image_search", "show_image"})
 # Tools that draw in the chat window itself (the todo panel, the picker), which no other caller has.
@@ -1327,6 +1347,7 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
         bypass_consent=config.boundaries.bypass_consent,
         actions=action_rate(config),
         modes=agent_modes,
+        shared=shared_turns(config, via, session),
     )
     forgetter.attach(agent)
     if watch is not None:

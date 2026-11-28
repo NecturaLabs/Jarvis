@@ -553,6 +553,14 @@ class ClockConfig(_Section):
     twelve_hour: bool = True
 
 
+class ChannelsConfig(_Section):
+    """How the voice service and the chat window go together (ADR 0030)."""
+
+    # One conversation: each channel remembers what was asked of the other, and the chat window
+    # shows spoken requests and their replies. False keeps them apart (ADR 0028).
+    shared: bool = True
+
+
 class FormatConfig(_Section):
     """How Jarvis writes numbers, in every reply and tool answer."""
 
@@ -1012,6 +1020,7 @@ class Config(_Section):
     model: ModelConfig = Field(default_factory=ModelConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     chat: ChatConfig = Field(default_factory=ChatConfig)
+    channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     strata: StrataConfig = Field(default_factory=StrataConfig)
     coding: CodingConfig = Field(default_factory=CodingConfig)
     spotify: SpotifyConfig = Field(default_factory=SpotifyConfig)

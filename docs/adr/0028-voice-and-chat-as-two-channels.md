@@ -1,6 +1,6 @@
 # ADR: Voice and chat as two cooperating channels, with a typed hand-off between them
 
-**Status:** accepted (2026-11-26)
+**Status:** accepted (2026-11-26); amended by [ADR 0030](0030-one-conversation-across-voice-and-chat.md) (2026-11-28): with `[channels] shared` on, the default, spoken requests show in the chat and the two share one conversation
 **Date:** 2026-11-26
 
 ## Context and problem statement
