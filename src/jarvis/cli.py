@@ -2279,6 +2279,40 @@ def _memlock_notes(cfg: config.Config) -> list[str]:
     return []
 
 
+def _greedy_notes(cfg: config.Config) -> list[str]:
+    """Warn of a mode whose requests Strata would decode greedily.
+
+    Strata fills in the model card's sampling only for a request that asks for some sampling;
+    one that asks for none stays greedy while its engine drafts with MTP (`--mtp`), unless the
+    run config's own `sampling` block sets it. A mode whose temperature is the model's own
+    (`"model"`, sent as none) on such a run config is greedy, which can repeat itself endlessly.
+    """
+    if cfg.strata.mode != "local":
+        return []
+    notes: list[str] = []
+    keys: tuple[tuple[modes.Mode, str], ...] = (
+        ("normal", "model.temperature"),
+        ("coding", "coding.temperature"),
+    )
+    for mode, key in keys:
+        served = modes.effective(cfg, mode)
+        if served.model.temperature is not None:
+            continue
+        try:
+            run = services.read_run_config(served)
+        except services.StrataSetupError:
+            continue  # the run config's own check says what is wrong with it
+        if "--mtp" not in run.args or run.data.get("sampling"):
+            continue
+        name = "the normal mode" if mode == "normal" else "coding mode"
+        notes.append(
+            f"warning: {name} is decoded greedily: its run config {run.path} drafts with MTP and "
+            f'{key} is "model", so Strata uses none of the model card\'s sampling; set {key} to '
+            "the temperature the model's card gives (or a `sampling` block in the run config)"
+        )
+    return notes
+
+
 def essential_checks(cfg: config.Config) -> tuple[list[tuple[bool, str, str]], list[str]]:
     """Return the local checks shared by doctor and the update health check."""
     from jarvis.audio import voice_files  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
@@ -2465,7 +2499,7 @@ def doctor_report(args: argparse.Namespace) -> DoctorReport:
     if cfg.strata.mode == "local":
         ram_checks, ram_notes = _ram_report(cfg, essential=args.essential)
         checks.extend(ram_checks)
-        notes.extend([*ram_notes, *_memlock_notes(cfg)])
+        notes.extend([*ram_notes, *_memlock_notes(cfg), *_greedy_notes(cfg)])
     else:
         notes.extend(_remote_notes(cfg, no_service=args.no_service))
     notes.extend([*_t3_notes(cfg), *update.doctor_notes(cfg, launch_for_update)])

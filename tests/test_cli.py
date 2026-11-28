@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, Literal, Self, cast
 
 import numpy as np
 import pytest
@@ -2952,6 +2952,70 @@ def test_doctor_notes_a_lock_limit_that_only_coding_mode_meets(
 
     assert len(notes) == 1
     assert "in coding mode" in notes[0]
+
+
+def _drafting_run_config(home: Path, name: str, sampling: dict[str, float] | None = None) -> Path:
+    """A run config whose engine drafts with MTP, as `strata launch` writes for Flash-Next."""
+    run = engine_run_config(home / name)
+    data = json.loads(run.read_text(encoding="utf-8"))
+    data["args"] = [*data["args"], "--mtp", str(home / name / "mtp")]
+    if sampling is not None:
+        data["sampling"] = sampling
+    run.write_text(json.dumps(data), encoding="utf-8")
+    return run
+
+
+@pytest.mark.parametrize(
+    ("temperature", "sampling", "warned"),
+    [("model", None, True), (1.0, None, False), ("model", {"temperature": 0.6}, False)],
+)
+def test_doctor_warns_when_coding_mode_would_be_sampled_greedily(
+    home: Path,
+    temperature: float | Literal["model"],
+    sampling: dict[str, float] | None,
+    *,
+    warned: bool,
+) -> None:
+    # Strata keeps a request with no sampling fields greedy when its engine drafts with MTP.
+    config.save(
+        config.Config(
+            strata=config.StrataConfig(
+                run_config=_drafting_run_config(home, "normal"),
+                coding_run_config=_drafting_run_config(home, "coder", sampling),
+            ),
+            coding=config.CodingConfig(temperature=temperature),
+        )
+    )
+
+    notes = cli._greedy_notes(config.load())  # pyright: ignore[reportPrivateUsage] - the note itself
+
+    assert bool(notes) is warned
+    if warned:
+        assert notes[0].startswith("warning: coding mode")
+        assert "coding.temperature" in notes[0]
+
+
+def test_doctor_warns_of_greedy_sampling_in_the_normal_mode_too(home: Path) -> None:
+    cfg = config.Config(
+        strata=config.StrataConfig(run_config=_drafting_run_config(home, "normal")),
+        model=config.ModelConfig(temperature=None),
+        coding=config.CodingConfig(temperature=0.6),
+    )
+
+    notes = cli._greedy_notes(cfg)  # pyright: ignore[reportPrivateUsage] - the note itself
+
+    assert len(notes) == 1
+    assert notes[0].startswith("warning: the normal mode")
+    assert "model.temperature" in notes[0]
+
+
+def test_doctor_says_nothing_of_sampling_without_mtp_drafting(home: Path) -> None:
+    cfg = config.Config(
+        strata=config.StrataConfig(run_config=engine_run_config(home)),
+        model=config.ModelConfig(temperature=None),
+    )
+
+    assert cli._greedy_notes(cfg) == []  # pyright: ignore[reportPrivateUsage] - the note itself
 
 
 def test_tools_lists_every_tool_with_its_setting(capsys: pytest.CaptureFixture[str]) -> None:

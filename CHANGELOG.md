@@ -330,6 +330,11 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `jarvis doctor` warns when a mode would be decoded greedily: Strata keeps a request with no sampling
+  greedy on a run config that drafts with MTP, and coding mode's default `temperature = "model"` sends
+  none. Coding runs of 8,000 tokens were decoded that way, the decoding Qwen's card warns repeats itself.
+  The docs no longer say `"model"` always gets the model card's sampling.
+
 - `write_file` limits each part to about half the reply budget, up to 20,000 characters.
   The coding prompt and the error for an oversized part give the same limit. Long reads
   and writes use successive tool calls.
