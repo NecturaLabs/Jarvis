@@ -2,12 +2,14 @@
 made before the action, nothing twice, and nothing after the owner speaks over Jarvis."""
 
 import json
+import random
 from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 from test_agent import Clock, Counter, ScriptedModel, stream_pieces
 
+from jarvis import agent as agent_module
 from jarvis import app
 from jarvis.agent import (
     MAX_STREAMED_CHARS,
@@ -15,10 +17,12 @@ from jarvis.agent import (
     Agent,
     Hooks,
     claims_action,
+    own_words,
     partial_reply,
 )
 from jarvis.app import no_action_operation, quiet_operation
 from jarvis.audit import AuditLog
+from jarvis.model import Delta
 from jarvis.operations import Operation, Registry
 from jarvis.sentences import sentence_end, split_sentences
 from jarvis.shortcuts import Shortcut
@@ -304,6 +308,8 @@ def test_a_partial_reply_is_read_only_as_far_as_it_is_whole(
         ("Paused. Next", "Paused."),
         ("Really? Yes", "Really?"),
         ("Line one\nLine two", "Line one"),
+        ("Line one \nLine two", "Line one"),
+        ("Line one  \n\n Line two", "Line one"),
         ("Dr. Who is on. Next", "Dr. Who is on."),
         ("Use e.g. vinegar. Next", "Use e.g. vinegar."),
         ("J. R. R. Tolkien wrote it. Next", "J. R. R. Tolkien wrote it."),
@@ -508,3 +514,80 @@ def test_words_written_before_a_call_to_stay_quiet_are_hushed() -> None:
     assert not agent.handle("Be quiet.", ear.hooks())
     assert ear.hushes >= 1  # what was queued of the preamble is dropped
     assert ear.quiets == 1  # and the channel is told the owner asked for silence
+
+
+def _spoken_in_pieces(text: str, size: int, *, as_call: bool) -> tuple[list[str], str, str]:
+    """Feed a reply to a stream `size` characters at a time; return what was spoken as it came,
+    what was left for the end, and the reply as it ends up."""
+    heard: list[str] = []
+    hooks = Hooks(confirm=lambda _q: False, speak=heard.append)
+    stream = agent_module._ReplyStream(  # pyright: ignore[reportPrivateUsage] - the stream under test
+        heard.append, hooks, may_claim=True, reply_allowed=True, before_first=lambda: None
+    )
+    written = json.dumps({"reply": text}) if as_call else text
+    if as_call:
+        stream.feed(Delta(call=0, name="no_action"))
+    for start in range(0, len(written), size):
+        piece = written[start : start + size]
+        stream.feed(Delta(call=0, arguments=piece) if as_call else Delta(text=piece))
+    final = own_words(text.strip()).strip()
+    return heard, stream.rest(final).strip(), final
+
+
+@pytest.mark.parametrize("as_call", [False, True], ids=["text", "reply call"])
+@pytest.mark.parametrize("size", [1, 3, 1000])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[looked up: foo [bar] baz. Qux quux] Real answer here. More.",
+        "[looked up: foo [bar] baz\nQux quux] Real answer here. More.",
+        "[looked up: a [b [c] d. e] f] Real answer here. More.",
+        '<data origin="web">[looked up: foo [bar] baz. Qux] Real answer here. More.</data>',
+        "[actions taken: pc_shell(echo [a] b. c) -> ok] Real answer here. More.",
+        '<DATA origin="web">Real answer here. More.</DATA>',
+        '<data origin="web">Real answer here. \nMore. \n</data>',
+        '<data origin="web">Real answer here.\n  \nMore.   </data>',
+    ],
+)
+def test_a_copied_note_with_brackets_inside_is_never_spoken_nor_costs_a_word(
+    text: str, size: int, as_call: bool
+) -> None:
+    heard, rest, final = _spoken_in_pieces(text, size, as_call=as_call)
+
+    assert final.split() == ["Real", "answer", "here.", "More."]
+    assert " ".join([*heard, rest]).split() == final.split()
+    assert not any(word in " ".join(heard) for word in ("baz", "Qux", "foo", "echo"))
+
+
+@pytest.mark.parametrize("as_call", [False, True], ids=["text", "reply call"])
+def test_what_is_spoken_as_a_reply_arrives_and_the_end_make_the_reply_in_any_chunks(
+    as_call: bool,
+) -> None:
+    rng = random.Random(7)  # ruff: ignore[suspicious-non-cryptographic-random-usage] - a fixed seed
+    parts = [
+        '<data origin="web">',
+        "</data>",
+        '<DATA origin="web">',
+        "</DATA>",
+        "<data>",
+        "<b>",
+        "[actions taken: none] ",
+        "[looked up: kettle [a] baz. quux] ",
+        "[looked up: xx [yy [zz] ww. vv] uu] ",
+        "[Pause] ",
+        " ",
+        " \n",
+        "\n",
+        "Hello there. ",
+        "It is fine. ",
+        "Ok.",
+        "x ",
+        "See 5 p.m.\n",
+    ]
+    for _ in range(1500):
+        text = "".join(rng.choice(parts) for _ in range(rng.randint(1, 8))).strip()
+        heard, rest, final = _spoken_in_pieces(
+            text, rng.choice([1, 2, 3, 5, 1000]), as_call=as_call
+        )
+
+        assert " ".join([*heard, rest]).split() == final.split(), text

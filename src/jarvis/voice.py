@@ -109,19 +109,21 @@ _RANGE = re.compile(
 # words it is a pause.
 _NAMES = re.compile(r"\b([A-Z][^\W\d_]*)[\u2012\u2013]([A-Z][^\W\d_]*)")
 # A hyphen between two figures with a unit sign or a percent after (5-10 km, 10-20%); a date, a
-# phone number or a version has none.
+# version or an address range (more than two parts) is read as written.
+_FIGURE = r"\d+(?:[.,]\d+)?"  # one figure; a dotted or dashed run of them is a date or a version
 _HYPHEN_RANGE = re.compile(
-    rf"(?<![\w.:/+\-\u2212$€£])({_NUMBER})-({_NUMBER})(?=\s?(?:{_SIGNS})(?![\w/°])|%)"
+    rf"(?<![\w.,:/+\-\u2212$€£])({_FIGURE})-({_FIGURE})(?![.,\-]\d)"
+    rf"(?=\s?(?:{_SIGNS})(?![\w/°])|%)"
 )
 # A dash that takes one thing from another in a sum ends in "=" (3 - 2 = 1).
 _TERM = r"(?:[\d.,()]+|[A-Za-z]\b)"
 _MINUS = re.compile(
-    rf"(?<=[\dA-Za-z)])\s?[\u2012\u2013]\s?(?={_TERM}(?:\s*[-+*/\u00d7\u00f7\u2212\u2013]\s*{_TERM})*\s*=)"
+    rf"(?:(?<=[\d)])|(?<=(?<![A-Za-z])[A-Za-z]))\s?[\u2012\u2013]\s?(?={_TERM}(?:\s*[-+*/\u00d7\u00f7\u2212\u2013]\s*{_TERM})*\s*=)"
 )
 # A long dash anywhere, or a hyphen set off by spaces between words (between numbers it is a minus).
 _DASH = re.compile(r"\s*,?\s*[\u2012-\u2015]\s*|(?<=[^\d\s]),?\s+-{1,2}\s+(?=\D)")
-_MINUS_BEFORE = re.compile(r"(?<!\w)\d*[A-Za-z]$")
-_MINUS_AFTER = re.compile(r"\d*[A-Za-z](?!\w)")
+_MINUS_BEFORE = re.compile(r"(?<!\w)(\d*)([A-Za-z])$")
+_MINUS_AFTER = re.compile(r"\d*[A-Za-z](?![\w'])")
 _ARROW = re.compile(r"\s*(?:\u2192|->)\s*")
 _ABOUT = re.compile(r"(?<![\w/])~(?=\d)")
 _ABOUT_TILDE = re.compile(r"\b(about\s+)~(?=\d)", re.IGNORECASE)
@@ -149,10 +151,26 @@ def _unit_words(found: re.Match[str]) -> str:
     return f"{number} {_SINGULAR.sub(r'\1', words) if number == '1' else words}"
 
 
+def _is_term(before: str) -> bool:
+    """Whether the text ends in a letter standing for a number ("x", "3x").
+
+    A capital counts only after no word: after a word it is a name ("Vitamin C", "Option B"),
+    and a dash after it is a pause.
+    """
+    term = _MINUS_BEFORE.search(before)
+    if term is None:
+        return False
+    digits, letter = term.groups()
+    if digits or letter.islower():
+        return True
+    earlier = before[: term.start()].rstrip()
+    return not earlier or not earlier[-1].isalnum()
+
+
 def _pause(found: re.Match[str]) -> str:
     """Return a dash as a pause; a spaced hyphen between single-letter terms is a minus."""
     before, after = found.string[: found.start()], found.string[found.end() :]
-    if "-" in found.group() and _MINUS_BEFORE.search(before) and _MINUS_AFTER.match(after):
+    if "-" in found.group() and _is_term(before) and _MINUS_AFTER.match(after):
         return found.group()
     return " " if before.endswith((".", ",", ";", ":", "!", "?")) else ", "
 

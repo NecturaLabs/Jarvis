@@ -63,7 +63,9 @@ def sentence_end(text: str, start: int = 0) -> int | None:
     has arrived, so a reply still being written never splits "3." from ".5".
     """
     for match in _END.finditer(text, start):
-        end = match.start()
+        end = len(
+            text[: match.start()].rstrip()
+        )  # a line break after spaces: they are not the sentence's
         if (
             end > start
             and text[start:end].strip()

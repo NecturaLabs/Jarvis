@@ -2531,6 +2531,11 @@ def test_a_copied_data_wrapper_is_never_spoken_or_drafted() -> None:
         ),
         ('<data origin="web">old</data> then </data> more', "old then </data> more"),
         ('<data origin="web">old', "old"),
+        ('<DATA origin="web">old</DATA> new answer', "old new answer"),
+        ("[looked up: <data>] Close it with </data> then.", "Close it with </data> then."),
+        ("[looked up: a [b [c] d] e] Real answer. Next one.", "Real answer. Next one."),
+        ("[looked up: a [b] c] [actions taken: none] Real.", "Real."),
+        ("[looked up: web_search c++ [ syntax] Here it is.", "Here it is."),
     ],
 )
 def test_the_closing_tag_that_pairs_with_a_stripped_wrapper_goes_wherever_it_is(
