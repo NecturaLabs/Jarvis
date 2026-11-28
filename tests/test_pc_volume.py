@@ -149,3 +149,12 @@ def test_turning_up_a_volume_above_the_usual_top_keeps_it_rather_than_lowering_i
 def test_turning_down_a_volume_above_the_usual_top_lowers_it_by_the_step() -> None:
     _, prepared = _run(FakeWpctl("Volume: 1.50\n"), {"delta": -10})
     assert prepared["target"] == 140
+
+
+def test_the_description_names_spotifys_own_tools_for_turning_spotify_up_or_down() -> None:
+    # With Spotify playing, "louder please" turned up the whole PC (#65): the description named
+    # only spotify_set_volume, while turning up needs spotify_change_volume.
+    (op,) = VolumeOps(FakeWpctl()).operations()
+
+    assert "spotify_change_volume" in op.description
+    assert "spotify_set_volume" in op.description

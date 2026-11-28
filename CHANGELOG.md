@@ -351,6 +351,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- `pc_volume`'s description names `spotify_change_volume` for turning Spotify up or down: with Spotify playing,
+  "louder please" turned up the whole PC.
 - With `tools = "routed"` the model can read a listed skill on any request: `read_skill` is a core tool, where it
   was in the `guides` group, which a request loaded only by chance. The router benchmark read none of 9 expected skills.
 - Jarvis's prompt distinguishes closing one window from stopping the whole program.
