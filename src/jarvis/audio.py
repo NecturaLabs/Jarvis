@@ -2175,6 +2175,11 @@ class Speaker:
         self.queue(text)
         self.wait()
 
+    def set_synthesizer(self, synthesize: Callable[[str], tuple[bytes, int]]) -> None:
+        """Use `synthesize` for sentences that have yet to start synthesis."""
+        with self._lock:
+            self._synthesize = synthesize
+
     def queue(self, text: str) -> None:
         """Have `text` spoken after what is already queued, and return at once."""
         if not text.strip():
@@ -2270,7 +2275,9 @@ class Speaker:
     def _speak(self, run: int, text: str, sound: _Sound | None = None) -> None:
         if not self._current(run):
             return
-        pcm, rate = (sound.pcm, sound.rate) if sound is not None else self._synthesize(text)
+        with self._lock:
+            synthesize = self._synthesize
+        pcm, rate = (sound.pcm, sound.rate) if sound is not None else synthesize(text)
         if not self._current(run):
             return
         if self._proc is not None and (rate != self._rate or self._player_run != run):

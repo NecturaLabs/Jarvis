@@ -197,6 +197,25 @@ def test_the_tempo_defaults_and_the_singer_is_made_once_on_the_first_song() -> N
     assert singer.scores[0].tempo == 100
 
 
+def test_the_singing_fallback_is_rebuilt_when_the_speaking_voice_changes() -> None:
+    voice = "first"
+    made: list[str] = []
+
+    def make() -> Singer:
+        made.append(voice)
+        return Singer()
+
+    (op,) = SingOps(make, voice=lambda: voice).operations()
+    args = validate_args(op, {"notes": LINE})
+
+    op.run(args)
+    voice = "second"
+    op.run(args)
+    op.run(args)
+
+    assert made == ["first", "second"]
+
+
 @pytest.mark.parametrize(
     "args",
     [{}, {"notes": LINE, "key": "C"}, {"notes": LINE, "tempo_bpm": 400}, {"notes": ""}],

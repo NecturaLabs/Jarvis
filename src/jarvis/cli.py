@@ -66,7 +66,7 @@ from jarvis.chat.history import InputHistory
 from jarvis.confirmkey import ConfirmKey
 from jarvis.files import write_atomic
 from jarvis.model import NOT_PRIVATE, ModelStatus, tls_context
-from jarvis.operations import OperationError
+from jarvis.operations import OperationError, OperationStoppedError, current_request
 from jarvis.paths import spotify_token_file, strata_key_file
 from jarvis.pc.hearing import Listening, PcHearing
 from jarvis.pc.screenshot import folders as screenshot_folders
@@ -1771,26 +1771,53 @@ def _never() -> bool:
     return False
 
 
+def _speech_synthesizer(cfg: config.Config) -> Callable[[str], tuple[bytes, int]]:
+    from jarvis.audio import make_synthesizer  # ruff: ignore[import-outside-top-level] - audio is loaded only for speech
+
+    return make_synthesizer(
+        cfg.data_dir,
+        cfg.audio.voice,
+        cfg.audio.speech_speed,
+        phoneme_map=cfg.audio.kokoro_phoneme_map,
+    )
+
+
+def _switch_voice(speaker: Speaker, running: config.Config, chosen: voices.Voice) -> None:
+    """Prepare the new voice, save its setting, then start using it for speech.
+
+    Raises:
+        OperationError: The voice or its setting could not be loaded or saved.
+        OperationStoppedError: The request ended while the new voice was loading.
+    """
+    try:
+        synthesize = _speech_synthesizer(voices.with_voice(running, chosen.setting))
+        if (request := current_request()) is not None and request.cancelled():
+            raise OperationStoppedError("The voice change was interrupted.")
+        config.save(voices.with_voice(config.load(), chosen.setting))
+    except (OSError, ValueError, config.ConfigError) as exc:
+        log.warning("could not switch to voice %s: %s", chosen.id, exc)
+        msg = f"I couldn't switch to {chosen.id}."
+        raise OperationError(msg) from exc
+    speaker.set_synthesizer(synthesize)
+
+
 def _speaker(cfg: config.Config, recording: OutputRecorder | None = None) -> Speaker:
     """Return the speaker, which hears its own wake word only when barge-in is on."""
     from jarvis.audio import (  # ruff: ignore[import-outside-top-level] - loads numpy and ONNX Runtime, which most commands never need
         OwnVoiceCheck,
         Speaker,
-        make_synthesizer,
     )
 
-    data = cfg.data_dir
     own_wake = None
     if cfg.audio.barge_in:
         own_wake = OwnVoiceCheck(
             livekit_wake(cfg),
             WAKE_NAME if cfg.audio.wake_engine == "azure" else None,
         )
-    synthesizer = make_synthesizer(
-        data, cfg.audio.voice, cfg.audio.speech_speed, phoneme_map=cfg.audio.kokoro_phoneme_map
-    )
     return Speaker(
-        synthesizer, own_wake=own_wake, record_output=None if recording is None else recording.feed
+        _speech_synthesizer(cfg),
+        own_wake=own_wake,
+        record_output=None if recording is None else recording.feed,
     )
 
 
@@ -1869,7 +1896,14 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
     )
     try:
         jarvis = build(
-            cfg, via=VOICE_VIA, units=StrataUnits(), listening=listening, recording=recording
+            cfg,
+            via=VOICE_VIA,
+            units=StrataUnits(),
+            listening=listening,
+            recording=recording,
+            voice_control=voices.VoiceControl(
+                cfg.audio.voice, lambda chosen: _switch_voice(speaker, cfg, chosen)
+            ),
         )
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
@@ -3419,9 +3453,7 @@ def cmd_voice(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-        audio = cfg.audio.model_copy(update={"voice": chosen.setting})
-        cfg = cfg.model_copy(update={"audio": audio})
-        config.save(cfg)
+        config.save(voices.with_voice(cfg, chosen.setting))
         _restart_if_running()
         print(f"voice: {chosen.id} ({chosen.accent} {chosen.gender}, {chosen.about})")
         return 0

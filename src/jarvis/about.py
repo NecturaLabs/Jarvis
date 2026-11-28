@@ -7,8 +7,7 @@ Strata's run config and the profile Jarvis serves from it, Jarvis's own Voxtype 
 systemd units. None of them holds a secret (the Strata key and the Spotify tokens live in the state
 folder, which is never read), and a value under a name that looks like one is still hidden. What
 the files say reaches the model as `file` text, like any file on the PC: an action after it needs a
-yes, and so does text sent off the PC. Neither operation changes anything: Jarvis never edits its
-own configuration, as it could then lift its own boundaries.
+yes, and so does text sent off the PC. Both operations are read-only.
 """
 
 import os
@@ -241,7 +240,7 @@ class AboutOps:
 
     def __init__(
         self,
-        config: Config,
+        config: Config | Callable[[], Config],
         channel: str,
         limits: Limits,
         *,
@@ -255,15 +254,15 @@ class AboutOps:
         `jarvis_files` (tests).
         """
         super().__init__()
-        self._config = config
+        self._config = config if callable(config) else lambda: config
         self._channel = channel
         self._limits = limits
         self._refused = refused
-        self._files = files or (lambda: jarvis_files(config))
+        self._files = files or (lambda: jarvis_files(self._config()))
 
     def about(self, _args: dict[str, Any]) -> Result:
         """Say what Jarvis is and how it is set up."""
-        return Result(facts(self._config, self._channel, self._limits), Origin.TOOL_STATUS)
+        return Result(facts(self._config(), self._channel, self._limits), Origin.TOOL_STATUS)
 
     def read(self, args: dict[str, Any]) -> Result:
         """Read one of Jarvis's own configuration files, or one section of it.
@@ -312,7 +311,7 @@ class AboutOps:
                 {
                     "type": "object",
                     "properties": {
-                        "file": {"type": "string", "enum": list(jarvis_files(self._config))},
+                        "file": {"type": "string", "enum": list(jarvis_files(self._config()))},
                         "section": {"type": "string", "maxLength": 60},
                     },
                     "required": ["file"],

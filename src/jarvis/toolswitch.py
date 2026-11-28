@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from jarvis.app import ALWAYS_OFFERED, channel_limits, channel_registry
 from jarvis.config import ConfigError
 from jarvis.policy import OpClass, effective_class
+from jarvis.voices import SET_VOICE, VoiceControl
 
 if TYPE_CHECKING:
     from jarvis.config import Config
@@ -78,7 +79,7 @@ def _summary(op: Operation) -> str:
 
 def tool_settings(config: Config, spotify: list[Operation]) -> list[ToolSetting]:
     """Return every tool of the voice service and the chat with its setting, by name."""
-    ops: dict[str, Operation] = {}
+    ops = {SET_VOICE: VoiceControl(config.audio.voice).operation()}
     for channel in ("voice", "chat"):
         registry = channel_registry(config, spotify, channel_limits(config, channel), channel)
         for name in registry.names():

@@ -28,6 +28,8 @@ which parts exist. Details of what is built are in [configuration.md](configurat
 Also beyond the plan: Jarvis answers about itself (`about_jarvis`), reads its own configuration files
 (`read_jarvis_file`) and sings a song the model writes as notes (`sing`, [models.md](models.md#singing)).
 The owner can record the audio Jarvis sends to its player as a private WAV with `voice_record`.
+With `set_voice`, the owner can select a Kokoro speaking voice by asking for it. The voice takes
+effect during the same service run and is saved in `audio.voice`.
 Built beyond the plan, each with an ADR: reminders and scheduled requests, said or carried out by the
 voice service ([0011](adr/0011-reminders-and-scheduled-requests.md)); speech heard in PC audio is treated as someone else's
 ([0003](adr/0003-pc-audio-is-not-the-owner.md)); plain commands skip the model

@@ -8,8 +8,17 @@ says what it sounds like, from listeners' write-ups.
 """
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from jarvis.operations import Operation, OperationError, Result, current_request
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from jarvis.config import Config
 
 KOKORO = "kokoro:"
+SET_VOICE = "set_voice"
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,3 +79,67 @@ def find(name: str) -> Voice | None:
     """Return the listed voice called `name` (with or without `kokoro:`), else None."""
     wanted = name.strip().lower().removeprefix(KOKORO)
     return next((v for v in VOICES if v.id == wanted), None)
+
+
+def with_voice(config: Config, setting: str) -> Config:
+    """Return the same configuration with a different speaking voice."""
+    return config.model_copy(update={"audio": config.audio.model_copy(update={"voice": setting})})
+
+
+def _owner_only(args: dict[str, Any]) -> dict[str, Any]:
+    request = current_request()
+    if (
+        request is None
+        or not request.owner_asked
+        or not request.words.strip()
+        or request.scheduled
+        or request.outside
+    ):
+        msg = "Only the owner's own request without outside text can change the speaking voice."
+        raise OperationError(msg)
+    return args
+
+
+class VoiceControl:
+    """The voice actually in use by the running speaker."""
+
+    def __init__(self, setting: str, switch: Callable[[Voice], None] | None = None) -> None:
+        """Start with `setting`. A settings listing has no live speaker to switch."""
+        super().__init__()
+        self._setting = setting
+        self._switch = switch
+
+    def setting(self) -> str:
+        """Return the current speaking voice setting (for example, `kokoro:bf_emma`)."""
+        return self._setting
+
+    def _run(self, args: dict[str, Any]) -> Result:
+        _owner_only(args)
+        if self._switch is None:
+            msg = "The voice service is not available to switch voices."
+            raise OperationError(msg)
+        chosen = find(str(args["voice"]))
+        if chosen is None:
+            msg = "That voice is not in the speaking voice catalogue."
+            raise OperationError(msg)
+        self._switch(chosen)
+        self._setting = chosen.setting
+        return Result(f"Speaking voice switched to {chosen.id}.", acted=True)
+
+    def operation(self) -> Operation:
+        """Let Jarvis select a fixed catalogue voice for a spoken request."""
+        catalogue = "\n".join(f"{v.id}: {v.accent} {v.gender}, {v.about}" for v in VOICES)
+        return Operation(
+            "set_voice",
+            "Change the speaking voice when the owner asks. Choose an ID below that fits "
+            "the owner's description:\n" + catalogue,
+            {
+                "type": "object",
+                "properties": {"voice": {"type": "string", "enum": [v.id for v in VOICES]}},
+                "required": ["voice"],
+                "additionalProperties": False,
+            },
+            self._run,
+            prepare=_owner_only,
+            spoken_summary=lambda args: f"switch my speaking voice to {args['voice']}",
+        )

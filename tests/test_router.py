@@ -34,6 +34,7 @@ from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
 from jarvis.toolgroups import CORE, GROUPS, USE_TOOLS, group_name
+from jarvis.voices import SET_VOICE, VoiceControl
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -99,12 +100,23 @@ def _registry(
         channel,
         watching=watch,
         recording=recording,
+        voice_control=VoiceControl(config.audio.voice),
         coding=coding,
     )
 
 
 def _no_program(_name: str) -> None:
     return None
+
+
+def test_the_voice_change_is_offered_only_by_the_voice_service(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assert _registry(monkeypatch, tmp_path, "voice").get(SET_VOICE) is not None
+    assert _registry(monkeypatch, tmp_path, "chat").get(SET_VOICE) is None
+    cfg = Config()
+    ask = channel_registry(cfg, [], channel_limits(cfg, "voice"), "voice")
+    assert ask.get(SET_VOICE) is None
 
 
 def _names(schemas: list[dict[str, Any]]) -> list[str]:

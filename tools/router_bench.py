@@ -64,6 +64,7 @@ from jarvis.spotify.api import SpotifyApi
 from jarvis.spotify.auth import TokenStore
 from jarvis.spotify.ops import SpotifyOps
 from jarvis.toolgroups import CORE, GROUPS
+from jarvis.voices import SET_VOICE, VoiceControl
 from jarvis.web import browser
 
 if TYPE_CHECKING:
@@ -725,6 +726,7 @@ STUBS: dict[str, Stub] = {
 }
 # What runs as shipped, on a throwaway state folder: pure arithmetic, Jarvis's own facts, the
 # reminders, the shipped skills and the core tools, which are the agent's own words and routing.
+# Voice changes use an in-memory speaker replacement.
 REAL = frozenset(
     {
         "calculate",
@@ -733,6 +735,7 @@ REAL = frozenset(
         "schedule_add",
         "schedule_list",
         "schedule_cancel",
+        SET_VOICE,
         *CORE.tools,
     }
 )
@@ -849,6 +852,7 @@ def make_session(
         limits,
         channel,
         watching=watch if channel == "voice" else None,
+        voice_control=VoiceControl(cfg.audio.voice, lambda _voice: None),
         off=LEFT_OUT,
     )
     ran: list[Call] = []

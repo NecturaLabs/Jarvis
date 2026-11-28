@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 from strata_fixture import engine_run_config, install_engine
 
-from jarvis import __version__, acpstore, app, cli, config, models, modes, paths, services
+from jarvis import __version__, acpstore, app, cli, config, models, modes, paths, services, voices
 from jarvis import audio as audio_module
 from jarvis import voice as voice_module
 from jarvis.agent import Hooks
@@ -34,7 +34,7 @@ from jarvis.chat.archive import ChatArchive
 from jarvis.cli import main
 from jarvis.confirmkey import ConfirmKey
 from jarvis.memory import Conversation, Turn
-from jarvis.operations import OperationError
+from jarvis.operations import OperationError, request_scope, validate_args
 from jarvis.pc.hearing import Listening
 from jarvis.secretfile import write_private, write_private_json
 from jarvis.services import strata_profile_file
@@ -1621,6 +1621,9 @@ class _Run:
     audit: AuditLog = field(default_factory=lambda: AuditLog(None))
     listening: list[Listening | None] = field(default_factory=list[Listening | None])
     vias: list[object] = field(default_factory=list[object])
+    voice_controls: list[voices.VoiceControl | None] = field(
+        default_factory=list[voices.VoiceControl | None]
+    )
     watch: object = field(default_factory=object)  # the service's screen watches, as built
 
     def part(self, *args: object, **kwargs: object) -> _Part:
@@ -1678,10 +1681,15 @@ def _cmd_run(
     )
 
     def build(
-        _cfg: config.Config, *, listening: Listening | None = None, **_kwargs: object
+        _cfg: config.Config,
+        *,
+        listening: Listening | None = None,
+        voice_control: voices.VoiceControl | None = None,
+        **_kwargs: object,
     ) -> SimpleNamespace:
         run.listening.append(listening)
         run.vias.append(_kwargs.get("via"))
+        run.voice_controls.append(voice_control)
         return jarvis
 
     monkeypatch.setattr(cli, "build", build)
@@ -1697,6 +1705,50 @@ def _cmd_run(
 
     monkeypatch.setattr(voice_module, "VoiceLoop", Loop)
     return run, main(["run"])
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_the_spoken_voice_change_saves_only_after_the_new_voice_loads(
+    monkeypatch: pytest.MonkeyPatch, *, installed: bool
+) -> None:
+    old = config.Config(audio=config.AudioConfig(speech_speed=1.2))
+    config.save(old)
+    loaded: list[str] = []
+    swapped: list[Callable[[str], tuple[bytes, int]]] = []
+
+    def speak(_text: str) -> tuple[bytes, int]:
+        return b"", 24000
+
+    def load(cfg: config.Config) -> Callable[[str], tuple[bytes, int]]:
+        loaded.append(cfg.audio.voice)
+        if not installed:
+            msg = "the voice pack is missing"
+            raise OSError(msg)
+        return speak
+
+    def body(run: _Run, _should_stop: Callable[[], bool]) -> None:
+        (control,) = run.voice_controls
+        assert control is not None
+        (speaker,) = run.kinds["Speaker"]
+        monkeypatch.setattr(speaker, "set_synthesizer", swapped.append, raising=False)
+        monkeypatch.setattr(cli, "_speech_synthesizer", load)
+        operation = control.operation()
+        args = validate_args(operation, {"voice": "bf_emma"})
+        with request_scope(foreign=False, words="Use a gentle British voice"):
+            if installed:
+                assert operation.run(args).ok
+            else:
+                with pytest.raises(OperationError, match="couldn't switch"):
+                    operation.run(args)
+        assert control.setting() == ("kokoro:bf_emma" if installed else old.audio.voice)
+        run.handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    _, code = _cmd_run(monkeypatch, body, old)
+
+    assert code == 0
+    assert loaded == ["kokoro:bf_emma"]
+    assert swapped == ([speak] if installed else [])
+    assert config.load() == (voices.with_voice(old, "kokoro:bf_emma") if installed else old)
 
 
 def test_the_run_hears_pc_audio_for_pc_audio_listen_through_the_pc_watcher_only_when_on(

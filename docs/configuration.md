@@ -697,6 +697,11 @@ the playlist ones: everything else works, and adding to a playlist says to run `
 
 See [the PC-audio ADR](adr/0003-pc-audio-is-not-the-owner.md) for why the last four exist.
 
+You can also ask the voice service to switch to one of the listed voices by name or by describing it.
+The `set_voice` operation changes `audio.voice` and takes effect with the next sentence synthesis.
+It accepts the owner's direct request in a conversation without outside text. Set
+`set_voice = "deny"` in `[boundaries.classes]` to turn off voice changes by request.
+
 ### Dictation and meetings
 
 Jarvis follows Voxtype's own status with one long-lived `voxtype status --follow --format json --extended`

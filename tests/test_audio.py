@@ -812,6 +812,28 @@ def test_a_stopped_speaker_says_nothing_more(tmp_path: Path) -> None:
     assert not heard.exists()
 
 
+def test_switching_synthesis_changes_the_next_sentence() -> None:
+    synthesized: list[tuple[str, str]] = []
+
+    def original(text: str) -> tuple[bytes, int]:
+        synthesized.append(("first", text))
+        return b"", 24000
+
+    def alternate(text: str) -> tuple[bytes, int]:
+        synthesized.append(("second", text))
+        return b"", 24000
+
+    speaker = Speaker(original, player=lambda _rate: ["true"])
+    try:
+        speaker.say("Before")
+        speaker.set_synthesizer(alternate)
+        speaker.say("After")
+    finally:
+        speaker.stop()
+
+    assert synthesized == [("first", "Before"), ("second", "After")]
+
+
 def test_stop_with_nothing_playing_is_harmless() -> None:
     _speaker(["true"]).stop()
 
