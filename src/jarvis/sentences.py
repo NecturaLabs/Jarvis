@@ -3,7 +3,7 @@
 A sentence ends at `.`, `!` or `?` followed by white space, or at a line break. Every end found
 here is also a sentence end for `jarvis.agent.claims_action`, so a reply cut at these points is
 checked the same in pieces as whole. An abbreviation ("Dr.", "e.g.", "a.m."), an initial ("J.") or
-a list number ("1.") does not end a sentence.
+a list number ("1.") does not end a sentence, except "a.m." and "p.m." at the end of a line.
 """
 
 import re
@@ -38,16 +38,21 @@ _ABBREVIATIONS = frozenset(
         "p.m.",
     }
 )
+_TIMES = frozenset({"a.m.", "p.m."})  # a line may end on them
 
 
-def _real_end(text: str, end: int) -> bool:
-    """Return False when the full stop before `end` belongs to an abbreviation or a number."""
+def _real_end(text: str, end: int, *, line_end: bool) -> bool:
+    """Return False when the full stop before `end` belongs to an abbreviation or a number.
+
+    `line_end` says a line break follows, where "a.m." and "p.m." do end the sentence.
+    """
     if text[end - 1] != ".":
         return True
     found = _WORD_BEFORE.search(text, 0, end)
     word = found.group(1).lower() if found else ""
-    if word.lstrip("(\"'") in _ABBREVIATIONS:
-        return False
+    word = word.lstrip("(\"'")
+    if word in _ABBREVIATIONS:
+        return line_end and word in _TIMES
     stem = word.rstrip(".")
     return not (stem.isdigit() or (len(stem) == 1 and stem.isalpha()))
 
@@ -60,8 +65,14 @@ def sentence_end(text: str, start: int = 0) -> int | None:
     has arrived, so a reply still being written never splits "3." from ".5".
     """
     for match in _END.finditer(text, start):
-        end = match.start()
-        if end > start and text[start:end].strip() and _real_end(text, end):
+        end = len(
+            text[: match.start()].rstrip()
+        )  # a line break after spaces: they are not the sentence's
+        if (
+            end > start
+            and text[start:end].strip()
+            and _real_end(text, end, line_end="\n" in match.group())
+        ):
             return end
     return None
 

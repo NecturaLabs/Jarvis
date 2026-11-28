@@ -192,7 +192,7 @@ class StatsOps:
         lines.extend(top)
         disks = self._disks()
         lines.extend(
-            f"Disk {d.name}: {round(d.used / GIB)} of {round(d.total / GIB)} GB used "
+            f"{_disk_label(d.name)}: {round(d.used / GIB)} of {round(d.total / GIB)} GB used "
             f"({_share(d.used, d.total)}), {round((d.total - d.used) / GIB)} GB free."
             for d in disks
         )
@@ -341,6 +341,16 @@ class StatsOps:
 _DISK_WORDS = {"~": "the home disk", "/": "the root disk"}
 
 
+def _disk_words(name: str) -> str:
+    return _DISK_WORDS.get(name, f"disk {name}")
+
+
+def _disk_label(name: str) -> str:
+    """Return a disk's label in the figures ("Home disk"), named as the verdict names it."""
+    words = _disk_words(name).removeprefix("the ")
+    return words[0].upper() + words[1:]
+
+
 def _strained(sample: Stats, disks: list[Disk], *, swamped: bool) -> list[tuple[str, str]]:
     """Return what is near its limit, each as words and the figure that says so ("" for none)."""
     found: list[tuple[str, str]] = []
@@ -358,7 +368,7 @@ def _strained(sample: Stats, disks: list[Disk], *, swamped: bool) -> list[tuple[
     if vram_used is not None and vram_total and vram_used >= NEARLY_FULL * vram_total:
         found.append(("video memory is nearly full", _share(vram_used, vram_total)))
     found.extend(
-        (f"{_DISK_WORDS.get(d.name, f'disk {d.name}')} is nearly full", _share(d.used, d.total))
+        (f"{_disk_words(d.name)} is nearly full", _share(d.used, d.total))
         for d in disks
         if d.total and d.used >= NEARLY_FULL * d.total
     )

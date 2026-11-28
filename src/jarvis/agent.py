@@ -235,14 +235,13 @@ _CLAUSE_BREAK = re.compile(r"[,\u3001\uff0c(\[]")  # a comma, or an aside openin
 _EDGES = "\"'\u201c\u201d\u2018)]"
 # What memory puts round a remembered reply (`memory.Turn.messages`), which a model may copy: its
 # notes, and the data wrapper of a reply that drew on outside text.
-_COPIED_HEAD = re.compile(
-    # Brackets inside a note (search text) are taken one level deep; an unbalanced one ends it at
-    # the first "]".
-    r"^(?:\[(?:actions taken|looked up):(?:(?:[^\[\]]|\[[^\[\]]*\])*|[^\]]*)\]\s*"
-    r'|<data origin="[a-z_]*">\s*)+',
-    re.IGNORECASE,
+_NOTE_OPEN = re.compile(r"\[(?:actions taken|looked up):", re.IGNORECASE)
+_NOTE_STARTS = ("[actions taken:", "[looked up:")
+_WRAPPER_OPEN = re.compile(r'<data origin="[a-z_]*">', re.IGNORECASE)
+_WRAPPER_START = re.compile(r"<(?:d(?:a(?:t(?:a)?)?)?)?$|<data\s[^>]*$", re.IGNORECASE)
+_DATA_TAG = re.compile(
+    r"(?P<space>\s*)(?:(?P<open><data(?:\s[^>]*)?>)|</data>)(?P<after>\s*)", re.IGNORECASE
 )
-_COPIED_TAIL = re.compile(r"\s*</data>\s*$")
 _REPLY_KEY = '{"reply":"'
 _REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
 _WRAPPED = re.compile(r'(?P<head><data origin="[a-z_]+">)(?P<body>.*)</data>', re.DOTALL)
@@ -302,17 +301,96 @@ def _clauses(text: str) -> list[tuple[str, bool]]:
     return out or [(text, False)]
 
 
+def _note_end(text: str, start: int) -> int | None:
+    """Return where the note opening at `start` ends: brackets inside it open and close in pairs."""
+    depth = 0
+    for index in range(start, len(text)):
+        depth += (text[index] == "[") - (text[index] == "]")
+        if depth == 0:
+            return index + 1
+    return None
+
+
+def _copied_head(text: str, *, whole: bool) -> tuple[int, int, bool]:
+    """Return where what memory puts before a reply ends in `text`, with the data wrappers in it.
+
+    A note ends where its brackets are even again, so one that holds brackets is stripped whole.
+    The last value says the text stops inside a note or wrapper, or at the start of one, that is
+    still arriving. With `whole`, the text is all there is: a note whose brackets never come
+    even ends at its first "]", and one with no "]" is not a note.
+    """
+    pos = wrappers = 0
+    while True:
+        if _NOTE_OPEN.match(text, pos):
+            end = _note_end(text, pos)
+            if end is None:
+                if not whole:
+                    return pos, wrappers, True
+                first = text.find("]", pos)
+                if first < 0:
+                    return pos, wrappers, False
+                end = first + 1
+        elif wrapper := _WRAPPER_OPEN.match(text, pos):
+            wrappers += 1
+            end = wrapper.end()
+        else:
+            rest = text[pos:]
+            starting = rest and (
+                _WRAPPER_START.match(rest)
+                or any(note.startswith(rest.lower()) for note in _NOTE_STARTS)
+            )
+            return pos, wrappers, not whole and bool(starting)
+        pos = len(text) - len(text[end:].lstrip())
+
+
+def _without_closings(rest: str, wrappers: int) -> str:
+    """Return `rest` without the closing tags of the `wrappers` stripped from before it.
+
+    A closing tag ends one of them unless it closes a tag the reply opened itself.
+    """
+    parts: list[str] = []
+    own = 0  # opening tags of the reply's own, whose closing tag is its own too
+    done = 0
+    for tag in _DATA_TAG.finditer(rest):
+        if tag.group("open"):
+            own += 1
+        elif own:
+            own -= 1
+        else:
+            gap = tag.group("space") + tag.group("after")
+            joined = "" if tag.end() == len(rest) else "\n" if "\n" in gap else gap and " "
+            parts.extend((rest[done : tag.start()], joined))
+            done = tag.end()
+            wrappers -= 1
+            if not wrappers:
+                break
+    return "".join((*parts, rest[done:]))
+
+
 def own_words(reply: str) -> str:
     """Return a reply without what the model copied from how memory shows an earlier reply.
 
-    That is the notes before it and, round a reply that drew on outside text, the data wrapper.
+    That is the notes before it and, round a reply that drew on outside text, the data wrapper:
+    its opening tag at the start and the closing tag that pairs with it, wherever that is.
     Only a reply that starts with them is changed: a tag further in is the reply's own words.
     """
-    head = _COPIED_HEAD.match(reply)
-    if head is None:
+    end, wrappers, _ = _copied_head(reply, whole=True)
+    if not end:
         return reply
-    rest = reply[head.end() :]
-    return _COPIED_TAIL.sub("", rest) if "<" in head.group() else rest
+    rest = reply[end:]
+    return _without_closings(rest, wrappers) if wrappers else rest
+
+
+def _streamed_words(words: str) -> str | None:
+    """Return a reply still being written without what memory's marks put before it.
+
+    That is None while it may yet turn out to start with one.
+    """
+    end, wrappers, arriving = _copied_head(words, whole=False)
+    if arriving:
+        return None
+    rest = words[end:]
+    return (_without_closings(rest, wrappers) if wrappers else rest).lstrip()
 
 
 def _model_failure(error: Exception) -> str:
@@ -500,9 +578,13 @@ class _ReplyStream:
         if self._held:
             return
         words = self._words()
-        if words is None or words.startswith(("[", "<")):  # not a reply, or memory's marks copied
-            self._held = words is not None or self._source == "reply"
+        if words is None:  # not a reply
+            self._held = self._source == "reply"
             return
+        if words.startswith(("<", "[")):
+            words = _streamed_words(words)  # what memory's marks put round a reply is not spoken
+            if words is None:
+                return  # it may yet turn out to be a note or a wrapper: wait for more
         while (end := sentence_end(words, len(self.spoken))) is not None:
             piece = words[len(self.spoken) : end]
             if end > self._max_chars or (not self._may_claim and claims_action(piece)):

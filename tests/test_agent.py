@@ -39,6 +39,7 @@ from jarvis.agent import (
     Limits,
     NoReason,
     claims_action,
+    own_words,
 )
 from jarvis.app import channel_limits, no_action_operation, quiet_operation, think_operation
 from jarvis.audit import AuditLog
@@ -2528,6 +2529,201 @@ def test_a_copied_data_wrapper_is_never_spoken_or_drafted() -> None:
     assert agent.handle("how is it", hooks) == "All fine. Truly."
     assert "".join(heard + drafts).count("data") == 0
     assert " ".join(heard) == "All fine. Truly."
+
+
+@pytest.mark.parametrize(
+    ("copied", "own"),
+    [
+        ('<data origin="web">old</data> new answer', "old new answer"),
+        ('<data origin="web">old </data> new answer', "old new answer"),
+        ('<data origin="web">old\n</data>\nnew answer', "old\nnew answer"),
+        ('[actions taken: none] <data origin="web">old</data> new answer', "old new answer"),
+        ('<data origin="web">old</data>', "old"),
+        ('<data origin="a"><data origin="b">old</data></data> new', "old new"),
+        (
+            '<data origin="web">see <data origin="x">a</data> b</data> c',
+            'see <data origin="x">a</data> b c',
+        ),
+        ('<data origin="web">old</data> then </data> more', "old then </data> more"),
+        ('<data origin="web">old', "old"),
+        ('<DATA origin="web">old</DATA> new answer', "old new answer"),
+        ("[looked up: <data>] Close it with </data> then.", "Close it with </data> then."),
+        ("[looked up: a [b [c] d] e] Real answer. Next one.", "Real answer. Next one."),
+        ("[looked up: a [b] c] [actions taken: none] Real.", "Real."),
+        ("[looked up: web_search c++ [ syntax] Here it is.", "Here it is."),
+    ],
+)
+def test_the_closing_tag_that_pairs_with_a_stripped_wrapper_goes_wherever_it_is(
+    copied: str, own: str
+) -> None:
+    assert own_words(copied) == own
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        'The page wraps it in <data origin="x"> tags.</data>',
+        "Close it with </data> and then say so.",
+        "A reply with </data> first.",
+    ],
+)
+def test_a_data_tag_the_model_wrote_mid_reply_is_left_alone(reply: str) -> None:
+    assert own_words(reply) == reply
+
+
+def test_a_reply_call_the_token_cap_ended_keeps_its_words_without_a_copied_wrapper() -> None:
+    arguments = '{"reply": "<data origin=\\"web\\">old</data> new answer that goes on'
+    cut = {
+        "role": "assistant",
+        "content": "",
+        "finish_reason": "length",
+        "tool_calls": [
+            {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "no_action", "arguments": arguments},
+            }
+        ],
+    }
+    agent, _ = _agent(ScriptedModel([cut]), [])
+
+    reply = agent.handle("how is it", NO_CONFIRM)
+
+    assert reply == f"old new answer that goes on {agent_module.CUT_SHORT}"
+
+
+def _streamed(model: ScriptedModel) -> tuple[list[list[str]], list[str]]:
+    """Run a request with a voice; return what was heard after each piece, and in the end."""
+    heard: list[str] = []
+    after: list[list[str]] = []
+    model.after_piece = lambda _number: after.append(list(heard))
+    agent, _ = _agent(model, [])
+    hooks = Hooks(confirm=lambda _q: False, speak=heard.append, draft=lambda _text: None)
+    agent.handle("how is it", hooks)
+    return after, heard
+
+
+@pytest.mark.parametrize("as_call", [False, True], ids=["text", "reply call"])
+def test_a_reply_that_starts_with_a_bracket_is_spoken_as_it_is_written(as_call: bool) -> None:
+    text = "<b>Bold</b> is how it looks. Then the next sentence arrives. And the last one."
+    model = ScriptedModel([_call("no_action", {"reply": text}) if as_call else _say(text)])
+
+    after, heard = _streamed(model)
+
+    assert heard == [
+        "<b>Bold</b> is how it looks.",
+        "Then the next sentence arrives.",
+        "And the last one.",
+    ]
+    assert ["<b>Bold</b> is how it looks."] in after
+
+
+@pytest.mark.parametrize("as_call", [False, True], ids=["text", "reply call"])
+def test_a_copied_wrapper_is_spoken_as_it_is_written_without_its_tags(as_call: bool) -> None:
+    text = '<data origin="web">All fine here. Nothing to report. Truly.</data> Bye now.'
+    model = ScriptedModel([_call("no_action", {"reply": text}) if as_call else _say(text)])
+
+    after, heard = _streamed(model)
+
+    assert heard == ["All fine here.", "Nothing to report.", "Truly.", "Bye now."]
+    assert ["All fine here."] in after
+    assert all("data" not in "".join(words) for words in after)
+
+
+@pytest.mark.parametrize("as_call", [False, True], ids=["text", "reply call"])
+def test_an_open_data_tag_that_is_not_a_wrapper_is_spoken_in_the_end(as_call: bool) -> None:
+    text = '<data origin="web" >Tags are shown. Then more.</data>'
+    model = ScriptedModel([_call("no_action", {"reply": text}) if as_call else _say(text)])
+
+    _, heard = _streamed(model)
+
+    assert heard == ['<data origin="web" >Tags are shown.', "Then more.</data>"]
+
+
+@pytest.mark.parametrize("as_call", [False, True], ids=["text", "reply call"])
+def test_a_reply_that_starts_with_a_plain_bracket_is_spoken_as_it_is_written(
+    as_call: bool,
+) -> None:
+    text = "[Pause] is the button you want. Press it once. Then it is done."
+    model = ScriptedModel([_call("no_action", {"reply": text}) if as_call else _say(text)])
+
+    after, heard = _streamed(model)
+
+    assert heard == ["[Pause] is the button you want.", "Press it once.", "Then it is done."]
+    assert ["[Pause] is the button you want."] in after
+
+
+@pytest.mark.parametrize("as_call", [False, True], ids=["text", "reply call"])
+@pytest.mark.parametrize(
+    "copied",
+    [
+        "[actions taken: none] [looked up: kettle] ",
+        "[Actions Taken: none (nothing was changed)] ",
+        "[looked up: web_search a[1] b] ",
+        '[actions taken: none] <data origin="web">[looked up: kettle] ',
+    ],
+)
+def test_a_copied_note_is_spoken_as_it_is_written_without_the_note(
+    copied: str, as_call: bool
+) -> None:
+    text = f"{copied}All fine here. Nothing to report. Truly."
+    model = ScriptedModel([_call("no_action", {"reply": text}) if as_call else _say(text)])
+
+    after, heard = _streamed(model)
+
+    assert heard == ["All fine here.", "Nothing to report.", "Truly."]
+    assert ["All fine here."] in after
+    assert all("[" not in "".join(words) for words in after)
+
+
+@pytest.mark.parametrize("as_call", [False, True], ids=["text", "reply call"])
+def test_a_copied_note_with_an_unbalanced_bracket_is_spoken_clean_at_the_end(
+    as_call: bool,
+) -> None:
+    text = "[looked up: web_search c++ [ syntax] Here it is. And more."
+    model = ScriptedModel([_call("no_action", {"reply": text}) if as_call else _say(text)])
+
+    after, heard = _streamed(model)
+
+    assert " ".join(heard) == "Here it is. And more."
+    assert all("[" not in "".join(words) for words in after)
+
+
+def test_a_data_tag_the_model_wrote_on_its_own_is_spoken_once_it_is_not_a_wrapper() -> None:
+    text = "<data> is the tag it uses. It wraps outside text. Nothing else."
+
+    after, heard = _streamed(ScriptedModel([_say(text)]))
+
+    assert heard[0] == "<data> is the tag it uses."
+    assert ["<data> is the tag it uses."] in after
+
+
+def test_a_reply_that_copied_the_wrapper_is_still_remembered_as_outside_text() -> None:
+    copied = '<data origin="web">The page says <b>hi</b>.</data>'
+    model = ScriptedModel([_call("search"), _say(copied), _call("no_action"), _say("Hi.")])
+    agent, _ = _agent(model, [Counter().op("search", origin=Origin.WEB)], limits=Limits())
+
+    assert agent.handle("search", NO_CONFIRM) == "The page says <b>hi</b>."
+    agent.handle("hello", NO_CONFIRM)
+
+    remembered = model.seen[2][2]["content"]
+    assert remembered.startswith('[actions taken: search -> ok] <data origin="web">')
+    assert remembered.endswith("The page says &lt;b&gt;hi&lt;/b&gt;.</data>")
+
+
+def test_a_reply_that_copied_the_wrapper_from_memory_is_still_marked_as_outside_text() -> None:
+    copied = '<data origin="web">The page says hi.</data> Anything else?'
+    replies = [_call("search"), _say("The page says hi."), _say(copied), _say("No.")]
+    model = ScriptedModel(replies)
+    agent, _ = _agent(model, [Counter().op("search", origin=Origin.WEB)], limits=Limits())
+
+    agent.handle("search", NO_CONFIRM)
+    assert agent.handle("say it again", NO_CONFIRM) == "The page says hi. Anything else?"
+    agent.handle("and now", NO_CONFIRM)
+
+    assert agent.memory.turns[-1].outside == agent_module.REMEMBERED
+    remembered = model.seen[3][-2]["content"]
+    assert remembered.endswith('<data origin="memory">The page says hi. Anything else?</data>')
 
 
 def test_a_data_tag_inside_a_reply_stays() -> None:

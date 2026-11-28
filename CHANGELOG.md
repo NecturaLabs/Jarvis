@@ -385,12 +385,24 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   stripped when the model copies them, as "[actions taken: …]" already was. So is the `<data origin="…">`
   wrapper memory puts round a reply that drew on outside text, with the notes inside it: a reply that
   copied it showed the tag in the chat and the note in T3 Code, and a voice would have read both out.
-  A reply that begins with such a note or tag is held back from speech and drafts until it is cleaned.
+  The wrapper's closing tag goes wherever it falls in the reply, not only at its end. A reply that begins with
+  "[" or "<" waits only while it could still be a copied note or wrapper, and is spoken as it is written
+  otherwise, with a copied note or wrapper left out. A note that holds brackets is stripped whole, and the
+  wrapper tags are matched in any case.
 - Spoken replies: a dash is a pause instead of a run-on (between numbers it is "to"), a unit sign after a
   number is said as its word ("22 °C" as "22 degrees Celsius", "12 km/h" as "12 kilometres per hour",
   "48 GB" as "48 gigabytes") instead of spelled out, a web address is said as its site, and a table's
   rules, code fences, "→" and "~5" are no longer read as signs. "a.m." and "p.m." no longer end a
-  sentence, so "11 a.m. on Sunday" is spoken in one breath.
+  sentence, so "11 a.m. on Sunday" is spoken in one breath. A range says "to" after a unit sign too ("5 km – 10 km")
+  and when written with hyphens before a unit or a percent ("5-10 km", "10-20%"; dates, versions and other
+  dotted or dashed numbers of more than two parts are read as written). An en dash between plain lowercase
+  words is a pause, and one in a sum ("3 – 2 = 1") is "minus" but after a word ("Quick math – 2 + 2 = 4")
+  is a pause; a spaced hyphen between letters standing for numbers ("x - y") keeps its minus, but not
+  after a name ("Vitamin C - a great source"); "about ~5" is "about 5"; "GB/s", "MB/s", "KB/s",
+  "Gbit/s" and "Mbit/s" are said as words. "a.m." and "p.m." at the end of a line end the sentence
+  ("Dinner at 7 p.m." then a new line), mid-line they still do not.
+- `pc_stats` names a disk the same way in its figures as in its verdict: "Home disk" and "Root disk" instead
+  of "Disk ~" and "Disk /", so a window shows the same words the voice says.
 - With `format.thousands_separator` set to a space or an apostrophe, the voice was told to write "25 000",
   which is read aloud as "twenty-five zero zero zero". The voice now writes such numbers without a mark,
   in its replies and in the calculator's answers; the chat keeps the mark you chose.
