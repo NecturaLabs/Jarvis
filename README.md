@@ -234,6 +234,7 @@ These are the subcommands `jarvis --help` lists. `jarvis` on its own shows what 
 | `jarvis pc-audio [on\|off]` | Show or set listening to PC audio; `--apps discord,firefox` names the apps, `--all-output` listens to everything the PC plays. |
 | `jarvis run` | Run the voice loop in the foreground. This is what `jarvis.service` runs. |
 | `jarvis speech-test record\|score\|compare` | Record a private set of your own requests, score how well speech-to-text hears them (word errors, names, time), and compare two scores for a difference beyond chance. |
+| `jarvis archive PATH.zip` | Export retained session transcripts and existing recordings to a private ZIP without starting Jarvis. Add `--input-recordings DIR` for microphone WAVs saved for debugging. |
 | `jarvis --version` | Print the version. |
 
 ### Using Jarvis in T3 Code

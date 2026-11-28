@@ -35,6 +35,12 @@ the request that heard them, even with `agent.memory_detail = "full"`; Jarvis's 
 like every reply. `JARVIS_DEBUG_AUDIO_DIR` saves the owner's microphone requests there
 (mode 0600) for debugging. Output recordings are independent of this setting.
 
+`jarvis archive PATH.zip` writes a private copy of retained request and reply text from the chat
+archive and audit logs. It reads the recordings folder for Jarvis WAVs and includes microphone WAVs
+from `--input-recordings DIR` or the `JARVIS_DEBUG_AUDIO_DIR` set in the calling shell. The ZIP groups
+WAVs by speaker; existing recordings carry no turn IDs. Export with Jarvis off if you want a snapshot
+between requests. The ZIP is a separate copy. Delete it separately when you no longer need it.
+
 By default the model runs in the `jarvis-strata` service on `127.0.0.1` and model requests stay on this PC.
 With the Azure wake word on, the audio Jarvis listens to goes to a helper process on the PC that runs
 Microsoft's Speech SDK in a namespace with no network, so neither the audio nor the SDK's telemetry can go
