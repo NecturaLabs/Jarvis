@@ -71,6 +71,7 @@ from jarvis.todos import NAME as TODO_NAME
 from jarvis.todos import TodoList
 from jarvis.todos import operation as todo_operation
 from jarvis.toolgroups import USE_TOOLS
+from jarvis.voices import SET_VOICE, with_voice
 from jarvis.web import browser, browserops, preview
 from jarvis.web.arctic import ArcticShift
 from jarvis.web.guard import public_client
@@ -84,6 +85,7 @@ if TYPE_CHECKING:
 
     from jarvis.config import ChatConfig, Config, FormatConfig
     from jarvis.model import ModelStatus
+    from jarvis.voices import VoiceControl
 
 
 log = logging.getLogger(__name__)
@@ -828,6 +830,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     coding: bool = False,
     listening: Listening | None = None,
     recording: OutputRecorder | None = None,
+    voice_control: VoiceControl | None = None,
     forgetter: Forgetter | None = None,
     persona: PersonaStore | None = None,
     browsers: dict[str, browser.Browser] | None = None,
@@ -863,13 +866,21 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     browsing = browser_ops(
         config, online, channel, page_chars=pages, shown=shown, sessions=browsers, coding=coding
     )
+    if channel != "voice":
+        voice_control = None
+    speech_voice = None if voice_control is None else voice_control.setting
     ops = [
         *spotify,
         *online.operations(),
         *(browsing.operations() if browsing is not None else []),
         *pc_operations(config, limits, shown=shown, watching=watching),
         *calc.operations(channel_format(config, channel)),
-        *AboutOps(config, channel, limits, refused=files_boundary(config).secret).operations(),
+        *AboutOps(
+            config if speech_voice is None else lambda: with_voice(config, speech_voice()),
+            channel,
+            limits,
+            refused=files_boundary(config).secret,
+        ).operations(),
         *ScheduleOps(
             JobStore(paths.schedule_file()),
             twelve_hour=config.clock.twelve_hour,
@@ -898,6 +909,7 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
         *([quiet_operation()] if channel == "voice" else []),
         *([handoff.operation()] if channel == "voice" else []),
         *([recording.operation()] if channel == "voice" and recording is not None else []),
+        *([voice_control.operation()] if voice_control is not None else []),
         (persona or PersonaStore(paths.persona_file())).operation(),
         (forgetter or Forgetter()).operation(),
         *(
@@ -908,7 +920,11 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
             if channel == "chat"
             else []
         ),
-        *(SingOps(singer_for(config)).operations() if channel == "voice" else []),
+        *(
+            SingOps(singer_for(config, voice=speech_voice), voice=speech_voice).operations()
+            if channel == "voice"
+            else []
+        ),
         *([think] if (think := think_operation(limits)) is not None else []),
         *([switch_operation(config, coding=coding)] if switches_itself(config, channel) else []),
         no_action_operation(
@@ -949,6 +965,7 @@ SETTING_ONLY = frozenset(
         "pc_watches",
         "pc_watch_stop",
         RECORD_NAME,
+        SET_VOICE,
         handoff.NAME,
     }
 )
@@ -1074,6 +1091,7 @@ def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; 
     voice_running: Callable[[], bool] = lambda: True,
     listening: Listening | None = None,
     recording: OutputRecorder | None = None,
+    voice_control: VoiceControl | None = None,
     forgetter: Forgetter | None = None,
     persona: PersonaStore | None = None,
     browsers: dict[str, browser.Browser] | None = None,
@@ -1107,6 +1125,7 @@ def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; 
         coding=coding,
         listening=listening,
         recording=recording,
+        voice_control=voice_control,
         forgetter=forgetter,
         persona=persona,
         browsers=browsers,
@@ -1197,6 +1216,7 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
     units: modes.Units | None = None,
     listening: Listening | None = None,
     recording: OutputRecorder | None = None,
+    voice_control: VoiceControl | None = None,
     mode: modes.Mode | None = None,
 ) -> Jarvis:
     """Assemble the agent from the config.
@@ -1258,6 +1278,7 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
             voice_running=voice_service_running if elsewhere else lambda: True,
             listening=listening,
             recording=recording,
+            voice_control=voice_control,
             forgetter=forgetter,
             persona=persona,
             browsers=browsers,

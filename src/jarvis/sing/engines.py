@@ -5,6 +5,7 @@ import os
 from typing import TYPE_CHECKING
 
 from jarvis.operations import OperationError
+from jarvis.voices import with_voice
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -52,7 +53,7 @@ def speech_singer(cfg: Config) -> PsolaSinger:
     return PsolaSinger(voice)
 
 
-def singer_for(cfg: Config) -> Callable[[], Singer]:
+def singer_for(cfg: Config, *, voice: Callable[[], str] | None = None) -> Callable[[], Singer]:
     """Return what makes the configured singer (`[sing] engine`), called on the first song.
 
     "soulx" with its files missing sings with the speaking voice, and says so in the log.
@@ -61,7 +62,7 @@ def singer_for(cfg: Config) -> Callable[[], Singer]:
     def make() -> Singer:
         from jarvis.sing import soulx  # ruff: ignore[import-outside-top-level] - only when Jarvis first sings
 
-        speech = speech_singer(cfg)
+        speech = speech_singer(cfg if voice is None else with_voice(cfg, voice()))
         found = soulx.files(cfg.data_dir)
         if cfg.sing.engine == "speech":
             return speech

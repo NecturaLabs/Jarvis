@@ -146,17 +146,23 @@ NOTES = (
 class SingOps:
     """The `sing` operation over a singer that is made on the first song and kept."""
 
-    def __init__(self, singer: Callable[[], Singer]) -> None:
+    def __init__(
+        self, singer: Callable[[], Singer], *, voice: Callable[[], str] | None = None
+    ) -> None:
         """Sing with what `singer` returns; it raises OperationError when no singer can run."""
         super().__init__()
         self._make = singer
         self._singer: Singer | None = None
+        self._voice = voice
+        self._singer_voice = ""
         self._lock = threading.Lock()
 
     def _get(self) -> Singer:
         with self._lock:
-            if self._singer is None:
+            voice = "" if self._voice is None else self._voice()
+            if self._singer is None or voice != self._singer_voice:
                 self._singer = self._make()
+                self._singer_voice = voice
             return self._singer
 
     def _sing(self, args: dict[str, Any]) -> Result:

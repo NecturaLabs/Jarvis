@@ -8,6 +8,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Ask Jarvis to switch to a Kokoro voice by name or description. Its next sentence uses the
+  chosen voice, which is saved for the next time Jarvis starts.
 - `set_persona`: ask Jarvis to talk like someone or some way, in any words, and it keeps that style in every
   reply, across the idle reset and restarts, until you ask it to stop. The style changes only the wording:
   tools, rules and confirmations stay the same. Only your own request can set it, and after Jarvis has read outside text (a search, a page) it asks for your yes first.

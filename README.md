@@ -25,8 +25,9 @@ Jarvis is pre-1.0 software; see [Status](#status).
   Plain commands such as "pause", "next song" or "volume 40" skip the model and answer in about 0.3 s.
   The model answers without thinking first, and thinks harder, up to a ceiling you set, only for a request
   that needs it ([thinking](docs/configuration.md)).
-- **Voice:** Kokoro by default (`kokoro:bm_george`); a Piper voice can be set instead. Jarvis replies by voice
-  only, with no desktop notifications.
+- **Voice:** Kokoro by default (`kokoro:bm_george`); a Piper voice can be set instead. Ask Jarvis for a voice
+  by name or describe how it should sound. The voice service uses the new Kokoro voice for its next sentence.
+  Voice requests get spoken replies, with no desktop notifications.
   Tell Jarvis to be quiet, in any words, and it stops without a word. Say the wake word while it speaks
   to stop it and ask something else.
 - **Singing:** ask Jarvis to sing, in any words, and the model writes the song as notes, up to 30 seconds

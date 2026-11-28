@@ -6,6 +6,7 @@ import pytest
 
 from jarvis import cli, config, voices
 from jarvis.cli import main
+from jarvis.operations import ArgumentError, OperationError, request_scope, validate_args
 
 
 def test_the_catalogue_lists_each_english_voice_once_with_a_description() -> None:
@@ -23,6 +24,43 @@ def test_the_default_voice_is_in_the_catalogue() -> None:
 
     assert found is not None
     assert found.setting == config.AudioConfig().voice
+
+
+def test_the_owner_can_select_a_catalogue_voice_by_request() -> None:
+    chosen: list[voices.Voice] = []
+    control = voices.VoiceControl("kokoro:bm_george", chosen.append)
+    op = control.operation()
+
+    with request_scope(foreign=False, words="Use a warm British voice"):
+        assert op.run(validate_args(op, {"voice": "bf_emma"})).ok
+
+    assert [voice.id for voice in chosen] == ["bf_emma"]
+    assert control.setting() == "kokoro:bf_emma"
+
+
+@pytest.mark.parametrize("source", ["pc_audio", "scheduled", "memory", "page"])
+def test_a_voice_change_refuses_nonowner_and_outside_context(source: str) -> None:
+    chosen: list[voices.Voice] = []
+    control = voices.VoiceControl("kokoro:bm_george", chosen.append)
+    op = control.operation()
+
+    with request_scope(
+        foreign=source == "pc_audio", scheduled=source == "scheduled", words="Use a British voice"
+    ) as request:
+        if source in {"memory", "page"}:
+            request.saw(source)
+        with pytest.raises(OperationError, match="owner"):
+            op.run(validate_args(op, {"voice": "bf_emma"}))
+
+    assert not chosen
+    assert control.setting() == "kokoro:bm_george"
+
+
+def test_the_voice_change_only_accepts_catalogue_ids() -> None:
+    op = voices.VoiceControl("kokoro:bm_george").operation()
+
+    with pytest.raises(ArgumentError):
+        validate_args(op, {"voice": "unknown"})
 
 
 def test_voice_lists_the_voices_and_marks_the_current_one(
