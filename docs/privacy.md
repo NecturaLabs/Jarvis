@@ -36,8 +36,10 @@ like every reply. `JARVIS_DEBUG_AUDIO_DIR` saves the owner's microphone requests
 (mode 0600) for debugging. Output recordings are independent of this setting.
 
 `jarvis archive PATH.zip` writes a private copy of retained request and reply text from the chat
-archive and audit logs. It reads the recordings folder for Jarvis WAVs and includes microphone WAVs
-from `--input-recordings DIR` or the `JARVIS_DEBUG_AUDIO_DIR` set in the calling shell. The ZIP groups
+archive and audit logs. Each new `jarvis ask` invocation has its own transcript. Older ask entries
+share one transcript if the logs lack session tags. The export reads the recordings folder for
+Jarvis WAVs and includes microphone WAVs from `--input-recordings DIR` or the
+`JARVIS_DEBUG_AUDIO_DIR` set in the calling shell. The ZIP groups
 WAVs by speaker. A microphone recording named in the audit log is listed by its request, and a Jarvis
 recording is listed in the session that saved it. Recordings without an audit entry are included by
 speaker. Export with Jarvis off for a snapshot between requests. The ZIP is a separate copy. Delete

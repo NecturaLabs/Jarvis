@@ -1018,7 +1018,7 @@ def _terminal_confirm_always(question: str) -> bool | Declined:
 def cmd_ask(args: argparse.Namespace) -> int:
     """Answer one typed request and print the reply."""
     try:
-        jarvis = build(_load(), via="ask", units=StrataUnits())
+        jarvis = build(_load(), via="ask", session=secrets.token_hex(8), units=StrataUnits())
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2

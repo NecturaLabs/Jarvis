@@ -344,6 +344,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Each new `jarvis ask` invocation gets its own transcript in the session export.
+
 - Web search found nothing for hours at a time: SearXNG's default engines answered with a CAPTCHA,
   "too many requests" or "access denied". Jarvis's SearXNG now also asks Bing and Yahoo, which kept
   answering.

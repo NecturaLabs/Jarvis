@@ -163,7 +163,7 @@ def _audit_name(via: object, tag: object, saved_acp: set[str]) -> str:
     if via == "acp" and isinstance(tag, str) and tag in saved_acp:
         return f"acp-{tag}"
     if via == "ask":
-        return "ask"
+        return f"ask-{tag}" if isinstance(tag, str) and _SESSION.fullmatch(tag) else "ask"
     # Older untagged entries have no reliable session. Chat retention is its own archive.
     return "legacy" if via is None else ""
 
@@ -226,8 +226,10 @@ def export(state: Path, destination: Path, *, input_recordings: Path | None = No
                 archive.writestr(f"transcripts/{name}.txt", "".join(lines))
             archive.writestr(
                 "README.txt",
-                "Transcripts are grouped by saved chat, ACP session, or voice conversation.\n"
+                "Each transcript covers a saved chat, ACP session, ask invocation, "
+                "or voice conversation.\n"
                 "Voice conversations split on service startup or a memory reset.\n"
+                "Older ask entries without a session tag are in ask.txt.\n"
                 "Older log entries with no channel tag are in legacy.txt.\n"
                 "Times are UTC when present. WAV names contain Unix timestamps in nanoseconds.\n"
                 "WAVs are grouped by speaker. Transcripts link to WAVs named in the log.\n"

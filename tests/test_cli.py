@@ -218,6 +218,41 @@ def test_archive_keeps_only_retained_typed_sessions_and_labels_scheduled_request
         assert "Owner: Ordinary turn" in spoken
 
 
+def test_archive_keeps_each_new_ask_in_its_own_transcript(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def build(_cfg: object, *, via: str, session: str = "", **_kwargs: object) -> object:
+        audit = AuditLog(paths.audit_file(), tags={"via": via, "session": session})
+
+        def handle(text: str, _hooks: Hooks) -> str:
+            audit.record("request", text=text)
+            reply = f"Reply to {text}"
+            audit.record("reply", text=reply)
+            return reply
+
+        return SimpleNamespace(agent=SimpleNamespace(handle=handle))
+
+    monkeypatch.setattr(cli, "build", build)
+    AuditLog(paths.audit_file()).record("request", via="ask", text="Older request")
+    assert main(["ask", "First request"]) == 0
+    assert main(["ask", "Second request"]) == 0
+    destination = home / "archive.zip"
+    assert main(["archive", str(destination)]) == 0
+
+    with ZipFile(destination) as saved:
+        assert "Older request" in saved.read("transcripts/ask.txt").decode()
+        typed = [
+            saved.read(name).decode()
+            for name in saved.namelist()
+            if name.startswith("transcripts/ask-")
+        ]
+    assert len(typed) == 2
+    for request in ("First request", "Second request"):
+        (transcript,) = [text for text in typed if f"Owner: {request}" in text]
+        assert f"Jarvis: Reply to {request}" in transcript
+        assert transcript.count("Owner: ") == 1
+
+
 def test_pc_audio_toggle_saves_the_setting(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
