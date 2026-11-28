@@ -199,26 +199,37 @@ arguments, an answer without the tool it needed (a routed request that never ask
 extra or forbidden call, or a model failure. The first reply is the first sentence handed to the speaker (voice)
 or the first draft of the reply (chat); prompt tokens are the server's own count, where it sends one.
 
-**Results, 2026-11-28.** Qwen3.8-Flash-Next IQ2_XS on Strata 0.2.16 (build 0.1.62) with a
-49,152-token context, using Jarvis at `71061d5`. One run of the 64 published cases (51 typed and
-13 spoken-style), with channel-specific cases counting only for that channel. The spoken-style
-cases were sent as text. The workspace case was scored against the corrected expectation in
-`25353a4` from the saved tool calls and timings.
+**Results, 2026-11-28.** Qwen3.8-Flash-Next IQ2_XS on Strata 0.2.20 (engine 0.1.66, the release the
+`jarvis-strata` service runs) with a 49,152-token context, one run of the 64 published cases (51 typed and
+13 spoken-style), with channel-specific cases counting only for that channel; the spoken-style cases were
+sent as text. "Before" is Jarvis at `02ee724`; "after" adds `read_skill` to the core tools (#64), names
+`spotify_change_volume` in `pc_volume` (#65) and lets an action end in silence after a window list.
 
-| Channel | Tools | Right | Wrong tool | Wrong args | Answered without the tool | Extra | Error | Model calls per request | First reply, median / p90 (s) | Done, median / p90 (s) | Prompt tokens per call |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| voice | all | 50/62 (81%) | 3 | 0 | 4 | 5 | 0 | 2.34 | 1.0 / 2.0 | 0.9 / 2.5 | 9,178 |
-| voice | routed | 50/62 (81%) | 4 | 0 | 6 | 2 | 0 | 3.25 | 5.7 / 6.7 | 5.6 / 6.7 | 4,535 |
-| chat | all | 45/58 (78%) | 2 | 1 | 5 | 5 | 0 | 2.61 | 1.0 / 2.6 | 1.1 / 2.9 | 8,462 |
-| chat | routed | 48/58 (83%) | 3 | 0 | 6 | 1 | 0 | 3.38 | 5.5 / 6.9 | 5.7 / 7.7 | 4,292 |
+| Channel | Tools | Jarvis | Right | Wrong tool | Wrong args | Answered without the tool | Extra | Error | Model calls per request | First reply, median / p90 (s) | Done, median / p90 (s) | Prompt tokens per call |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| voice | all | before | 48/62 (77%) | 4 | 0 | 4 | 6 | 0 | 2.37 | 1.0 / 2.2 | 0.9 / 2.4 | 9,801 |
+| voice | all | after | 51/62 (82%) | 3 | 0 | 4 | 4 | 0 | 2.35 | 1.0 / 1.8 | 0.9 / 1.8 | 9,813 |
+| voice | routed | before | 53/62 (85%) | 2 | 0 | 7 | 0 | 0 | 3.18 | 5.8 / 6.6 | 5.7 / 6.7 | 4,586 |
+| voice | routed | after | 51/62 (82%) | 3 | 0 | 6 | 2 | 0 | 3.22 | 5.8 / 6.7 | 5.8 / 6.6 | 4,676 |
+| chat | all | before | 46/58 (79%) | 1 | 0 | 4 | 7 | 0 | 2.54 | 1.0 / 2.3 | 1.1 / 2.4 | 8,473 |
+| chat | all | after | 48/58 (83%) | 2 | 0 | 3 | 5 | 0 | 2.62 | 1.0 / 2.0 | 1.1 / 2.4 | 8,495 |
+| chat | routed | before | 47/58 (81%) | 3 | 0 | 6 | 2 | 0 | 3.46 | 5.7 / 7.5 | 5.7 / 8.1 | 4,323 |
+| chat | routed | after | 47/58 (81%) | 3 | 0 | 6 | 2 | 0 | 3.56 | 5.7 / 7.4 | 5.8 / 7.8 | 4,461 |
 
-Keep `all` for both channels. Routing cut the mean number of prompt tokens per call. Median
-request time increased in both channels. The first-reply figures measure the first
+An earlier run the same day used Strata 0.2.16 (engine 0.1.62), the stale release a bare `strata` on the
+`PATH` starts, not the one the service runs; its figures were within a few cases of these and led to the same
+decision. With one run per case, a difference of two or three cases is within noise.
+
+Where a case expects a skill read, the model read it in 3 or 4 of 9 cases in `all` and in none in `routed`,
+before and after `read_skill` became a core tool (#64). "Louder" after Spotify music called `pc_volume` by
+voice before the description fix and `spotify_change_volume` after it (#65).
+
+Keep `all` for both channels: routing reads half the prompt tokens per call but takes about 5.8 s to the
+first reply against 1.0 s, for accuracy within noise of `all`. The first-reply figures measure the first
 text handed to the channel and exclude requests that stayed silent.
 
-The model sometimes omitted a required skill, did extra research, or changed the PC mix during
-a music-volume follow-up. The voice router also chose to stop a whole program when asked to close
-one window. An unrelated request sometimes drew a shell proposal. The benchmark substitutes
+The model sometimes did extra research, and in the chat an unrelated request sometimes drew a `calculate`
+or shell call (#66). The benchmark substitutes
 shell results and auto-answers confirmation hooks, so it records model choices and does not
 exercise real confirmation timing or desktop actions. The chat benchmark has no picker UI.
 

@@ -110,7 +110,8 @@ class VolumeOps:
                 "pc_volume",
                 "The PC's own output volume: everything it plays (games, videos, calls, Spotify). "
                 "No argument reads it; percent sets it; delta turns it up (positive) or down; "
-                "mute true or false. For Spotify alone, use spotify_set_volume.",
+                "mute true or false. For Spotify alone, use spotify_change_volume to turn it up or "
+                "down, or spotify_set_volume for a level.",
                 {
                     "type": "object",
                     "properties": {

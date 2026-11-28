@@ -446,6 +446,17 @@ def test_outside_text_read_in_the_request_cannot_silence_the_reply() -> None:
             quiet.run({})
 
 
+@pytest.mark.parametrize("origin", ["process", "web"])
+def test_quiet_holds_after_an_action_even_when_the_request_read_outside_text(origin: str) -> None:
+    # "Close the Discord window" lists the windows (their titles are other programs' words), closes
+    # one, and must end in silence as the voice prompt asks; the router benchmark heard Jarvis
+    # refused here. Once the request acted there is no answer a page could hide.
+    with request_scope(foreign=False) as request:
+        request.saw(origin)
+        request.note_action()
+        assert quiet_operation().run({}).quiet
+
+
 @pytest.mark.parametrize(
     ("foreign", "remembered"),
     [(False, "memory"), (False, "memory-process"), (True, "")],

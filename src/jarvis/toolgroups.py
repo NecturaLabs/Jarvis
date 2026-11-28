@@ -31,7 +31,7 @@ CORE = ToolGroup(
     CORE_NAME,
     "How you answer and go on: answer without a tool, stay quiet, change how you talk, forget "
     "the conversation, hand off to the chat, keep todos, ask the owner, think harder, switch "
-    "modes, load more tools.",
+    "modes, read one of the skills the prompt lists, load more tools.",
     (
         "no_action",
         "stay_quiet",
@@ -42,6 +42,7 @@ CORE = ToolGroup(
         "ask_owner",
         "think_harder",
         "switch_model",
+        "read_skill",
         USE_TOOLS,
     ),
 )
@@ -127,8 +128,8 @@ GROUPS = (
     ),
     ToolGroup(
         "guides",
-        "Written instructions for a kind of task: Jarvis's own skills and Omarchy's guides.",
-        ("read_skill", "os_skill"),
+        "Omarchy's own guides to this desktop and its settings.",
+        ("os_skill",),
     ),
     ToolGroup(
         "jarvis",

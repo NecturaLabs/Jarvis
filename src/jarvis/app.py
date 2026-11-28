@@ -98,17 +98,22 @@ type Channel = Literal["voice", "chat"]
 
 
 def _stay_quiet(_args: dict[str, Any]) -> Result:
-    """End the request in silence, unless outside text came into it (memory aside).
+    """End the request in silence, unless outside text came into it (memory aside) before it acted.
 
     A page or thread that asks for silence would otherwise hide the answer the owner asked for.
     Outside text remembered from earlier turns does not count, or the owner could not ask for quiet
-    after any search.
+    after any search; nor does it once the request has acted (a window closed after the window
+    list was read), since its result is what the owner notices and silence hides no answer.
 
     Raises:
-        OperationError: outside text came into this request.
+        OperationError: outside text came into this request before any action.
     """
     request = current_request()
-    if request is not None and request.outside - {REMEMBERED, REMEMBERED_LISTING}:
+    if (
+        request is not None
+        and not request.acted
+        and request.outside - {REMEMBERED, REMEMBERED_LISTING}
+    ):
         msg = "Only the owner asks for quiet, and this request read outside text: answer as usual."
         raise OperationError(msg)
     return Result("Quiet: nothing is said.", quiet=True)
