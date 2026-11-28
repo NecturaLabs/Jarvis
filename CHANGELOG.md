@@ -573,6 +573,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- With barge-in on, say the wake word while Jarvis is still looking something up or waiting for the
+  model to cancel the old request and start a new one.
 - Spoken replies are shorter: an action you notice at once (music, volume, an app) that went as asked
   ends in silence, and a reply never opens with a preamble, closes with an offer or apologises for a search.
 - The voice conversation keeps 8,000 tokens for 15 idle minutes (was 3,000 for 5), and `strata.context`

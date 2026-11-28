@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast, override
 import httpx
 import numpy as np
 import pytest
+from scripted_model import say
 from test_sing_psola import Voice as SpeechVoice
 
 from jarvis import announce, modes, voice
@@ -125,6 +126,33 @@ class Mic:
 
     def drain(self) -> None:
         self.drained += 1
+
+
+class CheckingMic(Mic):
+    """Fail if the wake watcher and the main loop try to pull frames at the same time."""
+
+    def __init__(self, *steps: Step) -> None:
+        super().__init__(*steps)
+        self._reading = threading.Lock()
+        self.watching = threading.Event()
+        self.overlapped = False
+
+    @override
+    def frames(self) -> Iterator[NDArray[np.int16]]:
+        frames = super().frames()
+        while True:
+            if not self._reading.acquire(blocking=False):
+                self.overlapped = True
+                return
+            try:
+                if threading.current_thread().name == "jarvis-barge-in":
+                    self.watching.set()
+                frame = next(frames, None)
+            finally:
+                self._reading.release()
+            if frame is None:
+                return
+            yield frame
 
 
 class PcAudio:
@@ -1499,6 +1527,78 @@ def test_the_wake_word_while_jarvis_speaks_stops_it_and_takes_the_new_request() 
     assert len(agent.calls) == 2
     assert speaker.said == ["Here is a long answer.", "Skipped."]
     assert speaker.chimes == 2  # the new request is greeted like any other
+
+
+@pytest.mark.parametrize("preamble", ["", "Give me a moment."])
+def test_the_wake_word_while_jarvis_is_working_starts_a_new_request(preamble: str) -> None:
+    working, interrupted = threading.Event(), threading.Event()
+    requests = iter(("look this up", "never mind"))
+
+    class Model:
+        @staticmethod
+        def is_loaded() -> bool:
+            return True
+
+        @staticmethod
+        def chat(
+            messages: list[dict[str, Any]],
+            tools: list[dict[str, Any]],
+            *,
+            on_delta: Callable[[Delta], None] | None = None,
+            **_options: object,
+        ) -> dict[str, Any]:
+            del messages, tools
+            if working.is_set():
+                return say("Okay.")
+            if preamble and on_delta is not None:
+                on_delta(Delta(text=f"{preamble} I can"))
+            working.set()
+            assert interrupted.wait(1)
+            return say("The old answer.")  # the final text came back without a streaming delta
+
+    class QuickSpeaker(Speaker):
+        @override
+        def hush(self) -> None:
+            super().hush()
+            interrupted.set()
+
+    audit = AuditLog(None)
+    agent = RealAgent(Model(), Registry([no_action_operation()]), "system", audit, {})
+    speaker = QuickSpeaker()
+    mic = Mic(*REQUEST, until(working.is_set), WAKE, *REQUEST[1:])
+
+    _run(_loop(agent, mic, speaker, transcribe=lambda _samples: next(requests)))
+
+    assert speaker.said == ([preamble, "Okay."] if preamble else ["Okay."])
+    assert [e["text"] for e in audit.events if e["event"] == "request"] == [
+        "look this up",
+        "never mind",
+    ]
+    replies = [e for e in audit.events if e["event"] == "reply"]
+    assert [(e["text"], e.get("stopped")) for e in replies] == [(preamble, True), ("Okay.", None)]
+
+
+def test_the_thinking_watcher_hands_the_microphone_to_a_spoken_confirmation() -> None:
+    answers: list[bool | Declined] = []
+    answer_samples: list[int] = []
+    mic = CheckingMic(*REQUEST, Idle(lambda: loop.state is State.CONFIRM), *ANSWER)
+
+    def reply(_text: str, hooks: Hooks, _origin: Origin) -> str:
+        assert mic.watching.wait(WAIT_S)
+        answers.append(hooks.confirm("Should I continue?"))
+        return "Okay."
+
+    def hear(samples: NDArray[np.int16]) -> str:
+        answer_samples.append(int(np.count_nonzero(samples)))
+        return "yes"
+
+    loop = _loop(Agent(reply), mic, Speaker(), answer=hear)
+
+    _run(loop)
+
+    assert answers == [True]
+    assert answer_samples == [FRAME * 2]
+    assert not mic.overlapped
 
 
 @dataclass
@@ -2986,6 +3086,31 @@ def test_the_confirm_key_allows_the_action_jarvis_asked_about() -> None:
 
     assert speaker.said == [f"Should I stop process 42? {voice.PRESS_KEY}", "approved"]
     assert states == [State.CONFIRM]
+
+
+def test_the_thinking_watcher_leaves_the_microphone_for_the_confirm_key() -> None:
+    clock, key_clock = Clock(), Clock()
+    key = ConfirmKey(clock=key_clock)
+    answers: list[bool | Declined] = []
+    mic = CheckingMic(
+        *REQUEST,
+        Idle(lambda: loop.state is State.CONFIRM),
+        SILENCE,
+        key_clock.advance(1),
+        key.press,
+        SILENCE,
+    )
+
+    def reply(text: str, hooks: Hooks, origin: Origin) -> str:
+        assert mic.watching.wait(WAIT_S)
+        return _asking_for_the_key(answers=answers)(text, hooks, origin)
+
+    loop = _key_loop(Agent(reply), mic, Speaker(), key, clock)
+
+    _run(loop)
+
+    assert answers == [True]
+    assert not mic.overlapped
 
 
 def test_no_press_before_the_wait_ends_is_a_no() -> None:

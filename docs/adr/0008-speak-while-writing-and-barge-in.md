@@ -88,6 +88,11 @@ that each of Jarvis's own sentences does not trigger it. The rules, all in code:
   spoken over (sentences are checked as they are synthesized, ahead of playback). A check that fails counts
   as wake-like.
 
+Issue #41 extended this to work before playback. The microphone watcher uses the normal wake score
+while the model or a tool is working. The loop joins the watcher before reading either kind of
+confirmation and starts it again when work resumes. A wake that cancels an in-flight model call is
+audited as stopped even when the model returns its answer in one piece.
+
 Measured: the check costs 6 to 33 ms per sentence. In direct playback, Jarvis's ordinary replies scored 0.001
 to 0.035 on the wake model (the threshold is 0.5), and only lines like "Hey, Jarvis here" scored above 0.9.
 

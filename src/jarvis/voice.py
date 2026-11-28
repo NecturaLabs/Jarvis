@@ -503,6 +503,7 @@ class VoiceLoop:
     """Runs the listen-think-speak cycle until stopped."""
 
     _asking_confirmation = False
+    _work_wake_at = 0.0
 
     def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - collaborators, each a test seam
         self,
@@ -605,7 +606,7 @@ class VoiceLoop:
         self._pc_speech = 0  # PC speech frames heard while waiting for an answer
         self._requests = 0  # requests the loop has taken
         self._chiming: threading.Thread | None = None
-        # Listens while Jarvis speaks, with the event that ends it (one per watcher).
+        # Listens while Jarvis works or speaks, with the event that ends it (one per watcher).
         self._watcher: tuple[threading.Thread, threading.Event] | None = None
         self._watch_lock = threading.Lock()
         self._barged_at: float | None = None  # when the owner spoke over Jarvis
@@ -627,7 +628,7 @@ class VoiceLoop:
         self._watch()
 
     def _watch(self) -> None:
-        """Start listening for the wake word while Jarvis speaks, unless barge-in is off."""
+        """Start the wake watcher for an active request unless barge-in is off."""
         if self._cfg.barge_in:
             with self._watch_lock:
                 if self._watcher is None:
@@ -637,6 +638,14 @@ class VoiceLoop:
                     )
                     self._watcher = (watcher, done)
                     watcher.start()
+
+    def _watch_work(self) -> None:
+        if not self._cancelled():
+            # Let a reply or a confirmation that is ready immediately take the microphone first.
+            # Frames stay queued so a wake heard during that first frame is still available.
+            self._work_wake_at = time.monotonic() + FRAME_S
+            self.state = State.THINK
+            self._watch()
 
     @contextlib.contextmanager
     def _making_sound(self) -> Generator[None]:
@@ -653,37 +662,47 @@ class VoiceLoop:
             self._making = False
 
     def _watch_speech(self, done: threading.Event) -> None:
-        """Listen for the wake word while Jarvis speaks or makes a sound; on it, stop speaking.
+        """Listen for the wake word while Jarvis works or speaks; on it, end that request.
 
-        Frames are read only while speech is playing or a sound is being made, so the loop's
-        own reads (an answer to a question, the next request) never lose one to this thread.
+        The loop joins the watcher before taking the microphone for an answer to a question,
+        or for the next request.
         """
         try:
-            self._listen_while_speaking(done)
+            self._listen_while_working(done)
         except AudioError:
             log.warning("the microphone stopped while Jarvis was speaking")
         except Exception:
             log.exception("listening while speaking failed")
 
-    def _listen_while_speaking(self, done: threading.Event) -> None:
+    def _listen_while_working(self, done: threading.Event) -> None:
         self._wake.reset()
         frames = self._mic.frames()
         while not done.is_set():
             speaking = self._speaker.busy
-            if not speaking and not self._making:
+            thinking = (
+                bool(self._work_wake_at)
+                and not self._asking_confirmation
+                and time.monotonic() >= self._work_wake_at
+            )
+            if not (speaking or thinking or self._making):
                 done.wait(0.02)
                 continue
             frame = next(frames, None)
-            if frame is None:
+            if frame is None or done.is_set():
                 return
             if not self._speaker.interruptible:
+                continue
+            speaking = self._speaker.busy
+            if not speaking and self._asking_confirmation:
                 continue
             if self._heard_over_speech(frame) if speaking else self._wake.heard(frame):
                 wake_at = self._clock()
                 if _same_wake(self._pc_capture_at, wake_at):
                     continue
                 self._barged_at = wake_at
-                log.info("wake word while speaking: stopping to listen")
+                log.info(
+                    "wake word while %s: stopping to listen", "speaking" if speaking else "working"
+                )
                 self._speaker.hush()
                 return
 
@@ -708,11 +727,13 @@ class VoiceLoop:
             self._speaker.wait()
         finally:
             with self._watch_lock:
-                watching, self._watcher = self._watcher, None
+                watching = self._watcher
+                if watching is not None:
+                    watcher, done = watching
+                    done.set()
+                    watcher.join()
+                    self._watcher = None
             if watching is not None:
-                watcher, done = watching
-                done.set()
-                watcher.join()
                 self._note_closest_miss()
             if self._barged_at is None:
                 # Jarvis's own voice is in what the mics heard meanwhile; after a barge-in the
@@ -798,7 +819,7 @@ class VoiceLoop:
         """Say a line while the agent works, then let the loop carry on thinking."""
         self._try_say(text)
         if self.state is State.SPEAK:
-            self.state = State.THINK
+            self._watch_work()
 
     def _confirm(self, question: str) -> bool | Declined:
         """Ask the owner; anything but a clear spoken yes, a failure included, is no."""
@@ -812,6 +833,8 @@ class VoiceLoop:
         except Exception:
             log.exception("the confirmation failed; counting it as no")
             return Declined(NoReason.FAILED)
+        finally:
+            self._watch_work()
 
     def _ask(self, question: str) -> bool | Declined:
         heard_out = self._said_in_full(spoken_question(question))
@@ -900,6 +923,8 @@ class VoiceLoop:
         except Exception:
             log.exception("waiting for the confirm key failed; counting it as no")
             return Declined(NoReason.FAILED)
+        finally:
+            self._watch_work()
 
     def _await_key(self, question: str, action: str) -> bool | Declined:
         """Speak the question, then wait for the key while still listening for the wake word.
@@ -1254,6 +1279,7 @@ class VoiceLoop:
         started = time.perf_counter()
         self._first_words = None
         self._said_nothing = False
+        self._watch_work()
         try:
             reply = self._agent.handle(
                 text,
@@ -1280,6 +1306,7 @@ class VoiceLoop:
                 self._said_nothing = True
             return time.perf_counter() - started
         finally:
+            self._work_wake_at = 0.0
             self._end_speaking()
 
     def _take_due(self) -> list[Due]:
@@ -1561,10 +1588,10 @@ class VoiceLoop:
         a yes or a follow-up, speech in PC audio is counted, so a voice there cannot answer or
         make a request without the wake word.
         """
-        if state is State.SPEAK:
+        if state in {State.THINK, State.SPEAK}:
             if pc.wake.heard(frame):
                 self._note_pc_wake(self._clock())
-                log.info("wake word in PC audio while Jarvis speaks")
+                log.info("wake word in PC audio while Jarvis is %s", state.value)
             return True
         if state in {State.CONFIRM, State.FOLLOW_UP}:
             if pc.vad.speech_probability(frame) >= self._cfg.vad_threshold:
