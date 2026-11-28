@@ -42,7 +42,7 @@ def test_a_runaway_reply_is_cut_before_it_is_cleaned() -> None:
         ("Open 9am\u20135pm.", "Open 9am to 5pm."),
         ("Mon\u2013Fri.", "Mon to Fri."),
         ("From 2020\u2013present.", "From 2020 to present."),
-        ("It costs $5\u2013$10.", "It costs $5 to $10."),
+        ("It costs $5\u2013$10.", "It costs 5 dollars to 10 dollars."),
         ("Lows of \u22125\u2013\u22123 \u00b0C.", "Lows of \u22125 to \u22123 degrees Celsius."),
         ("Lows of \u22125 \u2013 \u22123 \u00b0C.", "Lows of \u22125 to \u22123 degrees Celsius."),
         ("Highs of 5\u00b0 \u2013 10\u00b0.", "Highs of 5 degrees to 10 degrees."),
@@ -171,4 +171,42 @@ def test_a_sign_with_a_plain_word_is_said_as_it(reply: str, spoken: str) -> None
     ],
 )
 def test_a_hyphen_between_figures_with_a_unit_is_a_range(reply: str, spoken: str) -> None:
+    assert speakable(reply) == spoken
+
+
+@pytest.mark.parametrize(
+    ("reply", "spoken"),
+    [
+        # espeak-ng reads "$50" as "dollar fifty": the word goes after the figure.
+        ("It costs $50.", "It costs 50 dollars."),
+        ("Just $1.", "Just 1 dollar."),
+        ("It's $4.99 now.", "It's 4 dollars 99 now."),
+        ("About €20 or £15.", "About 20 euros or 15 pounds."),
+        ("Worth $2.5 million.", "Worth 2.5 million dollars."),
+        ("The $ sign alone stays.", "The $ sign alone stays."),
+    ],
+)
+def test_a_currency_sign_is_said_after_its_figure(reply: str, spoken: str) -> None:
+    assert speakable(reply) == spoken
+
+
+@pytest.mark.parametrize(
+    ("reply", "spoken"),
+    [
+        # A path, a hash or an ID is spelled out sign by sign ("tilde slash music slash ...").
+        ("Saved it to ~/Music/mix-2026-11-28.wav.", "Saved it to mix."),
+        ("It's in /var/log/pacman.log.", "It's in pacman."),
+        ("Open notes.txt for that.", "Open notes for that."),
+        ("Read ./scripts/build_all.sh first.", "Read build all first."),
+        ("The commit is 3f9a2c1e7b, on main.", "The commit is, on main."),
+        ("Job 123e4567-e89b-12d3-a456-426614174000 ran.", "Job ran."),
+        ("Call 5551234567 or dial 911.", "Call 5551234567 or dial 911."),
+        ("It said and/or, 24/7, decaf.", "It said and/or, 24/7, decaf."),
+        ("Version 2.1 is out on 2026-11-28.", "Version 2.1 is out on 2026-11-28."),
+        ("Built with Node.js and Next.js.", "Built with Node.js and Next.js."),
+        ("See ~/code/app/main.ts.", "See main."),
+        ("Weather on example.com today.", "Weather on example.com today."),
+    ],
+)
+def test_a_path_hash_or_id_is_not_spelled_out(reply: str, spoken: str) -> None:
     assert speakable(reply) == spoken

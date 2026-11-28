@@ -133,6 +133,32 @@ _SINGULAR = re.compile(
     r"|megabit|gigabit)s"
 )
 _QUESTION_MARKS = re.compile(r"[\[\]()`*_]")
+# A currency sign before its figure: espeak-ng reads "$50" as "dollar fifty".
+CENT_DIGITS = 2  # "$4.99": dollars and cents, said "4 dollars 99"
+_CURRENCY_WORDS = {"$": ("dollar", "dollars"), "€": ("euro", "euros"), "£": ("pound", "pounds")}
+_CURRENCY = re.compile(
+    r"(?<![\w$€£])([$€£])\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?"
+    r"(?:\s?(thousand|million|billion|trillion)\b)?(?![\d.,]\d)"
+)
+# What a voice spells out sign by sign: a path, a file name, a hash, an ID. A path or a file is
+# said as its name's words ("~/Music/mix-2026-11-28.wav" as "mix"); a hash or an ID is left out.
+# A bare file name is one of these types; "Node.js" or "Next.js" is a name, so script types count
+# only inside a path.
+_FILE_TYPES = (
+    "wav|ogg|mp3|flac|m4a|aac|opus|py|json|yaml|yml|toml|md|txt|csv|xlsx|xls|pdf|png|jpg|jpeg"
+    "|gif|webp|svg|log|sql|sh|bash|zsh|java|rb|php|html|css|lock|tar|gz|zip|db|sqlite|onnx|bin"
+    "|ini|conf|cfg|xml|docx|pptx|mp4|mkv|webm|desktop|service"
+)
+_PATH = re.compile(
+    rf"(?<![\w/~.])(?:~|\.{{1,2}})?/(?:[\w.+-]+/)*([\w+-]+(?:\.[\w+-]+)*)"
+    rf"|(?<![\w/.])([\w+-]+(?:\.[\w+-]+)*)\.(?:{_FILE_TYPES})(?![\w/])",
+    re.IGNORECASE,
+)
+_UUID = re.compile(r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", re.IGNORECASE)
+_HASH = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,64}\b", re.IGNORECASE)
+_NAME_WORDS = re.compile(r"[^\W\d_]+")
+_LEFT_GAP = re.compile(r"[ \t]+(?=[,.;:!?])|(?<=[ \t])[ \t]+")  # where a left-out word was
+_FILE_TYPE = re.compile(rf"\.(?:{_FILE_TYPES}|js|jsx|ts|tsx|mjs|rs|go|c|h|cpp)$", re.IGNORECASE)
 
 
 SLEPT_S = 2.0  # the boot clock running this far ahead of the monotonic one is a suspend
@@ -175,6 +201,28 @@ def _pause(found: re.Match[str]) -> str:
     return " " if before.endswith((".", ",", ";", ":", "!", "?")) else ", "
 
 
+def _money(found: re.Match[str]) -> str:
+    """Return a sum of money as words after its figure.
+
+    "$4.99" is "4 dollars 99", "$1" is "1 dollar" and "$2.5 million" is "2.5 million dollars".
+    """
+    one, many = _CURRENCY_WORDS[found.group(1)]
+    whole, part, scale = found.group(2), found.group(3), found.group(4)
+    if scale:
+        figure = f"{whole}.{part}" if part else whole
+        return f"{figure} {scale} {many}"
+    word = one if whole == "1" else many
+    if part and len(part) == CENT_DIGITS:
+        return f"{whole} {word}" if part == "00" else f"{whole} {word} {part}"
+    return f"{whole}.{part} {many}" if part else f"{whole} {word}"
+
+
+def _named(found: re.Match[str]) -> str:
+    """Return a path or a file as the words of its name, without its type."""
+    name = _FILE_TYPE.sub("", found.group(1) or found.group(2) or "")
+    return " ".join(_NAME_WORDS.findall(name))
+
+
 def _table_row(found: re.Match[str]) -> str:
     return ", ".join(cell.strip() for cell in found.group(1).split("|") if cell.strip())
 
@@ -189,6 +237,7 @@ def speakable(text: str) -> str:
     """
     text = _MD_LINK.sub(r"\1", text[:MAX_SPOKEN_CHARS])
     text = _WEB_ADDRESS.sub(r"\1", text)
+    text = _LEFT_GAP.sub("", _HASH.sub("", _UUID.sub("", _PATH.sub(_named, text))))
     text = _TABLE_RULE.sub("", _FENCE.sub("", text))
     text = _TABLE_ROW.sub(_table_row, text)
     text = _MD_LINE_MARK.sub("", text)
@@ -198,6 +247,7 @@ def speakable(text: str) -> str:
     text = _RANGE.sub(" to ", _MINUS.sub(" minus ", text))
     text = _NAMES.sub(r"\1 to \2", _HYPHEN_RANGE.sub(r"\1 to \2", text))
     text = _UNIT.sub(_unit_words, text)  # a range before its unit signs
+    text = _CURRENCY.sub(_money, text)
     text = _ARROW.sub(" to ", text)
     text = _ABOUT.sub("about ", _ABOUT_TILDE.sub(r"\1", _DASH.sub(_pause, text)))
     lines = [line.strip() for line in text.splitlines() if line.strip()]
