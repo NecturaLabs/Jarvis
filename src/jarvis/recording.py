@@ -139,7 +139,7 @@ class OutputRecorder:
     def operation(self) -> Operation:
         """Return the recording control for the running voice service."""
         return Operation(
-            NAME,
+            "voice_record",  # NAME, written out for the product-rule scan
             "Start recording Jarvis's own spoken and sung audio when the owner asks. "
             "Start before making the sound, and stop to save the recording as a private WAV file.",
             {
