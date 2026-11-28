@@ -476,6 +476,13 @@ def test_the_shell_stub_preserves_refusal_after_file_text(tmp_path: Path) -> Non
     assert result.refused == ["pc_shell"]
 
 
+def test_an_app_request_without_a_workspace_needs_no_launch() -> None:
+    case = next(case for case in load_cases(CASES_FILE) if case.id == "say_open")
+
+    assert judge(case, [Call("no_action", {"reply": "Which workspace?"})]) == "right"
+    assert judge(case, [Call("open_app", {"app": "spotify", "where": "background"})]) == "extra"
+
+
 def test_a_routed_call_to_a_tool_that_was_not_asked_for_is_refused_and_counted(
     tmp_path: Path,
 ) -> None:

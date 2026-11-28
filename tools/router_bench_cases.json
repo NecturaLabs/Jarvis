@@ -511,7 +511,8 @@
       "group": "apps",
       "set": "spoken",
       "turns": ["open spotify"],
-      "expect": [{"tool": "open_app", "args": {"app": "spotify"}}]
+      "expect": [],
+      "forbid": ["open_app"]
     },
     {
       "id": "say_quiet",
