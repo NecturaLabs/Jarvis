@@ -1,6 +1,6 @@
 # ADR: Use only the skills of plugins from Claude Code-format marketplaces
 
-**Status:** proposed
+**Status:** accepted (2026-11-26)
 **Date:** 2026-11-26
 
 ## Context and problem statement

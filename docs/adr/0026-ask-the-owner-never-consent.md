@@ -1,6 +1,6 @@
 # ADR: Let the model put a choice to the owner in the chat, with a timer; an answer is never consent
 
-**Status:** proposed
+**Status:** accepted (2026-11-26)
 **Date:** 2026-11-26
 
 ## Context and problem statement

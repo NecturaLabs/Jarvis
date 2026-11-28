@@ -31,6 +31,8 @@ The build plan and its decisions are in `docs/plan.md`; read it before changing 
   `/usr/share/omarchy/default/agents/skills/`, and the skills (never the code) of plugins the owner enabled
   under `[plugins]`, kept in Jarvis's own folder (ADR 0027).
 - One agent does all the work. Never add a subagent, delegation or second-agent tool to Jarvis.
+  Handing the owner's own spoken words to the open chat window (ADR 0028) is routing, not delegation:
+  the voice request ends there and the chat handles the words as typed.
 - Boundaries are enforced in code before any tool runs, never only in the prompt: typed operations,
   default deny, provenance on every message part, confirmation bound to one exact action, an audit log.
 - Voxtype is driven only through these commands: `voxtype transcribe` (with `-q`, `-c <Jarvis's own

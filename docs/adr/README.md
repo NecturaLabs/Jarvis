@@ -23,14 +23,14 @@ edited once accepted; a later decision supersedes it with a new record that link
 | [0016](0016-headless-browser.md) | Give Jarvis a headless browser, fenced by a local proxy and a yes for every click and typing | accepted |
 | [0017](0017-coding-mode.md) | A coding mode with its own model on the one model server, switched by the owner or by the model with a typed tool | accepted |
 | [0018](0018-sing-a-song-the-model-writes.md) | Sing a song the model writes as notes, with a speaking-voice singer and an optional GPU one | proposed |
-| [0019](0019-install-and-update.md) | Install and update Jarvis from a release branch | proposed |
-| [0020](0020-model-on-another-machine.md) | Optionally serve Strata on another machine owned by the user, with the Jarvis client on the PC it controls | proposed |
+| [0019](0019-install-and-update.md) | Install and update Jarvis from a release branch | accepted |
+| [0020](0020-model-on-another-machine.md) | Optionally serve Strata on another machine owned by the user, with the Jarvis client on the PC it controls | accepted |
 | [0021](0021-screen-watch.md) | Watch a window or the screen and say when something shows up, with one check by the same model that runs no call | proposed |
-| [0022](0022-tool-router.md) | Let the model route itself through tool groups, off by default until measured | proposed |
-| [0023](0023-acp-front-end.md) | Serve Jarvis to coding apps over the Agent Client Protocol; consent stays Jarvis's own | proposed |
+| [0022](0022-tool-router.md) | Let the model route itself through tool groups, off by default until measured | accepted |
+| [0023](0023-acp-front-end.md) | Serve Jarvis to coding apps over the Agent Client Protocol; consent stays Jarvis's own | accepted |
 | [0024](0024-owner-skills.md) | Read the owner's own skills from Jarvis's config folder | accepted |
-| [0025](0025-workspace-folder.md) | Give Jarvis a workspace folder it can always write in, where a new file needs no yes | proposed |
-| [0026](0026-ask-the-owner-never-consent.md) | Let the model put a choice to the owner in the chat, with a timer; an answer is never consent | proposed |
-| [0027](0027-skill-plugins.md) | Use only the skills of plugins from Claude Code-format marketplaces, kept at their newest commit | proposed |
-| [0028](0028-voice-and-chat-as-two-channels.md) | Voice and chat as two cooperating channels: a spoken request is its own, and a typed tool hands the owner's words to the open chat | proposed |
-| [0029](0029-refuse-a-load-that-does-not-fit.md) | Refuse to start or load the model when the memory available would be left below a margin | proposed |
+| [0025](0025-workspace-folder.md) | Give Jarvis a workspace folder it can always write in, where a new file needs no yes | accepted |
+| [0026](0026-ask-the-owner-never-consent.md) | Let the model put a choice to the owner in the chat, with a timer; an answer is never consent | accepted |
+| [0027](0027-skill-plugins.md) | Use only the skills of plugins from Claude Code-format marketplaces, kept at their newest commit | accepted |
+| [0028](0028-voice-and-chat-as-two-channels.md) | Voice and chat as two cooperating channels: a spoken request is its own, and a typed tool hands the owner's words to the open chat | accepted |
+| [0029](0029-refuse-a-load-that-does-not-fit.md) | Refuse to start or load the model when the memory available would be left below a margin | accepted |

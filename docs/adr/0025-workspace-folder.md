@@ -1,6 +1,6 @@
 # ADR: A workspace folder Jarvis can always write in
 
-**Status:** proposed
+**Status:** accepted (2026-11-26)
 **Date:** 2026-11-26
 
 ## Context and problem statement

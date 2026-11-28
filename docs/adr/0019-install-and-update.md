@@ -1,6 +1,6 @@
 # 0019. How Jarvis installs and updates from a release branch
 
-Status: proposed  
+Status: accepted (2026-11-26)  
 Date: 2026-11-26
 
 ## Context
