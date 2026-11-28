@@ -351,6 +351,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- An action that read other programs' words first (closing a window lists the windows, whose titles count as
+  outside text) can end in silence again: `stay_quiet` was refused there, so Jarvis spoke after it.
 - `pc_volume`'s description names `spotify_change_volume` for turning Spotify up or down: with Spotify playing,
   "louder please" turned up the whole PC.
 - With `tools = "routed"` the model can read a listed skill on any request: `read_skill` is a core tool, where it
