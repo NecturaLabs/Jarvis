@@ -12,21 +12,25 @@ its own remembered turns, and an action after a page read in the chat still need
 yes by voice. A request heard in PC audio is never shared, and nor are the tool calls and
 results a turn kept (`Turn.work`): only the request, the reply, what was done and looked up.
 
-The file holds the newest `MAX_TURNS` turns. A process that starts reads only the turns of the
-last `FRESH_S` seconds, the voice conversation's own idle time, so an old talk does not come
-back.
+The file holds the newest `MAX_TURNS` turns, and an agent reads only turns of the last
+`FRESH_S` seconds, the voice conversation's own idle time, so an old talk does not come back:
+not in a process that starts, nor in one that sat idle. Every row names the file it was written
+to (`epoch`), so a file that was removed and written again is read from its first turn. Asking
+Jarvis to forget the conversation clears the file too (`clear`).
 """
 
 import contextlib
+import errno
 import fcntl
 import json
 import os
+import secrets
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from jarvis.jsonutil import obj
-from jarvis.memory import Turn
+from jarvis.memory import Turn, origin_name
 from jarvis.secretfile import read_private, write_private
 
 if TYPE_CHECKING:
@@ -36,9 +40,14 @@ if TYPE_CHECKING:
 type Channel = Literal["voice", "chat"]
 
 MAX_TURNS = 40  # the newest turns the file keeps
-MAX_FIELD = 4000  # the most characters of one request or reply kept
-FRESH_S = 900.0  # how old a turn a newly started process still reads
+MAX_FIELD = 4000  # the most characters of one request, reply, actions or looked-up list kept
+FRESH_S = 900.0  # how old a turn an agent still reads
+LOCK_WAIT_S = 2.0  # how long a request waits for the other process to finish with the file
 HOW = {"voice": "said aloud", "chat": "typed in the chat"}  # how the owner made the request
+
+
+class SharedBusyError(OSError):
+    """The other process held the shared file's lock for longer than `LOCK_WAIT_S`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +55,7 @@ class SharedTurn:
     """One request the owner made of a channel, its reply and what came with it."""
 
     number: int
-    channel: Channel
+    channel: Channel  # the channel that answered it, and wrote it here
     at: float  # wall-clock seconds
     request: str
     reply: str
@@ -54,11 +63,13 @@ class SharedTurn:
     outside: str = ""
     private: bool = False
     looked: str = ""
+    said: Channel | None = None  # how the owner made it, when not the way `channel` takes words
+    epoch: str = ""  # which file it was written to
 
     def turn(self, at: float) -> Turn:
         """Return it as a turn of the other channel's conversation, at that channel's `at`."""
         return Turn(
-            f"({HOW[self.channel]}) {self.request}",
+            f"({HOW[self.said or self.channel]}) {self.request}",
             self.reply,
             self.actions,
             self.outside,
@@ -68,25 +79,33 @@ class SharedTurn:
         )
 
 
+def _channel(value: object) -> Channel | None:
+    if value == "voice":
+        return "voice"
+    return "chat" if value == "chat" else None
+
+
 def _parse(line: str) -> SharedTurn | None:
     try:
         row = obj(json.loads(line))
     except ValueError, RecursionError:
         return None
-    channel, number = row.get("channel"), row.get("number")
-    if channel not in HOW or not isinstance(number, int):
+    channel, number = _channel(row.get("channel")), row.get("number")
+    if channel is None or not isinstance(number, int):
         return None
     at = row.get("at")
     return SharedTurn(
         number,
-        "voice" if channel == "voice" else "chat",
+        channel,
         float(at) if isinstance(at, (int, float)) else 0.0,
-        str(row.get("request", "")),
-        str(row.get("reply", "")),
-        str(row.get("actions", "")),
-        str(row.get("outside", "")),
+        str(row.get("request", ""))[:MAX_FIELD],
+        str(row.get("reply", ""))[:MAX_FIELD],
+        str(row.get("actions", ""))[:MAX_FIELD],
+        origin_name(row.get("outside", "")),
         row.get("private") is True,
-        str(row.get("looked", "")),
+        str(row.get("looked", ""))[:MAX_FIELD],
+        _channel(row.get("said")),
+        str(row.get("epoch", "")),
     )
 
 
@@ -101,8 +120,21 @@ class SharedTurns:
         self._path = path
         self._channel: Channel = channel
         self._clock = clock
-        fresh = clock() - FRESH_S
-        self._seen = max((t.number for t in self._read() if t.at < fresh), default=0)
+        self._epoch, self._seen = "", 0
+        with contextlib.suppress(OSError):  # an unreadable file is reported when it is used
+            turns = self._read()
+            self._epoch = turns[-1].epoch if turns else ""
+
+    @property
+    def mark(self) -> str:
+        """Where this channel has read up to, for a saved conversation to start from again."""
+        return f"{self._epoch}:{self._seen}" if self._epoch else ""
+
+    def resume(self, mark: str) -> None:
+        """Start after `mark`, from a saved conversation that already holds the turns before it."""
+        epoch, _, number = mark.partition(":")
+        if epoch and epoch == self._epoch and number.isdigit():
+            self._seen = max(self._seen, int(number))
 
     @contextlib.contextmanager
     def _locked(self) -> Generator[None]:
@@ -110,22 +142,35 @@ class SharedTurns:
         lock = self._path.with_name(f"{self._path.name}.lock")
         fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            deadline = time.monotonic() + LOCK_WAIT_S
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise SharedBusyError(
+                            errno.EWOULDBLOCK, "the shared file is busy"
+                        ) from None
+                    time.sleep(0.02)
             yield
         finally:
             os.close(fd)
 
     def _read(self) -> list[SharedTurn]:
-        try:
-            text = read_private(self._path) or ""
-        except OSError:
-            return []
+        """Return the file's turns; none for a missing file. An unsafe or unreadable one raises."""
+        text = read_private(self._path) or ""
         return [turn for line in text.splitlines() if (turn := _parse(line)) is not None]
 
-    def publish(self, turn: Turn) -> None:
-        """Write a finished turn of this channel for the other one to read."""
+    def publish(self, turn: Turn, *, said: Channel | None = None) -> None:
+        """Write a finished turn of this channel for the other one to read.
+
+        `said` is how the owner made the request when it differs from this channel's own way:
+        spoken words handed to the chat are written as said aloud.
+        """
         with self._locked():
             kept = self._read()
+            epoch = kept[-1].epoch if kept and kept[-1].epoch else secrets.token_hex(8)
             number = max((t.number for t in kept), default=0) + 1
             row = {
                 "number": number,
@@ -133,25 +178,39 @@ class SharedTurns:
                 "at": round(self._clock(), 3),
                 "request": turn.request[:MAX_FIELD],
                 "reply": turn.reply[:MAX_FIELD],
-                "actions": turn.actions,
+                "actions": turn.actions[:MAX_FIELD],
                 "outside": turn.outside,
                 "private": turn.private,
-                "looked": turn.looked,
+                "looked": turn.looked[:MAX_FIELD],
+                "said": said if said is not None and said != self._channel else None,
+                "epoch": epoch,
             }
-            lines = [json.dumps(_row(t)) for t in kept[-(MAX_TURNS - 1) :]]
+            lines = [json.dumps(_row(t, epoch)) for t in kept[-(MAX_TURNS - 1) :]]
             write_private(self._path, "\n".join([*lines, json.dumps(row)]) + "\n")
 
     def take(self) -> list[SharedTurn]:
-        """Return the other channel's turns written since the last call, oldest first."""
+        """Return the other channel's turns of the last FRESH_S written since the last call."""
         turns = self._read()
-        if turns and max(t.number for t in turns) < self._seen:
-            self._seen = 0  # the file was removed and started again
-        new = [t for t in turns if t.number > self._seen and t.channel != self._channel]
+        epoch = turns[-1].epoch if turns else self._epoch
+        if epoch != self._epoch:
+            self._epoch, self._seen = epoch, 0  # the file was removed and written again
+        fresh = self._clock() - FRESH_S
+        new = [
+            t
+            for t in turns
+            if t.number > self._seen and t.channel != self._channel and t.at >= fresh
+        ]
         self._seen = max((t.number for t in turns), default=self._seen)
         return new
 
+    def clear(self) -> None:
+        """Forget every shared turn: the owner asked to start a new conversation."""
+        with self._locked(), contextlib.suppress(FileNotFoundError):
+            self._path.unlink()
+        self._epoch, self._seen = "", 0
 
-def _row(turn: SharedTurn) -> dict[str, object]:
+
+def _row(turn: SharedTurn, epoch: str) -> dict[str, object]:
     return {
         "number": turn.number,
         "channel": turn.channel,
@@ -162,4 +221,6 @@ def _row(turn: SharedTurn) -> dict[str, object]:
         "outside": turn.outside,
         "private": turn.private,
         "looked": turn.looked,
+        "said": turn.said,
+        "epoch": epoch,
     }

@@ -140,6 +140,7 @@ class Conversation:
     summary_private: bool = False  # ... and from turns that read the owner's files
     last: float = 0.0  # on the agent's clock; not kept across sessions
     saved_at: float = 0.0  # wall-clock time of the save a loaded conversation came from
+    shared_mark: str = ""  # how far it read the other channel's shared turns (`SharedTurns.mark`)
 
     def expire(self, now: float) -> bool:
         """Forget everything after a long silence; return whether something was forgotten."""
@@ -155,12 +156,14 @@ class Conversation:
         self.summary = ""
         self.summary_outside = False
         self.summary_private = False
+        self.shared_mark = ""
 
     def adopt(self, other: Conversation) -> None:
         """Take over `other`'s turns, summary and marks: a rebuilt agent remembers the talk."""
         self.turns, self.summary = list(other.turns), other.summary
         self.summary_outside, self.summary_private = other.summary_outside, other.summary_private
         self.last, self.saved_at = other.last, other.saved_at
+        self.shared_mark = other.shared_mark
 
     def add(self, turn: Turn) -> None:
         """Remember one finished turn."""
@@ -283,6 +286,7 @@ class Conversation:
             "summary_outside": self.summary_outside,
             "summary_private": self.summary_private,
             "saved_at": time.time(),
+            "shared_mark": self.shared_mark,
             "turns": [asdict(turn) for turn in self.turns],
         }
         write_atomic(path, json.dumps(data, ensure_ascii=False), mode=0o600)
@@ -301,21 +305,21 @@ class Conversation:
             return False
         if saved is None:
             return False
-        turns, summary, (summary_outside, summary_private), saved_at = saved
+        turns, summary, (summary_outside, summary_private), saved_at, shared_mark = saved
         self.turns, self.summary = turns, summary
         self.summary_outside, self.summary_private = summary_outside, summary_private
-        self.saved_at, self.last = saved_at, 0.0
+        self.saved_at, self.last, self.shared_mark = saved_at, 0.0, shared_mark
         return bool(turns or summary)
 
 
-def _origin(value: object) -> str:
+def origin_name(value: object) -> str:
     """Return a saved turn's outside mark, or `outside` for one that is not a plain origin name."""
     text = str(value)
     return text if not text or _ORIGIN_NAME.fullmatch(text) else "outside"
 
 
-def _read(path: Path) -> tuple[list[Turn], str, tuple[bool, bool], float] | None:
-    """Return the turns, summary, its outside and private marks and save time, or None if foreign.
+def _read(path: Path) -> tuple[list[Turn], str, tuple[bool, bool], float, str] | None:
+    """Return the turns, summary, its marks, save time and shared mark, or None if foreign.
 
     The file must be the owner's own, readable by nobody else and not a link (`read_private`).
     What it, `json.loads`, `obj` and `float` raise for such a file, or an unreadable, non-JSON or
@@ -335,7 +339,7 @@ def _read(path: Path) -> tuple[list[Turn], str, tuple[bool, bool], float] | None
             str(t.get("request", "")),
             str(t.get("reply", "")),
             str(t.get("actions", "")),
-            _origin(t.get("outside", "")),
+            origin_name(t.get("outside", "")),
             float(t.get("at", 0.0)),
             private=t.get("private") is True,
             looked=str(t.get("looked", "")),
@@ -351,7 +355,8 @@ def _read(path: Path) -> tuple[list[Turn], str, tuple[bool, bool], float] | None
             turn.outside = other or turn.outside or (listing if origins else "")
         turn.private = turn.private or not PRIVATE_ORIGINS.isdisjoint(origins)
     marks = (data.get("summary_outside") is True, data.get("summary_private") is True)
-    return turns, str(data.get("summary", "")), marks, float(data.get("saved_at", 0.0))
+    saved_at, shared_mark = float(data.get("saved_at", 0.0)), str(data.get("shared_mark", ""))
+    return turns, str(data.get("summary", "")), marks, saved_at, shared_mark
 
 
 def _work(value: object) -> list[dict[str, Any]]:

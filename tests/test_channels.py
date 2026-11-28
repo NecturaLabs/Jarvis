@@ -1,6 +1,7 @@
 """The voice service and the chat as two channels that cooperate (ADR 0028).
 
-A spoken request is the voice agent's own and never shows in a chat window; `chat_hand_off` passes
+A spoken request is the voice agent's own; it shows in a chat window only with `[channels] shared`
+on (ADR 0030, which also shares the two conversations). `chat_hand_off` passes
 the owner's spoken words to the open window as their own input; neither channel cuts the other's
 work except where the owner's words call for it (a pause, a mode switch).
 """
@@ -541,6 +542,30 @@ def test_with_sharing_on_a_voice_request_and_its_spoken_reply_show_in_the_open_c
         assert _has(app, "by voice")
         (reply,) = [w for w in app.query(Reply) if w.text == "Playing jazz."]
         assert reply._note.endswith("spoken")  # pyright: ignore[reportPrivateUsage] - the line under it
+
+    _run(test, app)
+
+
+def test_with_sharing_on_a_request_heard_in_pc_audio_and_its_reply_stay_out_of_the_chat() -> None:
+    # Overheard words are other people's (a call, a video): the shared talk leaves them out, so
+    # the window does too, while the spoken request after them shows.
+    tail = FakeTail()
+    voice = {"via": "voice"}
+    tail.entries = [
+        {"event": "request", "text": "the meeting moved", "origin": "pc_audio", **voice},
+        {"event": "tool_call", "op": "spotify_pause", "args": {}, **voice},
+        {"event": "reply", "text": "Paused for the call.", "seconds": 0.4, **voice},
+        {"event": "request", "text": "play some jazz", **voice},
+        {"event": "reply", "text": "Playing jazz.", "seconds": 0.4, **voice},
+    ]
+    app = _app(tail, FakeSession(), services=test_chat.Services(show_voice=True))
+
+    async def test(pilot: Pilot[None]) -> None:
+        await _until(pilot, lambda: _has(app, "Playing jazz."))
+        assert _has(app, "play some jazz")
+        assert not _has(app, "the meeting moved")
+        assert not _has(app, "Paused for the call.")
+        assert not _has(app, "PC audio")
 
     _run(test, app)
 

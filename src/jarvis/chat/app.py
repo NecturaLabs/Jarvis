@@ -2,10 +2,11 @@
 
 Typed requests go to the window's own agent; its replies are rendered as Markdown as they are
 written. What other Jarvis processes do (`jarvis ask`, other windows) is read from the shared audit
-log and shown too; the voice service's own work is not (`VOICE_VIA`). How much of the work in
-between shows is the verbosity: by default only requests and replies, with a working line that says
-what Jarvis is doing; `steps` adds each tool call and its result, `everything` the model calls
-and other details.
+log and shown too, and with `[channels] shared` on (ADR 0030) the voice service's spoken requests
+and replies as well, never one heard in PC audio; off, the voice's work is left out (`VOICE_VIA`).
+How much of the work in between shows is the verbosity: by default only requests and replies,
+with a working line that says what Jarvis is doing; `steps` adds each tool call and its result,
+`everything` the model calls and other details.
 
 A question the agent asks opens a yes-or-no choice above the input; anything but a chosen yes is a
 no, as by voice. A picture is attached as Claude Code does it: Ctrl+V pastes a copied picture (or
@@ -585,6 +586,7 @@ class ChatApp(App[None]):
         super().__init__()
         self.theme = "ansi-dark"
         self._tail = tail
+        self._overheard = False  # the voice's request in flight was heard in PC audio
         self._session = session
         self._unavailable = unavailable
         self._name = name
@@ -868,11 +870,24 @@ class ChatApp(App[None]):
             self._show_log()
 
     def _new_entries(self) -> list[dict[str, object]]:
-        """Return what the log gained; the voice agent's work only with `[channels] shared` on."""
+        """Return what the log gained; the voice agent's work only with `[channels] shared` on.
+
+        Never a request heard in PC audio, nor its reply and work: those are other people's
+        words (a call, a video), which the shared conversation leaves out too.
+        """
         entries = self._tail.read()
-        if self._services.show_voice:
-            return entries
-        return [entry for entry in entries if entry.get("via") != VOICE_VIA]
+        if not self._services.show_voice:
+            return [entry for entry in entries if entry.get("via") != VOICE_VIA]
+        kept: list[dict[str, object]] = []
+        for entry in entries:
+            if entry.get("via") == VOICE_VIA:
+                if entry.get("event") == "request":
+                    self._overheard = entry.get("origin") == "pc_audio"
+                if self._overheard:
+                    self._overheard = entry.get("event") != "reply"
+                    continue
+            kept.append(entry)
+        return kept
 
     def _show_log(self) -> None:
         self._follow_down()  # a reply's Markdown grows after it is mounted

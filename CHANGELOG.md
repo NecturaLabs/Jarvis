@@ -11,7 +11,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - Voice and chat are one conversation (`[channels] shared`, on by default; ADR 0030): what you say aloud shows in an
   open chat window with Jarvis's spoken reply, each channel knows what you asked the other ("what did I just ask
   you?" works across them), and each still answers the way you asked: aloud for speech, in text for typing.
-  `shared = false` keeps them apart as before.
+  Asking Jarvis to forget clears the shared talk too; a request heard in PC audio never shows in the chat; a
+  reopened chat window does not read the same turns twice. `shared = false` keeps them apart as before.
 - `jarvis archive PATH.zip` exports retained session transcripts and existing Jarvis and microphone
   recordings to a private ZIP. Each chat, ACP session, `jarvis ask` and voice conversation
   gets its own transcript, which points to the recordings named in the audit log. The export works
