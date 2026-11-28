@@ -380,7 +380,7 @@ falls under its catch-all entry, so a change anywhere still asks for review). Th
 - the policy engine: `policy.py`, `operations.py`, `shortcuts.py`, `ratelimit.py` and the call path
   in `agent.py`;
 - confirmation: `agent.py` and `voice.py`, with `is_yes` in `policy.py`;
-- the audit log: `audit.py`;
+- the audit log: `audit.py`, and its local session transcript and WAV export, `transcripts.py`;
 - the Spotify OAuth flow and token files: `spotify/`, `secretfile.py`;
 - the units and the config that become systemd lines: `services.py`, `config.py`;
 - the system prompt: `prompts/core.md`;

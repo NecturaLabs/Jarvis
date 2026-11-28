@@ -13,6 +13,7 @@ from jarvis.operations import Operation, OperationError, Result, current_request
 from jarvis.policy import OpClass
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 NAME = "voice_record"
@@ -30,10 +31,13 @@ class _Capture:
 class OutputRecorder:
     """Buffer the player input in memory and save it only when told to finish."""
 
-    def __init__(self, folder: Path) -> None:
-        """Keep WAV files in the private folder `folder`."""
+    def __init__(
+        self, folder: Path, *, on_saved: Callable[[Path], None] = lambda _path: None
+    ) -> None:
+        """Keep WAV files in `folder` and report each completed file to `on_saved`."""
         super().__init__()
         self._folder = folder
+        self._on_saved = on_saved
         self._lock = Lock()
         self._capture: _Capture | None = None
         self._saving = False
@@ -80,7 +84,7 @@ class OutputRecorder:
                 return None
             self._saving = True
         try:
-            return self._save(capture)
+            path = self._save(capture)
         except Exception:
             with self._lock:
                 self._capture = capture
@@ -88,6 +92,11 @@ class OutputRecorder:
         finally:
             with self._lock:
                 self._saving = False
+        try:
+            self._on_saved(path)
+        except Exception:
+            log.exception("the recording was saved but could not be recorded in the audit log")
+        return path
 
     def close(self) -> None:
         """Save any outstanding recording on a graceful service shutdown."""

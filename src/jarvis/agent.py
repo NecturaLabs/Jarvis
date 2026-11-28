@@ -1005,6 +1005,7 @@ class Hooks:
     play: Callable[[Sound], None] | None = None
     hushed: Callable[[], bool] = lambda: False
     making_sound: Callable[[], AbstractContextManager[None]] = nullcontext
+    input_recording: str = ""  # basename of a saved microphone WAV, for the local audit only
     condensed: Callable[[str], None] = lambda _note: None
     # Each audit event of the request as it is recorded: a front end that shows no audit log of
     # its own (a coding app) shows the calls made and their results with it.
@@ -1711,6 +1712,7 @@ class Agent:
             text=text,
             origin=origin.value,
             **shown,
+            **({"input_recording": hooks.input_recording} if hooks.input_recording else {}),
             **({"source": "spoken"} if self._spoken else {}),
             **({"source": "note", "note": self._noted} if self._noted else {}),
         )

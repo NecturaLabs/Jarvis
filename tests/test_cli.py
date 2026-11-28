@@ -11,11 +11,13 @@ import threading
 import time
 import tomllib
 import types
+import wave
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, Self, cast
+from zipfile import ZipFile
 
 import numpy as np
 import pytest
@@ -34,7 +36,7 @@ from jarvis.confirmkey import ConfirmKey
 from jarvis.memory import Conversation, Turn
 from jarvis.operations import OperationError
 from jarvis.pc.hearing import Listening
-from jarvis.secretfile import write_private_json
+from jarvis.secretfile import write_private, write_private_json
 from jarvis.services import strata_profile_file
 from jarvis.todos import TodoList
 from jarvis.voice import PcListener
@@ -82,6 +84,173 @@ def test_version_prints_package_version(capsys: pytest.CaptureFixture[str]) -> N
 def test_no_arguments_exits_cleanly(capsys: pytest.CaptureFixture[str]) -> None:
     assert main([]) == 0
     assert "Jarvis is not running" in capsys.readouterr().out
+
+
+def _archive_wav(path: Path) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav:
+        wav.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+        wav.writeframes(b"\0\0")
+    path.chmod(0o600)
+
+
+def test_archive_keeps_chat_and_voice_transcripts_and_both_speakers_recordings(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state = paths.state_dir()
+    audit = AuditLog(state / "audit.jsonl.1", tags={"via": "voice"})
+    audit.record("request", origin="owner_speech", text="First voice request")
+    audit = AuditLog(paths.audit_file(), tags={"via": "voice"})
+    audit.record("reply", text="First voice reply")
+    audit.record("memory_expired")
+    audit.record("request", origin="pc_audio", text="From a call")
+    audit.record("reply", text="", stopped=True)
+    archive = ChatArchive(state / "chat-archive", keep=2)
+    archive.record({"event": "request", "text": "A typed request"})
+    archive.record({"event": "reply", "text": "A typed reply"})
+    archive.save(Conversation(1000))
+    write_private(state / "unrelated.json", "do not include")
+    microphone = home / "microphone"
+    _archive_wav(microphone / "utterance-100.wav")
+    _archive_wav(state / "recordings" / "output-200.wav")
+    destination = home / "archive.zip"
+
+    assert main(["archive", str(destination), "--input-recordings", str(microphone)]) == 0
+
+    assert destination.stat().st_mode & 0o777 == 0o600
+    assert "3 transcripts" in capsys.readouterr().out
+    with ZipFile(destination) as saved:
+        assert "First voice request" in saved.read("transcripts/voice-001.txt").decode()
+        assert "First voice reply" in saved.read("transcripts/voice-001.txt").decode()
+        assert "PC audio: From a call" in saved.read("transcripts/voice-002.txt").decode()
+        assert "[stopped]" in saved.read("transcripts/voice-002.txt").decode()
+        assert "A typed reply" in saved.read(f"transcripts/chat-{archive.current}.txt").decode()
+        assert (
+            saved.read("audio/user/utterance-100.wav")
+            == (microphone / "utterance-100.wav").read_bytes()
+        )
+        assert (
+            saved.read("audio/jarvis/output-200.wav")
+            == (state / "recordings" / "output-200.wav").read_bytes()
+        )
+        assert all("unrelated" not in name for name in saved.namelist())
+
+
+def test_archive_preserves_an_existing_destination(home: Path) -> None:
+    destination = home / "archive.zip"
+    destination.write_text("existing file", encoding="utf-8")
+
+    assert main(["archive", str(destination)]) == 2
+    assert destination.read_text(encoding="utf-8") == "existing file"
+
+
+def test_archive_points_to_available_wavs_from_the_correct_voice_session(home: Path) -> None:
+    state = paths.state_dir()
+    audit = AuditLog(paths.audit_file(), tags={"via": "voice"})
+    audit.record("request", text="Older voice session")
+    audit.record("reply", text="Older reply")
+    audit.record("memory_expired")
+    audit.record("request", text="A new voice request", input_recording="utterance-100.wav")
+    audit.record("reply", text="A new reply")
+    audit.record("recording_saved", speaker="jarvis", filename="output-200.wav")
+    audit.record("recording_saved", speaker="jarvis", filename="output-300.wav")
+    microphone = home / "microphone"
+    _archive_wav(microphone / "utterance-100.wav")
+    _archive_wav(state / "recordings" / "output-200.wav")
+    destination = home / "archive.zip"
+
+    assert main(["archive", str(destination), "--input-recordings", str(microphone)]) == 0
+
+    with ZipFile(destination) as saved:
+        first = saved.read("transcripts/voice-001.txt").decode()
+        second = saved.read("transcripts/voice-002.txt").decode()
+        assert "../audio/" not in first
+        assert "A new voice request\nOwner WAV: ../audio/user/utterance-100.wav" in second
+        assert "Jarvis WAV saved: ../audio/jarvis/output-200.wav" in second
+        assert "output-300.wav" not in second
+
+
+def test_archive_refuses_a_recording_symlink_without_publishing_a_partial_zip(home: Path) -> None:
+    wav = home / "elsewhere.wav"
+    _archive_wav(wav)
+    folder = paths.state_dir() / "recordings"
+    folder.mkdir(parents=True)
+    (folder / "output-100.wav").symlink_to(wav)
+    destination = home / "archive.zip"
+
+    assert main(["archive", str(destination)]) == 1
+
+    assert not destination.exists()
+    assert not list(home.glob(".jarvis-archive-*"))
+
+
+def test_archive_keeps_only_retained_typed_sessions_and_labels_scheduled_requests(
+    home: Path,
+) -> None:
+    state = paths.state_dir()
+    retained = "jarvis-012345abcdef"
+    write_private_json(state / "acp-sessions" / f"{retained}.json", {"model": "normal"})
+    audit = AuditLog(paths.audit_file())
+    audit.record("request", via="acp", session=retained, text="Retained ACP request")
+    audit.record("reply", via="acp", session=retained, text="Retained ACP reply")
+    audit.record("request", via="acp", session="jarvis-111111111111", text="Forgotten ACP request")
+    audit.record("request", via="chat", session="forgotten", text="Forgotten chat request")
+    audit.record("schedule_due", via="voice", action="do")
+    audit.record("memory_expired", via="voice")
+    audit.record("request", via="voice", text="Scheduled task")
+    audit.record("reply", via="voice", text="Scheduled result")
+    audit.record("request", via="voice", text="Ordinary turn")
+    destination = home / "archive.zip"
+
+    assert main(["archive", str(destination)]) == 0
+
+    with ZipFile(destination) as saved:
+        assert set(saved.namelist()) == {
+            "README.txt",
+            f"transcripts/acp-{retained}.txt",
+            "transcripts/voice-001.txt",
+        }
+        assert (
+            "Jarvis: Retained ACP reply" in saved.read(f"transcripts/acp-{retained}.txt").decode()
+        )
+        spoken = saved.read("transcripts/voice-001.txt").decode()
+        assert "Scheduled request: Scheduled task" in spoken
+        assert "Owner: Ordinary turn" in spoken
+
+
+def test_archive_keeps_each_new_ask_in_its_own_transcript(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def build(_cfg: object, *, via: str, session: str = "", **_kwargs: object) -> object:
+        audit = AuditLog(paths.audit_file(), tags={"via": via, "session": session})
+
+        def handle(text: str, _hooks: Hooks) -> str:
+            audit.record("request", text=text)
+            reply = f"Reply to {text}"
+            audit.record("reply", text=reply)
+            return reply
+
+        return SimpleNamespace(agent=SimpleNamespace(handle=handle))
+
+    monkeypatch.setattr(cli, "build", build)
+    AuditLog(paths.audit_file()).record("request", via="ask", text="Older request")
+    assert main(["ask", "First request"]) == 0
+    assert main(["ask", "Second request"]) == 0
+    destination = home / "archive.zip"
+    assert main(["archive", str(destination)]) == 0
+
+    with ZipFile(destination) as saved:
+        assert "Older request" in saved.read("transcripts/ask.txt").decode()
+        typed = [
+            saved.read(name).decode()
+            for name in saved.namelist()
+            if name.startswith("transcripts/ask-")
+        ]
+    assert len(typed) == 2
+    for request in ("First request", "Second request"):
+        (transcript,) = [text for text in typed if f"Owner: {request}" in text]
+        assert f"Jarvis: Reply to {request}" in transcript
+        assert transcript.count("Owner: ") == 1
 
 
 def test_pc_audio_toggle_saves_the_setting(

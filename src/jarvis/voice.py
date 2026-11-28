@@ -15,6 +15,7 @@ import math
 import os
 import queue
 import re
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -479,24 +480,26 @@ def _no_request(heard: Utterance) -> str:
     return f"{heard.speech_s:.2f} s of speech is too little"
 
 
-def keep_for_debugging(samples: NDArray[np.int16]) -> None:
+def keep_for_debugging(samples: NDArray[np.int16]) -> Path | None:
     """Save the owner's utterance when `JARVIS_DEBUG_AUDIO_DIR` is set, readable by the owner only.
 
     Debugging never gets in the way of a request: a folder that cannot be written is logged.
     """
     folder = os.environ.get("JARVIS_DEBUG_AUDIO_DIR", "")
     if not folder:
-        return
+        return None
     path = Path(folder) / f"utterance-{time.time_ns()}.wav"
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
-        with os.fdopen(os.open(path, flags, 0o600), "wb") as handle:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".utterance-") as handle:
             write_wav(handle, samples)
+            handle.flush()
+            os.link(handle.name, path, follow_symlinks=False)
     except OSError as exc:
         log.warning("could not keep the utterance for debugging: %s", exc)
-        return
+        return None
     log.info("saved the utterance to %s", path)
+    return path
 
 
 class VoiceLoop:
@@ -1234,8 +1237,7 @@ class VoiceLoop:
             log.info("the wake word was also in PC audio; treating the request as PC audio")
             origin = Origin.PC_AUDIO
         from_owner = origin is Origin.OWNER_SPEECH
-        if from_owner:  # never keep other people's voices from PC audio
-            keep_for_debugging(samples)
+        recording = keep_for_debugging(samples) if from_owner else None
         if is_phantom(text) or (not text and not from_owner):
             log.info("ignored a phantom or empty transcript: %r", text)
             return
@@ -1246,7 +1248,9 @@ class VoiceLoop:
             return
         log.info("heard (%s): %r", origin.value, text)
         started = time.perf_counter()
-        agent_s = self._think(text, origin)
+        agent_s = self._think(
+            text, origin, input_recording="" if recording is None else recording.name
+        )
         # A reply that said nothing (the owner asked for quiet) opens no follow-up window.
         self._answered = (
             from_owner and not self._cancelled() and not self._muted and not self._said_nothing
@@ -1269,11 +1273,12 @@ class VoiceLoop:
         steered_by: Collection[str] = (),
         *,
         scheduled: bool = False,
+        input_recording: str = "",
     ) -> float:
         """Hand `text` to the agent and speak its reply; return the seconds the agent took.
 
         `steered_by` is what outside text could have steered it before, and `scheduled` says it
-        is a job's (`Agent.handle`).
+        is a job's (`Agent.handle`). `input_recording` names a microphone WAV already saved.
         """
         self.state = State.THINK
         started = time.perf_counter()
@@ -1295,6 +1300,7 @@ class VoiceLoop:
                     making_sound=self._making_sound,
                     hush=self._hush,
                     quiet=self._asked_quiet,
+                    input_recording=input_recording,
                 ),
                 origin,
                 steered_by=steered_by,

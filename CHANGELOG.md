@@ -8,6 +8,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `jarvis archive PATH.zip` exports retained session transcripts and existing Jarvis and microphone
+  recordings to a private ZIP. Each chat, ACP session, `jarvis ask` and voice conversation
+  gets its own transcript, which points to the recordings named in the audit log. The export works
+  while Jarvis is off.
 - `set_persona`: ask Jarvis to talk like someone or some way, in any words, and it keeps that style in every
   reply, across the idle reset and restarts, until you ask it to stop. The style changes only the wording:
   tools, rules and confirmations stay the same. Only your own request can set it, and after Jarvis has read outside text (a search, a page) it asks for your yes first.
@@ -342,7 +346,6 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 ### Fixed
 
 - Jarvis's prompt distinguishes closing one window from stopping the whole program.
-
 - Web search found nothing for hours at a time: SearXNG's default engines answered with a CAPTCHA,
   "too many requests" or "access denied". Jarvis's SearXNG now also asks Bing and Yahoo, which kept
   answering.

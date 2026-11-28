@@ -1,12 +1,15 @@
 """`jarvis --agent`: every command answers an agent with one line of JSON; people get text."""
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from jarvis import cli, cliout, config
 from jarvis.cli import main
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse] - every test starts as a person would
@@ -21,6 +24,24 @@ def _answer(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
     out = capsys.readouterr().out
     assert out.count("\n") == 1, out  # one line, nothing else around it
     return json.loads(out)
+
+
+def test_archive_reports_its_path_and_counts_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dest = tmp_path / "export.zip"
+
+    assert main(["archive", "--agent", str(dest)]) == 0
+
+    assert _answer(capsys) == {
+        "command": "archive",
+        "ok": True,
+        "exit": 0,
+        "path": str(dest),
+        "transcripts": 0,
+        "user_recordings": 0,
+        "jarvis_recordings": 0,
+    }
 
 
 @pytest.mark.parametrize(

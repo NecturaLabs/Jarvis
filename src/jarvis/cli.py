@@ -19,7 +19,7 @@ import termios
 import threading
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO, cast
 from urllib.parse import urlsplit
@@ -40,6 +40,7 @@ from jarvis import (
     services,
     skills,
     t3push,
+    transcripts,
     update,
     voices,
 )
@@ -224,6 +225,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("stop", "stop Jarvis and free the model"),
             ("restart", "restart Jarvis after a config change"),
             ("logs", "follow Jarvis's live log (Ctrl+C to leave)"),
+            ("archive", "export saved transcripts and recordings to a private ZIP"),
             ("unload", "free the model's memory now"),
             ("doctor", "check every part without loading the model"),
             ("update", "check for updates, apply them, or manage automatic updates"),
@@ -458,6 +460,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--enable", action="store_true", help="enable and start the user units")
 
     _setup_options(made)
+    _archive_options(made["archive"])
 
     made["model"].add_argument(
         "mode", nargs="?", choices=modes.MODES, metavar="MODE", help="normal or coding"
@@ -585,6 +588,13 @@ def _settings_options(made: Mapping[str, argparse.ArgumentParser]) -> None:
     )
     made["voice"].add_argument(
         "name", nargs="?", help="the voice's name, as `jarvis voice` lists it"
+    )
+
+
+def _archive_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("destination", type=Path, metavar="ZIP", help="new ZIP file to write")
+    parser.add_argument(
+        "--input-recordings", type=Path, metavar="DIR", help="include existing microphone WAVs"
     )
 
 
@@ -1008,7 +1018,7 @@ def _terminal_confirm_always(question: str) -> bool | Declined:
 def cmd_ask(args: argparse.Namespace) -> int:
     """Answer one typed request and print the reply."""
     try:
-        jarvis = build(_load(), via="ask", units=StrataUnits())
+        jarvis = build(_load(), via="ask", session=secrets.token_hex(8), units=StrataUnits())
     except SetupError as exc:
         print(f"jarvis: {exc}", file=sys.stderr)
         return 2
@@ -1851,7 +1861,12 @@ def cmd_run(_args: argparse.Namespace) -> int:  # ruff: ignore[too-many-locals] 
     request, answer = _transcribers(cfg, lambda: jarvis.hint())  # ruff: ignore[unnecessary-lambda] - `jarvis` is built below
     mic = PausableMic(Microphone(cfg.audio.source, stall_s=MIC_STALL_S))
     listening = _pc_listening(cfg, answer, paused=lambda: mic.paused)
-    recording = OutputRecorder(paths.state_dir() / "recordings")
+    recording = OutputRecorder(
+        paths.state_dir() / "recordings",
+        on_saved=lambda path: jarvis.audit.record(
+            "recording_saved", speaker="jarvis", filename=path.name
+        ),
+    )
     try:
         jarvis = build(
             cfg, via=VOICE_VIA, units=StrataUnits(), listening=listening, recording=recording
@@ -3751,12 +3766,37 @@ def _record_set(
     return 0
 
 
+def cmd_archive(args: argparse.Namespace) -> int:
+    """Export the local archive without starting any service."""
+    debug_dir = os.environ.get("JARVIS_DEBUG_AUDIO_DIR")
+    inputs = args.input_recordings
+    if inputs is None and debug_dir and Path(debug_dir).is_dir():
+        inputs = Path(debug_dir)
+    try:
+        saved = transcripts.export(paths.state_dir(), args.destination, input_recordings=inputs)
+    except FileExistsError:
+        print(f"jarvis: {args.destination} already exists", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"jarvis: could not export the archive: {exc}", file=sys.stderr)
+        return 1
+    args.archive_summary = {"path": str(args.destination), **asdict(saved)}
+    print(
+        cliout.note(
+            f"Saved {saved.transcripts} transcripts, {saved.user_recordings} microphone WAVs and "
+            f"{saved.jarvis_recordings} Jarvis WAVs to {args.destination}"
+        )
+    )
+    return 0
+
+
 COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "help": cmd_help,
     "start": cmd_start,
     "stop": cmd_stop,
     "restart": cmd_restart,
     "logs": cmd_logs,
+    "archive": cmd_archive,
     "setup": cmd_setup,
     "spotify-login": cmd_spotify_login,
     "ask": cmd_ask,
@@ -3880,7 +3920,12 @@ def _agent_plugins(_args: argparse.Namespace) -> dict[str, object]:
     return {"marketplaces": pluginsync.inventory(config.load(), launch_for_update)}
 
 
+def _agent_archive(args: argparse.Namespace) -> dict[str, object]:
+    return cast("dict[str, object]", args.archive_summary)
+
+
 AGENT_FIELDS: dict[str, Callable[[argparse.Namespace], dict[str, object]]] = {
+    "archive": _agent_archive,
     "plugins": _agent_plugins,
     "speed": _agent_speed,
     "voice": _agent_voice,

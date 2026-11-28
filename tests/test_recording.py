@@ -37,6 +37,21 @@ def test_output_recordings_keep_pcm_and_are_private(tmp_path: Path) -> None:
         assert audio.readframes(audio.getnframes()) == pcm
 
 
+def test_the_save_callback_points_to_the_finished_wav_once(tmp_path: Path) -> None:
+    saved: list[Path] = []
+    recording = OutputRecorder(tmp_path / "recordings", on_saved=saved.append)
+    recording.start()
+    recording.feed(b"\x01\x00" * 24, 24000)
+    assert not saved
+
+    recording.close()
+    recording.close()
+
+    (wav,) = saved
+    assert wav.is_file()
+    assert wav.suffix == ".wav"
+
+
 @pytest.mark.parametrize("source", ["pc_audio", "scheduled", "outside"])
 def test_only_a_present_owner_can_control_recording(tmp_path: Path, source: str) -> None:
     recording = OutputRecorder(tmp_path / "recordings")
