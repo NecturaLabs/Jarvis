@@ -6,10 +6,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from jarvis import voice
 from jarvis.audio import FRAME
 from jarvis.config import AudioConfig
 from jarvis.policy import Origin
-from jarvis.voice import PcListener, VoiceLoop
+from jarvis.voice import FRAME_S, PcListener, VoiceLoop
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Generator, Sequence
@@ -96,8 +97,10 @@ class Speaker:
     def hush(self) -> None:
         pass
 
+    chimes: int = 0
+
     def chime(self) -> None:
-        pass
+        self.chimes += 1
 
 
 @dataclass
@@ -146,4 +149,52 @@ def test_wake_word_in_pc_audio_hands_the_request_over_as_pc_audio() -> None:
     runner.join(5)
 
     assert agent.calls == [("skip this song", Origin.PC_AUDIO)]
+    # The owner's choice (2026-11-28): a wake word with its request is simply answered, with
+    # no chime and no canned acknowledgement.
     assert speaker.said == ["Skipped it."]
+    assert speaker.chimes == 0
+
+
+def test_a_bare_wake_word_in_pc_audio_is_answered_aloud_and_the_request_after_it_is_taken() -> None:
+    # "Hey Jarvis", a pause, then the request: before, the pause dropped it without a word.
+    agent = Agent()
+    speaker = Speaker()
+    wait = [SILENCE] * (int(0.3 / FRAME_S) + 1)  # just past the no-speech timeout below
+    script = [SILENCE, SPEECH, *wait, SPEECH, SPEECH, SPEECH, *[SILENCE] * 20]
+    pc_frames = Frames(script, forever=True)
+    loop = VoiceLoop(
+        agent,
+        Frames([], forever=True),
+        NeverWake(),
+        Vad(),
+        speaker,
+        AudioConfig(end_silence_s=0.3, no_speech_timeout_s=0.3),
+        lambda _samples: "skip this song",
+        pc=PcListener(pc_frames, WakeOnce(), Vad()),
+    )
+    stop = threading.Event()
+    runner = threading.Thread(target=loop.run, args=(stop.is_set,), daemon=True)
+    runner.start()
+
+    assert agent.done.wait(5)
+    stop.set()
+    runner.join(5)
+
+    assert agent.calls == [("skip this song", Origin.PC_AUDIO)]
+    (greeting, *rest) = speaker.said
+    assert greeting in voice.PC_GREETINGS
+    assert rest == ["Skipped it."]
+
+
+@dataclass
+class WakeOnce:
+    fired: bool = False
+
+    def heard(self, frame: NDArray[np.int16]) -> bool:
+        if self.fired or not frame.any():
+            return False
+        self.fired = True
+        return True
+
+    def reset(self) -> None:
+        pass

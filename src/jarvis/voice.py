@@ -15,6 +15,7 @@ import math
 import os
 import queue
 import re
+import secrets
 import tempfile
 import threading
 import time
@@ -309,6 +310,23 @@ class State(StrEnum):
 
 # While the loop is in these states, a wake word in PC audio is still noted (it may be the same
 # request heard twice); a PC request is only captured while the loop is idle.
+# Heard in PC audio (the owner's choice, 2026-11-28): a wake word with its request plays no chime
+# and is simply answered; a wake word alone is greeted aloud, never the same way twice running,
+# and the request after it is taken without another wake word. The microphone keeps the chime.
+PC_GREETINGS = (
+    "Yes?",
+    "Hi.",
+    "Hey there.",
+    "I'm listening.",
+    "What's up?",
+    "Go ahead.",
+    "Hey, what's up?",
+    "Yeah?",
+    "Here. What do you need?",
+    "Hi, I'm listening.",
+)
+PC_PROMPT_WAIT_S = 10.0  # the longest the watcher waits for that question to be said
+
 _NOTING_WAKES = frozenset({State.IDLE, State.CAPTURE, State.TRANSCRIBE, State.FOLLOW_UP})
 
 
@@ -451,8 +469,10 @@ class _Window:
 
 @dataclass(frozen=True, slots=True)
 class _PcRequest:
-    samples: NDArray[np.int16]
+    samples: NDArray[np.int16] | None  # None: the wake word came alone, so Jarvis asks
     wake_at: float
+    prompted: bool = False  # taken after Jarvis answered a bare wake word aloud
+    answered: threading.Event | None = None  # set once that answer has been said
 
 
 @dataclass(slots=True)
@@ -557,6 +577,7 @@ class VoiceLoop:
 
     _asking_confirmation = False
     _work_wake_at = 0.0
+    _greeted = ""  # the last greeting a bare wake word in PC audio got
 
     def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - collaborators, each a test seam
         self,
@@ -1669,10 +1690,13 @@ class VoiceLoop:
         wake_at: float,
         *,
         barge: bool = False,
+        prompted: bool = False,
     ) -> None:
         requests = self._requests
         threading.Thread(target=self._prewarm, daemon=True).start()
-        tap, lead = _with_lead(pc.wake, self._pc_tap(pc, frames, requests))
+        tapped = self._pc_tap(pc, frames, requests)
+        # After the question there is no wake word to carry a lead: listen from now.
+        tap, lead = (tapped, 0) if prompted else _with_lead(pc.wake, tapped)
         wake_window_s = 0.0 if lead else self._cfg.no_speech_timeout_s
         heard = capture_utterance(
             tap, pc.vad, self._cfg, lead_frames=lead, wake_window_s=wake_window_s
@@ -1687,6 +1711,10 @@ class VoiceLoop:
         if self._paused():
             log.info("dropped a PC audio request: Jarvis was paused meanwhile")
             return
+        if heard.samples is None and not prompted:
+            log.info("a wake word in PC audio came alone: asking")
+            self._prompt_pc(pc, frames, wake_at)
+            return
         if heard.samples is None or heard.speech_s < MIN_REQUEST_SPEECH_S:
             log.info("dropped a PC audio request: %s", _no_request(heard))
             return
@@ -1696,9 +1724,23 @@ class VoiceLoop:
             log.info("PC-audio request spoke over Jarvis")
             self.hush()
         try:
-            self._pc_heard.put_nowait(_PcRequest(heard.samples, wake_at))
+            self._pc_heard.put_nowait(_PcRequest(heard.samples, wake_at, prompted=prompted))
         except queue.Full:
             log.info("dropped a PC audio request: another one is still waiting")
+
+    def _prompt_pc(
+        self, pc: PcListener, frames: Iterator[NDArray[np.int16]], wake_at: float
+    ) -> None:
+        """Have the loop answer a bare wake word aloud, then take the request said after it."""
+        answered = threading.Event()
+        try:
+            self._pc_heard.put_nowait(_PcRequest(None, wake_at, answered=answered))
+        except queue.Full:
+            return
+        if not answered.wait(PC_PROMPT_WAIT_S):
+            log.info("dropped a PC audio wake word: the loop did not answer it")
+            return
+        self._capture_pc(pc, frames, self._clock(), prompted=True)
 
     def _pc_tap(
         self, pc: PcListener, frames: Iterator[NDArray[np.int16]], requests: int
@@ -1722,8 +1764,19 @@ class VoiceLoop:
             yield frame
 
     def _answer_pc(self, request: _PcRequest) -> None:
-        self.state = State.TRANSCRIBE  # out of IDLE before the chime: no PC capture starts now
-        self._speaker.chime()
+        if request.samples is None:  # a bare wake word: ask, and the watcher takes what follows
+            self.state = State.SPEAK
+            fresh = [line for line in PC_GREETINGS if line != self._greeted]
+            self._greeted = secrets.choice(fresh)
+            try:
+                self._try_say(self._greeted)
+                self._speaker.wait()
+            finally:
+                self.state = State.IDLE
+                if request.answered is not None:
+                    request.answered.set()
+            return
+        self.state = State.TRANSCRIBE  # out of IDLE first: no PC capture starts now
         self._answer(request.samples, Origin.PC_AUDIO, wake_at=request.wake_at)
 
     def run(self, should_stop: Callable[[], bool] = lambda: False) -> None:

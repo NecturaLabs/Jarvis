@@ -8,6 +8,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Called through the PC's audio (a call, a video) rather than your microphone, Jarvis no longer chimes: a
+  request said with the wake word is simply answered, and a wake word said alone gets a varied greeting
+  ("Hey there.", "What's up?", "I'm listening.") before Jarvis takes the request without another wake word,
+  where before it was dropped. Your microphone keeps the chime and nothing else.
 - Voice and chat are one conversation (`[channels] shared`, on by default; ADR 0030): what you say aloud shows in an
   open chat window with Jarvis's spoken reply, each channel knows what you asked the other ("what did I just ask
   you?" works across them), and each still answers the way you asked: aloud for speech, in text for typing.

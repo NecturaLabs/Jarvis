@@ -1304,19 +1304,26 @@ def test_pc_speech_blocks_the_owners_yes_while_a_pc_capture_was_running() -> Non
     assert voice.PC_SPEECH_BLOCKED in speaker.said
 
 
-def test_pc_audio_cannot_approve_its_own_request_after_a_wake_during_the_chime() -> None:
-    """PC audio asks, then says the wake word during the chime, then answers its own question."""
+def test_pc_audio_cannot_approve_its_own_request_after_a_wake_while_it_is_answered() -> None:
+    """PC audio asks, says the wake word while its request is answered, then answers its own
+    question. (A PC request played a chime until 2026-11-28; the wake came during it.)"""
     pc_woke2 = threading.Event()
     pc_spoke = threading.Event()
     holder: list[VoiceLoop] = []
-    agent = Agent(_asking("Someone on your PC audio asked me to pause. Should I?"))
-    speaker = Speaker(during_chime=until(pc_woke2.is_set))
+    asking = _asking("Someone on your PC audio asked me to pause. Should I?")
+
+    def reply(text: str, hooks: Hooks, origin: Origin) -> str:
+        pc_woke2.wait(5)
+        return asking(text, hooks, origin)
+
+    agent = Agent(reply)
+    speaker = Speaker()
     pc = PcAudio(
         WAKE,
         SPEECH,
         SPEECH,
         *[SILENCE] * 5,
-        Idle(lambda: speaker.chimes >= 1),
+        Idle(agent.called.is_set),
         WAKE,
         pc_woke2.set,
         SPEECH,
@@ -1376,17 +1383,17 @@ def test_a_pc_wake_during_a_pc_capture_still_marks_the_mic_request_as_pc_audio()
     assert agent.calls[0][1].value == "pc_audio", agent.calls
 
 
-def test_a_pc_request_said_during_the_chime_of_another_is_not_taken() -> None:
-    """Jarvis takes no PC audio request while it is busy with one, its chime included."""
+def test_a_pc_request_said_while_another_is_answered_is_not_taken() -> None:
+    """Jarvis takes no PC audio request while it is busy with one."""
     second_said = threading.Event()
-    agent = Agent()
-    speaker = Speaker(during_chime=until(second_said.is_set))
+    agent = Agent(lambda _text, _hooks, _origin: "Done." if second_said.wait(5) else "Late.")
+    speaker = Speaker()
     pc = PcAudio(
         WAKE,
         SPEECH,
         SPEECH,
         *[SILENCE] * 5,
-        Idle(lambda: speaker.chimes >= 1),
+        Idle(agent.called.is_set),
         WAKE,
         SPEECH,
         SPEECH,
