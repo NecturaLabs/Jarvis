@@ -592,7 +592,7 @@ def test_jarvis_model_shows_the_mode_and_each_modes_model(
     out = capsys.readouterr().out
     assert "mode: normal (model server not running)" in out
     lines = out.splitlines()
-    normal = lines.index("* normal: Flash, 24,576 tokens of context")
+    normal = lines.index("* normal: Flash, 49,152 tokens of context")
     coding = lines.index("  coding: Flash Coder, 65,536 tokens of context")
     assert lines[normal + 1] == f"    {modes.PURPOSE['normal']}"
     assert lines[coding + 1] == f"    {modes.PURPOSE['coding']}"

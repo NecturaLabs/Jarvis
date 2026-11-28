@@ -29,11 +29,14 @@ class ToolGroup:
 # be the first and only call of its reply, so a detour through `use_tools` would only cost a call.
 CORE = ToolGroup(
     CORE_NAME,
-    "How you answer and go on: answer without a tool, stay quiet, hand off to the chat, keep "
-    "todos, ask the owner, think harder, switch modes, load more tools.",
+    "How you answer and go on: answer without a tool, stay quiet, change how you talk, forget "
+    "the conversation, hand off to the chat, keep todos, ask the owner, think harder, switch "
+    "modes, load more tools.",
     (
         "no_action",
         "stay_quiet",
+        "set_persona",
+        "forget_conversation",
         "chat_hand_off",
         "todo_write",
         "ask_owner",

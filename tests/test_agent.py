@@ -4903,7 +4903,7 @@ def test_the_chat_keeps_full_detail_and_the_voice_condensed_by_default(
 # --- speech, `jarvis ask` and scheduled runs: short-term memory for quick commands ---------------
 
 
-def test_speech_remembers_a_quick_follow_up_and_forgets_after_five_idle_minutes() -> None:
+def test_speech_remembers_a_quick_follow_up_and_forgets_after_fifteen_idle_minutes() -> None:
     limits = Limits.of(AgentConfig(), 24576)
     clock = Clock()
     model = ScriptedModel([step for _ in range(3) for step in (_call("no_action"), _say("Hi."))])
@@ -4912,7 +4912,7 @@ def test_speech_remembers_a_quick_follow_up_and_forgets_after_five_idle_minutes(
     agent.handle("skip this song", NO_CONFIRM)
     clock.now += 60
     agent.handle("and the next one", NO_CONFIRM)
-    clock.now += 5 * 60 + 1
+    clock.now += 15 * 60 + 1
     agent.handle("skip again", NO_CONFIRM)
 
     assert [m["role"] for m in model.seen[2]] == ["system", "user", "assistant", "user"]
@@ -4923,8 +4923,8 @@ def test_speech_keeps_a_short_memory_and_the_chat_keeps_its_own() -> None:
     speech, chat = AgentConfig(), ChatConfig()
 
     assert (speech.memory_tokens, speech.memory_idle_s, speech.memory_detail) == (
-        3000,
-        300.0,
+        8000,
+        900.0,
         "condensed",
     )
     assert (chat.memory_idle_s, chat.memory_detail) == (0.0, "full")

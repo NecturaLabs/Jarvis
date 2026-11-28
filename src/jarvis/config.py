@@ -163,10 +163,11 @@ class AgentConfig(_Section):
     max_seconds: float = Field(default=90.0, ge=10, le=3600)
     reply_tokens: int = Field(default=400, ge=64, le=8192)
     tool_text_chars: int = Field(default=3000, ge=500, le=50000)  # of one tool result
-    # Speech is short-term memory for quick commands: a follow-up comes within a minute or two,
-    # and after five idle minutes an old exchange is likelier to mislead the next command.
-    memory_tokens: int | None = Field(default=3000, ge=0, le=200000)  # unset: what fits
-    memory_idle_s: float = Field(default=300.0, ge=0)  # forget after this long unused; 0 never
+    # Speech is short-term memory: a talk goes on over several requests ("the next ten answers"),
+    # and Strata keeps the remembered start between requests, so more of it costs little. After a
+    # quarter of an hour idle an old exchange is likelier to mislead the next command.
+    memory_tokens: int | None = Field(default=8000, ge=0, le=200000)  # unset: what fits
+    memory_idle_s: float = Field(default=900.0, ge=0)  # forget after this long unused; 0 never
     memory_detail: MemoryDetail = "condensed"
     thinking: Effort = "none"
     thinking_tokens: int = Field(default=192, ge=32, le=8192)
@@ -323,7 +324,7 @@ class StrataConfig(_Section):
     # The run config served in coding mode (`[coding]`); empty: coding mode keeps `run_config`.
     coding_run_config: SafePath = Path()
     port: int = Field(default=8080, ge=1024, le=65535)
-    context: int = Field(default=24576, ge=STRATA_CONTEXT_MIN, le=STRATA_CONTEXT_MAX)
+    context: int = Field(default=49152, ge=STRATA_CONTEXT_MIN, le=STRATA_CONTEXT_MAX)
     # Expert weights kept in VRAM, for an engine that takes a size (`--expert-vram`,
     # `--vram-experts-gb`); the rest stay in RAM.
     expert_vram_gib: float = Field(default=1.0, ge=0, le=64)

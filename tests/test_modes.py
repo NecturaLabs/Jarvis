@@ -482,7 +482,7 @@ def test_a_model_that_was_not_in_memory_is_not_loaded_on_the_way_back(tmp_path: 
 
 
 def test_coding_mode_on_the_same_model_and_context_needs_no_restart(tmp_path: Path) -> None:
-    cfg = _config(tmp_path, own_model=False, context=24576, reasoning_budget_tokens=512)
+    cfg = _config(tmp_path, own_model=False, context=49152, reasoning_budget_tokens=512)
     _installed(cfg)
     units = _Units()
     said: list[str] = []

@@ -48,6 +48,7 @@ from jarvis.operations import (
     request_scope,
     validate_args,
 )
+from jarvis.persona import style_note
 from jarvis.pictures import PICTURE_TOKENS, Picture
 from jarvis.policy import TRUSTED_ORIGINS, Decision, Origin, Verdict, action_hash, decide
 from jarvis.ratelimit import ActionRate
@@ -1221,6 +1222,7 @@ class Agent:
         clock: Callable[[], float] = boot_clock,
         grant_s: float = 600.0,
         names: Sequence[str] = (),
+        style: Callable[[], str] = lambda: "",
         still_waiting_s: float = STILL_WAITING_S,
         limits: Limits | None = None,
         memory_file: Path | None = None,
@@ -1254,6 +1256,9 @@ class Agent:
         self._limits = limits or Limits()
         self._schemas = tokens(json.dumps(registry.tool_schemas(every=True)))
         self._folder = ""  # the note naming the project folder the conversation is about
+        self._style = style  # the owner's passing style (`jarvis.persona`), read at each request
+        self._styled = ""  # the style note the prompt holds now
+        self._forget_next = False  # forget the conversation once this request ends
         self._fixed = tokens(system_prompt) + self._schemas
         self._memory = Conversation(self._memory_budget(), self._limits.memory_idle_s)
         self._memory_file = memory_file
@@ -1334,8 +1339,16 @@ class Agent:
         self._memory.budget = self._memory_budget()
 
     def _instructions(self) -> str:
-        """Return the system prompt with the project folder's note, when there is one."""
-        return self._system + self._folder
+        """Return the system prompt with the project folder's and the style's notes, if any."""
+        return self._system + self._folder + self._styled
+
+    def _follow_style(self) -> None:
+        """Take up the style the owner set since the last request (`jarvis.persona`)."""
+        note = style_note(self._style())
+        if note != self._styled:
+            self._styled = note
+            self._fixed = tokens(self._instructions()) + self._schemas
+            self._memory.budget = self._memory_budget()
 
     def set_thinking(self, section: AgentConfig) -> None:
         """Think as `section` says (its effort, caps and ceiling) from the next request on."""
@@ -1379,6 +1392,10 @@ class Agent:
         self._last_used = 0
         self._audit.record("memory_cleared")
         self._save_memory()
+
+    def forget_after_request(self) -> None:
+        """Forget the conversation, this request with it, once the request in flight ends."""
+        self._forget_next = True
 
     def resume(self, path: Path) -> bool:
         """Continue a conversation saved by `Conversation.save`; return whether it was read.
@@ -1779,6 +1796,7 @@ class Agent:
         if not self._switched:
             self._modes.rest(lambda line: _tell(hooks, line))
         self._follow_mode()
+        self._follow_style()
         started = self._clock()
         self._ends = started + self._limits.max_seconds
         self._shared_pictures = pictures
@@ -1807,6 +1825,9 @@ class Agent:
         seconds = round(self._clock() - turn.started, 2)
         flag = {"stopped": True} if stopped else {}
         self._audit.record("reply", text=reply, seconds=seconds, **flag)
+        if self._forget_next:
+            self._forget_next = False
+            self.forget()  # asked for in this request: it is forgotten with the rest
 
     def _kept_groups(self) -> tuple[str, ...]:
         """Return the tool groups a request continuing the conversation starts with (routed).

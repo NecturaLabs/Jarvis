@@ -51,6 +51,7 @@ from jarvis.pc.volume import VolumeOps
 from jarvis.pc.watch import ScreenWatch
 from jarvis.pc.windows import WindowOps
 from jarvis.pc.workspace import Ledger, workspace_in_use, workspace_path, workspace_problem
+from jarvis.persona import PersonaStore
 from jarvis.pictures import PictureCache
 from jarvis.policy import OpClass, effective_class
 from jarvis.ratelimit import ActionRate
@@ -116,8 +117,9 @@ def quiet_operation() -> Operation:
     return Operation(
         "stay_quiet",
         "Call this alone when the owner wants you to stop talking, be quiet or say nothing more,"
-        " however they put it: the request ends in silence, with no reply. Not for stopping"
-        " music or a program.",
+        " however they put it, or after an action whose result they notice at once went as"
+        " asked: the request ends in silence, with no reply. Not for stopping music or a"
+        " program.",
         {"type": "object", "properties": {}, "additionalProperties": False},
         _stay_quiet,
         side_effect=False,
@@ -198,6 +200,43 @@ def switch_operation(config: Config, *, coding: bool) -> Operation:
         lambda args: Result(f"Switching to {args['mode']} mode.", mode=str(args["mode"])),
         spoken_summary=lambda args: f"switch to {args.get('mode', 'the other')} mode",
     )
+
+
+class Forgetter:
+    """`forget_conversation`, for an agent made after its operations (`attach`)."""
+
+    def __init__(self) -> None:
+        """Forget nothing until an agent is attached."""
+        super().__init__()
+        self._agent: Agent | None = None
+
+    def attach(self, agent: Agent) -> None:
+        """Forget `agent`'s conversation when asked."""
+        self._agent = agent
+
+    def _run(self, _args: dict[str, Any]) -> Result:
+        request = current_request()
+        if request is None or not request.owner_asked or request.scheduled:
+            msg = "Only the owner's own request can clear the conversation."
+            raise OperationError(msg)
+        if self._agent is None:
+            msg = "There is no conversation to clear here."
+            raise OperationError(msg)
+        self._agent.forget_after_request()
+        return Result("The conversation is forgotten once this reply ends. Say so in a few words.")
+
+    def operation(self) -> Operation:
+        """Return `forget_conversation`."""
+        return Operation(
+            "forget_conversation",
+            "Forget this conversation and start fresh, when the owner asks you to clear your "
+            "context or memory of the talk so far, in any words. Long-term settings stay.",
+            {"type": "object", "properties": {}, "additionalProperties": False},
+            self._run,
+            default_class=OpClass.SAFE,
+            side_effect=False,
+            spoken_summary=lambda _args: "forget our conversation",
+        )
 
 
 def no_action_operation(
@@ -789,6 +828,8 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
     coding: bool = False,
     listening: Listening | None = None,
     recording: OutputRecorder | None = None,
+    forgetter: Forgetter | None = None,
+    persona: PersonaStore | None = None,
     browsers: dict[str, browser.Browser] | None = None,
     off: Collection[str] = (),
     watching: ScreenWatch | None = None,
@@ -857,6 +898,8 @@ def channel_registry(  # ruff: ignore[too-many-arguments] - what a channel offer
         *([quiet_operation()] if channel == "voice" else []),
         *([handoff.operation()] if channel == "voice" else []),
         *([recording.operation()] if channel == "voice" and recording is not None else []),
+        (persona or PersonaStore(paths.persona_file())).operation(),
+        (forgetter or Forgetter()).operation(),
         *(
             [
                 todo_operation(todos or TodoList()),
@@ -1031,6 +1074,8 @@ def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; 
     voice_running: Callable[[], bool] = lambda: True,
     listening: Listening | None = None,
     recording: OutputRecorder | None = None,
+    forgetter: Forgetter | None = None,
+    persona: PersonaStore | None = None,
     browsers: dict[str, browser.Browser] | None = None,
     watching: ScreenWatch | None = None,
     todos: TodoList | None = None,
@@ -1062,6 +1107,8 @@ def offered_registry(  # ruff: ignore[too-many-arguments] - what a mode offers; 
         coding=coding,
         listening=listening,
         recording=recording,
+        forgetter=forgetter,
+        persona=persona,
         browsers=browsers,
         watching=watching,
         todos=todos,
@@ -1187,6 +1234,8 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
     shared_profile = mode is not None and not modes.own_model(config)
     todos = TodoList() if via == "chat" else None  # both modes share them: one conversation
     questions = Questions(config.chat.ask_timeout_s) if via == "chat" else None
+    forgetter = Forgetter()  # the agent is made below, after the operations
+    persona = PersonaStore(paths.persona_file())  # one style for every front end
 
     def setup(
         mode: modes.Mode,
@@ -1209,6 +1258,8 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
             voice_running=voice_service_running if elsewhere else lambda: True,
             listening=listening,
             recording=recording,
+            forgetter=forgetter,
+            persona=persona,
             browsers=browsers,
             watching=watch,
             todos=todos,
@@ -1248,6 +1299,7 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
         config.boundaries.classes,
         grant_s=config.audio.pc_audio_grant_s,
         names=(config.persona.name,),
+        style=persona.style,
         limits=normal.limits,
         memory_file=remembered,
         pictures=normal.pictures,
@@ -1255,6 +1307,7 @@ def build(  # ruff: ignore[too-many-arguments, too-many-locals] - what each fron
         actions=action_rate(config),
         modes=agent_modes,
     )
+    forgetter.attach(agent)
     if watch is not None:
         watch.attach(agent)
     return Jarvis(

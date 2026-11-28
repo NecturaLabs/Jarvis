@@ -91,6 +91,11 @@ def acp_sessions_dir() -> Path:
     return state_dir() / "acp-sessions"
 
 
+def persona_file() -> Path:
+    """Return the file that keeps the style the owner asked Jarvis to talk in (`set_persona`)."""
+    return state_dir() / "persona.json"
+
+
 def workspace_ledger_file() -> Path:
     """Return the file that lists the files Jarvis made in its workspace (ADR 0025)."""
     return state_dir() / "workspace-files.json"

@@ -8,6 +8,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `set_persona`: ask Jarvis to talk like someone or some way, in any words, and it keeps that style in every
+  reply, across the idle reset and restarts, until you ask it to stop. The style changes only the wording:
+  tools, rules and confirmations stay the same. Only your own request can set it.
+- `forget_conversation`: asking Jarvis to clear its context or forget the talk so far now does it.
 - `voice_record` lets the owner start and stop a recording of Jarvis's own speech and songs.
   The voice service saves up to five minutes of its playback audio as a private WAV.
 - `sing` takes `times`: a song asked for more than once or on a loop is made once and played that many
@@ -567,6 +571,10 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Changed
 
+- Spoken replies are shorter: an action you notice at once (music, volume, an app) that went as asked
+  ends in silence, and a reply never opens with a preamble, closes with an offer or apologises for a search.
+- The voice conversation keeps 8,000 tokens for 15 idle minutes (was 3,000 for 5), and `strata.context`
+  defaults to 49,152 tokens (was 24,576), which was as fast beside a game and held the same VRAM.
 - Coding mode's prompt says to change files with `write_file` mode `edit`, check a built page with
   `browser_preview`, and never call a file written, changed, opened or tested unless a tool result in the
   request said so.
