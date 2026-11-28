@@ -48,8 +48,15 @@ default (`audio.listen_to_pc`). When it is on:
   passes the frames on but still notes wake words in them. The capture ends as soon as the loop takes another
   request or starts waiting for a yes, so PC speech in the answer window is still counted for the block above,
   and a wake word said meanwhile still marks a microphone request that echoes it as PC audio.
-- **No second capture.** A PC request moves the loop out of IDLE before its chime plays
-  (`VoiceLoop._answer_pc`), so no further PC request is captured while it is handled.
+- **No second capture.** A PC request moves the loop out of IDLE first (`VoiceLoop._answer_pc`), so no
+  further PC request is captured while it is handled.
+- **No chime; a bare wake word is greeted aloud** (owner, 2026-11-28). A wake word in PC audio that came with
+  its request plays no chime and gets no canned acknowledgement: the answer is the response. One that came
+  alone is greeted with a short line (`PC_GREETINGS`: "Yes?", "Hey there.", "What's up?" ...), never the same
+  one twice running, and the next utterance is taken as the request without another wake word, within
+  `audio.no_speech_timeout_s`, still as PC audio with every rule above. A wake word heard in PC audio by
+  mistake (a video) is now greeted aloud, where before a bare one was dropped in silence. The microphone keeps
+  the chime and nothing else.
 
 ### Consequences
 
