@@ -100,8 +100,6 @@ conversation (`/clear`, the idle time, a restart) starts with the core again, an
 from PC audio, which reads no history; what such a request loads is not kept. Groups decide only what is
 offered: every call is still classified as before, so a heard request still gets the same verdicts.
 
-
-
 ## Measurement (2026-11-28)
 
 Keep `all` as the default for voice and chat. The synthetic benchmark on Qwen3.8-Flash-Next
