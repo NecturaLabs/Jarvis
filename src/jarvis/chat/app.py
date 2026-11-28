@@ -38,7 +38,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Input, OptionList, Static
 
-from jarvis.acp import forget_kept
+from jarvis.acpstore import forget_kept
 from jarvis.activity import VOICE_VIA, Shown, call_target, describe, full_text, working_label
 from jarvis.agent import MAX_TRUSTED_PASTE, PICTURES_OFF, Declined, Hooks, NoReason
 from jarvis.chat import commands
@@ -1833,13 +1833,11 @@ class ChatApp(App[None]):
 
     def _forget_command(self, argument: str) -> None:
         archive = self._services.archive
-        if archive is None:
-            self._note("The archive is off (chat.archive_keep is 0).", "warn")
-            return
         if argument != "all":
             self._note(
-                "/forget all deletes every archived conversation and forgets this one too, "
-                "as /clear does, so none of it is archived again."
+                "/forget all deletes every archived conversation and the kept T3 Code sessions, "
+                "and forgets this one too, as /clear does, so none of it is archived again."
+                + ("" if archive is not None else " The archive is off (chat.archive_keep is 0)."),
             )
             return
         if self._busy():
@@ -1856,20 +1854,33 @@ class ChatApp(App[None]):
                 "error",
             )
             return
-        try:
-            gone = archive.forget() + t3
-        except OSError as exc:
-            self._note(
-                f"Couldn't delete the archive ({type(exc).__name__}); nothing was forgotten. "
-                f"Its folder is {archive.folder}.",
-                "error",
-            )
-            return
+        gone = t3
+        if archive is not None:
+            try:
+                gone += archive.forget()
+            except OSError as exc:
+                self._note(
+                    f"Couldn't delete the archive ({type(exc).__name__}); nothing was forgotten. "
+                    f"Its folder is {archive.folder}.",
+                    "error",
+                )
+                return
         self._forget_here()
-        self._note(
-            f"Deleted {gone} archived conversation{'' if gone == 1 else 's'} and forgot this "
-            "one: a new conversation starts."
-        )
+        if archive is None:
+            deleted = (
+                f"Deleted {t3} kept T3 Code session{'' if t3 == 1 else 's'}"
+                if t3
+                else "No T3 Code sessions were kept"
+            )
+            self._note(
+                f"{deleted}, and this conversation is forgotten: a new conversation starts. "
+                "The archive is off (chat.archive_keep is 0)."
+            )
+        else:
+            self._note(
+                f"Deleted {gone} archived conversation{'' if gone == 1 else 's'} and forgot this "
+                "one: a new conversation starts."
+            )
         self._draw_toolbar()
 
     def _format_command(self, argument: str) -> None:

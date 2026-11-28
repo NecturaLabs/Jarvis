@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 from jarvis import (
     __version__,
     acp,
+    acpstore,
     cliout,
     config,
     control,
@@ -1581,7 +1582,7 @@ def _acp_store(keep: int) -> Path | None:
     if keep:
         return store
     try:
-        gone = acp.forget_kept(store)
+        gone = acpstore.forget_kept(store)
     except OSError as exc:
         log.warning("the kept T3 Code sessions could not be deleted: %s", exc)
     else:

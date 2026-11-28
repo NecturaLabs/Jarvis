@@ -49,13 +49,13 @@ import collections
 import json
 import logging
 import queue
-import re
 import secrets
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, TextIO, runtime_checkable
 
+from jarvis.acpstore import SESSION_ID, forget_session, forgotten_at, prune
 from jarvis.activity import call_target, describe
 from jarvis.agent import Declined, Hooks, NoReason
 from jarvis.announce import Announcement
@@ -85,8 +85,6 @@ MAX_STEP = 200  # characters of one call or result line shown as a thought
 STEP_EVENTS = frozenset(
     {"tool_call", "tool_result", "tool_failed", "tool_denied", "tool_rejected", "tool_uncertain"}
 )
-MAX_KEPT = 200  # sessions kept on disk for `session/load`, the newest
-SESSION_ID = re.compile(r"jarvis-[0-9a-f]{12}")  # what `session/new` makes, and nothing else
 MAX_PUSHES = 8  # announcements waiting to be pushed; a hung `t3` loses the oldest
 MAX_PENDING = 50  # announcements a session keeps for its next prompt
 FEED_RETRY_S = 10.0  # how long to wait before looking again for the running Jarvis
@@ -259,6 +257,8 @@ class _Session:
     model: str = ""  # the chosen `ModelChoice.id`, "" when the server offers none
     effort: str = ""
     agents: dict[str, AgentSession] = field(default_factory=dict[str, AgentSession])
+    synced: float = field(default_factory=time.time)  # when its memory last matched the store
+    clearing: threading.Event | None = None  # the latest `/clear` waiting for a stopped request
 
     def keep(self, note: Announcement | Delivery) -> None:
         """Keep this copy of the announcement for the next reply."""
@@ -347,7 +347,7 @@ class AcpServer:
         if feed is not None:
             feed.close()
         for session in list(self._sessions.values()):
-            self._cancel(session)
+            self._cancel(session, NoReason.CLOSED)
         with self._threads_lock:
             threads = list(self._threads)
         for thread in threads:
@@ -563,6 +563,7 @@ class AcpServer:
         if full and all(session.run is not None for session in self._sessions.values()):
             raise _Rpc(INTERNAL_ERROR, f"at most {MAX_SESSIONS} sessions at once, all busy")
         session_id = f"jarvis-{secrets.token_hex(6)}"
+        opened = time.time()
         first = self._models[0] if self._models else None
         model = first.id if first is not None else ""
         folder = _folder(params)
@@ -571,7 +572,7 @@ class AcpServer:
             agent.set_effort(first.effort)
         if full:
             self._evict_idle()
-        session = _Session(session_id, agent, cwd=folder, model=model)
+        session = _Session(session_id, agent, cwd=folder, model=model, synced=opened)
         if first is not None:
             session.effort = first.effort
             session.agents[model] = agent
@@ -599,14 +600,37 @@ class AcpServer:
         self._result(request_id, {"stopReason": "end_turn"})
 
     def _forget(self, session: _Session) -> None:
-        agents = session.agents or {session.model: session.agent}
-        for agent in agents.values():
-            if isinstance(agent, Forgets):
-                agent.forget()
+        self._forget_memory(session)
         if self._store is not None:
             for path in self._store.glob(f"{session.id}.*.memory.json"):
                 path.unlink(missing_ok=True)
         self._audit("acp_cleared", session=session.id)
+
+    @staticmethod
+    def _forget_memory(session: _Session) -> None:
+        """Make every agent of the session forget its conversation; it matches the store again."""
+        agents = session.agents or {session.model: session.agent}
+        for agent in agents.values():
+            if isinstance(agent, Forgets):
+                agent.forget()
+        session.synced = time.time()
+
+    def _answer(
+        self, session: _Session, hooks: Hooks, text: str, pictures: Sequence[Picture]
+    ) -> str:
+        """Return the agent's reply to a request.
+
+        The agent first forgets what it remembers when the kept sessions were forgotten after the
+        session was opened.
+        """
+        if self._forgotten(session):
+            self._forget_memory(session)
+            self._audit("acp_forgotten", session=session.id)
+        return session.agent.handle(text, hooks, pictures=pictures)
+
+    def _forgotten(self, session: _Session) -> bool:
+        """Whether the kept sessions were forgotten after this one's memory was read or cleared."""
+        return self._store is not None and forgotten_at(self._store) > session.synced
 
     def _agent_for(self, session_id: str, model: str, folder: str = "") -> AgentSession:
         """Make a session's agent for `model`, with its kept conversation when there is one.
@@ -635,23 +659,29 @@ class AcpServer:
     def _keep(self, session: _Session) -> None:
         """Write the session's conversations and its mode and effort to the store."""
         store = self._store
-        if store is None:
-            return
-        agents = session.agents or {session.model: session.agent}
-        meta = {"model": session.model, "effort": session.effort, "at": time.time()}
+        if store is None or self._forgotten(session):
+            return  # forgotten since it was read: what it remembers is not written back
         try:
-            store.mkdir(mode=0o700, parents=True, exist_ok=True)
-            for model, agent in agents.items():
-                if isinstance(agent, Kept):
-                    agent.save(self._kept_file(store, session.id, model))
-            write_atomic(store / f"{session.id}.json", json.dumps(meta), mode=0o600)
+            self._write_kept(store, session)
+            if self._forgotten(session):  # forgotten while it wrote: take it back
+                forget_session(store, session.id)
+                return
         except OSError as exc:
             log.warning("the session could not be kept: %s", exc)
             return
         except Exception:  # a reply already given is never failed by keeping it
             log.exception("the session could not be kept")
             return
-        _prune(store)
+        prune(store)
+
+    def _write_kept(self, store: Path, session: _Session) -> None:
+        agents = session.agents or {session.model: session.agent}
+        meta = {"model": session.model, "effort": session.effort, "at": time.time()}
+        store.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for model, agent in agents.items():
+            if isinstance(agent, Kept):
+                agent.save(self._kept_file(store, session.id, model))
+        write_atomic(store / f"{session.id}.json", json.dumps(meta), mode=0o600)
 
     @staticmethod
     def _kept_meta(store: Path, session_id: str) -> dict[str, Any]:
@@ -677,6 +707,7 @@ class AcpServer:
         full = len(self._sessions) >= MAX_SESSIONS
         if full and all(session.run is not None for session in self._sessions.values()):
             raise _Rpc(INTERNAL_ERROR, f"at most {MAX_SESSIONS} sessions at once, all busy")
+        opened = time.time()  # before the kept files are read: a forget after it is seen
         meta = self._kept_meta(self._store, session_id) if self._store is not None else {}
         choice = next((m for m in self._models if m.id == meta.get("model")), None)
         choice = choice or (self._models[0] if self._models else None)
@@ -689,7 +720,9 @@ class AcpServer:
             agent.set_effort(str(effort))
         if full:
             self._evict_idle()
-        session = _Session(session_id, agent, cwd=folder, model=model, effort=str(effort or ""))
+        session = _Session(
+            session_id, agent, cwd=folder, model=model, effort=str(effort or ""), synced=opened
+        )
         if choice is not None:
             session.agents[model] = agent
         self._sessions[session_id] = session
@@ -808,7 +841,7 @@ class AcpServer:
 
     def _close_session(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._session(params)
-        self._cancel(session, close=True)
+        self._cancel(session, NoReason.CLOSED, close=True)
         self._sessions.pop(session.id, None)
         return {}
 
@@ -844,6 +877,19 @@ class AcpServer:
                 self._result(request_id, {"stopReason": "cancelled"})
                 return
             run = session.run
+            clearing = session.clearing
+            if stops is None and clearing is not None and not clearing.is_set():
+                # A `/clear` sent earlier still waits for a stopped request: it goes first.
+                self._spawn(
+                    self._prompt_later,
+                    request_id,
+                    params,
+                    run,
+                    session.stops,
+                    clearing,
+                    name="acp-prompt-wait",
+                )
+                return
             if run is None:
                 run = session.run = _Run()
             elif stops is None and run.cancel.is_set():
@@ -854,6 +900,7 @@ class AcpServer:
                     params,
                     run,
                     session.stops,
+                    None,
                     name="acp-prompt-wait",
                 )
                 return
@@ -897,39 +944,68 @@ class AcpServer:
             return True
         if not _is_clear(blocks):
             return False
+        done = previous = None
         with session.lock:
             run = session.run
             if run is not None:
                 question = run.question
                 if question is not None and not question.answered.is_set() and not run.attached:
                     # A question waits: it is declined and its request stopped, then cleared.
-                    question.answer = Declined(NoReason.CLOSED)
+                    question.answer = Declined(NoReason.CLEARED)
                     question.answered.set()
                     run.cancel.set()
                 elif not run.cancel.is_set():
                     raise _Rpc(BUSY, "a request is still being answered")
-        if run is None:
+                previous, done = session.clearing, threading.Event()
+                session.clearing = done  # a prompt that comes now waits for this clear
+        if run is None or done is None:
             self._clear(request_id, session)
         else:
-            self._spawn(self._clear_later, request_id, session, run, name="acp-clear-wait")
+            self._spawn(
+                self._clear_later, request_id, session, run, done, previous, name="acp-clear-wait"
+            )
         return True
 
-    def _clear_later(self, request_id: str | int, session: _Session, run: _Run) -> None:
-        """Clear once the request that was stopped has ended (or after `CANCEL_WAIT_S`)."""
-        run.finished.wait(CANCEL_WAIT_S)
+    def _clear_later(
+        self,
+        request_id: str | int,
+        session: _Session,
+        run: _Run,
+        done: threading.Event,
+        previous: threading.Event | None,
+    ) -> None:
+        """Clear once the request that was stopped has ended (or after `CANCEL_WAIT_S`).
+
+        A `/clear` before this one goes first, and a prompt sent after it waits for `done`.
+        """
         try:
+            run.finished.wait(CANCEL_WAIT_S)
+            if previous is not None:
+                previous.wait(CANCEL_WAIT_S)
             self._clear(request_id, session)
         except _Rpc as exc:
             self._error(request_id, exc.code, exc.message)
+        finally:
+            done.set()
 
     def _prompt_later(
-        self, request_id: str | int, params: dict[str, Any], old: _Run, stops: int
+        self,
+        request_id: str | int,
+        params: dict[str, Any],
+        old: _Run | None,
+        stops: int,
+        clearing: threading.Event | None,
     ) -> None:
         """Begin a prompt once the request that was stopped has ended (or after `CANCEL_WAIT_S`).
 
-        A stop that came meanwhile (`stops` is how many there were when it waited) stops it too.
+        A `/clear` sent before it (`clearing`) is done first, so the prompt runs on the cleared
+        session. A stop that came meanwhile (`stops` is how many there were when it waited) stops
+        it too.
         """
-        old.finished.wait(CANCEL_WAIT_S)
+        if old is not None:
+            old.finished.wait(CANCEL_WAIT_S)
+        if clearing is not None:
+            clearing.wait(CANCEL_WAIT_S)
         try:
             self._prompt(request_id, params, stops=stops)
         except _Rpc as exc:
@@ -1047,7 +1123,7 @@ class AcpServer:
             recorded=lambda entry: self._step(session, run, entry),
         )
         try:
-            reply = session.agent.handle(text, hooks, pictures=pictures)
+            reply = self._answer(session, hooks, text, pictures)
             self._keep(session)
             if not run.cancel.is_set():
                 self._finish(session, run, reply)
@@ -1117,8 +1193,10 @@ class AcpServer:
         question = _Question(text)
         self._flush(session, run)  # the prompt ends with the question: nothing is written after
         with session.lock:
-            if run.cancel.is_set() or self._closing.is_set():
+            if self._closing.is_set() or session.closed:
                 return Declined(NoReason.CLOSED)
+            if run.cancel.is_set():
+                return Declined(NoReason.STOPPED)
             run.question = question
         self._write(
             session, run, f"{SEPARATOR if run.total else ''}{text}{SEPARATOR}{ASK_HOW}{SEPARATOR}"
@@ -1141,8 +1219,10 @@ class AcpServer:
         if session is not None:
             self._cancel(session)
 
-    def _cancel(self, session: _Session, *, close: bool = False) -> None:
-        """Stop the request in flight; a question it waits on is answered no."""
+    def _cancel(
+        self, session: _Session, reason: NoReason = NoReason.STOPPED, *, close: bool = False
+    ) -> None:
+        """Stop the request in flight; a question it waits on is declined for `reason`."""
         with session.lock, self._write_lock:
             if close:
                 session.closed = True
@@ -1153,34 +1233,8 @@ class AcpServer:
             run.cancel.set()
             question = run.question
             if question is not None and not question.answered.is_set():
-                question.answer = Declined(NoReason.CLOSED)
+                question.answer = Declined(reason)
                 question.answered.set()
-
-
-def forget_kept(store: Path) -> int:
-    """Delete every session kept in `store`; return how many there were (an `OSError` passes)."""
-    if not store.is_dir():
-        return 0
-    gone = 0
-    for path in store.glob("jarvis-*"):
-        if SESSION_ID.fullmatch(path.name.split(".", 1)[0]):
-            gone += path.name.count(".") == 1  # the meta file, one per session
-            path.unlink(missing_ok=True)
-    return gone
-
-
-def _prune(store: Path) -> None:
-    """Keep only the newest `MAX_KEPT` sessions' files in `store`."""
-    try:
-        metas = sorted(
-            (p for p in store.glob("jarvis-*.json") if SESSION_ID.fullmatch(p.stem)),
-            key=lambda p: p.stat().st_mtime,
-        )
-        for old in metas[: max(0, len(metas) - MAX_KEPT)]:
-            for path in store.glob(f"{old.stem}.*"):
-                path.unlink(missing_ok=True)
-    except OSError as exc:
-        log.warning("old sessions could not be removed: %s", exc)
 
 
 def _folder(params: dict[str, Any]) -> str:

@@ -294,6 +294,8 @@ NO_REASON_WORDS = {  # the confirmation's `reason`, as the window says it after 
     "slept": ": the PC slept with the question open",
     "mic_lost": ": the microphone stopped",
     "closed": ": the window closed",
+    "stopped": ": the request was stopped",
+    "cleared": ": the conversation was cleared",
     "failed": ": asking failed",
 }
 

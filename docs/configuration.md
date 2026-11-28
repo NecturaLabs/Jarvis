@@ -202,7 +202,7 @@ The same keys as `[agent]`, with room for longer written work: `max_steps` `30`,
 | `while_working` | `steer` | `steer`, `queue` | What Enter does while a request runs. `steer`: the words join that request as yours, before the model's next call; words it ended before taking run next. `queue`: they wait and run as the next request. Words sent with a picture or with anything pasted into them, however short, are always queued. Esc still stops the request; queued words then run. `/config` changes it. |
 | `response_format` | `concise` | `concise`, `normal`, `verbose` | How the model writes chat replies: briefly, in a sentence or two with at most one short list or table and no headings; as much as the request needs; or explained in full, with headings for a long answer. In each, the first line is the answer, and several readings of one thing (a status, specs) are one bullet each with a bold label. `/format` and `/config` change it, from the next request on. The voice keeps its own short spoken style. |
 | `ask_timeout_s` | `300` | 0 to 86400 | Seconds a question Jarvis puts to you (`ask_owner`, a picker above the input) waits for an answer before it closes, shows a note, and Jarvis goes on with what it judges best, the option it marked as recommended unless something else is better. `0` waits for ever. The countdown shows on the picker and stops while the chat asks you yes or no about an action. `/config` changes it at once, for the next question. See [the todo list and questions](#the-todo-list-and-questions-in-the-chat). |
-| `archive_keep` | `50` | 0 to 1000 | Chat conversations kept in `~/.local/state/jarvis/chat-archive/` (0600) for `/resume` and reading back: each with its full log of requests, steps, results and replies. Older ones are deleted; `0` keeps none, deletes those kept before when the chat opens, and turns `/resume` off; it also keeps no T3 Code sessions (`jarvis acp`). `/forget all` deletes them all, T3 Code's kept sessions too, and forgets the conversation in the window. A conversation is written once it has a request; opening and closing the chat writes no copy of the one it remembers. |
+| `archive_keep` | `50` | 0 to 1000 | Chat conversations kept in `~/.local/state/jarvis/chat-archive/` (0600) for `/resume` and reading back: each with its full log of requests, steps, results and replies. Older ones are deleted; `0` keeps none, deletes those kept before when the chat opens, and turns `/resume` off; it also keeps no T3 Code sessions (`jarvis acp`). `/forget all` deletes them all, T3 Code's kept sessions too, and forgets the conversation in the window; with `0` there is no archive, and it deletes T3 Code's kept sessions (those kept before) and forgets the conversation in the window, and says so. A conversation is written once it has a request; opening and closing the chat writes no copy of the one it remembers. |
 | `history_size` | `1000` | 0 to 100000 | Typed lines kept for ↑ between sessions, with what was pasted into each, 0600 in `~/.local/state/jarvis/chat-history`; `0` keeps none. |
 
 ### The todo list and questions in the chat
@@ -1150,7 +1150,10 @@ newest 200), so when T3 Code starts a new `jarvis acp` for a thread it already h
 restarts, the thread opens again with its conversation (`session/load`) and goes on. `/clear` in the
 thread forgets the conversation and starts it afresh, as in the chat window; Jarvis offers it in T3 Code's
 command list and runs it itself, without the model, also while a question waits (it is declined) or a
-stopped request ends. With `chat.archive_keep = 0` no session is kept.
+stopped request ends; a prompt typed right after it waits for it and goes on from the cleared
+conversation. With `chat.archive_keep = 0` no session is kept. After the chat's `/forget all`, a thread
+that is open in a running `jarvis acp` forgets what it remembered before its next reply and keeps only what
+is said after.
 
 `jarvis acp` can show an announcement (a reminder) as soon as it is
 made, once you turn `push_to_t3` on, by sending it into the newest open T3 Code thread of the project a session was opened in whose

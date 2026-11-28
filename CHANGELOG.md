@@ -370,6 +370,23 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   model answered that it could not clear; `jarvis acp` now offers the command and runs it itself.
   It works while a confirmation question waits too; the question is declined. The kept sessions
   follow the chat's privacy settings: `chat.archive_keep = 0` keeps none, and `/forget all` deletes them.
+- `/forget all` in the chat with `chat.archive_keep = 0` no longer stops at "The archive is off": it deletes the
+  T3 Code sessions kept before (they stayed until the next `jarvis acp` started), forgets the conversation in the
+  window and says what it deleted.
+- A crash while Jarvis wrote a kept T3 Code session left a hidden temp file in `acp-sessions/` for good. Deleting
+  the kept sessions (`/forget all`, `chat.archive_keep = 0`) now removes such files, and pruning old sessions
+  removes those over an hour old.
+- After `/forget all` in the chat, a `jarvis acp` that was already running no longer writes its open T3 Code
+  threads back: each forgets what it remembered before its next reply and keeps only what is said after. A reply
+  that was being written while the files were deleted leaves none behind, and a failed deletion forgets nothing.
+- A prompt typed right after `/clear` in a T3 Code thread, while `/clear` waited for a stopped request to end,
+  could begin first and make `/clear` answer "a request is still being answered". `/clear` now goes first and the
+  prompt runs on the cleared conversation.
+- `/clear` in a T3 Code thread while a confirmation question waits declines it with its own audit reason,
+  `cleared`; the log read `closed`, as if the session had been closed. The action still does not run.
+- A question that waits in a T3 Code thread and is declined because the request was stopped (`session/cancel`) is
+  audited with the reason `stopped`; `closed` is kept for a session or connection that really closed. The action
+  still does not run.
 - The model server no longer starts a load that does not fit in memory. With a game running and 13 to
   20 GB of RAM available, starting Strata read about 39 GB of experts into RAM, the kernel failed page
   allocations and the game's process died. `jarvis start`, `jarvis restart`, a switch of modes, a model

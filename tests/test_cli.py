@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 from strata_fixture import engine_run_config, install_engine
 
-from jarvis import __version__, app, cli, config, models, modes, paths, services
+from jarvis import __version__, acpstore, app, cli, config, models, modes, paths, services
 from jarvis import audio as audio_module
 from jarvis import voice as voice_module
 from jarvis.agent import Hooks
@@ -1324,7 +1324,8 @@ def test_t3_code_sessions_are_not_kept_when_the_chat_keeps_no_archive() -> None:
 
     assert cli._acp_store(50) == kept  # pyright: ignore[reportPrivateUsage] - the store jarvis acp is given
     assert cli._acp_store(0) is None  # pyright: ignore[reportPrivateUsage] - the store jarvis acp is given
-    assert not list(kept.iterdir())  # what an earlier setting kept is deleted
+    # what an earlier setting kept is deleted; only the time it was forgotten stays
+    assert [p.name for p in kept.iterdir()] == [acpstore.FORGOTTEN]
 
 
 def _transcribed(monkeypatch: pytest.MonkeyPatch, text: str) -> list[tuple[str, Path | None]]:

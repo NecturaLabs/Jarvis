@@ -15,7 +15,7 @@ import pytest
 from PIL import Image
 from test_pictures import claimed_png
 
-from jarvis import acp, cli, t3push
+from jarvis import acp, acpstore, cli, t3push
 from jarvis.acp import AcpServer, StartError
 from jarvis.agent import Declined, Hooks
 from jarvis.announce import Announcement
@@ -529,6 +529,36 @@ def test_cancel_while_a_question_waits_answers_it_no_and_frees_the_session() -> 
         assert ran == []  # the yes after a cancel is a new request, not the answer
         assert again["result"]["stopReason"] == "end_turn"
         assert [call[0] for call in client.agent.calls] == ["close notes", "yes"]
+
+
+@pytest.mark.parametrize(
+    ("how", "reason"), [("cancel", "stopped"), ("close", "closed"), ("end", "closed")]
+)
+def test_a_question_declined_by_a_stop_or_a_close_says_which(how: str, reason: str) -> None:
+    ran: list[str] = []
+    seen: list[bool | Declined] = []
+
+    def script(_text: str, hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        seen.append(hooks.confirm("Close the window named Notes?"))
+        if seen[-1] is True:
+            ran.append("closed")
+        return "Left it open."
+
+    with Client(FakeAgent(script)) as client:
+        session = client.start()
+        client.response(client.prompt(session, text("close notes")))
+        if how == "cancel":
+            client.notify("session/cancel", {"sessionId": session})
+        elif how == "close":
+            client.ask("session/close", {"sessionId": session})
+        if how != "end":
+            until(lambda: bool(seen), "the question was declined")
+    # leaving the `with` closes the connection, which declines a question still waiting
+    until(lambda: bool(seen), "the question was declined")
+    (answer,) = seen
+    assert isinstance(answer, Declined)
+    assert answer.reason == reason
+    assert ran == []  # the action never ran
 
 
 def test_a_question_nobody_answers_is_a_no_and_the_next_prompt_is_a_request() -> None:
@@ -1932,7 +1962,7 @@ def test_without_a_store_sessions_are_not_loadable() -> None:
 
 
 def test_only_the_newest_sessions_are_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(acp, "MAX_KEPT", 1)
+    monkeypatch.setattr(acpstore, "MAX_KEPT", 1)
     store = tmp_path / "acp"
     with Client(KeptAgent(), store=store) as client:
         first = client.start()
@@ -2001,6 +2031,33 @@ def test_clear_while_a_question_waits_declines_it_and_then_clears(tmp_path: Path
     assert [call[0] for call in agent.calls] == ["close notes"]
 
 
+def test_clear_declines_a_waiting_question_as_a_cleared_conversation_not_a_closed_session(
+    tmp_path: Path,
+) -> None:
+    seen: list[bool | Declined] = []
+    audited: list[tuple[str, dict[str, object]]] = []
+
+    def script(_text: str, hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        seen.append(hooks.confirm("Close the window named Notes?"))
+        return "Left it open."
+
+    def record(event: str, **fields: object) -> None:
+        audited.append((event, fields))
+
+    agent = ClearableAgent()
+    agent.script = script
+    with Client(agent, store=tmp_path / "acp", record=record) as client:
+        session = client.start()
+        client.response(client.prompt(session, text("close notes")))
+        client.response(client.prompt(session, text("/clear")))
+
+    (answer,) = seen
+    assert isinstance(answer, Declined)
+    assert answer.reason == "cleared"
+    assert not answer
+    assert ("acp_cleared", {"session": session}) in audited
+
+
 def test_clear_after_a_stop_waits_for_the_stopped_request_then_clears(tmp_path: Path) -> None:
     release = threading.Event()
 
@@ -2020,6 +2077,54 @@ def test_clear_after_a_stop_waits_for_the_stopped_request_then_clears(tmp_path: 
         assert client.response(first)["result"]["stopReason"] == "cancelled"
         assert client.response(cleared)["result"]["stopReason"] == "end_turn"
     assert agent.forgotten == 1
+
+
+def test_a_prompt_typed_right_after_clear_runs_on_the_cleared_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = threading.Event()
+    next_began = threading.Event()
+    hold_next = threading.Event()
+    forgotten_when_next_ran: list[int] = []
+    agent = ClearableAgent()
+
+    def script(text_: str, hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        if text_ == "work":
+            release.wait(WAIT_S)
+            return "" if hooks.cancelled() else "done"
+        forgotten_when_next_ran.append(agent.forgotten)
+        next_began.set()
+        assert hold_next.wait(WAIT_S)
+        return "next done"
+
+    agent.script = script
+    cleared = AcpServer._clear  # pyright: ignore[reportPrivateUsage] - give the other prompt its turn
+
+    def clear_after_a_chance_for_the_prompt(
+        server: AcpServer, request_id: str | int, session_: _Session
+    ) -> None:
+        # Both wait for the stopped request. With nothing to order them, the prompt may begin
+        # first; this gives it that chance, so the clear then finds a request running.
+        next_began.wait(1.0)
+        cleared(server, request_id, session_)
+
+    monkeypatch.setattr(AcpServer, "_clear", clear_after_a_chance_for_the_prompt)
+    with Client(agent, store=tmp_path / "acp") as client:
+        session = client.start()
+        first = client.prompt(session, text("work"))
+        client.notify("session/cancel", {"sessionId": session})
+        clear = client.prompt(session, text("/clear"))  # sent first, so it goes first
+        after = client.prompt(session, text("next"))
+        try:
+            release.set()
+            assert client.response(first)["result"]["stopReason"] == "cancelled"
+            assert client.response(clear)["result"]["stopReason"] == "end_turn"
+            hold_next.set()
+            assert client.response(after)["result"]["stopReason"] == "end_turn"
+        finally:
+            release.set()
+            hold_next.set()
+    assert forgotten_when_next_ran == [1]  # it ran on the cleared session
 
 
 def test_clear_with_a_picture_is_a_request_not_the_command(tmp_path: Path) -> None:
@@ -2057,20 +2162,106 @@ def test_a_session_that_cannot_be_kept_still_gives_its_reply(tmp_path: Path) -> 
         assert "reply to hello" in client.said()
 
 
-def test_forget_kept_deletes_only_the_sessions_files(tmp_path: Path) -> None:
+def test_a_session_open_when_the_kept_ones_were_forgotten_starts_afresh_and_keeps_only_that(
+    tmp_path: Path,
+) -> None:
+    agent = ClearableAgent()
     store = tmp_path / "acp"
-    store.mkdir()
-    for name in (
-        "jarvis-0123456789ab.json",
-        "jarvis-0123456789ab.chat.memory.json",
-        "jarvis-ba9876543210.json",
-        "notes.txt",
-    ):
-        (store / name).write_text("{}", encoding="utf-8")
+    with Client(agent, store=store) as client:
+        session = client.start()
+        _finished(client, client.prompt(session, text("secret")))
+        assert any(store.glob(f"{session}.*"))
 
-    assert acp.forget_kept(store) == 2
-    assert [p.name for p in store.iterdir()] == ["notes.txt"]
-    assert acp.forget_kept(tmp_path / "none") == 0
+        acpstore.forget_kept(store)  # the chat's /forget all
+
+        assert not any(store.glob(f"{session}.*"))
+        _finished(client, client.prompt(session, text("again")))
+    assert agent.forgotten == 1  # what it remembered was forgotten before it answered
+    assert agent.turns == [("again", "reply to again")]
+    kept = json.loads((store / f"{session}.chat.memory.json").read_text(encoding="utf-8"))
+    assert kept == [["again", "reply to again"]]
+
+
+def test_a_reply_that_began_before_the_kept_sessions_were_forgotten_is_not_written_back(
+    tmp_path: Path,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow(_text: str, _hooks: Hooks, _pictures: Sequence[Picture]) -> str:
+        started.set()
+        assert release.wait(WAIT_S)
+        return "done"
+
+    agent = ClearableAgent()
+    agent.script = slow
+    store = tmp_path / "acp"
+    with Client(agent, store=store) as client:
+        session = client.start()
+        request = client.prompt(session, text("work"))
+        assert started.wait(WAIT_S)
+
+        acpstore.forget_kept(store)
+        release.set()
+
+        assert client.response(request)["result"]["stopReason"] == "end_turn"
+    assert not any(store.glob(f"{session}.*"))
+
+
+def test_a_session_forgotten_while_it_is_being_written_leaves_nothing_behind(
+    tmp_path: Path,
+) -> None:
+    store = tmp_path / "acp"
+
+    class Forgotten(ClearableAgent):
+        @override
+        def save(self, path: Path) -> None:
+            super().save(path)
+            acpstore.forget_kept(store)  # the owner's /forget all, between two of its files
+
+    with Client(Forgotten(), store=store) as client:
+        session = client.start()
+        _finished(client, client.prompt(session, text("hello")))
+
+    assert not any(store.glob(f"{session}.*"))
+
+
+def test_a_conversation_begun_after_the_kept_sessions_were_forgotten_is_kept(
+    tmp_path: Path,
+) -> None:
+    agent = ClearableAgent()
+    store = tmp_path / "acp"
+    with Client(agent, store=store) as client:
+        old = client.start()
+        _finished(client, client.prompt(old, text("before")))
+        acpstore.forget_kept(store)
+
+        new = client.start()
+        _finished(client, client.prompt(new, text("after")))
+        _finished(client, client.prompt(new, text("and after")))
+
+    assert any(store.glob(f"{new}.*.memory.json"))
+    assert agent.forgotten == 0  # a session begun after the forget has nothing to forget
+    assert not any(store.glob(f"{old}.*"))
+
+
+def test_a_session_loaded_after_the_kept_sessions_were_forgotten_is_not_cleared_again(
+    tmp_path: Path,
+) -> None:
+    store = tmp_path / "acp"
+    with Client(ClearableAgent(), store=store) as first:
+        session = first.start()
+        _finished(first, first.prompt(session, text("one")))
+    acpstore.forget_kept(store)
+    later = ClearableAgent()
+    with Client(later, store=store) as second:
+        second.ask("initialize", {"protocolVersion": 1})
+        second.ask("session/load", {"sessionId": session, "cwd": "/", "mcpServers": []})
+        _finished(second, second.prompt(session, text("two")))
+        _finished(second, second.prompt(session, text("three")))
+    assert later.forgotten == 0
+    kept = json.loads((store / f"{session}.chat.memory.json").read_text(encoding="utf-8"))
+    assert kept == [["two", "reply to two"], ["three", "reply to three"]]
 
 
 def test_each_call_and_its_result_are_shown_as_thoughts_beside_the_reply() -> None:

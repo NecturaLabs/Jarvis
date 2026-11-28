@@ -931,6 +931,8 @@ class NoReason(StrEnum):
     SLEPT = "slept"  # the PC slept with the question open
     MIC_LOST = "mic_lost"  # the microphone stopped or was paused
     CLOSED = "closed"  # the window asking was closed
+    STOPPED = "stopped"  # the request was stopped (ACP `session/cancel`) while asking
+    CLEARED = "cleared"  # the conversation was cleared (`/clear` in a T3 Code thread) while asking
     EARLIER_NO = "earlier_no"  # not asked: an earlier no in the same request
     NOT_HEARD = "not_heard"  # the question was hushed, paused or could not be played
     NO_KEY = "no_key"  # a `strong` action where this channel has no confirm key
