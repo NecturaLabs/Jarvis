@@ -5,8 +5,8 @@ The same requests (`tools/router_bench_cases.json`: a typed set that covers ever
 short spoken-style set, and requests that need two groups or none) go through Jarvis's real
 agent, system prompt and tool schemas, for the voice channel (`[agent]`) and the chat channel
 (`[chat]`), offering every tool and routed. Every tool that would touch the PC, Spotify or the
-web is a stub that records the call and returns a canned result; `calculate`, `about_jarvis`
-and the reminders run for real, in a throwaway state folder. Nothing is played: the voice's
+web is a stub that records the call and returns a canned result; `calculate`, `about_jarvis`,
+the shipped skills and the reminders run for real in a throwaway state folder. The voice's
 speaker is a stand-in that reads the clock, and every case runs with its own empty home and
 XDG folders, so nothing of the owner's is read or written.
 
@@ -346,6 +346,32 @@ def call_matches(want: Want, call: Call) -> bool:
     )
 
 
+def _unmatched(case: Case, calls: Sequence[Call]) -> tuple[list[Call], list[tuple[Want, ...]]]:
+    matched: dict[int, int] = {}
+
+    def assign(call: int, seen: set[int]) -> bool:
+        for entry, alternatives in enumerate(case.expect):
+            if entry in seen or not any(call_matches(want, calls[call]) for want in alternatives):
+                continue
+            seen.add(entry)
+            previous = matched.get(entry)
+            if previous is None or assign(previous, seen):
+                matched[entry] = call
+                return True
+        return False
+
+    # Prefer matching non-optional calls. Move an earlier match to another entry when
+    # that frees the only entry a later call can satisfy.
+    optional = case.allow | CORE_TOOLS
+    for index in sorted(range(len(calls)), key=lambda i: calls[i].tool in optional):
+        assign(index, set())
+    used = set(matched.values())
+    return (
+        [call for index, call in enumerate(calls) if index not in used],
+        [entry for index, entry in enumerate(case.expect) if index not in matched],
+    )
+
+
 def judge(case: Case, calls: Sequence[Call], *, failed: bool = False) -> Outcome:
     """Return how a request went, from the calls that ran.
 
@@ -357,14 +383,7 @@ def judge(case: Case, calls: Sequence[Call], *, failed: bool = False) -> Outcome
     """
     if failed:
         return "error"
-    unmatched = list(calls)
-    missing: list[tuple[Want, ...]] = []
-    for alternatives in case.expect:
-        hit = next((c for c in unmatched if any(call_matches(w, c) for w in alternatives)), None)
-        if hit is None:
-            missing.append(alternatives)
-        else:
-            unmatched.remove(hit)
+    unmatched, missing = _unmatched(case, calls)
     if missing:
         wanted = {w.tool for alternatives in missing for w in alternatives}
         if any(c.tool in wanted for c in unmatched):
@@ -697,14 +716,25 @@ STUBS: dict[str, Stub] = {
     "browser_preview": _say("Opened the preview of index.html: 'Built'.", Origin.WEB),
     "browser_act": _say("Done."),
     "browser_screenshot": _say("Showing the page."),
-    "read_skill": _say("(the skill's text)", Origin.PLUGIN_SKILL),
-    "os_skill": _say("(the guide's text)", Origin.OS_SKILL),
+    "os_skill": _say(
+        "In the general section of the Hyprland configuration, gaps_in sets the space between "
+        "windows and gaps_out sets the space between windows and the edge of the screen.",
+        Origin.OS_SKILL,
+    ),
     "read_jarvis_file": _say("[agent]\nreply_tokens = 400\n", Origin.FILE),
 }
 # What runs as shipped, on a throwaway state folder: pure arithmetic, Jarvis's own facts, the
-# reminders, and the core tools, which are the agent's own words and routing.
+# reminders, the shipped skills and the core tools, which are the agent's own words and routing.
 REAL = frozenset(
-    {"calculate", "about_jarvis", "schedule_add", "schedule_list", "schedule_cancel", *CORE.tools}
+    {
+        "calculate",
+        "about_jarvis",
+        "read_skill",
+        "schedule_add",
+        "schedule_list",
+        "schedule_cancel",
+        *CORE.tools,
+    }
 )
 
 
@@ -789,7 +819,9 @@ def stubbed(registry: Registry, ran: list[Call]) -> Registry:
             ran.append(Call(name, dict(args)))
             return run(args)
 
-        ops.append(replace(op, run=recorded, prepare=None, shortcuts=()))
+        # Shell preparation checks provenance and binds a directory. Its runner is stubbed.
+        prepare = op.prepare if name == "pc_shell" else None
+        ops.append(replace(op, run=recorded, prepare=prepare, shortcuts=()))
     return Registry(ops)
 
 
