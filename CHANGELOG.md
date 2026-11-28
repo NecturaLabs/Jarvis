@@ -362,6 +362,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- The first write to an older shared conversation file preserves each channel's read position, so
+  a chat window keeps only one copy of a voice turn it has already read.
 - A wake word from PC audio leaves your reply playing, including when Jarvis also detects its echo
   in the microphone. Your voice can still interrupt, and a named app can interrupt a PC-audio reply.
 - A reply that falls into repeating one sentence is cut before its third time, aloud and in writing, with a

@@ -37,7 +37,8 @@ shared conversation.
   starts and by one that sat idle, so a window opened later picks up the current talk but not an old one. A chat
   window that reopens its saved conversation starts after the turns that conversation already took (its
   `shared_mark`), and a file that was removed and written again is read from its first turn (each row names
-  the file's `epoch`).
+  the file's `epoch`). Older rows share a fixed file identity, which the first write carries forward
+  so it preserves existing read positions.
 - **The chat window shows spoken requests and their replies** (marked "by voice" and "spoken"), and the calls
   the voice made for them, but never a request heard in PC audio, its work or its reply, as it shows `jarvis ask` and ACP work. Only the voice service and a chat window share;
   `jarvis ask`, ACP sessions and speech tests keep their own conversation.

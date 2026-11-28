@@ -44,6 +44,7 @@ MAX_FIELD = 4000  # the most characters of one request, reply, actions or looked
 FRESH_S = 900.0  # how old a turn an agent still reads
 LOCK_WAIT_S = 2.0  # how long a request waits for the other process to finish with the file
 HOW = {"voice": "said aloud", "chat": "typed in the chat"}  # how the owner made the request
+LEGACY_EPOCH = "legacy"  # keep old rows' identity when the next write adds the epoch field
 
 
 class SharedBusyError(OSError):
@@ -105,7 +106,7 @@ def _parse(line: str) -> SharedTurn | None:
         row.get("private") is True,
         str(row.get("looked", ""))[:MAX_FIELD],
         _channel(row.get("said")),
-        str(row.get("epoch", "")),
+        str(row.get("epoch") or LEGACY_EPOCH),
     )
 
 
@@ -170,7 +171,7 @@ class SharedTurns:
         """
         with self._locked():
             kept = self._read()
-            epoch = kept[-1].epoch if kept and kept[-1].epoch else secrets.token_hex(8)
+            epoch = kept[-1].epoch if kept else secrets.token_hex(8)
             number = max((t.number for t in kept), default=0) + 1
             row = {
                 "number": number,

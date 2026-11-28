@@ -257,6 +257,22 @@ def test_a_reopened_chat_window_does_not_read_the_same_voice_turns_twice(tmp_pat
     assert _texts(model.seen[0]).count(said) == 1
 
 
+def test_the_first_write_to_a_legacy_file_does_not_replay_read_turns(tmp_path: Path) -> None:
+    path, clock = tmp_path / "shared.jsonl", Clock()
+    row = {"number": 1, "channel": "voice", "at": clock(), "request": "first", "reply": "Okay."}
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    chat = SharedTurns(path, "chat", clock=clock)
+    assert [turn.request for turn in chat.take()] == ["first"]
+
+    reopened = SharedTurns(path, "chat", clock=clock)
+    reopened.resume(chat.mark)
+    SharedTurns(path, "voice", clock=clock).publish(_turn("second"))
+
+    assert [turn.request for turn in chat.take()] == ["second"]
+    assert [turn.request for turn in reopened.take()] == ["second"]
+
+
 def test_an_outside_mark_that_is_not_an_origin_name_is_read_as_outside(tmp_path: Path) -> None:
     path = tmp_path / "shared.jsonl"
     row = {"number": 1, "channel": "voice", "at": 1e12, "request": "x", "reply": "y"}
