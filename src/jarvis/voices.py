@@ -99,14 +99,8 @@ def with_voice(config: Config, setting: str) -> Config:
 
 def _owner_only(args: dict[str, Any]) -> dict[str, Any]:
     request = current_request()
-    if (
-        request is None
-        or not request.owner_asked
-        or not request.words.strip()
-        or request.scheduled
-        or request.outside
-    ):
-        msg = "Only the owner's own request without outside text can change the speaking voice."
+    if request is None or not request.owner_asked or not request.words.strip() or request.scheduled:
+        msg = "Only the owner's own request can change the speaking voice."
         raise OperationError(msg)
     return args
 
@@ -152,6 +146,9 @@ class VoiceControl:
             },
             self._run,
             prepare=_owner_only,
+            # The voice is saved in the config, so outside text in the conversation (a page read
+            # just now or remembered) asks for the owner's yes first, like any action.
+            side_effect=True,
             spoken_summary=lambda args: f"switch my speaking voice to {args['voice']}",
         )
 

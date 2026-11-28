@@ -699,7 +699,8 @@ See [the PC-audio ADR](adr/0003-pc-audio-is-not-the-owner.md) for why the last f
 
 You can also ask the voice service to switch to one of the listed voices by name or by describing it.
 The `set_voice` operation changes `audio.voice` and takes effect with the next sentence synthesis.
-It accepts the owner's direct request in a conversation without outside text. Set
+Only your own spoken request can change it, never PC audio or a scheduled request, and after Jarvis
+has read outside text (a search, a page) it asks for your yes first. Set
 `set_voice = "deny"` in `[boundaries.classes]` to turn off voice changes by request.
 
 ### Dictation and meetings

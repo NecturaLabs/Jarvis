@@ -7,6 +7,7 @@ import pytest
 from jarvis import cli, config, voices
 from jarvis.cli import main
 from jarvis.operations import ArgumentError, OperationError, request_scope, validate_args
+from jarvis.policy import Verdict, decide
 
 
 def test_the_catalogue_lists_each_english_voice_once_with_a_description() -> None:
@@ -38,22 +39,46 @@ def test_the_owner_can_select_a_catalogue_voice_by_request() -> None:
     assert control.setting() == "kokoro:bf_emma"
 
 
-@pytest.mark.parametrize("source", ["pc_audio", "scheduled", "memory", "page"])
-def test_a_voice_change_refuses_nonowner_and_outside_context(source: str) -> None:
+@pytest.mark.parametrize("source", ["pc_audio", "scheduled"])
+def test_a_voice_change_refuses_a_request_that_is_not_the_owners(source: str) -> None:
     chosen: list[voices.Voice] = []
     control = voices.VoiceControl("kokoro:bm_george", chosen.append)
     op = control.operation()
 
-    with request_scope(
-        foreign=source == "pc_audio", scheduled=source == "scheduled", words="Use a British voice"
-    ) as request:
-        if source in {"memory", "page"}:
-            request.saw(source)
-        with pytest.raises(OperationError, match="owner"):
-            op.run(validate_args(op, {"voice": "bf_emma"}))
+    with (
+        request_scope(
+            foreign=source == "pc_audio",
+            scheduled=source == "scheduled",
+            words="Use a British voice",
+        ),
+        pytest.raises(OperationError, match="owner"),
+    ):
+        op.run(validate_args(op, {"voice": "bf_emma"}))
 
     assert not chosen
     assert control.setting() == "kokoro:bm_george"
+
+
+@pytest.mark.parametrize("origin", ["memory", "page"])
+def test_after_outside_text_the_owner_can_still_change_the_voice_once_they_say_yes(
+    origin: str,
+) -> None:
+    # Voice memory keeps a web search for 15 minutes; refusing then would turn down every
+    # voice request after it, as set_persona did. The policy asks the owner first instead.
+    chosen: list[voices.Voice] = []
+    control = voices.VoiceControl("kokoro:bm_george", chosen.append)
+    op = control.operation()
+
+    decision = decide(op, op.name, {}, untrusted_in_context=True)
+    with request_scope(foreign=False, words="Use a British voice") as request:
+        request.saw(origin)
+        args = validate_args(op, {"voice": "bf_emma"})
+        assert op.prepare is not None
+        result = op.run(op.prepare(args))
+
+    assert decision.verdict is Verdict.CONFIRM
+    assert result.ok
+    assert [voice.id for voice in chosen] == ["bf_emma"]
 
 
 def test_the_voice_change_only_accepts_catalogue_ids() -> None:
