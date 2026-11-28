@@ -21,6 +21,10 @@ if TYPE_CHECKING:
 TESTS = Path("tests")
 PACKAGE = Path("src/jarvis")
 CI_ONLY = {TESTS / "conftest.py", Path("pyproject.toml"), Path("uv.lock")}
+# Tests that read the whole tree rather than import it: the product rules over the package and the
+# docs check over the docs and the modules they describe. Any change to either selects them.
+TREE_SCANS = (TESTS / "test_product_rules.py", TESTS / "test_check_docs.py")
+DOCS = Path("docs")
 
 
 def _staged_paths(root: Path) -> list[str]:
@@ -112,8 +116,13 @@ def _select_tests(root: Path, changed: set[Path]) -> list[Path]:
     modules = {_module(path) for path in source_paths if path.suffix == ".py"}
     assets = {path for path in source_paths if path.suffix != ".py"}
     helpers = {path for path in changed if path.is_relative_to(TESTS) and path.suffix == ".py"}
+    scans: set[Path] = (
+        {path for path in TREE_SCANS if (root / path).is_file()}
+        if any(path.is_relative_to(PACKAGE) or path.is_relative_to(DOCS) for path in changed)
+        else set()
+    )
     if not (modules or assets or helpers):
-        return []
+        return sorted(scans, key=Path.as_posix)
 
     packages = {".".join(path.parent.parts) for path in assets}
     modules.update(packages)
@@ -141,7 +150,7 @@ def _select_tests(root: Path, changed: set[Path]) -> list[Path]:
             selected.add(path)
 
     selected.update(path for path in _helper_dependents(imports, helpers) if _is_test(path))
-    return sorted(selected, key=Path.as_posix)
+    return sorted(selected | scans, key=Path.as_posix)
 
 
 def main(argv: Sequence[str] | None = None) -> None:

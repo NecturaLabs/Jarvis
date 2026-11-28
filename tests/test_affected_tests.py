@@ -159,3 +159,23 @@ def test_a_packaged_file_selects_the_tests_of_the_modules_that_load_its_folder(
     selected, _ = _select(tmp_path, files, "src/jarvis/prompts/core.md")
 
     assert selected == ["tests/test_router.py", "tests/test_skills.py"]
+
+
+@pytest.mark.parametrize("change", ["src/jarvis/new_tool.py", "docs/architecture.md"])
+def test_a_change_to_the_package_or_docs_selects_the_whole_tree_scans(
+    tmp_path: Path, change: str
+) -> None:
+    # Regression: a new module passed every selected test and failed CI's product-rule and docs
+    # scans, which read the whole tree and import none of it.
+    files = {
+        change: "",
+        "tests/test_product_rules.py": "import ast\n",
+        "tests/test_check_docs.py": "import check_docs\n",
+        "tests/test_other.py": "import os\n",
+    }
+
+    selected, _ = _select(tmp_path, files, change)
+
+    assert "tests/test_product_rules.py" in selected
+    assert "tests/test_check_docs.py" in selected
+    assert "tests/test_other.py" not in selected
