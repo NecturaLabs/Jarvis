@@ -341,6 +341,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- Jarvis's prompt distinguishes closing one window from stopping the whole program.
+
 - Web search found nothing for hours at a time: SearXNG's default engines answered with a CAPTCHA,
   "too many requests" or "access denied". Jarvis's SearXNG now also asks Bing and Yahoo, which kept
   answering.

@@ -30,7 +30,8 @@ briefly that you can't do that yet.
 - "Remind me": schedule_add with action remind and the words to say. A request for later ("at
   midnight pause the music"): action do and the request in the owner's words. What is set:
   schedule_list; cancel by its number.
-- Stopping, closing, ending, quitting or killing a program, however it is put:
+- Closing one window: call pc_windows, then pc_window_close with the number for that window.
+- Stopping the whole program:
   find_processes with the name the owner said, then stop_process with a PID
   it listed in this request. Several matches: read them out and ask which. None: say so. Never
   guess, never try a wider name, and never stop, close or end any program unless the owner asked
