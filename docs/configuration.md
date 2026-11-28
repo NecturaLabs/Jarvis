@@ -876,7 +876,9 @@ With neither set, Jarvis asks you to name a place.
 | `reddit_comments` | `6` | 1 to 10 | Top comments read from a Reddit thread. |
 
 Search needs the SearXNG container running; without it Jarvis says search isn't running, and everything
-else keeps working. To start it:
+else keeps working. Search engines sometimes refuse a PC for a while (a CAPTCHA, a rate limit). When every
+engine refuses, Jarvis says which ones refused and why rather than that nothing was found. SearXNG retries
+them on its own later, so a Jarvis restart does not help. To start it:
 
 ```sh
 (umask 077; printf 'SEARXNG_SECRET=%s\n' "$(openssl rand -hex 32)" > deploy/searxng/.env)

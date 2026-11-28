@@ -372,8 +372,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
   was in the `guides` group, which a request loaded only by chance. The router benchmark read none of 9 expected skills.
 - Jarvis's prompt distinguishes closing one window from stopping the whole program.
 - Web search found nothing for hours at a time: SearXNG's default engines answered with a CAPTCHA,
-  "too many requests" or "access denied". Jarvis's SearXNG now also asks Bing and Yahoo, which kept
-  answering.
+  "too many requests" or "access denied". Jarvis's SearXNG now also asks Bing, Yahoo and Yandex, which kept
+  answering. When every engine refuses anyway, a search says which ones refused and why, instead of
+  "found nothing", so Jarvis can tell you search is blocked for now rather than that the web has no answer.
 - `jarvis doctor` warns when a mode would be decoded greedily: Strata keeps a request with no sampling
   greedy on a run config that drafts with MTP, and coding mode's default `temperature = "model"` sends
   none. Coding runs of 8,000 tokens were decoded that way, the decoding Qwen's card warns repeats itself.

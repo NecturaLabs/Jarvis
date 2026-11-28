@@ -27,8 +27,12 @@ engines:
     disabled: true
   # SearXNG's default web engines (DuckDuckGo, Google, Qwant, Wikidata) answer this PC with a
   # CAPTCHA, "too many requests" or "access denied" after a few hours of use, which left every
-  # search empty; Bing and Yahoo kept answering (checked 2026-11-28).
+  # search empty; Bing and Yahoo kept answering (checked 2026-11-28). Later that day Yahoo
+  # failed with "parsing error" too, so Yandex is a third: it answered every test query. Mojeek and
+  # Startpage are off upstream (proof-of-work CAPTCHAs).
   - name: bing
     disabled: false
   - name: yahoo
+    disabled: false
+  - name: yandex
     disabled: false

@@ -928,6 +928,32 @@ def test_search_failures_are_reported(answer: httpx.Response | Exception) -> Non
         Searxng("http://127.0.0.1:8888", _mock(handler)).search("q", limit=3)
 
 
+def test_an_empty_answer_with_refusing_engines_is_reported_not_taken_as_nothing_found() -> None:
+    # 2026-11-28: the engines refused this PC for half an hour and every search said "found
+    # nothing", so the model and the owner thought the web had no answer.
+    blocked = {
+        "results": [],
+        "unresponsive_engines": [["duckduckgo", "CAPTCHA"], ["google cse", "too many requests"]],
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=blocked)
+
+    search = Searxng("http://127.0.0.1:8888", _mock(handler))
+    with pytest.raises(SearchUnavailableError, match="duckduckgo: CAPTCHA") as caught:
+        search.search("q", limit=3)
+    assert "google cse: too many requests" in str(caught.value)
+    with pytest.raises(SearchUnavailableError, match="duckduckgo"):
+        search.images("q", limit=3)
+
+
+def test_an_empty_answer_with_every_engine_answering_is_nothing_found() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"results": [], "unresponsive_engines": []})
+
+    assert Searxng("http://127.0.0.1:8888", _mock(handler)).search("q", limit=3) == []
+
+
 # --- Open-Meteo -----------------------------------------------------------------------------------
 
 GEO = {

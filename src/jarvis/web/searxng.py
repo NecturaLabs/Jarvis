@@ -4,7 +4,7 @@ import re
 import threading
 from dataclasses import dataclass
 from http import HTTPStatus
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 
 MAX_TITLE = 160
 MAX_SNIPPET = 300
+MAX_REFUSALS = 6
+MAX_REASON = 60
 TIMEOUT = httpx.Timeout(15.0, connect=2.0)
 
 
@@ -57,6 +59,17 @@ def _size(text: object) -> tuple[int, int]:
 
 def _clean(text: object, limit: int) -> str:
     return " ".join(str(text or "").split())[:limit]
+
+
+def _refusals(engines: object) -> str:
+    """Return SearXNG's `unresponsive_engines` ([name, reason] pairs) as "name: reason, ..."."""
+    if not isinstance(engines, list):
+        return ""
+    named: list[str] = []
+    for entry in cast("list[object]", engines)[:MAX_REFUSALS]:
+        parts = cast("list[object]", entry) if isinstance(entry, list) else [entry]
+        named.append(": ".join(_clean(part, MAX_REASON) for part in parts[:2] if part))
+    return ", ".join(name for name in named if name)
 
 
 def _openable(url: str) -> bool:
@@ -115,10 +128,18 @@ class Searxng:
             msg = f"search answered {response.status_code}"
             raise SearchUnavailableError(msg)
         try:
-            return objs(obj(response.json()).get("results"))
+            answer = obj(response.json())
+            results = objs(answer.get("results"))
         except ValueError as exc:
             msg = "search answered something that is not JSON"
             raise SearchUnavailableError(msg) from exc
+        refused = _refusals(answer.get("unresponsive_engines"))
+        if not results and refused:
+            # Engines that refuse this PC (a CAPTCHA, a rate limit) leave an empty answer that is
+            # not "nothing found"; SearXNG keeps them suspended for a while.
+            msg = f"the search engines did not answer ({refused}); try again later"
+            raise SearchUnavailableError(msg)
+        return results
 
     def search(self, query: str, *, limit: int, site: str = "") -> list[Hit]:
         """Return up to `limit` results for `query`, optionally only from `site` (a host and path).
