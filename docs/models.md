@@ -199,8 +199,31 @@ arguments, an answer without the tool it needed (a routed request that never ask
 extra or forbidden call, or a model failure. The first reply is the first sentence handed to the speaker (voice)
 or the first draft of the reply (chat); prompt tokens are the server's own count, where it sends one.
 
-Results: **pending a live run** (not run yet; the owner runs it against Strata). The table will hold, for each of
-the four variants, the model, the date, the request set and the measures above.
+**Results, 2026-11-28.** Qwen3.8-Flash-Next IQ2_XS on Strata 0.2.16 (build 0.1.62) with a
+49,152-token context, using Jarvis at `71061d5`. One run of the 64 published cases (51 typed and
+13 spoken-style), with channel-specific cases counting only for that channel. The spoken-style
+cases were sent as text. The workspace case was scored against the corrected expectation in
+`25353a4` from the saved tool calls and timings.
+
+| Channel | Tools | Right | Wrong tool | Wrong args | Answered without the tool | Extra | Error | Model calls per request | First reply, median / p90 (s) | Done, median / p90 (s) | Prompt tokens per call |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| voice | all | 50/62 (81%) | 3 | 0 | 4 | 5 | 0 | 2.34 | 1.0 / 2.0 | 0.9 / 2.5 | 9,178 |
+| voice | routed | 50/62 (81%) | 4 | 0 | 6 | 2 | 0 | 3.25 | 5.7 / 6.7 | 5.6 / 6.7 | 4,535 |
+| chat | all | 45/58 (78%) | 2 | 1 | 5 | 5 | 0 | 2.61 | 1.0 / 2.6 | 1.1 / 2.9 | 8,462 |
+| chat | routed | 48/58 (83%) | 3 | 0 | 6 | 1 | 0 | 3.38 | 5.5 / 6.9 | 5.7 / 7.7 | 4,292 |
+
+Keep `all` for both channels. Routing cut the mean number of prompt tokens per call. Median
+request time increased in both channels. The first-reply figures measure the first
+text handed to the channel and exclude requests that stayed silent.
+
+The model sometimes omitted a required skill, did extra research, or changed the PC mix during
+a music-volume follow-up. The voice router also chose to stop a whole program when asked to close
+one window. An unrelated request sometimes drew a shell proposal. The benchmark substitutes
+shell results and auto-answers confirmation hooks, so it records model choices and does not
+exercise real confirmation timing or desktop actions. The chat benchmark has no picker UI.
+
+This comparison uses synthetic requests and stubbed tools. The microphone, speaker and the
+recorded speech-test set were outside the run.
 
 ### Experts
 
