@@ -316,6 +316,11 @@ with the reply as written, with the empty think block written back into it, and 
 help: the cache is reused only between calls within one request. llama.cpp gets reuse on such hybrid models from
 saved checkpoints of the recurrent state (`--ctx-checkpoints`), so the fix belongs in the engine.
 
+The local audit log records each completed model call's wall time in `model_call.seconds`.
+When the server supplies them, the same event includes `prompt_tokens`, `completion_tokens`
+and `reused_tokens`. Subtract reused tokens from prompt tokens to see how much of the prompt
+the server had to read again. Older entries record wall time alone.
+
 ### Warm-up
 
 What Jarvis gets ready ahead of a request, so the request does not wait for it:

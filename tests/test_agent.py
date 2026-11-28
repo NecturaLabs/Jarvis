@@ -2084,6 +2084,29 @@ def test_the_audit_log_tells_a_request_from_start_to_reply() -> None:
     assert (call["op"], call["verdict"]) == ("pause", "run")
 
 
+def test_the_audit_log_pairs_model_call_time_with_server_token_counts() -> None:
+    answer = {
+        **_say("Paused."),
+        "usage": {"prompt_tokens": 900, "completion_tokens": 40},
+        "timings": {"cache_n": 0},
+    }
+    model = ScriptedModel([_call("pause"), answer])
+    agent, audit = _agent(model, [Counter().op("pause")])
+
+    agent.handle("pause", NO_CONFIRM)
+
+    first, second = [event for event in audit.events if event["event"] == "model_call"]
+    assert "prompt_tokens" not in first
+    assert "completion_tokens" not in first
+    assert "reused_tokens" not in first
+    assert isinstance(second["seconds"], float)
+    assert (second["prompt_tokens"], second["completion_tokens"], second["reused_tokens"]) == (
+        900,
+        40,
+        0,
+    )
+
+
 def test_the_question_for_a_pc_audio_request_says_who_asked_and_what_yes_allows() -> None:
     asked: list[str] = []
     model = ScriptedModel([_call("next"), _say("Okay.")])

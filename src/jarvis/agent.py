@@ -2100,8 +2100,10 @@ class Agent:
             turn.stopped = True
             return spoken
         turn.answered = turn.wrote = True
-        self._note_usage(message)
-        self._audit.record("model_call", step=step, seconds=round(self._clock() - began, 2))
+        counts = self._note_usage(message)
+        self._audit.record(
+            "model_call", step=step, seconds=round(self._clock() - began, 2), **counts
+        )
         calls = self._unique(objs(message.get("tool_calls")))
         if only_answer:
             calls = [c for c in calls if str(obj(c.get("function")).get("name")) == NO_ACTION][:1]
@@ -2225,17 +2227,26 @@ class Agent:
             return str(arguments.get("reply", ""))
         return ""
 
-    def _note_usage(self, message: Mapping[str, Any]) -> None:
-        """Keep the server's count of what the last call read and wrote, and how fast it wrote."""
+    def _note_usage(self, message: Mapping[str, Any]) -> dict[str, int]:
+        """Update context use and writing rate, and return token counts for the audit."""
         usage = obj(message.get("usage"))
-        read, wrote = usage.get("prompt_tokens"), usage.get("completion_tokens")
-        if isinstance(read, int) and isinstance(wrote, int):
-            self._last_used = read + wrote
         timings = obj(message.get("timings"))
+        counts = {
+            key: count
+            for key, count in (
+                ("prompt_tokens", usage.get("prompt_tokens")),
+                ("completion_tokens", usage.get("completion_tokens")),
+                ("reused_tokens", timings.get("cache_n")),
+            )
+            if isinstance(count, int) and not isinstance(count, bool) and count >= 0
+        }
+        if "prompt_tokens" in counts and "completion_tokens" in counts:
+            self._last_used = counts["prompt_tokens"] + counts["completion_tokens"]
         made, spent = timings.get("predicted_n"), timings.get("predicted_ms")
         if isinstance(made, int) and isinstance(spent, int | float) and spent > 0:
             self._written[0] += made
             self._written[1] += float(spent)
+        return counts
 
     def last_rate(self) -> float | None:
         """Return how fast the model wrote in the last request, in tokens per second."""

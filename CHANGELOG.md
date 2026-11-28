@@ -8,6 +8,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- Model-call audit events record prompt, completion and reused token counts when the server supplies
+  them, alongside the time each call took.
 - Called through the PC's audio (a call, a video) rather than your microphone, Jarvis no longer chimes: a
   request said with the wake word is simply answered, and a wake word said alone gets a varied greeting
   ("Hey there.", "What's up?", "I'm listening.") before Jarvis takes the request without another wake word,
