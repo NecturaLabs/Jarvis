@@ -17,6 +17,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 - `set_persona`: ask Jarvis to talk like someone or some way, in any words, and it keeps that style in every
   reply, across the idle reset and restarts, until you ask it to stop. The style changes only the wording:
   tools, rules and confirmations stay the same. Only your own request can set it, and after Jarvis has read outside text (a search, a page) it asks for your yes first.
+- The 28 English Kokoro voices now speak at the same level: they were up to 8 dB apart, and each gets a fixed
+  gain measured over six sentences (`tools/voice_loudness.py`), for speech and songs alike.
+- `jarvis voice female` and `jarvis voice male` pick the default of each, `af_heart` and `am_michael`.
 - `jarvis voice` lists the 28 English Kokoro voices with their accent, Kokoro's own grade and a few words on
   how each sounds, and `jarvis voice af_heart` switches to one and restarts the voice service.
 - `forget_conversation`: asking Jarvis to clear its context or forget the talk so far now does it.

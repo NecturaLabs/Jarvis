@@ -113,3 +113,32 @@ def test_voice_answers_an_agent_with_the_catalogue(capsys: pytest.CaptureFixture
     assert answer["voice"] == "kokoro:bm_george"
     assert len(answer["voices"]) == 28
     assert [v["id"] for v in answer["voices"] if v["current"]] == ["bm_george"]
+
+
+def test_each_voice_has_a_level_correction_within_a_few_decibels() -> None:
+    gains = [v.gain_db for v in voices.VOICES]
+
+    assert all(-6.0 <= g <= 6.0 for g in gains)
+    assert any(g > 0 for g in gains)
+    assert any(g < 0 for g in gains)
+
+
+def test_asking_for_a_female_or_male_voice_picks_the_default_of_each() -> None:
+    assert voices.find("female") == voices.find(voices.DEFAULT_FEMALE)
+    assert voices.find("male") == voices.find(voices.DEFAULT_MALE)
+    assert (voices.DEFAULT_FEMALE, voices.DEFAULT_MALE) == ("af_heart", "am_michael")
+
+
+def test_voice_switches_to_the_male_default_and_marks_the_defaults(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config.save(config.Config())
+    monkeypatch.setattr(cli, "_restart_if_running", lambda: None)
+
+    assert main(["voice"]) == 0
+    listing = capsys.readouterr().out
+    assert main(["voice", "male"]) == 0
+
+    assert config.load().audio.voice == "kokoro:am_michael"
+    heart = next(line for line in listing.splitlines() if "af_heart" in line)
+    assert "female default" in heart

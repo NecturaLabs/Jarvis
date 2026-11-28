@@ -587,7 +587,9 @@ def _settings_options(made: Mapping[str, argparse.ArgumentParser]) -> None:
         help=f"{SPEEDS}; 1 is the voice's own pace",
     )
     made["voice"].add_argument(
-        "name", nargs="?", help="the voice's name, as `jarvis voice` lists it"
+        "name",
+        nargs="?",
+        help="the voice's name, as `jarvis voice` lists it; female or male for the default of each",
     )
 
 
@@ -3461,8 +3463,10 @@ def cmd_voice(args: argparse.Namespace) -> int:
     print(f"voice: {current.removeprefix(voices.KOKORO)}")
     for v in voices.VOICES:
         mark = "*" if v.setting == current else " "
-        print(f"{mark} {v.id:<12} {v.accent:<8} {v.gender:<6} {v.grade:<3} {v.about}")
-    print("Grades are Kokoro's own; `jarvis voice <name>` switches.")
+        default = {voices.DEFAULT_FEMALE: "; female default", voices.DEFAULT_MALE: "; male default"}
+        about = v.about + default.get(v.id, "")
+        print(f"{mark} {v.id:<12} {v.accent:<8} {v.gender:<6} {v.grade:<3} {about}")
+    print("Grades are Kokoro's own; `jarvis voice <name>`, `female` or `male` switches.")
     return 0
 
 

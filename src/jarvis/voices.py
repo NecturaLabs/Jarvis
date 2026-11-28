@@ -5,6 +5,10 @@ one (`kokoro.py`), so only those 28 voices of Kokoro's voice file are listed; th
 voices for other languages and sound wrong with English sounds. The grade is the voice's overall
 grade in Kokoro's own VOICES.md (how much and how good its training audio was); the description
 says what it sounds like, from listeners' write-ups.
+
+The voices speak at levels up to 8 dB apart, so each has a gain that brings its speech to the
+median of all 28 (`tools/voice_loudness.py` measures them: the RMS of the 20 ms frames within
+40 dB of the loudest, over six sentences, at speed 1.0, measured 2026-11-28 on voices-v1.0.bin).
 """
 
 from dataclasses import dataclass
@@ -19,17 +23,20 @@ if TYPE_CHECKING:
 
 KOKORO = "kokoro:"
 SET_VOICE = "set_voice"
+DEFAULT_FEMALE = "af_heart"  # the voice "female" picks
+DEFAULT_MALE = "am_michael"  # the voice "male" picks
 
 
 @dataclass(frozen=True, slots=True)
 class Voice:
-    """One Kokoro voice: its id, accent, gender, overall grade and what it sounds like."""
+    """One Kokoro voice: its id, accent, gender, grade, what it sounds like and its gain in dB."""
 
     id: str
     accent: str
     gender: str
     grade: str
     about: str
+    gain_db: float
 
     @property
     def setting(self) -> str:
@@ -37,47 +44,51 @@ class Voice:
         return KOKORO + self.id
 
 
-def _v(voice_id: str, grade: str, about: str) -> Voice:
+def _v(voice_id: str, grade: str, gain_db: float, about: str) -> Voice:
     accent = {"a": "American", "b": "British"}[voice_id[0]]
     gender = {"f": "female", "m": "male"}[voice_id[1]]
-    return Voice(voice_id, accent, gender, grade, about)
+    return Voice(voice_id, accent, gender, grade, about, gain_db)
 
 
 VOICES: tuple[Voice, ...] = (
-    _v("af_heart", "A", "warm and expressive, steady pace; the best-graded voice"),
-    _v("af_bella", "A-", "warm and inviting, lively"),
-    _v("af_nicole", "B-", "calm and close, slow with long pauses"),
-    _v("af_aoede", "C+", "soft and melodic"),
-    _v("af_kore", "C+", "bright, youthful and energetic"),
-    _v("af_sarah", "C+", "friendly and easygoing"),
-    _v("af_alloy", "C", "even and neutral"),
-    _v("af_nova", "C", "high-energy, like a broadcaster"),
-    _v("af_sky", "C-", "airy, lower than the other women"),
-    _v("af_jessica", "D", "crisp and professional, reads fast"),
-    _v("af_river", "D", "calm and measured, reads fast"),
-    _v("am_michael", "C+", "polished and professional; the best-graded American man"),
-    _v("am_fenrir", "C+", "forceful and firm"),
-    _v("am_puck", "C+", "playful and light"),
-    _v("am_echo", "D", "even and plain, darker"),
-    _v("am_eric", "D", "warm storyteller, the highest man's voice"),
-    _v("am_liam", "D", "young and laid-back"),
-    _v("am_onyx", "D", "very deep and theatrical"),
-    _v("am_adam", "F+", "deep and commanding; the lowest-graded voice"),
-    _v("am_santa", "D-", "deep and jolly, a novelty"),
-    _v("bf_emma", "B-", "warm narrator, bright; the best British voice"),
-    _v("bf_isabella", "C", "youthful and animated"),
-    _v("bf_alice", "D", "refined classic British, much pitch movement"),
-    _v("bf_lily", "D", "gentle and airy"),
-    _v("bm_george", "C", "mature and authoritative; Jarvis's default"),
-    _v("bm_fable", "C", "storyteller"),
-    _v("bm_lewis", "D+", "natural and conversational"),
-    _v("bm_daniel", "D", "businesslike and clear, flat pitch"),
+    _v("af_heart", "A", +1.6, "warm and expressive, steady pace; the best-graded voice"),
+    _v("af_bella", "A-", +0.4, "warm and inviting, lively"),
+    _v("af_nicole", "B-", +0.1, "calm and close, slow with long pauses"),
+    _v("af_aoede", "C+", -3.4, "soft and melodic"),
+    _v("af_kore", "C+", -2.5, "bright, youthful and energetic"),
+    _v("af_sarah", "C+", -0.4, "friendly and easygoing"),
+    _v("af_alloy", "C", -0.1, "even and neutral"),
+    _v("af_nova", "C", +4.9, "high-energy, like a broadcaster"),
+    _v("af_sky", "C-", +1.8, "airy, lower than the other women"),
+    _v("af_jessica", "D", +1.0, "crisp and professional, reads fast"),
+    _v("af_river", "D", +0.4, "calm and measured, reads fast"),
+    _v("am_michael", "C+", +2.5, "polished and professional; the best-graded American man"),
+    _v("am_fenrir", "C+", -1.6, "forceful and firm"),
+    _v("am_puck", "C+", -2.6, "playful and light"),
+    _v("am_echo", "D", +0.2, "even and plain, darker"),
+    _v("am_eric", "D", -0.3, "warm storyteller, the highest man's voice"),
+    _v("am_liam", "D", +0.4, "young and laid-back"),
+    _v("am_onyx", "D", +0.6, "very deep and theatrical"),
+    _v("am_adam", "F+", -2.8, "deep and commanding; the lowest-graded voice"),
+    _v("am_santa", "D-", +1.5, "deep and jolly, a novelty"),
+    _v("bf_emma", "B-", -0.4, "warm narrator, bright; the best British voice"),
+    _v("bf_isabella", "C", -3.0, "youthful and animated"),
+    _v("bf_alice", "D", -0.6, "refined classic British, much pitch movement"),
+    _v("bf_lily", "D", -0.1, "gentle and airy"),
+    _v("bm_george", "C", -0.3, "mature and authoritative; Jarvis's default"),
+    _v("bm_fable", "C", +2.5, "storyteller"),
+    _v("bm_lewis", "D+", +2.2, "natural and conversational"),
+    _v("bm_daniel", "D", -0.1, "businesslike and clear, flat pitch"),
 )
 
 
 def find(name: str) -> Voice | None:
-    """Return the listed voice called `name` (with or without `kokoro:`), else None."""
+    """Return the listed voice called `name` (with or without `kokoro:`), else None.
+
+    "female" and "male" are the default voice of each.
+    """
     wanted = name.strip().lower().removeprefix(KOKORO)
+    wanted = {"female": DEFAULT_FEMALE, "male": DEFAULT_MALE}.get(wanted, wanted)
     return next((v for v in VOICES if v.id == wanted), None)
 
 
@@ -143,3 +154,9 @@ class VoiceControl:
             prepare=_owner_only,
             spoken_summary=lambda args: f"switch my speaking voice to {args['voice']}",
         )
+
+
+def gain(voice_id: str) -> float:
+    """Return the factor that brings `voice_id`'s speech to the common level (1 if unlisted)."""
+    found = find(voice_id)
+    return 1.0 if found is None else 10 ** (found.gain_db / 20)

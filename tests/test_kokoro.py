@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, override
 import numpy as np
 import pytest
 
-from jarvis import kokoro
+from jarvis import kokoro, voices
 from jarvis.kokoro import (
     MAX_PHONEMES,
     MAX_THREADS,
@@ -114,7 +114,7 @@ def test_a_file_that_is_not_a_kokoro_model_is_refused_when_it_loads(
 def test_synthesis_pads_the_tokens_picks_the_style_by_length_and_joins_with_gaps(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    voice, session = _kokoro(tmp_path, monkeypatch)
+    voice, session = _kokoro(tmp_path, monkeypatch, voice="bf_uncatalogued")  # no level change
     _say(monkeypatch, ["ab", "ba b"])
 
     pcm = voice.synthesize("x")
@@ -326,3 +326,30 @@ def test_the_model_file_is_loaded_once_for_every_voice_that_uses_it(
         Kokoro(tmp_path / "shared.onnx", voices, "a")
 
     assert loads == [str(tmp_path / "shared.onnx")]
+
+
+@pytest.mark.parametrize("name", ["af_nova", "af_aoede"])
+def test_each_catalogued_voice_is_brought_to_the_same_speech_level(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    voice, _session = _kokoro(tmp_path, monkeypatch, voice=name)
+    _say(monkeypatch, ["ab"])
+    found = voices.find(name)
+    assert found is not None
+    gain = 10 ** (found.gain_db / 20)
+
+    pcm = voice.synthesize("x")
+    voice._session = _LoudTimedSession({"input_ids": "", "style": "", "speed": ""})  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue] - the stand-in model
+    (chunk,) = voice.timed("x")
+
+    assert pcm[0] == int(min(0.5 * gain, 1.0) * 32767)
+    assert chunk.audio[0] == pytest.approx(0.5 * gain)  # the singer starts from the same level
+
+
+class _LoudTimedSession(_TimedSession):
+    """A timed model whose speech is all at 0.5."""
+
+    @override
+    def run(self, _outputs: None, feed: dict[str, Any]) -> list[Any]:
+        audio, steps = super().run(_outputs, feed)
+        return [np.full_like(audio, 0.5), steps]

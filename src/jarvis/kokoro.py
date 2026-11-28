@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 import onnxruntime as ort
 
-from jarvis import espeak
+from jarvis import espeak, voices
 from jarvis.phonemes import trained_phonemes
 
 if TYPE_CHECKING:
@@ -142,6 +142,7 @@ class Kokoro:
                 msg = f"unknown Kokoro voice {voice!r}; available: {', '.join(sorted(pack.files))}"
                 raise ValueError(msg)
             self._style = np.asarray(pack[voice], dtype=np.float32)
+        self._gain = voices.gain(voice)  # each listed voice to the same speech level
         self._british = voice.startswith("b")
         self._espeak_voice = "en-gb-x-rp" if self._british else "en-us"
         self._speed = speed
@@ -179,7 +180,7 @@ class Kokoro:
             if len(outputs) < 2:  # ruff: ignore[magic-value-comparison] - audio, then durations
                 msg = "this Kokoro model gives no duration per phoneme"
                 raise ValueError(msg)
-            audio = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
+            audio = np.asarray(outputs[0], dtype=np.float32).reshape(-1) * self._gain
             steps = np.asarray(outputs[1], dtype=np.int64).reshape(-1)
             if steps.size != len(ids) + 2:  # the two pads around the ids
                 msg = f"Kokoro gave {steps.size} durations for {len(ids) + 2} tokens"
@@ -202,5 +203,5 @@ class Kokoro:
             parts.extend((audio, np.zeros(int(SAMPLE_RATE * 0.12), dtype=np.float32)))
         if not parts:
             return np.zeros(0, dtype=np.int16)
-        audio = np.clip(np.concatenate(parts), -1.0, 1.0)
+        audio = np.clip(np.concatenate(parts) * self._gain, -1.0, 1.0)
         return (audio * 32767).astype(np.int16)

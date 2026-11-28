@@ -6,6 +6,7 @@ a file here is not listed.
 | Script | What it does | Run by |
 |---|---|---|
 | `check.sh` | Everything CI runs, in one command, with audio cut. Exits 1 on a failure and 3 when a check could not run: the advisories check without PyPI, the workflow check without `actionlint`. | you, for CI-equivalent checks |
+| `voice_loudness.py` | Measures how loud each catalogued Kokoro voice speaks before and after its gain in `src/jarvis/voices.py`, and the gain that would bring it to the median. Needs the Kokoro files; makes no sound. | you |
 | `affected_tests.py` | Lists tests changed directly or selected through imports and packaged data references. Takes changed paths or `--staged`. | `hooks/`, you |
 | `check_licences.py` | Every installed package's licence is compatible with GPL-3.0-or-later, and `uv.lock` resolves only from PyPI. | `check.sh`, CI |
 | `check_docs.py` | Every doc is in `docs/README.md`, every ADR in `docs/adr/README.md`, every module in `docs/architecture.md`, every script here; links and backticked paths resolve; skills match their `.agents/` copy. | `check.sh`, CI |
