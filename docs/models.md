@@ -295,6 +295,9 @@ What Jarvis gets ready ahead of a request, so the request does not wait for it:
   `prompt_primed`, with the seconds it took. A load at the wake word is not followed by one: the request
   that started it reads the prompt itself. This is the only time Jarvis generates without a request, once
   per load; health checks still never generate.
+  On 2026-11-28, an isolated Strata run with the routed voice prompt and fixture tools read 3,904
+  prompt tokens in 3,342 ms to prime the model. Its first request reused 3,890 of 3,914 prompt tokens
+  and read the remaining 24 in 197 ms. The test called the startup warm-up path with audio off.
 - **The prompt on a step that may only answer.** After a repeated call, and on a request's last step, the
   model is made to call `no_action`, whose `reply` carries the answer, and the tool list stays in the
   request. Strata writes the tool list into the prompt, so a step sent with no tools had a prompt that no
