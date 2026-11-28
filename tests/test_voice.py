@@ -1077,7 +1077,7 @@ def test_pc_requests_too_soon_after_the_last_one_are_dropped(
 ) -> None:
     agent = Agent()
     clock = Clock()
-    pc_request = [WAKE, SPEECH, SPEECH, *[SILENCE] * 5]
+    pc_request = [WAKE, SPEECH, SPEECH, *[SILENCE] * 16]
     pc = PcAudio(
         *pc_request,
         Idle(lambda: len(agent.calls) == 1 and holder[0].state is State.IDLE),
@@ -1519,8 +1519,32 @@ class Playing(Speaker):
     ("settings", "accepts"),
     [({}, True), ({"pc_audio_apps": []}, False), ({"barge_in": False}, False)],
 )
-def test_only_selected_pc_apps_can_interrupt_a_spoken_reply(
+def test_only_selected_pc_apps_can_interrupt_a_reply_to_pc_audio(
     settings: dict[str, object], accepts: bool
+) -> None:
+    speaker = Playing()
+    agent = Agent(lambda _text, _hooks, _origin: "Here's the answer.")
+    pc_request = [WAKE, SPEECH, SPEECH, *[SILENCE] * 16]
+    pc = PcAudio(
+        *pc_request,
+        until(lambda: speaker.busy),
+        *pc_request,
+        *[SILENCE] * 16,
+        speaker.release.set,
+    )
+    calls = 2 if accepts else 1
+    mic = Mic(Idle(lambda: pc.ended.is_set() and len(agent.calls) == calls), *[SILENCE] * 5)
+    cfg = CFG.model_copy(update={"pc_audio_cooldown_s": 0, **settings})
+
+    _run(_loop(agent, mic, speaker, pc=pc, cfg=cfg))
+
+    assert [origin for _text, origin in agent.calls] == [Origin.PC_AUDIO] * calls
+    assert speaker.hushed == int(accepts)
+
+
+@pytest.mark.parametrize("settings", [{}, {"pc_audio_apps": []}])
+def test_a_wake_word_in_pc_audio_never_interrupts_a_reply_to_the_owner(
+    settings: dict[str, object],
 ) -> None:
     speaker = Playing()
     agent = Agent(lambda _text, _hooks, _origin: "Here's the answer.")
@@ -1531,9 +1555,39 @@ def test_only_selected_pc_apps_can_interrupt_a_spoken_reply(
 
     _run(_loop(agent, mic, speaker, pc=pc, cfg=CFG.model_copy(update=settings)))
 
-    origins = [origin for _text, origin in agent.calls]
-    assert origins == ([Origin.OWNER_SPEECH, Origin.PC_AUDIO] if accepts else [Origin.OWNER_SPEECH])
-    assert speaker.hushed == int(accepts)
+    assert [origin for _text, origin in agent.calls] == [Origin.OWNER_SPEECH]
+    assert speaker.hushed == 0
+
+
+@pytest.mark.parametrize("pc_first", [True, False])
+def test_a_pc_wake_echo_in_the_mic_does_not_interrupt_an_owner_reply(pc_first: bool) -> None:
+    speaker = Playing()
+    agent = Agent()
+    pc_woke, mic_woke = threading.Event(), threading.Event()
+
+    class MicWake(Wake):
+        @override
+        def heard(self, frame: NDArray[np.int16]) -> bool:
+            heard = super().heard(frame)
+            if heard and speaker.busy:
+                mic_woke.set()
+            return heard
+
+    pc = PcAudio(until(lambda: speaker.busy if pc_first else mic_woke.is_set()), WAKE, pc_woke.set)
+    mic = Mic(
+        *REQUEST,
+        Idle(lambda: pc_woke.is_set() if pc_first else speaker.busy),
+        WAKE,
+        until(pc_woke.is_set),
+        speaker.release.set,
+        *REQUEST[1:],
+    )
+    cfg = CFG.model_copy(update={"pc_audio_apps": []})
+
+    _run(_loop(agent, mic, speaker, pc=pc, cfg=cfg, wake=MicWake()))
+
+    assert [origin for _text, origin in agent.calls] == [Origin.OWNER_SPEECH]
+    assert speaker.hushed == 0
 
 
 def _replies(*texts: str) -> tuple[Reply, list[Hooks]]:
@@ -1548,7 +1602,10 @@ def _replies(*texts: str) -> tuple[Reply, list[Hooks]]:
     return reply, seen
 
 
-def test_the_wake_word_while_jarvis_speaks_stops_it_and_takes_the_new_request() -> None:
+@pytest.mark.parametrize("pc_audio_enabled", [False, True])
+def test_the_wake_word_while_jarvis_speaks_stops_it_and_takes_the_new_request(
+    pc_audio_enabled: bool,
+) -> None:
     reply, hooks = _replies("Here is a long answer.", "Skipped.")
     agent = Agent(reply)
     cancelled_after: list[bool] = []
@@ -1564,7 +1621,7 @@ def test_the_wake_word_while_jarvis_speaks_stops_it_and_takes_the_new_request() 
         *[SILENCE] * 5,
     )
 
-    _run(_loop(agent, mic, speaker))
+    _run(_loop(agent, mic, speaker, pc=PcAudio() if pc_audio_enabled else None))
 
     assert speaker.hushed == 1
     assert cancelled_after == [True]  # the first request was told to stop
@@ -1758,17 +1815,19 @@ class NotingWake(Wake):
         return found
 
 
-def test_a_wake_said_over_jarvis_that_pc_audio_also_held_is_pc_audio() -> None:
+def test_a_pc_wake_echo_over_an_announcement_keeps_its_pc_audio_origin() -> None:
     reply, _ = _replies("Here is a long answer.", "Skipped.")
     agent = Agent(reply)
     speaker = Playing()
     pc_wake = NotingWake()
     pc = PcAudio(Idle(lambda: speaker.busy), WAKE)
-    mic = Mic(*REQUEST, until(pc_wake.fired.is_set), WAKE, *REQUEST[1:])
+    mic = Mic(SILENCE, until(pc_wake.fired.is_set), WAKE, *REQUEST[1:])
     cfg = CFG.model_copy(update={"listen_to_pc": True, "pc_audio_apps": []})
+    jobs = DueJobs([Due(_job(3, "do", "say the forecast"), 0.0)])
 
-    _run(_loop(agent, mic, speaker, pc=pc, cfg=cfg, pc_wake=pc_wake))
+    _run(_loop(agent, mic, speaker, pc=pc, cfg=cfg, pc_wake=pc_wake, due=jobs))
 
+    assert agent.scheduled == [True, False]
     assert [origin for _text, origin in agent.calls] == [Origin.OWNER_SPEECH, Origin.PC_AUDIO]
 
 

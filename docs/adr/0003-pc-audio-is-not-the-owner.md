@@ -37,7 +37,10 @@ default (`audio.listen_to_pc`). When it is on:
 - **History exclusion.** A PC-audio request and its reply are not added to the owner's conversation history
   (`Agent.handle`), and their audio is never kept for debugging.
 - **Self-triggering and double hearing.** With `audio.barge_in` enabled, a wake word and request from
-  a named app can interrupt a reply. The named-app recorder excludes Jarvis's own playback. The
+  a named app can interrupt a PC-audio reply or a scheduled announcement. A reply to the owner
+  continues if the wake word is also detected in PC audio. If the microphone detects the wake word
+  first during an owner reply, Jarvis gives the PC detector two frames (160 ms) to identify the echo
+  before it acts on the microphone wake. The named-app recorder excludes Jarvis's own playback. The
   all-output monitor can start a request only while Jarvis is idle. Confirmation prompts are
   protected in both cases. A wake word heard by both the microphone and PC audio within 2 s is
   treated as PC audio. If the PC capture started first, the mic echo leaves it running. If the
@@ -48,8 +51,8 @@ default (`audio.listen_to_pc`). When it is on:
   passes the frames on but still notes wake words in them. The capture ends as soon as the loop takes another
   request or starts waiting for a yes, so PC speech in the answer window is still counted for the block above,
   and a wake word said meanwhile still marks a microphone request that echoes it as PC audio.
-- **No second capture.** A PC request moves the loop out of IDLE first (`VoiceLoop._answer_pc`), so no
-  further PC request is captured while it is handled.
+- **One capture at a time.** A PC request moves the loop out of IDLE first (`VoiceLoop._answer_pc`).
+  Another PC request can start during playback when the barge-in rules above allow it.
 - **No chime; a bare wake word is greeted aloud** (owner, 2026-11-28). A wake word in PC audio that came with
   its request plays no chime and gets no canned acknowledgement: the answer is the response. One that came
   alone is greeted with a short line (`PC_GREETINGS`: "Yes?", "Hey there.", "What's up?" ...), never the same

@@ -360,6 +360,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- A wake word from PC audio leaves your reply playing, including when Jarvis also detects its echo
+  in the microphone. Your voice can still interrupt, and a named app can interrupt a PC-audio reply.
 - A reply that falls into repeating one sentence is cut before its third time, aloud and in writing, with a
   short note (#70); twice on purpose ("Knock knock. Knock knock.") stays.
 - A file whose name is not valid UTF-8 no longer breaks the conversation: listing its folder made every

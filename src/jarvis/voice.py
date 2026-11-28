@@ -282,6 +282,7 @@ PRE_ROLL_FRAMES = 5
 # then the request was said straight after the wake word and may start inside the tail.
 TAIL_GAP_FRAMES = 2
 WAKE_DEDUPE_S = 2.0
+PC_ECHO_WAIT_S = 2 * FRAME_S  # give the PC wake detector two frames to catch up to the mic
 SCREEN_GRACE_S = 10.0  # no screen check starts this soon after a request, speech or a line
 SCREEN_LOCK_CACHE_S = 5.0  # how long the answer to "is the screen locked" is kept
 SORRY_INTERNAL = "Sorry, something went wrong on my side."
@@ -578,6 +579,8 @@ class VoiceLoop:
     _asking_confirmation = False
     _work_wake_at = 0.0
     _greeted = ""  # the last greeting a bare wake word in PC audio got
+    _pc_wake_at: float | None = None  # when PC audio last held the wake word
+    _reply_origin: Origin | None = None  # origin of a request being answered aloud
 
     def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - collaborators, each a test seam
         self,
@@ -673,7 +676,7 @@ class VoiceLoop:
         self._said_nothing = False  # the last reply had no words, or the owner asked for quiet
         self._should_stop: Callable[[], bool] = lambda: False
         self._pc_heard: queue.Queue[_PcRequest] = queue.Queue(maxsize=1)
-        self._pc_wake_at: float | None = None  # when PC audio last held the wake word
+        self._pc_woke = threading.Event()
         self._pc_capture_at: float | None = None  # wake already being captured directly
         self._mic_wake: _MicWake | None = None
         self._pc_done_at: float | None = None  # when the last PC-audio request ended
@@ -771,7 +774,7 @@ class VoiceLoop:
                 continue
             if self._heard_over_speech(frame) if speaking else self._wake.heard(frame):
                 wake_at = self._clock()
-                if _same_wake(self._pc_capture_at, wake_at):
+                if _same_wake(self._pc_capture_at, wake_at) or self._echo_over_owner_reply(wake_at):
                     continue
                 self._barged_at = wake_at
                 log.info(
@@ -779,6 +782,15 @@ class VoiceLoop:
                 )
                 self._speaker.hush()
                 return
+
+    def _echo_over_owner_reply(self, wake_at: float) -> bool:
+        """Give the PC stream a chance to identify a mic wake as an echo before stopping speech."""
+        if self._pc is None or self._reply_origin is not Origin.OWNER_SPEECH:
+            return False
+        self._pc_woke.clear()
+        if not _same_wake(self._pc_wake_at, wake_at):
+            self._pc_woke.wait(PC_ECHO_WAIT_S)
+        return _same_wake(self._pc_wake_at, wake_at)
 
     def _heard_over_speech(self, frame: NDArray[np.int16]) -> bool:
         wake = self._wake
@@ -1259,6 +1271,7 @@ class VoiceLoop:
 
     def _note_pc_wake(self, wake_at: float) -> None:
         self._pc_wake_at = wake_at
+        self._pc_woke.set()
         mic = self._mic_wake
         if mic is not None and _same_wake(mic.at, wake_at):
             mic.echoed = True
@@ -1277,9 +1290,11 @@ class VoiceLoop:
         A `follow_up` request (heard without the wake word) that cannot be made out is dropped
         without a word: it may not have been meant for Jarvis.
         """
+        self._reply_origin = origin
         try:
             self._reply(samples, origin, wake_at=wake_at, capture_s=capture_s, follow_up=follow_up)
         finally:
+            self._reply_origin = None
             if origin is Origin.PC_AUDIO or (wake_at is not None and self._heard_on_pc(wake_at)):
                 self._pc_done_at = self._clock()
 
@@ -1306,7 +1321,7 @@ class VoiceLoop:
         stt_s = time.perf_counter() - started
         if origin is Origin.OWNER_SPEECH and wake_at is not None and self._heard_on_pc(wake_at):
             log.info("the wake word was also in PC audio; treating the request as PC audio")
-            origin = Origin.PC_AUDIO
+            self._reply_origin = origin = Origin.PC_AUDIO
         from_owner = origin is Origin.OWNER_SPEECH
         recording = keep_for_debugging(samples) if from_owner else None
         if is_phantom(text) or (not text and not from_owner):
@@ -1647,9 +1662,10 @@ class VoiceLoop:
         return False
 
     def _pc_can_interrupt(self, state: State) -> bool:
-        """Allow a wake during ordinary speech only from named app streams."""
+        """Allow named app streams to interrupt a PC reply or announcement."""
         return (
             state is State.SPEAK
+            and self._reply_origin is not Origin.OWNER_SPEECH
             and self._cfg.barge_in
             and bool(self._cfg.pc_audio_apps)
             and not self._asking_confirmation
@@ -1720,7 +1736,7 @@ class VoiceLoop:
             return
         if self._asking_confirmation or self.state is State.CONFIRM:
             return
-        if barge and self.state is State.SPEAK:
+        if barge and self._pc_can_interrupt(self.state):
             log.info("PC-audio request spoke over Jarvis")
             self.hush()
         try:
