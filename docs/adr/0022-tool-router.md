@@ -34,10 +34,11 @@ Chosen option 3, as a setting: `tools = "all" | "routed"` in `[agent]` and `[cha
 - **Core** is what every request may need: `no_action`, `stay_quiet` and `chat_hand_off` (how Jarvis
   answers; the hand-off only while a chat window is open, [ADR 0028](0028-voice-and-chat-as-two-channels.md)),
   `think_harder` and `switch_model` (ways to go on; `switch_model` must be the first and only call of its reply, so a
-  detour through `use_tools` would only cost a call) and `use_tools`. Everything else is a group.
+  detour through `use_tools` would only cost a call), `read_skill` (since 2026-11-28, below) and `use_tools`.
+  Everything else is a group.
 - **The toolbox** (`Registry.groups()`, `router.toolbox_section`): in the system prompt of a routed agent, each
-  group, its summary and its tool names, then Jarvis's own skills and Omarchy's guides as before (their tools
-  are the `guides` group). It is generated from the registry, so a tool switched off or not installed is not
+  group, its summary and its tool names, then Jarvis's own skills and Omarchy's guides as before (`read_skill`
+  is a core tool, `os_skill` the `guides` group). It is generated from the registry, so a tool switched off or not installed is not
   in it. It costs about 730 tokens by voice and 790 in the chat (estimate), and is left out when every tool is
   offered anyway: there it would only take room from the remembered conversation, whose defaults the
   window tests pin.
@@ -86,7 +87,8 @@ inside a request counts only what that call is offered.
 - A conversation remembered with `memory_detail = "full"` can show a past call to a tool the new request has
   not been offered; calling it is refused with the hint, which costs a call. Since the amendment below this
   happens only after a new or forgotten conversation.
-- Owner-written skills and Omarchy's guides stay in the `guides` group and the skills list; the router never
+- Owner-written skills stay in the skills list, read with the core `read_skill`, and Omarchy's guides in the
+  `guides` group; the router never
   reads anything outside Jarvis's own files and Omarchy's guides.
 
 ## Amendment (2026-11-28): the groups stay for the conversation
@@ -106,3 +108,10 @@ Keep `all` as the default for voice and chat. The synthetic benchmark on Qwen3.8
 IQ2_XS had fewer prompt tokens per call with routing and a longer median request in both
 channels. See [the measured results](../models.md#router-benchmark) for accuracy, latency and
 the scope of the run. Routing remains available for owners who value a smaller prompt.
+
+## Amendment (2026-11-28): `read_skill` is a core tool
+
+The prompt tells the model to read a listed skill before the task it covers, but `read_skill` was in the
+`guides` group. A routed request loads only the group of the tool it needs, so in the router benchmark it read
+none of the 9 skills its cases expected, on voice and in the chat (#64). `read_skill` is now offered with the
+core tools whenever skills are listed; `os_skill` stays in `guides`.

@@ -349,6 +349,18 @@ def test_the_first_call_offers_only_the_core_tools() -> None:
     assert model.offered == [["stay_quiet", "think_harder", "use_tools", "no_action"]]
 
 
+def test_a_routed_first_call_offers_read_skill_so_a_listed_skill_can_be_read() -> None:
+    # The prompt tells the model to read a listed skill before the task it covers, but routed
+    # mode kept read_skill in the "guides" group: the router benchmark (#64) read 0 of 9
+    # expected skills routed, as the model loaded only the task's own group.
+    model = _Model([_say("Hello.")])
+    agent, _, _ = _routed_agent(model, [], extra=[_op("read_skill")])
+
+    agent.handle("how hot is my cpu", NO_CONFIRM)
+
+    assert "read_skill" in model.offered[0]
+
+
 def test_use_tools_adds_the_groups_in_the_registry_order_whatever_the_order_asked() -> None:
     orders: list[list[str]] = []
     for asked in (["web", "music"], ["music", "web"]):
@@ -607,6 +619,7 @@ def test_the_toolbox_group_names_are_the_use_tools_choices(
     assert enum == [group.name for group in registry.groups()]
     assert group_name("use_tools") == "core"
     assert registry.core_names() == [
+        "read_skill",
         "set_persona",
         "forget_conversation",
         "todo_write",

@@ -351,6 +351,8 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Fixed
 
+- With `tools = "routed"` the model can read a listed skill on any request: `read_skill` is a core tool, where it
+  was in the `guides` group, which a request loaded only by chance. The router benchmark read none of 9 expected skills.
 - Jarvis's prompt distinguishes closing one window from stopping the whole program.
 - Web search found nothing for hours at a time: SearXNG's default engines answered with a CAPTCHA,
   "too many requests" or "access denied". Jarvis's SearXNG now also asks Bing and Yahoo, which kept
