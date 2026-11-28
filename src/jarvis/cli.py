@@ -1660,6 +1660,7 @@ def cmd_chat(_args: argparse.Namespace) -> int:
         export_dir=_export_folder(cfg),
         paste=clipboard.read,
         pictures=pictures,
+        show_voice=cfg.channels.shared,
         screenshots=_screenshot_folders(Path.home(), os.environ),
         shown=chat_pictures(),
         twelve_hour=cfg.clock.twelve_hour,

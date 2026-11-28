@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from jarvis.config import AgentConfig
     from jarvis.model import ChatModel, Delta
     from jarvis.operations import Notice, Operation, Registry, Request, Sound
+    from jarvis.shared import SharedTurns
 
 log = logging.getLogger(__name__)
 
@@ -1231,6 +1232,7 @@ class Agent:
         bypass_consent: bool = False,
         actions: ActionRate | None = None,
         modes: Modes | None = None,
+        shared: SharedTurns | None = None,
     ) -> None:
         """Wire the agent to its model, operations, prompt, audit log and the owner's classes.
 
@@ -1246,7 +1248,9 @@ class Agent:
         `actions` caps the side-effecting actions in a window, asked or not and with consent
         bypassed too (`boundaries.max_actions`); without it this agent counts its own, 30 in 10
         minutes. With `modes`, the agent follows the mode Jarvis is in (the prompt, operations
-        and limits given here are the normal mode's), and the model may ask to switch it.
+        and limits given here are the normal mode's), and the model may ask to switch it. With
+        `shared` (`[channels] shared`), the other channel's turns join this conversation before
+        each request, and this one's go to it.
         """
         super().__init__()
         self._model = model
@@ -1284,6 +1288,7 @@ class Agent:
         self._noted = ""  # ... or began with Jarvis's own note of an answer
         self._ends = 0.0  # when the request in flight runs out of time
         self._shared_pictures = False  # the request in flight came with pictures
+        self._shared = shared  # the conversation shared with the other channel, if any
         self._follow_mode()
 
     def _follow_mode(self) -> None:
@@ -1498,6 +1503,25 @@ class Agent:
             self._registry.reset()
             self._audit.record("memory_expired")
 
+    def _take_shared(self, *, foreign: bool) -> None:
+        """Add what the owner asked of the other channel since the last request to this talk.
+
+        A request heard in PC audio reads no history, so it takes none either. A failure to read
+        the shared file costs the request nothing: it goes on with this channel's own talk.
+        """
+        if self._shared is None or foreign:
+            return
+        try:
+            taken = self._shared.take()
+        except OSError as exc:
+            log.warning("the other channel's turns could not be read: %s", exc)
+            return
+        for shared in taken:
+            self._memory.add(shared.turn(self._clock()))
+        if taken:
+            self._audit.record("shared_turns_taken", turns=len(taken))
+            self._save_memory()
+
     def _remembered(self, *, plain: bool) -> list[dict[str, Any]]:
         """Return the remembered conversation for a new request, cut to fit its budget.
 
@@ -1595,6 +1619,11 @@ class Agent:
             )
         )
         self._save_memory()
+        if self._shared is not None and not (turn.request and turn.request.scheduled):
+            try:
+                self._shared.publish(self._memory.turns[-1])
+            except OSError as exc:
+                log.warning("the turn could not be shared with the other channel: %s", exc)
 
     def handle(  # ruff: ignore[too-many-arguments] - a request's words and where each part came from
         self,
@@ -1735,6 +1764,7 @@ class Agent:
             else shortcuts.match(text, self._registry.shortcuts(), self._names)
         )
         self._expire(started)
+        self._take_shared(foreign=foreign)
         remembered = [] if foreign else self._remembered(plain=hit is not None)
         if remembered:
             self._note_remembered(request)

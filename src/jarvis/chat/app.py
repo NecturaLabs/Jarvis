@@ -255,6 +255,7 @@ class Services:
     export_dir: Path = field(default_factory=Path.home)
     paste: Callable[[], Clip] | None = None  # reads the clipboard, for Ctrl+V
     pictures: bool = False  # the model can see pictures
+    show_voice: bool = False  # show spoken requests and their replies too (`[channels] shared`)
     screenshots: tuple[Path, ...] = ()  # where `/image` looks for the newest screenshot
     home: Path = field(default_factory=Path.home)  # what `~/` means in a pasted path
     shown: PictureCache | None = None  # where the pictures Jarvis shows are kept
@@ -867,8 +868,11 @@ class ChatApp(App[None]):
             self._show_log()
 
     def _new_entries(self) -> list[dict[str, object]]:
-        """Return what the log gained, less the voice agent's own work (spoken, not shown)."""
-        return [entry for entry in self._tail.read() if entry.get("via") != VOICE_VIA]
+        """Return what the log gained; the voice agent's work only with `[channels] shared` on."""
+        entries = self._tail.read()
+        if self._services.show_voice:
+            return entries
+        return [entry for entry in entries if entry.get("via") != VOICE_VIA]
 
     def _show_log(self) -> None:
         self._follow_down()  # a reply's Markdown grows after it is mounted
@@ -947,10 +951,11 @@ class ChatApp(App[None]):
             done = datetime.fromisoformat(str(entry.get("ts"))).astimezone()
         except ValueError:
             done = datetime.now().astimezone()
+        spoken = "spoken" if entry.get("via") == VOICE_VIA else ""
         if not isinstance(seconds, int | float):
-            return ""
+            return spoken
         line = worked_line(float(seconds), done, None, twelve_hour=self._services.twelve_hour)
-        return f"{STAR} {line}"
+        return f"{STAR} {line}" + (f" · {spoken}" if spoken else "")
 
     def _follow(self, entry: dict[str, object]) -> None:
         """Keep the working line on what this window's request is doing."""

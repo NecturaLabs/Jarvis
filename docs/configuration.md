@@ -180,13 +180,26 @@ the limits, thinking, memory and `browser` of `[agent]` (voice) and `[chat]`, an
 `[spotify]` (one login), `[files]`, `[apps]`, `[shell]`, `[persona]`, `[model]` and `[strata]` (one model
 server with one slot).
 
-A spoken request is the voice agent's own: it is done and spoken, and does not show in an open chat window.
+With `[channels] shared = true` (the default) the two are one conversation
+([ADR 0030](adr/0030-one-conversation-across-voice-and-chat.md)): each agent reads what the owner asked of the
+other, and its reply, before its next request, and the chat window shows spoken requests and their replies. A
+spoken request is still answered aloud and a typed one in text, each by its own channel's agent, limits and
+tools. Only the voice service and chat windows share; `jarvis ask` and ACP sessions do not. `shared = false`
+keeps them apart, as below.
+
+With sharing off, a spoken request is the voice agent's own: it is done and spoken, and does not show in an open chat window.
 `chat_hand_off` (class `safe`, offered to spoken requests only while a chat window is open) hands the owner's
 spoken words to the open window instead, for work that belongs to the chat's own request or conversation: see
 [ADR 0028](adr/0028-voice-and-chat-as-two-channels.md). `boundaries.classes` can name it like any tool
 (`chat_hand_off = "deny"` switches it off). `jarvis pause` frees the model only once no request in any process is
 being answered, so a chat request (or a question it waits on: answer it or press Esc) keeps the model loaded
 until it ends; the chat's status line says so.
+
+## `[channels]`: voice and chat together
+
+| Key | Default | Allowed | What it does |
+|---|---|---|---|
+| `shared` | `true` | true or false | One conversation across the voice service and chat windows ([ADR 0030](adr/0030-one-conversation-across-voice-and-chat.md)): each reads what was asked of the other, and the chat shows spoken requests and replies. Each channel still answers the way it was asked. `false`: the two are kept apart ([ADR 0028](adr/0028-voice-and-chat-as-two-channels.md)). Takes effect when the voice service and the window start again (`jarvis restart`, reopen the chat). |
 
 ## `[chat]`: the same for typed requests in `jarvis chat`
 
