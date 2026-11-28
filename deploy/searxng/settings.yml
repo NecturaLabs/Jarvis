@@ -25,3 +25,10 @@ engines:
   # Its result links come back wrapped ("http:///go/v1/…") and cannot be opened.
   - name: brave
     disabled: true
+  # SearXNG's default web engines (DuckDuckGo, Google, Qwant, Wikidata) answer this PC with a
+  # CAPTCHA, "too many requests" or "access denied" after a few hours of use, which left every
+  # search empty; Bing and Yahoo kept answering (checked 2026-11-28).
+  - name: bing
+    disabled: false
+  - name: yahoo
+    disabled: false
