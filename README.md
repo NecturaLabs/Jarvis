@@ -29,7 +29,8 @@ Jarvis is pre-1.0 software; see [Status](#status).
   only, with no desktop notifications.
   Tell Jarvis to be quiet, in any words, and it stops without a word. Say the wake word while it speaks
   to stop it and ask something else.
-- **Singing:** ask Jarvis to sing, in any words, and the model writes the song as notes, up to 30 seconds,
+- **Singing:** ask Jarvis to sing, in any words, and the model writes the song as notes, up to 30 seconds
+  (played again and again when you ask for it on a loop, up to five minutes),
   that Jarvis sings in its own voice: with Kokoro's voice moved to each note, or with SoulX-Singer, a local
   singing-voice model on the GPU, once you install it ([Singing](docs/models.md#singing)).
 - **Spotify:** play a track, album, artist, playlist or your liked songs; pause, resume, next, previous; jump

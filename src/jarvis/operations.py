@@ -252,12 +252,13 @@ class Sound:
     """A sound an operation made for the owner to hear, a song: int16 mono samples at `rate`.
 
     `lyrics` are the words it says and when, so the voice's check for its own wake word reads
-    each stretch of it with the words heard there.
+    each stretch of it with the words heard there. It plays `times` times over, back to back.
     """
 
     pcm: bytes
     rate: int
     lyrics: tuple[Lyric, ...] = ()
+    times: int = 1
 
     @property
     def words(self) -> str:

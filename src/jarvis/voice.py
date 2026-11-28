@@ -302,7 +302,11 @@ class _Speaker(Protocol):
     def say(self, text: str) -> None: ...
     def queue(self, text: str) -> None: ...
     def queue_sound(
-        self, pcm: bytes, rate: int, lyrics: Sequence[tuple[float, float, str]] = ()
+        self,
+        pcm: bytes,
+        rate: int,
+        lyrics: Sequence[tuple[float, float, str]] = (),
+        times: int = 1,
     ) -> None: ...
     def wait(self) -> None: ...
     def hush(self) -> None: ...
@@ -698,7 +702,7 @@ class VoiceLoop:
         if self._first_words is None:
             self._first_words = time.perf_counter()
         self._begin_speaking()
-        self._speaker.queue_sound(sound.pcm, sound.rate, sound.lyrics)
+        self._speaker.queue_sound(sound.pcm, sound.rate, sound.lyrics, sound.times)
         if self._silent():  # spoken over or hushed while it was being queued
             self._speaker.hush()
 

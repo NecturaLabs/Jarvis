@@ -1978,6 +1978,7 @@ class _Sound:
     pcm: bytes
     rate: int
     lyrics: tuple[tuple[float, float, str], ...]
+    times: int = 1
 
 
 def trim_silence(pcm: bytes, rate: int, *, lead_s: float | None, tail_s: float) -> bytes:
@@ -2174,16 +2175,21 @@ class Speaker:
         self._put(text, None)
 
     def queue_sound(
-        self, pcm: bytes, rate: int, lyrics: Sequence[tuple[float, float, str]] = ()
+        self,
+        pcm: bytes,
+        rate: int,
+        lyrics: Sequence[tuple[float, float, str]] = (),
+        times: int = 1,
     ) -> None:
         """Have int16 mono `pcm` at `rate` played after what is already queued; return at once.
 
         It plays as it is, its silences included (a song's rests are part of it). `lyrics` are
         the words it says, each with the seconds it is heard in, for the check that it would
         not trigger the wake word itself: each chunk is checked with the words heard in it.
+        It plays `times` times back to back; one pass is checked, and the seam between two.
         """
         if pcm:
-            self._put("", _Sound(pcm, rate, tuple(lyrics)))
+            self._put("", _Sound(pcm, rate, tuple(lyrics), max(1, times)))
 
     def _put(self, text: str, sound: _Sound | None) -> None:
         if self._stopped.is_set():
@@ -2268,8 +2274,9 @@ class Speaker:
             pcm = trim_silence(pcm, rate, lead_s=lead_s, tail_s=TAIL_KEEP_S)
         if not pcm:
             return
+        times = sound.times if sound is not None else 1
         spans = (
-            self._song_spans(pcm, rate, sound.lyrics, run)
+            self._repeated_spans(pcm, rate, sound, run)
             if sound is not None
             else self._sentence_spans(pcm, rate, text)
         )
@@ -2279,13 +2286,45 @@ class Speaker:
             # It plays once what the open player already holds has played; a new player starts
             # it now. Kept before the player opens, so the guard is never late.
             start = max(self._clock(), self._ends if self._proc is not None else 0.0)
-            self._ends = start + len(pcm) / (2 * rate)
+            self._ends = start + times * len(pcm) / (2 * rate)
             self._guards.extend((start + a, start + b + GUARD_TAIL_S) for a, b in spans)
         if spans:
             log.info("a sentence sounds like the wake word; it cannot be spoken over")
         proc = self._proc or self._open(rate, run)
-        if proc is not None:
+        for _ in range(times):
+            if proc is None or not self._current(run):
+                return
             self._write(proc, pcm, run)
+
+    def _repeated_spans(
+        self, pcm: bytes, rate: int, sound: _Sound, run: int
+    ) -> list[tuple[float, float]]:
+        """Return the guarded seconds of a sound played `sound.times` times back to back.
+
+        Every pass sounds the same, so one is checked and its spans repeat in each; the seam,
+        where a pass's last second runs into the next one's start, is checked once on its own.
+        """
+        spans = self._song_spans(pcm, rate, sound.lyrics, run)
+        if sound.times == 1:
+            return spans
+        seconds = len(pcm) / (2 * rate)
+        tail_s = min(SONG_OVERLAP_S, seconds)
+        head_s = min(SONG_CHUNK_S, seconds)
+        seam = pcm[len(pcm) - 2 * int(tail_s * rate) :] + pcm[: 2 * int(head_s * rate)]
+        words = " ".join(
+            [t for _start, b, t in sound.lyrics if b > seconds - tail_s - LYRIC_SLACK_S]
+            + [t for a, _end, t in sound.lyrics if a < head_s + LYRIC_SLACK_S]
+        )
+        seams = (
+            [(seconds - tail_s, seconds + head_s)]
+            if self._current(run) and self._sounds_like_wake(seam, rate, words)
+            else []
+        )
+        return [
+            (a + n * seconds, b + n * seconds)
+            for n in range(sound.times)
+            for a, b in [*spans, *(seams if n < sound.times - 1 else [])]
+        ]
 
     def _sentence_spans(self, pcm: bytes, rate: int, text: str) -> list[tuple[float, float]]:
         """Return the seconds of a sentence (start, end) that would trigger the wake word.

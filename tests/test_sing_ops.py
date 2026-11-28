@@ -257,6 +257,56 @@ def test_a_score_that_cannot_be_sung_is_refused_before_anyone_is_asked() -> None
     assert op.prepare(args) == args
 
 
+def test_a_song_asked_for_several_times_is_rendered_once_and_played_that_often() -> None:
+    singer = Singer()
+    op = _op(singer)
+
+    result = op.run(validate_args(op, {"notes": LINE, "times": 3}))
+
+    assert result.sound is not None
+    assert result.sound.times == 3
+    assert len(result.sound.pcm) == 32000  # one pass: the speaker plays it three times
+    assert len(singer.scores) == 1
+    assert "3 times" in result.text
+
+
+def test_a_song_plays_once_unless_asked_for_more() -> None:
+    op = _op(Singer())
+
+    result = op.run(validate_args(op, {"notes": LINE}))
+
+    assert result.sound is not None
+    assert result.sound.times == 1
+
+
+def test_the_question_before_a_repeated_song_says_how_often_it_plays() -> None:
+    op = _op(Singer())
+
+    asked = op.spoken_summary({"notes": LINE, "times": 4})
+
+    assert asked == "sing a 2-second song 4 times with these words: Morning light"
+
+
+def test_a_loop_longer_than_the_limit_is_refused_before_anyone_is_asked() -> None:
+    singer = Singer()
+    op = _op(singer)
+    assert op.prepare is not None
+    long_line = ", ".join(["la C4 8"] * 3)  # 12 seconds at the default tempo of 120
+
+    with pytest.raises(OperationError, match=r"Nothing was sung: .*at most 300 seconds"):
+        op.prepare(validate_args(op, {"notes": long_line, "tempo_bpm": 120, "times": 26}))
+    assert op.prepare(validate_args(op, {"notes": long_line, "tempo_bpm": 120, "times": 25}))
+    assert not singer.scores
+
+
+@pytest.mark.parametrize("times", [0, 51])
+def test_a_count_outside_the_schema_is_refused(times: int) -> None:
+    op = _op(Singer())
+
+    with pytest.raises(ArgumentError):
+        validate_args(op, {"notes": LINE, "times": times})
+
+
 @pytest.mark.parametrize(
     ("engine", "installed", "chosen"),
     [

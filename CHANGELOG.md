@@ -8,6 +8,9 @@ Jarvis has no tagged releases yet; everything below is unreleased. Once releases
 
 ### Added
 
+- `sing` takes `times`: a song asked for more than once or on a loop is made once and played that many
+  times back to back (up to 50, at most five minutes in all), so each pass sounds the same and the model writes
+  the notes only once. The wake word, `jarvis hush` and a pause stop all of it.
 - `write_file` has an `edit` mode: `find` is one passage of the file, copied exactly and found once, and
   `content` what it becomes, so a long file is changed without being written again. It is bound and checked
   like a replace (refused if the file changed since the question), and a passage that is missing or found
