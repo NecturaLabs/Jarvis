@@ -105,8 +105,8 @@ offered: every call is still classified as before, so a heard request still gets
 ## Measurement (2026-11-28)
 
 Keep `all` as the default for voice and chat. The synthetic benchmark on Qwen3.8-Flash-Next
-IQ2_XS had fewer prompt tokens per call with routing and a longer median request in both
-channels. See [the measured results](../models.md#router-benchmark) for accuracy, latency and
+IQ2_XS (Strata engine 0.1.66) had half the prompt tokens per call with routing, accuracy within noise of
+`all`, and about 5.8 s to the first reply against 1.0 s, in both channels. See [the measured results](../models.md#router-benchmark) for accuracy, latency and
 the scope of the run. Routing remains available for owners who value a smaller prompt.
 
 ## Amendment (2026-11-28): `read_skill` is a core tool
